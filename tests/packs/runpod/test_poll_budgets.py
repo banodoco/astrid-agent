@@ -1,7 +1,18 @@
 """Remaining warm waits sleep, and stop at their original deadline/fence."""
+import threading
 from types import SimpleNamespace
 
 import pytest
+
+
+def _reset_driver(now):
+    from astrid.packs.runpod import machine as rm
+
+    owner = SimpleNamespace(
+        lock=threading.RLock(), clock=lambda: now[0],
+        preparation_claim=lambda lease: {"lease": {}}, _save=lambda *args: None,
+    )
+    return rm.RunPodMachine(SimpleNamespace(lease_owner=owner))
 
 
 def test_machine_backoff_cap_and_cancellation_budget(tmp_path):
@@ -35,9 +46,8 @@ def test_reset_interval_honours_verification_and_paid_deadlines(monkeypatch, pai
     monkeypatch.setattr('time.sleep', sleep)
     ops = SimpleNamespace(job_start=lambda cmd, job_id: {'id': job_id},
                           job_poll=lambda job_id: {'id': job_id, 'state': 'running'})
-    driver = SimpleNamespace(_checkpoint=lambda *a: None,
-                             _require=lambda: SimpleNamespace(lease_owner=SimpleNamespace(clock=lambda: now[0])))
-    lease = SimpleNamespace(claim=SimpleNamespace(ops=ops), run_dir='run', job_dir='job')
+    driver = _reset_driver(now)
+    lease = SimpleNamespace(lease=object(), claim=SimpleNamespace(ops=ops), run_dir='run', job_dir='job')
     deadline = {'paid_expiry': 0.45} if paid else {'verify_deadline': 0.45}
     with pytest.raises(rm.MachineError, match='original paid limit'):
         rm.RunPodMachine._reset(driver, lease, **deadline)
@@ -60,8 +70,8 @@ def test_reset_own_deadline_is_not_overslept(monkeypatch):
         return {'id': job_id, 'state': 'cancelled'}
     ops = SimpleNamespace(job_start=lambda cmd, job_id: {'id': job_id},
         job_poll=lambda job_id: {'id': job_id, 'state': 'running'}, job_cancel=cancel)
-    driver = SimpleNamespace(_checkpoint=lambda *a: None)
-    lease = SimpleNamespace(claim=SimpleNamespace(ops=ops), run_dir='run', job_dir='job')
+    driver = _reset_driver(now)
+    lease = SimpleNamespace(lease=object(), claim=SimpleNamespace(ops=ops), run_dir='run', job_dir='job')
     with pytest.raises(rm.MachineError, match='reset did not finish'):
         rm.RunPodMachine._reset(driver, lease)
     assert sleeps == pytest.approx([0.2, 0.2, 0.05])

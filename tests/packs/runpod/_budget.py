@@ -25,6 +25,14 @@ from astrid.packs.runpod.remote_placement import _HttpsOps
 _REAL_BOUNDED_CALL = _HttpsOps._bounded_call
 
 
+class CpuHttpsPodTransport(RealHttpsPodTransport):
+    def __init__(self, pod_id, token, **kwargs):
+        # The legacy fixture's pod-1 is not a valid RunPod proxy hostname.
+        # Adapt only at the loopback wire boundary, never in claim-scoped ops.
+        assert kwargs.get("base_url", "").startswith("http://127.0.0.1:")
+        super().__init__("pod1" if pod_id == "pod-1" else pod_id, token, **kwargs)
+
+
 class SharedCounts(MutableMapping):
     """SQLite transactions synchronize threads and independent helper processes."""
 
@@ -102,7 +110,7 @@ class RemoteBudget:
                 return original(*args, **kwargs)
         monkeypatch.setattr(target, name, wrapped)
 
-    def http_attempts(self, monkeypatch=None):
+    def http_attempts(self, monkeypatch=None, *, machine=False):
         """Below HttpsPodTransport._request's retry loop and chunk machinery."""
         import httpx
         original = httpx.Client._send_single_request
@@ -132,8 +140,10 @@ class RemoteBudget:
             startup = Path(self.counts.path).parent / "budget-startup"
             startup.mkdir(exist_ok=True)
             (startup / "sitecustomize.py").write_text(
-                "from tests.packs.runpod._budget import RemoteBudget\n"
-                f"_budget = RemoteBudget({self.counts.path!r})\n"
+                "from tests.packs.runpod._budget import RemoteBudget, CpuHttpsPodTransport\n"
+                + ("from runpod_lifecycle import https\n"
+                   "https.HttpsPodTransport = CpuHttpsPodTransport\n" if machine else "")
+                + f"_budget = RemoteBudget({self.counts.path!r})\n"
                 "_budget.http_attempts()\n")
             monkeypatch.setenv("PYTHONPATH", str(startup) + os.pathsep + os.environ.get("PYTHONPATH", ""))
 
@@ -212,7 +222,7 @@ class RemoteBudget:
         from astrid.packs.runpod import target_selection, worker_preparation
         from astrid.packs.runpod.remote_placement import _HttpsOps
 
-        self.http_attempts(monkeypatch)
+        self.http_attempts(monkeypatch, machine=True)
         agent = CpuAgent(case.pod, self, Path(self.counts.path).parent / "pod")
 
         class Handler(BaseHTTPRequestHandler):
@@ -240,11 +250,12 @@ class RemoteBudget:
         original = _HttpsOps.__init__
         def init(ops, pod_id, token, **kwargs):
             kwargs["base_url"] = base_url
-            original(ops, "pod1", token, **kwargs)
+            # Redirect the wire endpoint, preserving the exact claim identity.
+            original(ops, pod_id, token, **kwargs)
         monkeypatch.setattr(_HttpsOps, "__init__", init)
         assert _REAL_BOUNDED_CALL.__name__ == "_bounded_call", "CPU budget must restore real spawned transport"
         monkeypatch.setattr(_HttpsOps, "_bounded_call", _REAL_BOUNDED_CALL)
-        monkeypatch.setattr(https, "HttpsPodTransport", RealHttpsPodTransport)
+        monkeypatch.setattr(https, "HttpsPodTransport", CpuHttpsPodTransport)
         self.agent = agent
         self.wrap(monkeypatch, case.machine, "_observe_mounts", kind="provider.observe_mounts")
         for target, names in (
@@ -405,6 +416,12 @@ else:
             value = {'offset': len(state['data']), 'complete': complete}
         elif path == '/download-chunk':
             from runpod_lifecycle.https import CHUNK
+            if body['path'] not in self.pod.files and body['path'].endswith(('/outputs.tar', '/logs.tar')):
+                # W-B's fake seals archives lazily at get(), like its manifest.
+                local = self.local(body['path'])
+                local.parent.mkdir(parents=True, exist_ok=True)
+                self.pod.get(body['path'], local)
+                self.pod.files[body['path']] = local.read_bytes()
             if body['path'] not in self.pod.files:
                 return httpx.Response(400, json={'error': 'missing'})
             data = self.pod.files[body['path']]

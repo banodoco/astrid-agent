@@ -1705,7 +1705,10 @@ class RunPodMachine:
         deferred_reset = None
         if warm and job is not None and reason != "verification_timeout":
             try:
-                if failure is None:
+                # Zero idle arms immediate release at settlement. Finish reset
+                # first so its observer cannot race that exact release owner.
+                if failure is None and (record["lease"]["idle_seconds"] > 0
+                                        or record["lease"].get("keep_until_release") is True):
                     deferred_reset = self._start_reset(lease, pending=True)
                 else:
                     self._reset(lease, verify_deadline=verify_deadline, paid_expiry=paid_expiry)

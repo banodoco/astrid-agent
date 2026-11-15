@@ -100,7 +100,8 @@ def _fetch(tmp_path, ops):
     scratch = tmp_path / "scratch"
     scratch.mkdir()
     owner = object.__new__(machine.RunPodMachine)
-    fake_run = SimpleNamespace(remote_root=str(run), scratch=scratch)
+    fake_run = SimpleNamespace(remote_root=str(run), scratch=scratch,
+                               lease=SimpleNamespace(timing=None))
     return owner._fetch_failure_logs(ops, fake_run, stdout, tmp_path / "local")
 
 

@@ -509,6 +509,8 @@ def test_real_runtime_fenced_terminal_state_and_result(case, monkeypatch, tmp_pa
                 raw = service.task(task_id)["task"]
                 return {**raw, "version": int(raw["attempt"]) + 1}
             def fail_attempt(self, attempt_id, **kwargs):
+                if outcome in {"lease_lost", "lease_expired"}:
+                    assert "result" not in kwargs  # Ceding must not add timing-only evidence.
                 key = kwargs.pop("idempotency_key")
                 return service.fail_attempt(attempt_id, kwargs, idempotency_key=key)
             def cancel_task(self, task_id, **kwargs):

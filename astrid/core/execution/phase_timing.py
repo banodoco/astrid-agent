@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 SCHEMA = "astrid.generation.phase-timing.v1"
+TIER1_CARDS = ("P3", "P4", "W-A", "W-B", "W-C", "W-D", "W-E", "W-F", "W-H", "Q2")
 #: phase -> (start stamp, end stamp)
 PHASES = {
     "capacity_wait": ("capacity_wait_started_at", "claimed_at"),
@@ -262,7 +263,7 @@ class GenerationTiming:
                                         for name in ("whole_job", "unaccounted")}
                 execution["engine_reused"] = self.job_phases.get("engine_reused")
                 execution["unaccounted"] = _remainder(execution["seconds"], subtotal)
-            return {"total": {"seconds": total}, "phases": phases,
+            return {"total": {"seconds": total}, "phases": phases, "tier1_cards": list(TIER1_CARDS),
                     "unaccounted": _remainder(total, sum(row["seconds"] or 0.0 for row in phases.values())),
                     "clock_id": clock_id(), "started_monotonic": self.started, "ended_monotonic": now,
                     "intervals": intervals}

@@ -79,7 +79,7 @@ def test_canonical_verification_refuses_stale_receipt(monkeypatch, tmp_path, evi
     placement = _placement(monkeypatch, (0, json.dumps(live), ""))
     state = _state(tmp_path)
     state.installation.platform = recipe.platform
-    state.claim = SimpleNamespace(ops=SimpleNamespace(
+    state.claim = SimpleNamespace(identity={}, ops=SimpleNamespace(
         get=lambda remote, local: local.write_text(json.dumps(saved))))
 
     with pytest.raises(IntegrityError, match="installed but stale"):

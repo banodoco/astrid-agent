@@ -644,17 +644,24 @@ def test_host_v2_timing_is_stored_on_runtime_and_local_terminal(host_case, monke
     kwargs = {"lease_token": "lease-result", "_generation_timing": timing}
     if failure == "admission":
         kwargs["_setup_error"] = ValueError("fixture failure")
+    persisted = None
     if failure:
         with pytest.raises(ValueError, match="fixture failure"):
             case.host.run_task(case.task, **kwargs)
-        persisted = case.runtime.failures[0][3]["result"]
+        if failure == "admission":
+            # P3 must not invent evidence on a bare lifecycle failure.
+            assert "result" not in case.runtime.failures[0][3]
+        else:
+            persisted = case.runtime.failures[0][3]["result"]
     else:
         case.host.run_task(case.task, **kwargs)
         persisted = case.runtime.settlements[0][2]["result"]
     local = json.loads((case.root / "result.json").read_text())
-    assert local["timing"] == persisted["timing"]
-    assert "cli" not in persisted["timing"]
-    host = persisted["timing"]["host"]
+    if persisted is not None:
+        assert local["timing"] == persisted["timing"]
+    assert "cli" not in local["timing"]
+    host = local["timing"]["host"]
+    assert host["tier1_cards"] == list(phase_timing.TIER1_CARDS)
     assert host["total"]["seconds"] > 0
     if failure is True:
         assert host["phases"]["execution"]["seconds"] is not None

@@ -189,7 +189,8 @@ def test_failed_job_collects_all_declared_logs_with_one_verified_download(tmp_pa
     scratch = tmp_path / 'scratch'
     scratch.mkdir()
     owner = object.__new__(rm.RunPodMachine)
-    run = SimpleNamespace(remote_root=str(root), scratch=scratch, directory=str(job))
+    run = SimpleNamespace(remote_root=str(root), scratch=scratch, directory=str(job),
+                          lease=SimpleNamespace(timing=None))
     (job / 'stdout').write_text(done.stdout + '\n' + 'x' * 10000)
     reads = []
 

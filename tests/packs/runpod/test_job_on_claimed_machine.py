@@ -750,11 +750,12 @@ def test_warm_second_job_operation_budget(request, monkeypatch):
         raise
     assert not hasattr(budget.agent, "error"), getattr(budget.agent, "error", None)
     c.host.wait_for_reset()  # the deferred reset is part of job 2's counted work
+    print("warm second job counts:", dict(budget.counts))
     bounds = {
-        "http.post.jobs": 21, "http.get.jobs": 21,
-        "put.create": 5, "put.chunk": 5, "get.chunk": 5, "job_poll.read": 9,
+        "http.post.jobs": 15, "http.get.jobs": 15,
+        "put.create": 1, "put.chunk": 1, "get.chunk": 2, "job_poll.read": 6,
         "put.reconcile": 0, "put.verify": 0, "http.delete.jobs": 0,
-        "process_launch": 79, "process_fork": 43, "process_start": 20, "provider.read_exact_pod": 2,
+        "process_launch": 57, "process_fork": 30, "process_start": 16, "provider.read_exact_pod": 2,
         "provider.get_network_volumes": 2, "provider.list_pods": 1,
         "provider.confirm_acquired_machine": 1, "provider.get_pod_status": 1,
         "provider.observe_mounts": 1,

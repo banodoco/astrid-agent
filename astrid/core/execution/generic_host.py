@@ -11581,9 +11581,12 @@ class GenericPackHost:
                 if terminal.get("recorded"):
                     return terminal.get("completion")
             if operation in (self.client.settle, self.client.fail):
-                result_payload = dict(kwargs.get("result") or {})
-                phase_timing.attach_host(result_payload, generation_timing)
-                kwargs["result"] = result_payload
+                # Bare lifecycle failures must still cede an expired lease.
+                # Inventing a result would require live evidence authority.
+                if kwargs.get("result") is not None:
+                    result_payload = dict(kwargs["result"])
+                    phase_timing.attach_host(result_payload, generation_timing)
+                    kwargs["result"] = result_payload
                 # Freeze the call once: reconciliation must never rerun the
                 # producer or rebuild outputs from a changing spool.
                 if isinstance(self.client, RuntimeProtocolClient):

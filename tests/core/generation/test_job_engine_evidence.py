@@ -101,6 +101,8 @@ def job_harness(tmp_path, monkeypatch):
 
 
 def test_consecutive_jobs_have_bounded_slices_and_run_record(tmp_path, job_harness):
+    from astrid.core.execution.phase_timing import TIER1_CARDS
+
     state, run, evidence, log = job_harness
     with _FakeComfy() as fake:
         state.update(endpoint=fake.url, line='first job')
@@ -108,6 +110,7 @@ def test_consecutive_jobs_have_bounded_slices_and_run_record(tmp_path, job_harne
         fake.vram_free = 19_000_000_000
         state['line'] = 'second job'
         assert run(tmp_path / 'two') == {'ok': True}
+        assert evidence(tmp_path / 'two')[1]['tier1_cards'] == list(TIER1_CARDS)
         with log.open('a') as stream:
             stream.write('after both jobs\n')
         first, record = evidence(tmp_path / 'one')
@@ -316,6 +319,9 @@ def test_failed_task_survives_log_upload_failure(managed_host_job, monkeypatch, 
     assert timing["schema"] == "astrid.generation.timing.v2"
     assert "cli" not in timing
     host = timing["host"]
+    from astrid.core.execution.phase_timing import TIER1_CARDS
+
+    assert host["tier1_cards"] == list(TIER1_CARDS)
     assert host["total"]["seconds"] >= 0
     assert sum(row["seconds"] or 0 for row in host["phases"].values()) + host["unaccounted"]["raw_seconds"] == pytest.approx(host["total"]["seconds"])
     assert json.loads((case.root / "result.json").read_text())["timing"] == timing

@@ -401,3 +401,51 @@ def test_old_reset_completion_cannot_signal_a_later_reset(monkeypatch):
     adapter._complete_reset(lease, {"id": "reset", "limit": 600}, 600)
     assert old.is_set()
     assert not later.is_set()
+
+
+def test_zero_idle_reset_budget_finishes_before_immediate_release(machine_case, monkeypatch):
+    from dataclasses import replace
+
+    c = machine_case
+    claim(c)
+    paid = dict(c.read()["paid_limits"])
+    request = job(c)
+    request = replace(request, policy={**request.policy, "idle_timeout_s": 0})
+    reset_ids, poll_threads, armed_jobs = [], [], []
+    start, poll, arm = c.pod.job_start, c.pod.job_poll, c.host._arm
+
+    def started(command, **kwargs):
+        if "pod_reset reset --run-dir" in command:
+            reset_ids.append(kwargs["job_id"])
+        return start(command, **kwargs)
+
+    def polled(job_id):
+        if job_id in reset_ids:
+            poll_threads.append(threading.get_ident())
+        return poll(job_id)
+
+    def armed(record):
+        info = record["lease"]
+        last = info.get("last_job") or {}
+        if (info["idle_seconds"] == 0 and last.get("outcome") == "success"
+                and last.get("generation") == info["generation"]):
+            armed_jobs.append(info["job"]["state"])
+        return arm(record)
+
+    monkeypatch.setattr(c.host, "_arm", armed)
+    monkeypatch.setattr(c.pod, "job_start", started)
+    monkeypatch.setattr(c.pod, "job_poll", polled)
+    caller = threading.get_ident()
+    assert run(c, request)["files"]
+    c.host.wait_for_reset()
+    assert len(reset_ids) == 1
+    assert armed_jobs == ["exited"]
+    assert poll_threads == [caller]
+    assert c.host._reset_worker is None
+    record = c.read()
+    assert record["lease"]["idle_seconds"] == 0
+    assert record["lease"]["job"]["state"] == "exited"
+    assert record["paid_limits"] == paid
+    c.clock.advance(0)
+    assert c.read()["state"] == "cleanup_complete"
+    assert c.creates == 1 and c.deletes == ["pod-1"]

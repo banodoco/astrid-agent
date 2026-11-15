@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from astrid.core._shared import run_logs
-from astrid.core.execution.phase_timing import PhaseTiming, stamp
+from astrid.core.execution.phase_timing import TIER1_CARDS, PhaseTiming, stamp
 
 from .engine_custody import engine_log_path
 
@@ -153,7 +153,8 @@ class JobEvidence:
         if type(reused) is not bool:
             reused = False
             self.notes.append("engine_reused=false: no supervisor reuse decision was reached")
-        record = {"schema": "astrid.job-run.v1", "vram_free_before_bytes": self.before,
+        record = {"schema": "astrid.job-run.v1", "tier1_cards": list(TIER1_CARDS),
+                  "vram_free_before_bytes": self.before,
                   "vram_free_after_bytes": after, "model_verification_seconds": verify,
                   "started_at": self.started_at, "ended_at": datetime.now(timezone.utc).isoformat(),
                   "phases": phases, "engine_reused": reused,

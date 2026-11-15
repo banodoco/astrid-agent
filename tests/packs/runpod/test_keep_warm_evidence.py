@@ -157,7 +157,8 @@ def test_upload_failure_before_submission_keeps_pod(machine_case, monkeypatch, t
     c = machine_case
     original = c.pod.put
     def put(source, destination):
-        if destination.endswith("/job.json"):
+        # W-B uploads job.json inside the single dispatch archive.
+        if destination.endswith("/dispatch.tar"):
             raise OSError("upload failed")
         return original(source, destination)
     monkeypatch.setattr(c.pod, "put", put)
