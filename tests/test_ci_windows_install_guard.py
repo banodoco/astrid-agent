@@ -116,3 +116,59 @@ def test_prepare_selects_checkout_archives_without_local_git_sources(tmp_path, m
     assert manifest["lifecycle"] == {"repo": "https://example.invalid/lifecycle.git",
                                      "sha": "c" * 40, "version": "1.2.3"}
     assert manifest["vibecomfy"] == {"sha": "d" * 40}
+
+
+def test_command_smoke_uses_installed_isolated_python_and_real_http_fixture(tmp_path, monkeypatch):
+    import urllib.request
+    monkeypatch.setattr(guard.windows, 'EVIDENCE', tmp_path)
+    monkeypatch.setattr(guard.windows, 'version', lambda: {
+        'python': 'installed-python.exe', 'env': {'INSTALLED_PROFILE': 'selected'},
+    })
+    monkeypatch.setenv('PYTHONPATH', 'checkout-must-not-leak')
+    monkeypatch.setenv('PYTHONHOME', 'checkout-must-not-leak')
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        assert argv[:4] == ['installed-python.exe', '-I', '-m', 'astrid']
+        assert kwargs['cwd'] == tmp_path and kwargs['timeout'] == 60
+        assert kwargs['env']['INSTALLED_PROFILE'] == 'selected'
+        assert not {'PYTHONPATH', 'PYTHONHOME'} & kwargs['env'].keys()
+        result = {}
+        if '--comfy-url' in argv:
+            url = argv[argv.index('--comfy-url') + 1]
+            with urllib.request.urlopen(url + '/internal/folder_paths') as response:
+                folders = json.load(response)
+            assert all(__import__('pathlib').Path(paths[0]).is_dir() for paths in folders.values())
+            with urllib.request.urlopen(url + '/object_info') as response:
+                assert json.load(response)['UNETLoader']['input']['required']['unet_name'] == [[]]
+            result = {'plan_sha256': 'a' * 64, 'files': [{}, {}, {}]}
+        if '--dry-run' in argv:
+            url = argv[argv.index('--placement') + 1]
+            with urllib.request.urlopen(url + '/system_stats') as response:
+                assert 'system' in json.load(response)
+            with urllib.request.urlopen(url + '/object_info') as response:
+                assert json.load(response)['UNETLoader']['input']['required']['unet_name'][0]
+        return subprocess.CompletedProcess(argv, 0, json.dumps(result), '')
+
+    monkeypatch.setattr(guard.subprocess, 'run', run)
+    guard.command_smoke()
+    assert len(calls) == 7
+    assert calls[0][4:] == ['doctor', '--json']
+    assert '--dry-run' in calls[-1] and '--apply' not in sum(calls, [])
+    assert len(list(tmp_path.glob('command-*.log'))) == 7
+
+
+@pytest.mark.parametrize('returncode, stdout, stderr', [
+    (0, '{}', 'Traceback (most recent call last):\nAttributeError: O_DIRECTORY'),
+    (0, 'Traceback (most recent call last):\n{}', ''),
+    (1, '{"error":"refused"}', ''),
+])
+def test_command_smoke_rejects_tracebacks_even_with_zero_exit(tmp_path, monkeypatch, returncode, stdout, stderr):
+    monkeypatch.setattr(guard.windows, 'EVIDENCE', tmp_path)
+    monkeypatch.setattr(guard.windows, 'version', lambda: {'python': 'installed.exe', 'env': {}})
+    monkeypatch.setattr(guard.subprocess, 'run', lambda *a, **kw:
+                        subprocess.CompletedProcess(a[0], returncode, stdout, stderr))
+    with pytest.raises(RuntimeError, match='command smoke doctor failed'):
+        guard.command_smoke()
+    assert (tmp_path / 'command-doctor.log').read_text() == stdout + stderr

@@ -694,6 +694,10 @@ def _fsync_file(path: Path) -> None:
 
 
 def _fsync_directory(path: Path) -> None:
+    # Windows CRT descriptors cannot open/flush directories. File bytes were
+    # already flushed; Windows publication has no directory-fsync guarantee.
+    if os.name == "nt":
+        return
     fd = os.open(path, os.O_RDONLY)
     try:
         os.fsync(fd)

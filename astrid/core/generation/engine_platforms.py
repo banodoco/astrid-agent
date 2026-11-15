@@ -114,6 +114,8 @@ class LinuxPlatformAdapter:
 
     @contextmanager
     def local_install_lock(self, root, *, deadline, cancelled=None, on_contention=None, kind="job"):
+        if os.name == 'nt':
+            raise UnsupportedPlatform("Linux engine install locking must run on the Linux engine machine")
         # Import only at the target; no operational Runtime daemon is involved.
         from runtime_protocol import platform
 

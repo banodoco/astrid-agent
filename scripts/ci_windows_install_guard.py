@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import re
+import runpy
 import shutil
 import subprocess
 import sys
@@ -106,9 +107,69 @@ def install():
         windows.save("guard-result.json", receipt)
 
 
+def command_smoke():
+    """Run only the installed candidate; the checkout supplies an HTTP fixture."""
+    installed = windows.version()
+    env = {key: value for key, value in os.environ.items() if key not in {"PYTHONPATH", "PYTHONHOME"}}
+    env.update(installed["env"])
+
+    def command(args, name):
+        result = subprocess.run([installed["python"], "-I", "-m", "astrid", *args],
+                                cwd=windows.EVIDENCE, env=env, capture_output=True,
+                                text=True, encoding="utf-8", errors="replace", timeout=60)
+        output = result.stdout + result.stderr
+        (windows.EVIDENCE / ("command-" + name + ".log")).write_text(output, encoding="utf-8")
+        if "Traceback (most recent call last)" in output or result.returncode:
+            raise RuntimeError(f"Installed command smoke {name} failed (exit {result.returncode}): {output[-2000:]}")
+        return json.loads(result.stdout) if "--json" in args else None
+
+    command(["doctor", "--json"], "doctor")
+    command(["generate", "--help"], "generate-help")
+    command(["generate", "scan", "--json"], "scan")
+    command(["generate", "defaults", "--json"], "defaults")
+    command(["generate", "fetch-models", "--help"], "fetch-help")
+    # The installed-child protocol fixture is pure stdlib and runs on Windows.
+    # Add the discovery and folder endpoints needed by public CLI preparation.
+    fixture = runpy.run_path(str(windows.ROOT / "tests/fixtures/comfyui_protocol/server.py"))
+    with fixture["ComfyUIProtocolServer"]() as comfy:
+        folders = {}
+        for name in ("diffusion_models", "text_encoders", "vae"):
+            folder = windows.EVIDENCE / "smoke-models" / name
+            folder.mkdir(parents=True, exist_ok=True)
+            folders[name] = [str(folder)]
+        original = comfy.server.RequestHandlerClass
+
+        class Handler(original):
+            def do_GET(self):
+                if self.path == "/system_stats":
+                    self.send(200, {"system": {"comfyui_version": "0.0.0"}, "devices": []})
+                elif self.path == "/internal/folder_paths":
+                    self.send(200, folders)
+                else:
+                    super().do_GET()
+
+        comfy.server.RequestHandlerClass = Handler
+        menus = []
+        for node, field in (("UNETLoader", "unet_name"), ("CLIPLoader", "clip_name"), ("VAELoader", "vae_name")):
+            inputs = comfy.object_info[node]["input"]["required"]
+            menus.append((inputs, field, inputs[field]))
+            inputs[field] = [[]]
+        plan = command(["generate", "fetch-models", "qwen-image-2.1-turbo", "t2i",
+                        "--comfy-url", comfy.url, "--json"], "fetch-plan")
+        if not plan.get("plan_sha256") or len(plan.get("files", [])) != 3:
+            raise RuntimeError("Installed fetch-models did not produce the three-model plan")
+        for inputs, field, menu in menus:
+            inputs[field] = menu
+        command(["generate", "image", "a copper teapot", "--entry", "qwen-image-2.1-turbo",
+                 "--placement", comfy.url, "--width", "512", "--height", "512", "--seed", "42",
+                 "--dry-run", "--json"], "attached-dry-run")
+        if any(request.method == "POST" for request in comfy.requests):
+            raise RuntimeError("Plan/dry run unexpectedly submitted to ComfyUI")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("step", choices=("prepare", "install"))
+    parser.add_argument("step", choices=("prepare", "install", "smoke"))
     args = parser.parse_args()
     if sys.platform != "win32":
         parser.error("Run the install guard only on Windows")
@@ -116,8 +177,10 @@ def main():
     windows.EVIDENCE.mkdir(parents=True, exist_ok=True)
     if args.step == "prepare":
         prepare()
-    else:
+    elif args.step == "install":
         install()
+    else:
+        command_smoke()
 
 
 if __name__ == "__main__":

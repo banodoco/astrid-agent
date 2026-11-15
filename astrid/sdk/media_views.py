@@ -7,6 +7,7 @@ import errno
 import hashlib
 import os
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Mapping
@@ -62,7 +63,7 @@ def clone_or_copy(source: Path, destination: Path, *, digest: str) -> str:
     temporary = Path(raw)
     strategy = "copy"
     try:
-        if os.uname().sysname == "Darwin":
+        if sys.platform == "darwin":
             libc = ctypes.CDLL(None, use_errno=True)
             clonefile = getattr(libc, "clonefile", None)
             if clonefile is None:

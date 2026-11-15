@@ -12,6 +12,12 @@ on:
   pull_request:
     paths:
       - "astrid/installer/**"
+      - "astrid/core/generation/**"
+      - "astrid/core/execution/**"
+      - "astrid/packs/vibecomfy/**"
+      - "tests/test_windows_posix_guard.py"
+      - "tests/core/generation/test_windows_target_files.py"
+      - "tests/fixtures/comfyui_protocol/**"
       - ".github/workflows/windows-install-guard.yml"
       - ".github/workflows/windows-journey.yml"
       - "scripts/ci_windows_install_guard.py"
@@ -109,6 +115,12 @@ jobs:
           # No TLS prewarming, trust-store edits, verification bypass or seeded
           # Astrid directory ACLs. Run the real App bootstrap exactly once.
           python -u scripts/ci_windows_install_guard.py install
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Installed command and attached ComfyUI smoke
+        run: |
+          $env:LOCALAPPDATA = 'C:\Users\AstridLongUserName_Tester01\AppData\Local'
+          python -u scripts/ci_windows_install_guard.py smoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: "F4 DACL diagnostics: retain paths, owners and SDDL after installation"
