@@ -208,6 +208,7 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
                               scheduler: str = "simple", video_references: list[dict[str, Any]] | None = None,
                               adapter_strength: float | None = None, turbo_enabled: bool = True,
                               character_swap_sha256: str = CHARACTER_SWAP_SHA256,
+                              image_roles: list[Mapping[str, Any]] | None = None,
                               masked_edit: dict[str, Any] | None = None):
     """Build ordinary H3 nodes and one muxed sink, ready for canonical emission.
 
@@ -218,9 +219,11 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
     H3 rounding tail is extended (last video frame, silent audio, black video masks);
     a genuinely short decoded source still fails the native node's fit checks.
 
-    Graph shape depends only on reference list length. Filenames remain managed
-    run bindings, not graph defaults; ordered slots bind Picture 1..N without
-    implicit keyframe constraints.
+    Image roles select look references, timed guide conditioning, or one
+    protected frame-zero latent. The latter writes an encoded still and a zero
+    video denoise mask; VAE decoding and output encoding can change pixels.
+    Filenames remain managed run bindings, not graph defaults. Untimed look
+    slots retain their original graph and bind Picture 1..N in order.
     """
     from vibecomfy.templates import ModelAsset, OutputSpec, ReadyMetadata, new_workflow, node
     from vibecomfy.nodes.core import (
@@ -233,6 +236,12 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
 
     if not (0 if masked_edit else 1) <= len(references) <= IMAGE_REFERENCE_CAPACITY:
         raise ValueError("this adapter requires one to nine image references")
+    image_roles = image_roles if image_roles is not None else [{} for _ in references]
+    if len(image_roles) != len(references):
+        raise ValueError("each image binding requires exactly one role")
+    first_frames = [index for index, role in enumerate(image_roles) if role.get("purpose") == "first_frame"]
+    if len(first_frames) > 1 or (masked_edit and any(role.get("purpose") in {"first_frame", "keyframe"} for role in image_roles)):
+        raise ValueError("timed image roles require source-free generation with at most one first_frame")
     video_references = list(video_references or [])
     if len(video_references) > VIDEO_REFERENCE_CAPACITY:
         raise ValueError("this adapter requires at most three video references")
@@ -274,7 +283,8 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
                  "url": "https://github.com/seitanism/ComfyUI-H3-Motion-Context-MultiRef.git",
                  "commit": "361624fb406b63eb6694442eac6c895fc1533a70",
                  "classes": ["MiniMaxH3AudioVAECompatibility"]
-                            + (["H3V2VGranularFractionalDenoise"] if masked_edit else [])},
+                            + (["H3V2VGranularFractionalDenoise"] if masked_edit else [])
+                            + (["MiniMaxH3CustomKeyframesMasked"] if first_frames else [])},
                 {"slug": "ComfyUI-VideoHelperSuite", "source": "git",
                  "url": "https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git",
                  "commit": "4ee72c065db22c9d96c2427954dc69e7b908444b",
@@ -304,6 +314,7 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
             upstream = turbo.out("MODEL")
         shifted = node("MiniMaxH3SigmaShift", _outputs=("MODEL",), model=upstream, shift_audio=3.0, shift_video=12.0)
         refs = {}
+        images = []
         for index in range(len(references)):
             ident = f"reference_{index}"
             # Canonical emission deliberately clears media defaults. Keep the
@@ -311,7 +322,9 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
             # so emitting/reloading cannot change the graph's semantic digest.
             loaded = LoadImage(image="", _id=ident)
             wf.register_input(ident, ident, "image", "", type="CHOICE", default="", required=True, media_semantics="image")
-            refs[f"ref_images.ref_image_{index}"] = loaded.out("IMAGE")
+            images.append(loaded.out("IMAGE"))
+            if image_roles[index].get("purpose") not in {"first_frame", "keyframe"}:
+                refs[f"ref_images.ref_image_{len(refs)}"] = loaded.out("IMAGE")
         video_audio_inputs: set[str] = set()
         for index, reference in enumerate(video_references):
             ident = str(reference.get("binding", f"video_reference_{index}"))
@@ -346,6 +359,37 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
                       prompt=prompt, width=1024, height=576, length=frames, ref_image_size="match", **refs)
         sampling_model = shifted.out("MODEL")
         sampling_latent = target.out("LATENT")
+        sampling_conditioning = target.out("positive")
+        if first_frames:
+            anchor = node(
+                "MiniMaxH3CustomKeyframesMasked", _id="first_frame", _outputs=("LATENT",),
+                _native_ports={
+                    "native_input_names": ["latent", "vae", "keyframe_state", "indexing", "crop", "keyframe_image_1"],
+                    "native_input_types": ["LATENT", "VAE", "STRING", "COMBO", "COMBO", "IMAGE"],
+                    "native_output_names": ["latent"], "native_output_types": ["LATENT"],
+                },
+                latent=sampling_latent, vae=video_vae.out("VAE"),
+                keyframe_state='{"count":1,"positions":[0]}', indexing="0-based", crop="disabled",
+                keyframe_image_1=images[first_frames[0]],
+            )
+            # Preserve the encoded video latent at frame 0 through sampling.
+            # The node retains the audio stream and gives it an all-generate mask.
+            sampling_latent = anchor.out("LATENT")
+        for index, role in enumerate(image_roles):
+            if role.get("purpose") != "keyframe":
+                continue
+            guide = node(
+                "MiniMaxH3AddGuide", _id=f"keyframe_{index}", _outputs=("positive",),
+                _native_ports={
+                    "native_input_names": ["positive", "latent", "frame_idx", "vae", "image"],
+                    "native_input_types": ["CONDITIONING", "LATENT", "INT", "VAE", "IMAGE"],
+                    "native_output_names": ["positive"], "native_output_types": ["CONDITIONING"],
+                },
+                positive=sampling_conditioning, latent=target.out("LATENT"),
+                frame_idx=role["position"], vae=video_vae.out("VAE"), image=images[index],
+            )
+            # This conditions the requested frame; it does not preserve pixels.
+            sampling_conditioning = guide.out("positive")
         if masked_edit:
             from vibecomfy.nodes.core import LoadImageMask
             source = VHS_LoadVideoFFmpeg(
@@ -421,7 +465,7 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
         schedule = BasicScheduler(model=sampling_model, scheduler=scheduler, steps=steps, denoise=1.0, _id="schedule")
         selected = KSamplerSelect(sampler_name=sampler, _id="sampler")
         noise = RandomNoise(noise_seed=seed, _id="noise")
-        guider = BasicGuider(model=sampling_model, conditioning=target.out("positive"))
+        guider = BasicGuider(model=sampling_model, conditioning=sampling_conditioning)
         sampled = SamplerCustomAdvanced(guider=guider.out("GUIDER"), latent_image=sampling_latent,
                                        noise=noise.out("NOISE"), sampler=selected.out("SAMPLER"), sigmas=schedule.out("SIGMAS"))
         video = VAEDecode(samples=sampled.out("OUTPUT"), vae=video_vae.out("VAE"))

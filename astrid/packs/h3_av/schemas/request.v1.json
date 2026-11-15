@@ -14,7 +14,7 @@
         "source": {"type": "null"},
         "output": {"required": ["duration"], "properties": {"duration": {"minimum": 0.20833333333333334, "maximum": 15.083333333333334}}},
         "changes": {"properties": {"video": {"maxItems": 0}, "audio": {"maxItems": 0}}},
-        "references": {"minItems": 1, "maxItems": 9, "items": {"properties": {"purpose": {"enum": ["appearance", "motion", "pose", "style"]}}}}
+        "references": {"minItems": 1, "maxItems": 9, "items": {"properties": {"purpose": {"enum": ["appearance", "reference", "motion", "pose", "style", "first_frame", "keyframe"]}}}}
       }
     },
     "else": {"required": ["source"], "properties": {"source": {"type": "object"}}}
@@ -78,8 +78,14 @@
       "required": ["asset", "purpose"],
       "properties": {
         "asset": {"type": "string", "minLength": 1},
-        "purpose": {"enum": ["appearance", "motion", "pose", "keyframe", "audio", "style"]}
-      }
+        "purpose": {"enum": ["appearance", "reference", "motion", "pose", "keyframe", "first_frame", "audio", "style"]},
+        "position": {"type": "integer", "minimum": 0, "description": "Zero-based frame within requested output; keyframe conditions this frame, first_frame protects only the encoded latent at zero."}
+      },
+      "allOf": [
+        {"if": {"properties": {"purpose": {"const": "keyframe"}}}, "then": {"required": ["position"]}},
+        {"if": {"properties": {"purpose": {"const": "first_frame"}}}, "then": {"properties": {"position": {"const": 0}}}},
+        {"if": {"properties": {"purpose": {"not": {"enum": ["first_frame", "keyframe"]}}}}, "then": {"not": {"required": ["position"]}}}
+      ]
     },
     "area": {
       "type": "object",
