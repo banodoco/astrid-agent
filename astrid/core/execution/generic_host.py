@@ -18755,6 +18755,13 @@ if sys.platform == "win32":
     # One thread means none are created at load. Children inherit the setting.
     # `os` in this module is the Runtime filesystem adapter, so use the stdlib module.
     __import__("os").environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+    # The setting alone was not enough: a clean install still hung at the first
+    # workflow load on the Windows CI machine. Load numpy here, on the main thread and
+    # before any other thread exists, so its DLLs are never first loaded mid-task.
+    try:
+        __import__("numpy")
+    except ImportError:  # numpy arrives with the workflow tooling; absent, nothing to preload
+        pass
 
 
 if __name__ == "__main__":
