@@ -18,8 +18,9 @@ the skill into that harness's skills folder.
 - macOS or Linux: `python3 -c 'import urllib.request; exec(urllib.request.urlopen("https://raw.githubusercontent.com/banodoco/astrid-agent/main/scripts/preinstall_setup_skill.py").read())'`
 - Windows PowerShell: `python -c "import urllib.request; exec(urllib.request.urlopen('https://raw.githubusercontent.com/banodoco/astrid-agent/main/scripts/preinstall_setup_skill.py').read())"`
 
-Open Terminal on macOS or Linux, or PowerShell on Windows. Read the installer
-before running it. It keeps your existing workspace and credentials. Ask for
+Open Terminal on macOS or Linux, or PowerShell on Windows. Git is required for
+every install; on Windows, install Git for Windows (https://git-scm.com/download/win)
+first. Read the installer before running it. It keeps your existing workspace and credentials. Ask for
 consent once before a fresh install if it has not already been given. If you
 approved setup choices in the Astrid App, ask once whether to install
 with them or change one, then run the App's command with the chosen values.

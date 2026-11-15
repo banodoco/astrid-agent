@@ -27,6 +27,9 @@ Astrid commands here use the launcher; its path on each OS is in the
 [astrid-setup skill's Launcher paths](../../setup/docs/SKILL.md#launcher-paths).
 The blocks show the Linux path. Make a work folder first: `WORK=$(mktemp -d)`
 (PowerShell: `$WORK = New-Item -ItemType Directory -Path (Join-Path $env:TEMP ([guid]::NewGuid()))`).
+On Windows, replace the Linux prefix with `& "$env:LOCALAPPDATA\Astrid\run-astrid.cmd"`,
+for example `& "$env:LOCALAPPDATA\Astrid\run-astrid.cmd" generate defaults --json`.
+PowerShell continues lines with a backtick, not `\`.
 
 1. **Read what is set.** `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate defaults --json` (each slot and
    where its value came from) and `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate targets --json` (the placement).
@@ -159,7 +162,8 @@ one. Do not add memory across GPUs. Report what you found, and say if capability
 is unconfirmed. Then offer one of these, each on its own yes:
 
 **Astrid's managed engine** (`local`), on a capable computer where it is
-available. Check the plan first. This installs nothing:
+available. On Windows the managed engine is not available yet; use your own running ComfyUI or RunPod.
+Check the plan first. This installs nothing:
 
 ```sh
 "${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" engines install comfyui --dry-run

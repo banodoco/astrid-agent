@@ -26,6 +26,10 @@ one for the user's OS:
 - macOS: `"$HOME/.local/share/astrid/run-astrid"`
 - Windows PowerShell: `& "$env:LOCALAPPDATA\Astrid\run-astrid.cmd"`
 
+On Windows, replace the Linux prefix with `& "$env:LOCALAPPDATA\Astrid\run-astrid.cmd"`,
+for example `& "$env:LOCALAPPDATA\Astrid\run-astrid.cmd" generate defaults --json`.
+PowerShell continues lines with a backtick, not `\`.
+
 A Pinokio-managed install keeps its launcher in its Pinokio app folder. Pinokio's
 home is `$HOME/pinokio` (Windows: `$env:USERPROFILE\pinokio`) unless the scan's
 `pinokio.home` names another. Set `PINOKIO_HOME` to that home, then find the
@@ -98,6 +102,8 @@ for a fresh install, after step 1; an existing install uses route 4 in step 0.
 They show Astrid defaults.
 After consent, run the line for the user's OS with the values from step 1.
 `--yes` records that consent. Never use it to skip the consent question.
+Git must be installed first. On Windows, install Git for Windows
+(https://git-scm.com/download/win).
 
 **macOS or Linux:**
 
@@ -126,8 +132,9 @@ success, go to step 3.
 If the installer stops to ask for consent (exit code 2), show the user the plan
 it prints. Run the rerun command it prints only after they agree.
 
-If the install fails, read the log at the `Details:` path it prints. To get
-help, rerun the same command with `--doctor` and follow
+If the install does not finish, read the log at the `Details:` path it prints,
+and attach that install log to the support request. `--doctor` only works after
+a successful install. For a support bundle, follow
 [Make a support bundle](https://github.com/banodoco/astrid-agent/blob/main/docs/setup/troubleshooting.md#make-a-support-bundle).
 If a proxy blocks GitHub downloads, see
 [Troubleshooting](https://github.com/banodoco/astrid-agent/blob/main/docs/setup/troubleshooting.md).
@@ -144,8 +151,8 @@ To update later, see [Update Astrid](https://github.com/banodoco/astrid-agent/bl
 
 Read first, and ask before each change. Never launch, restart or install
 anything in the user's ComfyUI. The one thing setup adds to it is a default's
-missing models, after the user says yes. If a read fails, use the `--doctor`
-fallback from step 2.
+missing models, after the user says yes. If a read fails, make a support bundle
+with `--doctor`, as in step 2.
 
 **See what you have.** Run these read-only commands and report what they show:
 
@@ -206,6 +213,7 @@ step.
 **No local GPU or ComfyUI?** Follow the generation skill's
 [Placement](https://github.com/banodoco/astrid-agent/blob/main/astrid/packs/generation/docs/SKILL.md#placement): Astrid's managed engine, or a RunPod GPU
 through the [RunPod machine skill](https://github.com/banodoco/astrid-agent/blob/main/astrid/packs/runpod/docs/SKILL.md#runpod-generation-machines).
+On Windows the managed engine is not available yet; use your own running ComfyUI or RunPod.
 
 ## Run everything on this computer
 

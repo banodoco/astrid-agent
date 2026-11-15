@@ -52,6 +52,10 @@ the Linux one):
 "${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate scan --ports 8188 --json   # health-check a saved address
 ```
 
+On Windows, replace the Linux prefix with `& "$env:LOCALAPPDATA\Astrid\run-astrid.cmd"`,
+for example `& "$env:LOCALAPPDATA\Astrid\run-astrid.cmd" generate scan --json`.
+PowerShell continues lines with a backtick, not `\`.
+
 It reads `/system_stats`, `/internal/folder_paths` (model folders and
 `custom_nodes`, whose parent is the ComfyUI base) and `/userdata?dir=workflows`,
 and prints one JSON object: `servers[]` with `url`, `base_dir`, `output_dir`

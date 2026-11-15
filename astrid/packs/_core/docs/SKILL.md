@@ -17,6 +17,9 @@ skill sync; pack-local `docs/SKILL.md` files are discovered from their declared
 manifest pointers.
 
 Astrid commands here run through the launcher; its path on each OS is in the [astrid-setup skill's Launcher paths](../../setup/docs/SKILL.md#launcher-paths), and the blocks show the Linux path.
+On Windows, replace the Linux prefix with `& "$env:LOCALAPPDATA\Astrid\run-astrid.cmd"`,
+for example `& "$env:LOCALAPPDATA\Astrid\run-astrid.cmd" projects list --json`.
+PowerShell continues lines with a backtick, not `\`.
 
 Choose the route by the requested result. Read only that route's guidance:
 
