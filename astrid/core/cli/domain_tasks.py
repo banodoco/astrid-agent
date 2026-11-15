@@ -264,6 +264,8 @@ def _cmd_events(parsed: argparse.Namespace) -> int:
 
 
 def _cmd_logs(parsed: argparse.Namespace) -> int:
+    from astrid.core.gateway.doctor_bundle import redact_log
+
     task_id, code = _task_id(parsed)
     if task_id is None:
         return code
@@ -277,7 +279,7 @@ def _cmd_logs(parsed: argparse.Namespace) -> int:
     rows = terminal.get("outputs") if isinstance(terminal.get("outputs"), list) else []
     logs = [row for row in rows if isinstance(row, Mapping) and row.get("role") == "log"]
     if not logs:
-        print(f"no logs recorded for task {task_id}", file=sys.stderr)
+        print(redact_log(f"no logs recorded for task {task_id}"), file=sys.stderr)
         return 1
     if parsed.name is not None:
         selected = next(
@@ -285,25 +287,25 @@ def _cmd_logs(parsed: argparse.Namespace) -> int:
             None,
         )
         if selected is None:
-            print(f"no log named {parsed.name} for task {task_id}", file=sys.stderr)
+            print(redact_log(f"no log named {parsed.name} for task {task_id}"), file=sys.stderr)
             return 1
         digest = selected.get("digest") or selected.get("object_id")
         reader = getattr(getattr(parsed.client, "media", None), "read_bytes", None)
         if callable(reader) and digest:
             data = reader(str(digest))
-            sys.stdout.buffer.write(data)
+            sys.stdout.buffer.write(redact_log(data.decode("utf-8", errors="replace")).encode("utf-8"))
             return 0
-        print(f"{selected.get('variant_key') or selected.get('filename')}  {digest or 'object reference unavailable'}")
+        print(redact_log(f"{selected.get('variant_key') or selected.get('filename')}  {digest or 'object reference unavailable'}"))
         print("This client cannot read managed output bytes; showing the object reference instead.", file=sys.stderr)
         return 0
     if parsed.json:
-        return print_result(DomainResult.success(logs), as_json=True)
+        return print_result(DomainResult.success(json.loads(redact_log(json.dumps(logs)))), as_json=True)
     for row in logs:
         name = row.get("variant_key") or row.get("filename") or "-"
         media_type = row.get("media_type") or "-"
         size = row.get("size_bytes", row.get("size", "-"))
         digest = row.get("digest") or row.get("object_id") or "-"
-        print(f"{name}  {media_type}  {size}  {digest}")
+        print(redact_log(f"{name}  {media_type}  {size}  {digest}"))
     return 0
 
 

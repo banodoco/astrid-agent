@@ -402,6 +402,58 @@ def test_volume_is_sized_by_the_job_manifest_rows_not_the_model_lock():
     assert installation.model_bytes(()) == 1  # a warm job needs no model bytes
 
 
+@pytest.mark.parametrize("exit_code", [0, 1], ids=["stdout", "stderr"])
+@pytest.mark.parametrize("as_json", [False, True], ids=["text", "json"])
+def test_install_stream_redaction_keeps_files_and_remote_operation_budget(
+        tmp_path, sources, monkeypatch, exit_code, as_json):
+    provider = _provider(sources)
+    claim = provider.claim(rp.ClaimSpec())
+    pod = claim.ops
+    original = b"https://ghp_abc123@github.com/o/r\nAuthorization: Bearer abc.def.ghi\n"
+    source = tmp_path / "install.log"
+    source.write_bytes(original)
+    start = pod.job_start
+
+    def job_start(command):
+        started = start(command)
+        pod.jobs[started["id"]] = exit_code
+        for stream in ("stdout", "stderr"):
+            pod.files[f"{started['dir']}/{stream}"] = source.read_bytes()
+        return started
+
+    monkeypatch.setattr(pod, "job_start", job_start)
+    counts = dict.fromkeys(("job_start", "job_poll", "job_cancel", "exec", "put", "get"), 0)
+
+    def counted(name, operation):
+        def call(*args, **kwargs):
+            counts[name] += 1
+            return operation(*args, **kwargs)
+        return call
+
+    for name in counts:
+        monkeypatch.setattr(pod, name, counted(name, getattr(pod, name)))
+    state = rp.RemoteRun("redaction", "/unused", tmp_path / "out", claim=claim)
+    wrapper = _wrapper(provider, sources)
+    if exit_code:
+        with pytest.raises(RemotePlacementError) as caught:
+            wrapper._run_job(state, "engines install", "engine install")
+        output = str(caught.value)
+        for stream in ("stdout", "stderr"):
+            assert (state.local_out / "logs" / f"engine-install.{stream}").read_bytes() == original
+    else:
+        output = wrapper._run_job(state, "engines install", "engine install")
+    if as_json:
+        output = json.dumps({"message": output})
+    assert source.read_bytes() == original
+    assert all(data == original for path, data in pod.files.items()
+               if path.endswith(("/stdout", "/stderr")))
+    assert counts == {"job_start": 1, "job_poll": 1, "job_cancel": 0,
+                      "exec": 10 if exit_code else 2, "put": 0, "get": 2 if exit_code else 0}
+    assert sum("/bin/python -c " in command for command in pod.exec_log) == (4 if exit_code else 0)
+    assert "ghp_abc123" not in output and "abc.def.ghi" not in output
+    assert "<redacted>" in output
+
+
 @pytest.mark.parametrize("userinfo", [
     "install-url-token", "alice:install-password", "x-access-token:install-secret", "alice:",
     "alice%40example.test:p%3Ass%2Fword", "install%2Dtoken%40only",

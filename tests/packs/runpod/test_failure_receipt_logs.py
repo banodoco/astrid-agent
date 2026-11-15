@@ -1,9 +1,71 @@
 import json
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from astrid.core.generation import cli
 from astrid.packs.runpod import failure_receipt
+
+
+@pytest.mark.parametrize("args", [[], ["--json"], ["--logs"], ["--logs", "--json"],
+                                 ["--name", "generation.stdout"],
+                                 ["--name", "generation.stdout", "--json"], ["mcp"]])
+def test_failure_output_redacts_secrets_without_changing_receipt_or_logs(tmp_path, monkeypatch, capsys, args):
+    message = "https://ghp_abc123@github.com/o/r Authorization: Bearer abc.def.ghi"
+    log = tmp_path / "generation.stdout.json"
+    original = json.dumps({"issues": [{"message": message}]}).encode()
+    log.write_bytes(original)
+    receipt = failure_receipt.build_receipt(
+        {"failure": RuntimeError("failed"), "stage": "claim",
+         "lease": SimpleNamespace(failure_logs={"files": [
+             {"name": "generation.stdout", "path": str(log)}]})},
+        job=SimpleNamespace(task_id="task"), machine=None, timing=None)
+    assert receipt["cause"]["issue_message"] == message
+    path = failure_receipt.write_receipt(receipt, root=tmp_path / "failures")
+    stored = path.read_bytes()
+    copied = Path(json.loads(stored)["logs"][0]["path"])
+    monkeypatch.setattr(failure_receipt, "find_receipt", lambda _task_id: path)
+
+    if args == ["mcp"]:
+        from astrid import mcp_server
+
+        def run(argv, _cwd):
+            command = argv[argv.index("generate") + 1:]
+            assert command == ["failure", "--json"]
+            code = cli._failure_command(cli._parser().parse_args(command))
+            captured = capsys.readouterr()
+            return subprocess.CompletedProcess(argv, code, captured.out, captured.err)
+
+        monkeypatch.setattr(mcp_server, "_run", run)
+        result = mcp_server.call_tool(mcp_server._generation_tools()["generate_failure"], {})
+        assert result["isError"] is False
+        output = json.dumps(result)
+    else:
+        assert cli._failure_command(cli._parser().parse_args(["failure", *args])) == 0
+        output = capsys.readouterr().out
+    assert path.read_bytes() == stored
+    assert log.read_bytes() == copied.read_bytes() == original
+    assert "ghp_abc123" not in output and "abc.def.ghi" not in output
+    assert "<redacted>" in output
+    if args == ["--json"]:
+        assert "<redacted>" in json.loads(output)["cause"]["issue_message"]
+
+
+@pytest.mark.parametrize("boundary", ["render", "kept-details"])
+def test_receipt_display_returns_redacted_cause_without_rewriting_file(tmp_path, monkeypatch, boundary):
+    message = "https://ghp_abc123@github.com/o/r Authorization: Bearer abc.def.ghi"
+    receipt = {"cause": {"issue_message": message}, "identity": {"lease": "lease", "generation": 1}}
+    path = failure_receipt.write_receipt(receipt, root=tmp_path)
+    original = path.read_bytes()
+    monkeypatch.setattr(failure_receipt, "failures_root", lambda: tmp_path)
+    output = (failure_receipt.render(receipt) if boundary == "render" else
+              json.dumps(failure_receipt.kept_failure_details("lease", 1)))
+    assert path.read_bytes() == original
+    assert receipt["cause"]["issue_message"] == message
+    assert "ghp_abc123" not in output and "abc.def.ghi" not in output
+    assert "<redacted>" in output
 
 
 def test_receipt_copies_declared_logs_and_keeps_missing_row(tmp_path):

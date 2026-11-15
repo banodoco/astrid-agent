@@ -430,6 +430,8 @@ def find_receipt(task_id: str | None = None, *, root: Path | None = None) -> Pat
 
 def render(receipt: Mapping[str, Any]) -> str:
     """The human form: a few fixed lines from the receipt."""
+    from astrid.core.gateway.doctor_bundle import redact_log
+
     cause, ident = receipt.get("cause") or {}, receipt.get("identity") or {}
     machine, collection = receipt.get("machine") or {}, receipt.get("collection") or {}
     timing = ((receipt.get("timing") or {}).get("phases") or {})
@@ -452,7 +454,7 @@ def render(receipt: Mapping[str, Any]) -> str:
             continue
         suffix = ", truncated" if log.get("truncated") else ""
         lines.append(f"Log: {log.get('name')} ({_log_role(log)}, {log.get('bytes', 0)} bytes{suffix}) {log.get('path')}")
-    return "\n".join(lines)
+    return redact_log("\n".join(lines))
 
 
 __all__ = ["SCHEMA", "STAGES", "build_receipt", "decide_stage", "find_receipt", "record_failure", "recorder", "render",
@@ -464,6 +466,8 @@ def kept_failure_details(lease: Any, generation: Any) -> dict[str, str]:
 
     Best-effort: optional evidence never masks the job failure.
     """
+    from astrid.core.gateway.doctor_bundle import redact_log
+
     if lease is None or generation is None:
         return {}
     try:
@@ -476,7 +480,7 @@ def kept_failure_details(lease: Any, generation: Any) -> dict[str, str]:
                 details: dict[str, str] = {}
                 reason = (receipt.get("cause") or {}).get("issue_message")
                 if isinstance(reason, str) and reason:
-                    details["issue_message"] = reason[:ISSUE_MESSAGE_LIMIT]
+                    details["issue_message"] = redact_log(reason)[:ISSUE_MESSAGE_LIMIT]
                 if any(log.get("path") and not log.get("missing") for log in receipt.get("logs", [])):
                     details["logs_dir"] = str(receipt_path.parent / "logs")
                 return details

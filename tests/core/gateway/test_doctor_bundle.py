@@ -399,3 +399,20 @@ def test_doctor_preserves_supervision_warning_when_runtime_is_unavailable(tmp_pa
     monkeypatch.setattr(service, "supervision_warning", lambda *_args: service.UNSUPERVISED_WARNING)
     assert dispatch._dispatch_doctor(["--json"]) == 1
     assert json.loads(capsys.readouterr().out)["warnings"] == [service.UNSUPERVISED_WARNING]
+
+
+@pytest.mark.parametrize("text", [
+    "a" * 20_000,
+    "https://" + "a" * 20_000,
+    "a://" * 5_000,
+    "x@" * 10_000,
+    "a-b.c+d" * 3_000,
+])
+def test_url_credential_redaction_is_linear_on_long_scheme_like_runs(text):
+    """W177: a long run of scheme-legal characters must not backtrack quadratically."""
+    import time
+    from astrid.core.gateway.doctor_bundle import redact_log
+
+    started = time.monotonic()
+    redact_log(text)
+    assert time.monotonic() - started < 0.2
