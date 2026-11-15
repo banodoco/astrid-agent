@@ -182,9 +182,13 @@ def _patch_socket(originals: Mapping[tuple[Any, str], Any]) -> None:
     # of time, the pair is built here: the only unchecked connect is the one to the
     # listener this call itself just opened, and the two ends are verified to be
     # connected to each other before they are returned.
-    def socketpair(family: int = socket.AF_INET, type: int = socket.SOCK_STREAM, proto: int = 0):
+    def socketpair(*args: Any, **kwargs: Any):
         if _kernel_socketpair():
-            return originals[(socket, "socketpair")](family, type, proto)
+            # Untouched: the standard library's own defaults apply (AF_UNIX on POSIX).
+            return originals[(socket, "socketpair")](*args, **kwargs)
+        return _loopback_pair(*args, **kwargs)
+
+    def _loopback_pair(family: int = socket.AF_INET, type: int = socket.SOCK_STREAM, proto: int = 0):
         host = {socket.AF_INET: "127.0.0.1", socket.AF_INET6: "::1"}.get(family)
         if host is None or type != socket.SOCK_STREAM or proto != 0:
             raise ValueError("Only AF_INET and AF_INET6 stream socket pairs are supported")
