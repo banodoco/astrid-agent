@@ -423,7 +423,7 @@ def test_stage_profile_points_to_candidate_service_declaration(tmp_path, monkeyp
         monkeypatch.setenv('ASTRID_RUNTIME_DOOR_PORT', requested_port)
     else:
         monkeypatch.delenv('ASTRID_RUNTIME_DOOR_PORT', raising=False)
-    def source(name, _sha, destination):
+    def source(name, _sha, destination, *, git_executable=None):
         if name == 'agent':
             root = Path(__file__).parents[1]
             for relative in (
@@ -923,8 +923,8 @@ def test_pack_host_verification_uses_declared_readiness_timeout(tmp_path, monkey
 
 
 def test_source_archives_are_flattened_to_shallow_managed_paths(tmp_path, monkeypatch):
-    def unpack(url, destination):
-        child = destination / ('astrid-agent-' + 'a' * 40)
+    def unpack(url, destination, *, strip_root=False, platform_name=None):
+        child = destination if strip_root else destination / ('astrid-agent-' + 'a' * 40)
         child.mkdir(parents=True)
         (child / 'pyproject.toml').write_text('source')
     monkeypatch.setattr(tools, 'fetch_archive', unpack)
@@ -951,8 +951,8 @@ def test_source_retries_windows_sharing_violation_on_publish(tmp_path, monkeypat
     monkeypatch.setattr(tools.platform.sys, "platform", "win32")
     monkeypatch.setattr(tools.platform, "_move_file_write_through", move)
     monkeypatch.setattr(tools.platform.time, "sleep", lambda _: None)
-    def unpack(url, destination):
-        child = destination / ('astrid-agent-' + 'a' * 40)
+    def unpack(url, destination, *, strip_root=False, platform_name=None):
+        child = destination if strip_root else destination / ('astrid-agent-' + 'a' * 40)
         child.mkdir(parents=True)
         (child / 'pyproject.toml').write_text('source')
     monkeypatch.setattr(tools, 'fetch_archive', unpack)

@@ -197,7 +197,7 @@ def test_local_fork_uses_selected_commit_and_records_actual_tree(tmp_path, monke
     recipe, _payloads, requests, calls, run, env = fixture(tmp_path, monkeypatch)
     archived = []
 
-    def local(repo, commit, archive):
+    def local(repo, commit, archive, *, git_executable=None):
         archived.append((repo, commit))
         archive.write_bytes(zipped({"bun.lock": b"frozen lock\n", "main.ts": b"already fixed\n",
             "packages/coding-agent/package.json": b'{"version":"18.12.6"}'}))

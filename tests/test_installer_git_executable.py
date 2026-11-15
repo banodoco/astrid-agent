@@ -191,3 +191,63 @@ def test_invalid_recorded_value_falls_back_to_path(tmp_path, monkeypatch, record
 
     tools._record_installing_git(env, _run("git version 2.47.0", []), windows=False, recorded=recorded)
     assert env["ASTRID_GIT_EXECUTABLE"] == str(fallback)
+
+
+@pytest.mark.parametrize("platform_name,remedy", [
+    ("win32", "Git for Windows from https://git-scm.com/download/win"),
+    ("darwin", "xcode-select --install"),
+    ("linux", "package manager"),
+])
+def test_preflight_missing_git_names_the_platform_remedy(tmp_path, monkeypatch, platform_name, remedy):
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.delenv("ASTRID_GIT_EXECUTABLE", raising=False)
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(ValueError, match="Astrid needs Git") as caught:
+        tools.require_git(platform_name=platform_name)
+    assert remedy in str(caught.value)
+    assert "run the same command again" in str(caught.value)
+
+
+@pytest.mark.parametrize("failure", ["not Git", PermissionError("cannot run"),
+                                      subprocess.TimeoutExpired("git", 60)])
+def test_preflight_refuses_an_unusable_executable(tmp_path, monkeypatch, failure):
+    from types import SimpleNamespace
+
+    selected = _executable(tmp_path / "bin" / "git")
+    monkeypatch.setenv("PATH", str(selected.parent))
+    monkeypatch.delenv("ASTRID_GIT_EXECUTABLE", raising=False)
+
+    def run(*args, **kwargs):
+        if isinstance(failure, Exception):
+            raise failure
+        return SimpleNamespace(stdout=failure)
+
+    monkeypatch.setattr(tools.subprocess, "run", run)
+    with pytest.raises(ValueError, match="Astrid needs Git"):
+        tools.require_git(platform_name="linux")
+
+
+def test_missing_git_blocks_manifest_and_stage_before_downloads(tmp_path, monkeypatch):
+    from astrid.installer import backend as backend_module
+    from astrid.installer import cli, update_job
+
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.delenv("ASTRID_GIT_EXECUTABLE", raising=False)
+    monkeypatch.setattr(tools, "download", lambda *a, **k: pytest.fail("download before Git check"))
+    monkeypatch.setattr(cli, "download", lambda *a, **k: pytest.fail("manifest before Git check"))
+    monkeypatch.setattr(backend_module, "source", lambda *a, **k: pytest.fail("source before Git check"))
+    backend = backend_module.Backend(tmp_path / "program", tmp_path / "log", tmp_path / "uv")
+    backend.uv.touch()
+    monkeypatch.setattr(backend, "run", lambda *a, **k: "uv 1.2.3")
+    monkeypatch.setattr(backend, "existing", lambda data: None)
+    manifest = {"tools": {"uv": {"version": "1.2.3"}}}
+    for operation in (
+        lambda: cli._download_manifest(backend.root, tmp_path / "manifest.json"),
+        lambda: backend.stage(manifest, backend.root, tmp_path / "data"),
+        lambda: update_job.fetch_update_inputs(tmp_path / "inputs", manifest_url="https://example.invalid/m",
+                    bootstrap_url="https://example.invalid/b", installed_release=12),
+    ):
+        with pytest.raises(ValueError, match="Astrid needs Git"):
+            operation()
+    assert not backend.root.exists()
+    assert not (tmp_path / "inputs").exists()

@@ -1290,8 +1290,8 @@ def test_cli_explains_backup_space_failure_with_one_sentence(tmp_path, monkeypat
     # No install.log was used, so the summary is shown above the receipt in this window,
     # and the receipt's Details line, last, says so.
     assert "Astrid setup summary:" in lines
-    assert lines.index("Astrid setup summary:") < lines.index("Nothing was installed.")
-    assert lines[-1] == "Details: shown above in this window (the installer log was not used)."
+    assert lines.index("Astrid setup summary:") < lines.index("Setup did not finish; some downloaded files may remain.")
+    assert lines[-1] == "Details: see the error in this window."
     assert message in output.err
     assert not (tmp_path / "logs").exists()  # selection was never resolved
 
@@ -1320,7 +1320,7 @@ def test_cli_shows_safe_verification_context_but_not_raw_diagnostics(tmp_path, m
 
 
 @pytest.mark.parametrize("failure_type", [subprocess.SubprocessError, RuntimeError])
-def test_cli_summary_hides_generic_subprocess_and_service_log_diagnostics(
+def test_cli_prints_generic_subprocess_and_runtime_errors(
     tmp_path, monkeypatch, capsys, failure_type
 ):
     from runtime_protocol import platform
@@ -1328,7 +1328,7 @@ def test_cli_summary_hides_generic_subprocess_and_service_log_diagnostics(
     from astrid.installer import cli
 
     monkeypatch.setattr(platform, "log_dir", lambda: tmp_path / "logs")
-    raw = f"private-subprocess-token service log says permission denied at {tmp_path / 'service.log'}"
+    raw = f"Permission denied at {tmp_path / 'service.log'}"
 
     def verification_failed(*_args, **_kwargs):
         raise failure_type(raw)
@@ -1338,13 +1338,11 @@ def test_cli_summary_hides_generic_subprocess_and_service_log_diagnostics(
     assert cli.main(["--root", str(tmp_path / "program")]) == 1
     output = capsys.readouterr().out
     assert f"Failure: {failure_type.__name__}" in output
-    assert raw not in output
-    assert "private-subprocess-token" not in output
-    assert str(tmp_path / "service.log") not in output
+    assert raw in output
     # Backend construction fails before any installer log is selected; pre-main
     # then keeps diagnostics on the console and prints no Details path.
     assert not any(line.startswith("Details: /") for line in output.splitlines())
-    assert "Details: shown above in this window (the installer log was not used)." in output
+    assert "Details: see the error in this window." in output
 
 
 @pytest.mark.parametrize(("sandbox_flag", "expected_control"), [(None, "strict"), ("--sandbox", "sandbox")])

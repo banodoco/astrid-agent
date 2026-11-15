@@ -74,7 +74,7 @@ def test_a_run_that_changed_nothing_still_says_so():
 
 def test_a_failed_fresh_install_says_it_was_not_installed_not_that_it_did_not_update():
     lines = Outcome("failed", None, None, 2, "error", "install").headline()
-    assert lines[0] == "Astrid was NOT installed: the run stopped with an error; the message above says why."
+    assert lines[0] == "Astrid was NOT installed: setup stopped with an error."
     assert not any("did NOT update" in line for line in lines)
 
 
@@ -88,3 +88,20 @@ def test_the_approved_copy_for_the_two_pending_reasons_is_exact():
     for reason, (why, next_line) in APPROVED_COPY.items():
         assert REASONS[reason] == why, reason
         assert NEXT_STEPS[reason] == next_line, reason
+
+
+def test_settings_advice_requires_an_observed_running_runtime():
+    from types import SimpleNamespace
+    from astrid.installer.outcome import Request, settle
+
+    for live in (None, 12):
+        state = SimpleNamespace(kind="direct", live_release=live, selected_release=12)
+        result = settle(Request("update", target=13), state, lambda: state,
+                        failure=RuntimeError("failed prepare"))
+        assert ("Settings > Updates" in " ".join(result.headline())) is (live is not None)
+
+
+def test_first_install_failure_does_not_claim_no_files_exist():
+    lines = Outcome("failed", None, reason="error").headline()
+    assert "Nothing was installed." not in lines
+    assert "Setup did not finish; some downloaded files may remain." in lines

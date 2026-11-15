@@ -451,6 +451,7 @@ def fetch_update_inputs(directory: Path, *, manifest_url: str, bootstrap_url: st
     override, signature implementation, or verification bypass is introduced.
     Callers own this private directory for the full selection lifetime.
     """
+    tools.require_git()  # The selected service environment carries its recorded Git.
     platform.private_directory(directory)
     metadata = {}
     for name, url in (("manifest", manifest_url), ("bootstrap", bootstrap_url)):
