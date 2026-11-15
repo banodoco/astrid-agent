@@ -7,11 +7,25 @@ import pytest
 
 from astrid.core.execution.machine_run import run_on_machine
 from astrid.core.execution.warm_hold import WarmHolds
-from tests.packs.runpod.test_machine import machine_case as machine_case
+from tests.packs.runpod import test_machine
 from tests.packs.runpod.test_generation_preparation import retained as retained
 from tests.packs.runpod.test_remote_placement import sources as sources
 from tests.packs.runpod.test_target_selection import case as case
-from tests.packs.runpod.test_warm_session import lease_selection_case as lease_selection_case, small_lease as small_lease
+from tests.packs.runpod.test_warm_session import lease_selection_case as lease_selection_case
+from tests.packs.runpod.test_warm_session import small_lease as small_lease
+
+base_machine_case = test_machine.machine_case
+
+
+@pytest.fixture
+def machine_case(base_machine_case):
+    yield base_machine_case
+    # Assertions observe the caller's result immediately. Drain fake cleanup
+    # owners only at teardown, before their provider stubs are removed.
+    for owner in base_machine_case.owners:
+        if owner._reset_worker is not None:
+            owner._reset_worker.join(10)
+            assert not owner._reset_worker.is_alive()
 
 
 def claim(c):
@@ -27,16 +41,13 @@ def job(c, n=1):
 
 
 def run(c, request):
-    result = run_on_machine(c.machine, request, destination=request.scratch / "outputs",
-                            cancelled=lambda: False, sleep=lambda _: None)
-    c.machine._require().lease_owner.wait_for_reset()
-    return result
+    return run_on_machine(c.machine, request, destination=request.scratch / "outputs",
+                          cancelled=lambda: False, sleep=lambda _: None)
 
 
 def restart_bindings(c, monkeypatch):
     """Build a fresh real host adapter over this fixture's fake lease edges."""
-    from astrid.packs.runpod import adapter
-    from astrid.packs.runpod import worker_owner
+    from astrid.packs.runpod import adapter, worker_owner
 
     real_owner = worker_owner.RunPodLeaseOwner
 
@@ -199,6 +210,8 @@ def test_three_sequential_jobs_share_claim_without_renewal(machine_case, monkeyp
     queued = [job(c, n) for n in (1, 2, 3)]
     for request in queued:
         run(c, request)
+        # This assertion checks readiness for reuse, after asynchronous cleanup.
+        c.host.wait_for_reset()
         assert c.read()["pod_id"] == "pod-1" and c.read()["lease"]["state"] == "idle"
         assert c.read()["paid_limits"] == paid
     assert c.creates == 1
@@ -247,7 +260,6 @@ def test_jobs_obey_recorded_bounds_and_report_stricter_saved_policy(request, mon
     receipt = run_on_machine(c.machine, request, destination=request.scratch / "outputs",
                              cancelled=lambda: False, sleep=lambda _: None,
                              on_claim=lambda lease: descriptions.append(c.machine.describe(lease)))
-    c.machine._require().lease_owner.wait_for_reset()
     status = bindings.operate({"kind": "runpod", "engine": "comfyui",
                                "preferences": None}, "status")
     if saved_cap < paid["max_usd"]:
@@ -265,9 +277,11 @@ def test_jobs_obey_recorded_bounds_and_report_stricter_saved_policy(request, mon
     assert c.read()["lease"]["paid_expires_at"] == expiry
     assert c.read()["lease"]["idle_expires_at"] <= expiry
     if exhausted == "budget":
-        record = c.read()
-        record["paid_limits"]["max_usd"] = 0
-        write_target_record(c.owner.path, record)
+        # Match the owner's journal-write lock while reset checkpoints can run.
+        with c.host.lock:
+            record = c.read()
+            record["paid_limits"]["max_usd"] = 0
+            write_target_record(c.owner.path, record)
     else:
         c.clock.advance(expiry - c.clock() + 1)
     with pytest.raises(Exception, match="remaining budget|no machine"):
@@ -323,7 +337,8 @@ def test_host_cache_jobs_ignore_changed_preferences(machine_case, monkeypatch):
 
 def test_restart_recovers_claim_from_journal_through_provider_bindings(machine_case, monkeypatch):
     from astrid.core.generation import settings
-    from astrid.packs.runpod import target_selection, machine as rm, adapter
+    from astrid.packs.runpod import adapter, target_selection
+    from astrid.packs.runpod import machine as rm
 
     c = machine_case
     claim(c)
@@ -497,8 +512,9 @@ def test_restart_reconciles_incompatible_idle_claim_without_adopting(
 
 
 def test_restart_recovery_failure_keeps_retry_timer_and_exact_custody(machine_case, monkeypatch):
-    from astrid.core.generation import settings
     from runpod_lifecycle import api
+
+    from astrid.core.generation import settings
     from astrid.packs.runpod import target_selection
     from astrid.packs.runpod.worker_preparation import write_target_record
 
@@ -551,6 +567,7 @@ def test_restart_recovery_failure_keeps_retry_timer_and_exact_custody(machine_ca
 
 def test_hostwedge_restart_live_job_fences_claim_until_exact_recovery(machine_case, monkeypatch):
     from runpod_lifecycle import api
+
     from astrid.packs.runpod.target_selection import PaidSelectionError
 
     c = machine_case

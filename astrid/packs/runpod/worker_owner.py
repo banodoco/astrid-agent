@@ -259,7 +259,7 @@ class RunPodLeaseOwner:
     def _sync_deadline(self, record: Mapping[str, Any]) -> dict[str, Any]:
         lease = record["lease"]
         deadline = (min(lease["idle_expires_at"], lease["paid_expires_at"])
-                    if lease["state"] == "idle" else lease["paid_expires_at"])
+                    if self._idle_retention(lease) else lease["paid_expires_at"])
         try:
             return sync_deadline(record, self.selection.path, deadline)
         except PodWatchdogError:
@@ -290,13 +290,19 @@ class RunPodLeaseOwner:
         self.warm_lease = self.holds.lease(
             self.key, lock=self.lock,
             stop=lambda: self.timer(0, lambda: self._expire("idle", generation, operation)))
-        if lease["state"] == "idle":
+        if self._idle_retention(lease):
             self.holds.release(self.warm_lease, holding="RunPod " + record["pod_id"],
                                on_idle="terminate exact owned pod; verify absence",
                                idle_seconds=max(0, lease["idle_expires_at"] - self.clock()))
             self.warm_lease = None
         self.deadline_timer = self.timer(max(0, lease["paid_expires_at"] - self.clock()),
                                         lambda: self._expire("paid_deadline", generation, operation))
+
+    @staticmethod
+    def _idle_retention(lease: Mapping[str, Any]) -> bool:
+        """Settlement starts idle billing bounds while reset still fences reuse."""
+        return lease["state"] == "idle" or (
+            (lease.get("reset") or {}).get("state") == "pending" and "idle_expires_at" in lease)
 
     def _expire(self, reason: str, generation: int, operation: str) -> None:
         deadline_timer = self.deadline_timer
@@ -309,7 +315,7 @@ class RunPodLeaseOwner:
                 if lease["owner_epoch"] != self.epoch or lease["generation"] != generation:
                     return
                 if (self.clock() < lease["paid_expires_at"]
-                        and (lease["state"] != "idle" or self.clock() < lease["idle_expires_at"])):
+                        and (not self._idle_retention(lease) or self.clock() < lease["idle_expires_at"])):
                     return
             self.release(reason=reason, _expected_operation=operation)
         except Exception as exc:  # noqa: BLE001 - expiry failure must keep exact custody and its retry armed.
@@ -494,8 +500,10 @@ class RunPodLeaseOwner:
                 record = self._read()
                 lease = record.get("lease", {}) if record else {}
                 reset = lease.get("reset") or {}
-                if (record is None or record.get("state") != "claimed"
-                        or reset.get("state") != "pending"):
+                pending = (record is not None and record.get("state") == "claimed"
+                           and reset.get("state") == "pending")
+                running = self._reset_worker is not None and not self._reset_done.is_set()
+                if not pending and not running:
                     return
                 remaining = min(limit - time.monotonic(),
                                 reset["deadline"] - self.clock(),
@@ -630,6 +638,7 @@ class RunPodLeaseOwner:
                 previous = None
             if previous is not None and (
                 record["state"] != "claimed" or previous["state"] != "idle"
+                or (previous.get("reset") or {}).get("state") == "pending"
                 or previous["owner_epoch"] != self.epoch
                 or self.clock() >= previous["idle_expires_at"]
                 or self.clock() >= previous["paid_expires_at"]
@@ -822,7 +831,8 @@ class RunPodLeaseOwner:
                                    if outcome != "success" else None,
                                    "structural_node_ids": sorted(node_ids) if outcome != "success" else [],
                                    "structural_names": sorted(node_names) if outcome != "success" else []},
-                         state="idle", idle_expires_at=(lease["paid_expires_at"] if lease.get("keep_until_release")
+                         state=("active" if (lease.get("reset") or {}).get("state") == "pending" else "idle"),
+                         idle_expires_at=(lease["paid_expires_at"] if lease.get("keep_until_release")
                          else min(self.clock() + lease["idle_seconds"], lease["paid_expires_at"])))
             record = self._save(record, lease)
             record = self._sync_deadline(record)

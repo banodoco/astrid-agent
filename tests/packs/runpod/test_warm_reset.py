@@ -84,17 +84,84 @@ def test_result_budget_has_one_reset_start_and_zero_reset_polls_on_caller(machin
             assert entered.wait(60)
             assert set(result.result(timeout=1)["files"]) == {"artifacts/cpu.png", "manifest.json"}
             assert len(resets) == 1
-            assert release_ops == ["job_start"]
+            # The idle watchdog deadline is published before delivery. Reset
+            # polls, stdout reads and cleanup stay on the bounded owner.
+            assert release_ops == ["job_start", "exec"]
             assert caller[0] not in polls
             pending = c.read()["lease"]
             assert pending["state"] == "active"
             assert pending["reset"]["state"] == "pending"
             assert pending["reset"]["job_id"] == resets[0]
+            idle_expiry = pending["idle_expires_at"]
+            status = test_machine.rm.lease_row(c.read())
+            assert status["reset_state"] == "pending" and status["state"] == "active"
+            assert status["release_at"] == status["idle_expires_at"] == idle_expiry
+            c.clock.advance(5)
         finally:
             complete.set()
     c.host.wait_for_reset()
     assert c.read()["lease"]["reset"]["state"] == "ready"
     assert c.read()["lease"]["state"] == "idle"
+    assert c.read()["lease"]["idle_expires_at"] == idle_expiry
+    assert test_machine.rm.lease_row(c.read())["reset_state"] == "ready"
+
+
+def test_interrupt_after_result_keeps_published_idle_deadline_and_armed_timer(machine_case, monkeypatch):
+    c = machine_case
+    claim(c)
+    interrupted = threading.Event()
+    order = []
+    finish, sync, arm = c.machine._finish, c.host._sync_deadline, c.host._arm
+
+    def settled(invocation):
+        finish(invocation)
+        order.append("settled")
+
+    def published(record):
+        record = sync(record)
+        if (record["lease"].get("reset") or {}).get("state") != "pending":
+            return record
+        assert record["lease"]["reset"]["state"] == "pending"
+        assert record["self_stop"]["acknowledged"] is True
+        order.append("published")
+        return record
+
+    def armed(record):
+        arm(record)
+        if (record["lease"].get("reset") or {}).get("state") == "pending":
+            order.append("armed")
+
+    # Model a controller interrupted after delivery, before reset completion.
+    monkeypatch.setattr(c.machine, "_complete_reset", lambda *args: interrupted.wait(60))
+    monkeypatch.setattr(c.machine, "_finish", settled)
+    monkeypatch.setattr(c.host, "_sync_deadline", published)
+    monkeypatch.setattr(c.host, "_arm", armed)
+    try:
+        assert run(c, job(c))["files"]
+        order.append("result")
+        record = c.read()
+        pending = record["lease"]
+        assert order == ["settled", "published", "armed", "result"]
+        assert pending["state"] == "active" and pending["reset"]["state"] == "pending"
+        assert pending["last_job"]["outcome"] == "success"
+        assert record["self_stop"]["deadline"] == pending["idle_expires_at"]
+        assert record["self_stop"]["acknowledged"] is True
+        hold = c.host.holds._holds[c.host.key]
+        assert hold.timer.due == pending["idle_expires_at"]
+        assert not hold.timer.cancelled and hold.leases == 0
+        assert c.host.deadline_timer.due == pending["paid_expires_at"]
+        assert c.active[-1][0] == "done"
+    finally:
+        interrupted.set()
+        if c.host._reset_worker is not None:
+            c.host._reset_worker.join(10)
+    # Even loss of the owner leaves the pod's shorter deadline published;
+    # recovery fences pending cleanup without waiting for another job.
+    c.host.close()
+    replacement = c.fresh()
+    replacement.recover_job()
+    assert c.read()["state"] == "cleanup_complete"
+    assert c.deletes == ["pod-1"]
 
 
 def test_next_job_waits_for_reset_without_polling_or_starting_it(machine_case, monkeypatch):
@@ -165,6 +232,8 @@ def test_deferred_reset_failure_keeps_exact_release_state(machine_case, monkeypa
     record = c.read()
     assert record["state"] == "cleanup_complete"
     assert record["lease"]["ended"] == "reset_failed"
+    assert record["lease"]["reset"]["state"] == "failed"
+    assert test_machine.rm.lease_row(record)["reset_state"] == "failed"
     assert record["lease"]["job"]["state"] == ("exited" if failure == "exit" else "cancelled")
     assert c.deletes == ["pod-1"] and c.creates == 1
     assert errors == (["pod reset failed (exit 1): unknown"] if failure == "exit" else
@@ -222,6 +291,94 @@ def test_pending_reset_admission_wait_is_bounded(machine_case, monkeypatch):
                 c.host._reset_worker.join(10)
 
 
+def test_pending_reset_does_not_delay_idle_expiry_release(machine_case, monkeypatch):
+    c = machine_case
+    claim(c)
+    entered, complete, resets, _ = hold_reset(c, monkeypatch)
+    try:
+        assert run(c, job(c))["files"]
+        assert entered.wait(10)
+        expiry = c.read()["lease"]["idle_expires_at"]
+        c.clock.advance(expiry - c.clock())
+        record = c.read()
+        assert record["state"] == "cleanup_complete"
+        assert record["lease"]["ended"] == "idle"
+        assert resets[0] in c.pod.cancelled and c.deletes == ["pod-1"]
+    finally:
+        complete.set()
+        c.host._reset_worker.join(10)
+        assert not c.host._reset_worker.is_alive()
+
+
+def test_post_result_release_exception_keeps_durable_fence_and_retry(machine_case, monkeypatch):
+    c = machine_case
+    claim(c)
+    entered, complete, _, _ = hold_reset(c, monkeypatch)
+    c.pod.fail_jobs = {"--run-dir"}
+    c.delete_error = RuntimeError("fake release failure")
+    try:
+        assert run(c, job(c))["files"]
+        assert entered.wait(10)
+    finally:
+        complete.set()
+        c.host._reset_worker.join(10)
+    assert not c.host._reset_worker.is_alive()
+    record = c.read()
+    assert record["state"] in {"cleanup_pending", "release_pending"}
+    assert record["lease"]["state"] == "releasing"
+    assert record["lease"]["release_reason"] == "reset_failed"
+    assert record["lease"]["reset"]["state"] == "failed"
+    assert c.host.last_error_type == "RuntimeError"
+    assert not c.host.deadline_timer.cancelled
+    with pytest.raises(Exception, match="unresolved preparation|recovery is pending"):
+        c.machine.claim(job(c, 2))
+    c.delete_error = None
+    c.host.release(reason="reset_failed")
+    assert c.read()["state"] == "cleanup_complete"
+
+
+def test_settlement_exception_before_delivery_remains_a_release_stage_failure(machine_case, monkeypatch):
+    c = machine_case
+    claim(c)
+    failures = []
+
+    def failed_settlement(*args, **kwargs):
+        raise RuntimeError("fake settlement failure")
+
+    monkeypatch.setattr(c.host, "settle", failed_settlement)
+    request = job(c)
+    with pytest.raises(RuntimeError, match="fake settlement failure"):
+        run_on_machine(c.machine, request, destination=request.scratch / "outputs",
+                       cancelled=lambda: False, sleep=lambda _: None,
+                       on_failure=failures.append)
+    assert c.read()["state"] == "cleanup_complete"
+    assert c.read()["lease"]["ended"] == "settlement_unverified"
+    assert c.deletes == ["pod-1"]
+    assert len(failures) == 1 and failures[0]["stage"] == "release"
+    assert c.host._reset_worker is None
+
+
+def test_post_result_reset_keeps_the_original_invocation_fence(machine_case, monkeypatch):
+    c = machine_case
+    claim(c)
+    entered, complete, _, _ = hold_reset(c, monkeypatch)
+    try:
+        assert run(c, job(c))["files"]
+        assert entered.wait(10)
+        with c.host.lock:
+            record = c.read()
+            c.host._save(record, {**record["lease"], "invocation_id": "different-invocation"})
+    finally:
+        complete.set()
+        c.host._reset_worker.join(10)
+    assert not c.host._reset_worker.is_alive()
+    record = c.read()
+    assert record["state"] == "cleanup_complete"
+    assert record["lease"]["ended"] == "reset_failed"
+    assert record["lease"]["reset"]["state"] != "ready"
+    assert c.deletes == ["pod-1"]
+
+
 def test_old_reset_completion_cannot_signal_a_later_reset(monkeypatch):
     from types import SimpleNamespace
 
@@ -230,17 +387,17 @@ def test_old_reset_completion_cannot_signal_a_later_reset(monkeypatch):
     old, later = threading.Event(), threading.Event()
     owner = SimpleNamespace(
         _reset_done=old, lock=threading.RLock(), clock=lambda: 0,
-        preparation_claim=lambda lease: {"lease": {"reset": {"state": "pending"}}},
-        _save=lambda *args: None,
+        preparation_claim=lambda lease: {"lease": {"reset": {"state": "pending", "job_id": "reset"},
+                                                   "job": {"id": "reset", "state": "exited"}}},
     )
     # A subsequent release can replace the completion event as the old owner
-    # leaves settlement; its final notification belongs only to its own reset.
-    owner.settle = lambda *args, **kwargs: setattr(owner, "_reset_done", later)
+    # marks ready; its final notification belongs only to its own reset.
+    owner._save = lambda *args: setattr(owner, "_reset_done", later)
     adapter = machine.RunPodMachine(SimpleNamespace(lease_owner=owner))
     lease = SimpleNamespace(lease=None, claim=SimpleNamespace(ops=SimpleNamespace()),
                             node_ids=frozenset(), node_names=frozenset())
     monkeypatch.setattr(adapter, "_wait_reset", lambda *args, **kwargs: None)
     monkeypatch.setattr(adapter, "_finish", lambda *args: None)
-    adapter._complete_reset(lease, {"limit": 600}, 600)
+    adapter._complete_reset(lease, {"id": "reset", "limit": 600}, 600)
     assert old.is_set()
     assert not later.is_set()

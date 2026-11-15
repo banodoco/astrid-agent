@@ -1346,7 +1346,7 @@ class RunPodMachine:
     def _release_impl(self, lease: MachineLease, warm: bool, *, reason: str,
                       failure: BaseException | None, stage: str,
                       abort_event: Any = None, observer_key: Any = None) -> None:
-        """Reset a verified job's Runtime, then settle idle; release unsafe custody."""
+        """Settle verified results behind reset custody; release unsafe custody."""
         from .worker_preparation import AcquisitionUnresolvedError
 
         adapter = self._require()
@@ -1493,14 +1493,15 @@ class RunPodMachine:
             warm, reason = False, rejection
         elif failure is not None:
             warm = True
+        deferred_reset = None
         if warm and job is not None and reason != "verification_timeout":
             try:
                 if failure is None:
-                    self._defer_reset(lease, paid_expiry=paid_expiry)
-                    return
-                self._reset(lease, verify_deadline=verify_deadline, paid_expiry=paid_expiry)
-                if (verify_deadline is not None and time.monotonic() >= verify_deadline) or owner.clock() >= paid_expiry:
-                    raise MachineError("failure reset exceeded the original paid limit")
+                    deferred_reset = self._start_reset(lease, pending=True)
+                else:
+                    self._reset(lease, verify_deadline=verify_deadline, paid_expiry=paid_expiry)
+                    if (verify_deadline is not None and time.monotonic() >= verify_deadline) or owner.clock() >= paid_expiry:
+                        raise MachineError("failure reset exceeded the original paid limit")
             except Exception as exc:  # noqa: BLE001 - custody: any failed reset must release the exact pod
                 _logger.debug("Remote reset failed; releasing the exact pod", exc_info=True)
                 lease.state.note("reset", "failed", error=type(exc).__name__)
@@ -1537,6 +1538,15 @@ class RunPodMachine:
             try:
                 owner.settle(lease.lease, outcome=outcome, failure=summary, node_ids=lease.node_ids,
                              node_names=lease.node_names)
+                record = owner._read()
+                info = record["lease"]
+                lease.expires_at = info.get("idle_expires_at")
+                lease.cost_usd = record.get("estimated_cost_usd", 0) + max(0, owner.clock() - info.get("accounted_at", info["started_at"])) * info.get("hourly_usd", 0) / 3600
+                lease.preparation_state = (info.get("preparation") or {}).get("state")
+                lease.released = True
+                lease.kept, lease.release_reason = True, reason if reason == "verification_timeout" else None
+                if deferred_reset is not None:
+                    self._defer_reset(lease, deferred_reset, paid_expiry=paid_expiry)
             except Exception:  # noqa: BLE001 - custody: any settlement failure must still release the exact pod
                 _logger.debug("Job settlement failed; releasing the exact pod", exc_info=True)
                 if observer_key is not None:
@@ -1544,13 +1554,6 @@ class RunPodMachine:
                 owner.release(reason="settlement_unverified", _expected_operation=lease.lease.operation_id,
                               expected_machine_id=lease.claim.pod_id)
                 raise
-            lease.released = True
-            lease.kept, lease.release_reason = True, reason if reason == "verification_timeout" else None
-            record = owner._read()
-            info = record["lease"]
-            lease.expires_at = info.get("idle_expires_at")
-            lease.cost_usd = record.get("estimated_cost_usd", 0) + max(0, owner.clock() - info.get("accounted_at", info["started_at"])) * info.get("hourly_usd", 0) / 3600
-            lease.preparation_state = (info.get("preparation") or {}).get("state")
             return
         try:
             if observer_key is not None:
@@ -1569,26 +1572,16 @@ class RunPodMachine:
                     raise
         lease.released = True
 
-    def _defer_reset(self, lease: MachineLease, *, paid_expiry: float) -> None:
-        """Launch under durable custody; the host completes reset without a later job."""
+    def _defer_reset(self, lease: MachineLease, started: Mapping[str, Any], *, paid_expiry: float) -> None:
+        """Only reset completion moves off the settled, deadline-published caller."""
         owner = self._require().lease_owner
         with owner.lock:
             owner._reset_done = threading.Event()
             try:
-                started = self._start_reset(lease, pending=True)
                 worker = threading.Thread(target=self._complete_reset,
                                           args=(lease, started, paid_expiry),
                                           name="astrid-runpod-reset", daemon=False)
-                # Delivery metadata describes retention intent. The journal remains
-                # active/pending until the owner verifies reset and settles it.
-                record = owner.preparation_claim(lease.lease)
-                info = record["lease"]
-                lease.kept, lease.released = True, True
-                lease.expires_at = (paid_expiry if info.get("keep_until_release") else
-                                    min(owner.clock() + info["idle_seconds"], paid_expiry))
-                lease.cost_usd = record.get("estimated_cost_usd", 0) + max(
-                    0, owner.clock() - info.get("accounted_at", info["started_at"])) * info.get("hourly_usd", 0) / 3600
-                lease.preparation_state = (info.get("preparation") or {}).get("state")
+                owner.preparation_claim(lease.lease)
                 owner._reset_worker = worker
                 worker.start()
             except BaseException:
@@ -1601,7 +1594,6 @@ class RunPodMachine:
         reason = "reset_failed"
         done = owner._reset_done
         original_ops = lease.claim.ops
-        finished = False
         try:
             try:
                 bounded = getattr(original_ops, "bounded", None)
@@ -1622,30 +1614,32 @@ class RunPodMachine:
                     raise MachineError("bounded pod observer remains alive; exact custody is pending")
             reason = "settlement_unverified"
             with owner.lock:
-                self._finish(lease.lease)
-                finished = True
                 record = owner.preparation_claim(lease.lease)
-                owner._save(record, {**record["lease"], "reset": {
-                    **record["lease"]["reset"], "state": "ready"}})
-                owner.settle(lease.lease, outcome="success", node_ids=lease.node_ids,
-                             node_names=lease.node_names)
-        except Exception:  # noqa: BLE001 - bounded owner must fence reset or settlement failures, even without another job
+                info = record["lease"]
+                if (info["reset"]["state"] != "pending" or info["reset"]["job_id"] != started["id"]
+                        or info["job"] != {"id": started["id"], "state": "exited"}):
+                    raise MachineError("reset completion differs from the checkpointed job custody")
+                # Preserve the already-published idle bound; cleanup grants no
+                # additional retention and cannot settle a newer invocation.
+                owner._save(record, {**info, "state": "idle", "reset": {
+                    **info["reset"], "state": "ready"}})
+        except Exception as exc:  # noqa: BLE001 - bounded owner must fence reset or settlement failures, even without another job
             _logger.debug("Deferred reset could not settle; releasing exact custody", exc_info=True)
             lease.kept, lease.release_reason = False, reason
             try:
-                if not finished:
-                    self._finish(lease.lease)
-                    finished = True
+                with owner.lock:
+                    record = owner.preparation_claim(lease.lease)
+                    owner._save(record, {**record["lease"], "reset": {
+                        **record["lease"]["reset"], "state": "failed", "error_type": type(exc).__name__}})
+            except Exception:  # noqa: BLE001 - lost invocation custody must still reach exact release
+                _logger.debug("Could not record reset failure under original custody", exc_info=True)
+            try:
                 owner.release(reason=reason, _expected_operation=lease.lease.operation_id,
                               expected_machine_id=lease.claim.pod_id)
             except Exception:  # noqa: BLE001 - exact release preserves its durable fence and retry on failure
                 _logger.exception("Deferred reset release remains pending")
         finally:
-            try:
-                if not finished:
-                    self._finish(lease.lease)
-            finally:
-                done.set()
+            done.set()
 
     def _reset(self, lease: MachineLease, *, verify_deadline: float | None = None,
                paid_expiry: float | None = None) -> dict[str, Any]:
@@ -1851,13 +1845,16 @@ def lease_row(record: Mapping[str, Any]) -> dict[str, Any]:
         state = lease["state"]
     else:
         state = "unresolved"
+    reset_state = (lease.get("reset") or {}).get("state")
+    retaining = state == "idle" or (
+        state == "active" and reset_state == "pending" and "idle_expires_at" in lease)
     now = time.time()
     hourly_usd = lease.get("hourly_usd")
     cost_usd = float(record.get("estimated_cost_usd", lease.get("estimated_cost_usd")) or 0)
     release_at = None
     minutes_left = None
     if live:
-        release_at = (lease.get("idle_expires_at") if state == "idle"
+        release_at = (lease.get("idle_expires_at") if retaining
                       else lease.get("paid_expires_at"))
         accounted_at = lease.get("accounted_at", lease.get("started_at"))
         if isinstance(hourly_usd, (int, float)) and isinstance(accounted_at, (int, float)):
@@ -1868,7 +1865,8 @@ def lease_row(record: Mapping[str, Any]) -> dict[str, Any]:
             "gpu": record.get("gpu_type"), "state": state,
             "release_capability_id": "runpod.release",
             "live": live, "idle_timeout_s": lease.get("idle_seconds"),
-            "idle_expires_at": lease.get("idle_expires_at") if state == "idle" else None,
+            "idle_expires_at": lease.get("idle_expires_at") if retaining else None,
+            "reset_state": reset_state if reset_state in {"pending", "ready", "failed"} else None,
             "release_at": release_at, "minutes_left": minutes_left,
             "cost_usd": round(cost_usd, 4), "hourly_usd": hourly_usd,
             "preparation_state": (lease.get("preparation") or {}).get("state"),
