@@ -227,29 +227,29 @@ def extract(archive: Path, destination: Path, *, reject_links: bool = False,
                     target.chmod(0o755 if zip_member.external_attr >> 16 & 0o111 else 0o644)
         return
     with tarfile.open(archive) as bundle:
-        members = bundle.getmembers()
-        targets = archive_destinations([(m.name, m.isdir()) for m in members], destination,
+        tar_members = bundle.getmembers()
+        targets = archive_destinations([(m.name, m.isdir()) for m in tar_members], destination,
                                        platform_name=platform_name, strip_root=strip_root)
         destination.mkdir(parents=True, exist_ok=True)
-        for member, target in zip(members, targets):
-            if member.isdir():
+        for tar_member, target in zip(tar_members, targets):
+            if tar_member.isdir():
                 target.mkdir(parents=True, exist_ok=True)
-            elif member.isfile():
+            elif tar_member.isfile():
                 target.parent.mkdir(parents=True, exist_ok=True)
-                tar_source = bundle.extractfile(member)
+                tar_source = bundle.extractfile(tar_member)
                 if tar_source is None:
-                    raise ValueError(f"Archive regular entry cannot be read: {member.name}")
+                    raise ValueError(f"Archive regular entry cannot be read: {tar_member.name}")
                 with tar_source, target.open("wb") as output:
                     shutil.copyfileobj(tar_source, output)
-                target.chmod(0o755 if member.mode & 0o111 else 0o644)
-            elif member.issym() or member.islnk():
+                target.chmod(0o755 if tar_member.mode & 0o111 else 0o644)
+            elif tar_member.issym() or tar_member.islnk():
                 if reject_links:
-                    raise ValueError(f"Source archive contains a link: {member.name}")
+                    raise ValueError(f"Source archive contains a link: {tar_member.name}")
                 # Official Node archives contain npm/npx links. The installer
                 # invokes npm-cli.js directly and needs neither link.
                 continue
             else:
-                raise ValueError(f"Archive contains a special entry: {member.name}")
+                raise ValueError(f"Archive contains a special entry: {tar_member.name}")
 
 
 def fetch_archive(url: str, destination: Path, *, sha256: str | None = None,
@@ -300,7 +300,7 @@ def git_required_message(platform_name: str) -> str:
 def require_git(*, recorded: str | None = None, platform_name: str | None = None) -> str:
     """Check before downloads, including a prior install's recorded executable."""
     platform_name = platform_name or sys.platform
-    env = {}
+    env: dict[str, str] = {}
 
     def probe(argv, **kwargs):
         return subprocess.run(argv, check=True, capture_output=True, text=True,

@@ -20,7 +20,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, MutableMapping
 from urllib.parse import urlsplit
 
 
@@ -188,7 +188,7 @@ def _patch_socket(originals: Mapping[tuple[Any, str], Any]) -> None:
             return originals[(socket, "socketpair")](*args, **kwargs)
         return _loopback_pair(*args, **kwargs)
 
-    def _loopback_pair(family: int = socket.AF_INET, type: int = socket.SOCK_STREAM, proto: int = 0):
+    def _loopback_pair(family: socket.AddressFamily = socket.AF_INET, type: int = socket.SOCK_STREAM, proto: int = 0):
         host = {socket.AF_INET: "127.0.0.1", socket.AF_INET6: "::1"}.get(family)
         if host is None or type != socket.SOCK_STREAM or proto != 0:
             raise ValueError("Only AF_INET and AF_INET6 stream socket pairs are supported")
@@ -371,7 +371,7 @@ def _local_process_probe(command: Any) -> bool:
     return tokens[4].startswith("-iTCP:") and tokens[4][7:].isdigit()
 
 
-def _patch_native_descendants(originals: Mapping[tuple[Any, str], Any]) -> None:
+def _patch_native_descendants(originals: MutableMapping[tuple[Any, str], Any]) -> None:
     """Fail closed when a Python provider tries to escape via a native child."""
     original_popen = subprocess.Popen
 

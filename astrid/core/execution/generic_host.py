@@ -18536,7 +18536,7 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
         remotion_runtime._deferred_validation = remotion_runtime.DeferredRemotionValidation(
             prepare_render_validation
         )
-        host._defer_startup_remotion = True
+        host._defer_startup_remotion = True  # type: ignore[attr-defined]
     # Only verified host startup arguments populate this private context. A
     # child's payload/environment is never accepted as launch/source identity.
     host._child_import_host_context = {
@@ -18719,7 +18719,7 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
             ready_path.unlink(missing_ok=True)
             stdin_shutdown.wait_for_shutdown_cleanup()
             return 1
-    host._defer_startup_remotion = False
+    host._defer_startup_remotion = False  # type: ignore[attr-defined]
     if args.run_task:
         if client is None or not args.lease_token:
             parser.error("--run-task requires --runtime-endpoint, --credential-file, and --lease-token")

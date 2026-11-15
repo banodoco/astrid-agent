@@ -23,8 +23,8 @@ def _read_registry_value() -> int:
     # Imported here: winreg exists only on Windows, and this module must import everywhere.
     import winreg
 
-    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _KEY) as key:
-        value, _kind = winreg.QueryValueEx(key, _VALUE)
+    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _KEY) as key:  # type: ignore[attr-defined]
+        value, _kind = winreg.QueryValueEx(key, _VALUE)  # type: ignore[attr-defined]
     return int(value)
 
 
