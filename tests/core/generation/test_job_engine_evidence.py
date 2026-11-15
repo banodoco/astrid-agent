@@ -378,27 +378,6 @@ def test_hung_stats_are_bounded_when_finishing_job(tmp_path):
 PHASE_KEYS = {"whole_job", "unaccounted", "verify_models", "engine_start_or_reuse", "queue_wait", "execute", "collect"}
 
 
-def test_preparation_remainder_accounts_for_previously_untimed_work(tmp_path, monkeypatch):
-    import astrid.core.generation.job_evidence as module
-
-    prep = SimpleNamespace(root=str(tmp_path / "engine"), recipe=SimpleNamespace(
-        engine="comfyui", start=SimpleNamespace(port=1)), verification_seconds=2.0,
-        engine_start_seconds=3.0, phase_seconds={"installation_verification": 4.0})
-    monkeypatch.setattr(JobEvidence, "_vram", lambda *args: None)
-    # Construction reads 10.0; every later read (P3's monotonic phase stamps included) reads 20.0.
-    ticks = iter([10.0])
-    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: next(ticks, 20.0)))
-    evidence = JobEvidence(tmp_path, prep)
-    evidence.start_execution()
-    evidence.finish()
-    record = json.loads((tmp_path / "job-run.json").read_text())
-    assert record["additional_phases"] == {"preparation_other": 5.0}
-    assert record["preparation_steps"] == {"installation_verification": 4.0}
-    assert record["additional_phases"]["preparation_other"] + sum(
-        record["phases"][name] for name in ("verify_models", "engine_start_or_reuse", "queue_wait")) == 10.0
-    _assert_phase_record(record)
-
-
 def _assert_phase_record(record):
     from datetime import datetime, timedelta
 

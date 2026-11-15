@@ -493,7 +493,7 @@ def test_fetch_surfaces_only_fixed_diagnostic_and_safe_exit(tmp_path, exit_code)
     assert SENTINEL not in str(caught.value)
     # The tail carries no logs marker, so exactly one bounded marker read follows it.
     assert calls == [f'tail -c {fd.MAX_FRAME_BYTES + 1} /fake/job/stdout',
-                     "grep -a -E '^LOGS_(MANIFEST_SHA256|ARCHIVE)=' /fake/job/stdout | tail -n 2"]
+                     f"grep -a '^{rm.LOGS_MANIFEST_MARK}' /fake/job/stdout | tail -n 1"]
     assert run.lease.failure_logs == {'unavailable': 'not_reported'}
 
 
