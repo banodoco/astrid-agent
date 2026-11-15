@@ -570,14 +570,21 @@ def _install_omp_source(selected: dict, recipe: dict, root: Path, target: str, r
     if native is None:
         raise ValueError(f"There is no pinned OMP native build for {target}.")
     root.mkdir(parents=True, exist_ok=True)
-    container = root / "source-archive"
+    # On Windows the archive's wrapper folder (name plus 40-character commit) and a
+    # long staging name push deep source files past MAX_PATH; unpack without the
+    # wrapper into a short folder there. The file set is identical either way.
+    windows = sys.platform == "win32"
+    container = root / ("s.u" if windows else "source-archive")
     source_url = omp_source_url(selected["repo"], selected["sha"])
     if source_url:
-        fetch_archive(source_url, container, reject_links=True)
-        children = list(container.iterdir())
-        if len(children) != 1 or not children[0].is_dir():
-            raise ValueError("Unexpected OMP source directory layout.")
-        source_root = children[0]
+        fetch_archive(source_url, container, reject_links=True, strip_root=windows)
+        if windows:
+            source_root = container
+        else:
+            children = list(container.iterdir())
+            if len(children) != 1 or not children[0].is_dir():
+                raise ValueError("Unexpected OMP source directory layout.")
+            source_root = children[0]
     else:
         archive = root / "source.download"
         try:
