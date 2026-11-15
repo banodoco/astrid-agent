@@ -158,3 +158,26 @@ def test_unsupported_pair_arguments_are_refused(guarded_sockets, monkeypatch):
     monkeypatch.setattr(network_policy, "_kernel_socketpair", lambda: False)
     with pytest.raises(ValueError):
         socket.socketpair(socket.AF_INET, socket.SOCK_DGRAM)
+
+
+def test_posix_socketpair_and_asyncio_are_untouched_under_the_guard(guarded_sockets):
+    """With a kernel socketpair the guard must pass the call through with its own defaults."""
+    import asyncio
+
+    socket, _, events = guarded_sockets
+    left, right = socket.socketpair()
+    try:
+        assert left.family == socket.AF_UNIX
+        left.sendall(b"x")
+        assert right.recv(1) == b"x"
+    finally:
+        left.close()
+        right.close()
+    loop = asyncio.new_event_loop()
+    loop.close()
+
+    async def answer():
+        return 42
+
+    assert asyncio.run(answer()) == 42
+    assert not [fields for _, fields in events if fields.get("detail") == "local-socketpair"]
