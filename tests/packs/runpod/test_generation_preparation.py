@@ -78,6 +78,7 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
     engine_base = tmp_path / "engines"
     engine_root = str(engine_base / "comfyui")
     monkeypatch.setattr(rp, "ENGINE_BASE", str(engine_base))
+    monkeypatch.setattr(rp, "ENGINE_ROOT", engine_root)
     plan = engine_runner.plan_install(recipe, root=engine_root, placement="local")
     compatibility = RunPodLeaseCompatibility(
         "sha256:" + plan.recipe_sha256, "sha256:" + plan.models_lock_sha256,

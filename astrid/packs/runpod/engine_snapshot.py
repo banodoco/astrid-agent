@@ -60,6 +60,8 @@ _CREATE = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
 _LOCKISH = re.compile(r"(\.lock|\.flock|\.owner)$|^owner")
 _MANIFEST_LIMIT = 1024 * 1024
 _COMFY_MUTABLE = frozenset({"output", "input", "temp", "user"})
+_DURATION_KEYS = frozenset({"estimate", "write_root", "write_python", "manifest", "manifest_check",
+                            "restore_root", "restore_python", "extract", "total"})
 # Pure bytecode cache: a file the running engine replaces or removes mid-publish is omitted.
 _CACHE_PREFIX = ".astrid-engine/pycache/"
 
@@ -69,6 +71,37 @@ class SnapshotSkip(Exception):
         assert reason in REASONS
         super().__init__(reason)
         self.reason, self.facts = reason, facts
+
+
+def sanitized_outcome(value, *, include_prior=True):
+    """Only fixed labels, identities, counters and timings may leave the pod/cache boundary."""
+    action = value.get("action")
+    reason = value.get("reason", "none")
+    result = {"action": action if action in ("restored", "published", "skipped", "started") else "withheld",
+              "reason": reason if isinstance(reason, str) and reason in REASONS | {"none"} else "withheld"}
+    if value.get("command") in ("restore", "publish"):
+        result["command"] = value["command"]
+    identity = value.get("identity")
+    if isinstance(identity, str) and re.fullmatch(r"[0-9a-f]{64}", identity):
+        result["identity"] = identity
+    for key in ("bytes", "archive_bytes", "estimate_bytes", "free_bytes", "members"):
+        if type(value.get(key)) is int and 0 <= value[key] <= 2**63 - 1:
+            result[key] = value[key]
+        elif key == "bytes" and key in value and value[key] is None:
+            result[key] = None
+    durations = value.get("durations")
+    result["durations"] = {k: v for k, v in durations.items()
+                           if k in _DURATION_KEYS and type(v) in (int, float) and 0 <= v <= 1e12
+                           } if isinstance(durations, dict) else {}
+    finished = value.get("finished_at")
+    if isinstance(finished, str) and re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z", finished):
+        result["finished_at"] = finished
+    prior = value.get("prior_publish")
+    if (include_prior and isinstance(prior, dict) and prior.get("command") == "publish"
+            and prior.get("identity") == result.get("identity")
+            and prior.get("action") in ("published", "skipped")):
+        result["prior_publish"] = sanitized_outcome(prior, include_prior=False)
+    return result
 
 
 # ---- identity -------------------------------------------------------------------------------
@@ -198,6 +231,44 @@ def _read_json(path, limit=_MANIFEST_LIMIT):
         return None
     finally:
         os.close(fd)
+
+
+def _publish_completion(cache, identity, result):
+    """Best-effort diagnostics, separate from the sealed snapshot manifest and its authority."""
+    directory = os.path.join(cache, identity)
+    partial = f"last-publish-{uuid.uuid4().hex}.partial"
+    directory_fd = None
+    try:
+        os.makedirs(directory, exist_ok=True)
+        directory_fd = os.open(directory, _DIR)
+        fd = os.open(partial, _CREATE, 0o600, dir_fd=directory_fd)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            json.dump(result, stream, sort_keys=True, separators=(",", ":"), allow_nan=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(partial, "last-publish.json", src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+        os.fsync(directory_fd)
+    except OSError:
+        pass  # Diagnostics must never change publish/restore decisions or wait for release.
+    finally:
+        if directory_fd is not None:
+            try:
+                os.unlink(partial, dir_fd=directory_fd)
+            except OSError:
+                pass
+            os.close(directory_fd)
+
+
+def _prior_publish(cache, identity):
+    directory = os.path.join(cache, identity)
+    if os.path.islink(directory):
+        return None
+    result = _read_json(os.path.join(directory, "last-publish.json"), 16384)
+    if (result is not None and result.get("command") == "publish" and result.get("identity") == identity
+            and result.get("action") in ("published", "skipped")):
+        return sanitized_outcome(result, include_prior=False)
+    return None
 
 
 def _unlink(*paths):
@@ -799,6 +870,10 @@ def main(argv=None):
                 raise SnapshotSkip("identity_unavailable") from None
             described, identity = None, None  # housekeeping never needs the current identity
         result["identity"] = identity
+        if args.command == "restore" and identity is not None:
+            prior = _prior_publish(args.cache, identity)
+            if prior is not None:
+                result["prior_publish"] = prior
         handler = {"restore": restore, "publish": publish, "report": report, "prune": prune}[args.command]
         result.update(handler(args, described, identity, clock))
     except SnapshotSkip as skip:
@@ -808,6 +883,12 @@ def main(argv=None):
     except Exception:  # noqa: BLE001 - the one-line JSON contract carries no exception text
         result.update(action="skipped", reason="internal_error")
     result["durations"] = clock.total()
+    if args.command == "publish":
+        result.setdefault("identity", None)
+        result.update(reason=result.get("reason", "none"), bytes=result.get("archive_bytes"),
+                      finished_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"))
+        if result.get("identity") is not None:
+            _publish_completion(args.cache, result["identity"], result)
     sys.stdout.write(PREFIX + json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n")
     sys.stdout.flush()
     return 0

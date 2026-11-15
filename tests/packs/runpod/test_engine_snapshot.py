@@ -12,6 +12,7 @@ import sys
 import tarfile
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -93,7 +94,10 @@ def run(w, command, *extra, capsys=None):
     result = json.loads(lines[-1].split("=", 1)[1])
     assert isinstance(result["durations"], dict)
     if "reason" in result:
-        assert result["reason"] in es.REASONS
+        if result["command"] == "publish" and result["action"] == "published":
+            assert result["reason"] == "none"
+        else:
+            assert result["reason"] in es.REASONS
     return result
 
 
@@ -192,6 +196,91 @@ def test_second_publish_is_already_published(world):
     second = run(world, "publish")
     assert (second["action"], second["reason"]) == ("skipped", "already_published")
     assert len(list(snapshot_dir(world).glob("*.tar"))) == 2
+
+
+@pytest.mark.parametrize("skip", [None, "not_installed", "insufficient_space", "io_error"])
+def test_publish_completion_is_atomic_private_and_returned_by_next_restore(world, monkeypatch, skip):
+    w = world
+    if skip is not None:
+        def fail(*args):
+            if skip == "io_error":
+                raise OSError("private filesystem detail")
+            raise es.SnapshotSkip(skip)
+        monkeypatch.setattr(es, "publish", fail)
+    replacements = []
+    replace = os.replace
+
+    def observed_replace(source, destination, **kwargs):
+        if os.path.basename(destination) == "last-publish.json":
+            # The previous complete record stays visible until this single replace.
+            assert json.loads((snapshot_dir(w) / "last-publish.json").read_text()) == {"old": True}
+            replacements.append((source, destination))
+        return replace(source, destination, **kwargs)
+
+    snapshot_dir(w).mkdir(parents=True)
+    (snapshot_dir(w) / "last-publish.json").write_text('{"old": true}')
+    monkeypatch.setattr(os, "replace", observed_replace)
+    published = run(w, "publish")
+    assert len(replacements) == 1
+    completion = snapshot_dir(w) / "last-publish.json"
+    assert stat.S_IMODE(completion.stat().st_mode) == 0o600
+    assert json.loads(completion.read_text()) == published
+    assert published["command"] == "publish" and published["identity"] == w.identity()
+    assert published["reason"] == (skip or "none") and "bytes" in published
+    assert datetime.fromisoformat(published["finished_at"].replace("Z", "+00:00")).tzinfo is not None
+    assert not list(snapshot_dir(w).glob("*.partial"))
+    # The following report must never overwrite publish with a reported action.
+    run(w, "report")
+    assert json.loads(completion.read_text()) == published
+    wipe(w)
+    restored = run(w, "restore")
+    assert restored["action"] == ("restored" if skip is None else "skipped")
+    assert restored["prior_publish"] == published
+    assert "private filesystem detail" not in json.dumps(restored)
+
+
+@pytest.mark.parametrize("prior", ["malformed", "wrong_identity", "symlink", "oversized", "untrusted_fields"])
+def test_prior_publish_diagnostics_are_bounded_sanitized_and_never_restore_authority(world, prior):
+    w = world
+    assert run(w, "publish")["action"] == "published"
+    path = snapshot_dir(w) / "last-publish.json"
+    body = {"command": "publish", "identity": w.identity(), "action": "published", "reason": "none",
+            "bytes": 5, "durations": {"total": 1.5, "/outside/secret": 4, "estimate": 10**400},
+            "finished_at": "2026-11-15T00:00:00.000000Z", "secret": "private-value", "path": "/outside/secret"}
+    if prior == "wrong_identity":
+        body["identity"] = "f" * 64
+    path.write_text(json.dumps(body) if prior != "malformed" else "{not-json")
+    if prior == "symlink":
+        path.unlink()
+        path.symlink_to(w.tmp / "missing")
+    if prior == "oversized":
+        path.write_text(" " * 65537)
+    wipe(w)
+    result = run(w, "restore")
+    assert result["action"] == "restored"
+    if prior == "untrusted_fields":
+        outcome = result["prior_publish"]
+        assert outcome["action"] == "published" and outcome["durations"] == {"total": 1.5}
+        assert "private-value" not in json.dumps(result) and "/outside" not in json.dumps(result)
+    else:
+        assert "prior_publish" not in result
+
+
+def test_completion_write_failure_does_not_change_publish_or_restore(world, monkeypatch):
+    replace = os.replace
+
+    def fail_record(source, destination, **kwargs):
+        if os.path.basename(destination) == "last-publish.json":
+            raise OSError("private disk failure")
+        return replace(source, destination, **kwargs)
+
+    monkeypatch.setattr(os, "replace", fail_record)
+    assert run(world, "publish")["action"] == "published"
+    assert not list(snapshot_dir(world).glob("*.partial"))
+    assert not (snapshot_dir(world) / "last-publish.json").exists()
+    wipe(world)
+    result = run(world, "restore")
+    assert result["action"] == "restored" and "prior_publish" not in result
 
 
 def test_publish_requires_installed_receipt(world):
@@ -348,7 +437,8 @@ def test_publish_skips_on_insufficient_statvfs_space(world, monkeypatch):
     result = run(world, "publish")
     assert (result["action"], result["reason"]) == ("skipped", "insufficient_space")
     assert result["estimate_bytes"] > 0
-    assert not world.cache.exists() or not any(p.is_file() for p in world.cache.rglob("*"))
+    assert [p for p in world.cache.rglob("*") if p.is_file()] == [snapshot_dir(world) / "last-publish.json"]
+    assert json.loads((snapshot_dir(world) / "last-publish.json").read_text()) == result
 
 
 def test_publish_skips_on_insufficient_declared_volume(world, monkeypatch):
@@ -377,7 +467,8 @@ def test_concurrent_publisher_loses_race(world, monkeypatch):
     result = run(world, "publish")
     assert (result["action"], result["reason"]) == ("skipped", "lost_race")
     assert len(calls) == 2
-    assert not [p for p in world.cache.rglob("*") if p.is_file()]
+    assert [p for p in world.cache.rglob("*") if p.is_file()] == [snapshot_dir(world) / "last-publish.json"]
+    assert json.loads((snapshot_dir(world) / "last-publish.json").read_text()) == result
 
 
 def test_report_cleans_old_partials_and_keeps_snapshot(world):

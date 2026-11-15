@@ -40,6 +40,7 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from astrid.core.contracts.errors import AstridError
 
+from .engine_snapshot import sanitized_outcome
 from .failure_reason import Reason, attach_reason, installation_reason
 from .failure_receipt import checkpoint_refusal
 from .pod_bootstrap import SCRIPT as POD_BOOTSTRAP_SCRIPT
@@ -430,6 +431,7 @@ class RemoteRun:
     install_unverified: str | None = None
     # The pinned network volume ({"mount_path", "size_gb"}); None means no volume for this run.
     volume: Mapping[str, Any] | None = None
+    preparation_checkpoint: Callable[[list[dict[str, Any]]], None] | None = None
 
     @property
     def remote_in(self) -> str:
@@ -441,6 +443,30 @@ class RemoteRun:
 
     def note(self, step: str, status: str, **detail: Any) -> None:
         self.steps.append({"step": step, "status": status, "at": time.time(), **detail})
+        if self.preparation_checkpoint is not None and step in {
+                "bootstrap", "install", "engine_snapshot_restore", "engine_snapshot_publish"}:
+            self.preparation_checkpoint(self.preparation_steps)
+
+    @property
+    def preparation_steps(self) -> list[dict[str, Any]]:
+        """Durable preparation evidence; never export log paths or arbitrary note details."""
+        rows = []
+        for note in self.steps:
+            step = note["step"]
+            if step in {"bootstrap", "install"}:
+                rows.append({"step": step, "status": _safe_label(note["status"]), "at": note["at"]})
+            elif step in {"engine_snapshot_restore", "engine_snapshot_publish"}:
+                outcome = sanitized_outcome({**note, "action": note["status"]})
+                # Placement-side gates and transport failures also have fixed, path-free reasons.
+                if note.get("reason") in {"no_volume", "invalid_mount", "other_engine_root", "receipt_present",
+                                          "runtime_present", "restore_failed", "restore_exit_nonzero",
+                                          "restore_output_unparsable", "publish_start_failed"}:
+                    outcome["reason"] = note["reason"]
+                row = {"step": step, "status": outcome.pop("action"), "at": note["at"], **outcome}
+                if type(note.get("pid")) is int and note["pid"] > 0:
+                    row["pid"] = note["pid"]
+                rows.append(row)
+        return rows
 
 
 # ----------------------------------------------------------------------------
@@ -490,7 +516,8 @@ class RemotePlacement:
                         installation: RunPodInstallation | None = None,
                         checkpoint: Callable[[Mapping[str, Any]], None] | None = None,
                         reuse_snapshot: Mapping[str, Any] | None = None,
-                        volume: Mapping[str, Any] | None = None) -> RemoteRun:
+                        volume: Mapping[str, Any] | None = None,
+                        preparation_checkpoint: Callable[[list[dict[str, Any]]], None] | None = None) -> RemoteRun:
         """Bootstrap/install an exact existing claim for ordinary prepared work.
 
         Claim/admission/release stay with their existing journal and Runtime
@@ -508,7 +535,8 @@ class RemotePlacement:
         if (installation is None) != (checkpoint is None):
             raise RemotePlacementError("retained installation requires its lease checkpoint")
         state = RemoteRun(run_id, f"{RUNS_ROOT}/{run_id}", out, claim=claim,
-                          installation=installation, checkpoint=checkpoint, volume=volume)
+                          installation=installation, checkpoint=checkpoint, volume=volume,
+                          preparation_checkpoint=preparation_checkpoint)
         try:
             from .pod_watchdog import IDENTITY_LOG_PATH, IDENTITY_MARK, write_deadline
             saved = (claim.handle or {}).get("self_stop")
@@ -858,8 +886,11 @@ class RemotePlacement:
         """The fixed module command, or None when no pinned volume serves the canonical root."""
         volume, installation = state.volume, state.installation
         mount = volume.get("mount_path") if isinstance(volume, Mapping) else None
-        if (not isinstance(mount, str) or not mount.startswith("/")
-                or installation is not None and installation.root != ENGINE_ROOT):
+        reason = ("no_volume" if volume is None else
+                  "invalid_mount" if not isinstance(mount, str) or not mount.startswith("/") else
+                  "other_engine_root" if installation is not None and installation.root != ENGINE_ROOT else None)
+        if reason is not None:
+            state.note(f"engine_snapshot_{action}", "skipped", reason=reason)
             return None
         engine = installation.engine if installation is not None else ENGINE_ID
         platform = installation.platform if installation is not None else RunPodInstallation.platform
@@ -877,11 +908,7 @@ class RemotePlacement:
             return None
         if not isinstance(result, dict) or not isinstance(result.get("action"), str):
             return None
-        durations = result.get("durations")
-        result["durations"] = ({_safe_label(k): float(v) for k, v in durations.items()
-                                if type(v) in (int, float) and math.isfinite(v)}
-                               if isinstance(durations, Mapping) else {})
-        return result
+        return sanitized_outcome(result)
 
     def _restore_engine_snapshot(self, state: RemoteRun) -> None:
         """Restore the volume's environment snapshot onto an empty container-disk root.
@@ -909,8 +936,7 @@ class RemotePlacement:
             state.note("engine_snapshot_restore", "skipped",
                        reason="restore_exit_nonzero" if code != 0 else "restore_output_unparsable")
             return
-        state.note("engine_snapshot_restore", _safe_label(result["action"]),
-                   reason=_safe_label(result.get("reason", "none")), durations=result["durations"])
+        state.note("engine_snapshot_restore", result.pop("action"), **result)
 
     def _start_snapshot_publish(self, state: RemoteRun) -> None:
         """Start publish, then report, detached on the pod; the module dedupes an existing snapshot.
@@ -919,9 +945,9 @@ class RemotePlacement:
         a partial with no manifest, which restore never sees and a later report cleans up.
         """
         command = self._snapshot_command(state, "publish")
-        report = self._snapshot_command(state, "report")
-        if command is None or report is None:
+        if command is None:
             return
+        report = self._snapshot_command(state, "report")
         size, mount = (state.volume or {}).get("size_gb"), (state.volume or {}).get("mount_path")
         if type(size) is int and size > 0:
             command += f" --mount {shlex.quote(mount)} --volume-size-gb {size}"
