@@ -927,6 +927,8 @@ def test_a_failed_reset_releases_the_pod_instead_of_settling_it(journey):
     assert first.ok, first.to_dict()
     delivered = deliver_generation(first, client=s["client"], out=j.tmp / "first", project=s["project"])
     assert Path(delivered["image_paths"][0]).read_bytes() == provider.image
+    # W-C returns the result before the acknowledged reset owner completes.
+    s["host"]._target_bindings.provider.lease_owner.wait_for_reset()
     record = j.record()
     _released(provider, record)
     assert record["lease"]["ended"] == "reset_failed" and record["lease"]["job"]["state"] == "exited"
