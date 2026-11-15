@@ -68,6 +68,7 @@ per-user `generation` app-state document, not a project config file.
 The default shape is `"models": {"trust_unchanged": true}`; the controller carries this choice into each pod job.
 Opt in to full per-job re-verification with `"models": {"trust_unchanged": false}` in that same document (`python3 -m astrid generate settings checkout --file "$WORK/generation.json"`, edit, then `python3 -m astrid generate settings checkin "$WORK/generation.json"`).
 The default skips re-checking model files that haven't changed since they were verified: faster warm jobs; trusts file metadata, not a fresh checksum.
+The same setting controls warm attestations: true reuses fully verified workflow requirements under the same supervisor and unchanged installation on local-managed hosts and kept-warm claims (including the claim ID when present); false forces full source, environment, runtime and workflow verification on every job.
 With it on, a file counts as unchanged when its size, timestamps and inode match the verified record; another process running as you could make a record match, and a network volume remounted on another pod may match by metadata alone. Set it to false to re-check every file on the next preparation.
 
 To replace preferences while a machine is held, release that machine using

@@ -626,3 +626,76 @@ def test_hostwedge_restart_live_job_fences_claim_until_exact_recovery(machine_ca
     assert c.pod.cancelled == [old.job_id]
     assert c.deletes == ["pod-1"] and c.creates == 1
     assert c.read()["state"] == "cleanup_complete"
+
+
+@pytest.mark.parametrize('match,trust', [(True, True), (False, True), (True, False)])
+@pytest.mark.parametrize('verification_seconds', [None, 30], ids=['preparation', 'collection'])
+def test_collection_warm_attestation_selects_status_only_on_miss(machine_case, monkeypatch, match, trust,
+                                                               verification_seconds):
+    """Execute the shipped pod Python; fake only its attestation and OS/provider edges."""
+    import contextlib
+    import io
+    import shlex
+    import sys
+    from astrid.core.generation import engine_runner, settings, warm_attestation
+
+    c = machine_case
+    claim(c)
+    request = job(c)
+    lease = c.machine.claim(request, cancelled=lambda: False)
+    state = lease.state
+    pod = lease.claim.ops
+    original_exec = pod.exec
+    original_status = engine_runner.engine_status
+    observed = []
+    helper_calls = []
+
+    def helper(**kwargs):
+        helper_calls.append(kwargs)
+        assert kwargs['claim_id'] == lease.lease.operation_id
+        return c.context.read_json(c.installation.root + '/.astrid-engine/install.json',
+                                   deadline=c.context.deadline) if match else None
+
+    monkeypatch.setattr(warm_attestation, 'collection_receipt', helper)
+
+    def status(*args, **kwargs):
+        observed.append('status')
+        return original_status(*args, **kwargs)
+
+    monkeypatch.setattr(engine_runner, 'engine_status', status)
+
+    def execute(command, timeout=600):
+        if 'warm_attestation import collection_receipt' not in command:
+            return original_exec(command, timeout)
+        argv = shlex.split(command)
+        script = argv[argv.index('-c') + 1]
+        capture = io.StringIO()
+        with monkeypatch.context() as patch:
+            patch.setattr(sys, 'argv', ['-c', *argv[argv.index('-c') + 2:argv.index('||')]])
+            try:
+                with contextlib.redirect_stdout(capture):
+                    exec(compile(script, '<pod-warm-status>', 'exec'), {})
+            except SystemExit as error:
+                if error.code:
+                    return original_exec(shlex.join(argv[argv.index('||') + 1:]), timeout)
+        return 0, capture.getvalue(), ''
+
+    monkeypatch.setattr(pod, 'exec', execute)
+    with settings.using_model_trust_unchanged(trust):
+        assert c.placement._canonical_installed(state, verification_seconds=verification_seconds)
+    assert bool(helper_calls) is trust
+    assert observed == ([] if match and trust else ['status'])
+
+
+def test_job_projects_current_claim_operation_id(machine_case):
+    c = machine_case
+    claim(c)
+    request = job(c)
+    run(c, request)
+    shipped = [json.loads(value) for path, value in c.pod.files.items() if path.endswith('/job.json')]
+    # Release resets job directories, so use the controller's exact staging copy.
+    if not shipped:
+        from pathlib import Path
+        shipped = [json.loads(path.read_text()) for path in Path(request.scratch).rglob('job.json')]
+    assert shipped
+    assert all(body['claim_id'] == c.read()['operation_id'] for body in shipped)

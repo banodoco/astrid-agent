@@ -960,6 +960,18 @@ class RemotePlacement:
         command = (f"{POD_VENV}/bin/astrid engines status {installation.engine} "
                    f"--platform {installation.platform} --placement local "
                    f"--root {shlex.quote(installation.root)} --deadline {remaining}")
+        from astrid.core.generation.settings import model_trust_unchanged
+
+        claim_id = (state.claim.identity or {}).get("operation_id") if state.claim is not None else None
+        if model_trust_unchanged() and isinstance(claim_id, str) and claim_id:
+            script = ("import json,sys,time;"
+                      "from astrid.core.generation.warm_attestation import collection_receipt;"
+                      "raw=collection_receipt(root=sys.argv[1],engine=sys.argv[2],platform=sys.argv[3],"
+                      "claim_id=sys.argv[4],deadline=time.monotonic()+float(sys.argv[5]),trust_unchanged=True);"
+                      "raw is not None or sys.exit(3);print(json.dumps(raw))")
+            arguments = [installation.root, installation.engine, installation.platform, claim_id, str(remaining)]
+            command = (f"{POD_VENV}/bin/python -c {shlex.quote(script)} "
+                       + " ".join(shlex.quote(argument) for argument in arguments) + " || " + command)
         # Checkpoint verification is read-only and bounded by the original paid
         # lease, independently of the execution timer that the job may exhaust.
         if verification_seconds is None:

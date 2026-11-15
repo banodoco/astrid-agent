@@ -485,3 +485,31 @@ def test_machine_job_hashing_uses_projection_or_default(tmp_path, monkeypatch, g
         assert model.reads
         assert report == {'trust_unchanged': False, 'hashed': 1, 'skipped': 0}
     assert store_reads == []
+
+
+@pytest.mark.parametrize('claim_id', ['lease-1', None])
+def test_machine_job_scopes_claim_identity_and_restores_it(tmp_path, monkeypatch, claim_id):
+    import json
+    from astrid.core.generation import local_job, warm_attestation
+    body = {'schema': local_job.SCHEMA, 'align': 'align', 'inputs': {}}
+    if claim_id is not None:
+        body['claim_id'] = claim_id
+    path = tmp_path / 'job.json'
+    path.write_text(json.dumps(body))
+    monkeypatch.setattr(local_job, '_run_job', lambda *a, **kw: warm_attestation.CLAIM_ID.get())
+    token = warm_attestation.CLAIM_ID.set('outer-claim')
+    try:
+        assert local_job.run_job('workflow', path, tmp_path / 'out') == claim_id
+        assert warm_attestation.CLAIM_ID.get() == 'outer-claim'
+    finally:
+        warm_attestation.CLAIM_ID.reset(token)
+
+
+@pytest.mark.parametrize('claim_id', [None, '', False, {}, []])
+def test_machine_job_rejects_invalid_claim_identity(tmp_path, claim_id):
+    import json
+    from astrid.core.generation import local_job
+    path = tmp_path / 'job.json'
+    path.write_text(json.dumps({'schema': local_job.SCHEMA, 'align': 'align', 'inputs': {}, 'claim_id': claim_id}))
+    with pytest.raises(local_job.JobFileError, match='claim_id'):
+        local_job.read_job(path)

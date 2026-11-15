@@ -38,6 +38,8 @@ def read_job(path: str | Path) -> dict[str, Any]:
         raise JobFileError(f"job align must be one of {', '.join(ALIGN_MODES)}")
     if not isinstance(body.get("inputs"), dict):
         raise JobFileError("job inputs must be an object")
+    if "claim_id" in body and (not isinstance(body["claim_id"], str) or not body["claim_id"]):
+        raise JobFileError("job claim_id must be a nonempty string")
     if "generation_settings" in body:
         projected = body["generation_settings"]
         if (not isinstance(projected, dict) or set(projected) != {"models"}
@@ -65,6 +67,7 @@ def run_job(entry: str, job_path: str | Path, out: str | Path, *, mode: str | No
     from . import settings
     from .model_storage import DECLARED_VOLUME, DeclaredVolume
     from .target_inventory import POD_ALIGN
+    from .warm_attestation import CLAIM_ID
 
     timing = phase_timing.GenerationTiming()
     job = read_job(job_path)
@@ -77,6 +80,7 @@ def run_job(entry: str, job_path: str | Path, out: str | Path, *, mode: str | No
     projected = job.get("generation_settings")
     policy = settings.using_model_trust_unchanged(
         projected["models"]["trust_unchanged"] if projected is not None else True)
+    claim_token = CLAIM_ID.set(job.get("claim_id"))
     try:
         phase_timing.transition(timing, "execution")
         with policy:
@@ -90,6 +94,7 @@ def run_job(entry: str, job_path: str | Path, out: str | Path, *, mode: str | No
             exc.timing = block.get("timing")
         raise
     finally:
+        CLAIM_ID.reset(claim_token)
         DECLARED_VOLUME.reset(storage_token)
         POD_ALIGN.reset(token)
 
