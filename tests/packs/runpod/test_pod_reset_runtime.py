@@ -141,6 +141,11 @@ def test_the_pod_reset_empties_the_one_runtime_in_place(real_runtime, tmp_path):
     steps = pod_reset.reset(ensure=ensure, runs_root=pod / "runs", **paths)
     elapsed = time.perf_counter() - started
     assert steps["replace"]["state"] == "complete" and "template" not in steps
+    # Read-only evidence recorded before the restore: what this job left in the realm.
+    rows = steps["realm_rows_before"]
+    assert all(rows[table] >= 1 for table in EMPTY_TABLES), rows
+    # The first (template-taking) reset ran on an empty realm: nothing to undo.
+    assert all(count == 0 for count in first["realm_rows_before"].values()), first["realm_rows_before"]
 
     # The same daemon and realm id; the old root moved aside and deleted.
     assert steps["replace"]["realm_id"] == daemon.service.realm["id"]
