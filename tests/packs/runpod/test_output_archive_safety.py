@@ -131,14 +131,58 @@ def test_verified_archive_uses_one_download_and_renames_staged_files(tmp_path, m
 
     def replace(source, target):
         assert Path(source).is_relative_to(destination)
-        assert Path(source).read_bytes() in (b'new', b'image')
+        if Path(source) == destination / 'old':
+            assert Path(source).read_bytes() == b'old'
+            assert Path(target).name.startswith('original-')
+        else:
+            assert Path(source).read_bytes() in (b'new', b'image')
+            assert Path(source).parent.name.startswith('.astrid-output-')
         replaces.append(target)
         original_replace(source, target)
 
     monkeypatch.setattr(rm.os, 'replace', replace)
     files = fetch(destination)
     assert len(calls) == 1
-    assert len(replaces) == 2
+    assert len(replaces) == 3
+    assert Path(replaces[0]).name.startswith('original-')
     assert Path(files['old']).read_bytes() == b'new'
     assert Path(files['nested/image']).read_bytes() == b'image'
     assert sorted(path.name for path in destination.iterdir()) == ['nested', 'old']
+
+
+@pytest.mark.parametrize('fail_at', [2, 3, 4, 5])
+def test_any_publish_rename_failure_restores_originals(tmp_path, monkeypatch, fail_at):
+    destination = tmp_path / 'outputs'
+    destination.mkdir()
+    originals = {'a-existing': b'first original', 'z-existing': b'last original'}
+    for name, data in originals.items():
+        (destination / name).write_bytes(data)
+    fetch, calls = _bundle(tmp_path, [('a-existing', b'first replacement'),
+                                    ('b-new', b'new'), ('z-existing', b'last replacement')])
+    replace = rm.os.replace
+    renames = []
+
+    def fail_once(source, target):
+        renames.append((source, target))
+        if len(renames) == fail_at:
+            raise OSError('injected rename failure')
+        return replace(source, target)
+
+    monkeypatch.setattr(rm.os, 'replace', fail_once)
+    with pytest.raises(OSError, match='injected rename failure'):
+        fetch(destination)
+    assert calls and len(calls) == 1  # Rollback never retries the transfer.
+    assert {path.name: path.read_bytes() for path in destination.iterdir()} == originals
+
+
+def test_resolved_destination_escape_is_refused_before_link_check(tmp_path):
+    destination, outside = tmp_path / 'outputs', tmp_path / 'outside'
+    destination.mkdir()
+    outside.mkdir()
+    (destination / 'parent').symlink_to(outside, target_is_directory=True)
+    fetch, _ = _bundle(tmp_path, [('parent/image', b'bad')])
+    # The reason pins the independent resolve-inside guard: generic link
+    # refusal alone cannot satisfy this regression.
+    with pytest.raises(rm.DigestMismatch, match='escapes the output directory'):
+        fetch(destination)
+    assert not list(outside.iterdir())

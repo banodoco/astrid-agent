@@ -21,6 +21,9 @@ from tests.packs.runpod.test_target_selection import case as case
 from tests.packs.runpod.test_warm_session import lease_selection_case as lease_selection_case
 from tests.packs.runpod.test_warm_session import small_lease as small_lease
 
+# Keep the production wrapper before the in-memory claimed-machine fixture patches it.
+_REAL_BOUNDED_CALL = _HttpsOps._bounded_call
+
 
 def test_warm_job_constructs_one_client_and_closes_it(request, monkeypatch):
     from runpod_lifecycle import https
@@ -311,3 +314,145 @@ def test_reused_transport_gets_each_views_exact_deadline_and_scoped_hook(monkeyp
     finally:
         ops.close()
     assert transport.http.is_closed
+
+
+@pytest.mark.parametrize('size,paid,transport,expected', [
+    (0, 1000, None, 30),
+    (120 << 20, 1000, None, 120),
+    (10000 << 20, 1000, None, 600),
+    (120 << 20, 12, None, 12),
+    (120 << 20, 1000, 1007, 7),
+])
+def test_output_transfer_has_one_size_scaled_paid_bounded_budget(tmp_path, monkeypatch,
+                                                                size, paid, transport, expected):
+    from threading import RLock
+
+    from astrid.packs.runpod import machine as rm
+
+    abort, cancelled, ended = Event(), Event(), []
+    original = _HttpsOps('fake', 'fake', deadline=transport)
+    owner = SimpleNamespace(lock=RLock(), clock=lambda: 2000,
+                            preparation_claim=lambda _: {'lease': {'paid_expires_at': 2000 + paid}},
+                            begin_failure_observation=lambda *_: ('fetch', abort),
+                            end_failure_observation=ended.append)
+    machine = rm.RunPodMachine(SimpleNamespace(lease_owner=owner))
+    run = SimpleNamespace(lease=SimpleNamespace(lease=object(),
+                          claim=SimpleNamespace(ops=original, pod_id='fake')), cancelled=cancelled.is_set)
+    monkeypatch.setattr(rm, 'time', SimpleNamespace(monotonic=lambda: 1000))
+    with machine._output_downloads(run, size) as downloads:
+        assert downloads.deadline == 1000 + expected
+        assert downloads.abort_event is abort
+        assert downloads.cancelled is run.cancelled
+        assert run.lease.claim.ops.cancelled is run.cancelled
+    assert run.lease.claim.ops is original
+    assert ended == ['fetch']
+
+
+@pytest.mark.parametrize('interruption', ['cancel', 'deadline', 'release'])
+def test_stalled_output_fetch_drains_and_exact_release_does_not_wait(request, agent,
+                                                                   monkeypatch, interruption):
+    from threading import RLock
+
+    from astrid.core.execution.machine_run import run_on_machine
+    from astrid.packs.runpod import machine as rm
+    from astrid.packs.runpod.adapter import TargetProviderBindings
+    from astrid.packs.runpod.remote_placement import _HttpsConnection
+
+    c = request.getfixturevalue("machine_case")
+    claim(c)
+    cancelled, finished = Event(), Event()
+    bindings = object.__new__(TargetProviderBindings)
+    bindings.lock, bindings.active = RLock(), None
+    c.machine._begin = lambda lease: bindings.begin(lease, cancelled)
+    c.machine._done = bindings.done
+    real_quiesce = c.host.quiesce
+
+    async def quiesce(record):
+        bindings._quiesce(record)  # Actual host-only invocation drain gate.
+        return await real_quiesce(record)
+
+    c.host.quiesce = quiesce
+    direct = _HttpsOps._bounded_call  # The fixture's in-memory fake.
+    calls, deadlines, transfer_started = [], [], []
+    def output_transport(self, name, *args, **kwargs):
+        if name == 'get' and str(args[0]).endswith('/outputs.tar'):
+            calls.append(name)
+            transfer_started.append(time.monotonic())
+            deadlines.append(self.deadline)
+            # Only the output download reaches the real localhost HTTPS worker.
+            remote = _HttpsOps('pod1', 'x' * 32, deadline=self.deadline, base_url=agent.ops.base_url,
+                               abort_event=self.abort_event, cancelled=self.cancelled,
+                               connection=_HttpsConnection())
+            try:
+                return _REAL_BOUNDED_CALL(remote, name, *args, **kwargs)
+            finally:
+                remote.close()
+        return direct(self, name, *args, **kwargs)
+
+    monkeypatch.setattr(_HttpsOps, '_bounded_call', output_transport)
+    monkeypatch.setattr(rm, 'OUTPUT_FETCH_MIN_SECONDS', 1.8, raising=False)
+    monkeypatch.setattr(rm, 'OUTPUT_FETCH_MAX_SECONDS', 1.8, raising=False)
+    agent.mode = 'stall'
+    errors, release_errors = [], []
+    request = job(c)
+
+    def invoke():
+        try:
+            run_on_machine(c.machine, request, destination=request.scratch / 'outputs',
+                           cancelled=cancelled.is_set, sleep=lambda _: None)
+        except Exception as error:  # noqa: BLE001 - report worker failures to the assertion thread
+            errors.append(error)
+        finally:
+            finished.set()
+
+    def release_exact():
+        try:
+            c.host.release(reason='explicit')
+        except Exception as error:  # noqa: BLE001 - report release failures to the assertion thread
+            release_errors.append(error)
+
+    worker = Thread(target=invoke)
+    releaser = None
+    before = {child.pid for child in multiprocessing.active_children()}
+    try:
+        worker.start()
+        assert agent.entered.wait(30), errors
+        if interruption == 'cancel':
+            cancelled.set()
+        elif interruption == 'release':
+            releaser = Thread(target=release_exact)
+            releaser.start()
+        drained = finished.wait(3)
+        # A stalled old implementation is explicitly unblocked in finally;
+        # the assertion measures draining without that test-only escape hatch.
+        assert drained, 'output transfer prevented the host invocation from draining'
+        worker.join(1)
+        assert errors and isinstance(errors[0], (MachineRunCancelled, RemotePlacementError))
+        if interruption == 'cancel':
+            assert isinstance(errors[0], MachineRunCancelled)
+        if releaser is not None:
+            releaser.join(3)
+            assert not releaser.is_alive() and not release_errors
+        else:
+            c.host.release(reason='explicit')
+        assert c.deletes == ['pod-1'] and c.read()['state'] == 'cleanup_complete'
+        assert len(calls) == 1  # A deadline/cancel never retries the output download.
+        assert deadlines[0] is not None and 0 < deadlines[0] - transfer_started[0] <= 1.8
+        assert {child.pid for child in multiprocessing.active_children()} == before
+    finally:
+        agent.unblock.set()
+        worker.join(12)
+        if releaser is not None:
+            releaser.join(12)
+        assert not worker.is_alive()
+
+
+def test_bounded_output_download_reuses_connection_and_writes_file(agent, tmp_path):
+    ops = agent.ops
+    ops.get('/output', tmp_path / 'first')
+    child = ops._connection.observer[0]
+    downloads = ops.bounded(time.monotonic() + 5).cancellable(lambda: False)
+    downloads.get('/output', tmp_path / 'second')
+    assert (tmp_path / 'second').read_bytes() == b'output'
+    assert ops._connection.observer[0] is child
+    assert agent.connections == 1
