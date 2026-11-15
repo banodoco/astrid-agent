@@ -242,3 +242,97 @@ def test_generation_thumbnail_skips_when_output_budget_has_no_headroom(tmp_path:
     assert thumbnails == []
     assert diagnostics == []
     assert output.is_file()
+
+
+def test_output_upload_carries_harvest_digest_and_runtime_checks_mutation(tmp_path: Path, monkeypatch) -> None:
+    from types import SimpleNamespace
+    from astrid.core._shared import result_manifest
+    from astrid.core.execution.generic_host import RuntimeProtocolClient
+
+    root = tmp_path / "attempt"
+    output_root = root / "outputs"
+    output_root.mkdir(parents=True)
+    path = output_root / "output.bin"
+    data = b"one output" * 100
+    path.write_bytes(data)
+    declared = SimpleNamespace(name="result", path_template="output.bin", artifact_type="application/octet-stream")
+    record = SimpleNamespace(definition=SimpleNamespace(outputs=(declared,), metadata={}))
+    observed = []
+    original_file_hash = result_manifest.sha256_file
+    monkeypatch.setattr(result_manifest, "sha256_file", lambda item: (observed.append(Path(item)), original_file_hash(item))[1])
+    descriptors = result_manifest.harvest_staged_outputs(output_root, declared_outputs=(declared,))
+    assert observed == [path]
+
+    host = object.__new__(GenericPackHost)
+    protocol = object.__new__(RuntimeProtocolClient)
+    protocol.executor_id = "worker"
+    protocol._claimed_runtime_epoch = lambda _attempt: 1
+    accepted = []
+
+    def ingest(data, *, upload_binding, **kwargs):
+        # Model the Runtime's independent upload-binding check, not host trust.
+        digest = "sha256:" + hashlib.sha256(data).hexdigest()
+        if upload_binding["digest"] != digest or upload_binding["size"] != len(data):
+            raise ValueError("Runtime rejected changed bytes")
+        accepted.append(digest)
+        return SimpleNamespace(digest=digest, size=len(data))
+
+    protocol.generated = SimpleNamespace(ingest_object=ingest)
+    protocol.INLINE_SETTLEMENT_OUTPUTS = False
+    host.client = protocol
+    # If the host rehashes while typing or uploading, this focused test fails.
+    monkeypatch.setattr(generic_host.hashlib, "file_digest", lambda *_a, **_k: pytest.fail("redundant host file hash"))
+    original_sha256 = hashlib.sha256
+    byte_hashes = []
+    def count_hash(value=b"", *args, **kwargs):
+        if value == data:
+            byte_hashes.append(value)
+        return original_sha256(value, *args, **kwargs)
+    monkeypatch.setattr(generic_host.hashlib, "sha256", count_hash)
+    typed = host._typed_outputs(record, descriptors, root, defer_content_check_to_runtime=True)
+    args = dict(project_id="project", run_id="run", task_id="task", attempt_id="attempt",
+                lease_id="lease", fence=1, runtime_epoch=1)
+    uploaded = host._upload_outputs(typed, **args)
+    assert uploaded[0]["digest"] == typed[0]["digest"] == accepted[0]
+    assert byte_hashes == [data]  # only the simulated Runtime boundary
+    path.write_bytes(b"X" * len(data))
+    with pytest.raises(ValueError, match="Runtime rejected changed bytes"):
+        host._upload_outputs(typed, **args)
+    assert len(accepted) == 1
+    path.write_bytes(data)
+    protocol.generated = SimpleNamespace(ingest_object=lambda *_a, **_k: SimpleNamespace(
+        digest="sha256:" + "0" * 64, size=len(data)))
+    with pytest.raises(generic_host.HostError, match="different canonical digest"):
+        host._upload_outputs(typed, **args)
+
+
+def test_inline_runtime_rejects_output_changed_after_harvest(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+    from astrid.core._shared.result_manifest import harvest_staged_outputs
+    from astrid.core.execution.generic_host import RuntimeProtocolClient
+    from runtime_protocol.service import RuntimeService
+    from runtime_protocol.store import RealmStore
+    from runtime_protocol.errors import ConflictError
+
+    root = tmp_path / "attempt"
+    output_root = root / "outputs"
+    output_root.mkdir(parents=True)
+    path = output_root / "output.bin"
+    path.write_bytes(b"original")
+    declared = SimpleNamespace(name="result", path_template="output.bin", artifact_type="application/octet-stream")
+    record = SimpleNamespace(definition=SimpleNamespace(outputs=(declared,), metadata={}))
+    descriptors = harvest_staged_outputs(output_root, declared_outputs=(declared,))
+    host = object.__new__(GenericPackHost)
+    host.client = object.__new__(RuntimeProtocolClient)
+    typed = host._typed_outputs(record, descriptors, root, defer_content_check_to_runtime=True)
+    path.write_bytes(b"modified")  # Same length; timestamp and size cannot prove custody.
+    outputs = host._upload_outputs(typed, project_id=None)
+
+    realm = tmp_path / "realm"
+    RealmStore.initialize(realm).close()
+    service = RuntimeService(realm)
+    try:
+        with pytest.raises(ConflictError, match="output content hash does not match declared digest"):
+            service._stage_outputs("attempt-1", outputs)
+    finally:
+        service.close()

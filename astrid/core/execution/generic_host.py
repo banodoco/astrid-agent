@@ -5415,6 +5415,7 @@ class RuntimeProtocolClient:
     # forbidden project association.
     INLINE_SETTLEMENT_OUTPUTS = True
     REQUIRES_OUTPUT_BINDING = True
+    REUSES_OUTPUT_DIGEST = True
 
     def __init__(self, endpoint: str, credential: str, *, timeout: float = 30.0,
                  credential_file: str | Path | None = None):
@@ -6183,6 +6184,7 @@ class RuntimeProtocolClient:
         output_key: str,
         output_port: str,
         runtime_epoch: int | None = None,
+        expected_digest: str | None = None,
     ):
         if project_id is not None and (not isinstance(project_id, str) or not project_id.strip()):
             raise HostError("output upload project_id must be a non-empty string or None")
@@ -6212,8 +6214,15 @@ class RuntimeProtocolClient:
         }
         with path.open("rb") as stream:
             data = stream.read()
+        if expected_digest is not None and (
+            not isinstance(expected_digest, str)
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", expected_digest)
+        ):
+            raise HostError("output upload expected digest is invalid")
         binding.update({
-            "digest": "sha256:" + hashlib.sha256(data).hexdigest(),
+            # Runtime validates this binding against the received bytes. A
+            # changed staged file therefore fails rather than being published.
+            "digest": expected_digest or "sha256:" + hashlib.sha256(data).hexdigest(),
             "size": len(data),
             "media_type": media_type,
         })
@@ -9632,6 +9641,7 @@ class GenericPackHost:
         attempt: Path,
         generation_intent: Mapping[str, Any] | None = None,
         unselected_generation_port: str | None = None,
+        defer_content_check_to_runtime: bool = False,
     ) -> list[dict[str, Any]]:
         """Bind validated harvest descriptors to their declared output ports."""
         outputs: list[dict[str, Any]] = []
@@ -9694,15 +9704,23 @@ class GenericPackHost:
             if not path.is_file() or not path.is_relative_to(attempt):
                 raise HostError(f"declared output {name!r} is not inside the attempt directory")
             output = by_name.get(name)
-            digest = hashlib.sha256(path.read_bytes()).hexdigest()
             declared_hash = harvested.get("content_hash")
             normalized_hash = (
                 declared_hash.removeprefix("sha256:")
                 if isinstance(declared_hash, str)
                 else None
             )
-            if normalized_hash != digest:
-                raise HostError(f"harvested output {name!r} content hash does not match")
+            if not isinstance(normalized_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", normalized_hash):
+                raise HostError(f"harvested output {name!r} content hash is invalid")
+            if defer_content_check_to_runtime:
+                # The harvester already checked this value; the Runtime must
+                # check it again against the bytes actually uploaded/settled.
+                digest = normalized_hash
+            else:
+                with path.open("rb") as stream:
+                    digest = hashlib.file_digest(stream, "sha256").hexdigest()
+                if normalized_hash != digest:
+                    raise HostError(f"harvested output {name!r} content hash does not match")
             size = path.stat().st_size
             if harvested.get("bytes") != size:
                 raise HostError(f"harvested output {name!r} byte count does not match")
@@ -10469,7 +10487,13 @@ class GenericPackHost:
             if send_inline:
                 inline_budget -= encoded_size
                 data = path.read_bytes()
-                descriptor["digest"] = "sha256:" + hashlib.sha256(data).hexdigest()
+                expected = descriptor.get("digest")
+                if not (getattr(self.client, "REUSES_OUTPUT_DIGEST", False) is True
+                        and isinstance(expected, str)
+                        and re.fullmatch(r"sha256:[0-9a-f]{64}", expected)):
+                    expected = "sha256:" + hashlib.sha256(data).hexdigest()
+                # Runtime checks the digest against these exact inline bytes.
+                descriptor["digest"] = expected
                 descriptor["media_type"] = media_type
                 descriptor["size"] = len(data)
                 descriptor["kind"] = "object"
@@ -10527,10 +10551,16 @@ class GenericPackHost:
                 )
                 if runtime_epoch is not None:
                     upload_kwargs["runtime_epoch"] = runtime_epoch
+            if getattr(self.client, "REUSES_OUTPUT_DIGEST", False) is True:
+                expected = descriptor.get("digest")
+                if isinstance(expected, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", expected):
+                    upload_kwargs["expected_digest"] = expected
             object_row = upload_object(path, **upload_kwargs)
             digest = getattr(object_row, "digest", None)
             if not digest:
                 raise HostError("generated object upload returned no canonical digest")
+            if "expected_digest" in upload_kwargs and digest != upload_kwargs["expected_digest"]:
+                raise HostError("generated object upload returned a different canonical digest")
             uploaded_row = {
                 "name": descriptor.get("name"),
                 "kind": "object",
@@ -12876,7 +12906,8 @@ class GenericPackHost:
                 self._validate_producer_evidence(
                     harvested, output_root=Path(output_root), task_id=task_id, attempt_id=attempt_id,
                 )
-                typed = self._typed_outputs(record, harvested, root)
+                typed = self._typed_outputs(record, harvested, root,
+                    defer_content_check_to_runtime=getattr(self.client, "REUSES_OUTPUT_DIGEST", False) is True)
                 task_epoch = task_data.get("runtime_epoch")
                 upload_started = bool(typed)
                 uploaded = self._upload_outputs(
@@ -13559,6 +13590,7 @@ class GenericPackHost:
                 root,
                 generation_intent=_task_generation_intent(task_data),
                 unselected_generation_port=_named_raw_publication_port(task_data),
+                defer_content_check_to_runtime=getattr(self.client, "REUSES_OUTPUT_DIGEST", False) is True,
             )
             _bind_named_parent_output(task_data, typed_outputs)
             _terminal["outputs"] = typed_outputs
