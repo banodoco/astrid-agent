@@ -452,7 +452,8 @@ class ExtensionRegistry:
             )
         except OSError:
             return None
-        return (fingerprint, tuple(roots), str(self._sdk_root.absolute()),
+        return (fingerprint, tuple((root, str(root.path.absolute()), str(root.path.resolve()))
+                                   for root in roots), str(self._sdk_root.absolute()),
                 str(self._sdk_root.resolve()), sdk, str(model.SCHEMA_DIR.resolve()), schemas)
 
     def load(self, *, refresh: bool = False) -> ExtensionRegistry:

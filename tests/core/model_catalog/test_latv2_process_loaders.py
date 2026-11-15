@@ -214,3 +214,27 @@ def test_verified_source_pin_identity_changes_invalidate(tmp_path, monkeypatch):
         identity[0] = 'pin-three'
         extensions.ExtensionRegistry().load()
         assert parse.call_count == 2
+
+
+def test_relative_contribution_roots_follow_cwd(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from astrid.core.extensions.scopes import Root
+    from astrid.core.pack import loader
+    first, second = tmp_path / 'first', tmp_path / 'second'
+    first.mkdir()
+    second.mkdir()
+    (first / 'packs').symlink_to(loader.packs_root(), target_is_directory=True)
+    (second / 'packs').mkdir()
+    roots = (Root('user', Path('packs'), True, 'user'),)
+    with patch.object(extensions.ExtensionRegistry, '_packs', autospec=True,
+                      side_effect=extensions.ExtensionRegistry._packs) as scan:
+        monkeypatch.chdir(first)
+        one = extensions.ExtensionRegistry(roots=roots).load()
+        contributions = [c for p in one.points() for c in one.contributions(p.id)]
+        assert contributions and {c.scope for c in contributions} == {'user'}
+        monkeypatch.chdir(second)
+        two = extensions.ExtensionRegistry(roots=roots).load()
+        contributions = [c for p in two.points() for c in two.contributions(p.id)]
+        assert contributions and {c.scope for c in contributions} == {'installed'}
+        assert scan.call_count == 2
