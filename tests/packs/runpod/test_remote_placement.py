@@ -336,7 +336,9 @@ def test_prepare_claimed_reuses_bootstrap_install_without_claim_or_transform(tmp
     assert state.claim is claim
     assert provider.claims == 1
     assert provider.releases == 0
-    assert [step["step"] for step in state.steps] == ["bootstrap", "install"]
+    assert [(step["step"], step.get("reason")) for step in state.steps] == [
+        ("bootstrap", None), ("engine_snapshot_restore", "no_volume"),
+        ("install", None), ("engine_snapshot_publish", "no_volume")]
     assert all("h3_av.transform" not in command for command in claim.ops.job_log)
     assert not any("/01-prepare/" in path for path in claim.ops.files)
 
@@ -361,7 +363,9 @@ def test_prepare_claimed_install_is_model_free(tmp_path, sources):
     install = next(c for c in claim.ops.job_log if "engines install" in c)
     assert "--model-cache" not in install
     assert not any("fetch" in c or "download" in c for c in claim.ops.job_log)
-    assert [step["step"] for step in state.steps] == ["bootstrap", "install"]
+    assert [(step["step"], step.get("reason")) for step in state.steps] == [
+        ("bootstrap", None), ("engine_snapshot_restore", "no_volume"),
+        ("install", None), ("engine_snapshot_publish", "no_volume")]
 
 
 @pytest.mark.parametrize("config_present", [True, False], ids=["all-artifacts", "missing-config"])

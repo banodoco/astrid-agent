@@ -111,6 +111,7 @@ def prepare_retained_generation(
             "schema": "astrid.runpod.lease-preparation.v1", "state": "preparing",
             "operation_id": invocation.operation_id, "pod_id": claimed["pod_id"],
             "compatibility": dict(installation.compatibility), "bootstrap_digest": bootstrap_digest,
+            "steps": [],
         }
 
         def save(**changes):
@@ -160,6 +161,7 @@ def prepare_retained_generation(
                 claim, out=out,
                 deadline_seconds=remaining, installation=installation,
                 checkpoint=lambda job: save(job=dict(job)),
+                preparation_checkpoint=lambda steps: save(steps=steps),
                 reuse_snapshot=previous["installed"] if reuse else None,
                 # Only a pinned volume carries the engine environment snapshot.
                 volume=({"mount_path": preferences.mount_path, "size_gb": claimed.get("network_volume_size_gb")}
@@ -173,7 +175,7 @@ def prepare_retained_generation(
                     or any(hashlib.sha256(path.read_bytes()).hexdigest() != sources[name]
                            for name, path in (("source", request.source), ("workflow", request.workflow)))):
                 raise PreparedWorkerError("preparation consumed its paid lifetime or source bytes changed")
-            saved = save(state="prepared", installed=dict(state.installed))
+            saved = save(state="prepared", installed=dict(state.installed), steps=state.preparation_steps)
         except BaseException as exc:
             current = lease_owner._read()
             jobs = (preparation.get("job"), current.get("lease", {}).get("job"))

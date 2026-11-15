@@ -849,6 +849,7 @@ class RunPodMachine:
         return {"placement": KIND, "machine": "runpod.runpod", "id": lease.claim.pod_id,
                 "lease": lease.lease.operation_id, "generation": lease.lease.generation,
                 "device": lease.custody.get("gpu_type") or record.get("gpu_type"), "warm": lease.warm,
+                "preparation_steps": lease.state.preparation_steps,
                 **({"policy_notice": lease.policy_notice} if lease.policy_notice is not None else {}),
                 "idle_timeout_s": record["lease"]["idle_seconds"]}
 
