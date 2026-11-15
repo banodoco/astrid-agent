@@ -82,12 +82,13 @@ def _signature(path):
     return [info.st_mode, info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns]
 
 
-def _tree(root, ignored, tracked, deadline, *, skip_bytecode=False, hash_bytes=False):
+def _tree(root, ignored, tracked, deadline, *, skip_bytecode=False, hash_bytes=False,
+          symlink_root=None, ancestors=()):
     """Witness metadata, optionally content; Git objects aren't sources.
 
     The ignored paths are inventoried by Git only after full verification. New
     ignored paths can cause a conservative miss until the next full verification.
-    Symlinks are witnessed as links and never traversed.
+    Pack symlinks additionally witness their resolved content inside symlink_root.
     """
     rows, pending = [], [root]
     files = _TargetFiles(str(root))
@@ -113,6 +114,9 @@ def _tree(root, ignored, tracked, deadline, *, skip_bytecode=False, hash_bytes=F
                     if hash_bytes:
                         if stat.S_ISLNK(info.st_mode):
                             rows.append([relative, 'link', os.readlink(path)])
+                            if symlink_root is not None:
+                                rows.append([relative, 'target',
+                                             _pack_tree(path, symlink_root, deadline, ancestors)])
                         elif stat.S_ISREG(info.st_mode):
                             fact = files.file_fact(str(path), hash_bytes=True, deadline=deadline)
                             if not fact.regular or not fact.sha256:
@@ -126,6 +130,38 @@ def _tree(root, ignored, tracked, deadline, *, skip_bytecode=False, hash_bytes=F
         path = root / relative
         rows.append([relative, *_signature(path)])
     return _digest(rows)
+
+
+def _pack_tree(path, engine_root, deadline, ancestors=()):
+    """Hash loader inputs, following only links contained in the engine root."""
+    if len(ancestors) >= 64:
+        raise ValueError('node pack symlink depth')
+    try:
+        resolved = path.resolve(strict=True)
+    except RuntimeError as exc:
+        raise ValueError('node pack symlink loop') from exc
+    if not resolved.is_relative_to(engine_root.resolve()) or resolved in ancestors:
+        raise ValueError('unsafe node pack symlink target')
+    info = resolved.stat()
+    if stat.S_ISDIR(info.st_mode):
+        content = _tree(resolved, [], [], deadline, hash_bytes=True,
+                        symlink_root=engine_root, ancestors=(*ancestors, resolved))
+        signature = [info.st_mode, info.st_dev, info.st_ino]
+    elif stat.S_ISREG(info.st_mode):
+        fact = _TargetFiles(str(engine_root)).file_fact(str(resolved), hash_bytes=True, deadline=deadline)
+        if not fact.regular or not fact.sha256:
+            raise ValueError('node pack content unavailable')
+        content, signature = fact.sha256, _signature(resolved)
+    else:
+        raise ValueError('unsupported node pack member')
+    return _digest([str(resolved), signature, content])
+
+
+def _node_pack_name(node):
+    name = Path(urlsplit(node['repo']).path).name.removesuffix('.git')
+    if not name or name in {'.', '..'} or any(c.isspace() or c in '/\\' for c in name):
+        raise ValueError('warm node pack name')
+    return name
 
 
 def _git_identity(root, deadline):
@@ -191,11 +227,13 @@ class WarmAttestation:
         self.files = _TargetFiles(str(self.root))
         self.path = str(self.root / '.astrid-engine/warm-attestation.json')
         self.saved = None
+        self.known_node_packs = []
         self.matched = False
         if self.enabled:
             try:
                 saved = self.files.read_json(self.path, deadline=deadline)
                 self._validate(saved)
+                self.known_node_packs = saved['node_packs']
                 if (_digest(self.identity(saved['sources'], saved['node_packs'])) == _digest(saved['identity'])
                         and _digest(self._model_stats(saved['model_stats'])) == _digest(saved['model_stats'])):
                     self.saved, self.matched = saved, True
@@ -251,30 +289,45 @@ class WarmAttestation:
                     or type(row['size']) is not int or row['size'] < 0):
                 raise ValueError('warm model declaration')
 
-    def _node_packs(self, nodes):
-        """Reinventory each pack from its own root, independent of engine ignores."""
-        if not nodes:
-            return []
+    def _node_pack_paths(self):
+        """Match the pinned loader's scan, independently of Git ignore rules."""
         comfy = next(source for source in self.recipe.sources if source.name == 'comfyui')
-        rows, names = [], set()
-        for node in sorted(nodes, key=lambda row: (row['repo'], row['commit'])):
-            name = Path(urlsplit(node['repo']).path).name.removesuffix('.git')
-            if not name or name in {'.', '..'} or name in names or any(c.isspace() or c in '/\\' for c in name):
+        root = self.root / comfy.relative_path / 'custom_nodes'
+        with self.files._directory(root.parts[1:], self.deadline):
+            pass
+        with os.scandir(root) as entries:
+            return {entry.name: Path(entry.path) for entry in entries
+                    if entry.name != '__pycache__' and not entry.name.endswith('.disabled')
+                    and not (entry.is_file() and Path(entry.name).suffix != '.py')}
+
+    def _node_packs(self, nodes):
+        """Witness every installed loader member, including unpinned/non-Git packs."""
+        declarations = {}
+        for node in nodes:
+            name = _node_pack_name(node)
+            if name in declarations:
                 raise ValueError('warm node pack name')
-            names.add(name)
-            root = self.root / comfy.relative_path / 'custom_nodes' / name
-            with self.files._directory(root.parts[1:], self.deadline):
-                pass
-            git_sha256 = _git_identity(root, self.deadline)
-            observed = []
-            for args in [('rev-parse', 'HEAD'), ('status', '--porcelain=v1', '--untracked-files=all', '-z')]:
-                result = self.runner.run(('git', '-C', str(root), *args), check=False)
-                if result.exit_code != 0 or result.stdout_truncated:
-                    raise ValueError('warm node pack Git observation')
-                observed.append(result.stdout)
-            rows.append({**node, 'head': observed[0].strip(), 'porcelain': observed[1],
+            declarations[name] = node
+        paths = self._node_pack_paths()
+        if declarations.keys() - paths.keys():
+            raise ValueError('declared node pack absent')
+        rows = []
+        for name, path in sorted(paths.items()):
+            tree_sha256 = _pack_tree(path, self.root, self.deadline)
+            root = path.resolve(strict=True)
+            git_sha256, observed = None, [None, None]
+            if (root / '.git').exists() or (root / '.git').is_symlink():
+                git_sha256 = _git_identity(root, self.deadline)
+                for index, args in enumerate([('rev-parse', 'HEAD'),
+                        ('status', '--porcelain=v1', '--untracked-files=all', '-z')]):
+                    result = self.runner.run(('git', '-C', str(root), *args), check=False)
+                    if result.exit_code != 0 or result.stdout_truncated:
+                        raise ValueError('warm node pack Git observation')
+                    observed[index] = result.stdout.strip() if index == 0 else result.stdout
+            rows.append({'name': name, **declarations.get(name, {}),
+                         'head': observed[0], 'porcelain': observed[1],
                          'git_sha256': git_sha256,
-                         'tree_sha256': _tree(root, [], [], self.deadline, hash_bytes=True)})
+                         'tree_sha256': tree_sha256})
         return rows
 
     def identity(self, sources, node_packs):
@@ -383,7 +436,8 @@ class WarmAttestation:
                             raise ValueError('warm ignored directory encoding')
                         ignored.update(directories)
                     sources[source.name] = {'ignored': sorted(ignored), 'tracked': tracked}
-            nodes = {node['repo']: node for node in self.saved['node_packs']} if self.matched else {}
+            installed = self._node_pack_paths()
+            nodes = {node['repo']: node for node in self.known_node_packs if _node_pack_name(node) in installed}
             nodes.update({node['repo']: node for node in manifest['extra']['nodes']})
             node_packs = [nodes[repo] for repo in sorted(nodes)]
             identity = self.identity(sources, node_packs)
@@ -392,9 +446,9 @@ class WarmAttestation:
             if self.matched:
                 # Adding a pack may extend the attested requirement set only if
                 # the base and every previously attested pack remain unchanged.
-                prior_repos = {node['repo'] for node in self.saved['node_packs']}
+                prior_names = {node['name'] for node in self.saved['identity']['node_packs']}
                 prior_identity = {**identity, 'node_packs': [node for node in identity['node_packs']
-                                                            if node['repo'] in prior_repos]}
+                                                            if node['name'] in prior_names]}
                 if prior_identity == self.saved['identity']:
                     requirements.update(self.saved['requirements'])
                     rows.update({_digest(row): row for row in self.saved['model_rows']})
