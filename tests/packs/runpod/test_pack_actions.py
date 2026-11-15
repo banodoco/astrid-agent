@@ -366,6 +366,75 @@ def test_cold_listing_uses_journal_without_settings_or_provider(monkeypatch):
     assert bindings.provider is None
 
 
+@pytest.mark.parametrize("as_json", [False, True])
+@pytest.mark.parametrize("journal_state", ["live", "missing", "ended", "failed", "releasing"])
+def test_cold_release_absent_requires_ended_journal_with_zero_provider_calls(
+    monkeypatch, capsys, as_json, journal_state,
+):
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+    from astrid.packs.runpod import adapter
+    from astrid.sdk.generation import GenerationFacade
+    from astrid.sdk.results import InvocationResult
+
+    live = {"id": "prior-pod", "kind": "runpod", "state": "idle", "live": True}
+    ended = {**live, "state": "ended", "live": False}
+    stale = {**live, "state": journal_state, "live": False}
+    after = ([live] if journal_state == "live" else [ended] if journal_state == "ended"
+             else [stale] if journal_state in {"failed", "releasing"} else [])
+    views = iter([[live], after])
+    monkeypatch.setattr(machines_cli, "_leases", lambda: next(views))
+    lookups, provider_calls, policy_reads = [], [], []
+
+    def records(machine_id=None):
+        lookups.append(machine_id)
+        return []
+
+    def forbidden_provider(**kwargs):
+        provider_calls.append(kwargs)
+        pytest.fail("absent release must not construct a provider")
+
+    def forbidden_policy(*args, **kwargs):
+        policy_reads.append(args)
+        pytest.fail("release must not read saved preferences")
+
+    monkeypatch.setattr(adapter, "_cleanup_records", records)
+    monkeypatch.setattr(adapter, "build_host_adapter", forbidden_provider)
+    monkeypatch.setattr(settings, "machine_policy", forbidden_policy)
+    bindings = TargetProviderBindings(pack_roots=[], holds=WarmHolds(), credentials=None, environ={})
+
+    def invoke(capability, **kwargs):
+        assert capability == "runpod.release"
+        operation = bindings.operate(json.loads(kwargs["inputs"]["placement_policy"]), "release")
+        return InvocationResult(capability_id=capability, capability_type="executor", native_kind="action",
+                                ok=True, raw_result={"result": {"payload": {"target_operation": operation}}})
+
+    def release():
+        return GenerationFacade().release(engine="comfyui", placement="runpod", machine_id="prior-pod",
+                                          client=SimpleNamespace(invoke_result=invoke), wait=True)
+
+    code = machines_cli.main(["release", "prior-pod"] + (["--json"] if as_json else []), release=release)
+    output = capsys.readouterr().out
+    assert provider_calls == [] and policy_reads == []  # Zero remote operations or provider starts.
+    assert lookups == ["prior-pod"] and bindings.provider is None
+    if journal_state == "ended":
+        assert code == 0
+        if as_json:
+            assert json.loads(output) == {"ok": True, "machine": ended}
+        else:
+            assert "already released prior-pod" in output
+    else:
+        assert code == 1
+        if as_json:
+            payload = json.loads(output)
+            assert payload["ok"] is False and payload["machine"] == (after[0] if after else None)
+            output = payload["error"]
+        assert "prior-pod is not held by this host: not released" in output
+        assert "`astrid machines`" in output and "astrid machines ls" not in output
+        assert "host that holds it" in output and "provider console" in output
+        assert ("journal still lists prior-pod as live" in output) == (journal_state == "live")
+
+
 def test_manifest_routes_setup_and_ls_to_the_existing_host_owner():
     from pathlib import Path
 
