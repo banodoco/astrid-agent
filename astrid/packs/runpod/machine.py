@@ -1670,7 +1670,9 @@ class RunPodMachine:
             raise MachineError(f"pod reset failed (exit {safe_code}): {reset_failure_reason(result)}")
         if directory:
             ops.exec(f"rm -rf {shlex.quote(directory)}", 120)  # the agent keeps at most 128 job folders
-        lease.state.note("reset", "done", removed=result.get("removed"))
+        lease.state.note("reset", "done", removed=result.get("removed"),
+                         realm_rows_before=result.get("realm_rows_before"),
+                         realm_reset=result.get("realm_reset"))
         return result
 
     # -- helpers -------------------------------------------------------------

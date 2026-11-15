@@ -141,6 +141,11 @@ def test_the_pod_reset_empties_the_one_runtime_in_place(real_runtime, tmp_path):
     steps = pod_reset.reset(ensure=ensure, runs_root=pod / "runs", **paths)
     elapsed = time.perf_counter() - started
     assert steps["replace"]["state"] == "complete" and "template" not in steps
+    # Read-only evidence recorded before the restore: what this job left in the realm.
+    rows = steps["realm_rows_before"]
+    assert all(rows[table] >= 1 for table in EMPTY_TABLES), rows
+    # The first (template-taking) reset ran on an empty realm: nothing to undo.
+    assert all(count == 0 for count in first["realm_rows_before"].values()), first["realm_rows_before"]
 
     # The same daemon and realm id; the old root moved aside and deleted.
     assert steps["replace"]["realm_id"] == daemon.service.realm["id"]
@@ -222,11 +227,20 @@ def test_fresh_reset_uses_launcher_owner_authority_and_preserves_scoped_connecti
     try:
         try:
             first = pod_reset.reset(**paths)
+            # A job leaves a row, so the next reset must really replace the realm with the
+            # owner token (a clean realm is skipped since Q6; that is covered below).
+            job = pod_reset.open_prepared(paths["prepared"])
+            assert job.projects.create(name="Job", slug="job", idempotency_key="job-row").ok
+            job.__exit__(None, None, None)
             second = pod_reset.reset(**paths)
+            third = pod_reset.reset(**paths)
         except Exception as exc:
             # A regression must not print an invalid Authorization header/token.
             raise AssertionError(f"real-launcher reset failed: {type(exc).__name__}") from None
         assert "template" in first and second["replace"]["state"] == "complete"
+        assert second["realm_rows_before"]["projects"] >= 1
+        # The replaced realm is clean again, so the next reset skips the replace.
+        assert third["replace"] == {"state": "skipped", "reason": "realm_clean"}
         connection = json.loads(paths["prepared"].read_text())
         envelope = json.loads(Path(connection["credential_file"]).read_text())
         assert envelope["scope"] == "astrid" and envelope["actor_id"] != "owner"
