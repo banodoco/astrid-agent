@@ -154,6 +154,9 @@ class RunPodLeaseOwner:
         self.closed, self.started = False, False
         self._release_inflight = False
         self._acquisition_cancel = threading.Event()
+        self._reset_worker: threading.Thread | None = None
+        self._reset_done = threading.Event()
+        self._reset_done.set()
         self._observer_lock = threading.Lock()
         self._failure_observers: dict[tuple[str, str, int, str], threading.Event] = {}
         self._unreaped_children: list[Any] = []
@@ -362,6 +365,7 @@ class RunPodLeaseOwner:
             now = self.clock()
             if (record is not None and record.get("state") == "claimed"
                     and lease.get("state") == "idle"
+                    and (lease.get("reset") or {}).get("state") != "pending"
                     and now < lease["idle_expires_at"] and now < lease["paid_expires_at"]):
                 try:
                     self.selection._owned(record, self.selection._recorded_offer(record))
@@ -476,6 +480,32 @@ class RunPodLeaseOwner:
             logging.getLogger(__name__).debug("Metadata or recovery failure must retain durable retry authority", exc_info=True)
             self.last_error_type = type(exc).__name__
 
+    def wait_for_reset(self, *, cancelled: Callable[[], bool] | None = None) -> None:
+        """Wait only for this host's bounded reset owner; never perform its reset."""
+        from astrid.core.execution.machine_run import MachineRunCancelled
+
+        from .machine import RESET_SECONDS
+
+        limit = time.monotonic() + RESET_SECONDS
+        while True:
+            if cancelled is not None and cancelled():
+                raise MachineRunCancelled("generation cancelled while waiting for pod reset")
+            with self.lock:
+                record = self._read()
+                lease = record.get("lease", {}) if record else {}
+                reset = lease.get("reset") or {}
+                if (record is None or record.get("state") != "claimed"
+                        or reset.get("state") != "pending"):
+                    return
+                remaining = min(limit - time.monotonic(),
+                                reset["deadline"] - self.clock(),
+                                lease["paid_expires_at"] - self.clock())
+                if lease.get("owner_epoch") != self.epoch or self._reset_done.is_set():
+                    raise AcquisitionUnresolvedError("pending pod reset requires owner recovery")
+                if remaining <= 0:
+                    raise AcquisitionUnresolvedError("pending pod reset exceeded its bounded wait")
+            self._reset_done.wait(min(0.1, remaining))
+
     def job_limits(self, invocation_id, *, consent=()):
         """Read claim authority without provider calls; rechecked on admission."""
         from .target_selection import ClaimedJob, PaidSelectionError, _utc
@@ -577,6 +607,7 @@ class RunPodLeaseOwner:
                  cancelled: Callable[[], bool] | None = None) -> RunPodLease:
         from .target_selection import ClaimedJob, _utc
         from .worker_preparation import TargetObservationError
+        self.wait_for_reset(cancelled=cancelled)
         job = isinstance(consent, ClaimedJob)
         if job:
             current = self.job_limits(consent.invocation_id, consent=consent.consent)

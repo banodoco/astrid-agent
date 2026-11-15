@@ -25,7 +25,7 @@ from astrid.packs.vibecomfy.direct_image.compiler import CANONICAL_CAPABILITIES
 from astrid.sdk.invocation import discover
 
 
-def catalog_rows() -> list[dict[str, Any]]:
+def catalog_rows(*, entry_id: str | None = None) -> list[dict[str, Any]]:
     """Static inventory shared by the CLI and the generated capability index.
 
     The caller controls pack discovery scope; this function never probes a host
@@ -38,7 +38,14 @@ def catalog_rows() -> list[dict[str, Any]]:
 
     declaration = availability_declaration()
     registry = ModelRegistry.load_default()
-    for entry in registry.list_all(include_closed=True):
+    if entry_id is None:
+        models = registry.list_all(include_closed=True)
+    else:
+        try:
+            models = [registry.get(entry_id)]
+        except KeyError:
+            models = []
+    for entry in models:
         for mode, spec in entry.modes.items():
             for backend, target in spec.backends.items():
                 decision = model_availability(entry.id, mode, backend, declaration=declaration)
@@ -47,6 +54,8 @@ def catalog_rows() -> list[dict[str, Any]]:
                     "unavailable" if unavailable else "available",
                     decision.get("error", {}).get("message", "") if unavailable else "")
     for spec in CANONICAL_CAPABILITIES.values():
+        if entry_id is not None and spec.model_id != entry_id:
+            continue
         if spec.model_id == "z-image-turbo":
             # Public direct-image spelling of the catalog's z-image identity.
             # Inventory follows G23's declaration, not the older leaf binding.
@@ -61,6 +70,8 @@ def catalog_rows() -> list[dict[str, Any]]:
     actions = declaration.get("actions", {})
     discovery = discover()
     for capability in discovery.actions:
+        if entry_id is not None and capability.id != entry_id:
+            continue
         if not capability.id.startswith("generation.") and capability.id not in actions:
             continue
         name = capability.id.lower()
@@ -71,13 +82,20 @@ def catalog_rows() -> list[dict[str, Any]]:
         add(capability.id, kind, source="action", availability="unavailable" if unavailable else "available", reason=error.get("message", "") if unavailable else "")
     existing = {row["id"] for row in rows if row["source"] == "action"}
     for action, record in actions.items():
-        if action not in existing:
+        if action not in existing and (entry_id is None or action == entry_id):
             add(action, "image" if "thumbnail" in action or "sampler" in action else "generation", source="action", availability="unavailable" if record.get("available") is not True else "available", reason=record.get("error", {}).get("message", ""))
     for route, fixture in declaration.get("fixture_only_routes", {}).items():
-        if fixture:
+        if fixture and (entry_id is None or route == entry_id):
             add(route, "fixture", source="fixture", availability="fixture-only", reason="fixture-only route")
-    from astrid.core.generation.entries import action_entries, ready_entries, user_entries
+    from astrid.core.generation.entries import (
+        _ready_entries_for,
+        action_entries,
+        ready_entries,
+        user_entries,
+    )
     for entry in action_entries(discovery):
+        if entry_id is not None and entry["id"] != entry_id:
+            continue
         for mode in entry["modes"]:
             record = actions.get(entry["action"], {})
             unavailable = entry["action"] in actions and record.get("available") is not True
@@ -87,11 +105,13 @@ def catalog_rows() -> list[dict[str, Any]]:
             rows[-1]["requirements"] = entry["requirements"]
             rows[-1]["isolation_requirements"] = entry["isolation_requirements"]
     for entry in user_entries():
+        if entry_id is not None and entry["id"] != entry_id:
+            continue
         for mode in entry["modes"] or [""]:
             ambiguity = next((need["ambiguity"] for need in entry["needs"] if need.get("ambiguity")), "")
             add(entry["id"], entry["kind"], mode, "local", entry["bundle"], "user-entry",
                 reason="entry mode requires review" if not mode else ambiguity)
-    for entry in ready_entries():
+    for entry in (ready_entries() if entry_id is None else _ready_entries_for(entry_id)):
         for mode in entry["modes"] or [""]:
             add(entry["id"], entry["kind"] or "generation", mode, "local", entry["bundle"], "ready-template",
                 reason=entry["ambiguity"] or next((need["ambiguity"] for need in entry["needs"] if need.get("ambiguity")), ""))

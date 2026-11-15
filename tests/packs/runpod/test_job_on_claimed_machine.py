@@ -27,8 +27,10 @@ def job(c, n=1):
 
 
 def run(c, request):
-    return run_on_machine(c.machine, request, destination=request.scratch / "outputs",
-                          cancelled=lambda: False, sleep=lambda _: None)
+    result = run_on_machine(c.machine, request, destination=request.scratch / "outputs",
+                            cancelled=lambda: False, sleep=lambda _: None)
+    c.machine._require().lease_owner.wait_for_reset()
+    return result
 
 
 def restart_bindings(c, monkeypatch):
@@ -245,6 +247,7 @@ def test_jobs_obey_recorded_bounds_and_report_stricter_saved_policy(request, mon
     receipt = run_on_machine(c.machine, request, destination=request.scratch / "outputs",
                              cancelled=lambda: False, sleep=lambda _: None,
                              on_claim=lambda lease: descriptions.append(c.machine.describe(lease)))
+    c.machine._require().lease_owner.wait_for_reset()
     status = bindings.operate({"kind": "runpod", "engine": "comfyui",
                                "preferences": None}, "status")
     if saved_cap < paid["max_usd"]:

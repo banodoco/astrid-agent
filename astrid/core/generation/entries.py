@@ -103,6 +103,10 @@ def _ready_entries_for(entry_id: str | None = None) -> list[dict[str, Any]]:
         return []
     root = resources.ready_templates_root().parent
     index = resources.template_index()['templates']
+    if entry_id is not None:
+        index = [item for item in index if item['id'] == entry_id]
+        if not index:
+            return []
     coverage = resources.coverage_manifest()['workflows']
     task_modes = {'text_to_image': 't2i', 'text_to_image_single_frame': 't2i', 'image_to_image': 'i2i', 'image_edit': 'edit',
                   'text_to_video': 't2v', 'image_to_video': 'i2v', 'first_last_frame': 'flf',
