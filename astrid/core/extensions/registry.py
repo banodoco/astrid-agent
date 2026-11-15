@@ -14,6 +14,7 @@ import inspect
 import re
 import sys
 from collections.abc import Callable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -89,6 +90,13 @@ class _Snapshot:
     points: Mapping[str, ExtensionPoint]
     point_problems: tuple[Quarantined, ...]
     entries: tuple[_Entry, ...]  # best first (scope, then pack id, then path)
+
+
+_snapshot_cache: dict[tuple, _Snapshot] = {}
+
+
+def _reset_for_tests() -> None:
+    _snapshot_cache.clear()
 
 
 class _LoadFailure(Exception):
@@ -353,9 +361,10 @@ class ExtensionRegistry:
             return self._roots_arg
         return contribution_roots()
 
-    def _packs(self, roots: Sequence[Root]) -> list[_Pack]:
+    @staticmethod
+    def _extra_roots(roots: Sequence[Root]) -> tuple[str, ...]:
         # Pass only the roots discovery does not already scan (source tree, managed sources, ASTRID_PACKS_PATH).
-        extra = tuple(
+        return tuple(
             str(r.path)
             for r in roots
             if r.scope != "built-in"
@@ -363,7 +372,9 @@ class ExtensionRegistry:
             and r.origin != "ASTRID_PACKS_PATH"
             and r.path.is_dir()
         )
-        records = self._discover(extra_pack_roots=extra)
+
+    def _packs(self, roots: Sequence[Root]) -> list[_Pack]:
+        records = self._discover(extra_pack_roots=self._extra_roots(roots))
         packs: list[_Pack] = []
         for (
             rec
@@ -419,19 +430,55 @@ class ExtensionRegistry:
                 )
             ]
 
+    def _process_key(self, roots: Sequence[Root]):
+        from astrid.core.extensions import model
+        from astrid.core.foundation.paths import REPO_ROOT
+        from astrid.core.pack import discovery
+        from astrid.core.pack._registry_cache import discovery_key
+
+        if self._discover is not discovery.discover_pack_metadata:
+            return None
+        fingerprint = discovery_key(REPO_ROOT, self._extra_roots(roots), discovery.discover_packs)
+        if fingerprint is None:
+            return None
+        try:
+            sdk = discovery._tree_fingerprint(self._sdk_root.parent.resolve())
+            schemas = discovery._tree_fingerprint(model.SCHEMA_DIR.resolve())
+        except OSError:
+            return None
+        return (fingerprint, tuple(roots), str(self._sdk_root.absolute()),
+                str(self._sdk_root.resolve()), sdk, str(model.SCHEMA_DIR.resolve()), schemas)
+
     def load(self, *, refresh: bool = False) -> ExtensionRegistry:
-        """Discover, parse and resolve. Imports nothing. Re-parses only when roots or manifests changed."""
+        """Load a private snapshot, reusing only content-identical admission.
+
+        The process memo owns deep copies, never contribution runtime objects.
+        Config is deliberately outside the snapshot memo: enable/disable and
+        malformed-config diagnostics are read and resolved on *every* call.
+        ``refresh`` bypasses reuse, including the existing instance snapshot.
+        """
         roots = self._current_roots()
-        sdk_pack = _Pack(SDK_OWNER, self._sdk_root.parent, "0.0.0", "built-in", sdk=True)
-        packs = self._packs(roots)
-        items = self._collect(packs, sdk_pack)
-        key = self._fingerprint(roots, packs, items)
+        before = self._process_key(roots)
+        if not refresh and before is not None and before in _snapshot_cache:
+            snap = deepcopy(_snapshot_cache[before])
+            key = before
+        else:
+            sdk_pack = _Pack(SDK_OWNER, self._sdk_root.parent, "0.0.0", "built-in", sdk=True)
+            packs = self._packs(roots)
+            items = self._collect(packs, sdk_pack)
+            key = before if before is not None else self._fingerprint(roots, packs, items)
+            if not refresh and self._snap is not None and key == self._snap_key:
+                snap = self._snap
+            else:
+                snap = _parse(items)
+            if before is not None and before == self._process_key(self._current_roots()):
+                _snapshot_cache[before] = deepcopy(snap)
         if refresh or self._snap is None or key != self._snap_key:
-            self._snap = _parse(items)
-            self._snap_key = key
             self._loaded.clear()
             self._runtime_failed.clear()
             self._protocols.clear()
+        self._snap = snap
+        self._snap_key = key
         disabled, config_problems = self._disabled_now()
         self._resolve(self._snap, disabled, config_problems)
         return self

@@ -10,6 +10,7 @@ Schema v2: model → mode → backend taxonomy.  Lookups are keyed by
 
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,13 @@ from astrid.core.model_catalog.schema import (
     validate_lora_registry,
     validate_registry_with_backends,
 )
+
+
+_default_cache: dict[tuple, ModelRegistry] = {}
+
+
+def _reset_for_tests() -> None:
+    _default_cache.clear()
 
 
 class ModelRegistry:
@@ -116,7 +124,6 @@ class ModelRegistry:
                 f"model registry not found: {yaml_path}",
                 recovery_command="reinstall astrid; models.yaml ships with the package",
             )
-        raw = _load_yaml(yaml_path)
         # Runtime assembly seam. ``load_default`` is a convenience assembler that
         # builds a fully-populated registry by pack-scanning — and pack-scanning
         # for generation features/backends lives in ``generation`` (which sits
@@ -136,6 +143,44 @@ class ModelRegistry:
             "load_default_generation_taxonomy_registry",
         )
 
+        from astrid.core.pack._registry_cache import discovery_key
+        from astrid.core.pack.discovery import pack_discovery_scope
+
+        features = importlib.import_module("astrid.core.generation.features")
+        backends = importlib.import_module("astrid.core.generation.backends.registry")
+
+        def key():
+            # Both assemblers use the same discovery inputs. Preserve custom
+            # scanner seams: their arbitrary state has no content identity.
+            if features.discover_packs is not backends.discover_packs:
+                return None
+            fingerprint = discovery_key(project_root, extra_pack_roots, features.discover_packs)
+            if fingerprint is None:
+                return None
+            return (cls, fingerprint, str(yaml_path), yaml_path.read_bytes(),
+                    load_default_generation_taxonomy_registry,
+                    load_default_generation_backend_registry)
+
+        before = key()
+        if before is not None and before in _default_cache:
+            return deepcopy(_default_cache[before])
+        # Keep taxonomy and backend admission on the existing content-verified
+        # discovery seam, even outside a generate invocation.
+        with pack_discovery_scope():
+            result = cls._load_default_uncached(
+                yaml_path, project_root, extra_pack_roots,
+                load_default_generation_taxonomy_registry,
+                load_default_generation_backend_registry,
+            )
+        if before is not None and before == key():
+            _default_cache[before] = deepcopy(result)
+        return result
+
+    @classmethod
+    def _load_default_uncached(cls, yaml_path, project_root, extra_pack_roots,
+                               load_default_generation_taxonomy_registry,
+                               load_default_generation_backend_registry):
+        raw = _load_yaml(yaml_path)
         taxonomy_registry = load_default_generation_taxonomy_registry(
             project_root=project_root,
             extra_pack_roots=extra_pack_roots,

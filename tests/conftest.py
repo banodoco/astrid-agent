@@ -390,3 +390,15 @@ def _h3_engine_facts():
     from astrid.core.generation.engine_facts import comfyui_facts
     from astrid.packs.h3_av.shared import engine_facts
     engine_facts.install(comfyui_facts())
+
+
+@pytest.fixture(autouse=True)
+def _reset_process_loader_memos():
+    from astrid.core.extensions.registry import _reset_for_tests as reset_extensions
+    from astrid.core.model_catalog.registry import _reset_for_tests as reset_models
+
+    reset_extensions()
+    reset_models()
+    yield
+    reset_extensions()
+    reset_models()
