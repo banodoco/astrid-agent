@@ -367,7 +367,7 @@ def test_cold_listing_uses_journal_without_settings_or_provider(monkeypatch):
 
 
 @pytest.mark.parametrize("as_json", [False, True])
-@pytest.mark.parametrize("journal_state", ["live", "missing", "ended"])
+@pytest.mark.parametrize("journal_state", ["live", "missing", "ended", "failed", "releasing"])
 def test_cold_release_absent_requires_ended_journal_with_zero_provider_calls(
     monkeypatch, capsys, as_json, journal_state,
 ):
@@ -379,7 +379,9 @@ def test_cold_release_absent_requires_ended_journal_with_zero_provider_calls(
 
     live = {"id": "prior-pod", "kind": "runpod", "state": "idle", "live": True}
     ended = {**live, "state": "ended", "live": False}
-    after = [live] if journal_state == "live" else [ended] if journal_state == "ended" else []
+    stale = {**live, "state": journal_state, "live": False}
+    after = ([live] if journal_state == "live" else [ended] if journal_state == "ended"
+             else [stale] if journal_state in {"failed", "releasing"} else [])
     views = iter([[live], after])
     monkeypatch.setattr(machines_cli, "_leases", lambda: next(views))
     lookups, provider_calls, policy_reads = [], [], []
@@ -425,10 +427,11 @@ def test_cold_release_absent_requires_ended_journal_with_zero_provider_calls(
         assert code == 1
         if as_json:
             payload = json.loads(output)
-            assert payload["ok"] is False and payload["machine"] == (live if after else None)
+            assert payload["ok"] is False and payload["machine"] == (after[0] if after else None)
             output = payload["error"]
         assert "prior-pod is not held by this host: not released" in output
-        assert "astrid machines ls" in output and "host that holds it" in output
+        assert "`astrid machines`" in output and "astrid machines ls" not in output
+        assert "host that holds it" in output and "provider console" in output
         assert ("journal still lists prior-pod as live" in output) == (journal_state == "live")
 
 
