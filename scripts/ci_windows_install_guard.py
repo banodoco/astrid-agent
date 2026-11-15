@@ -170,6 +170,9 @@ def capture_generation_failure():
     windows.save("generation-failure.json", report)
 
 
+LONG_PATHS_REFUSAL = "needs Windows long paths to be enabled"
+
+
 def known_long_path_failure(error):
     """Evidence dict when the generate command failed only on a too-long Runtime path with long paths off, else None."""
     if os.environ.get(LONG_PATHS_ENV) != "off" or not isinstance(error, RuntimeError):
@@ -178,7 +181,8 @@ def known_long_path_failure(error):
         return None
     log = windows.EVIDENCE / "command-generate-image.log"
     text = (log.read_text(encoding="utf-8", errors="replace") if log.is_file() else "") + "\n" + str(error)
-    if not (KNOWN_LONG_PATH_ERROR.search(text) and ".vibecomfy-runtime" in text):
+    # Either the product's own up-front refusal, or (before that existed) the raw error.
+    if LONG_PATHS_REFUSAL not in text and not (KNOWN_LONG_PATH_ERROR.search(text) and ".vibecomfy-runtime" in text):
         return None
     lengths = [len(path.rstrip()) for path in re.findall(r"[A-Za-z]:\\[^'\"<>|\r\n]+", text)]
     return {"reason": "runtime path exceeds 260 characters with long paths off",
@@ -287,9 +291,15 @@ def command_smoke():
             raise RuntimeError("Installed fetch-models did not produce the three-model plan")
         for inputs, field, menu in menus:
             inputs[field] = menu
-        command(["generate", "image", "a copper teapot", "--entry", "qwen-image-2.1-turbo",
-                 "--placement", comfy.url, "--width", "512", "--height", "512", "--seed", "42",
-                 "--dry-run", "--json"], "attached-dry-run")
+        try:
+            command(["generate", "image", "a copper teapot", "--entry", "qwen-image-2.1-turbo",
+                     "--placement", comfy.url, "--width", "512", "--height", "512", "--seed", "42",
+                     "--dry-run", "--json"], "attached-dry-run")
+        except RuntimeError as error:
+            # With long paths off the product refuses up front, dry run included.
+            if os.environ.get(LONG_PATHS_ENV) != "off" or LONG_PATHS_REFUSAL not in str(error):
+                raise
+            print("dry run refused up front: generation needs Windows long paths", flush=True)
         if any(request.method == "POST" for request in comfy.requests):
             raise RuntimeError("Plan/dry run unexpectedly submitted to ComfyUI")
         # Menus are restored above, so this is the same model resolution a real submit performs.
