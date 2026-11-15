@@ -160,3 +160,68 @@ def test_media_open_defaults_to_human_output() -> None:
     parsed = parser.parse_args(["open", "media-1", "--project", "demo"])
     assert parsed.json is False
     assert parser.parse_args(["open", "media-1", "--project", "demo", "--json"]).json is True
+
+
+def test_materialize_returns_an_independent_copy_of_verified_response(tmp_path: Path, monkeypatch) -> None:
+    payload = b"unique output bytes for custody proof" * 1024
+    runtime = _Runtime(payload)
+    reference = next(iter(runtime.objects))
+    source = tmp_path / "runtime-cas"
+    source.write_bytes(payload)
+    runtime.get_project_object_location = lambda *_args: {"storage": "runtime_cas", "verified": True,
+                                                          "digest": reference, "local_path": str(source)}
+    original = hashlib.sha256
+    observed = []
+
+    def counted(data=b"", *args, **kwargs):
+        if data == payload:
+            observed.append(len(data))
+        return original(data, *args, **kwargs)
+
+    monkeypatch.setattr(hashlib, "sha256", counted)
+    result = RemoteMedia(runtime).open("demo", reference, materialize=True, cache_root=tmp_path / "view")
+    assert result.ok
+    assert observed == [len(payload), len(payload)]  # response verification and view naming/checking
+    assert runtime.reads == [reference]
+    view = Path(result.data["local_path"])
+    assert view.read_bytes() == payload
+    view.write_bytes(b"caller mutation")
+    assert source.read_bytes() == payload
+
+
+def test_truncated_runtime_response_does_not_replace_existing_view(tmp_path: Path) -> None:
+    runtime = _Runtime(b"complete content")
+    reference = next(iter(runtime.objects))
+    runtime.get_object = lambda _id: {"data": b"truncated"}
+    existing = tmp_path / "note.txt"
+    existing.write_bytes(b"original")
+    result = RemoteMedia(runtime).open("demo", reference, materialize=True, cache_root=tmp_path)
+    assert not result.ok and result.error.code == "integrity_error"
+    assert existing.read_bytes() == b"original"
+
+
+def test_existing_hardlink_to_cas_is_never_returned_as_a_caller_view(tmp_path: Path) -> None:
+    import os
+
+    payload = b"retained immutable bytes"
+    runtime = _Runtime(payload)
+    reference = next(iter(runtime.objects))
+    bare = reference.removeprefix("sha256:")
+    cas = tmp_path / "cas" / "sha256" / bare[:2] / bare[2:]
+    cas.parent.mkdir(parents=True)
+    cas.write_bytes(payload)
+    runtime.get_project_object_location = lambda *_args: {"storage": "runtime_cas", "verified": True,
+                                                          "digest": reference, "local_path": str(cas)}
+    cache = tmp_path / "views"
+    cache.mkdir()
+    existing = cache / "note.txt"
+    os.link(cas, existing)
+
+    result = RemoteMedia(runtime).open("demo", reference, materialize=True, cache_root=cache)
+    assert result.ok
+    view = Path(result.data["local_path"])
+    assert view == existing and view.read_bytes() == payload
+    assert not os.path.samefile(view, cas)
+    view.write_bytes(b"caller mutation")
+    assert cas.read_bytes() == payload
+    assert existing.read_bytes() == b"caller mutation"
