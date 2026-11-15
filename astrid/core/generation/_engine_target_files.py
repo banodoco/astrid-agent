@@ -7,19 +7,18 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import secrets
 import stat
 import time
-from pathlib import PureWindowsPath
 from collections.abc import Mapping
 from contextlib import contextmanager
+from pathlib import PureWindowsPath
 
 # POSIX (including the rented engine machine, where only this file and two
 # Runtime modules are shipped) uses ordinary os. On Windows the Runtime adapter
 # retains native directory handles, refuses reparse points and compares final
 # paths and file identities; it does not protect against same-user byte edits.
-import os
-
 if not hasattr(os, 'O_DIRECTORY'):  # Windows
     from runtime_protocol.dirfd import filesystem as os
 

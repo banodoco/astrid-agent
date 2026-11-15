@@ -116,7 +116,7 @@ def _emit_startup_phase(phase: str) -> None:
         try:
             print(json.dumps({"event": "astrid.host_startup_timing", "phase": phase,
                               "elapsed_ms": elapsed}), file=sys.stderr, flush=True)
-        except Exception:
+        except (OSError, ValueError):
             pass
     try:
         info = os.fstat(2)
