@@ -295,15 +295,42 @@ class WarmAttestation:
                 raise ValueError('warm model declaration')
 
     def _node_pack_paths(self):
-        """Match the pinned loader's scan, independently of Git ignore rules."""
+        """Cover imports and prestartup scripts, independently of Git ignores."""
         comfy = next(source for source in self.recipe.sources if source.name == 'comfyui')
         root = self.root / comfy.relative_path / 'custom_nodes'
         with self.files._directory(root.parts[1:], self.deadline):
             pass
         with os.scandir(root) as entries:
             return {entry.name: Path(entry.path) for entry in entries
-                    if entry.name != '__pycache__' and not entry.name.endswith('.disabled')
+                    if not entry.name.endswith('.disabled')
                     and not (entry.is_file() and Path(entry.name).suffix != '.py')}
+
+    def _loader_paths(self):
+        """Refuse unobserved custom_nodes roots instead of trusting a partial scan."""
+        launch = self.runner.launch_spec()
+        for env in (os.environ, getattr(self.runner, 'env', {}), launch.get('env', {})):
+            if 'COMFYUI_PATH' in env and env['COMFYUI_PATH'] is not None:
+                raise ValueError('warm loader root override')
+            raw = env.get('VIBECOMFY_COMFY_CONFIGURATION')
+            if raw is not None:
+                config = json.loads(raw)
+                if not isinstance(config, dict) or {'base_directory', 'extra_model_paths_config'} & config.keys():
+                    raise ValueError('warm loader path configuration')
+        if any(arg.split('=', 1)[0] in {'--base-directory', '--extra-model-paths-config'}
+               for arg in launch['argv']):
+            raise ValueError('warm loader path argument')
+        comfy = next(source for source in self.recipe.sources if source.name == 'comfyui')
+        root = self.root / comfy.relative_path
+        # main.py reads this automatically; VibeComfy also checks its session cwd.
+        # Observe absence explicitly even when Git ignores the configuration file.
+        paths = {root / 'extra_model_paths.yaml', Path(launch.get('cwd', root)) / 'extra_model_paths.yaml'}
+        presence = {}
+        for path in sorted(paths):
+            fact = self.files.file_fact(str(path), hash_bytes=False, deadline=self.deadline)
+            presence[str(path.relative_to(self.root))] = fact.exists
+            if fact.exists:
+                raise ValueError('warm extra loader paths present')
+        return presence
 
     def _node_packs(self, nodes):
         """Witness every installed loader member, including unpinned/non-Git packs."""
@@ -338,6 +365,7 @@ class WarmAttestation:
     def identity(self, sources, node_packs):
         from .engine_contracts import effective_models_root
         from .engine_recipe import recipe_digest
+        loader_paths = self._loader_paths()
         raw = self.files.read_json(str(self.root / '.astrid-engine/install.json'), deadline=self.deadline)
         models_root = Path(effective_models_root(str(self.root), raw.get('models_root')))
         source_rows = {}
@@ -371,6 +399,7 @@ class WarmAttestation:
                 'recipe_sha256': recipe_digest(self.recipe), 'helper_sha256': self.runner.helper_sha256,
                 'receipt_sha256': _receipt_identity(raw), 'sources': source_rows, 'requirements_locks': locks,
                 'node_locks': node_locks,
+                'loader_paths': loader_paths,
                 'node_packs': self._node_packs(node_packs),
                 'runtime_dependency_sha256': _dependencies(self.root, self.recipe, self.deadline),
                 'models_root_receipt': {'root': str(models_root), 'receipt_id': raw['receipt_id'],

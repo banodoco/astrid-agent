@@ -1407,7 +1407,7 @@ def test_warm_attestation_unsafe_pack_symlink_refuses_witness(extra_pack_case, k
 
 
 @pytest.mark.parametrize('member', ['__pycache__', 'pack.disabled', 'notes.txt'])
-def test_warm_attestation_loader_skipped_members_do_not_invalidate(warm_case, member):
+def test_warm_attestation_loader_member_filter(warm_case, member):
     c = warm_case
     c.run()
     path = c.checkout / 'custom_nodes' / member
@@ -1418,7 +1418,127 @@ def test_warm_attestation_loader_skipped_members_do_not_invalidate(warm_case, me
         (path / 'node.py').write_text('not imported\n')
     c.calls.clear()
     c.run()
-    assert not set(c.calls) & {'source', 'environment', 'runtime', 'nodes', 'prepare', 'doctor', 'alignment'}
+    audits = {'source', 'environment', 'runtime', 'nodes', 'prepare', 'doctor', 'alignment'}
+    if member == '__pycache__':
+        assert audits <= set(c.calls)
+    else:
+        assert not set(c.calls) & audits
+
+
+@pytest.mark.parametrize('contents', ['', 'null\n', 'extra:\n  custom_nodes: {root}\n'])
+def test_warm_attestation_extra_paths_refuses_hit_and_write(warm_case, contents):
+    c = warm_case
+    # Match the pinned checkout: Git porcelain cannot see this default config.
+    with (c.checkout / '.gitignore').open('a') as stream:
+        stream.write('/extra_model_paths.yaml\n')
+    external = c.root.parent / 'extra_nodes/pack'
+    external.mkdir(parents=True)
+    script = external / 'prestartup_script.py'
+    script.write_text('verified = True\n')
+    c.run()
+    assert c.attestation.exists()
+    before = c.attestation.read_bytes()
+    (c.checkout / 'extra_model_paths.yaml').write_text(contents.format(root=external.parent))
+    script.write_text('verified = False\n')
+    c.calls.clear()
+    c.run()
+    assert {'source', 'environment', 'runtime', 'nodes', 'prepare', 'doctor', 'alignment'} <= set(c.calls)
+    assert c.attestation.read_bytes() == before
+    assert json.loads([body for step, body in c.logs if step == 'warm_attestation'][-1])[
+        'warm_attestation'] == {'used': False, 'skipped': []}
+    c.attestation.unlink()
+    c.run()
+    assert not c.attestation.exists()
+
+
+@pytest.mark.parametrize('location', ['process', 'runner', 'launch'])
+@pytest.mark.parametrize('override', [
+    {'COMFYUI_PATH': '/other/comfy'},
+    {'COMFYUI_PATH': ''},
+    {'VIBECOMFY_COMFY_CONFIGURATION': '{"base_directory":"/other/comfy"}'},
+    {'VIBECOMFY_COMFY_CONFIGURATION': '{"extra_model_paths_config":["/other/paths.yaml"]}'},
+])
+def test_warm_attestation_path_environment_refuses_hit_and_write(warm_case, monkeypatch, location, override):
+    c = warm_case
+    c.run()
+    assert c.attestation.exists()
+    before = c.attestation.read_bytes()
+    if location == 'process':
+        for key, value in override.items():
+            monkeypatch.setenv(key, value)
+    elif location == 'runner':
+        monkeypatch.setattr(c.runner, 'env', override, raising=False)
+    else:
+        monkeypatch.setattr(c.runner, 'launch_spec', lambda self: {'argv': [], 'env': override})
+    c.calls.clear()
+    c.run()
+    assert {'source', 'environment', 'runtime', 'nodes', 'prepare', 'doctor', 'alignment'} <= set(c.calls)
+    assert c.attestation.read_bytes() == before
+    c.attestation.unlink()
+    c.run()
+    assert not c.attestation.exists()
+
+
+@pytest.mark.parametrize('flag', ['--base-directory', '--extra-model-paths-config'])
+@pytest.mark.parametrize('joined', [False, True])
+def test_warm_attestation_path_launch_override_refuses_witness(warm_case, monkeypatch, flag, joined):
+    c = warm_case
+    c.run()
+    before = c.attestation.read_bytes()
+    argv = [flag + '=/other/path'] if joined else [flag, '/other/path']
+    monkeypatch.setattr(c.runner, 'launch_spec', lambda self: {'argv': argv})
+    c.calls.clear()
+    c.run()
+    assert {'source', 'environment', 'runtime', 'nodes', 'prepare', 'doctor', 'alignment'} <= set(c.calls)
+    assert c.attestation.read_bytes() == before
+
+
+def test_warm_attestation_pycache_drift_and_hit_process_budget(warm_case):
+    c = warm_case
+    cache = c.checkout / 'custom_nodes/__pycache__'
+    cache.mkdir()
+    script = cache / 'prestartup_script.py'
+    script.write_text('verified = True\n')
+    c.run()
+    assert c.attestation.exists()
+    audits = {'source', 'environment', 'runtime', 'nodes', 'prepare', 'doctor', 'alignment'}
+    c.calls.clear()
+    c.run()
+    assert c.calls.count('git-inventory') == 0
+    assert not set(c.calls) & audits
+    script.write_text('verified = False\n')
+    c.calls.clear()
+    c.run()
+    assert audits <= set(c.calls)
+    assert json.loads([body for step, body in c.logs if step == 'warm_attestation'][-1])[
+        'warm_attestation'] == {'used': False, 'skipped': []}
+    c.calls.clear()
+    c.run()
+    assert c.calls.count('git-inventory') == 0
+    assert not set(c.calls) & audits
+
+
+def test_warm_attestation_node_listing_error_is_miss(warm_case, monkeypatch):
+    import os
+    c = warm_case
+    c.run()
+    assert c.attestation.exists()
+    before = c.attestation.read_bytes()
+    original = os.scandir
+    def listing(path):
+        if not isinstance(path, int) and Path(path) == c.checkout / 'custom_nodes':
+            raise PermissionError('node listing unavailable')
+        return original(path)
+    monkeypatch.setattr(os, 'scandir', listing)
+    c.calls.clear()
+    c.run()
+    assert {'source', 'environment', 'runtime', 'nodes', 'prepare', 'doctor', 'alignment'} <= set(c.calls)
+    assert c.attestation.read_bytes() == before
+    assert json.loads([body for step, body in c.logs if step == 'warm_attestation'][-1])[
+        'warm_attestation'] == {'used': False, 'skipped': []}
+    c.attestation.unlink()
+    c.run()
+    assert not c.attestation.exists()
 
 
 @pytest.mark.parametrize('damage', ['permission', 'corrupt'])
