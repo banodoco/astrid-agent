@@ -3105,8 +3105,11 @@ def _kernel_invoke(
             _recovery.freeze(prepared.data, metadata=_recovery_metadata or {})
         return dispatch(prepared.data)
 
+    from astrid.core.execution.phase_timing import cli_stamp
+    cli_stamp("submit")
     submitted_at = datetime.now(timezone.utc)
     data, rejection = _admission_resource(admit(admission))
+    cli_stamp("submitted")
     if rejection is not None:
         return "", "", "", None, {"ok": False, "error": rejection}, False, None
     replay = _admission_replay(data, submitted_at)
@@ -3492,6 +3495,10 @@ def _wait_for_kernel_task_loop(
             }, False, ""
 
         task = dict(data)
+        from astrid.core.execution.phase_timing import cli_host, cli_stamp
+        cli_host(task.get("result"))
+        if _task_state(task) in {"succeeded", "completed", "failed", "cancelled"}:
+            cli_stamp("result")
         if owner_tick is not None:
             owner_tick(task)
         runpod_policy = _runpod_generation_policy(task, allow_direct_spec=True)

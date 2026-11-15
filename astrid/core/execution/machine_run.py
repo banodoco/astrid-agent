@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import inspect
 import time
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from astrid.core.contracts.errors import AstridError
+from astrid.core.execution import phase_timing
 
 POINT = "generation.machine"
 #: Built-in placements that are not machine contributions.
@@ -53,6 +55,7 @@ class MachineJob:
     files: frozenset[str] = field(default=FILE_INPUTS)
     #: Optional ``PhaseTiming`` collector; the machine stamps its phases into it.
     timing: Any = None
+    generation_timing: Any = None
 
 
 def resolve_machine(kind: str, registry: Any | None = None) -> Any:
@@ -81,6 +84,8 @@ def run_on_machine(machine: Any, job: MachineJob, *, destination: Path,
     # Existing machine kinds keep their original claim contract. A machine
     # with a capacity wait can opt into the same host cancellation callback.
     claim_parameters = inspect.signature(machine.claim).parameters
+    timing = job.generation_timing
+    phase_timing.transition(timing, "capacity_wait")
     run = None
     try:
         lease = (machine.claim(job, cancelled=cancelled) if "cancelled" in claim_parameters
@@ -92,10 +97,15 @@ def run_on_machine(machine: Any, job: MachineJob, *, destination: Path,
     failure = None
     stage = "start"
     try:
+        # RunPod supplies finer preparation boundaries during claim.
+        if job.timing is None:
+            phase_timing.transition(timing, "preparation")
         if on_claim is not None:
             on_claim(lease)
         if cancelled():
             raise MachineRunCancelled("generation cancelled before the remote job started")
+        # Include dispatch: the pod can begin (or finish) before start returns.
+        phase_timing.transition(timing, "execution")
         start_parameters = inspect.signature(machine.start).parameters
         run = (machine.start(lease, job, cancelled=cancelled) if "cancelled" in start_parameters
                else machine.start(lease, job))
@@ -119,13 +129,17 @@ def run_on_machine(machine: Any, job: MachineJob, *, destination: Path,
             sleep(delay)
             delay = min(delay * 1.5, poll_seconds)
         stage = "fetch"
+        phase_timing.transition(timing, "collection")
         fetched = machine.fetch(run, destination)
+        with suppress(Exception):
+            timing.read_job(destination)
         success = True
         return fetched
     except BaseException as exc:
         failure = exc
         raise
     finally:
+        phase_timing.transition(timing, "release")
         release_parameters = inspect.signature(machine.release).parameters
         try:
             if "failure" in release_parameters:
@@ -142,6 +156,8 @@ def run_on_machine(machine: Any, job: MachineJob, *, destination: Path,
             else:
                 _report_failure(on_failure, failure, stage, lease, run, release_failed=True)
             raise
+        finally:
+            phase_timing.transition(timing, None)
         if failure is not None:
             _report_failure(on_failure, failure, stage, lease, run)
 

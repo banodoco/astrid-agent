@@ -163,6 +163,7 @@ class GenerationResult:
     source_ref: dict[str, Any] | str | None = None
     effective_settings_ref: dict[str, Any] | str | None = None
     logs: list[dict[str, Any]] = field(default_factory=list)
+    timing: dict[str, Any] | None = None
 
     @property
     def ok(self) -> bool:
@@ -204,6 +205,7 @@ class GenerationResult:
             "source_ref": self.source_ref,
             "effective_settings_ref": self.effective_settings_ref,
             "logs": self.logs,
+            "timing": self.timing,
         }
         return result
 
@@ -252,6 +254,7 @@ class GenerationResult:
             source_ref=data.get('source_ref'),
             effective_settings_ref=data.get('effective_settings_ref'),
             logs=list(data.get('logs', [])),
+            timing=data.get('timing'),
         )
 
 

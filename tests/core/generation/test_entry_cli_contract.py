@@ -137,7 +137,13 @@ def test_json_and_convenience_values_use_shared_resolver(monkeypatch, capsys, tm
     assert cli.main(["image", "--entry", "workflow", "--inputs-json", str(file), "--seed", "19", "--json"]) == 0
     assert captured == [{"entry": "workflow", "mode": expected_description["mode"],
                          "placement": "auto", "dry_run": False, "client": "client", **expected}]
-    assert json.loads(capsys.readouterr().out) == {"ok": True}
+    payload = json.loads(capsys.readouterr().out)
+    timing = payload["timing"]
+    assert payload == {"ok": True, "timing": timing}
+    assert timing["schema"] == "astrid.generation.timing.v2"
+    block = timing["cli"]
+    assert block["total"]["seconds"] >= 0
+    assert sum(phase["seconds"] or 0 for phase in block["phases"].values()) + block["unaccounted"]["raw_seconds"] == pytest.approx(block["total"]["seconds"])
 
 
 @pytest.mark.parametrize(("body", "flags", "reason"), [

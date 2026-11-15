@@ -419,6 +419,7 @@ def test_public_generation_forms_reach_the_existing_facade(monkeypatch, capsys, 
 ])
 def test_console_uses_process_arguments_for_each_generate_form(monkeypatch, args, handler):
     import sys
+
     from astrid import console
     from astrid.core.generation import listing
 
@@ -659,3 +660,93 @@ def test_workflow_no_run_does_not_require_a_machine(monkeypatch):
     assert cli.main(['workflow', 'workflow.json', '--as-entry', 'example',
                      '--no-run', '--placement', 'runpod']) == 0
     assert len(saved) == 1 and saved[0].no_run and saved[0].as_entry == 'example'
+
+
+@pytest.mark.parametrize("same_clock", [True, False])
+@pytest.mark.parametrize("failed", [False, True])
+def test_generate_json_times_real_admission_and_wait_with_fake_runtime(monkeypatch, capsys, same_clock, failed):
+    from astrid.core.execution import phase_timing
+    from astrid.sdk import invocation
+
+    now = [100.0]
+    monkeypatch.setattr(phase_timing, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    monkeypatch.setattr(phase_timing, "clock_id", lambda: "fixture-host")
+    host = {"total": {"seconds": 12.0}, "phases": {"execution": {"seconds": 10.0}},
+            "unaccounted": {"seconds": 2.0, "raw_seconds": 2.0},
+            "started_monotonic": 106.0 if same_clock else 900006.0,
+            "ended_monotonic": 118.0 if same_clock else 900018.0,
+            "clock_id": "fixture-host" if same_clock else "other-host"}
+    timing = {"schema": phase_timing.TIMING_SCHEMA, "host": host}
+
+    def create(**kwargs):
+        now[0] = 104.0
+        return SimpleNamespace(ok=True, data={"task_id": "task-1", "run_id": "run-1", "state": "queued"})
+
+    def show(_):
+        now[0] = 120.0
+        return SimpleNamespace(ok=True, data={"task_id": "task-1", "attempt_id": "attempt-1",
+            "state": "failed" if failed else "succeeded", "result": {"timing": timing}})
+
+    client = SimpleNamespace(tasks=SimpleNamespace(create=create, show=show))
+
+    def open_client():
+        now[0] = 102.0
+        return nullcontext(client)
+
+    def generate(**kwargs):
+        capability = SimpleNamespace(id="timing.test", capability_type="executor")
+        invocation._kernel_invoke(capability, kind="executor", project="demo", inputs={}, outputs={}, _client=client)
+        raw, ok, _ = invocation._wait_for_kernel_task(client, task_id="task-1", run_id="run-1",
+                                                    timeout_seconds=10, poll_seconds=0.1)
+        if not ok:
+            raise ValueError("fixture generation failed")
+        return {"image_paths": [], "timing": raw["result"]["timing"]}
+
+    monkeypatch.setattr(cli, "_open_client", open_client)
+    monkeypatch.setattr(cli, "_generate_facade", lambda: SimpleNamespace(image=generate))
+    assert cli.main(["image", "a dog", "--model", "flux-schnell", "--placement", "managed", "--json"]) == (2 if failed else 0)
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["timing"]["host"] == host
+    block = payload["timing"]["cli"]
+    assert block["same_clock"] is same_clock
+    assert block["total"]["seconds"] == 20.0
+    assert block["phases"]["submit"]["seconds"] == 2.0
+    assert block["phases"]["host"]["seconds"] == 12.0
+    assert block["phases"]["wait_for_claim"]["seconds"] == (2.0 if same_clock else 4.0)
+    assert block["phases"]["result_fetch_and_print"]["seconds"] == (2.0 if same_clock else 0.0)
+    assert sum(p["seconds"] or 0 for p in block["phases"].values()) + block["unaccounted"]["raw_seconds"] == 20.0
+    # Enrichment must never persist the client clock into the host's stored result.
+    assert "cli" not in timing
+
+
+def test_human_generation_prints_one_timing_line_after_the_result(monkeypatch, capsys):
+    from astrid.core.execution import phase_timing
+
+    now = [10.0]
+    monkeypatch.setattr(phase_timing, "time", SimpleNamespace(monotonic=lambda: now[0]))
+
+    def open_client():
+        now[0] = 11.0
+        return nullcontext("fake-runtime")
+
+    def generate(**kwargs):
+        phase_timing.cli_stamp("submit")
+        now[0] = 12.0
+        phase_timing.cli_stamp("submitted")
+        host = phase_timing.GenerationTiming()
+        host.transition("execution")
+        now[0] = 14.0
+        result = {"image_paths": []}
+        phase_timing.attach_host(result, host)
+        now[0] = 15.0
+        phase_timing.cli_stamp("result")
+        return result
+
+    monkeypatch.setattr(cli, "_open_client", open_client)
+    monkeypatch.setattr(cli, "_generate_facade", lambda: SimpleNamespace(image=generate))
+    assert cli.main(["image", "a dog", "--model", "flux-schnell", "--placement", "managed"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == "image generation complete"
+    assert len(lines) == 2 and lines[1].startswith("timing: 2.0s = ")
+    assert "execution 2.0 + unaccounted 0.0" in lines[1]
+    assert "; cli 5.0s = " in lines[1] and lines[1].endswith("unaccounted 1.0")

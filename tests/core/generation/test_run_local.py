@@ -475,6 +475,9 @@ def test_machine_job_hashing_uses_projection_or_default(tmp_path, monkeypatch, g
     monkeypatch.setattr(generation_settings_store, 'get_user_app_state', pod_store)
     monkeypatch.setattr(local_job, '_run_job', verify_job)
     report = local_job.run_job('workflow', path, tmp_path / 'out')
+    # P3: run_job also attaches the host timing block; the verification report is unchanged.
+    timing = report.pop('timing')
+    assert timing['schema'] == 'astrid.generation.timing.v2' and 'host' in timing
     if projection is not False:
         assert model.reads == []
         assert report == {'trust_unchanged': True, 'hashed': 0, 'skipped': 1}
