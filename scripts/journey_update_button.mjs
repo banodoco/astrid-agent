@@ -67,12 +67,17 @@ export function slimDoorBody(text) {
 }
 
 function capture(result, fn) {
-  try { Promise.resolve(fn()).catch(() => {}); } catch { /* diagnostics only */ }
+  try { return Promise.resolve(fn()).catch(() => {}); } catch { return Promise.resolve(); /* diagnostics only */ }
+}
+
+/** The final snapshots are awaited (bounded) so the browser is not closed under them. */
+async function settleCapture(promise) {
+  await Promise.race([promise, new Promise((resolve) => setTimeout(resolve, 5_000))]).catch(() => {});
 }
 
 function capturePage(page, result, moment) {
   const t = Date.now();
-  capture(result, async () => {
+  return capture(result, async () => {
     const data = await page.evaluate(({ source }) => {
       const readStorage = () => {
         const session = {};
@@ -240,13 +245,13 @@ export async function run(config) {
       }
       result.posts = result.door_requests[`POST ${config.updatePath}`] ?? 0;
     }
-    capturePage(page, result, 'end');
+    await settleCapture(capturePage(page, result, 'end'));
     if (config.screenshot) await page.screenshot({ path: config.screenshot, fullPage: true }).catch(() => {});
   } catch (error) {
     result.error = `${error?.name ?? 'Error'}: ${String(error?.message ?? error).slice(0, 1000)}`;
     try {
       const page = browser.contexts().flatMap((context) => context.pages()).pop();
-      if (page) capturePage(page, result, 'end');
+      if (page) await settleCapture(capturePage(page, result, 'end'));
       if (page && config.screenshot) await page.screenshot({ path: config.screenshot, fullPage: true });
       if (page) result.page_text = (await page.locator('body').innerText()).slice(0, 4000);
     } catch { /* diagnostics only */ }
