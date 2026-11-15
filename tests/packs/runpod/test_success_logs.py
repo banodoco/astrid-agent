@@ -284,6 +284,51 @@ def test_success_logs_refuse_symlink_destination(completed_case, tmp_path):
     c.host.release()
 
 
+def test_success_logs_refuse_nested_symlink_destination(completed_case, tmp_path, monkeypatch):
+    c = completed_case
+    data = b"verified log\n"
+    c.manifest_logs = {"logs/a/engine.log": {
+        "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}}
+    original_get = c.pod.get
+
+    def get(remote, local):
+        if remote.endswith("/out/logs/a/engine.log"):
+            c.pod.files[remote] = data
+        return original_get(remote, local)
+
+    monkeypatch.setattr(c.pod, "get", get)
+    job = c.job()
+    destination = job.scratch / "outputs"
+    (destination / "logs").mkdir(parents=True)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (destination / "logs/a").symlink_to(elsewhere, target_is_directory=True)
+    fetched = run_on_machine(c.machine, job, destination=destination,
+                             cancelled=lambda: False, sleep=lambda _: None)
+    assert fetched.get("logs_unavailable") == {"a/engine.log": "unsafe_destination"}
+    assert "logs/a/engine.log" not in fetched["files"]
+    assert not list(elsewhere.iterdir())
+    assert fetched["returncode"] == 0
+    c.host.release()
+
+
+@pytest.mark.parametrize("entry", [
+    {}, {"size": -1}, {"size": "12"}, {"size": 1.5}, {"size": True},
+], ids=["missing", "negative", "string", "float", "bool"])
+def test_success_logs_invalid_size_request_budget(completed_case, entry):
+    c = completed_case
+    c.manifest_logs = {"logs/engine.log": {"sha256": "0" * 64, **entry}}
+    job = c.job()
+    fetched = run_on_machine(c.machine, job, destination=job.scratch / "outputs",
+                             cancelled=lambda: False, sleep=lambda _: None)
+    # Budget: malformed log sizes cause zero log requests; required outputs still arrive.
+    assert c.output_reads == [rm.MANIFEST_NAME, "artifacts/cpu.png", "manifest.json"]
+    assert fetched["logs_unavailable"] == {"engine.log": "invalid_size"}
+    assert fetched["returncode"] == 0
+    assert c.read()["lease"]["state"] == "idle"
+    c.host.release()
+
+
 @pytest.mark.parametrize("paid, job, transport, expected", [
     (300, 300, None, 1060),
     (20, 300, None, 1005),
@@ -310,6 +355,20 @@ def test_success_log_deadline_reserves_cleanup_time(monkeypatch, paid, job, tran
     with machine._success_log_transport(run) as ops:
         assert ops.deadline == expected
         assert ops.cancelled is cancelled
+    assert run.lease.claim.ops is original
+
+
+@pytest.mark.parametrize("job, expected", [(20, 1005), (300, 1060)])
+def test_success_log_deadline_without_lease_owner(monkeypatch, job, expected):
+    from astrid.packs.runpod.remote_placement import _HttpsOps
+
+    monkeypatch.setattr(rm.time, "monotonic", lambda: 1000)
+    original = _HttpsOps("fake-pod", "fake-only")
+    placement = SimpleNamespace(_clock=lambda: 200, _deadline_at=200 + job)
+    machine = rm.RunPodMachine(SimpleNamespace(placement=placement))
+    run = SimpleNamespace(lease=SimpleNamespace(claim=SimpleNamespace(ops=original)), cancelled=None)
+    with machine._success_log_transport(run) as ops:
+        assert ops.deadline == expected
     assert run.lease.claim.ops is original
 
 

@@ -34,6 +34,7 @@ import os
 import re
 import secrets
 import shlex
+import stat
 import time
 import uuid
 from contextlib import contextmanager, nullcontext
@@ -1107,26 +1108,32 @@ class RunPodMachine:
     def _success_log_transport(self, run: MachineRun) -> Iterator[Any]:
         """Share one cancellable log deadline, leaving time for checkpoint/reset."""
         adapter = self._require()
-        owner, placement = adapter.lease_owner, adapter.placement
+        owner, placement = getattr(adapter, "lease_owner", None), adapter.placement
         with _cancellable(run.lease, run.cancelled):
             started = time.monotonic()
-            with owner.lock:
-                current = owner.preparation_claim(run.lease.lease)
-                remaining = current["lease"]["paid_expires_at"] - owner.clock()
-            if placement._deadline_at is not None:
+            remaining = float("inf")
+            if owner is not None:
+                with owner.lock:
+                    current = owner.preparation_claim(run.lease.lease)
+                    remaining = current["lease"]["paid_expires_at"] - owner.clock()
+            if getattr(placement, "_deadline_at", None) is not None:
                 remaining = min(remaining, placement._deadline_at - placement._clock())
             original_ops = run.lease.claim.ops
             transport_deadline = getattr(original_ops, "deadline", None)
             if transport_deadline is not None:
                 remaining = min(remaining, transport_deadline - started)
             deadline = started + min(SUCCESS_LOG_SECONDS, remaining - SUCCESS_LOG_MARGIN_SECONDS)
-            run.lease.claim.ops = original_ops.bounded(deadline)
+            bounded = getattr(original_ops, "bounded", None)
+            # Legacy local adapters may lack both ownership and a bounded transport.
+            if owner is not None or bounded is not None:
+                run.lease.claim.ops = original_ops.bounded(deadline)
             try:
                 yield run.lease.claim.ops
             finally:
                 unreaped = getattr(run.lease.claim.ops, "unreaped_child", None)
                 if unreaped is not None:
-                    owner.fence_unreaped_observer(run.lease.lease, run.lease.claim.pod_id, unreaped)
+                    if owner is not None:
+                        owner.fence_unreaped_observer(run.lease.lease, run.lease.claim.pod_id, unreaped)
                     raise MachineError("success log observer could not be reaped")
 
     def _collect_fetch_failure_logs(self, run: MachineRun, destination: Path) -> dict[str, Any]:
@@ -1276,8 +1283,11 @@ class RunPodMachine:
                     logs_unavailable[key] = "deadline"
                     continue
                 entry = recorded[relative]
-                if (isinstance(entry, Mapping) and isinstance(entry.get("size"), int)
-                        and entry["size"] > CAP_BYTES):
+                size = entry.get("size") if isinstance(entry, Mapping) else None
+                if type(size) is not int or size < 0:
+                    logs_unavailable[key] = "invalid_size"
+                    continue
+                if size > CAP_BYTES:
                     logs_unavailable[key] = "too_large"
                     continue
                 if (destination / "logs").is_symlink():
@@ -1288,7 +1298,23 @@ class RunPodMachine:
                     with TemporaryDirectory(dir=scratch) as staging:
                         verified = fetch_file(relative, Path(staging), log_ops)
                         local = destination / relative
-                        local.parent.mkdir(parents=True, exist_ok=True)
+                        parents = [destination]
+                        for part in local.parent.relative_to(destination).parts:
+                            parents.append(parents[-1] / part)
+                        unsafe = False
+                        for parent in parents:
+                            try:
+                                mode = parent.lstat().st_mode
+                            except FileNotFoundError:
+                                parent.mkdir()
+                                mode = parent.lstat().st_mode
+                            if stat.S_ISLNK(mode):
+                                unsafe = True
+                                break
+                        root = destination.resolve()
+                        if unsafe or os.path.commonpath((root, local.parent.resolve())) != str(root):
+                            logs_unavailable[key] = "unsafe_destination"
+                            continue
                         verified.replace(local)
                     files[relative] = str(local)
                 except MachineRunCancelled:
