@@ -602,7 +602,7 @@ class RemotePlacement:
 
     def _run_job(self, state: RemoteRun, command: str, what: str) -> str:
         """Step 5 mechanism: detached job, then poll the durable status."""
-        from astrid.core.gateway.doctor_bundle import redact_log
+        from astrid.core._shared.log_redaction import redact_log
 
         assert state.claim is not None
         ops = state.claim.ops
@@ -687,7 +687,7 @@ class RemotePlacement:
                     )
                     program = (
                         "import sys; from pathlib import Path; "
-                        "from astrid.core.gateway.doctor_bundle import redact_log; "
+                        "from astrid.core._shared.log_redaction import redact_log; "
                         "p=Path(sys.argv[1]); q=Path(sys.argv[2]); "
                         "q.write_text(redact_log(p.read_text(encoding='utf-8', errors='replace')), encoding='utf-8')"
                     )

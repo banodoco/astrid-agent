@@ -264,7 +264,7 @@ def _cmd_events(parsed: argparse.Namespace) -> int:
 
 
 def _cmd_logs(parsed: argparse.Namespace) -> int:
-    from astrid.core.gateway.doctor_bundle import redact_log
+    from astrid.core._shared.log_redaction import redact_log
 
     task_id, code = _task_id(parsed)
     if task_id is None:
