@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from ..vibecomfy_runtime_root import vibecomfy_runtime_root
 from .comfy_target import (
     ComfyTarget,
     ComfyTargetClient,
@@ -129,11 +130,12 @@ def cleanup_prompts(url: str, destination: Path, *, confirm: bool = False, timeo
     SIGKILL/crashes and acceptance that raced with an earlier cancel request.
     """
     client = ComfyTargetClient(ComfyTarget(url, "attached"))
-    runs = destination / ".vibecomfy-runtime" / "out" / "runs"
+    runs = vibecomfy_runtime_root(destination) / "out" / "runs"
     for path in runs.glob("*/attempt.json"):
         if (path.is_symlink() or not path.is_file()
                 or any(part.is_symlink() for part in path.parents)
-                or not path.resolve().is_relative_to(destination.resolve())):
+                or not (path.resolve().is_relative_to(destination.resolve())
+                        or path.resolve().is_relative_to(Path(vibecomfy_runtime_root(destination)).resolve()))):
             raise ValueError("local_server attempt journal escaped attempt custody")
         attempt = json.loads(path.read_text(encoding="utf-8"))
         acceptance = attempt.get("queue_acceptance", {})

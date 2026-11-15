@@ -1,7 +1,7 @@
 import contextlib
 import ssl
 import typing
-from ctypes import (
+from ctypes import (  # type: ignore[attr-defined]
     POINTER,
     Structure,
     WinDLL,  # type: ignore

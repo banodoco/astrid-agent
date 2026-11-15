@@ -714,13 +714,6 @@ def _main(argv: list[str]) -> int:
         kwargs.pop("width")
         kwargs.pop("height")
         kwargs[_KIND_SPEC[parsed.modality]['dimension_key']] = f"{parsed.width}x{parsed.height}"
-    if '://' in str(parsed.placement or '') and not is_runpod_placement(parsed.placement):
-        # Attached ComfyUI on Windows without long paths: refuse before any task is created (dry-run included).
-        from astrid.core.generation.windows_long_paths import LONG_PATHS_MESSAGE, long_paths_enabled
-        if long_paths_enabled() is False:
-            from astrid.core.generation.preflight import generation_error
-            raise generation_error(ValueError(LONG_PATHS_MESSAGE), code='missing_dependency',
-                                   details={'field': 'placement', 'constraint': 'windows_long_paths'})
     from .delivery import admitted_project, open_url_for
     admitted = None
     try:

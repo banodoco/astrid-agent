@@ -787,6 +787,11 @@ class StorageEnvelopeError(HostError):
 
 def _cleanup_ephemeral_attempt(root: Path) -> None:
     """Remove an owned attempt root and verify that no residue remains."""
+    from astrid.core.generation.vibecomfy_runtime_root import remove_windows_runtime_root
+    try:
+        remove_windows_runtime_root(root / "outputs")
+    except OSError as exc:
+        raise HostError(f"owned attempt cleanup failed: {root}") from exc
     try:
         shutil.rmtree(root)
     except FileNotFoundError:
@@ -18536,7 +18541,7 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
         remotion_runtime._deferred_validation = remotion_runtime.DeferredRemotionValidation(
             prepare_render_validation
         )
-        host._defer_startup_remotion = True
+        host._defer_startup_remotion = True  # type: ignore[attr-defined]
     # Only verified host startup arguments populate this private context. A
     # child's payload/environment is never accepted as launch/source identity.
     host._child_import_host_context = {
@@ -18719,7 +18724,7 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
             ready_path.unlink(missing_ok=True)
             stdin_shutdown.wait_for_shutdown_cleanup()
             return 1
-    host._defer_startup_remotion = False
+    host._defer_startup_remotion = False  # type: ignore[attr-defined]
     if args.run_task:
         if client is None or not args.lease_token:
             parser.error("--run-task requires --runtime-endpoint, --credential-file, and --lease-token")

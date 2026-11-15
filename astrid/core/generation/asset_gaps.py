@@ -7,6 +7,7 @@ import os
 import re
 import shlex
 import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -90,11 +91,47 @@ def _is_comfyui_core_repo(repo: str) -> bool:
     return 'github.com/' in lowered and lowered.endswith(('/comfyui', '/comfyui.git'))
 
 
-def attached_asset_readiness(entry: str | None, *, nodes=(), models=(), lockfile_path=None, target=None) -> dict[str, Any]:
+def _locked_commit(lock: Any, pack: Any) -> str | None:
+    """The commit the lock pins for this pack's repository, if the lock declares one."""
+    from vibecomfy.node_packs import read_lockfile
+
+    for entry in read_lockfile(lock):
+        if entry.url == pack.repo and (entry.git_commit_sha or entry.commit):
+            return entry.git_commit_sha or entry.commit
+    return None
+
+
+def _pack_install_commands(url: str, commit: str | None, custom_nodes: str | None):
+    """Argv lists to clone a custom node pack (and check out its pinned commit), plus a paste-safe renderer.
+
+    With no real custom_nodes folder, a placeholder stands in; its style follows sys.platform.
+    """
+    if custom_nodes is None:
+        windows = sys.platform == 'win32'
+        base = '<your ComfyUI folder>' + ('\\custom_nodes' if windows else '/custom_nodes')
+    else:
+        windows = '\\' in custom_nodes or bool(re.match(r'[A-Za-z]:', custom_nodes))
+        base = custom_nodes
+    sep = '\\' if windows else '/'
+    folder = base.rstrip('\\/') + sep + url.rstrip('/').rsplit('/', 1)[-1].removesuffix('.git')
+    commands = [['git', 'clone', url, folder]]
+    if commit:
+        commands.append(['git', '-C', folder, 'checkout', commit])
+    render = subprocess.list2cmdline if windows else shlex.join
+    return commands, render
+
+
+PACK_AFTER = ('If the pack has a requirements.txt, install it with the Python your ComfyUI runs on, '
+              'then restart ComfyUI and retry.')
+
+
+def attached_asset_readiness(entry: str | None, *, nodes=(), models=(), lockfile_path=None, target=None,
+                             custom_nodes: str | None = None) -> dict[str, Any]:
     """Readiness for an attached ComfyUI: the person fixes it on their ComfyUI; Astrid installs and restarts nothing there.
 
     A node no locked pack provides is part of ComfyUI itself. A node a locked custom pack provides
-    names that pack, and its repository when the lock declares a URL.
+    names that pack, and its repository when the lock declares a URL. For such a pack Astrid only
+    shows the commands; the person or their coding agent runs them.
     """
     from pathlib import Path
 
@@ -102,24 +139,37 @@ def attached_asset_readiness(entry: str | None, *, nodes=(), models=(), lockfile
 
     lock = Path('custom_nodes.lock') if lockfile_path is None else lockfile_path
     issues, fixes = [], []
+    fixed_packs: set[str] = set()
     for name in nodes:
         packs = [pack for pack in resolve_node_packs({name}, lockfile_path=lock)
                  if not _is_comfyui_core_repo(pack.repo)]
+        commands = None
         if packs:
             pack = packs[0]
             url = pack.repo if pack.repo.startswith(('http://', 'https://', 'git@')) else None
             where = f' ({url})' if url else ''
             action = (f"Install {pack.name}{where} in your ComfyUI's custom_nodes folder, "
                       "then restart ComfyUI yourself and retry.")
-            message = f'Your ComfyUI does not have {name}, which comes from the custom node pack {pack.name}. {action}'
             details = {'node': name, 'pack': pack.name, 'repository': url}
+            if url:
+                argv, render = _pack_install_commands(url, _locked_commit(lock, pack), custom_nodes)
+                action += f" Commands: {' ; '.join(render(cmd) for cmd in argv)}. {PACK_AFTER}"
+                details.update(commands=argv, after=PACK_AFTER)
+                commands = argv
+            message = f'Your ComfyUI does not have {name}, which comes from the custom node pack {pack.name}. {action}'
         else:
             action = 'Update ComfyUI, then retry.'
             message = (f'Your ComfyUI does not have {name}, which is part of ComfyUI itself; '
                        'update ComfyUI, then retry.')
             details = {'node': name, 'pack': None, 'repository': None}
         issues.append({'code': 'missing_node_pack', 'severity': 'error', 'message': message, 'details': details})
-        fixes.append({'scope': 'attached_target', 'details': {'action': action}})
+        if commands is not None and pack.name in fixed_packs:
+            continue  # one fix per pack: its commands are listed once
+        if commands is not None:
+            fixed_packs.add(pack.name)
+            fixes.append({'scope': 'attached_target', 'details': {'action': action, 'commands': commands}})
+        else:
+            fixes.append({'scope': 'attached_target', 'details': {'action': action}})
     for name in models:
         action = 'Put the model file in its models folder on your ComfyUI yourself, then retry.'
         issues.append({'code': 'missing_model', 'severity': 'error',

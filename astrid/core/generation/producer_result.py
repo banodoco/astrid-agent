@@ -15,6 +15,7 @@ from astrid.core._shared.result_manifest import (
     _validate_manifest,
     validate_result_manifest,
 )
+from astrid.core.generation.vibecomfy_runtime_root import vibecomfy_runtime_root
 
 
 def public_alignment_evidence(alignment: Mapping[str, Any]) -> dict[str, Any]:
@@ -247,7 +248,8 @@ def _native_failure_result(error, receipt: Path, destination: Path, *, task_id: 
 
     if (attempt_id is None or receipt.is_symlink()
             or any(parent.is_symlink() for parent in receipt.parents)
-            or not receipt.resolve().is_relative_to(destination.resolve())):
+            or not (receipt.resolve().is_relative_to(destination.resolve())
+                    or receipt.resolve().is_relative_to(Path(vibecomfy_runtime_root(destination)).resolve()))):
         raise ValueError('native receipt is outside this Runtime attempt')
     attempt = json.loads(receipt.read_bytes())
     runtime = attempt['runtime_evidence']
@@ -409,7 +411,7 @@ def preserve_result_on_error(destination: Path, *, task_id: str, attempt_id: str
     without replacing the exception or creating a second terminal profile.
     """
     destination = Path(destination).resolve()
-    previous_receipts = set(destination.glob('.vibecomfy-runtime/out/runs/*/attempt.json'))
+    previous_receipts = set(vibecomfy_runtime_root(destination).glob('out/runs/*/attempt.json'))
     try:
         yield
     except BaseException as error:
@@ -444,7 +446,7 @@ def preserve_result_on_error(destination: Path, *, task_id: str, attempt_id: str
                 error.add_note(f'Could not retain producer settings evidence: {evidence_error}')
             break
         else:
-            receipts.extend(path for path in destination.glob('.vibecomfy-runtime/out/runs/*/attempt.json')
+            receipts.extend(path for path in vibecomfy_runtime_root(destination).glob('out/runs/*/attempt.json')
                             if path not in previous_receipts)
             # An ambiguous native run is recovery work, never an invented run id.
             receipts = [path for path in dict.fromkeys(receipts)
