@@ -169,6 +169,7 @@ class DeferredRemotionValidation:
                         self._prepare()
                     except BaseException as exc:
                         self._error = exc
+                        raise
                     finally:
                         self.done = True
         if self._error is not None:

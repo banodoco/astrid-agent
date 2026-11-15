@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -118,23 +119,36 @@ def test_prepare_selects_checkout_archives_without_local_git_sources(tmp_path, m
     assert manifest["vibecomfy"] == {"sha": "d" * 40}
 
 
-def test_command_smoke_uses_installed_isolated_python_and_real_http_fixture(tmp_path, monkeypatch):
+def _smoke_environment(tmp_path, monkeypatch, *, generation):
+    """Run command_smoke against the real stdlib fixture; ``generation`` fakes only the installed generate call."""
+    import types
     import urllib.request
-    monkeypatch.setattr(guard.windows, 'EVIDENCE', tmp_path)
+    (tmp_path / 'evidence').mkdir()  # main() creates this directory before any step runs
+    monkeypatch.setattr(guard.windows, 'EVIDENCE', tmp_path / 'evidence')
     monkeypatch.setattr(guard.windows, 'version', lambda: {
         'python': 'installed-python.exe', 'env': {'INSTALLED_PROFILE': 'selected'},
     })
+    local = tmp_path / 'local'
+    monkeypatch.setenv('LOCALAPPDATA', str(local))
     monkeypatch.setenv('PYTHONPATH', 'checkout-must-not-leak')
     monkeypatch.setenv('PYTHONHOME', 'checkout-must-not-leak')
+    monkeypatch.setattr(guard.windows, 'wait_for', lambda label, probe, **kwargs: None)
     calls = []
 
     def run(argv, **kwargs):
+        if argv[0] == 'tasklist':
+            return subprocess.CompletedProcess(argv, 0, 'TASKLIST /v rows\n', '')
         calls.append(argv)
         assert argv[:4] == ['installed-python.exe', '-I', '-m', 'astrid']
-        assert kwargs['cwd'] == tmp_path and kwargs['timeout'] == 60
+        assert kwargs['cwd'] == guard.windows.EVIDENCE
         assert kwargs['env']['INSTALLED_PROFILE'] == 'selected'
         assert not {'PYTHONPATH', 'PYTHONHOME'} & kwargs['env'].keys()
         result = {}
+        if '--out' in argv:
+            assert kwargs['timeout'] == 420
+            return generation(argv, kwargs, urllib.request)
+        if kwargs['timeout'] != 60:
+            raise AssertionError(kwargs['timeout'])
         if '--comfy-url' in argv:
             url = argv[argv.index('--comfy-url') + 1]
             with urllib.request.urlopen(url + '/internal/folder_paths') as response:
@@ -152,11 +166,90 @@ def test_command_smoke_uses_installed_isolated_python_and_real_http_fixture(tmp_
         return subprocess.CompletedProcess(argv, 0, json.dumps(result), '')
 
     monkeypatch.setattr(guard.subprocess, 'run', run)
+    return calls
+
+
+def _submitting_generation(argv, kwargs, urllib_request):
+    """Behave like the installed product: one POST /prompt to the attached URL, then one delivered PNG."""
+    url = argv[argv.index('--placement') + 1]
+    request = urllib_request.Request(url + '/prompt', data=b'{"prompt": {}}', method='POST')
+    with urllib_request.urlopen(request) as response:
+        assert response.status == 200
+    out = Path(argv[argv.index('--out') + 1])
+    out.mkdir(parents=True, exist_ok=True)
+    image = out / 'Qwen_image_2.1_teapot.png'
+    image.write_bytes(b'\x89PNG\r\n\x1a\n' + b'0' * 16)
+    return subprocess.CompletedProcess(argv, 0, json.dumps({'image_paths': [str(image)]}), '')
+
+
+def test_command_smoke_uses_installed_isolated_python_and_real_http_fixture(tmp_path, monkeypatch):
+    calls = _smoke_environment(tmp_path, monkeypatch, generation=_submitting_generation)
     guard.command_smoke()
-    assert len(calls) == 7
+    assert len(calls) == 8
     assert calls[0][4:] == ['doctor', '--json']
-    assert '--dry-run' in calls[-1] and '--apply' not in sum(calls, [])
-    assert len(list(tmp_path.glob('command-*.log'))) == 7
+    assert '--dry-run' in calls[-2] and '--apply' not in sum(calls, [])
+    generate = calls[-1]
+    assert generate[4:6] == ['generate', 'image']
+    assert generate[generate.index('--mode') + 1] == 't2i'
+    assert generate[generate.index('--entry') + 1] == 'qwen-image-2.1-turbo'
+    assert generate[generate.index('--seed') + 1] == '42'
+    assert generate[generate.index('--out') + 1] == str(tmp_path / 'evidence' / 'generation-output')
+    assert '--dry-run' not in generate
+    assert len(list((tmp_path / 'evidence').glob('command-*.log'))) == 8
+    timing = json.loads((tmp_path / 'evidence' / 'generation-timing.json').read_text())
+    assert timing['status'] == 'passed' and timing['prompt_posts'] == 1
+    assert timing['seconds'] >= 0 and timing['budget_seconds'] == 240 and timing['timeout_seconds'] == 420
+    assert not (tmp_path / 'evidence' / 'generation-failure').exists()
+
+
+def test_real_generation_over_budget_fails_with_timing_and_evidence(tmp_path, monkeypatch):
+    import types
+    ticks = iter([0.0, 300.0])
+    monkeypatch.setattr(guard, 'time', types.SimpleNamespace(monotonic=lambda: next(ticks)))
+    _smoke_environment(tmp_path, monkeypatch, generation=_submitting_generation)
+    with pytest.raises(RuntimeError, match='Installed real generation failed'):
+        guard.command_smoke()
+    evidence = tmp_path / 'evidence'
+    timing = json.loads((evidence / 'generation-timing.json').read_text())
+    assert timing['status'] == 'failed' and timing['seconds'] == 300.0
+    assert 'took 300.0 s; budget is 240 s' in timing['error']
+    assert (evidence / 'generation-failure.json').is_file()
+    assert (evidence / 'generation-failure' / 'tasklist-python.txt').read_text() == 'TASKLIST /v rows\n'
+
+
+def test_real_generation_timeout_keeps_logs_attempts_and_process_list(tmp_path, monkeypatch):
+    def hangs(argv, kwargs, urllib_request):
+        raise subprocess.TimeoutExpired(argv, kwargs['timeout'], output=b'partial stdout', stderr=b'partial stderr')
+
+    _smoke_environment(tmp_path, monkeypatch, generation=hangs)
+    local = tmp_path / 'local' / 'Astrid Runtime'
+    (local / 'logs').mkdir(parents=True)
+    (local / 'logs' / 'generic-host.log').write_text('lease_lost sample')
+    attempt = local / 'attempts' / 'digest' / 'astrid-attempt-task-1-token'
+    attempt.mkdir(parents=True)
+    (attempt / 'task-stderr-tail.log').write_text('child stderr')
+    with pytest.raises(RuntimeError, match='Installed real generation failed'):
+        guard.command_smoke()
+    evidence = tmp_path / 'evidence'
+    failure = evidence / 'generation-failure'
+    assert (failure / 'runtime-logs' / 'generic-host.log').read_text() == 'lease_lost sample'
+    assert (failure / 'attempts' / '0-astrid-attempt-task-1-token' / 'task-stderr-tail.log').read_text() == 'child stderr'
+    assert (failure / 'tasklist-python.txt').is_file()
+    assert json.loads((evidence / 'generation-failure.json').read_text())['runtime_logs'] == 'captured'
+    assert (evidence / 'command-generate-image.log').read_text() == 'partial stdoutpartial stderr'
+    timing = json.loads((evidence / 'generation-timing.json').read_text())
+    assert timing['status'] == 'failed' and 'TimeoutExpired' in timing['error']
+
+
+def test_real_generation_without_a_submitted_prompt_fails(tmp_path, monkeypatch):
+    def delivers_without_submitting(argv, kwargs, urllib_request):
+        return subprocess.CompletedProcess(argv, 0, json.dumps({'image_paths': []}), '')
+
+    _smoke_environment(tmp_path, monkeypatch, generation=delivers_without_submitting)
+    with pytest.raises(RuntimeError, match='sent 0 POST /prompt'):
+        guard.command_smoke()
+    timing = json.loads((tmp_path / 'evidence' / 'generation-timing.json').read_text())
+    assert timing['status'] == 'failed' and 'sent 0 POST /prompt' in timing['error']
 
 
 @pytest.mark.parametrize('returncode, stdout, stderr', [

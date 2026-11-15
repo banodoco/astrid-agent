@@ -147,3 +147,4 @@ jobs:
           path: |
             ${{ runner.temp }}/windows-install-guard/*.log
             ${{ runner.temp }}/windows-install-guard/*.json
+            ${{ runner.temp }}/windows-install-guard/generation-failure/**

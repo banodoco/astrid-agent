@@ -13,7 +13,7 @@ def test_host_limits_openblas_threads_on_windows_at_import():
               and ast.unparse(node.test) == "sys.platform == 'win32'"
               and "OPENBLAS_NUM_THREADS" in ast.unparse(node)]
     assert len(guards) == 1
-    assert "setdefault('OPENBLAS_NUM_THREADS', '1')" in ast.unparse(guards[0])
+    assert "__import__('os').environ.setdefault('OPENBLAS_NUM_THREADS', '1')" in ast.unparse(guards[0])
 
 
 def test_windows_children_inherit_the_setting():

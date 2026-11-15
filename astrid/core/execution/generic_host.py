@@ -32,7 +32,6 @@ import io
 import json
 import logging
 import mimetypes
-import os
 import queue
 import re
 import secrets as secrets_module
@@ -18754,7 +18753,8 @@ if sys.platform == "win32":
     # DllMain. Doing that under the Windows loader lock while the heartbeat thread
     # is running deadlocked the task host on a tester's machine (astrid-dev#651).
     # One thread means none are created at load. Children inherit the setting.
-    os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+    # `os` in this module is the Runtime filesystem adapter, so use the stdlib module.
+    __import__("os").environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 
 
 if __name__ == "__main__":

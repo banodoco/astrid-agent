@@ -25,7 +25,6 @@ first, then character/style, then brand); one handle per port.
 from __future__ import annotations
 
 import mimetypes
-import os
 import re
 import sys
 from pathlib import Path
