@@ -644,12 +644,13 @@ class ManagedEnginePreparation:
         self.check()
         self._verify_canonical_bytes(staged_digests)
         self._verify_model_alignment(manifest)
-        if not getattr(self, "_warm_claim_matched", False):
-            self._guard_runtime(workflow, runner, post=True)
-            # Q2: reuses this lock hold's audit unless alignment changed something.
-            self._audit_installation(runner, receipt, runner.plan.steps, alignment=True)
-        elif runner.locks != receipt.requirements_locks or runner.commits != receipt.source_commits:
-            raise IntegrityError("managed alignment changed the installed base")
+        # This runs only after native alignment actually ran (warm hits skip it),
+        # and alignment can mutate the base even on an attested claim with new
+        # requirements, so the base is always re-audited here before any witness
+        # is written. Q2 reuses this lock hold's audit only when nothing changed;
+        # a matched claim stored no audit, so it audits fully.
+        self._guard_runtime(workflow, runner, post=True)
+        self._audit_installation(runner, receipt, runner.plan.steps, alignment=True)
         self.check()
 
     def _verify_canonical_bytes(self, staged_digests):

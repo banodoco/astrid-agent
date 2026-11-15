@@ -1142,7 +1142,7 @@ def warm_case(tmp_path, monkeypatch):
     receipt = SimpleNamespace(status='installed', requirements_locks=locks,
                               source_commits={recipe.sources[0].name: head}, receipt_id='receipt', models_root=None)
     calls, logs = [], []
-    state = SimpleNamespace(claim='claim-1', birth={'pid': 123, 'start_ticks': '456', 'uid': 1000},
+    state = SimpleNamespace(drift_on_nodes=False, drifted_commits=None, claim='claim-1', birth={'pid': 123, 'start_ticks': '456', 'uid': 1000},
                             nodes=[], models=[], fail_doctor=False, recipe=recipe, helper_sha='a' * 64)
     monkeypatch.setattr(warm_attestation, 'supervisor_incarnation', lambda *a: state.birth)
     (root / 'runtime/ComfyUI/models').mkdir(parents=True, exist_ok=True)
@@ -1161,7 +1161,8 @@ def warm_case(tmp_path, monkeypatch):
             return {'helper_sha256': self.helper_sha256}
         def execute(self, step, **kwargs):
             calls.append(step.kind)
-            self.commits.update(receipt.source_commits)
+            # A node restore that moved a recipe-owned source shows up in the next audit.
+            self.commits.update(state.drifted_commits or receipt.source_commits)
             self.locks.update(receipt.requirements_locks)
         def run(self, argv, **kwargs):
             calls.append('git-inventory')
@@ -1216,7 +1217,11 @@ def warm_case(tmp_path, monkeypatch):
             calls.append('doctor')
             if state.fail_doctor:
                 raise IntegrityError('doctor failed')
-        commands = SimpleNamespace(nodes_restore=lambda rows: calls.append('nodes'),
+        def nodes_restore(rows):
+            calls.append('nodes')
+            if state.drift_on_nodes:
+                state.drifted_commits = {name: 'f' * 40 for name in receipt.source_commits}
+        commands = SimpleNamespace(nodes_restore=nodes_restore,
             prepare_deps_sync=lambda: calls.append('prepare'), doctor=doctor)
         engine = mod.ComfyUIEngine(commands)
         original_align = engine.align
@@ -1363,13 +1368,32 @@ def test_warm_attestation_requirement_set_survives_t2i_edit_t2i(warm_case):
     c.calls.clear()
     c.state.nodes = [{'repo': 'https://example.invalid/edit.git', 'commit': 'e' * 40}]
     c.run()
-    assert not set(c.calls) & {'source', 'environment', 'runtime'}
+    # Ruling (review W131, money/generate path): alignment ran for the new requirement, so the
+    # base is re-audited after it, even on a matched claim; only the pre-alignment audit is skipped.
+    assert c.calls.index('alignment') < c.calls.index('source')
+    assert {'source', 'environment', 'runtime'} <= set(c.calls)
     assert {'nodes', 'prepare', 'doctor', 'alignment'} <= set(c.calls)
     c.state.nodes = []
     c.calls.clear()
     c.run()
     assert not set(c.calls) & {'source', 'environment', 'runtime', 'nodes', 'prepare', 'doctor', 'alignment'}
     assert len(json.loads(c.attestation.read_text())['requirements']) == 2
+
+
+def test_warm_attestation_new_requirement_alignment_change_is_audited_and_not_witnessed(warm_case):
+    """Review W131: a matched claim with new requirements whose node restore moves a pinned
+    source must fail the post-alignment audit and must not extend the witness."""
+    from astrid.core.generation.engine_contracts import IntegrityError
+    c = warm_case
+    c.run()
+    before = json.loads(c.attestation.read_text())['requirements']
+    c.calls.clear()
+    c.state.nodes = [{'repo': 'https://example.invalid/edit.git', 'commit': 'e' * 40}]
+    c.state.drift_on_nodes = True
+    with pytest.raises(IntegrityError, match='changed the installed base'):
+        c.run()
+    assert c.calls.index('nodes') < c.calls.index('source')
+    assert json.loads(c.attestation.read_text())['requirements'] == before
 
 
 @pytest.mark.parametrize('change', ['recipe', 'head', 'dirty', 'lock', 'claim', 'supervisor',
