@@ -26,6 +26,7 @@ from .engine_contracts import (
 from .engine_local_endpoint import DEFAULT_ENGINE
 
 SCHEMA = "astrid.managed-engine-preparation.v1"
+_ENGINE_STOP_TIMEOUT_SECONDS = 30.0
 _PREPARATION_CONTEXT = ContextVar("astrid_managed_engine_preparation", default=None)
 _NATIVE_STEPS = frozenset({"runtime_inspect", "nodes_restore", "pip_bootstrap", "fetch", "prepare", "doctor"})
 # A preparation can outlive its Python call when a POST may still be accepted
@@ -400,7 +401,7 @@ class ManagedEnginePreparation:
         try:
             # This client stops only its authenticated supervisor's retained
             # handles and confirms all command/process/output drain before return.
-            self.context.service_client.stop_owned(deadline=time.monotonic() + 5)
+            self.context.service_client.stop_owned(deadline=time.monotonic() + _ENGINE_STOP_TIMEOUT_SECONDS)
         except BaseException as stop_error:  # noqa: BLE001 - reported through the raised error or fallback; diagnostic at debug, never a user-facing traceback
             # The fail-safe comes first and never depends on the diagnostic.
             self.uncertain = True
@@ -858,13 +859,15 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
         # align has already run nodes/fetch/prepare. Re-attest their results
         # before the first launch can execute the installed ComfyUI or venv.
         self._verify_alignment(*self._alignment_verification)
+        start_action = expected = None
         try:
             self.check()
             runner.step_id = "doctor-start"
-            self._start_engine(runner)
+            start_action, _ = self._start_engine(runner)
             # A refused foreign owner or mismatched launch never authorizes
             # stop. Uncertain start responses retain the fence in prepare().
-            self._preparing_engine = True
+            if start_action != "skipped":
+                self._preparing_engine = True
             runner.step_id = "doctor-health"
             self._time_engine(runner.check_health)
             expected = runner.health.object_info_sha256
@@ -879,5 +882,15 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
                 raise IntegrityError("managed doctor target schema changed during diagnosis")
             return result
         except BaseException:
+            if start_action == "skipped" and not self._preparing_engine:
+                # A bad workflow does not own a healthy warm engine. Only
+                # retain it when a fresh probe proves its schema unchanged.
+                self._preparing_engine = True
+                if expected is not None:
+                    with suppress(Exception):
+                        runner.step_id = "doctor-failure-health"
+                        self._time_engine(runner.check_health)
+                        if runner.health.object_info_sha256 == expected:
+                            self._preparing_engine = False
             self._stop_preparing_engine()
             raise
