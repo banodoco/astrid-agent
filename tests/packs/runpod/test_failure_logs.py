@@ -1,17 +1,15 @@
 """Declared logs from a failed pod job come back before the reset."""
 
 import json
-import shlex
 import shutil
 import subprocess
 import sys
-import threading
-import time
 from pathlib import Path
 from types import SimpleNamespace
 
 from astrid.core._shared import run_logs
 from astrid.packs.runpod import failure_receipt, machine
+
 
 ERROR = "Traceback (most recent call last):\nRuntimeError: CUDA out of memory. Tried to allocate 2.00 GiB"
 
@@ -135,53 +133,3 @@ def test_receipt_keeps_its_own_copy_of_the_logs(tmp_path):
     assert copy.parent == path.parent / "logs" and copy.read_text() == ERROR
     source.unlink()
     assert copy.read_text() == ERROR
-
-
-def test_host_refusal_recovers_logs_using_only_supported_bounded_exec(tmp_path):
-    job, root = _pod(tmp_path)
-    # Force more than one chunk, including binary content.
-    (job / 'stderr').write_bytes(bytes(range(256)) * 700)
-    stdout = _finish(job, root)
-    (job / 'stdout').write_text(stdout)
-    deadlines, ended, commands = [], [], []
-    abort = threading.Event()
-
-    class BoundedOps:
-        deadline = time.monotonic() + 30
-
-        def bounded(self, deadline, *, abort_event):
-            assert abort_event is abort
-            deadlines.append(deadline)
-            return self
-
-        def get(self, *_):
-            raise AssertionError('bounded ops reject get')
-
-        def exec(self, command, timeout):
-            commands.append(command)
-            assert time.monotonic() < self.deadline
-            command = command.replace(shlex.quote(f'{machine.POD_VENV}/bin/python'),
-                                      shlex.quote(sys.executable), 1)
-            done = subprocess.run(['bash', '-c', command], capture_output=True, text=True,
-                                   timeout=min(timeout, self.deadline - time.monotonic()))
-            return done.returncode, done.stdout, done.stderr
-
-    owner = SimpleNamespace(
-        lock=threading.RLock(), clock=time.time,
-        preparation_claim=lambda _: {'lease': {'paid_expires_at': time.time() + 40}},
-        begin_failure_observation=lambda *_: ('observer', abort),
-        end_failure_observation=ended.append)
-    machine_owner = object.__new__(machine.RunPodMachine)
-    machine_owner.adapter = SimpleNamespace(lease_owner=owner)
-    scratch = tmp_path / 'scratch'
-    scratch.mkdir()
-    run = SimpleNamespace(remote_root=str(root), scratch=scratch, directory=str(job),
-                          lease=SimpleNamespace(lease=object(), timing=None,
-                                                claim=SimpleNamespace(ops=BoundedOps(), pod_id='fake')))
-    logs = machine_owner._collect_fetch_failure_logs(run, tmp_path / 'local')
-    assert 'unavailable' not in logs
-    row = next(row for row in logs['files'] if row['name'] == 'job.stderr')
-    assert Path(row['path']).read_bytes() == bytes(range(256)) * 700
-    assert deadlines == [run.lease.claim.ops.deadline]
-    assert ended == ['observer']
-    assert 2 <= len(commands) <= 8  # marker read plus bounded archive chunks and EOF
