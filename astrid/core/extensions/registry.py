@@ -443,7 +443,13 @@ class ExtensionRegistry:
             return None
         try:
             sdk = discovery._tree_fingerprint(self._sdk_root.parent.resolve())
-            schemas = discovery._tree_fingerprint(model.SCHEMA_DIR.resolve())
+            # These validators are outside pack admission. Read their actual
+            # bytes too, including targets if a schema file is a symlink.
+            schemas = tuple(
+                (str(path), str(path.resolve()), path.read_bytes())
+                for path in (model.SCHEMA_DIR / "point.json",
+                             model.SCHEMA_DIR / "contribution.json")
+            )
         except OSError:
             return None
         return (fingerprint, tuple(roots), str(self._sdk_root.absolute()),
@@ -466,7 +472,14 @@ class ExtensionRegistry:
             sdk_pack = _Pack(SDK_OWNER, self._sdk_root.parent, "0.0.0", "built-in", sdk=True)
             packs = self._packs(roots)
             items = self._collect(packs, sdk_pack)
-            key = before if before is not None else self._fingerprint(roots, packs, items)
+            from astrid.core.pack.discovery import discover_pack_metadata
+
+            # An un-fingerprintable default discovery is a miss, never a
+            # fallback to the weaker historical instance/stat cache.
+            key = before
+            if key is None:
+                key = (object() if self._discover is discover_pack_metadata
+                       else self._fingerprint(roots, packs, items))
             if not refresh and self._snap is not None and key == self._snap_key:
                 snap = self._snap
             else:

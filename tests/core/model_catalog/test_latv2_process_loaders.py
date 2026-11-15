@@ -52,8 +52,9 @@ def test_extensions_scan_once_across_instances_and_isolate_mutation(tmp_path):
 
 def test_extensions_same_timestamp_content_and_config_changes(tmp_path, monkeypatch):
     import os
-    from tests.core.extensions.test_registry import POINT_DATA, _contribution
+
     from astrid.pack_api import VERSION
+    from tests.core.extensions.test_registry import POINT_DATA, _contribution
     collection = tmp_path / 'packs'
     pack = collection / 'latv2'
     point = pack / 'extensions/points/widget.yaml'
@@ -82,6 +83,12 @@ def test_extensions_same_timestamp_content_and_config_changes(tmp_path, monkeypa
         assert registry.load().resolve('latv2.widget', 'one').summary == 'other'
         registry.load(refresh=True)
         assert scan.call_count == 3
+        # Unreadable/racing full identities must not fall back to stat reuse.
+        monkeypatch.setattr(registry, '_process_key', lambda roots: None)
+        manifest.write_text(_contribution(summary='third'))
+        os.utime(manifest, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        assert registry.load().resolve('latv2.widget', 'one').summary == 'third'
+        assert scan.call_count == 4
 
 
 def test_model_admission_is_not_repeated_and_matches_uncached(tmp_path):
@@ -122,6 +129,7 @@ def test_model_pack_content_change_is_a_miss(tmp_path):
     root = tmp_path / 'extra'
     manifest = _pack(root, 'latv2', backend_id='studio')
     import json
+
     from astrid.pack_api import VERSION
     payload = json.loads(manifest.read_text())
     payload['pack_api'] = f'{VERSION[0]}.{VERSION[1]}'
@@ -148,10 +156,16 @@ def test_extension_snapshot_matches_forced_reload():
 def test_extension_validator_content_changes_invalidate(tmp_path, monkeypatch):
     import os
     import shutil
+
     from astrid.core.extensions import model
     schemas = tmp_path / 'schemas'
     shutil.copytree(model.SCHEMA_DIR, schemas)
     monkeypatch.setattr(model, 'SCHEMA_DIR', schemas)
+    schema = schemas / 'contribution.json'
+    external = tmp_path / 'validator.json'
+    external.write_bytes(schema.read_bytes())
+    schema.unlink()
+    schema.symlink_to(external)
     with patch.object(extensions, '_parse', wraps=extensions._parse) as parse:
         extensions.ExtensionRegistry().load()
         extensions.ExtensionRegistry().load()
@@ -177,3 +191,26 @@ def test_extension_sdk_root_changes_invalidate(tmp_path):
         assert scan.call_count == 1
         extensions.ExtensionRegistry(sdk_root=tmp_path / 'other/extensions').load()
         assert scan.call_count == 2
+
+
+def test_verified_source_pin_identity_changes_invalidate(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from astrid.core.pack import source_setup
+    identity = ['pin-one']
+    monkeypatch.setattr(source_setup, 'active_source_inventory',
+                        lambda: SimpleNamespace(identity=identity[0], sources=()))
+    with patch.object(models, '_load_yaml', wraps=models._load_yaml) as read:
+        models.ModelRegistry.load_default(project_root=tmp_path)
+        models.ModelRegistry.load_default(project_root=tmp_path)
+        assert read.call_count == 1
+        identity[0] = 'pin-two'
+        models.ModelRegistry.load_default(project_root=tmp_path)
+        assert read.call_count == 2
+    with patch.object(extensions, '_parse', wraps=extensions._parse) as parse:
+        extensions.ExtensionRegistry().load()
+        extensions.ExtensionRegistry().load()
+        assert parse.call_count == 1
+        identity[0] = 'pin-three'
+        extensions.ExtensionRegistry().load()
+        assert parse.call_count == 2

@@ -24,7 +24,6 @@ from astrid.core.model_catalog.schema import (
     validate_registry_with_backends,
 )
 
-
 _default_cache: dict[tuple, ModelRegistry] = {}
 
 

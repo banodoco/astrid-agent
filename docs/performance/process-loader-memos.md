@@ -12,7 +12,7 @@ schemas and verified managed-source inventory identity. Managed-source
 verification still runs on every lookup. Model keys also contain the resolved
 catalog path and models.yaml bytes; extension keys contain contribution roots
 (including their scope/origin), SDK path and tree, and extension validator schema
-path and tree. Model assembly shares the existing discovery scope between its
+paths and bytes (including symlink targets). Model assembly shares the existing discovery scope between its
 taxonomy and backend loaders. The discovery implementation is unchanged.
 
 Extension enable/disable config and malformed-config diagnostics are read and
