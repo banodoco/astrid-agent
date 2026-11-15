@@ -314,7 +314,7 @@ def _patch_native_descendants(originals: Mapping[tuple[Any, str], Any]) -> None:
     """Fail closed when a Python provider tries to escape via a native child."""
     original_popen = subprocess.Popen
 
-    def guarded_popen(*args: Any, **kwargs: Any):
+    def check(args: tuple[Any, ...], kwargs: Mapping[str, Any]) -> None:
         command = args[0] if args else kwargs.get("args", "")
         local_media = _local_media_tool(command)
         local_identity = _local_identity_tool(command)
@@ -336,10 +336,18 @@ def _patch_native_descendants(originals: Mapping[tuple[Any, str], Any]) -> None:
             raise NetworkPolicyError(
                 "network policy denied native descendant; use a validated observable proxy or OS broker"
             )
-        return original_popen(*args, **kwargs)
+
+    # A class, not a function: the standard library subclasses subprocess.Popen
+    # (asyncio.windows_utils does at import on Windows), and callers use isinstance.
+    class GuardedPopen(original_popen):  # type: ignore[misc, valid-type]
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            check(args, kwargs)
+            super().__init__(*args, **kwargs)
+
+    GuardedPopen.__name__ = GuardedPopen.__qualname__ = "Popen"
 
     originals[(subprocess, "Popen")] = original_popen
-    subprocess.Popen = guarded_popen  # type: ignore[assignment]
+    subprocess.Popen = GuardedPopen  # type: ignore[misc]
 
     for name in ("execv", "execve", "execvp", "execvpe", "execl", "execle", "execlp", "execlpe"):
         original = getattr(os, name, None)
