@@ -288,12 +288,17 @@ def _command_label(command: Any) -> str:
     return str(command)
 
 
+_WINDOWS = os.name == "nt"
+
+
 def _program_name(token: str) -> str:
     """Name of the program a command starts, as the allow rules spell it.
 
     On Windows the resolved program is ``ffprobe.exe`` or ``C:\\...\\git.exe``; the rules
-    name ``ffprobe`` and ``git``.
+    name ``ffprobe`` and ``git``. Elsewhere the name is taken exactly as before.
     """
+    if not _WINDOWS:
+        return Path(token).name.lower()
     name = str(token).replace("\\", "/").rsplit("/", 1)[-1].lower()
     return name[:-4] if name.endswith(".exe") else name
 
