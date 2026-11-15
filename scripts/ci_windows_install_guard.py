@@ -57,7 +57,7 @@ def install():
         windows.run_bootstrap_process([
             "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
             "-File", windows.ROOT / "journey-app" / "public" / "install.ps1",
-            "--manifest", manifest_path, "--autostart", "off", "--command", "off",
+            "--manifest", manifest_path, "--yes", "--autostart", "off", "--command", "off",
             "--skills", "off", "--skill-copies", "off",
         ], evidence / "install-bootstrap.log", "install", env=env, timeout=3600)
         installed = windows.version()
