@@ -352,6 +352,8 @@ class ComfyTargetClient:
                 self.endpoint_transport.put(frozen, str(root / subfolder / filename))
             return f"{subfolder}/{filename}"
         old_subfolder, old_filename = subfolder, filename
+        # Preserve the old request-size refusal before making any HTTP call.
+        self._multipart_parts(data, media_type, subfolder, filename)
         extension = source.suffix.lower()
         content_name = digest + extension if extension in _CONTENT_EXTENSIONS else None
         if content_name:
@@ -380,10 +382,11 @@ class ComfyTargetClient:
                 return int(value) if value.isdigit() else None
         except urllib_error.HTTPError as exc:
             return -1 if exc.code == 404 else None
-        except (OSError, ValueError):
+        except (OSError, ValueError, AttributeError):
             return None
 
-    def _upload_http(self, data: bytes, media_type: str, subfolder: str, filename: str) -> str:
+    @staticmethod
+    def _multipart_parts(data: bytes, media_type: str, subfolder: str, filename: str):
         boundary = uuid.uuid4().hex
         fields = []
         for name, value in (("subfolder", subfolder), ("type", "input")):
@@ -393,6 +396,10 @@ class ComfyTargetClient:
         body_size = sum(map(len, fields)) + len(data) + len(ending)
         if body_size > MAX_ENGINE_BODY_BYTES:
             raise ValueError("multipart media upload exceeds the engine request body limit")
+        return boundary, fields, ending
+
+    def _upload_http(self, data: bytes, media_type: str, subfolder: str, filename: str) -> str:
+        boundary, fields, ending = self._multipart_parts(data, media_type, subfolder, filename)
         body = b"".join((*fields, data, ending))
         request = urllib_request.Request(self.http_origin + "/upload/image", data=body,
                                         headers={"Content-Type": f"multipart/form-data; boundary={boundary}",
