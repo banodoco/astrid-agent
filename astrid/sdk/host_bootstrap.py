@@ -1995,8 +1995,11 @@ def _attach_resident_host(
 
 
 # A Runtime-supervised foreground host writes its ready record only after its own
-# startup, which can take minutes (Windows launch validation alone took 69 s).
-_STARTUP_WAIT_SECONDS = 180.0
+# startup, which can take minutes (Windows launch validation alone took 69 s, and a
+# virus scanner took 205 s). Keep this no shorter than the supervisor's own readiness
+# budget for the pack host, `"timeout_seconds": 300` in astrid/services.py; that
+# value is a literal there and cannot be imported here without a cycle.
+_STARTUP_WAIT_SECONDS = 300.0
 _STARTUP_POLL_SECONDS = 0.5
 _STARTUP_HEALTH_SECONDS = 5.0
 _PACK_HOST_SERVICE = "pack-host"

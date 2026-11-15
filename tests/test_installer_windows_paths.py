@@ -98,6 +98,19 @@ def test_file_limit_counts_utf16_units(length, ok):
             tools.archive_destinations([(name, False)], root, platform_name="win32")
 
 
+def test_omp_budget_is_checked_at_final_source_location_not_staging():
+    # "source" is three UTF-16 units longer than the old "s.u" staging name, so a file
+    # that fits under staging can still fail after the rename. The check must refuse it.
+    root = PureWindowsPath("C:/Users/u/AppData/Local/Astrid/omp")
+    name = "f" * (260 - len(str(root / "source")) - 1)
+    assert len(str(root / "s.u" / name)) < 260 <= len(str(root / "source" / name))
+    tools.archive_destinations([(name, False)], root / "s.u", platform_name="win32")
+    with pytest.raises(ValueError, match="shorter Windows path"):
+        tools.archive_destinations([(name, False)], root / "source", platform_name="win32")
+    with pytest.raises(ValueError, match="shorter Windows path"):
+        tools.archive_destinations([(name, False)], root / "sources", platform_name="win32")
+
+
 @pytest.mark.parametrize("explicit", [False, True])
 def test_directory_limit_includes_implicit_parents(explicit):
     root = PureWindowsPath("C:/short")

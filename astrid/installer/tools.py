@@ -572,9 +572,12 @@ def _install_omp_source(selected: dict, recipe: dict, root: Path, target: str, r
     root.mkdir(parents=True, exist_ok=True)
     # On Windows the archive's wrapper folder (name plus 40-character commit) and a
     # long staging name push deep source files past MAX_PATH; unpack without the
-    # wrapper into a short folder there. The file set is identical either way.
+    # wrapper into a staging folder there. The file set is identical either way.
+    # The staging name must be at least as long as the final "source" name below:
+    # archive_destinations checks paths under the staging folder, and a shorter
+    # name would let a tree pass the Windows path budget and then fail at the rename.
     windows = sys.platform == "win32"
-    container = root / ("s.u" if windows else "source-archive")
+    container = root / ("sources" if windows else "source-archive")
     source_url = omp_source_url(selected["repo"], selected["sha"])
     if source_url:
         fetch_archive(source_url, container, reject_links=True, strip_root=windows)
