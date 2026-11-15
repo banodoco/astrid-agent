@@ -14,11 +14,16 @@ import hashlib
 import shutil
 import sys
 from pathlib import Path, PurePath
+from typing import overload
 
 RUNTIME_DIR_NAME = ".vibecomfy-runtime"
 _WINDOWS_PARENT = "vr"
 
 
+@overload
+def vibecomfy_runtime_root(destination: Path | str, *, platform_name: str | None = None) -> Path: ...
+@overload
+def vibecomfy_runtime_root(destination: PurePath, *, platform_name: str | None = None) -> PurePath: ...
 def vibecomfy_runtime_root(destination: PurePath | str, *, platform_name: str | None = None) -> PurePath:
     """``destination/.vibecomfy-runtime``; on Windows ``<data root>/vr/<16 hex of the attempt name>``."""
     if (sys.platform if platform_name is None else platform_name) != "win32":

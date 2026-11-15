@@ -187,20 +187,31 @@ def test_posix_socketpair_and_asyncio_are_untouched_under_the_guard(guarded_sock
     "ffprobe", "ffprobe.exe", "FFPROBE.EXE", "/usr/bin/ffprobe",
     r"C:\Program Files\ffmpeg\bin\ffprobe.exe", "ffmpeg.exe",
 ])
-def test_local_media_tools_are_recognised_with_a_windows_suffix_or_path(program):
+def test_local_media_tools_are_recognised_with_a_windows_suffix_or_path(program, monkeypatch):
+    monkeypatch.setattr(network_policy, "_WINDOWS", True)
     assert network_policy._local_media_tool([program, "-v", "error", "clip.mp4"]) is True
 
 
 @pytest.mark.parametrize("program", ["ffprobe.exe.bat", "notffprobe.exe", "ffprobe.com", "curl.exe"])
-def test_other_programs_are_not_media_tools(program):
+def test_other_programs_are_not_media_tools(program, monkeypatch):
+    monkeypatch.setattr(network_policy, "_WINDOWS", True)
     assert network_policy._local_media_tool([program, "-v", "error", "clip.mp4"]) is False
 
 
-def test_media_tool_with_a_url_is_still_refused_on_windows_names():
+def test_media_tool_with_a_url_is_still_refused_on_windows_names(monkeypatch):
+    monkeypatch.setattr(network_policy, "_WINDOWS", True)
     assert network_policy._local_media_tool(["ffprobe.exe", "https://example.com/clip.mp4"]) is False
 
 
-def test_git_identity_probe_is_recognised_as_git_exe():
+def test_git_identity_probe_is_recognised_as_git_exe(monkeypatch):
+    monkeypatch.setattr(network_policy, "_WINDOWS", True)
     command = ["git", "rev-parse", "HEAD"]
     windows = [r"C:\Program Files\Git\cmd\git.exe", *command[1:]]
     assert network_policy._local_identity_tool(windows) == network_policy._local_identity_tool(command)
+
+
+@pytest.mark.parametrize("program", ["ffprobe.exe", r"C:\\tools\\ffprobe.exe"])
+def test_off_windows_program_names_are_taken_exactly_as_before(program, monkeypatch):
+    monkeypatch.setattr(network_policy, "_WINDOWS", False)
+    assert network_policy._local_media_tool([program, "-v", "error", "clip.mp4"]) is False
+    assert network_policy._local_media_tool(["/usr/bin/ffprobe", "-v", "error", "clip.mp4"]) is True
