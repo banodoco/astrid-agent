@@ -18,6 +18,8 @@ ROOT = Path(__file__).resolve().parents[2]
 @pytest.mark.remotion
 @pytest.mark.usefixtures("remotion_runtime_environment")
 class AudioRenderTest(unittest.TestCase):
+    # Hosted Darwin render exceeded 120s; R12's default timeout was 600s.
+    @pytest.mark.timeout(600)
     def test_rendered_mp4_contains_audio_stream(self) -> None:
         tmp_dir = Path(tempfile.mkdtemp(prefix="audio-render-"))
         self.addCleanup(shutil.rmtree, tmp_dir, ignore_errors=True)
