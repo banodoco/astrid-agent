@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 SCHEMA = "astrid.generation.phase-timing.v1"
-TIER1_CARDS = ("P3", "P4", "W-A", "W-B", "W-C", "W-D", "W-E", "W-F", "W-H", "Q2")
+TIER1_CARDS = ("P3", "P4", "W-B", "W-C", "W-D", "W-E", "W-F", "W-H", "Q2")
 #: phase -> (start stamp, end stamp)
 PHASES = {
     "capacity_wait": ("capacity_wait_started_at", "claimed_at"),

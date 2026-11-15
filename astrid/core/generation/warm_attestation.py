@@ -28,6 +28,8 @@ from .engine_contracts import EngineError
 
 CLAIM_ID: ContextVar[str | None] = ContextVar('warm_attestation_claim', default=None)
 SCHEMA = 'astrid.warm-attestation.v3'
+#: Plan 54 re-enables this once the inventory matches the loader exactly.
+WARM_ATTESTATION_ENABLED = False
 _SHA = re.compile(r'[0-9a-f]{64}\Z')
 
 
@@ -223,7 +225,10 @@ class WarmAttestation:
     def __init__(self, root, recipe, runner, claim_id, deadline, *, enabled):
         self.root, self.recipe, self.runner = Path(root), recipe, runner
         self.claim_id, self.deadline = claim_id, deadline
-        self.enabled = enabled is True and (claim_id is None or isinstance(claim_id, str) and bool(claim_id))
+        # R13: off (reviews W144/W150: the inventory does not yet equal what the
+        # pinned engine imports). Every job takes the full audit and alignment.
+        self.enabled = (WARM_ATTESTATION_ENABLED is True and enabled is True
+                        and (claim_id is None or isinstance(claim_id, str) and bool(claim_id)))
         self.files = _TargetFiles(str(self.root))
         self.path = str(self.root / '.astrid-engine/warm-attestation.json')
         self.saved = None
