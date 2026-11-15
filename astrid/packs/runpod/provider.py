@@ -7,6 +7,7 @@ from typing import Any
 from urllib.parse import quote
 
 from runpod_lifecycle.rest import collect_pages, normalize_pod
+from runtime_protocol.platform import fsync_directory
 
 from astrid.core.generation.engine_contracts import PlacementRefused
 from astrid.core.generation.machine_provider import MachineRecord
@@ -193,11 +194,7 @@ class ProviderGate:
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, self.path)
-            directory = os.open(self.path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
+            fsync_directory(self.path.parent)  # POSIX dir fsync; no-op on Windows
         finally:
             try:
                 os.unlink(temporary)
