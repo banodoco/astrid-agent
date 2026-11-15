@@ -208,6 +208,133 @@ def test_owned_engine_stop_failure_is_logged_and_reported_as_unconfirmed_custody
     assert not capsys.readouterr().err
 
 
+@pytest.fixture
+def doctor_case():
+    """Keep one fake supervisor alive across separate preparation owners."""
+    from astrid.core.generation import managed_preparation
+
+    state = SimpleNamespace(running=True, failure=IntegrityError('unknown node input'),
+                            health_failure=False, schema='d' * 64, stops=[], starts=[],
+                            health_checks=0, preparations=[])
+
+    def stop_owned(*, deadline):
+        state.stops.append((time.monotonic(), deadline))
+        state.running = False
+
+    def start(*, readonly):
+        assert readonly is False
+        action = 'skipped' if state.running else 'executed'
+        state.starts.append(action)
+        state.running = True
+        return action, {}
+
+    def preparation():
+        prep = ManagedEnginePreparation.__new__(ManagedEnginePreparation)
+        prep._preparing_engine = prep.uncertain = False
+        prep.report = prep.lock = None
+        prep.deadline = time.monotonic() + 60
+        prep.cancelled = lambda: False
+        prep.recipe = SimpleNamespace(start=SimpleNamespace(port=8188))
+        prep.context = SimpleNamespace(service_client=SimpleNamespace(stop_owned=stop_owned))
+        prep._verify_alignment = lambda *args: None
+        prep._alignment_verification = ()
+        runner = SimpleNamespace(start=start)
+
+        def check_health():
+            state.health_checks += 1
+            if state.health_failure and state.health_checks > 1:
+                raise IntegrityError('engine unhealthy')
+            runner.health = SimpleNamespace(object_info_sha256=state.schema)
+            return 'skipped', {}
+
+        def native(*args, **kwargs):
+            if state.failure is not None:
+                raise state.failure
+            return 'doctor passed'
+
+        runner.check_health = check_health
+        prep._alignment_runner = runner
+        prep._native = native
+        prep._prepare = lambda *args, **kwargs: prep._doctor(['doctor', 'workflow.py'])
+        state.preparations.append(prep)
+        return prep
+
+    state.preparation = preparation
+    state.prepare = lambda prep: prep.prepare(Path('workflow.py'), execution_identity='execution',
+        inputs={}, canonical_workflow=None, input_digests={})
+    yield state
+    for prep in state.preparations:
+        managed_preparation._UNRESOLVED_CUSTODY.pop(id(prep), None)
+
+
+def test_reused_engine_doctor_failure_preserves_warm_engine_budget(doctor_case):
+    c = doctor_case
+    prep = c.preparation()
+    with pytest.raises(IntegrityError) as caught:
+        c.prepare(prep)
+    assert caught.value is c.failure
+    assert c.health_checks == 2
+    prep.close()
+    assert not prep.uncertain and c.stops == []
+    c.failure = None
+    following = c.preparation()
+    assert c.prepare(following) == 'doctor passed'
+    following.close()
+    assert c.starts == ['skipped', 'skipped']
+    assert c.stops == []  # CPU budget: no supervisor stop or engine restart.
+
+
+@pytest.mark.parametrize('change', ['unhealthy', 'schema'])
+def test_reused_engine_doctor_failure_stops_changed_engine(doctor_case, change):
+    c = doctor_case
+    prep = c.preparation()
+    native = prep._native
+
+    def fail_doctor(*args, **kwargs):
+        c.health_failure = change == 'unhealthy'
+        if change == 'schema':
+            c.schema = 'e' * 64
+        return native(*args, **kwargs)
+
+    prep._native = fail_doctor
+    with pytest.raises(IntegrityError) as caught:
+        c.prepare(prep)
+    assert caught.value is c.failure
+    prep.close()
+    assert len(c.stops) == 1 and not c.running and not prep.uncertain
+
+
+def test_fresh_engine_doctor_failure_stop_has_thirty_second_budget(doctor_case):
+    c = doctor_case
+    c.running = False
+    prep = c.preparation()
+    before = time.monotonic()
+    with pytest.raises(IntegrityError) as caught:
+        c.prepare(prep)
+    assert caught.value is c.failure
+    prep.close()
+    assert c.starts == ['executed'] and len(c.stops) == 1
+    assert c.stops[0][1] >= before + 30
+    assert not c.running and not prep.uncertain
+
+
+def test_fresh_engine_doctor_success_retains_custody_until_report(doctor_case):
+    c = doctor_case
+    c.running, c.failure = False, None
+    prep = c.preparation()
+
+    def finish_preparation(*args, **kwargs):
+        result = prep._doctor(['doctor', 'workflow.py'])
+        assert prep._preparing_engine
+        return result
+
+    prep._prepare = finish_preparation
+    assert c.prepare(prep) == 'doctor passed'
+    assert not prep._preparing_engine
+    prep.close()
+    assert c.stops == [] and c.running
+
+
 def test_alignment_failure_keeps_native_stderr_out_of_public_error(tmp_path, caplog):
     from astrid.core.generation.engine_recipe import load_recipe
     from astrid.core.generation.engine_platforms import platform_adapter
