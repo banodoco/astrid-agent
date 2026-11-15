@@ -160,7 +160,8 @@ def _attached_workflow_endpoint(parsed: argparse.Namespace) -> str:
         return ''
     if not Path(parsed.workflow).expanduser().exists():
         return ''
-    from astrid.core.generation import placement as placements, settings, targets
+    from astrid.core.generation import placement as placements
+    from astrid.core.generation import settings, targets
     endpoint = placements.resolve_placement(placements.request_from_selector(parsed.placement)).endpoint or ''
     try:  # loopback only, like `settings set placement`: nothing is sent to any other host
         return targets.normalize_target({'endpoint': endpoint}).endpoint
