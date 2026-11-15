@@ -42,7 +42,7 @@ def authored(monkeypatch, tmp_path):
     import astrid.sdk as sdk
     monkeypatch.setattr(sdk, '_load_model_registry', lambda **kwargs: ModelRegistry([]))
     monkeypatch.setattr('astrid.packs.vibecomfy.production_engine.load_workflow_path',
-        lambda *args, **kwargs: SimpleNamespace(resolved=SimpleNamespace(workflow=workflow.copy())))
+        lambda *args, **kwargs: SimpleNamespace(resolved=SimpleNamespace(workflow=workflow.copy()), saved_seed_controls=None))
     return workflow, entry
 
 

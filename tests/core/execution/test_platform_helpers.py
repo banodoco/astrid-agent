@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import errno
+import hashlib
+import threading
 import os
 import sys
 import subprocess
@@ -72,7 +74,12 @@ def test_windows_task_stop_closes_job_without_posix_census(monkeypatch):
 @pytest.mark.parametrize("configured_base", [False, True])
 def test_windows_attempt_directory_is_private_from_creation(tmp_path, monkeypatch, configured_base):
     from astrid.core.execution import generic_host
+    from astrid.sdk import storage_root
     host = object.__new__(generic_host.GenericPackHost)
+    host.executor_id = "test-executor"
+    host._process_lock = threading.RLock()
+    monkeypatch.setattr(storage_root, "resolve_runtime_data_root", lambda **_: tmp_path)
+    monkeypatch.setattr(platform, "is_owner_only", lambda *args, **kwargs: True)
     host.attempt_base = tmp_path / "attempts" if configured_base else None
     host.attempt_root = None
     monkeypatch.setattr(generic_host, "sys", SimpleNamespace(platform="win32"))
@@ -83,8 +90,9 @@ def test_windows_attempt_directory_is_private_from_creation(tmp_path, monkeypatc
         path.mkdir()
     monkeypatch.setattr(platform, "private_directory", private)
     root = host._allocate_attempt_root("task", "attempt")
-    assert root.exists() and created == [root]
-    assert root.parent == (host.attempt_base or tmp_path)
+    default_base = tmp_path / "attempts" / hashlib.sha256(host.executor_id.encode()).hexdigest()[:16]
+    assert root.exists() and created == ([root] if configured_base else [default_base.parent, default_base, root])
+    assert root.parent == (host.attempt_base or default_base)
 
 
 def test_windows_task_stop_reports_job_failure(monkeypatch):
