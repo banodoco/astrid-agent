@@ -34,13 +34,16 @@ import os
 import re
 import secrets
 import shlex
+import stat
 import tarfile
+import tempfile
+import textwrap
 import threading
 import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from typing import Any, Callable, Iterator, Mapping
 
 from .failure_reason import Reason, installation_reason
@@ -448,6 +451,8 @@ def generation_command(entry: str | None, remote_root: str, *, mode: str | None,
         f"{line} > {result}\n"
         "rc=$?\n"
         "finish_logs\n"
+        "finish_rc=$?\n"
+        "if [ $rc -eq 0 ] && [ $finish_rc -ne 0 ]; then exit $finish_rc; fi\n"
         f"if [ $rc -ne 0 ]; then {POD_VENV}/bin/python -c "
         f"{shlex.quote(Path(__file__).with_name('failure_diagnostics.py').read_text(encoding='utf-8'))} "
         f"{result} {shlex.quote(f'{remote_root}/{JOB_NAME}')}; exit $rc; fi\n"
@@ -480,32 +485,61 @@ def output_manifest_command(remote_root: str) -> str:
 
 
 def finish_command(remote_root: str, *, python: str = f"{POD_VENV}/bin/python") -> str:
-    """Best-effort declaration, collection and transfer manifest for pod job logs."""
+    """Seal outputs first; log transport failure must not lose a successful job."""
     from astrid.core._shared import run_logs
 
-    # Execute the stdlib-only source as before, replacing just its CLI entry
-    # with one combined operation. This also works while package imports fail.
+    # The collector stays stdlib-only and shares the one finish interpreter.
     source = Path(run_logs.__file__).read_text(encoding="utf-8")
     source = source[:source.rindex('\nif __name__ == "__main__":')]
+    source = source.replace("from __future__ import annotations\n", "")
     source += '''
-root, job = Path(sys.argv[1]), Path(sys.argv[2])
-for name, role, path in [("job.stdout", "stdout", job / "stdout"),
-                         ("job.stderr", "stderr", job / "stderr"),
-                         ("generation.stdout", "stdout", root.parent / "result.json")]:
-    try:
-        declare(root, LogDecl(name, role, str(path)))
-    except (OSError, ValueError):
-        pass
-collect(root)
-'''
-    # All five former finish commands share this interpreter, including the
-    # log manifest and archive. Keep the embedded collector package-independent.
-    source += '\nsys.argv = [sys.argv[0], str(root / "logs")]\n'
-    source += _MANIFEST_SCRIPT.replace(MANIFEST_MARK, LOGS_MANIFEST_MARK)
-    source += _archive_script('str(Path(root).parent.parent / "logs.tar")', LOGS_ARCHIVE_MARK)
-    source += '''
+import contextlib, io
+output_root, job = Path(sys.argv[1]), Path(sys.argv[2])
+logs_unavailable = None
 try:
-    progress_path = Path(root).parent.parent / "progress.json"
+    for name, role, path in [("job.stdout", "stdout", job / "stdout"),
+                             ("job.stderr", "stderr", job / "stderr"),
+                             ("generation.stdout", "stdout", output_root.parent / "result.json")]:
+        declare(output_root, LogDecl(name, role, str(path)))
+    collect(output_root)
+except Exception as error:  # logs are best-effort, including collection
+    logs_unavailable = type(error).__name__
+    finish_diagnostic()
+'''
+    manifest = _MANIFEST_SCRIPT.replace(
+        '{"schema_version": 1, "files": files}',
+        '{"schema_version": 1, "files": files, '
+        '**({"logs_unavailable": logs_unavailable} if logs_unavailable else {})}')
+    output_seal = '\nimport sys\nsys.argv = [sys.argv[0], str(output_root)]\n' + manifest
+    output_seal += _archive_script('str(output_root.parent / "outputs.tar")', OUTPUT_ARCHIVE_MARK)
+    source += '\ndef seal_outputs():\n' + textwrap.indent(output_seal, "    ")
+    log_seal = '\nimport sys\nsys.argv = [sys.argv[0], str(output_root / "logs")]\n'
+    log_seal += _MANIFEST_SCRIPT.replace(MANIFEST_MARK, LOGS_MANIFEST_MARK)
+    log_seal += _archive_script('str(output_root.parent / "logs.tar")', LOGS_ARCHIVE_MARK)
+    source += '\ndef seal_logs():\n' + textwrap.indent(log_seal, "    ")
+    source += '''
+# Authenticate all outputs before trying the independent failure-log transport.
+# Buffer markers so a failed log seal cannot advertise an incomplete archive.
+output_markers, log_markers = io.StringIO(), io.StringIO()
+with contextlib.redirect_stdout(output_markers):
+    seal_outputs()
+if logs_unavailable is None:
+    try:
+        with contextlib.redirect_stdout(log_markers):
+            seal_logs()
+    except Exception as error:  # a log archive must never make outputs fail
+        logs_unavailable = type(error).__name__
+        finish_diagnostic()
+        log_markers = io.StringIO()
+        output_markers = io.StringIO()
+        # Publish an authenticated manifest carrying the failure, retaining all
+        # output files. This extra local sealing pass happens only on log error.
+        with contextlib.redirect_stdout(output_markers):
+            seal_outputs()
+print(log_markers.getvalue(), end="")
+print(output_markers.getvalue(), end="")
+try:
+    progress_path = output_root.parent / "progress.json"
     if progress_path.stat().st_size <= 65536:
         payload = json.loads(progress_path.read_text())
         if isinstance(payload, dict):
@@ -514,13 +548,27 @@ try:
 except (OSError, ValueError):
     pass
 '''
-    source += '\nsys.argv = [sys.argv[0], str(Path(root).parent)]\n'
-    source += _MANIFEST_SCRIPT
-    source += _archive_script('str(Path(root).parent / "outputs.tar")', OUTPUT_ARCHIVE_MARK)
+    # Keep stderr useful and bounded without another process or a shell that
+    # turns a failed output seal into success.
+    diagnostic = '''from __future__ import annotations
+import sys, traceback
+stderr_remaining = 65536
+def finish_diagnostic():
+    global stderr_remaining
+    message = traceback.format_exc()[-stderr_remaining:] if stderr_remaining else ""
+    sys.stderr.write(message)
+    stderr_remaining -= len(message)
+try:
+'''
+    source = diagnostic + textwrap.indent(source, "    ") + '''
+except Exception:
+    finish_diagnostic()
+    sys.exit(1)
+'''
     interpreter = shlex.quote(python)
     out = f"{remote_root}/out"
-    jobdir = '"$(dirname "$0")"'
-    return f"( {interpreter} -c {shlex.quote(source)} {shlex.quote(out)} {jobdir} ) 2>/dev/null || true"
+    jobdir = '\"$(dirname \"$0\")\"'
+    return f"{interpreter} -c {shlex.quote(source)} {shlex.quote(out)} {jobdir}"
 
 
 LOGS_MANIFEST_MARK = "LOGS_MANIFEST_SHA256="
@@ -534,6 +582,37 @@ def _last_marked(text: str, mark: str) -> str | None:
 def _stamp(timing: Any, name: str, **kw: Any) -> None:
     from astrid.core.execution.phase_timing import stamp
     stamp(timing, name, **kw)
+
+
+def _safe_archive_path(relative: str, path_type: type[PurePath]) -> bool:
+    """Reject aliases and escapes on either caller OS, before normalization."""
+    if not isinstance(relative, str) or "\\" in relative or ":" in relative or "\0" in relative:
+        return False
+    parts = relative.split("/")
+    if any(part in {"", ".", ".."} or part.endswith((".", " "))
+           or re.fullmatch(r"CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9]", part.split(".")[0].rstrip(" "), re.I)
+           for part in parts):
+        return False
+    path = path_type(relative)
+    return not (path.drive or path.root or path.anchor)
+
+
+def _archive_destination(destination: Path, relative: str) -> Path:
+    local = destination / relative
+    if not local.resolve().is_relative_to(destination.resolve()):
+        raise DigestMismatch("output destination escapes the output directory")
+    if local.is_symlink() or any(parent.is_symlink() for parent in local.parents):
+        raise DigestMismatch("output destination contains a symlink")
+    if any(parent.exists() and not parent.is_dir() for parent in local.parents):
+        raise DigestMismatch("output destination parent is not a directory")
+    try:
+        observed = local.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        if not stat.S_ISREG(observed.st_mode) or observed.st_nlink > 1:
+            raise DigestMismatch("output destination is not a single-link regular file")
+    return local
 
 
 def _fetch_output_archive(ops: Any, remote: str, destination: Path, scratch: Path,
@@ -551,6 +630,9 @@ def _fetch_output_archive(ops: Any, remote: str, destination: Path, scratch: Pat
             by_name = {member.name: member for member in members}
             if len(by_name) != len(members) or any(not member.isfile() for member in members):
                 raise DigestMismatch("output archive contains duplicate or non-regular members")
+            if any(not _safe_archive_path(member.name, kind)
+                   for member in members for kind in (PurePosixPath, PureWindowsPath)):
+                raise DigestMismatch("output archive has an unsafe path")
             manifest = by_name.get(MANIFEST_NAME)
             if manifest is None or manifest.size > 1024 * 1024:
                 raise DigestMismatch("output archive has no bounded manifest")
@@ -563,34 +645,45 @@ def _fetch_output_archive(ops: Any, remote: str, destination: Path, scratch: Pat
             if not isinstance(recorded, Mapping) or not recorded:
                 raise MachineError("remote job reported no output files")
             for relative, entry in recorded.items():
-                path = Path(relative)
-                if (not isinstance(entry, Mapping) or path.is_absolute() or not path.parts
-                        or ".." in path.parts or relative != path.as_posix()
+                if (not all(_safe_archive_path(relative, kind) for kind in (PurePosixPath, PureWindowsPath))
+                        or not isinstance(entry, Mapping)
                         or type(entry.get("size")) is not int or entry["size"] < 0):
                     raise DigestMismatch("output archive has an unsafe path or size")
             if set(by_name) != {MANIFEST_NAME, *recorded}:
                 raise DigestMismatch("output archive members differ from the pod manifest")
             if any(by_name[name].size != entry["size"] for name, entry in recorded.items()):
                 raise DigestMismatch("output archive member size differs from the pod manifest")
+            # Windows callers also collapse case. Refuse collisions and file /
+            # directory conflicts before publishing anything on either OS.
+            names = {name.casefold() for name in recorded}
+            if len(names) != len(recorded) or any(
+                    parent.as_posix() in names for name in names for parent in PurePosixPath(name).parents):
+                raise DigestMismatch("output archive has conflicting paths")
             destination = Path(destination)
+            files = {relative: str(_archive_destination(destination, relative)) for relative in recorded}
             destination.mkdir(parents=True, exist_ok=True)
-            files = {}
-            for relative, entry in sorted(recorded.items()):
-                local = destination / relative
-                if local.is_symlink() or any(parent.is_symlink() for parent in local.parents):
-                    raise DigestMismatch("output destination contains a symlink")
-                local.parent.mkdir(parents=True, exist_ok=True)
-                source = archive.extractfile(by_name[relative])
-                assert source is not None
-                digest = hashlib.sha256()
-                with source, local.open("wb") as target:
-                    for chunk in iter(lambda: source.read(1 << 20), b""):
-                        digest.update(chunk)
-                        target.write(chunk)
-                if digest.hexdigest() != entry.get("sha256") or local.stat().st_size != entry["size"]:
-                    local.unlink(missing_ok=True)
-                    raise DigestMismatch(f"downloaded {relative} does not match the pod manifest")
-                files[relative] = str(local)
+            with tempfile.TemporaryDirectory(prefix=".astrid-output-", dir=destination) as temporary:
+                staged = {}
+                for index, (relative, entry) in enumerate(sorted(recorded.items())):
+                    local = Path(temporary) / str(index)
+                    source = archive.extractfile(by_name[relative])
+                    assert source is not None
+                    digest = hashlib.sha256()
+                    with source, local.open("wb") as target:
+                        for chunk in iter(lambda: source.read(1 << 20), b""):
+                            digest.update(chunk)
+                            target.write(chunk)
+                    if digest.hexdigest() != entry.get("sha256") or local.stat().st_size != entry["size"]:
+                        raise DigestMismatch(f"downloaded {relative} does not match the pod manifest")
+                    staged[relative] = local
+                # Every member and existing destination has passed before the
+                # first rename. No archive bytes are written through caller files.
+                for relative in staged:
+                    _archive_destination(destination, relative)
+                for relative, source in staged.items():
+                    local = _archive_destination(destination, relative)
+                    local.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(source, local)
             return files
     except (tarfile.TarError, EOFError) as error:
         raise DigestMismatch("downloaded output archive is invalid") from error
@@ -601,6 +694,42 @@ def _fetch_output_archive(ops: Any, remote: str, destination: Path, scratch: Pat
 # ----------------------------------------------------------------------------
 # The machine
 # ----------------------------------------------------------------------------
+
+
+class _FailureLogDownloads:
+    """Failure observers support exec, but cannot use the transport's get op."""
+
+    def __init__(self, ops: Any):
+        self.ops = ops
+
+    def exec(self, command: str, timeout: float) -> tuple[int, str, str]:
+        return self.ops.exec(command, timeout)
+
+    def get(self, remote: str, local: Path) -> None:
+        # Each frame fits beneath the bounded observer's IPC limit. Every exec
+        # retains its original paid deadline, abort event and reaping fence.
+        program = ("import base64,os,stat,sys;"
+                   "fd=os.open(sys.argv[1],os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK);"
+                   "stat.S_ISREG(os.fstat(fd).st_mode) or sys.exit(2);"
+                   "os.lseek(fd,int(sys.argv[2]),os.SEEK_SET);"
+                   "print(base64.b64encode(os.read(fd,65536)).decode())")
+        with Path(local).open("wb") as stream:
+            offset = 0
+            while True:
+                code, output, _ = self.ops.exec(
+                    f"{POD_VENV}/bin/python -c {shlex.quote(program)} {shlex.quote(remote)} {offset}", 120)
+                if code != 0 or len(output) > 87385:
+                    raise MachineError("bounded log read failed")
+                try:
+                    chunk = base64.b64decode(output.strip(), validate=True)
+                except ValueError as error:
+                    raise DigestMismatch("bounded log read is invalid") from error
+                if len(chunk) > 65536:
+                    raise DigestMismatch("bounded log read exceeds its frame bound")
+                if not chunk:
+                    break
+                stream.write(chunk)
+                offset += len(chunk)
 
 
 @dataclass
@@ -1285,7 +1414,7 @@ class RunPodMachine:
             if transport_deadline is not None:
                 deadline = min(deadline, transport_deadline)
             ops = bounded(deadline, abort_event=abort_event)
-            return self._fetch_failure_logs(ops, run, "", destination)
+            return self._fetch_failure_logs(_FailureLogDownloads(ops), run, "", destination)
         except Exception as exc:  # noqa: BLE001 - evidence must never mask the original refusal
             return {"unavailable": type(exc).__name__}
         finally:
