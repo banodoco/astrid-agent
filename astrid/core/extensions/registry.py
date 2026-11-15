@@ -481,12 +481,18 @@ class ExtensionRegistry:
             if key is None:
                 key = (object() if self._discover is discover_pack_metadata
                        else self._fingerprint(roots, packs, items))
-            if not refresh and self._snap is not None and key == self._snap_key:
+            if (self._discover is not discover_pack_metadata and not refresh
+                    and self._snap is not None and key == self._snap_key):
                 snap = self._snap
             else:
                 snap = _parse(items)
-            if before is not None and before == self._process_key(self._current_roots()):
-                _snapshot_cache[before] = deepcopy(snap)
+            if before is not None:
+                if before == self._process_key(self._current_roots()):
+                    _snapshot_cache[before] = deepcopy(snap)
+                else:
+                    # Admission raced its identity check. Do not label this
+                    # private snapshot (or its runtime imports) with the old key.
+                    key = object()
         if refresh or self._snap is None or key != self._snap_key:
             self._loaded.clear()
             self._runtime_failed.clear()

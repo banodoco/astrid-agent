@@ -238,3 +238,26 @@ def test_relative_contribution_roots_follow_cwd(tmp_path, monkeypatch):
         contributions = [c for p in two.points() for c in two.contributions(p.id)]
         assert contributions and {c.scope for c in contributions} == {'installed'}
         assert scan.call_count == 2
+
+
+def test_extension_racing_admission_cannot_relabel_or_publish_snapshot(monkeypatch):
+    registry = extensions.ExtensionRegistry()
+    key = registry._process_key(registry._current_roots())
+    keys = iter([key, ('changed-during-admission',), key, key])
+    monkeypatch.setattr(registry, '_process_key', lambda roots: next(keys))
+    with patch.object(extensions, '_parse', wraps=extensions._parse) as parse:
+        expected = deepcopy(registry.load().points())
+        registry._snap.points.clear()
+        registry._loaded['stale runtime import'] = object()
+        assert registry.load().points() == expected
+        assert parse.call_count == 2
+        assert not registry._loaded
+
+
+def test_extension_reset_does_not_publish_caller_mutated_instance():
+    registry = extensions.ExtensionRegistry().load()
+    expected = deepcopy(registry.points())
+    registry._snap.points.clear()
+    extensions._reset_for_tests()
+    assert registry.load().points() == expected
+    assert extensions.ExtensionRegistry().load().points() == expected
