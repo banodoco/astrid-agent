@@ -1877,8 +1877,9 @@ class RunPodMachine:
         self._finish(lease.lease)
         if warm:
             try:
-                owner.settle(lease.lease, outcome=outcome, failure=summary, node_ids=lease.node_ids,
-                             node_names=lease.node_names)
+                watchdog_acknowledged = owner.settle(
+                    lease.lease, outcome=outcome, failure=summary, node_ids=lease.node_ids,
+                    node_names=lease.node_names)
                 record = owner._read()
                 info = record["lease"]
                 lease.expires_at = info.get("idle_expires_at")
@@ -1887,7 +1888,8 @@ class RunPodMachine:
                 lease.released = True
                 lease.kept, lease.release_reason = True, reason if reason == "verification_timeout" else None
                 if deferred_reset is not None:
-                    self._defer_reset(lease, deferred_reset, paid_expiry=paid_expiry)
+                    self._defer_reset(lease, deferred_reset, paid_expiry=paid_expiry,
+                                      watchdog_acknowledged=watchdog_acknowledged)
             except Exception:  # noqa: BLE001 - custody: any settlement failure must still release the exact pod
                 _logger.debug("Job settlement failed; releasing the exact pod", exc_info=True)
                 if observer_key is not None:
@@ -1913,28 +1915,35 @@ class RunPodMachine:
                     raise
         lease.released = True
 
-    def _defer_reset(self, lease: MachineLease, started: Mapping[str, Any], *, paid_expiry: float) -> None:
-        """Only reset completion moves off the settled, deadline-published caller."""
+    def _defer_reset(self, lease: MachineLease, started: Mapping[str, Any], *, paid_expiry: float,
+                     watchdog_acknowledged: bool) -> None:
+        """Defer completion only with independent, acknowledged pod custody."""
         owner = self._require().lease_owner
         with owner.lock:
             owner._reset_done = threading.Event()
             try:
-                worker = threading.Thread(target=self._complete_reset,
-                                          args=(lease, started, paid_expiry),
-                                          name="astrid-runpod-reset", daemon=False)
                 owner.preparation_claim(lease.lease)
-                owner._reset_worker = worker
-                lease.reset_owns_connection = True
-                worker.start()
+                if watchdog_acknowledged is True:
+                    worker = threading.Thread(target=self._complete_reset,
+                                              args=(lease, started, paid_expiry),
+                                              name="astrid-runpod-reset", daemon=False)
+                    owner._reset_worker = worker
+                    lease.reset_owns_connection = True
+                    worker.start()
             except BaseException:
                 lease.reset_owns_connection = False
                 lease.released = False
                 owner._reset_done.set()
                 raise
+        if watchdog_acknowledged is not True:
+            # Host-only custody cannot survive abrupt CLI death. Complete
+            # reset (or exact failure release) before delivering the result.
+            self._complete_reset(lease, started, paid_expiry, deferred=False)
 
-    def _complete_reset(self, lease: MachineLease, started: Mapping[str, Any], paid_expiry: float) -> None:
+    def _complete_reset(self, lease: MachineLease, started: Mapping[str, Any], paid_expiry: float,
+                        *, deferred: bool = True) -> None:
         try:
-            self._complete_reset_inner(lease, started, paid_expiry)
+            self._complete_reset_inner(lease, started, paid_expiry, deferred=deferred)
         finally:
             # This owner took over the job's connection from release; close it last.
             if getattr(lease, "reset_owns_connection", False):
@@ -1944,7 +1953,8 @@ class RunPodMachine:
                 except Exception:  # noqa: BLE001 - an observer fence was recorded; never mask the reset outcome
                     _logger.debug("Could not close the job connection after the deferred reset", exc_info=True)
 
-    def _complete_reset_inner(self, lease: MachineLease, started: Mapping[str, Any], paid_expiry: float) -> None:
+    def _complete_reset_inner(self, lease: MachineLease, started: Mapping[str, Any], paid_expiry: float,
+                              *, deferred: bool = True) -> None:
         owner = self._require().lease_owner
         reason = "reset_failed"
         done = owner._reset_done
@@ -1954,7 +1964,7 @@ class RunPodMachine:
                 bounded = getattr(original_ops, "bounded", None)
                 if bounded is not None:
                     lease.claim.ops = bounded(started["limit"])
-                self._wait_reset(lease, started, paid_expiry=paid_expiry, backoff=True)
+                self._wait_reset(lease, started, paid_expiry=paid_expiry, backoff=deferred)
                 if owner.clock() >= paid_expiry:
                     raise MachineError("failure reset exceeded the original paid limit")
             except Exception as exc:  # noqa: BLE001 - every asynchronous reset failure must release exact custody
@@ -1992,6 +2002,8 @@ class RunPodMachine:
                 owner.release(reason=reason, _expected_operation=lease.lease.operation_id,
                               expected_machine_id=lease.claim.pod_id)
             except Exception:  # noqa: BLE001 - exact release preserves its durable fence and retry on failure
+                if not deferred:
+                    raise  # Host-only custody cannot deliver while exact release is unresolved.
                 _logger.exception("Deferred reset release remains pending")
         finally:
             done.set()
