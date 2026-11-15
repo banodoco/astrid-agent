@@ -779,7 +779,7 @@ def _main(argv: list[str]) -> int:
 
 def _failure_command(parsed) -> int:
     """Print one local failure receipt; it reads only the receipt file, never a machine."""
-    from astrid.core.gateway.doctor_bundle import redact_log
+    from astrid.core._shared.log_redaction import redact_log
     from astrid.packs.runpod import failure_receipt
     path = failure_receipt.find_receipt(parsed.task_id)
     if path is None:

@@ -49,14 +49,14 @@ class FakePod:
     # --- agent surface
     def exec(self, command, timeout=600):
         self.exec_log.append(command)
-        if "from astrid.core.gateway.doctor_bundle import redact_log" in command:
+        if "from astrid.core._shared.log_redaction import redact_log" in command:
             import shlex
 
             argv = shlex.split(command)
             source, destination = argv[-2:]
             if source not in self.files:
                 return 1, "", "missing"
-            from astrid.core.gateway.doctor_bundle import redact_log
+            from astrid.core._shared.log_redaction import redact_log
 
             safe = redact_log(self.files[source].decode("utf-8", errors="replace"))
             self.files[destination] = safe.encode()
