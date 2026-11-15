@@ -19,7 +19,7 @@ entries:
       - {name: request, type: file, required: false, description: "H3 request document (request.v1 or request.v2 JSON)."}
       - {name: asset_map, type: file_map, required: false, description: "Map of the request's asset ids to local files."}
       - {name: prompt, type: string, required: false, description: "What to generate, when no request document is given."}
-      - {name: image_ref, type: file, required: false, description: "Image for i2v: it now becomes the first frame (frame 0 is protected at its encoded latent, not guaranteed pixel-identical after decoding). purpose reference or appearance in a request keeps the old look-only conditioning (named <Picture 1> in the prompt); a native-v2 role reference alone does not opt out."}
+      - {name: image_ref, type: file, required: false, description: "Reference image for i2v (named <Picture 1> in the prompt)."}
       - {name: video_ref, type: file, required: false, description: "Source clip for v2v: 1024x576, 24 fps, at most 15 s; its whole picture is regenerated."}
       - {name: frames, type: integer, required: false, description: "Length of an i2v result in frames at 24 fps (default 120)."}
       - {name: seed, type: integer, required: false}

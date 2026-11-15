@@ -32,8 +32,6 @@ class Source:
 class Reference:
     name: str
     asset: str
-    purpose: str = "appearance"
-    position: int | None = None
 
 
 @dataclass(frozen=True)
@@ -370,8 +368,7 @@ def _normalize_spec(
 
     generation_timing(spec.duration)  # Existing single-window bound; no splitting.
     media = [
-        {"id": name, "asset": ref.asset, "role": "reference", "modality": "image",
-         "purpose": ref.purpose, **({"position": ref.position} if ref.position is not None else {})}
+        {"id": name, "asset": ref.asset, "role": "reference", "modality": "image"}
         for name, ref in refs.items()
     ]
     if spec.source is not None:
@@ -486,9 +483,7 @@ def _from_v2(request: H3Request) -> H3Spec:
             )
         name = f"ref-{len(refs) + 1}"
         names[item["occurrence_id"]] = name
-        purpose = item.get("purpose", "appearance")
-        refs.append(Reference(name, item["asset"], "appearance" if purpose == "reference" else purpose,
-                              item.get("position")))
+        refs.append(Reference(name, item["asset"]))
     source = None
     ops = []
     regions: list[Region] = []
@@ -583,16 +578,14 @@ def canonical_spec(
         )
         refs = []
         for ref in value["references"]:
-            if ref["purpose"] not in {"appearance", "reference", "first_frame", "keyframe"}:
+            if ref["purpose"] != "appearance":
                 _fail(
                     "unsupported_reference",
-                    "Only look references, first-frame latents and timed image guides are equivalent",
+                    "Only appearance image references are equivalent",
                     "references",
-                    "Use appearance, reference, first_frame or keyframe image purposes",
+                    "Use untimed appearance references",
                 )
-            refs.append(Reference(f"ref-{len(refs) + 1}", ref["asset"],
-                                  "appearance" if ref["purpose"] == "reference" else ref["purpose"],
-                                  ref.get("position")))
+            refs.append(Reference(f"ref-{len(refs) + 1}", ref["asset"]))
         regions: list[Region] = []
         ops = []
         for stream in ("video", "audio"):

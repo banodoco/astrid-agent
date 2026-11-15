@@ -136,13 +136,7 @@ def test_h3_builds_the_same_request_from_the_kinds_plain_inputs(tmp_path):
     assert assets == {"image_ref": "/x/look.png"}
     value = request_module.normalize_request(document).value
     assert value["operation"] == "generate" and value["output"]["duration"] == 3.0 and value["overrides"] == {"seed": 7}
-    # A bare i2v image now anchors frame 0 (h3first2); only an explicit purpose keeps look-only conditioning.
-    assert value["references"] == [{"asset": "image_ref", "purpose": "first_frame"}]
-    for explicit_purpose in ("appearance", "reference"):
-        explicit = json.loads(json.dumps(document))
-        explicit["references"][0]["purpose"] = explicit_purpose
-        kept = request_module.normalize_request(explicit).value
-        assert kept["references"] == [{"asset": "image_ref", "purpose": explicit_purpose}], explicit_purpose
+    assert value["references"] == [{"asset": "image_ref", "purpose": "appearance"}]
 
     document, assets = hooks._plain_request({"prompt": "as water"}, {"video_ref": "/x/clip.mp4"}, Facts)
     assert assets == {"video_ref": "/x/clip.mp4"}
