@@ -27,6 +27,9 @@ Unreadable fingerprint inputs bypass the memo and use normal admission.
 
 Custom discovery/scanner seams have arbitrary dependencies and bypass process
 reuse. Their previous instance-local extension cache behavior remains intact.
+Manifest timestamps are still checked on every extension load to preserve
+its existing touch-to-reset signal for instance-owned lazy imports, protocols
+and runtime quarantines; timestamps never substitute for content freshness.
 `refresh=True` bypasses extension snapshot reuse. Each loader module exposes
 `_reset_for_tests()`, and the test suite clears both process memos around each
 test. Content reads used for identity still occur on hits: the saving is parsing,

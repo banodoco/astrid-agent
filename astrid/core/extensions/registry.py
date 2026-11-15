@@ -345,6 +345,7 @@ class ExtensionRegistry:
         self._discover = discover
         self._snap: _Snapshot | None = None
         self._snap_key: Any = None
+        self._manifest_stamps: Any = None
         self._points: dict[str, ExtensionPoint] = {}
         self._winners: list[_Entry] = []
         self._short: dict[tuple[str, str], _Entry] = {}
@@ -415,6 +416,23 @@ class ExtensionRegistry:
                 stamp = None
             files.append((str(m.path), stamp))
         return head, tuple(files)
+
+    @staticmethod
+    def _runtime_reset_stamps(snap: _Snapshot):
+        # Touching a manifest historically resets lazy imports/quarantines.
+        # Preserve that signal independently of content-verified parse reuse.
+        paths = {entry.path for entry in snap.entries}
+        paths.update(point.path for point in snap.points.values() if point.path is not None)
+        paths.update(problem.path for problem in snap.point_problems)
+        stamps = []
+        for path in sorted(paths):
+            try:
+                stat = path.stat()
+                stamp = (stat.st_mtime_ns, stat.st_size)
+            except OSError:
+                stamp = None
+            stamps.append((str(path), stamp))
+        return tuple(stamps)
 
     def _disabled_now(self) -> tuple[frozenset[str], list[Quarantined]]:
         try:
@@ -493,12 +511,15 @@ class ExtensionRegistry:
                     # Admission raced its identity check. Do not label this
                     # private snapshot (or its runtime imports) with the old key.
                     key = object()
-        if refresh or self._snap is None or key != self._snap_key:
+        stamps = self._runtime_reset_stamps(snap)
+        if (refresh or self._snap is None or key != self._snap_key
+                or stamps != self._manifest_stamps):
             self._loaded.clear()
             self._runtime_failed.clear()
             self._protocols.clear()
         self._snap = snap
         self._snap_key = key
+        self._manifest_stamps = stamps
         disabled, config_problems = self._disabled_now()
         self._resolve(self._snap, disabled, config_problems)
         return self

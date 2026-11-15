@@ -261,3 +261,24 @@ def test_extension_reset_does_not_publish_caller_mutated_instance():
     extensions._reset_for_tests()
     assert registry.load().points() == expected
     assert extensions.ExtensionRegistry().load().points() == expected
+
+
+def test_manifest_touch_still_resets_instance_runtime_state(tmp_path):
+    import os
+
+    from tests.core.extensions.test_registry import POINT_DATA
+    sdk = tmp_path / 'sdk/extensions'
+    manifest = sdk / 'points/widget.yaml'
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(POINT_DATA)
+    registry = extensions.ExtensionRegistry(sdk_root=sdk).load()
+    registry._loaded['runtime object'] = object()
+    registry._runtime_failed['runtime failure'] = object()
+    registry._protocols['runtime protocol'] = object()
+    stat = manifest.stat()
+    os.utime(manifest, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+    with patch.object(extensions.ExtensionRegistry, '_packs', autospec=True,
+                      side_effect=extensions.ExtensionRegistry._packs) as scan:
+        registry.load()
+        assert scan.call_count == 0  # The parsed content is identical.
+    assert not registry._loaded and not registry._runtime_failed and not registry._protocols
