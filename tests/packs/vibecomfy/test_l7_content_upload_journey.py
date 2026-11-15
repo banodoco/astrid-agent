@@ -35,7 +35,9 @@ def test_reused_input_reaches_workflow_and_preserves_task_evidence(comfy_video, 
                                         comfy_url=comfy_video.url, comfy_output_dir=str(comfy_video.output),
                                         managed_assets=str(archive))
         envelope = json.loads((output / result['managed_generation_result_path']).read_text())
-        assert task in json.dumps(envelope)
+        assert envelope['task_id'] == task
+        prompt = envelope['evidence']['producer']['attempt']['record']['compiled_prompt']
+        assert prompt['99']['inputs']['video'] == f'astrid/{digest}.mp4'
         ledger = json.loads((output / 'engine-input' / '.managed-asset-digests.json').read_text())
         assert digest in ledger.values()
     assert len(engine.uploads) == 1
