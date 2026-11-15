@@ -143,7 +143,6 @@ from astrid.core.execution.guards import (
     write_evidence_status,
 )
 from astrid.core.execution.host_log import log_lease_diagnostic, start_stdio_rotator
-from astrid.core.execution.local_engine_idle import LocalEngineIdle
 from astrid.core.execution.managed_inputs import managed_file_digest
 from astrid.core.execution.managed_tool_session import (
     AdmissionToken,
@@ -202,7 +201,6 @@ from astrid.core.rendering.assets import managed_asset_digest
 from astrid.core.subprocess_env import build_child_subprocess_env
 from astrid.core.util.secrets import load_local_api_key_with_source
 from astrid.sdk.execution_request import normalize_execution_request
-from astrid.sdk.storage_ownership import ATTEMPT_ROOT_PREFIX
 from astrid.sdk.workspace_client import WorkspaceClientError, validate_runtime_endpoint
 
 
@@ -6808,6 +6806,7 @@ class GenericPackHost:
         self._evidence_observation_lock = threading.RLock()
         # Idle release for the session slot (Wan2GP) and Remotion frame owner.
         self.warm_holds = WarmHolds(on_change=self._publish_evidence_status)
+        from astrid.core.execution.local_engine_idle import LocalEngineIdle
         self._local_engine_idle = LocalEngineIdle(on_change=self._publish_evidence_status,
             release_blocked=lambda: bool(getattr(self, "recovery_blocked", None)))
         self._target_bindings = None
@@ -6965,6 +6964,7 @@ class GenericPackHost:
 
     def _allocate_attempt_root(self, task_id: str, attempt_id: str) -> Path:
         """Allocate the filesystem namespace for one claimed attempt."""
+        from astrid.sdk.storage_ownership import ATTEMPT_ROOT_PREFIX
         if self.attempt_base is not None:
             self.attempt_base.mkdir(parents=True, exist_ok=True)
             if self.attempt_base.is_symlink() or not self.attempt_base.is_dir():
@@ -14336,6 +14336,7 @@ class GenericPackHost:
 
     def _recover_terminal_requests(self) -> None:
         """Resolve this host's saved requests, with bounded startup custody."""
+        from astrid.sdk.storage_ownership import ATTEMPT_ROOT_PREFIX
         if self.client is None:
             return
         self.recovery_blocked.clear()
