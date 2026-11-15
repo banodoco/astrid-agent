@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 from contextlib import nullcontext
 from pathlib import Path
@@ -785,11 +786,11 @@ def _main(argv: list[str]) -> int:
             'code': 'generation_failed', 'message': 'Generation did not succeed.'}
         raise generation_error(error, task_id=getattr(result, 'kernel_task_id', None))
     payload = result.to_dict() if hasattr(result, "to_dict") else result
-    if not parsed.dry_run and not parsed.no_wait:
-        phase_timing.attach_cli(payload)
     if admitted and isinstance(payload, dict):
         # An admitted generation names its project's link; the App shows the output there once it finishes.
         payload = {**payload, 'open_url': open_url_for(admitted)}
+    if not parsed.dry_run and not parsed.no_wait:
+        phase_timing.attach_cli(payload)
     if parsed.json or parsed.dry_run or not isinstance(payload, dict):
         print(json.dumps(payload, indent=2, sort_keys=True))
     elif parsed.no_wait:
@@ -934,7 +935,14 @@ def _timed_main(argv: list[str] | None = None) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    timing = phase_timing.CliTiming()
+    # Gateway main carries the earliest package-entry stamp. Embedded direct
+    # calls have their own clock and must not inherit package import age.
+    entry = os.environ.get("ASTRID_CLI_START_MONO")
+    try:
+        started = float(entry) if entry else None
+    except ValueError:
+        started = None
+    timing = phase_timing.CliTiming(started=started)
     token = phase_timing._ACTIVE_CLI.set(timing)
     try:
         return _timed_main(argv)

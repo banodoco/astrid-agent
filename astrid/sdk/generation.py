@@ -1319,7 +1319,7 @@ class GenerationFacade:
         wait: bool = True,
         read_managed_outputs: bool = True,
         timeout_seconds: float = 3600.0,
-        poll_seconds: float = 1.0,
+        poll_seconds: float = 0.2,
         project_root: str | Path | None = None,
         extra_pack_roots: tuple[str, ...] = (),
         banodoco_config: Any | None = None,

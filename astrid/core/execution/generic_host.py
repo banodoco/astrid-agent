@@ -7562,7 +7562,7 @@ class GenericPackHost:
 
         try:
             fetched = run_on_machine(machine, job, destination=output_root, cancelled=cancelled,
-                                     poll_seconds=float(os.environ.get("ASTRID_MACHINE_POLL_SECONDS") or 5.0),
+                                     poll_seconds=float(os.environ.get("ASTRID_MACHINE_POLL_SECONDS") or 0.2),
                                      on_claim=claimed, on_failure=failed)
         finally:
             # Success and failure both carry the one timing block (release is done by now).
@@ -14599,7 +14599,7 @@ class GenericPackHost:
                     self._record_recovery_blocked(path, message)
         self._publish_ready_registration(self._ready_marker_context.get("registration"))
 
-    def run(self, *, once: bool = False, poll_seconds: float = 1.0, max_tasks: int | None = None) -> list[Mapping[str, Any]]:
+    def run(self, *, once: bool = False, poll_seconds: float = 0.2, max_tasks: int | None = None) -> list[Mapping[str, Any]]:
         """Run the bounded worker claim loop; ``once`` is the test-friendly form."""
         self._recover_terminal_requests()
         if not once and self.max_concurrency > 1:
@@ -18094,7 +18094,7 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
     parser.add_argument("--lease-token")
     parser.add_argument("--keep-attempt", action="store_true")
     parser.add_argument("--once", action="store_true", help="claim at most one task and exit")
-    parser.add_argument("--poll-seconds", type=float, default=1.0)
+    parser.add_argument("--poll-seconds", type=float, default=0.2)
     parser.add_argument("--max-tasks", type=int)
     parser.add_argument("--supervisor-state", help="persistent JSONL supervisor journal")
     parser.add_argument("--max-frame-bytes", type=int, default=1024 * 1024)

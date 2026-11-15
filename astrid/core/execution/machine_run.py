@@ -70,7 +70,7 @@ def resolve_machine(kind: str, registry: Any | None = None) -> Any:
 
 
 def run_on_machine(machine: Any, job: MachineJob, *, destination: Path,
-                   cancelled: Callable[[], bool], poll_seconds: float = 5.0,
+                   cancelled: Callable[[], bool], poll_seconds: float = 0.2,
                    sleep: Callable[[float], None] = time.sleep,
                    on_claim: Callable[[Any], None] | None = None,
                    on_failure: Callable[[Mapping[str, Any]], None] | None = None) -> Mapping[str, Any]:

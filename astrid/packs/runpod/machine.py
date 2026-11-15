@@ -1249,6 +1249,8 @@ class RunPodMachine:
                                      manifest_line[len(MANIFEST_MARK):].strip(),
                                      remote_archive=(f"{run.remote_root}/{OUTPUT_ARCHIVE}"
                                                      if OUTPUT_ARCHIVE_MARK in lines else None))
+        from astrid.core.execution.phase_timing import ingest_job_run
+        ingest_job_run(timing, files)
         self._checkpoint_installed(run, files)
         state.note("fetch", "done", files=len(files))
         _stamp(timing, "collection_ended_at")
@@ -1322,6 +1324,9 @@ class RunPodMachine:
                                                 line[len(LOGS_MANIFEST_MARK):].strip(),
                                                 remote_archive=(f"{run.remote_root}/{LOGS_ARCHIVE}"
                                                                 if LOGS_ARCHIVE_MARK in stdout.splitlines() else None))
+                from astrid.core.execution.phase_timing import ingest_job_run
+                ingest_job_run(getattr(run.lease, "timing", None),
+                               {"logs/" + name: path for name, path in verified.items()})
                 rows = run_logs.read_index(Path(destination))
                 for row in rows:
                     if row.get("role") == "run" and row.get("file") in verified:
@@ -1892,8 +1897,9 @@ class RunPodMachine:
                     paid_expiry: float | None = None, backoff: bool = False) -> dict[str, Any]:
         ops = lease.claim.ops
         job_id, limit = started["id"], started["limit"]
-        poll = min(POLL_SECONDS, float(os.environ.get("ASTRID_MACHINE_POLL_SECONDS") or (5.0 if backoff else 1.0)))
-        delay = min(1.0, poll)
+        # W-F: plain reset polls at 0.2 s; the deferred owner (W-C) backs off from 0.2 s to 5 s.
+        poll = min(POLL_SECONDS, float(os.environ.get("ASTRID_MACHINE_POLL_SECONDS") or (5.0 if backoff else 0.2)))
+        delay = min(0.2, poll)
         while True:
             if (verify_deadline is not None and time.monotonic() >= verify_deadline) or (
                     paid_expiry is not None and self._require().lease_owner.clock() >= paid_expiry):
@@ -1909,13 +1915,13 @@ class RunPodMachine:
                 break
             if record.get("state") in {"missing", "cancelled"}:
                 raise MachineError(f"reset job is {record.get('state')}")
-            if time.monotonic() > limit:
+            if time.monotonic() >= limit:
                 stopped = ops.job_cancel(job_id)
                 if stopped.get("id") != job_id or stopped.get("state") not in {"exited", "cancelled"}:
                     raise MachineError("exact reset job stop could not be verified")
                 self._checkpoint(lease, {"id": job_id, "state": stopped["state"]})
                 raise MachineError(f"reset did not finish in {RESET_SECONDS:.0f}s")
-            sleep_for = min(delay, max(0, limit - time.monotonic())) if backoff else poll
+            sleep_for = min(delay if backoff else poll, max(0, limit - time.monotonic()))
             if verify_deadline is not None:
                 sleep_for = min(sleep_for, max(0, verify_deadline - time.monotonic()))
             if paid_expiry is not None:

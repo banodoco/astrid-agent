@@ -719,3 +719,64 @@ def test_job_projects_current_claim_operation_id(machine_case):
         shipped = [json.loads(path.read_text()) for path in Path(request.scratch).rglob('job.json')]
     assert shipped
     assert all(body['claim_id'] == c.read()['operation_id'] for body in shipped)
+
+
+def test_warm_second_job_operation_budget(request, monkeypatch):
+    from tests.packs.runpod._budget import RemoteBudget
+
+    c = request.getfixturevalue("machine_case")
+
+    import socket
+    original_connect = socket.socket.connect
+    def no_network(sock, address):
+        if isinstance(address, tuple) and address[0] in {"127.0.0.1", "::1"}:
+            return original_connect(sock, address)
+        pytest.fail("warm CPU budget must not reach a real service")
+
+    monkeypatch.setattr("socket.socket.connect", no_network)
+    budget = RemoteBudget()
+    claim(c)
+    run(c, job(c, 1))
+    # W-C: job 1's reset completes off the caller's path; count only job 2's work.
+    c.host.wait_for_reset()
+    paid = c.read()["paid_limits"]
+    budget.machine_case(c, monkeypatch)
+    request.addfinalizer(budget.close)
+    try:
+        run(c, job(c, 2))
+    except Exception:
+        if hasattr(budget.agent, "error"):
+            raise budget.agent.error
+        raise
+    assert not hasattr(budget.agent, "error"), getattr(budget.agent, "error", None)
+    c.host.wait_for_reset()  # the deferred reset is part of job 2's counted work
+    bounds = {
+        "http.post.jobs": 21, "http.get.jobs": 21,
+        "put.create": 5, "put.chunk": 5, "get.chunk": 5, "job_poll.read": 9,
+        "put.reconcile": 0, "put.verify": 0, "http.delete.jobs": 0,
+        "process_launch": 79, "process_fork": 43, "process_start": 20, "provider.read_exact_pod": 2,
+        "provider.get_network_volumes": 2, "provider.list_pods": 1,
+        "provider.confirm_acquired_machine": 1, "provider.get_pod_status": 1,
+        "provider.observe_mounts": 1,
+    }
+    budget.assert_within(bounds)
+    assert c.creates == 1 and c.read()["paid_limits"] == paid
+    assert c.read()["lease"]["state"] == "idle"
+
+    # Bypass every public pod/ops method from a thread, with a hidden Python
+    # child inside the command. Both the real HTTP attempt and both launches
+    # must still exceed the unchanged warm-job ceiling.
+    from concurrent.futures import ThreadPoolExecutor
+
+    import httpx
+    before = budget.counts["process_start"]
+    command = "python3 -c 'import subprocess,sys; subprocess.run([sys.executable, \"-c\", \"pass\"],check=True)'"
+    def hidden():
+        with httpx.Client(base_url=budget.base_url, trust_env=False) as client:
+            response = client.post('/jobs', json={'id': 'f' * 32, 'command': command})
+            assert response.status_code == 200
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(hidden).result()
+    assert budget.counts["process_start"] == before + 2
+    with pytest.raises(AssertionError, match="process_start.*per-kind counts"):
+        budget.assert_within(bounds)

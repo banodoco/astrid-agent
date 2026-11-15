@@ -21,7 +21,9 @@ import sys
 import time
 
 # Shared by `astrid-tools` and `python -m astrid`: start before gateway imports.
-_GATEWAY_IMPORTED_MONO = time.monotonic()
+from astrid import _PROCESS_ENTRY_MONOTONIC
+
+_GATEWAY_IMPORTED_MONO = _PROCESS_ENTRY_MONOTONIC
 _MAIN_CALLS = 0
 
 from astrid.core.contracts.errors import (

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import time
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
@@ -35,8 +36,24 @@ def mark_job_collect() -> None:
             evidence.start_collect()
 
 
+def _process_entry() -> tuple[float | None, str]:
+    """Linux pod process birth, including Python startup and imports.
+
+    /proc starttime and CLOCK_BOOTTIME share the boot clock; translate to the
+    monotonic clock used for the span. Never label module import as process birth.
+    """
+    try:
+        fields = Path("/proc/self/stat").read_text().rsplit(")", 1)[1].split()
+        birth = int(fields[19]) / os.sysconf("SC_CLK_TCK")
+        age = time.clock_gettime(time.CLOCK_BOOTTIME) - birth
+        return time.monotonic() - age, "Linux /proc/self/stat process starttime"
+    except (OSError, ValueError, IndexError, AttributeError):
+        return None, "process entry unavailable on this platform"
+
+
 class JobEvidence:
     def __init__(self, out: Path, preparation: Any, *, generation: Any = None):
+        self.process_entry, self.process_entry_source = _process_entry()
         self.out = Path(out)
         self.started_at = datetime.now(timezone.utc).isoformat()
         self.preparation_started = time.monotonic()
@@ -156,6 +173,19 @@ class JobEvidence:
         with suppress(Exception):
             path = self.out / "job-run.json"
             path.parent.mkdir(parents=True, exist_ok=True)
+            whole = (None if self.process_entry is None else
+                     max(0.0, time.monotonic() - self.process_entry))
+            accounted = list(phases.values())
+            phases["whole_job"] = whole
+            # Keep unknown durations unknown, and expose overlap as a negative
+            # remainder rather than silently hiding an accounting error.
+            phases["unaccounted"] = (None if whole is None or any(v is None for v in accounted)
+                                     else whole - sum(accounted))
+            record["ended_at"] = datetime.now(timezone.utc).isoformat()
+            record["phase_sources"].update({
+                "whole_job": self.process_entry_source + "; through job-run record write boundary",
+                "unaccounted": "whole_job minus sum of the other measured phases",
+            })
             path.write_text(json.dumps(record, sort_keys=True, indent=2) + "\n", encoding="utf-8")
             run_logs.declare(self.out, run_logs.LogDecl("run", "run", str(path.resolve())))
 

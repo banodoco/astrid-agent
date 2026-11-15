@@ -14,7 +14,7 @@ import platform
 import subprocess
 import threading
 import time
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from functools import lru_cache
 from pathlib import Path
@@ -41,6 +41,7 @@ class PhaseTiming:
         self.stamps: dict[str, float] = {}
         #: Controller-observed first time each pod phase (align, run, ...) was seen by a poll.
         self.pod_phases: list[dict[str, Any]] = []
+        self.pod_job: dict[str, Any] | None = None
         self.paid_started_at: float | None = None
         self.idle_before_s: float | None = None
 
@@ -63,6 +64,7 @@ class PhaseTiming:
             stamps = dict(self.stamps)
             pod_phases = [dict(row) for row in self.pod_phases]
             paid, idle = self.paid_started_at, self.idle_before_s
+            pod_job = self.pod_job
         phases: dict[str, Any] = {}
         for name, (start, end) in PHASES.items():
             began, ended = stamps.get(start), stamps.get(end)
@@ -74,7 +76,33 @@ class PhaseTiming:
                                 {"start": paid, "end": released,
                                  "seconds": None if released is None else round(max(0.0, released - paid), 3)})
         phases["idle"] = None if idle is None else {"before_s": round(float(idle), 3)}
-        return {"schema": SCHEMA, "stamps": stamps, "phases": phases, "pod_phases": pod_phases}
+        return {"schema": SCHEMA, "stamps": stamps, "phases": phases, "pod_phases": pod_phases,
+                **({"pod_job": pod_job} if pod_job is not None else {})}
+
+
+def ingest_job_run(timing: Any, files: dict[str, Any]) -> None:
+    """Nest verified pod evidence in v1 without any extra transport operation."""
+    if not isinstance(timing, PhaseTiming):
+        return
+    try:
+        path = files.get("job-run.json") or files.get("logs/run.json")
+        if path is None:
+            return
+        with Path(path).open("rb") as stream:
+            record = json.loads(stream.read(65537))
+        if record.get("schema") != "astrid.job-run.v1":
+            return
+        phases = record.get("phases")
+        if not isinstance(phases, dict):
+            return
+        names = {"verify_models", "engine_start_or_reuse", "queue_wait", "execute", "collect",
+                 "whole_job", "unaccounted"}
+        clean = {name: value for name, value in phases.items() if name in names and
+                 (value is None or type(value) in (int, float) and math.isfinite(value))}
+        with timing._lock:
+            timing.pod_job = {"schema": record["schema"], "phases": clean}
+    except Exception:  # noqa: BLE001 - optional evidence must never fail delivery
+        pass
 
 
 def stamp(timing: Any, name: str, **kw: Any) -> None:
@@ -97,7 +125,7 @@ def attach(machine: dict[str, Any] | None, timing: Any) -> None:
         pass
 
 
-__all__ = ["PhaseTiming", "SCHEMA", "attach", "stamp"]
+__all__ = ["PhaseTiming", "SCHEMA", "attach", "ingest_job_run", "stamp"]
 
 
 TIMING_SCHEMA = "astrid.generation.timing.v2"
@@ -228,6 +256,10 @@ class GenerationTiming:
                 execution["sub_phases"] = {name: {"seconds": _seconds(source.get(name))} for name in JOB_PHASES}
                 subtotal = sum(row["seconds"] or 0.0 for row in execution["sub_phases"].values())
                 execution["sub_phases_seconds"] = subtotal
+                # Pod whole-job overlaps its measured subphases; keep it as a
+                # nested span, never add it to the exclusive phase sum.
+                execution["pod_job"] = {name: {"seconds": _seconds(source.get(name))}
+                                        for name in ("whole_job", "unaccounted")}
                 execution["engine_reused"] = self.job_phases.get("engine_reused")
                 execution["unaccounted"] = _remainder(execution["seconds"], subtotal)
             return {"total": {"seconds": total}, "phases": phases,
@@ -256,11 +288,24 @@ _ACTIVE_CLI: ContextVar[Any] = ContextVar("generation_cli_timing", default=None)
 class CliTiming:
     """Client-only intervals; host duration is embedded, never epoch-subtracted."""
 
-    def __init__(self, clock: Callable[[], float] | None = None) -> None:
+    def __init__(self, clock: Callable[[], float] | None = None, *, started: float | None = None) -> None:
         self.clock = clock or time.monotonic
-        self.started = _now(self.clock)
+        now = _now(self.clock)
+        entry = _seconds(started)
+        # Embedded callers may inject another clock or inherit a stale gateway
+        # environment value. Never subtract a future stamp from this clock.
+        self.started = entry if entry is not None and now is not None and entry <= now else now
         self.stamps: dict[str, float] = {}
         self.host: dict[str, Any] | None = None
+        self.delivery_phases: dict[str, float] = {}
+        self.phase_stack: list[str] = []
+        self.phase_at: float | None = None
+
+    def phase_boundary(self, now: float | None) -> None:
+        if self.phase_stack and now is not None and self.phase_at is not None:
+            name = self.phase_stack[-1]
+            self.delivery_phases[name] = self.delivery_phases.get(name, 0.0) + max(0.0, now - self.phase_at)
+        self.phase_at = now
 
     def stamp(self, name: str, **_kw: Any) -> None:
         now = _now(self.clock)
@@ -293,9 +338,30 @@ class CliTiming:
                   "submit": {"seconds": elapsed(submit_start, submit_end)},
                   "wait_for_claim": {"seconds": wait}, "host": {"seconds": host_total},
                   "result_fetch_and_print": {"seconds": fetch}}
+        named = sum(self.delivery_phases.values())
+        if fetch is not None:
+            phases["result_fetch_and_print"]["seconds"] = max(0.0, fetch - named)
+        phases.update({name: {"seconds": self.delivery_phases.get(name)} for name in
+                       ("delivery", "materialisation", "project_open_url", "output_hashing")})
         total = elapsed(self.started, now)
         return {"total": {"seconds": total}, "same_clock": same, "phases": phases,
                 "unaccounted": _remainder(total, sum(row["seconds"] or 0.0 for row in phases.values()))}
+
+
+@contextmanager
+def cli_phase(name: str):
+    """Exclusive nested caller work; timings never change delivery behavior."""
+    active = _ACTIVE_CLI.get()
+    if active is None:
+        yield
+        return
+    active.phase_boundary(_now(active.clock))
+    active.phase_stack.append(name)
+    try:
+        yield
+    finally:
+        active.phase_boundary(_now(active.clock))
+        active.phase_stack.pop()
 
 
 def cli_stamp(name: str) -> None:
