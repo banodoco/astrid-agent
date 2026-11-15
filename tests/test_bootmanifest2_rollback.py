@@ -1,14 +1,15 @@
 """A same-schema failed update restores boot provenance before activating R12."""
 
 import json
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from astrid.core.gateway.dispatch import compose_profile_handoff
 from astrid.installer.core import Version, rollback_transaction
-from tests.helpers.bootmanifest2_r12 import LEGACY_FIXTURE, r12_export, r12_probe
+from tests.helpers.bootmanifest2_r12 import LEGACY_FIXTURE, r12_probe
+
+pytest_plugins = ("tests.helpers.bootmanifest2_r12",)
 
 
 def _state(tmp_path):
