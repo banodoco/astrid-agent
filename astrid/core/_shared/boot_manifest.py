@@ -22,6 +22,7 @@ from runtime_protocol import platform
 from astrid.core.foundation.hash import canonical_json_digest
 
 BOOT_MANIFEST_FILENAME = "boot-manifest.json"
+_PRE_RESTAMP_SUFFIX = ".pre-restamp"
 BOOT_MANIFEST_SCHEMA_VERSION = 1
 _DEFAULT_PROFILE_ORDER: tuple[str, ...] = ()
 # Retired by 9f00e2ae2 (pip_embedded) and a26030e78 (checkout_server).
@@ -374,6 +375,61 @@ def _load_stored(path: Path) -> dict[str, Any]:
     return raw
 
 
+def _preserve_pre_restamp(path: Path, stored: Mapping[str, Any]) -> None:
+    """Publish a durable byte copy before restamping, without clobbering it."""
+    backup = path.with_name(path.name + _PRE_RESTAMP_SUFFIX)
+    _reject_lexical_symlinks(backup, label="pre-restamp backup")
+    handle = tempfile.NamedTemporaryFile("wb", dir=path.parent, prefix=".boot-manifest-", suffix=".tmp", delete=False)
+    try:
+        handle.write(path.read_bytes())
+        handle.flush()
+        os.fsync(handle.fileno())
+        handle.close()
+        try:
+            # Linking a complete sibling publishes atomically and never replaces
+            # an earlier backup, including on a replay after an interrupted update.
+            os.link(handle.name, backup)
+        except FileExistsError:
+            if not backup.is_file() or _load_stored(backup) != stored:
+                raise BootManifestCorrupt(f"pre-restamp backup disagrees with legacy stamp: {backup}") from None
+    finally:
+        handle.close()
+        Path(handle.name).unlink(missing_ok=True)
+
+
+def restore_pre_restamp_boot_manifest(
+    support_root: str | Path, *, remove_if_missing: bool = True,
+) -> None:
+    """Restore retained provenance after stopping the candidate, before rollback.
+
+    Keep the backup for interrupted rollback replay. Without one, an older
+    release can stamp its own fresh identity, even for a same-schema update.
+    A full workspace restore may already have restored the old stamp.
+    """
+    root = Path(support_root)
+    if not root.exists():
+        return
+    path = validate_manifest_path(root / "astrid-host" / BOOT_MANIFEST_FILENAME,
+                                  root, require_existing=False)
+    backup = path.with_name(path.name + _PRE_RESTAMP_SUFFIX)
+    _reject_lexical_symlinks(backup, label="pre-restamp backup")
+    if not backup.exists():
+        if remove_if_missing:
+            path.unlink(missing_ok=True)
+        return
+    _load_stored(backup)
+    handle = tempfile.NamedTemporaryFile("wb", dir=path.parent, prefix=".boot-manifest-", suffix=".tmp", delete=False)
+    try:
+        handle.write(backup.read_bytes())
+        handle.flush()
+        os.fsync(handle.fileno())
+        handle.close()
+        platform.replace_path(handle.name, path)
+    finally:
+        handle.close()
+        Path(handle.name).unlink(missing_ok=True)
+
+
 def stamp_boot_manifest(
     manifest_path: str | Path,
     *,
@@ -419,6 +475,7 @@ def stamp_boot_manifest(
             drift = sorted(set(stored) | set(current))
             details = "; ".join(f"key={key} stamped={stored.get(key)!r} live={current.get(key)!r}" for key in drift if stored.get(key) != current.get(key))
             raise BootManifestDrift(f"boot manifest disagrees with live registry/fixtures at {path}: {details}")
+        _preserve_pre_restamp(path, stored)
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, prefix=".boot-manifest-", suffix=".tmp", delete=False)
     try:
@@ -474,5 +531,6 @@ __all__ = [
     "manifest_hash",
     "normalize_sha256_digest",
     "registry_scope",
+    "restore_pre_restamp_boot_manifest",
     "stamp_boot_manifest",
 ]
