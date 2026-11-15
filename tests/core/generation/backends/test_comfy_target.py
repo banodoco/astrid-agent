@@ -523,3 +523,52 @@ def test_pod_target_requires_attested_transport(endpoint, network, tmp_path):
         with pytest.raises(ValueError):
             ComfyTargetClient(ComfyTarget(endpoint.url.replace("/single", "/other"), "pod"), endpoint_transport=transport)
     assert network["upstream"] == []
+
+
+def test_runtime_history_is_scoped_to_attempt_witness(monkeypatch):
+    import asyncio
+    from astrid.core.generation.backends.vibecomfy_local_server import TargetRuntimeClient
+
+    first = ComfyTargetClient(ComfyTarget('http://127.0.0.1:8188', 'attached'))
+    second = ComfyTargetClient(ComfyTarget('http://127.0.0.1:8188', 'attached'))
+    first.witness_prompt('first')
+    second.witness_prompt('second')
+    calls = []
+    monkeypatch.setattr(first, 'history', lambda prompt_id: calls.append(prompt_id) or {'id': prompt_id})
+    adapter = TargetRuntimeClient(first)
+    with pytest.raises(ValueError, match='witnessed prompt'):
+        asyncio.run(adapter.history('second'))
+    with pytest.raises(ValueError, match='unsafe'):
+        asyncio.run(adapter.history('../bad'))
+    assert calls == []
+    assert asyncio.run(adapter.history('first')) == {'id': 'first'}
+    assert calls == ['first']
+
+
+def test_artifact_custody_requires_same_attempt_and_durable_acceptance(tmp_path, monkeypatch):
+    import asyncio
+    from astrid.core.generation.backends.vibecomfy_local_server import AttachedArtifacts
+
+    owner = ComfyTargetClient(ComfyTarget('http://127.0.0.1:8188', 'attached'))
+    other = ComfyTargetClient(ComfyTarget('http://127.0.0.1:8188', 'attached'))
+    owner.witness_prompt('ours')
+    attempt_path = tmp_path / 'attempt.json'
+    root = tmp_path / 'downloaded-artifacts'
+    calls = []
+    monkeypatch.setattr(owner, 'download_output', lambda descriptor, path: calls.append(path))
+    monkeypatch.setattr(other, 'download_output', lambda descriptor, path: calls.append(path))
+    artifact = {'descriptor': DESCRIPTOR}
+    def journal(status, prompt='ours'):
+        attempt_path.write_text(json.dumps({'prompt_id': prompt, 'queue_acceptance': {
+            'status': status, 'prompt_id': prompt}, 'artifacts': [artifact]}))
+
+    journal('accepted')
+    with pytest.raises(ValueError, match='witnessed prompt'):
+        asyncio.run(AttachedArtifacts(other).download_artifacts(local_root=root))
+    journal('unknown')
+    with pytest.raises(ValueError, match='witnessed prompt'):
+        asyncio.run(AttachedArtifacts(owner).download_artifacts(local_root=root))
+    assert not calls and not root.exists()
+    journal('accepted')
+    result = asyncio.run(AttachedArtifacts(owner).download_artifacts(local_root=root))
+    assert result['status'] == 'retrieved' and len(calls) == 1
