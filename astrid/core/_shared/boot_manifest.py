@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, is_dataclass
@@ -23,6 +24,9 @@ from astrid.core.foundation.hash import canonical_json_digest
 BOOT_MANIFEST_FILENAME = "boot-manifest.json"
 BOOT_MANIFEST_SCHEMA_VERSION = 1
 _DEFAULT_PROFILE_ORDER: tuple[str, ...] = ()
+# Retired by 9f00e2ae2 (pip_embedded) and a26030e78 (checkout_server).
+# Older releases stamped these derived rows into persistent runtime support.
+_REMOVED_BOOT_PROFILES = frozenset({"pip_embedded", "checkout_server"})
 _REGISTRY_ENTRY_FIELDS = ("definition_version", "binding", "output_policy", "probe")
 _SECRET_WORDS = ("secret", "token", "password", "credential", "api_key", "private_key")
 
@@ -356,6 +360,15 @@ def _load_stored(path: Path) -> dict[str, Any]:
         raise BootManifestCorrupt(f"stamped boot manifest at {path} must be an object")
     try:
         assert_secret_free(raw)
+        if set(raw) != _MANIFEST_FIELDS:
+            raise BootManifestError("boot manifest is missing required fields")
+        order = raw["profile_order"]
+        if (
+            not isinstance(order, list)
+            or any(not isinstance(item, str) or not item for item in order)
+            or len(order) != len(set(order))
+        ):
+            raise BootManifestError("boot manifest profile_order must be a list of unique profile IDs")
     except BootManifestError as exc:
         raise BootManifestCorrupt(str(exc)) from exc
     return raw
@@ -369,6 +382,11 @@ def stamp_boot_manifest(
     fixtures: Iterable[Any] | None = None,
     profile_order: Iterable[str] = _DEFAULT_PROFILE_ORDER,
 ) -> dict[str, Any]:
+    raw_path = Path(manifest_path).expanduser()
+    if raw_path.is_symlink() or (raw_path.exists() and not raw_path.is_file()):
+        raise BootManifestCorrupt(
+            f"stamped boot manifest must be a non-symlink regular file: {raw_path}"
+        )
     path = validate_manifest_path(
         manifest_path, support_root, require_existing=False
     )
@@ -385,13 +403,22 @@ def stamp_boot_manifest(
         raise BootManifestCorrupt(
             f"stamped boot manifest must be a regular file: {path}"
         )
+    removed_profiles: list[str] = []
     if path.exists():
         stored = _load_stored(path)
-        if stored != current:
+        if stored == current:
+            return current
+        stored_order = set(stored["profile_order"])
+        removed_profiles = sorted(stored_order & _REMOVED_BOOT_PROFILES)
+        stale_legacy = (
+            stored["profile_order"] != current["profile_order"]
+            and bool(removed_profiles)
+            and stored_order <= _REMOVED_BOOT_PROFILES | set(current["profile_order"])
+        )
+        if not stale_legacy:
             drift = sorted(set(stored) | set(current))
             details = "; ".join(f"key={key} stamped={stored.get(key)!r} live={current.get(key)!r}" for key in drift if stored.get(key) != current.get(key))
             raise BootManifestDrift(f"boot manifest disagrees with live registry/fixtures at {path}: {details}")
-        return current
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, prefix=".boot-manifest-", suffix=".tmp", delete=False)
     try:
@@ -407,6 +434,12 @@ def stamp_boot_manifest(
         finally:
             Path(handle.name).unlink(missing_ok=True)
         raise
+    if removed_profiles:
+        print(
+            "boot manifest restamped after removing legacy profiles: "
+            + ", ".join(removed_profiles),
+            file=sys.stderr,
+        )
     return current
 
 
