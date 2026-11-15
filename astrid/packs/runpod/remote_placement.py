@@ -32,6 +32,8 @@ import tempfile
 import threading
 import time
 import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar, copy_context
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence
@@ -1108,17 +1110,60 @@ class _OutstandingObserver:
         self.send.close()
 
 
+@dataclass
+class _HttpsConnection:
+    # Wrappers change policy, never the claim's connection. Serialize complete
+    # operations: transport.deadline and request hooks are per-call mutable state.
+    lock: Any = field(default_factory=threading.RLock)
+    transport: Any = None
+    observer: Any = None
+    unreaped: Any = None
+    closed: bool = False
+
+
+_job_https: ContextVar[list[Any] | None] = ContextVar("runpod_job_https", default=None)
+
+
+@contextmanager
+def job_https_scope(ops: Any = None):
+    """Share only transport within one job's claim/settlement, across no claims."""
+    slot = [ops if getattr(ops, "_connection", None) is not None else None]
+    marker = _job_https.set(slot)
+    try:
+        yield slot
+    except BaseException:
+        if ops is None and slot[0] is not None:
+            slot[0].close()
+        raise
+    finally:
+        _job_https.reset(marker)
+
+
 class _HttpsOps:
     def __init__(self, pod_id: str, token: str, *, deadline: float | None = None,
                  base_url: str | None = None, abort_event: threading.Event | None = None,
-                 cancelled: Callable[[], bool] | None = None) -> None:
+                 cancelled: Callable[[], bool] | None = None,
+                 connection: _HttpsConnection | None = None) -> None:
         self.pod_id, self.token, self.deadline, self.base_url = pod_id, token, deadline, base_url
         self.abort_event = abort_event
         self.cancelled = cancelled
+        self._connection = connection
+
+    @property
+    def unreaped_child(self) -> Any:
+        return (self._connection.unreaped if self._connection is not None
+                else getattr(self, "_unreaped_child", None))
+
+    @unreaped_child.setter
+    def unreaped_child(self, child: Any) -> None:
+        if self._connection is not None:
+            self._connection.unreaped = child
+        else:
+            self._unreaped_child = child
 
     def cancellable(self, cancelled: Callable[[], bool]) -> "_HttpsOps":
         return type(self)(self.pod_id, self.token, deadline=self.deadline, base_url=self.base_url,
-                          abort_event=self.abort_event, cancelled=cancelled)
+                          abort_event=self.abort_event, cancelled=cancelled, connection=self._connection)
 
     def _check_cancelled(self) -> None:
         if self.cancelled is not None and self.cancelled():
@@ -1127,7 +1172,38 @@ class _HttpsOps:
 
     def bounded(self, deadline: float, *, abort_event: threading.Event | None = None) -> "_HttpsOps":
         return type(self)(self.pod_id, self.token, deadline=deadline, base_url=self.base_url,
-                          abort_event=abort_event)
+                          abort_event=abort_event, connection=self._connection)
+
+    def observer_fenced(self) -> None:
+        """The lease owner now owns the handle; no view may transfer or call it again."""
+        self.unreaped_child = None
+        if self._connection is not None:
+            self._connection.closed = True
+
+    def close(self) -> None:
+        connection = self._connection
+        if connection is None:
+            return
+        with connection.lock:
+            connection.closed = True
+            if connection.transport is not None:
+                connection.transport.disconnect()
+                connection.transport = None
+            if connection.observer is not None:
+                child, recv, send = connection.observer
+                connection.observer = None
+                # Closing the private command pipe asks an idle worker to close
+                # HTTPX; do not leave even an idle local observer after the job.
+                recv.close()
+                child.join(timeout=0.2)
+                if child.is_alive():
+                    child.kill()
+                    child.join(timeout=0.25)
+                if child.is_alive():
+                    self.unreaped_child = _OutstandingObserver(child, None, None, recv, send)
+                    raise BoundedObserverUnreaped("job pod observer could not be reaped")
+                child.close()
+                send.close()
 
     def _transport(self):
         from runpod_lifecycle.https import HttpsPodTransport
@@ -1137,8 +1213,25 @@ class _HttpsOps:
                                  **({"base_url": self.base_url} if self.base_url is not None else {}))
 
     def _call_direct(self, name: str, *args: Any, **kwargs: Any) -> Any:
+        connection = self._connection
+        if connection is not None:
+            with connection.lock:
+                if connection.closed:
+                    raise RemotePlacementError("job HTTPS connection is closed")
+                return self._call_connected(name, *args, **kwargs)
+        return self._call_connected(name, *args, **kwargs)
+
+    def _call_connected(self, name: str, *args: Any, **kwargs: Any) -> Any:
         self._check_cancelled()
-        transport = self._transport()
+        connection = self._connection
+        transport = connection.transport if connection is not None else None
+        if transport is None:
+            transport = self._transport()
+            if connection is not None and getattr(transport, "http", None) is not None:
+                connection.transport = transport
+        transport.deadline = self.deadline
+        before_request = None
+        failed = False
         try:
             http = getattr(transport, "http", None)
             if self.cancelled is not None and http is not None:
@@ -1153,40 +1246,87 @@ class _HttpsOps:
             result = getattr(transport, name)(*args, **kwargs)
             self._check_cancelled()
             return result
+        except BaseException:
+            # Never carry an ambiguous operation's connection into cleanup.
+            if connection is not None:
+                connection.transport = None
+            failed = True
+            raise
         finally:
-            transport.disconnect()
+            if before_request is not None:
+                http.event_hooks["request"].remove(before_request)
+            if failed or connection is None or connection.transport is not transport:
+                transport.disconnect()
 
     def _bounded_call(self, name: str, *args: Any, **kwargs: Any) -> Any:
+        connection = self._connection
+        if connection is not None:
+            # Waiting for another thread must consume this view's budget too.
+            while not connection.lock.acquire(timeout=0.02):
+                self._check_cancelled()
+                interrupted = self.abort_event is not None and self.abort_event.is_set()
+                if interrupted or self.deadline is not None and time.monotonic() >= self.deadline:
+                    raise PlacementReasonError(
+                        "bounded pod operation was interrupted" if interrupted
+                        else "bounded pod operation deadline expired",
+                        reason=Reason(stage="boot", step="provider_contract", gate="provider",
+                                      code="custody_unresolved" if interrupted else "deadline_exceeded"))
+            try:
+                if self.unreaped_child is not None:
+                    raise BoundedObserverUnreaped("job pod observer still lives")
+                if connection.closed:
+                    raise RemotePlacementError("job HTTPS connection is closed")
+                return self._observer_call(name, *args, **kwargs)
+            finally:
+                connection.lock.release()
+        return self._observer_call(name, *args, **kwargs)
+
+    def _observer_call(self, name: str, *args: Any, **kwargs: Any) -> Any:
         """Kill a slow-drip caller before it can hold the host's drain forever."""
-        assert self.deadline is not None
+        from astrid.core.execution.machine_run import MachineRunCancelled
+
+        connection = self._connection
+        deadline = self.deadline if self.deadline is not None else float("inf")
+        self._check_cancelled()
         def refuse(code: str, message: str) -> PlacementReasonError:
             return PlacementReasonError(
                 message, reason=Reason(stage="boot", step="provider_contract", gate="provider", code=code)
             )
 
-        if name not in {"execute_command", "detached_start", "detached_poll", "detached_cancel"}:
+        if self.deadline is not None and name not in {"execute_command", "detached_start", "detached_poll", "detached_cancel"}:
             raise RemotePlacementError("unsupported bounded pod operation")
-        remaining = self.deadline - time.monotonic()
+        remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise refuse("deadline_exceeded", "bounded pod operation deadline expired")
         if self.abort_event is not None and self.abort_event.is_set():
             raise refuse("custody_unresolved", "bounded pod operation was interrupted")
-        context = multiprocessing.get_context("spawn")
-        recv, send = context.Pipe(duplex=False)
-        child = context.Process(target=_bounded_https_call_child,
-                                args=(send, self.pod_id, self.token, self.deadline, self.base_url, name, args, kwargs))
-        child.daemon = True
-        started = False
+        persistent = connection is not None
+        reused = persistent and connection.observer is not None
+        if reused:
+            child, recv, send = connection.observer
+        else:
+            context = multiprocessing.get_context("spawn")
+            recv, send = context.Pipe(duplex=persistent)
+            child = context.Process(target=_bounded_https_call_child,
+                                    args=(send, self.pod_id, self.token, self.deadline, self.base_url,
+                                          name, args, kwargs),
+                                    **({"kwargs": {"persistent": True,
+                                                   "checking": self.cancelled is not None}}
+                                       if persistent else {}))
+            child.daemon = True
+        started = reused
+        succeeded = False
         watchdog = None
         reader = None
         stop_watchdog = threading.Event()
         # Reserve child termination and reaping inside the same absolute
         # transport deadline; HTTP response time never consumes that reserve.
-        request_deadline = self.deadline - min(0.35, remaining / 2)
+        request_deadline = deadline - min(0.35, remaining / 2)
         try:
-            child.start()
-            started = True
-            send.close()
+            if not reused:
+                child.start()
+                started = True
+                send.close()
             # poll() can wake on a partial frame; recv_bytes() may then block
             # indefinitely. The watchdog also observes exact owner release,
             # killing the child so a paid timer can drain without waiting for
@@ -1213,14 +1353,34 @@ class _HttpsOps:
             received: dict[str, Any] = {}
             def read_frame() -> None:
                 try:
-                    received["raw"] = recv.recv_bytes(maxlength=2 * 1024 * 1024)
-                except BaseException:
+                    if reused:
+                        # Sending and reading both live beneath the same killable
+                        # watchdog; a blocked IPC write cannot evade its deadline.
+                        recv.send_bytes(json.dumps([self.deadline, self.cancelled is not None,
+                                                    name, args, kwargs],
+                                                   default=str).encode())
+                    while True:
+                        raw = recv.recv_bytes(maxlength=2 * 1024 * 1024)
+                        if persistent and raw == b"cancel?":
+                            # Consult the actual host callback for every request
+                            # hook, not a periodically sampled cancellation flag.
+                            cancelled = self.cancelled is not None and self.cancelled()
+                            recv.send_bytes(b"cancel" if cancelled else b"continue")
+                        else:
+                            received["raw"] = raw
+                            break
+                except BaseException:  # noqa: BLE001 - IPC failure must enter the same custody/reaping path.
                     received["error"] = True
                 finally:
                     read_done.set()
-            reader = threading.Thread(target=read_frame, daemon=True)
+            reader = threading.Thread(target=copy_context().run, args=(read_frame,), daemon=True)
             reader.start()
             while not read_done.wait(0.02):
+                if self.cancelled is not None and self.cancelled():
+                    # Commands must run execute_command's finally/DELETE before
+                    # returning cancellation, just as the direct transport does.
+                    if name in {"get", "put", "detached_poll"}:
+                        self._check_cancelled()
                 if self.abort_event is not None and self.abort_event.is_set():
                     raise refuse("custody_unresolved", "bounded pod operation was interrupted")
                 if time.monotonic() >= request_deadline:
@@ -1231,18 +1391,20 @@ class _HttpsOps:
                 raise refuse("deadline_exceeded" if time.monotonic() >= request_deadline else "transport_failed",
                              "bounded pod operation deadline expired" if time.monotonic() >= request_deadline
                              else "bounded pod operation failed")
+            self._check_cancelled()
             raw = received["raw"]
             if self.abort_event is not None and self.abort_event.is_set():
                 raise refuse("custody_unresolved", "bounded pod operation was interrupted")
-            if time.monotonic() >= self.deadline:
+            if time.monotonic() >= deadline:
                 raise refuse("deadline_exceeded", "bounded pod operation deadline expired")
             payload = json.loads(raw)
             if not isinstance(payload, dict) or set(payload) != {"ok", "value"} or payload["ok"] is not True:
                 raise refuse("transport_failed", "bounded pod operation failed")
             if self.abort_event is not None and self.abort_event.is_set():
                 raise refuse("custody_unresolved", "bounded pod operation was interrupted")
+            succeeded = True
             return payload["value"]
-        except PlacementReasonError:
+        except (PlacementReasonError, MachineRunCancelled):
             raise
         except (OSError, EOFError, ValueError, TypeError, RuntimeError):
             raise refuse("deadline_exceeded" if time.monotonic() >= request_deadline else "transport_failed",
@@ -1253,28 +1415,37 @@ class _HttpsOps:
         finally:
             stop_watchdog.set()
             if watchdog is not None:
-                watchdog.join(timeout=min(0.05, max(0, self.deadline - time.monotonic())))
-            if started:
-                child.join(timeout=min(0.02, max(0, self.deadline - time.monotonic())))
+                watchdog.join(timeout=min(0.05, max(0, deadline - time.monotonic())))
+            keep = persistent and succeeded
+            if started and not keep:
+                child.join(timeout=min(0.02, max(0, deadline - time.monotonic())))
                 if child.is_alive():
                     try:
                         child.kill()
                     except (OSError, ValueError):
                         pass  # The composite handle below keeps custody pending.
-                    child.join(timeout=min(0.25, max(0, self.deadline - time.monotonic())))
+                    child.join(timeout=min(0.25, max(0, deadline - time.monotonic())))
             if reader is not None:
-                reader.join(timeout=min(0.03, max(0, self.deadline - time.monotonic())))
-            if started and (child.is_alive() or reader is not None and reader.is_alive()
+                reader.join(timeout=min(0.03, max(0, deadline - time.monotonic())))
+            if started and (not keep and child.is_alive() or reader is not None and reader.is_alive()
                             or watchdog is not None and watchdog.is_alive()):
+                if persistent:
+                    connection.observer = None
                 self.unreaped_child = _OutstandingObserver(child, reader, watchdog, recv, send)
                 raise BoundedObserverUnreaped("bounded pod observer could not be reaped")
-            if started:
-                child.close()
-            recv.close()
-            send.close()
+            if keep:
+                connection.observer = (child, recv, send)
+            else:
+                if persistent:
+                    connection.observer = None
+                if started:
+                    child.close()
+                recv.close()
+                send.close()
 
     def _call(self, name: str, *args: Any, **kwargs: Any) -> Any:
-        return (self._call_direct(name, *args, **kwargs) if self.deadline is None
+        return (self._call_direct(name, *args, **kwargs)
+                if self.deadline is None and self._connection is None
                 else self._bounded_call(name, *args, **kwargs))
 
     def exec(self, command: str, timeout: float = 600) -> tuple[int, str, str]:
@@ -1296,22 +1467,43 @@ class _HttpsOps:
         return self._call("detached_cancel", job_id)
 
 
-def _bounded_https_call_child(send: Any, pod_id: str, token: str, deadline: float, base_url: str | None,
-                             name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
-    """One no-journal transport RPC; credentials arrive only on the private spawn pipe."""
+def _bounded_https_call_child(send: Any, pod_id: str, token: str, deadline: float | None, base_url: str | None,
+                             name: str, args: tuple[Any, ...], kwargs: dict[str, Any], *,
+                             persistent: bool = False, checking: bool = False) -> None:
+    """No-journal RPCs; the private pipe carries credentials, never process metadata.
+
+    A job keeps this worker and its HTTPX pool, including across bounded views.
+    Every operation still enters _call_direct with that call's exact deadline.
+    """
+    def cancelled() -> bool:
+        send.send_bytes(b"cancel?")
+        return send.recv_bytes(maxlength=32) == b"cancel"
+
+    ops = _HttpsOps(pod_id, token, deadline=deadline, base_url=base_url,
+                    connection=_HttpsConnection() if persistent else None,
+                    cancelled=cancelled if checking else None)
     try:
-        ops = _HttpsOps(pod_id, token, deadline=deadline, base_url=base_url)
-        value = ops._call_direct(name, *args, **kwargs)
-        payload = json.dumps({"ok": True, "value": value}, separators=(",", ":")).encode()
-        if len(payload) > 2 * 1024 * 1024:
-            payload = b'{"ok":false,"value":null}'
-        send.send_bytes(payload)
+        while True:
+            value = ops._call_direct(name, *args, **kwargs)
+            payload = json.dumps({"ok": True, "value": value}, separators=(",", ":")).encode()
+            if len(payload) > 2 * 1024 * 1024:
+                payload = b'{"ok":false,"value":null}'
+            send.send_bytes(payload)
+            if not persistent:
+                break
+            try:
+                ops.deadline, checking, name, args, kwargs = json.loads(
+                    send.recv_bytes(maxlength=2 * 1024 * 1024))
+                ops.cancelled = cancelled if checking else None
+            except EOFError:
+                break
     except BaseException:
         try:
             send.send_bytes(b'{"ok":false,"value":null}')
         except Exception:
             pass
     finally:
+        ops.close()
         send.close()
 
 
@@ -1339,8 +1531,20 @@ def connect_claimed_for_preparation(record: Mapping[str, Any]) -> Claim:
             or record.get("request_name") != "astrid-product-" + operation
             or record.get("name") != record["request_name"]):
         raise RemotePlacementError("ordinary preparation requires verified journal-created HTTPS custody")
+    token = _read_token(record)
+    slot = _job_https.get()
+    ops = slot[0] if slot is not None else None
+    if ops is not None and (ops.pod_id != record["pod_id"] or ops.token != token
+                            or ops.claim_operation != operation):
+        raise RemotePlacementError("job HTTPS claim changed")
+    if ops is None:
+        ops = _HttpsOps(record["pod_id"], token,
+                        connection=_HttpsConnection() if slot is not None else None)
+        ops.claim_operation = operation
+        if slot is not None:
+            slot[0] = ops
     return Claim(
-        pod_id=record["pod_id"], ops=_HttpsOps(record["pod_id"], _read_token(record)),
+        pod_id=record["pod_id"], ops=ops,
         identity={key: record.get(key) for key in (
             "operation_id", "pod_id", "provider_account_ref", "worker_image",
             "network_volume_id", "volume_mount_path",
