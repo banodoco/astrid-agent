@@ -51,6 +51,8 @@ _SCHEMA = "astrid.engine-service.v1"
 _FRAME_LIMIT = 16 * 1024 * 1024
 _OUTPUT_LIMIT = 1024 * 1024
 _CLEANUP_SECONDS = 8.0
+_RELEASE_POLL_SECONDS = 0.25
+_RELEASE_POLL_LIMIT_SECONDS = 3.0
 _CAUSE_LIMIT = 600
 _CLEANUP_STAGES = {"terminate", "verify", "stdout_drain", "stderr_drain",
                    "stdout_close", "stderr_close", "drain"}
@@ -222,6 +224,9 @@ class LinuxEngineServiceClient:
             raise RecipeValidationError("invalid installation identity")
         self.control = root + "/.astrid-engine/session"
         self._spawned = None
+        # Set only by a successful preparation/service response, never by a
+        # later idle reconnect to the same installation's successor.
+        self._prepared_peer = None
         self.cancelled: Callable[[], bool] | None = None
 
     @classmethod
@@ -474,11 +479,11 @@ class LinuxEngineServiceClient:
                 if channel is None:
                     return None
                 with channel:
-                    if cancelled is not None or expected_peer is not None:
+                    if cancelled is not None or expected_peer is not None or operation in {"probe", "start", "health"}:
                         peer = struct.unpack("3i", channel.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
                         incarnation = (*peer, _vibe_birth(peer[0]))
                         if expected_peer is not None and incarnation != expected_peer:
-                            raise CustodyUnresolved("supervisor incarnation changed during cancellation")
+                            raise CustodyUnresolved("supervisor incarnation changed")
                         if peer[1] != os.getuid():
                             raise CustodyUnresolved("supervisor peer has a different user")
                     if cancelled is not None and cancelled():
@@ -487,7 +492,7 @@ class LinuxEngineServiceClient:
                                     "remaining_seconds": _remaining(deadline)}, deadline)
                     # Keep the connection open while target deadline cleanup is verified.
                     try:
-                        response = _receive(channel, deadline if operation == "stop" else deadline + _CLEANUP_SECONDS,
+                        response = _receive(channel, deadline if operation in {"stop", "release"} else deadline + _CLEANUP_SECONDS,
                                             **({"cancelled": cancelled} if cancelled is not None else {}))
                     except CancelledError:
                         # EOF cancels only this request; the supervisor drains its
@@ -500,7 +505,7 @@ class LinuxEngineServiceClient:
                         if not isinstance(barrier, dict) or barrier.get("exit_code") != 0 or barrier.get("timed_out") is not False:
                             raise CustodyUnresolved("cancelled engine command drainage is unconfirmed")
                         raise
-                    except DeadlineExceeded as exc:
+                    except (DeadlineExceeded, socket.timeout) as exc:
                         raise CustodyUnresolved("supervisor did not confirm command cleanup before the response deadline") from exc
                 if (not isinstance(response, dict) or response.get("identity") != self.identity
                         or set(response) not in ({"identity", "result"}, {"identity", "error", "reason"},
@@ -521,6 +526,8 @@ class LinuxEngineServiceClient:
                     error.reason = reason
                     error.cleanup_failure = cause
                     raise error
+                if operation in {"probe", "start", "health"}:
+                    self._prepared_peer = incarnation
                 return response["result"]
         except (CustodyUnresolved, EndpointOwnershipError, UnsafePathError) as exc:
             if not hasattr(exc, "custody_details"):
@@ -556,7 +563,20 @@ class LinuxEngineServiceClient:
                              "env": dict(request.env), "max_output_bytes": request.max_output_bytes}, request.deadline, **({"cancelled": self.cancelled} if self.cancelled is not None else {})))
 
     def release_owned(self, *, deadline):
-        return self._request("release", {}, deadline, start=False)
+        """Prepared clients fence idle release to their original incarnation.
+
+        A fresh installation client is also used by the explicit SDK release
+        API, which releases the current owner without a prior preparation.
+        The host retains only clients from successful preparation.
+        """
+        if self._prepared_peer is None:
+            return self._request("release", {}, deadline, start=False)
+        try:
+            return self._request("release", {}, deadline, start=False,
+                                 expected_peer=self._prepared_peer)
+        except CustodyUnresolved as exc:
+            # A stale timer must neither adopt nor free a replacement owner.
+            return {"status": "skipped", "reason": exc.reason or str(exc)}
 
     def _live_owner(self):
         owner = type(self).for_stop(**{key: self.identity[key] for key in ("root", "engine", "platform")})
@@ -1065,7 +1085,7 @@ def _verify_connected_child(channel, owned, port, deadline, check):
         time.sleep(min(0.01, _remaining(deadline)))
 
 
-def _get_json(port, path, limit, deadline, check, *, owned=None, payload=None):
+def _get_json(port, path, limit, deadline, check, *, owned=None, payload=None, empty_ok=False):
     """Bound the whole HTTP exchange, including slow headers and body reads."""
     with socket.socket() as channel:
         channel.settimeout(min(1.0, _remaining(deadline)))
@@ -1097,7 +1117,10 @@ def _get_json(port, path, limit, deadline, check, *, owned=None, payload=None):
                 raise ValueError("engine HTTP headers exceed limit")
         raw, body = bytes(data).split(b"\r\n\r\n", 1)
         lines = raw.decode("ascii").split("\r\n")
-        if lines[0].split(" ")[:2] not in (["HTTP/1.1", "200"], ["HTTP/1.0", "200"]):
+        status = lines[0].split(" ")[:2]
+        if not (status in (["HTTP/1.1", "200"], ["HTTP/1.0", "200"]) or
+                (empty_ok and len(status) == 2 and status[0] in ("HTTP/1.0", "HTTP/1.1")
+                 and len(status[1]) == 3 and status[1].isdigit() and 200 <= int(status[1]) < 300)):
             raise ValueError("engine HTTP status is not 200")
         headers = {}
         for line in lines[1:]:
@@ -1107,7 +1130,7 @@ def _get_json(port, path, limit, deadline, check, *, owned=None, payload=None):
                 raise ValueError("ambiguous engine HTTP headers")
             headers[key] = value.strip()
         length = headers.get("content-length", "")
-        if (not length.isascii() or not length.isdigit() or not 0 < int(length) <= limit
+        if (not length.isascii() or not length.isdigit() or not (0 <= int(length) <= limit if empty_ok else 0 < int(length) <= limit)
                 or "transfer-encoding" in headers or "content-encoding" in headers):
             raise ValueError("unsupported engine HTTP framing")
         length = int(length)
@@ -1116,6 +1139,8 @@ def _get_json(port, path, limit, deadline, check, *, owned=None, payload=None):
             body.extend(receive())
         if len(body) != length:
             raise ValueError("oversized engine HTTP body")
+        if empty_ok and not body:
+            return {}
         value = _decode(bytes(body).decode("utf-8"))
         if not isinstance(value, dict):
             raise ValueError("engine health must be a JSON object")
@@ -1426,9 +1451,9 @@ class _Supervisor:
             raise EndpointOwnershipError("live engine custody is required")
         engine = self.engine
         check = lambda: self.check(channel, deadline)
-        def request(path, payload=None):
-            return _get_json(self.recipe.start.port, path, 1024 * 1024, deadline, check,
-                             owned=engine, payload=payload)
+        def request(path, payload=None, *, empty_ok=False, request_deadline=deadline):
+            return _get_json(self.recipe.start.port, path, 1024 * 1024, request_deadline, check,
+                             owned=engine, payload=payload, empty_ok=empty_ok)
         def vram(stats):
             devices = stats.get("devices")
             if not isinstance(devices, list) or not devices or not isinstance(devices[0], dict):
@@ -1437,7 +1462,8 @@ class _Supervisor:
             if type(total) is not int or type(free) is not int:
                 raise ValueError("managed ComfyUI reported malformed VRAM")
             return total, free
-        total, before = vram(request("/system_stats"))
+        before_stats = request("/system_stats")
+        total, before = vram(before_stats)
         queue = request("/queue")
         running, pending = queue.get("queue_running"), queue.get("queue_pending")
         if not isinstance(running, list) or not isinstance(pending, list):
@@ -1445,14 +1471,53 @@ class _Supervisor:
         if running or pending:
             return {"status": "busy"}
         try:
-            free = request("/api/free", {"unload_models": True, "free_memory": True})
-            unloaded = free.get("models_unloaded") is True
+            # Keep the queue check immediately before POST. Production HTTP
+            # submissions bypass self.work, so these are not atomic. Pinned
+            # ComfyUI 6bfaacc6 server.py:1195-1203 sets flags only; main.py:
+            # 386-399 applies them after execution, never during a prompt.
+            # A successful response accepts the flags; main.py:386-399 applies
+            # them at the next prompt boundary, not necessarily by this reply.
+            request("/api/free", {"unload_models": True, "free_memory": True}, empty_ok=True)
+            unloaded = True
         except (OSError, ValueError):
             unloaded = False
-        _, after = vram(request("/system_stats"))
-        return {"status": "completed" if unloaded else "failed", "models_unloaded": unloaded,
-                "vram_total_bytes": total, "vram_free_before_bytes": before,
-                "vram_free_after_bytes": after}
+        after_stats = request("/system_stats")
+        _, after = vram(after_stats)
+        # Release holds self.work; preparation RPCs wait behind it within their
+        # 10-second budget. Bound polling by both this limit and the deadline.
+        poll_deadline = min(deadline, time.monotonic() + _RELEASE_POLL_LIMIT_SECONDS)
+        while unloaded and after <= before:
+            remaining = poll_deadline - time.monotonic()
+            if remaining <= _RELEASE_POLL_SECONDS:
+                break
+            time.sleep(_RELEASE_POLL_SECONDS)
+            try:
+                sample = request("/system_stats", request_deadline=poll_deadline)
+                _, sample_after = vram(sample)
+            except (OSError, ValueError, DeadlineExceeded):
+                break
+            after = sample_after
+            after_stats = sample
+        result = {"status": "completed" if unloaded else "failed", "models_unloaded": unloaded,
+                  "vram_total_bytes": total, "vram_free_before_bytes": before,
+                  "vram_free_after_bytes": after}
+        # Host-wide free RAM, not the ComfyUI process's memory: /free frees
+        # models from GPU memory and releases their cached memory.
+        for stats, source, target in ((before_stats, "ram_total", "ram_total_bytes"),
+                                      (before_stats, "ram_free", "ram_free_before_bytes"),
+                                      (after_stats, "ram_free", "ram_free_after_bytes")):
+            system = stats.get("system")
+            value = system.get(source) if isinstance(system, dict) else None
+            if type(value) is int:
+                result[target] = value
+        # The same append-only engine log is declared by the preparing run.
+        # Retain the native release evidence even when idle fires after settle.
+        try:
+            with open(engine_log_path(self.root, self.identity["engine"]), "a", encoding="utf-8") as log:
+                log.write(json.dumps(result, sort_keys=True) + "\n")
+        except OSError:
+            pass  # Logging cannot change the release outcome.
+        return result
 
     def stop(self, deadline=None):
         deadline = self.cleanup_deadline(deadline)
@@ -1478,7 +1543,9 @@ class _Supervisor:
                 with self.stop_lock:
                     self.stop_deadlines[channel] = deadline
                     self.stopping.set()
-            response_deadline = deadline if operation == "stop" else deadline + _CLEANUP_SECONDS
+            # Release owns no command to drain. In particular, preparation
+            # must not queue behind an idle RPC's command-cleanup allowance.
+            response_deadline = deadline if operation in {"stop", "release"} else deadline + _CLEANUP_SECONDS
             if not self.work.acquire(timeout=_remaining(response_deadline)):
                 raise CustodyUnresolved("active supervisor operation did not drain")
             engine_before = self.engine
