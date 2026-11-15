@@ -50,7 +50,7 @@ def test_guard_budget_is_one_real_bootstrap_without_retry(tmp_path, monkeypatch,
     assert "--manifest" in argv
     assert "--autostart" in argv and "--command" in argv
     assert "--skills" in argv and "--skill-copies" in argv
-    assert "--yes" not in argv
+    assert "--yes" in argv  # unattended installs stop for consent without it
     assert timeout == 3600
     assert env["LOCALAPPDATA"] == str(local)
     assert (evidence / "install.log").read_text() == (logs / "install.log").read_text()
