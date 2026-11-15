@@ -1041,8 +1041,8 @@ def test_explicit_pinokio_backend_mode_uses_backend_executor(tmp_path, monkeypat
 
 def test_journey_workflow_uses_astrid_app_for_all_candidate_checkouts():
     workflow = (journey.ROOT / ".github" / "workflows" / "journey.yml").read_text()
-    # Six: the candidate App, frozen App candidate checkouts, and pinned Release 9/11 Apps.
-    assert workflow.count("repository: banodoco/astrid-app") == 6
+    # Seven: the candidate App, frozen App candidate checkouts, and pinned Release 9/11/12 Apps.
+    assert workflow.count("repository: banodoco/astrid-app") == 7
     assert workflow.count("name: Check out frozen App candidate") == 3
     assert "repository: banodoco/reigh-app" not in workflow
 
@@ -1978,8 +1978,8 @@ def test_sentinel_setup_failure_records_failure_diagnostics(tmp_path, monkeypatc
     assert "before-cleanup" in receipt["failure_diagnostics"]
 
 
-def test_row_direct_is_one_nine_row_run_and_keep_going_stays_on_the_legacy_rows(tmp_path):
-    """Row direct is one full run of the nine Release-1 rows; keep-going never admits the new legs."""
+def test_row_direct_is_one_full_direct_run_and_keep_going_stays_on_the_legacy_rows(tmp_path):
+    """Row direct is one full run of the fourteen Release-1 rows; keep-going never admits the new legs."""
     import subprocess
     import sys
     import textwrap
@@ -2019,6 +2019,9 @@ def test_row_direct_is_one_nine_row_run_and_keep_going_stays_on_the_legacy_rows(
         "direct-macos-r9-install": ("release9-then-install", "macos", "macos-15"),
         "direct-linux-r11-update": ("release11-then-update", "linux", "ubuntu-24.04"),
         "direct-macos-r11-update": ("release11-then-update", "macos", "macos-15"),
+        "direct-linux-r12-update": ("release12-then-update", "linux", "ubuntu-24.04"),
+        "direct-macos-r12-update": ("release12-then-update", "macos", "macos-15"),
+        "direct-windows-r12-update": ("release12-then-update", "windows", "windows-2022"),
         "direct-linux-autostart-off": ("fresh-install-autostart-off", "linux", "ubuntu-24.04"),
         "direct-macos-autostart-off": ("fresh-install-autostart-off", "macos", "macos-15"),
     }
@@ -2070,6 +2073,9 @@ def test_journey_workflow_selects_nine_direct_rows_and_keeps_full_gate(tmp_path)
         ("direct-macos-r9-install", "direct", "macos-15", "release9-then-install"),
         ("direct-linux-r11-update", "direct", "ubuntu-24.04", "release11-then-update"),
         ("direct-macos-r11-update", "direct", "macos-15", "release11-then-update"),
+        ("direct-linux-r12-update", "direct", "ubuntu-24.04", "release12-then-update"),
+        ("direct-macos-r12-update", "direct", "macos-15", "release12-then-update"),
+        ("direct-windows-r12-update", "direct", "windows-2022", "release12-then-update"),
         ("direct-linux-autostart-off", "direct", "ubuntu-24.04", "fresh-install-autostart-off"),
         ("direct-macos-autostart-off", "direct", "macos-15", "fresh-install-autostart-off"),
     }
@@ -2077,6 +2083,8 @@ def test_journey_workflow_selects_nine_direct_rows_and_keeps_full_gate(tmp_path)
     automatic_five = {row for row in expected_direct
                       if row[0] not in ("direct-linux-r9-install", "direct-macos-r9-install",
                                         "direct-linux-r11-update", "direct-macos-r11-update",
+                                        "direct-linux-r12-update", "direct-macos-r12-update",
+                                        "direct-windows-r12-update",
                                         "direct-linux-autostart-off", "direct-macos-autostart-off")}
     values = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
     assert len(unrestricted) == 5

@@ -38,6 +38,7 @@ if __package__:
         M4_4A_OLD_UPDATE_SHA256,
         M4_4A_PROVISIONAL_AGENT_REF,
         M4_4A_REQUIRED_AGENT_ANCESTORS,
+        RELEASE12_WINDOWS_JOB_ID,
         RELEASE1_MODES,
         validate_job,
     )
@@ -49,6 +50,7 @@ else:
         M4_4A_OLD_UPDATE_SHA256,
         M4_4A_PROVISIONAL_AGENT_REF,
         M4_4A_REQUIRED_AGENT_ANCESTORS,
+        RELEASE12_WINDOWS_JOB_ID,
         RELEASE1_MODES,
         validate_job,
     )
@@ -111,6 +113,9 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "r11-home-packs.json",
     # Linux/macOS: each expected host/service log, captured or absent.
     "runtime-service-log-status.json",
+    # direct-windows-r12-update: `astrid doctor --json` and the dry-run generation, each as the installed
+    # candidate printed it (see journey_windows_r12_update.py).
+    "windows-r12-doctor.json", "windows-r12-dry-run.json",
 })
 JOURNEY_PACK_LOG = re.compile(r"journey-pack-[A-Za-z0-9_-]+\.log")
 EVIDENCE_LOG_LIMIT = 1024 * 1024
@@ -4051,10 +4056,16 @@ def main(argv: list[str] | None = None) -> int:
     elif args.release11_app_checkout is not None or args.allow_release11_to_candidate:
         parser.error("release-11 admission is only valid for the release11-then-update leg")
     if args.leg == "release12-then-update":
-        if sys.platform == "win32" or diagnostic or args.diagnostic_keep_going or args.retain_for_next_leg:
-            parser.error("release12-then-update requires a disposable direct qualification job on Linux or macOS")
+        if diagnostic or args.diagnostic_keep_going or args.retain_for_next_leg:
+            parser.error("release12-then-update requires a disposable direct qualification job")
         if not (args.job_id and args.mode == "direct" and args.candidate):
             parser.error("release12-then-update requires a frozen direct candidate receipt")
+        # Windows is admitted for exactly one job, and that job only on Windows.
+        if (sys.platform == "win32") != (args.job_id == RELEASE12_WINDOWS_JOB_ID):
+            parser.error(f"release12-then-update on Windows is admitted only for the {RELEASE12_WINDOWS_JOB_ID} "
+                         "job on windows-2022; Linux and macOS use their own r12 rows")
+        if validate_job(args.job_id, args.mode)["os"] != journey_os_label():
+            parser.error(f"{args.job_id} does not run on this operating system")
         if (args.release12_app_checkout is None or not args.allow_release12_to_candidate
                 or args.release0_fixture is not None or args.release9_app_checkout is not None
                 or args.allow_release0_to_release1):

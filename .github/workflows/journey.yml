@@ -171,6 +171,7 @@ on:
           - direct-macos-r11-update
           - direct-linux-r12-update
           - direct-macos-r12-update
+          - direct-windows-r12-update
           - direct-linux-autostart-off
           - direct-macos-autostart-off
           - direct
@@ -477,7 +478,7 @@ jobs:
     if: needs.config.outputs.m4_5_only != 'true'
     needs: config
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: ${{ matrix.job_id == 'direct-windows' && 300 || 150 }}
+    timeout-minutes: ${{ startsWith(matrix.job_id, 'direct-windows') && 300 || 150 }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.config.outputs.matrix) }}
@@ -689,7 +690,7 @@ jobs:
           printf 'XDG_RUNTIME_DIR=%s\nDBUS_SESSION_BUS_ADDRESS=%s\n' "$XDG_RUNTIME_DIR" "$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
           echo 'Native systemd user manager discovered and started the isolated-path probe.'
       - name: Establish Windows Task Scheduler readiness
-        if: matrix.job_id == 'direct-windows'
+        if: startsWith(matrix.job_id, 'direct-windows')
         shell: powershell
         timeout-minutes: 3
         run: |
@@ -737,7 +738,7 @@ jobs:
           }
           exit $result
       - name: Capture Windows scheduled-task query diagnostics
-        if: always() && matrix.job_id == 'direct-windows'
+        if: always() && startsWith(matrix.job_id, 'direct-windows')
         shell: powershell
         env:
           JOURNEY_LEG: ${{ matrix.leg }}
@@ -800,7 +801,8 @@ jobs:
         with:
           retention-days: 30
           name: journey-manager-${{ matrix.job_id }}${{ inputs.diagnostic_keep_going && format('-{0}', matrix.leg) || '' }}
-          path: ${{ runner.temp }}/journey-manager-${{ matrix.job_id }}
+          # Both Windows rows write the one journey-manager-direct-windows folder, each on its own runner.
+          path: ${{ runner.temp }}/journey-manager-${{ startsWith(matrix.job_id, 'direct-windows') && 'direct-windows' || matrix.job_id }}
           if-no-files-found: warn
       # The fresh Linux row updates by clicking Update now in the candidate's own hosted App build:
       # the driver serves this build at https://astrid.haus through the update leg's intercept.
@@ -993,7 +995,8 @@ jobs:
             'manager-state-before-cleanup.log', 'manager-state-after-cleanup.log',
             'unit-file-before-cleanup.txt', 'unit-file-after-cleanup.txt',
             'journey-packs-list.json', 'journey-pack-hot-refresh.json', 'journey-pack-registration.json',
-            'journey-pack-host-identity.json', 'r11-home-packs.json', 'runtime-service-log-status.json'
+            'journey-pack-host-identity.json', 'r11-home-packs.json', 'runtime-service-log-status.json',
+            'windows-r12-doctor.json', 'windows-r12-dry-run.json'
           )
           $maxArtifactBytes = 49000000
           # Reserve 1 KiB per file for the stored ZIP entry and central directory.

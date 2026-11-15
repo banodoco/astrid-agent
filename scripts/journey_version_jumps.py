@@ -23,6 +23,7 @@ if __package__:
     from . import check_journey_evidence as evidence_gate
     from . import ci_journey as journey, upgrade_release, journey_workspace, journey_live_workspace as live
     from . import journey_data_roots
+    from .journey_matrix import RELEASE12_WINDOWS_JOB_ID
 else:
     import check_journey_evidence as evidence_gate
     import ci_journey as journey
@@ -30,6 +31,7 @@ else:
     import journey_workspace
     import journey_live_workspace as live
     import journey_data_roots
+    from journey_matrix import RELEASE12_WINDOWS_JOB_ID
 
 
 RELEASE0_FIXTURE = journey.ROOT / "tests" / "fixtures" / "release0"
@@ -2041,7 +2043,15 @@ def execute_owned(args, root: Path, data: Path, evidence: Path, sentinel, birth:
         return execute_release11_then_update(args, root, data, evidence, sentinel, birth)
     if args.leg == RELEASE12_LEG:
         if sys.platform == "win32":
-            raise RuntimeError("Release-12 update is only supported on Linux and macOS")
+            # Windows starts from the published Release 12 on its one admitted job only; the
+            # leg itself lives in journey_windows_r12_update (it needs the Windows helpers).
+            if getattr(args, "job_id", None) != RELEASE12_WINDOWS_JOB_ID:
+                raise RuntimeError(f"Release-12 update on Windows is only admitted for {RELEASE12_WINDOWS_JOB_ID}")
+            if __package__:
+                from . import journey_windows_r12_update
+            else:
+                import journey_windows_r12_update
+            return journey_windows_r12_update.execute(args, root, data, evidence, sentinel, birth)
         return execute_release12_then_update(args, root, data, evidence, sentinel, birth)
     if args.leg == AUTOSTART_LEG:
         if sys.platform == "win32":

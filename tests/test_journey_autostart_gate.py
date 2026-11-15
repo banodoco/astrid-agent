@@ -1,4 +1,4 @@
-"""The fresh-install-autostart-off rows: the eleven-row aggregate requires them, and the gate checks the
+"""The fresh-install-autostart-off rows: the fourteen-row aggregate requires them, and the gate checks the
 autostart assertions by name, including the App capture at deviceScaleFactor 2.
 """
 import importlib.util
@@ -17,11 +17,12 @@ rows = importlib.util.module_from_spec(rows_spec)
 rows_spec.loader.exec_module(rows)
 
 AUTOSTART_ROWS = ("direct-linux-autostart-off", "direct-macos-autostart-off")
-ELEVEN = (
+FOURTEEN = (
     "direct-linux-fresh", "direct-macos-fresh", "direct-windows",
     "direct-linux", "direct-macos",
     "direct-linux-r9-install", "direct-macos-r9-install",
     "direct-linux-r11-update", "direct-macos-r11-update",
+    "direct-linux-r12-update", "direct-macos-r12-update", "direct-windows-r12-update",
     *AUTOSTART_ROWS,
 )
 
@@ -33,16 +34,16 @@ def mutate(tmp_path, job_id, change):
     path.write_text(json.dumps(row), encoding="utf-8")
 
 
-def test_the_release1_matrix_is_the_eleven_direct_rows_with_the_two_autostart_rows():
-    assert {row["job_id"] for row in gate.RELEASE1_MATRIX} == set(ELEVEN)
-    assert len(gate.RELEASE1_MATRIX) == 11
+def test_the_release1_matrix_is_the_fourteen_direct_rows_with_the_two_autostart_rows():
+    assert {row["job_id"] for row in gate.RELEASE1_MATRIX} == set(FOURTEEN)
+    assert len(gate.RELEASE1_MATRIX) == 14
     autostart = {row["job_id"]: row for row in gate.RELEASE1_MATRIX if row["job_id"] in AUTOSTART_ROWS}
     assert autostart["direct-linux-autostart-off"]["runner"] == "ubuntu-24.04"
     assert autostart["direct-macos-autostart-off"]["runner"] == "macos-15"
     assert all(row["leg"] == "fresh-install-autostart-off" for row in autostart.values())
 
 
-def test_a_complete_eleven_row_run_passes_including_the_release11_and_autostart_rows(tmp_path):
+def test_a_complete_fourteen_row_run_passes_including_the_release11_and_autostart_rows(tmp_path):
     candidate = rows.release1_receipts(tmp_path)
     assert gate.evaluate_release1_matrix(candidate, tmp_path) == []
 

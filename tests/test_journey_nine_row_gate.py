@@ -1,8 +1,9 @@
 """The Release-1 aggregate is the nine-row direct run, and every row's leg is validated by its own assertions.
 
-Nine rows: three fresh-install rows (linux and macOS fresh, plus Windows), two r0-handoff-then-update rows,
-two release9-then-install rows and two release11-then-update rows. The aggregate rejects a run missing any
-one of them. The release9-then-install rows are strict: their own receipt fields must hold.
+The direct rows: three fresh-install rows (linux and macOS fresh, plus Windows), two r0-handoff-then-update rows,
+two release9-then-install rows, two release11-then-update rows, three release12-then-update rows (Linux, macOS
+and Windows) and two autostart-off rows: fourteen in all. The aggregate rejects a run missing any one of them.
+The release9-then-install rows are strict: their own receipt fields must hold.
 """
 import importlib.util
 import json
@@ -34,6 +35,7 @@ NINE = {
     "direct-macos-r11-update": ("release11-then-update", "macos", "macos-15"),
     "direct-linux-r12-update": ("release12-then-update", "linux", "ubuntu-24.04"),
     "direct-macos-r12-update": ("release12-then-update", "macos", "macos-15"),
+    "direct-windows-r12-update": ("release12-then-update", "windows", "windows-2022"),
     "direct-linux-autostart-off": ("fresh-install-autostart-off", "linux", "ubuntu-24.04"),
     "direct-macos-autostart-off": ("fresh-install-autostart-off", "macos", "macos-15"),
 }
@@ -49,7 +51,7 @@ def mutate(tmp_path, job_id, change):
 def test_the_release1_matrix_is_exactly_the_nine_direct_rows():
     matrix = {row["job_id"]: (row["leg"], row["os"], row["runner"]) for row in gate.RELEASE1_MATRIX}
     assert matrix == NINE
-    assert len(gate.RELEASE1_MATRIX) == 13
+    assert len(gate.RELEASE1_MATRIX) == 14
     assert all(row["mode"] == "direct" for row in gate.RELEASE1_MATRIX)
     assert set(gate.RELEASE1_JOB_IDS) == set(NINE)
 
@@ -128,7 +130,7 @@ def test_an_automatic_run_is_the_five_rows_and_a_direct_run_is_the_nine(tmp_path
     assert sorted(errors) == sorted(f"{job}: missing receipt" for job in NINE if job not in AUTOMATIC_FIVE)
     # The five-row scope rejects the release9 and release11 rows as outside its scope.
     scoped = gate.evaluate_release1_matrix(candidate, tmp_path, scope="five")
-    assert sum("unknown or absent Release-1 job id" in error for error in scoped) == 8
+    assert sum("unknown or absent Release-1 job id" in error for error in scoped) == 9
     assert sum("duplicate receipt" in error for error in scoped) == 5
 
 

@@ -50,9 +50,16 @@ RELEASE11_UPDATE_MATRIX: Final = (
     {"job_id": "direct-macos-r11-update", "mode": "direct", "runner": "macos-15", "shell": "sh", "os": "macos", "leg": "release11-then-update"},
 )
 RELEASE11_UPDATE_JOB_IDS: Final = tuple(row["job_id"] for row in RELEASE11_UPDATE_MATRIX)
+# The release12-then-update rows start from the served Release 12, installed plainly from its pinned
+# App commit, and take the candidate's install --update to its manifest release. The Windows row is the
+# only Windows row that starts from a published release: it installs Release 12 through install.ps1 and
+# updates through the candidate's install.ps1 --update, then also checks astrid doctor and a dry-run
+# generation (see journey_windows_r12_update.py).
+RELEASE12_WINDOWS_JOB_ID: Final = "direct-windows-r12-update"
 RELEASE12_UPDATE_MATRIX: Final = (
     {"job_id": "direct-linux-r12-update", "mode": "direct", "runner": "ubuntu-24.04", "shell": "sh", "os": "linux", "leg": "release12-then-update"},
     {"job_id": "direct-macos-r12-update", "mode": "direct", "runner": "macos-15", "shell": "sh", "os": "macos", "leg": "release12-then-update"},
+    {"job_id": RELEASE12_WINDOWS_JOB_ID, "mode": "direct", "runner": "windows-2022", "shell": "powershell.exe", "os": "windows", "leg": "release12-then-update"},
 )
 RELEASE12_UPDATE_JOB_IDS: Final = tuple(row["job_id"] for row in RELEASE12_UPDATE_MATRIX)
 # The direct matrix includes fresh installs, handoffs, and pinned release update rows.

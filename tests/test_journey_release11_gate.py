@@ -79,7 +79,7 @@ def test_release11_rows_are_accepted_by_the_release1_aggregate_when_all_four_ass
     assert gate.evaluate_release1_matrix(candidate, tmp_path) == []
 
 
-def test_release11_rows_are_required_by_the_nine_row_aggregate(tmp_path):
+def test_release11_rows_are_required_by_the_full_aggregate(tmp_path):
     candidate = rows.release1_receipts(tmp_path)
     assert gate.evaluate_release1_matrix(candidate, tmp_path) == []
     (tmp_path / "direct-linux-r11-update" / "journey-result.json").unlink()
@@ -87,11 +87,12 @@ def test_release11_rows_are_required_by_the_nine_row_aggregate(tmp_path):
     assert errors == ["direct-linux-r11-update: missing receipt"]
 
 
-def test_release1_aggregate_expects_the_nine_rows_including_windows_and_both_fresh_rows():
+def test_release1_aggregate_expects_every_direct_row_including_windows_and_both_fresh_rows():
     assert set(gate.RELEASE1_JOB_IDS) == {
         "direct-linux", "direct-macos", "direct-windows", "direct-linux-fresh", "direct-macos-fresh",
         "direct-linux-r9-install", "direct-macos-r9-install",
         "direct-linux-r11-update", "direct-macos-r11-update",
+        "direct-linux-r12-update", "direct-macos-r12-update", "direct-windows-r12-update",
         "direct-linux-autostart-off", "direct-macos-autostart-off"}
     assert {row["job_id"] for row in gate.RELEASE11_UPDATE_MATRIX} <= set(gate.RELEASE1_JOB_IDS)
 

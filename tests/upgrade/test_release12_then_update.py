@@ -22,7 +22,7 @@ def test_release12_source_and_matrix_are_pinned(monkeypatch, tmp_path):
     assert receipt["app_commit"] == jumps.RELEASE12_APP_COMMIT
     assert receipt["identity"] == jumps.RELEASE12_IDENTITY
     assert {row["job_id"] for row in journey_matrix.RELEASE12_UPDATE_MATRIX} == {
-        "direct-linux-r12-update", "direct-macos-r12-update"}
+        "direct-linux-r12-update", "direct-macos-r12-update", "direct-windows-r12-update"}
     for row in journey_matrix.RELEASE12_UPDATE_MATRIX:
         assert journey_matrix.validate_job(row["job_id"], "direct")["leg"] == "release12-then-update"
 

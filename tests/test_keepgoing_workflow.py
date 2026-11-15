@@ -62,11 +62,13 @@ def test_strict_direct_matrix_preserves_original_leg_and_artifact_names(tmp_path
                              DIAGNOSTIC_LEG='release9-then-install')
     assert result.returncode == 0, result.stderr
     rows = json.loads(outputs['matrix'])['include']
-    assert {(row['job_id'], row['leg']) for row in rows} == {
+    # row=direct is every direct row: the five original rows keep their own legs beside the nine newer ones.
+    assert {(row['job_id'], row['leg']) for row in rows} >= {
         ('direct-linux', 'r0-handoff-then-update'), ('direct-macos', 'r0-handoff-then-update'),
         ('direct-windows', 'fresh-install'),
         ('direct-linux-fresh', 'fresh-install'), ('direct-macos-fresh', 'fresh-install')}
-    assert len(rows) == 5
+    assert ('direct-windows-r12-update', 'release12-then-update') in {(row['job_id'], row['leg']) for row in rows}
+    assert len(rows) == len({row['job_id'] for row in rows}) == 14
     suffix = "${{ inputs.diagnostic_keep_going && format('-{0}', matrix.leg) || '' }}"
     assert 'name: journey-receipt-${{ matrix.job_id }}' + suffix in WORKFLOW
     assert 'name: journey-manager-${{ matrix.job_id }}' + suffix in WORKFLOW

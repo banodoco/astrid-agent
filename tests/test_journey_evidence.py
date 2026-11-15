@@ -70,6 +70,25 @@ def release11_fields():
     }
 
 
+def release12_windows_fields():
+    """The Windows release12-then-update row's own evidence: the doctor, the dry run and the seeded data."""
+    fields = release11_fields()
+    fields["release12_source"] = fields.pop("release11_source")
+    fields["release12_source"].update(app_commit=gate.RELEASE12_APP_COMMIT, identity=gate.RELEASE12_IDENTITY)
+    fields["release_transition"]["from"] = 12
+    fields["update"]["receipt"]["start"] = 12
+    fields.update(
+        service_manager={"manager": "task-scheduler", "foreground_fallback": False},
+        doctor={"exit_code": 0, "ok": True, "state": "ready", "evidence": "windows-r12-doctor.json"},
+        dry_run={"exit_code": 0, "ok": True, "dry_run": True, "capability_id": "generation.generate_speech",
+                 "evidence": "windows-r12-dry-run.json"},
+        data_marker={"project": "windows-r12-update", "sha256": "d" * 64, "survived": True},
+        steps=[{"step": name, "label": name, "status": "pass"} for name in
+               ("admission", "r12_bootstrap", "r12_start", "r12_seed", "update", "release_check", "doctor",
+                "dry_run", "data_check")])
+    return fields
+
+
 def autostart_fields():
     """The fresh-install-autostart-off row's own evidence: the selection, the status, the refused POST and the capture."""
     return {
@@ -116,13 +135,17 @@ def release1_receipts(tmp_path):
                 row.update(release11_fields())
                 row["checks"].update({name: "pass" for name in gate.RELEASE11_CHECKS})
             elif contract.get("leg") == "release12-then-update":
-                fields = release11_fields()
-                fields["release12_source"] = fields.pop("release11_source")
-                fields["release12_source"].update(app_commit=gate.RELEASE12_APP_COMMIT, identity=gate.RELEASE12_IDENTITY)
-                fields["release_transition"]["from"] = 12
-                fields["update"]["receipt"]["start"] = 12
-                row.update(fields)
-                row["checks"].update({name: "pass" for name in gate.RELEASE12_CHECKS})
+                if contract["os"] == "windows":
+                    row.update(release12_windows_fields())
+                    row["checks"].update({name: "pass" for name in gate.RELEASE12_WINDOWS_CHECKS})
+                else:
+                    fields = release11_fields()
+                    fields["release12_source"] = fields.pop("release11_source")
+                    fields["release12_source"].update(app_commit=gate.RELEASE12_APP_COMMIT, identity=gate.RELEASE12_IDENTITY)
+                    fields["release_transition"]["from"] = 12
+                    fields["update"]["receipt"]["start"] = 12
+                    row.update(fields)
+                    row["checks"].update({name: "pass" for name in gate.RELEASE12_CHECKS})
             elif contract.get("leg") == "fresh-install-autostart-off":
                 row.update(autostart_fields())
                 row["checks"].update({name: "pass" for name in gate.AUTOSTART_CHECKS})
@@ -422,7 +445,7 @@ def test_workflow_declares_the_exact_release1_matrix_and_aggregate_gate():
     workflow = (Path(__file__).parents[1] / ".github" / "workflows" / "journey.yml").read_text()
     assert "matrix = [dict(row) for row in journey_matrix.RELEASE1_MATRIX]" in workflow
     contract_rows = {(row["job_id"], row["mode"], row["os"], row["leg"]) for row in gate.RELEASE1_MATRIX}
-    assert len(gate.RELEASE1_MATRIX) == len({row["job_id"] for row in gate.RELEASE1_MATRIX}) == 11
+    assert len(gate.RELEASE1_MATRIX) == len({row["job_id"] for row in gate.RELEASE1_MATRIX}) == 14
     assert contract_rows == {
         ("direct-linux", "direct", "linux", "r0-handoff-then-update"),
         ("direct-macos", "direct", "macos", "r0-handoff-then-update"),
@@ -433,6 +456,9 @@ def test_workflow_declares_the_exact_release1_matrix_and_aggregate_gate():
         ("direct-macos-r9-install", "direct", "macos", "release9-then-install"),
         ("direct-linux-r11-update", "direct", "linux", "release11-then-update"),
         ("direct-macos-r11-update", "direct", "macos", "release11-then-update"),
+        ("direct-linux-r12-update", "direct", "linux", "release12-then-update"),
+        ("direct-macos-r12-update", "direct", "macos", "release12-then-update"),
+        ("direct-windows-r12-update", "direct", "windows", "release12-then-update"),
         ("direct-linux-autostart-off", "direct", "linux", "fresh-install-autostart-off"),
         ("direct-macos-autostart-off", "direct", "macos", "fresh-install-autostart-off"),
     }
@@ -709,6 +735,7 @@ def test_each_release1_leg_needs_its_own_receipt_kind(tmp_path):
     swapped = {"r0-handoff-then-update": "release1-installed-lifecycle",
                "release1-installed-lifecycle": "r0-handoff-then-update",
                "release11-then-update": "release1-installed-lifecycle",
+               "release12-then-update": "release1-installed-lifecycle",
                "fresh-install-autostart-off": "release1-installed-lifecycle"}
     for job_id, kind in kinds.items():
         path = tmp_path / job_id / "journey-result.json"

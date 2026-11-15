@@ -28,6 +28,8 @@ if __package__:
         RELEASE1_JOB_IDS,
         RELEASE1_MATRIX,
         RELEASE1_AUTOMATIC_MATRIX,
+        RELEASE11_UPDATE_MATRIX,
+        RELEASE12_UPDATE_MATRIX,
         RELEASE1_1_DEFERRED_PINOKIO_MATRIX,
         RELEASE1_1_PINOKIO_MATRIX,
     )
@@ -50,6 +52,8 @@ else:
             RELEASE1_JOB_IDS,
             RELEASE1_MATRIX,
             RELEASE1_AUTOMATIC_MATRIX,
+            RELEASE11_UPDATE_MATRIX,
+            RELEASE12_UPDATE_MATRIX,
             RELEASE1_1_DEFERRED_PINOKIO_MATRIX,
             RELEASE1_1_PINOKIO_MATRIX,
         )
@@ -71,6 +75,8 @@ else:
             RELEASE1_JOB_IDS,
             RELEASE1_MATRIX,
             RELEASE1_AUTOMATIC_MATRIX,
+            RELEASE11_UPDATE_MATRIX,
+            RELEASE12_UPDATE_MATRIX,
             RELEASE1_1_DEFERRED_PINOKIO_MATRIX,
             RELEASE1_1_PINOKIO_MATRIX,
         )
@@ -107,6 +113,12 @@ RELEASE12_IDENTITY = {
     "schema_digest": "sha256:9628bb5fd6e1dbbec392dd39f2e01031622dcf52d7ccff7cd1f0ad10743dcb1c",
 }
 RELEASE12_CHECKS = tuple("release12_install" if name == "release11_install" else name for name in RELEASE11_CHECKS)
+# The Windows release12-then-update row seeds a project and a workspace marker through the installed command
+# line instead of the live API, and adds astrid doctor and a dry-run generation. Its run receipt is read
+# where the Windows installer writes it and is checked when present.
+RELEASE12_WINDOWS_CHECKS = ("release12_install", "update_exit", "release", "one_runtime", "service", "health",
+                            "doctor", "dry_run", "data_marker", "unrelated_sentinel")
+RELEASE12_WINDOWS_DRY_RUN_CAPABILITY = "generation.generate_speech"
 AUTOSTART_LEG = "fresh-install-autostart-off"
 AUTOSTART_CHECKS = ("install_exit", "selection_autostart_false", "update_status_autostart_off",
                     "post_update_refused_unchanged", "autostart_card_capture", "service", "health",
@@ -499,7 +511,33 @@ def _release11_row_errors(job_id, row, target_release):
     return errors
 
 
-def _release12_row_errors(job_id, row, target_release):
+def _release12_windows_errors(job_id, row):
+    """What only the Windows release12-then-update row records: the doctor, the dry run and the seeded data."""
+    errors = []
+    doctor = row.get("doctor")
+    if (not isinstance(doctor, dict) or doctor.get("exit_code") != 0 or doctor.get("ok") is not True):
+        errors.append(f"{job_id}: astrid doctor did not exit 0 and report ok")
+    dry_run = row.get("dry_run")
+    if (not isinstance(dry_run, dict) or dry_run.get("exit_code") != 0 or dry_run.get("ok") is not True
+            or dry_run.get("dry_run") is not True
+            or dry_run.get("capability_id") != RELEASE12_WINDOWS_DRY_RUN_CAPABILITY):
+        errors.append(f"{job_id}: the dry-run generation did not run as a clean dry run")
+    marker = row.get("data_marker")
+    if (not isinstance(marker, dict) or marker.get("survived") is not True
+            or not isinstance(marker.get("sha256"), str) or not DIGEST.fullmatch(marker["sha256"])
+            or not isinstance(marker.get("project"), str) or not marker["project"]):
+        errors.append(f"{job_id}: the seeded project and workspace marker did not survive the update")
+    manager = row.get("service_manager")
+    if not isinstance(manager, dict) or manager.get("manager") != "task-scheduler":
+        errors.append(f"{job_id}: the Windows Task Scheduler service ownership assertion is absent")
+    steps = row.get("steps")
+    if (not isinstance(steps, list) or not steps
+            or any(not isinstance(item, dict) or item.get("status") != "pass" for item in steps)):
+        errors.append(f"{job_id}: a journey step did not pass")
+    return errors
+
+
+def _release12_row_errors(job_id, row, target_release, os_name="linux"):
     """The release12-then-update row's four assertions, each read from the leg's own receipt fields.
 
     1. the installed and live release match the candidate, from the pinned source;
@@ -507,7 +545,11 @@ def _release12_row_errors(job_id, row, target_release):
     3. exactly one Runtime is live afterwards;
     4. the seeded user data survives (identical semantic digests).
     Every other leg assertion must also pass. Each failure names the missing assertion.
+
+    On Windows the run receipt is checked only when the installer's log directory held one, the seeded data
+    is the project and workspace marker, and doctor and the dry run are required as well.
     """
+    windows = os_name == "windows"
     errors = []
     source = row.get("release12_source")
     if (not isinstance(source, dict) or source.get("app_commit") != RELEASE12_APP_COMMIT
@@ -523,11 +565,10 @@ def _release12_row_errors(job_id, row, target_release):
                       f"(release {RELEASE12_RELEASE} to {target_release}, live identity)")
     update = row.get("update")
     receipt = update.get("receipt") if isinstance(update, dict) else None
+    receipt_ok = (isinstance(receipt, dict) and receipt.get("kind") == "updated" and receipt.get("exit_code") == 0
+                  and receipt.get("still") == target_release and receipt.get("target") == target_release)
     if (not isinstance(update, dict) or update.get("command") != "install --update"
-            or update.get("exit_code") != 0 or not isinstance(receipt, dict)
-            or receipt.get("kind") != "updated" or receipt.get("exit_code") != 0
-            or receipt.get("still") != target_release
-            or receipt.get("target") != target_release):
+            or update.get("exit_code") != 0 or not (receipt_ok or (windows and receipt is None))):
         errors.append(f"{job_id}: candidate install --update receipt does not say updated to release "
                       f"{target_release}")
     live = row.get("live_runtimes")
@@ -536,16 +577,19 @@ def _release12_row_errors(job_id, row, target_release):
     if (not isinstance(live, list) or len(live) != 1 or not isinstance(live[0], dict)
             or not isinstance(data, str) or live[0].get("data_root") not in {data, data + "-r1"}):
         errors.append(f"{job_id}: exactly one live Runtime is not recorded after the update")
-    semantic = row.get("semantic_data")
-    if (not isinstance(semantic, dict) or semantic.get("identical") is not True
-            or not all(isinstance(semantic.get(name), str) and DIGEST.fullmatch(semantic[name])
-                       for name in ("before_sha256", "after_sha256"))
-            or semantic.get("before_sha256") != semantic.get("after_sha256")):
-        errors.append(f"{job_id}: seeded user data preservation is absent or unequal")
+    if not windows:
+        semantic = row.get("semantic_data")
+        if (not isinstance(semantic, dict) or semantic.get("identical") is not True
+                or not all(isinstance(semantic.get(name), str) and DIGEST.fullmatch(semantic[name])
+                           for name in ("before_sha256", "after_sha256"))
+                or semantic.get("before_sha256") != semantic.get("after_sha256")):
+            errors.append(f"{job_id}: seeded user data preservation is absent or unequal")
     checks = row.get("checks") if isinstance(row.get("checks"), dict) else {}
-    for check in RELEASE12_CHECKS:
+    for check in (RELEASE12_WINDOWS_CHECKS if windows else RELEASE12_CHECKS):
         if checks.get(check) != "pass":
             errors.append(f"{job_id}: {check} assertion did not pass")
+    if windows:
+        errors.extend(_release12_windows_errors(job_id, row))
     return errors
 
 
@@ -679,7 +723,7 @@ def _release1_row_errors(candidate, contract, row):
         elif contract.get("leg") == RELEASE11_LEG:
             errors.extend(_release11_row_errors(job_id, row, candidate.get("release")))
         elif contract.get("leg") == RELEASE12_LEG:
-            errors.extend(_release12_row_errors(job_id, row, candidate.get("release")))
+            errors.extend(_release12_row_errors(job_id, row, candidate.get("release"), contract["os"]))
         elif not fresh:
             if row.get("scenario") != "r0-handoff-then-update":
                 errors.append(f"{job_id}: direct receipt did not run the r0-handoff-then-update leg")
