@@ -49,7 +49,9 @@ def install():
     manifest_path = evidence / "install-manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     receipt = {"status": "failed", "candidate": manifest, "guards": [], "files": {}}
-    env = dict(os.environ)
+    # powershell.exe started under pwsh inherits PowerShell 7's module path and then
+    # cannot load its own modules (Get-Acl); the journey driver drops it the same way.
+    env = {key: value for key, value in os.environ.items() if key.casefold() != "psmodulepath"}
     env["BROWSER"] = f'"{sys.executable}" -c "pass" %s'
     try:
         windows.run_bootstrap_process([

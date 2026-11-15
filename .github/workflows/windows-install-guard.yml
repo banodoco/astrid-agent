@@ -1,6 +1,6 @@
 name: Windows fresh user install guard
 
-# Expected to fail until r14/windows-install fixes the fresh-user installer.
+# A fresh-user install with Windows long paths disabled and a long profile path.
 # Keep the failure blocking: no continue-on-error, retries, or installer patches.
 on:
   workflow_dispatch:
@@ -28,7 +28,7 @@ permissions:
 
 jobs:
   windows-install-guard:
-    name: Fresh Windows install (long paths off, Git absent, TLS, private DACL)
+    name: Fresh Windows install (long paths off, long user name, TLS, private DACL)
     runs-on: windows-latest
     timeout-minutes: 75
     defaults:
@@ -97,15 +97,12 @@ jobs:
           # Process-scoped changes: later steps and actions keep the runner PATH.
           $env:LOCALAPPDATA = 'C:\Users\AstridLongUserName_Tester01\AppData\Local'
           $env:UV_CACHE_DIR = Join-Path $env:RUNNER_TEMP 'windows-install-guard-uv-cache'
+          # Git stays on PATH: the installer requires Git and now says so before any
+          # download (unit-tested, and checked by a tester on a machine without Git).
+          # This job proves the install itself with long paths off.
           Remove-Item Env:ASTRID_GIT_EXECUTABLE -ErrorAction SilentlyContinue
-          $env:PATH = ($env:PATH -split ';' | Where-Object {
-            $_ -and $_ -notmatch '(?i)git|mingw' -and
-            -not (Test-Path -LiteralPath (Join-Path $_ 'git.exe')) -and
-            -not (Test-Path -LiteralPath (Join-Path $_ 'git.cmd')) -and
-            -not (Test-Path -LiteralPath (Join-Path $_ 'git.bat'))
-          }) -join ';'
-          if ($null -ne (Get-Command git -ErrorAction SilentlyContinue)) {
-            throw "B3 Git-missing guard setup failed: Git is still discoverable"
+          if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) {
+            throw "Guard setup failed: Git is not discoverable"
           }
           $value = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem').LongPathsEnabled
           if ($value -ne 0) { throw "B1 long-path guard setup drifted" }
