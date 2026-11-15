@@ -74,6 +74,7 @@ _SAFE_BASE_ENV = frozenset(
 
 _WINDOWS_BASE_ENV = frozenset(
     {
+        "OPENBLAS_NUM_THREADS",
         "USERPROFILE",
         "HOMEDRIVE",
         "HOMEPATH",

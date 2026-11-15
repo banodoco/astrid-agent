@@ -32,6 +32,7 @@ import io
 import json
 import logging
 import mimetypes
+import os
 import queue
 import re
 import secrets as secrets_module
@@ -45,6 +46,7 @@ import tempfile
 import threading
 import time
 import zipfile
+
 from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field, is_dataclass, replace
 from datetime import datetime, timezone
@@ -18745,6 +18747,14 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
         )
         supervisor.serve(sys.stdin, sys.stdout)
     return 0
+
+
+if sys.platform == "win32":
+    # OpenBLAS (loaded with numpy by workflow tooling) starts worker threads inside
+    # DllMain. Doing that under the Windows loader lock while the heartbeat thread
+    # is running deadlocked the task host on a tester's machine (astrid-dev#651).
+    # One thread means none are created at load. Children inherit the setting.
+    os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 
 
 if __name__ == "__main__":
