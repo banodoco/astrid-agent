@@ -75,7 +75,15 @@ def test_installed_module_generate_subprocesses(tmp_path):
             cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30,
         )
         assert live.returncode == 0, live.stdout + live.stderr
-        assert json.loads(live.stdout) == {"dry_run": False, "entry": "z-image", "target": url}
+        payload = json.loads(live.stdout)
+        timing = payload["timing"]
+        assert payload == {"dry_run": False, "entry": "z-image", "target": url, "timing": timing}
+        assert timing["schema"] == "astrid.generation.timing.v2"
+        block = timing["cli"]
+        assert block["same_clock"] is False
+        assert block["total"]["seconds"] >= 0
+        assert set(block["phases"]) == {"cli_startup", "submit", "wait_for_claim", "host", "result_fetch_and_print"}
+        assert block["unaccounted"]["seconds"] >= 0
         assert hits == ["/system_stats"]
     finally:
         server.shutdown()

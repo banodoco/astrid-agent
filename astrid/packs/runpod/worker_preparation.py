@@ -530,7 +530,7 @@ async def observe_exact_target(
     return await asyncio.to_thread(observe_target, api_key, contract)
 
 
-_MACHINE_POLL_SECONDS = 3.0
+_MACHINE_POLL_SECONDS = 0.2
 
 
 def confirm_acquired_machine(

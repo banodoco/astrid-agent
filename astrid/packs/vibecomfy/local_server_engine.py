@@ -476,7 +476,7 @@ def run_local_server(
         raise SystemExit(128 + signum)
 
     pins = {"VIBECOMFY_COMFY_CONFIGURATION": "{}", "VIBECOMFY_WARM": "never",
-            "VIBECOMFY_SCHEMA_WARN_ONLY": "0"}
+            "VIBECOMFY_SCHEMA_WARN_ONLY": "0", "VIBECOMFY_HISTORY_POLL_INTERVAL_SEC": "0.2"}
     previous = {key: os.environ.get(key) for key in pins}
     restore = platform.install_stop_handlers(stop)
     try:

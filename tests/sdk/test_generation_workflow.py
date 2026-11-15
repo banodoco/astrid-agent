@@ -195,3 +195,28 @@ def test_claimed_machine_policy_has_no_paid_controls_or_preferences(monkeypatch)
     assert generation._runpod_placement_policy(engine='comfyui', machine='pod-a') == {
         'kind': 'runpod', 'engine': 'comfyui', 'machine': 'pod-a',
     }
+
+
+def test_default_caller_poll_budget_and_existing_deadline(monkeypatch):
+    from astrid.sdk import invocation
+
+    clock = SimpleNamespace(now=0.0)
+    sleeps = []
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        clock.now += seconds
+
+    def invoke(capability, **kwargs):
+        client = SimpleNamespace(tasks=SimpleNamespace(show=lambda task: {"state": "queued"}))
+        payload, ok, _ = invocation._wait_for_kernel_task(
+            client, task_id="task-1", run_id="run-1", timeout_seconds=kwargs["timeout_seconds"],
+            poll_seconds=kwargs["poll_seconds"])
+        assert not ok and payload["error"]["code"] == "task_wait_timeout"
+        return result(ok=False)
+
+    monkeypatch.setattr(invocation, "time", SimpleNamespace(monotonic=lambda: clock.now, sleep=sleep))
+    client = SimpleNamespace(invoke_result=invoke)
+    assert not GenerationFacade().workflow(client=client, project="project", timeout_seconds=0.45).ok
+    assert sleeps == pytest.approx([0.2, 0.2, 0.05]), sleeps
+    assert clock.now == 0.45

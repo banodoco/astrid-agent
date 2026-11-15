@@ -14,6 +14,8 @@ forces full hashing. Settings that are present but invalid or unreadable fail cl
 to full hashing, the safe direction for integrity. A file without a matching witness
 is fully hashed. One preparation snapshots the choice; its model_verification
 step log counts full hashes and skips and gives a reason for each model check.
+The same setting disables supervisor-local warm attestations when false, forcing full
+source, environment, runtime and workflow verification on local-managed and pod jobs.
 
 Records live with the models and use relative paths, size, mtime_ns and inode, so
 new pods can reuse them on a warm volume. The key deliberately omits ctime and

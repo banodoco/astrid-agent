@@ -165,6 +165,47 @@ def native_preparation_program():
     return _native_program(prepare_native_workflow)
 
 
+def restore_native_nodes(argv):
+    """Keep CLI restore semantics and report successfully executed mutations.
+
+    A refreshed pack may already match its pin. Its status alone cannot tell
+    whether restore actually fetched, checked out or installed dependencies.
+    """
+    import subprocess
+
+    from vibecomfy.cli import main
+    from vibecomfy.commands import nodes
+
+    changed = False
+    def run(command, **kwargs):
+        nonlocal changed
+        result = subprocess.run(command, **kwargs)
+        if command[0] == 'git':
+            args = command[3:] if command[1] == '-C' else command[1:]
+            mutation = args[0] not in {'status', 'rev-parse'} and tuple(args[:2]) != ('remote', 'get-url')
+        else:
+            mutation = 'install' in command and '--dry-run' not in command
+        if result.returncode == 0 and mutation:
+            changed = True
+        return result
+
+    original = nodes.node_packs_install.restore_pack
+    def restore(entry):
+        return original(entry, runner=run)
+    nodes.node_packs_install.restore_pack = restore
+    try:
+        status = main(argv)
+        if status:
+            raise SystemExit(status)
+    finally:
+        nodes.node_packs_install.restore_pack = original
+    return {'changed': changed}
+
+
+def native_nodes_restore_program():
+    return _native_program(restore_native_nodes)
+
+
 def run_native_doctor(argv, endpoint, expected_schema_sha256, request_timeout, *, schema_provider_type, schema_digest):
     """Run the original doctor against one fresh, owner-bound target schema."""
     import json

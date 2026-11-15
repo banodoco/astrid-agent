@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import time
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from datetime import datetime, timezone
@@ -10,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from astrid.core._shared import run_logs
-from astrid.core.execution.phase_timing import PhaseTiming
+from astrid.core.execution.phase_timing import TIER1_CARDS, PhaseTiming, stamp
 
 from .engine_custody import engine_log_path
 
@@ -34,11 +36,27 @@ def mark_job_collect() -> None:
             evidence.start_collect()
 
 
+def _process_entry() -> tuple[float | None, str]:
+    """Linux pod process birth, including Python startup and imports.
+
+    /proc starttime and CLOCK_BOOTTIME share the boot clock; translate to the
+    monotonic clock used for the span. Never label module import as process birth.
+    """
+    try:
+        fields = Path("/proc/self/stat").read_text().rsplit(")", 1)[1].split()
+        birth = int(fields[19]) / os.sysconf("SC_CLK_TCK")
+        age = time.clock_gettime(time.CLOCK_BOOTTIME) - birth
+        return time.monotonic() - age, "Linux /proc/self/stat process starttime"
+    except (OSError, ValueError, IndexError, AttributeError):
+        return None, "process entry unavailable on this platform"
+
+
 class JobEvidence:
-    def __init__(self, out: Path, preparation: Any):
+    def __init__(self, out: Path, preparation: Any, *, generation: Any = None):
+        self.process_entry, self.process_entry_source = _process_entry()
         self.out = Path(out)
         self.started_at = datetime.now(timezone.utc).isoformat()
-        self.timing = PhaseTiming()
+        self.timing = PhaseTiming(clock=time.monotonic, generation=generation)
         self.preparation = preparation
         self.path = engine_log_path(str(preparation.root), preparation.recipe.engine)
         self.start: int | None = 0
@@ -50,20 +68,21 @@ class JobEvidence:
         self.begin()
 
     def waiting(self) -> None:
-        self.timing.stamp("capacity_wait_started_at", first=True)
+        stamp(self.timing, "capacity_wait_started_at", first=True)
 
     def start_execution(self) -> None:
-        self.timing.stamp("job_started_at", first=True)
+        stamp(self.timing, "job_started_at", first=True)
 
     def start_collect(self) -> None:
         if "job_started_at" in self.timing.stamps:
-            self.timing.stamp("job_ended_at", first=True)
-        self.timing.stamp("collection_started_at", first=True)
+            stamp(self.timing, "job_ended_at", first=True)
+        stamp(self.timing, "collection_started_at", first=True)
 
     def begin(self) -> None:
         """Reset the boundary after acquiring exclusive engine custody."""
         if "capacity_wait_started_at" in self.timing.stamps:
-            self.timing.stamp("claimed_at", first=True)
+            stamp(self.timing, "claimed_at", first=True)
+        stamp(self.timing, "preparation_started_at")
         self.notes.clear()
         self.log_identity = None
         try:
@@ -107,7 +126,7 @@ class JobEvidence:
                 declared = True
         if not declared:
             self.notes.append("engine log declaration unavailable")
-        self.timing.stamp("collection_ended_at")
+        stamp(self.timing, "collection_ended_at")
         if ("capacity_wait_started_at" in self.timing.stamps
                 and "claimed_at" not in self.timing.stamps):
             self.notes.append("queue_wait unavailable: custody admission was interrupted before completion")
@@ -125,20 +144,34 @@ class JobEvidence:
         if type(reused) is not bool:
             reused = False
             self.notes.append("engine_reused=false: no supervisor reuse decision was reached")
-        record = {"schema": "astrid.job-run.v1", "vram_free_before_bytes": self.before,
+        record = {"schema": "astrid.job-run.v1", "tier1_cards": list(TIER1_CARDS),
+                  "vram_free_before_bytes": self.before,
                   "vram_free_after_bytes": after, "model_verification_seconds": verify,
                   "started_at": self.started_at, "ended_at": datetime.now(timezone.utc).isoformat(),
                   "phases": phases, "engine_reused": reused,
                   "phase_sources": {
                       "verify_models": "managed preparation verification_seconds; model_verification_seconds is an alias",
                       "engine_start_or_reuse": "sum of supervisor probe/start and readiness-health calls, including doctor preparation",
-                      "queue_wait": "phase-timing.v1 capacity_wait: local engine custody admission",
-                      "execute": "phase-timing.v1 execution: dispatch through producer result; includes ComfyUI prompt queue",
-                      "collect": "phase-timing.v1 collection: local finalization and evidence capture; excludes record serialization",
+                      "queue_wait": "pod monotonic capacity_wait: local engine custody admission",
+                      "execute": "pod monotonic execution: dispatch through producer result; includes ComfyUI prompt queue",
+                      "collect": "pod monotonic collection: local finalization and evidence capture; excludes record serialization",
                   }, "notes": self.notes}
         with suppress(Exception):
             path = self.out / "job-run.json"
             path.parent.mkdir(parents=True, exist_ok=True)
+            whole = (None if self.process_entry is None else
+                     max(0.0, time.monotonic() - self.process_entry))
+            accounted = list(phases.values())
+            phases["whole_job"] = whole
+            # Keep unknown durations unknown, and expose overlap as a negative
+            # remainder rather than silently hiding an accounting error.
+            phases["unaccounted"] = (None if whole is None or any(v is None for v in accounted)
+                                     else whole - sum(accounted))
+            record["ended_at"] = datetime.now(timezone.utc).isoformat()
+            record["phase_sources"].update({
+                "whole_job": self.process_entry_source + "; through job-run record write boundary",
+                "unaccounted": "whole_job minus sum of the other measured phases",
+            })
             path.write_text(json.dumps(record, sort_keys=True, indent=2) + "\n", encoding="utf-8")
             run_logs.declare(self.out, run_logs.LogDecl("run", "run", str(path.resolve())))
 

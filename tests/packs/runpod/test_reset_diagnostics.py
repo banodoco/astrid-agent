@@ -1,6 +1,7 @@
 """Reset failures cross the pod/controller boundary as fixed reasons only."""
 import contextlib
 import json
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -9,6 +10,18 @@ from astrid.core import machines_cli
 from astrid.packs.runpod import machine, pod_reset, remote_placement
 
 SECRET = "provider-token-must-not-escape"
+
+
+def _reset_case(ops):
+    checkpoints = []
+    owner = SimpleNamespace(
+        lock=threading.RLock(), preparation_claim=lambda lease: {"lease": {}},
+        _save=lambda record, info: checkpoints.append(info["job"]),
+    )
+    runner = machine.RunPodMachine(SimpleNamespace(lease_owner=owner))
+    lease = SimpleNamespace(lease=object(), claim=SimpleNamespace(ops=ops),
+                            run_dir="/runs/exact", job_dir="/jobs/previous")
+    return runner, lease, checkpoints
 
 
 @pytest.mark.parametrize("stage", sorted(pod_reset.RESET_FAILURE_REASONS - {"unknown"}))
@@ -138,9 +151,7 @@ def test_post_job_reset_also_rejects_hostile_diagnostics(monkeypatch, exit_code,
         job_poll=lambda job: {"state": "exited", "exit_code": exit_code},
         exec=lambda *a: (0, json.dumps(result), SECRET),
     )
-    runner = machine.RunPodMachine()
-    monkeypatch.setattr(runner, "_checkpoint", lambda *args: None)
-    lease = SimpleNamespace(claim=SimpleNamespace(ops=ops), run_dir="/runs/exact", job_dir="/jobs/previous")
+    runner, lease, _checkpoints = _reset_case(ops)
     with pytest.raises(machine.MachineError) as caught:
         runner._reset(lease)
     safe_code = "1" if exit_code == 1 else "unknown"
@@ -168,10 +179,7 @@ def test_incomplete_reset_poll_cannot_confirm_success(monkeypatch):
         job_poll=lambda job: {"state": "exited", "exit_code": 0},
         exec=lambda *a: (0, '{"reset":"ok"}', ""),
     )
-    runner = machine.RunPodMachine()
-    checkpoints = []
-    monkeypatch.setattr(runner, "_checkpoint", lambda lease, job: checkpoints.append(job))
-    lease = SimpleNamespace(claim=SimpleNamespace(ops=ops), run_dir="/runs/exact", job_dir="/jobs/previous")
+    runner, lease, checkpoints = _reset_case(ops)
     with pytest.raises(machine.MachineError, match=r"pod reset failed \(exit 0\): unknown"):
         runner._reset(lease)
     assert [job["state"] for job in checkpoints] == ["starting", "running"]

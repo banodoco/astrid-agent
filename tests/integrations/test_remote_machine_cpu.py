@@ -234,6 +234,13 @@ class MachineProviderHTTP:
             reports = [line for line in self.files.get(argv[3], b"").split(b"\n")
                        if line.startswith(b"LOGS_MANIFEST_SHA256=")]
             return 0, (reports[-1] + b"\n").decode(errors="replace") if reports else ""
+        if command.startswith("/opt/astrid/bin/python -c ") and "import collection_receipt;" in command:
+            # W-A: this virtual pod has no witness; exercise the canonical fallback.
+            argv = shlex.split(command)
+            assert len(argv) == 21 and argv[8] == "||"
+            assert argv[6] == json.loads(self.claim_path.read_text())["operation_id"]
+            assert argv[9:12] == ["/opt/astrid/bin/astrid", "engines", "status"]
+            command = shlex.join(argv[9:])
         if command.startswith("/opt/astrid/bin/python -c "):
             argv = shlex.split(command)
             reader = ("import base64,os,stat,sys;"
@@ -281,8 +288,9 @@ class MachineProviderHTTP:
         if ': > "$d/cancel"' in command:
             # detached_cancel: signal the recorded group; a finished job keeps its exit.
             directory = shlex.split(command.splitlines()[0])[0].removeprefix("d=")
-            job = self.detached[directory]
-            if directory + "/exit" not in self.files:
+            job = self.detached.get(directory)
+            # W-C may stop a completed reset; only generations use this table.
+            if job is not None and directory + "/exit" not in self.files:
                 job["state"] = "cancelled"
                 self.files[directory + "/status"] = b"cancelled"
             self.events.append(("detached_cancel", directory))
@@ -301,6 +309,15 @@ class MachineProviderHTTP:
         if command.startswith("python3 -c ") and "ASTRID_STORAGE_DIAGNOSTIC" in command:
             return self._storage_probe(command)
         if command.startswith(("cat ", "tail ")):
+            if " && rm -rf " in command:
+                read, remove = command.split(" && ", 1)
+                read_argv, remove_argv = shlex.split(read), shlex.split(remove)
+                assert read_argv[0] == "cat" and remove_argv[:2] == ["rm", "-rf"]
+                assert read_argv[1] == remove_argv[2] + "/stdout"
+                data = self.files.get(read_argv[1], b"")
+                for path in [p for p in self.files if p.startswith(remove_argv[2] + "/")]:
+                    del self.files[path]
+                return 0, data.decode(errors="replace")
             argv = shlex.split(command)
             data = self.files.get(argv[-1], b"")
             if argv[:2] == ["tail", "-c"]:
@@ -365,15 +382,16 @@ class MachineProviderHTTP:
         active = next(row for row in detached.splitlines()
                       if row.startswith("/opt/astrid/bin/python -c ") and "active-job.json" in row)
         self.active_job = {**json.loads(shlex.split(active)[3]), "job_dir": directory}
-        assert detached.index("generate list --json") < detached.index("--placement local")
+        assert "generate list --json" not in detached  # W-D checks only the selected entry.
         argv = shlex.split(next(line for line in detached.splitlines() if "--placement local" in line).split(" > ")[0])
         assert argv[1] == "generate" and argv[3:5] == ["--placement", "local"], argv
+        assert "--check-entry" in argv
         assert self.expect_entry is None or argv[2] == self.expect_entry, argv
         assert "17340" not in detached and "--port" not in detached
         root = argv[argv.index("--job") + 1].rsplit("/", 1)[0]
         job = json.loads(self.files[root + "/job.json"])
         assert f"export ASTRID_PACKS_PATH={root}/selection/packs" in detached
-        # The command's own listing reads the shipped selection (every job, a workflow job too).
+        # The same-process entry guard reads the shipped selection for every job.
         shipped = self._shipped(root)
         if argv[2] != "workflow":
             # The entry resolves from the pod's built-ins or the shipped selection only.
@@ -441,6 +459,7 @@ class MachineProviderHTTP:
     def _shipped(self, root):
         """Entry ids the job's selection.tar.gz makes resolvable on the pod, from its real bytes."""
         import tarfile
+
         import yaml
         data = self.files[root + "/selection.tar.gz"]
         ids = []
@@ -554,6 +573,8 @@ class MachineProviderHTTP:
             data = self.files[meta["path"]]
             return reply({"offset": len(data), "complete": len(data) == meta["size"] and _sha(data) == meta["sha256"]})
         if path == "/download-chunk":
+            from runpod_lifecycle.https import CHUNK
+
             target = body["path"]
             directory, _, name = target.rpartition("/")
             if target.endswith("/out/" + remote_placement.MANIFEST_NAME):
@@ -563,8 +584,9 @@ class MachineProviderHTTP:
             if target not in self.files:
                 return reply({}, 400)
             data = self.files[target]
-            return reply({"data": base64.b64encode(data[body["offset"]:]).decode(), "offset": body["offset"],
-                          "total": len(data), "sha256": _sha(data[body["offset"]:]), "etag": _sha(data)})
+            chunk = data[body["offset"]:body["offset"] + CHUNK]
+            return reply({"data": base64.b64encode(chunk).decode(), "offset": body["offset"],
+                          "total": len(data), "sha256": _sha(chunk), "etag": _sha(data)})
         raise AssertionError((method, host, path))
 
 
@@ -785,9 +807,10 @@ def test_cold_run_then_warm_second_run_reuses_the_machine(journey):
     assert provider.deploys == 1
     assert len(provider.kinds("pod_bootstrap.sh")) == 1
     assert len(provider.kinds("engines install comfyui")) == 1
-    # The entry is listed from the shipped selection inside the job's one command.
-    assert len(provider.kinds("generate list --json")) == 1
-    assert len([c for c in provider.kinds("generate list --json") if "tar -xzf" in c]) == 1
+    # W-D checks the selected entry after extracting the shipped selection.
+    assert len(provider.kinds("--check-entry")) == 1
+    assert not provider.kinds("generate list --json")
+    assert len([c for c in provider.kinds("--check-entry") if "tar -xzf" in c]) == 1
     # T5f: the fresh pod's claim takes the template; the job's reset runs after the
     # digest-verified fetch and before settle (the lease is still the job's, not idle).
     claim_reset, job_reset = provider.resets
@@ -826,7 +849,8 @@ def test_cold_run_then_warm_second_run_reuses_the_machine(journey):
     assert provider.deploys == 1, "the warm machine was not reused"
     new = provider.commands[len(jobs_before):]
     assert not [c for c in new if "pod_bootstrap.sh" in c or "engines install" in c]
-    assert len([c for c in new if "generate list --json" in c]) == 1  # warm: only the job's own check
+    assert len([c for c in new if "--check-entry" in c]) == 1
+    assert not [c for c in new if "generate list --json" in c]
     assert len([c for c in new if " generate cpu-image " in c]) == 1
     # A warm job runs no up and no connect: no claim-time reset, the prepared connection only.
     assert not [c for c in new if "ensure_runtime" in c or "astrid-runtime" in c]
@@ -903,6 +927,8 @@ def test_a_failed_reset_releases_the_pod_instead_of_settling_it(journey):
     assert first.ok, first.to_dict()
     delivered = deliver_generation(first, client=s["client"], out=j.tmp / "first", project=s["project"])
     assert Path(delivered["image_paths"][0]).read_bytes() == provider.image
+    # W-C returns the result before the acknowledged reset owner completes.
+    s["host"]._target_bindings.provider.lease_owner.wait_for_reset()
     record = j.record()
     _released(provider, record)
     assert record["lease"]["ended"] == "reset_failed" and record["lease"]["job"]["state"] == "exited"

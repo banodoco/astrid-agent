@@ -90,6 +90,14 @@ class FakePod:
             body = {"status": "installed", "health": {"status": "healthy"}} if self.installed else None
             return 0, json.dumps(body) + "\n", ""
         if command.startswith("cat ") or command.startswith("tail "):
+            if " && rm -rf " in command:
+                read, remove = command.split(" && ", 1)
+                path = read.split()[-1].strip("'")
+                data = self.files.get(path, b"").decode()
+                gone = remove.split(" ", 2)[2].strip("'")
+                for path in [p for p in self.files if p.startswith(gone + "/")]:
+                    del self.files[path]
+                return 0, data, ""
             path = command.split()[-1].strip("'")
             return 0, self.files.get(path, b"").decode(), ""
         if "generate list --json" in command:

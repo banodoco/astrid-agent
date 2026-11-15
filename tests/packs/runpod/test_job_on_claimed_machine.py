@@ -7,11 +7,25 @@ import pytest
 
 from astrid.core.execution.machine_run import run_on_machine
 from astrid.core.execution.warm_hold import WarmHolds
-from tests.packs.runpod.test_machine import machine_case as machine_case
+from tests.packs.runpod import test_machine
 from tests.packs.runpod.test_generation_preparation import retained as retained
 from tests.packs.runpod.test_remote_placement import sources as sources
 from tests.packs.runpod.test_target_selection import case as case
-from tests.packs.runpod.test_warm_session import lease_selection_case as lease_selection_case, small_lease as small_lease
+from tests.packs.runpod.test_warm_session import lease_selection_case as lease_selection_case
+from tests.packs.runpod.test_warm_session import small_lease as small_lease
+
+base_machine_case = test_machine.machine_case
+
+
+@pytest.fixture
+def machine_case(base_machine_case):
+    yield base_machine_case
+    # Assertions observe the caller's result immediately. Drain fake cleanup
+    # owners only at teardown, before their provider stubs are removed.
+    for owner in base_machine_case.owners:
+        if owner._reset_worker is not None:
+            owner._reset_worker.join(10)
+            assert not owner._reset_worker.is_alive()
 
 
 def claim(c):
@@ -33,8 +47,7 @@ def run(c, request):
 
 def restart_bindings(c, monkeypatch):
     """Build a fresh real host adapter over this fixture's fake lease edges."""
-    from astrid.packs.runpod import adapter
-    from astrid.packs.runpod import worker_owner
+    from astrid.packs.runpod import adapter, worker_owner
 
     real_owner = worker_owner.RunPodLeaseOwner
 
@@ -197,6 +210,8 @@ def test_three_sequential_jobs_share_claim_without_renewal(machine_case, monkeyp
     queued = [job(c, n) for n in (1, 2, 3)]
     for request in queued:
         run(c, request)
+        # This assertion checks readiness for reuse, after asynchronous cleanup.
+        c.host.wait_for_reset()
         assert c.read()["pod_id"] == "pod-1" and c.read()["lease"]["state"] == "idle"
         assert c.read()["paid_limits"] == paid
     assert c.creates == 1
@@ -262,9 +277,11 @@ def test_jobs_obey_recorded_bounds_and_report_stricter_saved_policy(request, mon
     assert c.read()["lease"]["paid_expires_at"] == expiry
     assert c.read()["lease"]["idle_expires_at"] <= expiry
     if exhausted == "budget":
-        record = c.read()
-        record["paid_limits"]["max_usd"] = 0
-        write_target_record(c.owner.path, record)
+        # Match the owner's journal-write lock while reset checkpoints can run.
+        with c.host.lock:
+            record = c.read()
+            record["paid_limits"]["max_usd"] = 0
+            write_target_record(c.owner.path, record)
     else:
         c.clock.advance(expiry - c.clock() + 1)
     with pytest.raises(Exception, match="remaining budget|no machine"):
@@ -320,7 +337,8 @@ def test_host_cache_jobs_ignore_changed_preferences(machine_case, monkeypatch):
 
 def test_restart_recovers_claim_from_journal_through_provider_bindings(machine_case, monkeypatch):
     from astrid.core.generation import settings
-    from astrid.packs.runpod import target_selection, machine as rm, adapter
+    from astrid.packs.runpod import adapter, target_selection
+    from astrid.packs.runpod import machine as rm
 
     c = machine_case
     claim(c)
@@ -494,8 +512,9 @@ def test_restart_reconciles_incompatible_idle_claim_without_adopting(
 
 
 def test_restart_recovery_failure_keeps_retry_timer_and_exact_custody(machine_case, monkeypatch):
-    from astrid.core.generation import settings
     from runpod_lifecycle import api
+
+    from astrid.core.generation import settings
     from astrid.packs.runpod import target_selection
     from astrid.packs.runpod.worker_preparation import write_target_record
 
@@ -565,6 +584,7 @@ def test_job_projects_current_model_verification_setting(machine_case, monkeypat
 
 def test_hostwedge_restart_live_job_fences_claim_until_exact_recovery(machine_case, monkeypatch):
     from runpod_lifecycle import api
+
     from astrid.packs.runpod.target_selection import PaidSelectionError
 
     c = machine_case
@@ -626,3 +646,139 @@ def test_hostwedge_restart_live_job_fences_claim_until_exact_recovery(machine_ca
     assert c.pod.cancelled == [old.job_id]
     assert c.deletes == ["pod-1"] and c.creates == 1
     assert c.read()["state"] == "cleanup_complete"
+
+
+@pytest.mark.parametrize('match,trust', [(True, True), (False, True), (True, False)])
+@pytest.mark.parametrize('verification_seconds', [None, 30], ids=['preparation', 'collection'])
+def test_collection_warm_attestation_selects_status_only_on_miss(machine_case, monkeypatch, match, trust,
+                                                               verification_seconds):
+    """Execute the shipped pod Python; fake only its attestation and OS/provider edges."""
+    import contextlib
+    import io
+    import shlex
+    import sys
+    from astrid.core.generation import engine_runner, settings, warm_attestation
+
+    c = machine_case
+    claim(c)
+    request = job(c)
+    lease = c.machine.claim(request, cancelled=lambda: False)
+    state = lease.state
+    pod = lease.claim.ops
+    original_exec = pod.exec
+    original_status = engine_runner.engine_status
+    observed = []
+    helper_calls = []
+
+    def helper(**kwargs):
+        helper_calls.append(kwargs)
+        assert kwargs['claim_id'] == lease.lease.operation_id
+        return c.context.read_json(c.installation.root + '/.astrid-engine/install.json',
+                                   deadline=c.context.deadline) if match else None
+
+    monkeypatch.setattr(warm_attestation, 'collection_receipt', helper)
+
+    def status(*args, **kwargs):
+        observed.append('status')
+        return original_status(*args, **kwargs)
+
+    monkeypatch.setattr(engine_runner, 'engine_status', status)
+
+    def execute(command, timeout=600):
+        if 'warm_attestation import collection_receipt' not in command:
+            return original_exec(command, timeout)
+        argv = shlex.split(command)
+        script = argv[argv.index('-c') + 1]
+        capture = io.StringIO()
+        with monkeypatch.context() as patch:
+            patch.setattr(sys, 'argv', ['-c', *argv[argv.index('-c') + 2:argv.index('||')]])
+            try:
+                with contextlib.redirect_stdout(capture):
+                    exec(compile(script, '<pod-warm-status>', 'exec'), {})
+            except SystemExit as error:
+                if error.code:
+                    return original_exec(shlex.join(argv[argv.index('||') + 1:]), timeout)
+        return 0, capture.getvalue(), ''
+
+    monkeypatch.setattr(pod, 'exec', execute)
+    with settings.using_model_trust_unchanged(trust):
+        assert c.placement._canonical_installed(state, verification_seconds=verification_seconds)
+    assert bool(helper_calls) is trust
+    assert observed == ([] if match and trust else ['status'])
+
+
+def test_job_projects_current_claim_operation_id(machine_case):
+    c = machine_case
+    claim(c)
+    request = job(c)
+    run(c, request)
+    shipped = [json.loads(value) for path, value in c.pod.files.items() if path.endswith('/job.json')]
+    # Release resets job directories, so use the controller's exact staging copy.
+    if not shipped:
+        from pathlib import Path
+        shipped = [json.loads(path.read_text()) for path in Path(request.scratch).rglob('job.json')]
+    assert shipped
+    assert all(body['claim_id'] == c.read()['operation_id'] for body in shipped)
+
+
+def test_warm_second_job_operation_budget(request, monkeypatch):
+    from tests.packs.runpod._budget import RemoteBudget
+
+    c = request.getfixturevalue("machine_case")
+
+    import socket
+    original_connect = socket.socket.connect
+    def no_network(sock, address):
+        if isinstance(address, tuple) and address[0] in {"127.0.0.1", "::1"}:
+            return original_connect(sock, address)
+        pytest.fail("warm CPU budget must not reach a real service")
+
+    monkeypatch.setattr("socket.socket.connect", no_network)
+    budget = RemoteBudget()
+    claim(c)
+    run(c, job(c, 1))
+    # W-C: job 1's reset completes off the caller's path; count only job 2's work.
+    c.host.wait_for_reset()
+    paid = c.read()["paid_limits"]
+    budget.machine_case(c, monkeypatch)
+    request.addfinalizer(budget.close)
+    try:
+        run(c, job(c, 2))
+    except Exception:
+        if hasattr(budget.agent, "error"):
+            raise budget.agent.error
+        raise
+    assert not hasattr(budget.agent, "error"), getattr(budget.agent, "error", None)
+    c.host.wait_for_reset()  # the deferred reset is part of job 2's counted work
+    print("warm second job counts:", dict(budget.counts))
+    # W-B fallback: per-file transfer and legacy finish, within pre-Tier-1 ceilings.
+    bounds = {
+        "http.post.jobs": 21, "http.get.jobs": 21,
+        "put.create": 5, "put.chunk": 5, "get.chunk": 5, "job_poll.read": 9,
+        "put.reconcile": 0, "put.verify": 0, "http.delete.jobs": 0,
+        "process_launch": 79, "process_fork": 43, "process_start": 20, "provider.read_exact_pod": 2,
+        "provider.get_network_volumes": 2, "provider.list_pods": 1,
+        "provider.confirm_acquired_machine": 1, "provider.get_pod_status": 1,
+        "provider.observe_mounts": 1,
+    }
+    budget.assert_within(bounds)
+    assert c.creates == 1 and c.read()["paid_limits"] == paid
+    assert c.read()["lease"]["state"] == "idle"
+
+    # Bypass every public pod/ops method from a thread, with a hidden Python
+    # child inside the command. Both the real HTTP attempt and both launches
+    # must still exceed the unchanged warm-job ceiling.
+    from concurrent.futures import ThreadPoolExecutor
+
+    import httpx
+    before = budget.counts["process_start"]
+    command = "python3 -c 'import subprocess,sys; subprocess.run([sys.executable, \"-c\", \"pass\"],check=True)'"
+    def hidden():
+        with httpx.Client(base_url=budget.base_url, trust_env=False) as client:
+            response = client.post('/jobs', json={'id': 'f' * 32, 'command': command})
+            assert response.status_code == 200
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(hidden).result()
+    assert budget.counts["process_start"] == before + 2
+    with pytest.raises(AssertionError, match="process_start.*per-kind counts"):
+        budget.assert_within(bounds)

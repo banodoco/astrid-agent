@@ -429,3 +429,43 @@ def test_slot_discovery_refresh_failure_retries_before_claim(world, monkeypatch)
         assert sorted(backend.claimed) == ["0", "1"]
     finally:
         host.shutdown()
+
+
+def test_idle_pickup_wait_budget_and_shutdown_deadline(monkeypatch):
+    clock = SimpleNamespace(now=0.0)
+    waits = []
+    claims = []
+    deadline = 0.45
+
+    class Shutdown:
+        def is_set(self):
+            return clock.now >= deadline
+
+        def wait(self, seconds):
+            waits.append(seconds)
+            clock.now += min(seconds, deadline - clock.now)
+            return self.is_set()
+
+    host = SimpleNamespace(
+        _shutdown=Shutdown(), max_concurrency=1,
+        _recover_terminal_requests=lambda: None,
+        acknowledge_pack_refresh=lambda: None, _pack_refresh_delay=lambda: 60,
+        _registration_refresh_deadline=60,
+        claim_once=lambda: claims.append(clock.now),
+    )
+    monkeypatch.setattr(generic_host, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    assert GenericPackHost.run(host) == []
+    assert waits == pytest.approx([0.2, 0.2, 0.2]), waits
+    assert claims == pytest.approx([0, 0.2, 0.4])
+    assert clock.now == deadline  # Event.wait remains interruptible at shutdown.
+
+    class Parsed(Exception):
+        pass
+
+    def parse(parser):
+        assert parser.get_default("poll_seconds") == 0.2
+        raise Parsed
+
+    monkeypatch.setattr(generic_host.argparse.ArgumentParser, "parse_args", parse)
+    with pytest.raises(Parsed):
+        generic_host._cli_impl([])

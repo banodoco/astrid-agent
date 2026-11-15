@@ -72,7 +72,8 @@ def test_generation_stdout_survives_the_failure_log_fetch(tmp_path):
     scratch = tmp_path / "scratch"
     scratch.mkdir()
     owner = object.__new__(machine.RunPodMachine)
-    run = SimpleNamespace(remote_root=str(remote), scratch=scratch)
+    run = SimpleNamespace(remote_root=str(remote), scratch=scratch,
+                          lease=SimpleNamespace(timing=None))
     collected = owner._fetch_failure_logs(LocalOps(), run, done.stdout, tmp_path / "receipt")
     row = next(row for row in collected["files"] if row["name"] == "generation.stdout")
     assert Path(row["path"]).read_text() == '{"ok":false}\n'
@@ -85,6 +86,9 @@ def test_generation_script_finishes_logs_once_on_early_and_generation_failures()
     assert "/failure" not in command and "FAILURE_MANIFEST" not in command
     failure = command.index("if [ $rc -ne 0 ]")
     assert command.index("finish_logs\n", command.index("rc=$?")) < failure
-    assert command.count("|| { finish_logs; exit 3; }") == 3
+    # W-D performs the selected-entry checks inside the generation process.
+    assert command.count("|| { finish_logs; exit 3; }") == 1
+    assert "--check-entry" in command
+    assert "generate list" not in command
     frame_writer = machine.Path(machine.__file__).with_name("failure_diagnostics.py").read_text(encoding="utf-8")
     assert command.index("finish_logs\n", command.index("rc=$?")) < command.index(shlex.quote(frame_writer))

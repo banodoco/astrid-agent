@@ -107,6 +107,7 @@ def test_warm_failure_admission_success_and_long_success_share_one_machine(
     third = c.job(3)
     run_on_machine(c.machine, third, destination=third.scratch / "outputs", cancelled=lambda: False,
                    sleep=lambda _s: None)
+    c.host.wait_for_reset()  # W-C delivers the result before reset makes the lease idle.
     assert c.read()["lease"]["state"] == "idle"
     assert c.read()["lease"]["preparation"]["state"] == "prepared"
     assert c.read()["lease"]["preparation"]["installed"]
@@ -138,6 +139,7 @@ def test_warm_failure_admission_success_and_long_success_share_one_machine(
     fetched = run_on_machine(c.machine, fourth, destination=fourth.scratch / "outputs", cancelled=lambda: False,
                              sleep=lambda _s: None)
     assert "artifacts/cpu.png" in fetched["files"]
+    c.host.wait_for_reset()
     assert c.read()["lease"]["state"] == "idle"
     assert c.creates == 1 and c.deletes == []
 

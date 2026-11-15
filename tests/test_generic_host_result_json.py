@@ -618,3 +618,79 @@ def test_full_terminal_receipt_includes_generated_thumbnail(host_case, monkeypat
     assert artifacts[1]["digest"] == thumbnail_digest
     assert artifacts[1]["path"] == str(thumbnail_path)
     assert artifacts[1]["size"] == thumbnail_path.stat().st_size
+
+
+@pytest.mark.parametrize("failure", [False, True, "admission"])
+def test_host_v2_timing_is_stored_on_runtime_and_local_terminal(host_case, monkeypatch, failure):
+    from astrid.core.execution import phase_timing
+
+    case = host_case
+    now = [100.0]
+    timing = phase_timing.GenerationTiming(clock=lambda: now[0])
+    original_transition = timing.transition
+
+    def transition(phase, **kwargs):
+        now[0] += 1.0
+        original_transition(phase, **kwargs)
+
+    monkeypatch.setattr(timing, "transition", transition)
+    if not failure:
+        _success_boundary(case, monkeypatch)
+    else:
+        def execute(*args, **kwargs):
+            raise ValueError("fixture failure")
+        monkeypatch.setattr(case.host, "_run_command_definition", execute)
+    now[0] = 101.0  # Claim handoff precedes even an immediate admission failure.
+    kwargs = {"lease_token": "lease-result", "_generation_timing": timing}
+    if failure == "admission":
+        kwargs["_setup_error"] = ValueError("fixture failure")
+    persisted = None
+    if failure:
+        with pytest.raises(ValueError, match="fixture failure"):
+            case.host.run_task(case.task, **kwargs)
+        if failure == "admission":
+            # P3 must not invent evidence on a bare lifecycle failure.
+            assert "result" not in case.runtime.failures[0][3]
+        else:
+            persisted = case.runtime.failures[0][3]["result"]
+    else:
+        case.host.run_task(case.task, **kwargs)
+        persisted = case.runtime.settlements[0][2]["result"]
+    local = json.loads((case.root / "result.json").read_text())
+    if persisted is not None:
+        assert local["timing"] == persisted["timing"]
+    assert "cli" not in local["timing"]
+    host = local["timing"]["host"]
+    assert host["tier1_cards"] == list(phase_timing.TIER1_CARDS)
+    assert host["total"]["seconds"] > 0
+    if failure is True:
+        assert host["phases"]["execution"]["seconds"] is not None
+        assert host["phases"]["collection"]["seconds"] is not None
+    assert abs(sum(p["seconds"] or 0 for p in host["phases"].values())
+               + host["unaccounted"]["raw_seconds"] - host["total"]["seconds"]) < 0.001
+
+
+def test_published_timing_never_carries_the_hostname(host_case, monkeypatch):
+    """The clock identity lands in results and receipts people share."""
+    from astrid.core.execution import phase_timing
+
+    hostname = "Hannahs-MacBook-Pro"
+    monkeypatch.setattr(phase_timing.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(phase_timing.platform, "node", lambda: hostname)
+    monkeypatch.setattr(phase_timing.subprocess, "check_output",
+                        lambda *a, **kw: "{ sec = 1700000000, usec = 123456 } Tue Nov 14 22:13:20 2023\n")
+    phase_timing.clock_id.cache_clear()
+    try:
+        identity = phase_timing.clock_id()
+        assert identity is not None and identity.startswith("darwin:") and hostname not in identity
+        assert identity == phase_timing.clock_id()  # stable for every process on this boot
+        case = host_case
+        _success_boundary(case, monkeypatch)
+        case.host.run_task(case.task, lease_token="lease-result",
+                           _generation_timing=phase_timing.GenerationTiming())
+        persisted = case.runtime.settlements[0][2]["result"]
+        local = (case.root / "result.json").read_text()
+        assert persisted["timing"]["host"]["clock_id"] == identity
+        assert hostname not in json.dumps(persisted) and hostname not in local
+    finally:
+        phase_timing.clock_id.cache_clear()
