@@ -207,6 +207,10 @@ export async function run(config) {
     const isUpdatePost = (request) => request.method() === 'POST' && request.url() === `${config.door}${config.updatePath}`;
     const posted = page.waitForRequest(isUpdatePost, { timeout: 60_000 });
     const answered = page.waitForResponse((response) => isUpdatePost(response.request()), { timeout: 60_000 });
+    // Whichever of the two rejects second must not become an unhandled rejection that kills the process
+    // before the result is written; the awaited one still throws into the catch below, unchanged.
+    posted.catch(() => {});
+    answered.catch(() => {});
     result.stage = 'click';
     capturePage(page, result, 'before_click');
     await button.click();
