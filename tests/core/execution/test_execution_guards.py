@@ -332,8 +332,10 @@ def test_host_live_evidence_publication_uses_measured_charge_and_private_atomic_
     import threading
     from astrid.core.execution.generic_host import GenericPackHost
     from astrid.core.execution.guards import EvidenceBudget, ExecutionGuardPolicy
+    from astrid.core.execution.local_engine_idle import LocalEngineIdle
     budget = EvidenceBudget()
     host = GenericPackHost.__new__(GenericPackHost)
+    host._local_engine_idle = LocalEngineIdle()
     host.execution_policy = ExecutionGuardPolicy(evidence_budget=budget, evidence_cap_bytes=100)
     host.evidence_status_path = tmp_path / "generic-host.evidence.json"
     host._evidence_observation_lock = threading.RLock()

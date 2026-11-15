@@ -21,7 +21,10 @@ LIVE_PLACEMENT = {'kind': 'runpod', 'machine': 'pod-a'}
 # and the fix (install it on the target, or choose a target that has it). With h3 declaring the kind's plain
 # inputs (5fe9ed7a0), an attached video/i2v default resolves to h3 and may refuse this way (recorded no-LTX-fallback).
 REFUSALS = {'runpod_engine_unavailable', 'missing_dependency',
-            'engine_not_found', 'COMFY_TARGET_NO_MODEL', 'missing_node_pack'}
+            'engine_not_found', 'COMFY_TARGET_NO_MODEL', 'missing_node_pack',
+            # Timed H3 images require an integer position within the requested clip,
+            # and protected frame-zero latents are source-free, single-anchor only.
+            'h3.keyframe.position', 'h3.keyframe.unsupported'}
 TARGETS = ('auto', 'managed', 'runpod', 'attached')
 
 
