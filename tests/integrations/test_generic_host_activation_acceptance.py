@@ -351,8 +351,13 @@ def test_bootstrap_register_observe_commit_and_same_incarnation_recovery(residen
     with witness.service.store._mutex:
         assert witness.service.store.conn.execute("SELECT COUNT(*) FROM attempts WHERE task_id=?", (witness.task_id,)).fetchone()[0] == 1
     outputs = witness.service.managed_outputs(witness.task_id)
-    assert len(outputs) == 1
-    assert witness.service.object(outputs[0]["object_id"])[1] == b"accepted"
+    assert sorted((output["role"], output["output_port"], output["variant_key"]) for output in outputs) == [
+        ("log", "logs", "job.stderr"),
+        ("log", "logs", "job.stdout"),
+        ("result", "answer", "0"),
+    ]
+    answer = next(output for output in outputs if output["role"] == "result" and output["output_port"] == "answer")
+    assert witness.service.object(answer["object_id"])[1] == b"accepted"
     assert witness.service.store.conn.execute(
         "SELECT COUNT(*) FROM events WHERE task_id=? AND kind='task.remote_activation_qualified'",
         (witness.task_id,),
