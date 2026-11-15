@@ -14,11 +14,14 @@ from pathlib import PureWindowsPath
 from collections.abc import Mapping
 from contextlib import contextmanager
 
-# POSIX remains ordinary os. On Windows the existing Runtime adapter retains
-# native directory handles, refuses reparse points and compares final paths and
-# file identities. Unlike a lstat/resolve then full-path open, this also pins
-# parents during operations; it does not protect against same-user byte edits.
-from runtime_protocol.dirfd import filesystem as os
+# POSIX (including the rented engine machine, where only this file and two
+# Runtime modules are shipped) uses ordinary os. On Windows the Runtime adapter
+# retains native directory handles, refuses reparse points and compares final
+# paths and file identities; it does not protect against same-user byte edits.
+import os
+
+if not hasattr(os, 'O_DIRECTORY'):  # Windows
+    from runtime_protocol.dirfd import filesystem as os
 
 from .engine_contracts import DeadlineExceeded, FileFact, RecipeValidationError, UnsafePathError
 

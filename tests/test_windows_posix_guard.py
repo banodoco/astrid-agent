@@ -35,7 +35,7 @@ def import_time_findings(source):
                for n in n.names if n.name == 'os'}
     # Runtime's adapter defines these flags on Windows too; it is not stdlib os.
     adapter = any(isinstance(n, ast.ImportFrom) and n.module == 'runtime_protocol.dirfd'
-           and any(a.name == 'filesystem' and a.asname == 'os' for a in n.names) for n in tree.body)
+           and any(a.name == 'filesystem' and a.asname == 'os' for a in n.names) for n in ast.walk(tree))
     if adapter:
         aliases.add('os')
     findings = []
