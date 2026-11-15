@@ -602,6 +602,8 @@ class RemotePlacement:
 
     def _run_job(self, state: RemoteRun, command: str, what: str) -> str:
         """Step 5 mechanism: detached job, then poll the durable status."""
+        from astrid.core.gateway.doctor_bundle import redact_log
+
         assert state.claim is not None
         ops = state.claim.ops
         self._check_deadline(what)
@@ -749,10 +751,10 @@ class RemotePlacement:
                     + (f" (full logs: {state.local_out / 'logs' / f'{safe_what}.stderr'})" if log_paths else "")
                 )
             raise RemotePlacementError(
-                f"{what} job {job_id} exited {exit_code}: {stderr[-800:]}"
+                f"{what} job {job_id} exited {exit_code}: {redact_log(stderr)[-800:]}"
                 + (f" (full logs: {state.local_out / 'logs' / f'{safe_what}.stderr'})" if log_paths else "")
             )
-        return stdout
+        return redact_log(stdout) if what == "engine install" else stdout
 
     # -- step 2 ------------------------------------------------------------
 

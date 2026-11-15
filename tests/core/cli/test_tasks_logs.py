@@ -85,6 +85,61 @@ def test_name_prints_selected_log_bytes(capsys):
     assert capsys.readouterr().out == "log bytes\n"
 
 
+@pytest.mark.parametrize("as_json", [False, True, "mcp"])
+def test_named_log_redacts_secrets_without_rewriting_object(tmp_path, monkeypatch, capsys, as_json):
+    original = b"https://ghp_abc123@github.com/o/r\nAuthorization: Bearer abc.def.ghi\n"
+    stored = tmp_path / "engine.log"
+    stored.write_bytes(original)
+    client = FakeClient(outputs())
+
+    def read_bytes(digest):
+        client.media.read.append(digest)
+        return stored.read_bytes()
+
+    client.media.read_bytes = read_bytes
+    args = ["--name", "engine", *(["--json"] if as_json else [])]
+    if as_json == "mcp":
+        from astrid import mcp_server
+
+        def run(argv, _cwd):
+            command = argv[argv.index("tasks") + 1:]
+            assert command == ["logs", TASK_ID, "--project", "demo", "--name", "engine", "--json"]
+            parsed = build_parser(client).parse_args(command)
+            code = parsed.handler(parsed)
+            captured = capsys.readouterr()
+            return subprocess.CompletedProcess(argv, code, captured.out, captured.err)
+
+        monkeypatch.setattr(mcp_server, "_run", run)
+        tools = mcp_server._tools_for_parsers({"tasks": build_parser(client)})
+        result = mcp_server.call_tool(tools["tasks_logs"],
+                                      {"project": "demo", "task_id": TASK_ID, "name": "engine"})
+        assert result["isError"] is False
+        output = json.dumps(result)
+    else:
+        assert invoke(client, *args) == 0
+        output = capsys.readouterr().out
+    assert stored.read_bytes() == original
+    assert client.tasks.outputs == outputs()
+    assert client.read == ["sha256:engine"]  # exactly one existing object read
+    assert "ghp_abc123" not in output and "abc.def.ghi" not in output
+    assert "<redacted>" in output
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+def test_log_listing_redacts_without_mutating_runtime_rows(capsys, as_json):
+    message = "https://ghp_abc123@github.com/o/r Authorization: Bearer abc.def.ghi"
+    rows = [{"role": "log", "filename": message, "digest": "sha256:engine"}]
+    client = FakeClient(rows)
+    assert invoke(client, *(["--json"] if as_json else [])) == 0
+    output = capsys.readouterr().out
+    assert rows[0]["filename"] == message
+    assert client.read == []
+    assert "ghp_abc123" not in output and "abc.def.ghi" not in output
+    assert "<redacted>" in output
+    if as_json:
+        assert json.loads(output)["ok"] is True
+
+
 def test_json_contains_only_role_log_rows(capsys):
     assert invoke(FakeClient(outputs()), "--json") == 0
     envelope = json.loads(capsys.readouterr().out)

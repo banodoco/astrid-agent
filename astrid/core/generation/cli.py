@@ -779,35 +779,36 @@ def _main(argv: list[str]) -> int:
 
 def _failure_command(parsed) -> int:
     """Print one local failure receipt; it reads only the receipt file, never a machine."""
+    from astrid.core.gateway.doctor_bundle import redact_log
     from astrid.packs.runpod import failure_receipt
     path = failure_receipt.find_receipt(parsed.task_id)
     if path is None:
         what = f"task {parsed.task_id}" if parsed.task_id else "any failed generation"
-        print(f"no failure receipt for {what}", file=sys.stderr)
+        print(redact_log(f"no failure receipt for {what}"), file=sys.stderr)
         return 1
     receipt = json.loads(path.read_text(encoding="utf-8"))
     selected_name = getattr(parsed, 'name', None)
     if not selected_name:
-        print(json.dumps(receipt, indent=2, sort_keys=True) if parsed.json else failure_receipt.render(receipt))
+        print(redact_log(json.dumps(receipt, indent=2, sort_keys=True)) if parsed.json else failure_receipt.render(receipt))
     if parsed.logs or getattr(parsed, 'name', None):
         logs = sorted(receipt.get('logs', []), key=failure_receipt.log_order)
         name = selected_name
         if name:
             logs = [log for log in logs if log.get('name') == name]
             if not logs or logs[0].get('missing') or not logs[0].get('path'):
-                print(f"failure log '{name}' is absent from this receipt", file=sys.stderr)
+                print(redact_log(f"failure log '{name}' is absent from this receipt"), file=sys.stderr)
                 return 1
         for log in logs:
             if log.get('missing') or not log.get('path'):
                 if name:
-                    print(f"failure log '{name}' is unavailable", file=sys.stderr)
+                    print(redact_log(f"failure log '{name}' is unavailable"), file=sys.stderr)
                     return 1
                 continue
-            print(f"==> {log['name']} <==")
+            print(redact_log(f"==> {log['name']} <=="))
             try:
-                print(Path(log['path']).read_text(encoding='utf-8', errors='replace'), end='')
+                print(redact_log(Path(log['path']).read_text(encoding='utf-8', errors='replace')), end='')
             except OSError as exc:
-                print(f"failure log '{log['name']}' unavailable ({type(exc).__name__})", file=sys.stderr)
+                print(redact_log(f"failure log '{log['name']}' unavailable ({type(exc).__name__})"), file=sys.stderr)
                 if name:
                     return 1
     return 0
