@@ -4,6 +4,8 @@ from __future__ import annotations
 import hashlib
 import json
 import shlex
+import subprocess
+import sys
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -11,15 +13,19 @@ from pathlib import Path
 import pytest
 
 from astrid.core.generation import entries
-from astrid.packs.runpod import failure_receipt, machine as rm
+from astrid.packs.runpod import failure_receipt
+from astrid.packs.runpod import machine as rm
 from astrid.packs.runpod import remote_placement as rp
 from tests.packs.runpod.test_failure_receipt import _only, _run
 from tests.packs.runpod.test_generation_preparation import retained as retained  # noqa: F401
-from tests.packs.runpod.test_machine import _claim_machine, machine_case as machine_case  # noqa: F401
+from tests.packs.runpod.test_machine import _claim_machine  # noqa: F401
+from tests.packs.runpod.test_machine import machine_case as machine_case
 from tests.packs.runpod.test_remote_placement import sources as sources  # noqa: F401
 from tests.packs.runpod.test_target_selection import case as case  # noqa: F401
 from tests.packs.runpod.test_warm_session import (  # noqa: F401
     lease_selection_case as lease_selection_case,
+)
+from tests.packs.runpod.test_warm_session import (
     small_lease as small_lease,
 )
 
@@ -29,7 +35,7 @@ def _digest(data):
 
 
 @pytest.fixture
-def evidence_case(machine_case, monkeypatch):
+def evidence_case(machine_case, monkeypatch, tmp_path):
     c = machine_case
     c.context.deadline = time.monotonic() + 600
     original_entries = entries.user_entries
@@ -40,6 +46,7 @@ def evidence_case(machine_case, monkeypatch):
     c.pod.listed.extend(["cpu-music", "cpu-edit"])
     original_start = c.pod.job_start
     c.log_reads = []
+    c.log_execs = []
     c.generated = []
     c.generation_jobs = []
 
@@ -84,17 +91,33 @@ def evidence_case(machine_case, monkeypatch):
 
     original_get = c.pod.get
 
+    def observe_log_read(remote):
+        assert not c.host.lock._is_owned(), "log transfer held owner.lock"
+        c.log_reads.append((remote, c.transport_deadlines[-1], time.monotonic(),
+                            c.read()["lease"]["paid_expires_at"] - c.clock()))
+
     def get(remote, local):
         if "/out/logs/" in remote or remote.endswith("/logs.tar"):
-            assert not c.host.lock._is_owned(), "log transfer held owner.lock"
-            c.log_reads.append((remote, c.transport_deadlines[-1], time.monotonic(),
-                                c.read()["lease"]["paid_expires_at"] - c.clock()))
+            observe_log_read(remote)
         return original_get(remote, local)
 
     original_exec = c.pod.exec
 
     def execute(command, timeout=600):
+        if "os.read(fd,65536)" in command:
+            c.log_execs.append(command)
+            argv = shlex.split(command)
+            remote, offset = argv[-2:]
+            observe_log_read(remote)
+            # W130 reads logs through bounded exec, not the unsupported get
+            # observer op. Map only the fake filesystem; run its real script.
+            local = tmp_path / "bounded-log-source"
+            original_get(remote, local)
+            done = subprocess.run([sys.executable, *argv[1:3], str(local), offset],
+                                  capture_output=True, text=True, timeout=timeout)
+            return done.returncode, done.stdout, done.stderr
         if command.startswith("grep -a -E ") and command.endswith("/stdout | tail -n 2"):
+            c.log_execs.append(command)
             path = shlex.split(command)[4]
             lines = c.pod.files.get(path, b"").decode().splitlines()
             return 0, "\n".join(line for line in lines if line.startswith((rm.LOGS_MANIFEST_MARK, rm.LOGS_ARCHIVE_MARK))), ""
@@ -107,7 +130,8 @@ def evidence_case(machine_case, monkeypatch):
 
     def collect_logs(ops, run, stdout, destination):
         if run.lease.failure_exit_code is None:
-            assert ops.abort_event is not None, "host log collection must be cancellable"
+            transport = getattr(ops, "ops", ops)  # W130 wraps the bounded observer for downloads.
+            assert transport.abort_event is not None, "host log collection must be cancellable"
             assert not c.host.lock._is_owned()
         return original_logs(ops, run, stdout, destination)
 
@@ -293,6 +317,9 @@ def test_host_fetch_refusal_keeps_logs(evidence_case, tmp_path, monkeypatch, ref
     monkeypatch.setattr(c.pod, "exec", refuse)
     error, _, _ = _run(c, tmp_path / "failures")
     assert error is not None
+    # W130: one marker observation, one small archive frame and its EOF;
+    # never one remote read per declared log.
+    assert len(c.log_execs) == 3
     receipt = _only(tmp_path / "failures")
     _assert_logs(receipt)
     _assert_bounded_reads(c)
@@ -338,6 +365,8 @@ def test_log_collection_cannot_mask_host_refusal(evidence_case, tmp_path, monkey
         return original_release(lease, warm, failure=failure, stage=stage)
 
     def missing_markers(command, timeout=600):
+        if log_failure == "transfer" and "os.read(fd,65536)" in command:
+            raise OSError("private transport body")
         code, stdout, stderr = original_exec(command, timeout)
         if (command.startswith("cat ") and command.endswith("/stdout")
                 and c.generation_jobs and c.generation_jobs[-1] in command):
