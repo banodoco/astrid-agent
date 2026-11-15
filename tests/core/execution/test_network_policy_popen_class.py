@@ -77,42 +77,87 @@ def guarded_sockets(monkeypatch):
             setattr(owner, name, value)
 
 
-def test_windows_style_socketpair_is_allowed_but_other_loopback_connects_are_not(guarded_sockets):
-    """asyncio's Windows event loop builds its self-pipe with the loopback fallback."""
-    socket, originals, events = guarded_sockets
-    # Force the pure-Python fallback Windows uses, under the guard.
-    originals[(socket, "socketpair")] = socket._fallback_socketpair
+def test_pair_without_a_kernel_socketpair_works_and_is_recorded(guarded_sockets, monkeypatch):
+    """asyncio's Windows event loop needs socket.socketpair() for its self-pipe."""
+    socket, _, events = guarded_sockets
+    monkeypatch.setattr(network_policy, "_kernel_socketpair", lambda: False)
     left, right = socket.socketpair()
     try:
         left.sendall(b"x")
         assert right.recv(1) == b"x"
+        assert left.getsockname() == right.getpeername()
     finally:
         left.close()
         right.close()
-    assert events[-1][1]["detail"] == "local-socketpair" and events[-1][1]["allowed"] is True
+    kind, fields = events[-1]
+    assert kind == "tcp" and fields["detail"] == "local-socketpair" and fields["allowed"] is True
+    assert sum(1 for _, f in events if f.get("detail") == "local-socketpair") == 1
 
+
+@pytest.mark.parametrize("address", [("127.0.0.1", None), ("192.0.2.1", 9), ("::ffff:127.0.0.1", None)])
+def test_every_other_connect_is_still_refused(guarded_sockets, monkeypatch, address):
+    """There is no window: a loopback service on another port is never opened by a pair."""
+    socket, _, _ = guarded_sockets
+    monkeypatch.setattr(network_policy, "_kernel_socketpair", lambda: False)
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
     listener.listen(1)
-    client = socket.socket()
+    host, port = address[0], address[1] or listener.getsockname()[1]
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    try:
+        client = socket.socket(family)
+    except OSError:
+        listener.close()
+        pytest.skip("this machine has no IPv6")
+    left, right = socket.socketpair()
     try:
         with pytest.raises(network_policy.NetworkPolicyError):
-            client.connect(listener.getsockname())
+            client.connect((host, port))
+        with pytest.raises(network_policy.NetworkPolicyError):
+            client.connect_ex((host, port))
     finally:
-        client.close()
-        listener.close()
+        for item in (client, left, right, listener):
+            item.close()
 
 
-def test_socketpair_exemption_does_not_cover_non_loopback(guarded_sockets):
-    socket, originals, _ = guarded_sockets
+def test_nested_and_concurrent_pairs_leave_no_state(guarded_sockets, monkeypatch):
+    import threading
 
-    def hostile(*args, **kwargs):
-        probe = socket.socket()
+    socket, _, _ = guarded_sockets
+    monkeypatch.setattr(network_policy, "_kernel_socketpair", lambda: False)
+    pairs, errors = [], []
+
+    def make():
         try:
-            probe.connect(("192.0.2.1", 9))
+            pairs.append(socket.socketpair())
+        except Exception as error:  # noqa: BLE001 - reported below
+            errors.append(error)
+
+    threads = [threading.Thread(target=make) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(30)
+    try:
+        assert not errors and len(pairs) == 8
+        probe = socket.socket()
+        target = socket.socket()
+        target.bind(("127.0.0.1", 0))
+        target.listen(1)
+        try:
+            with pytest.raises(network_policy.NetworkPolicyError):
+                probe.connect(target.getsockname())
         finally:
             probe.close()
+            target.close()
+    finally:
+        for left, right in pairs:
+            left.close()
+            right.close()
 
-    originals[(socket, "socketpair")] = hostile
-    with pytest.raises(network_policy.NetworkPolicyError):
-        socket.socketpair()
+
+def test_unsupported_pair_arguments_are_refused(guarded_sockets, monkeypatch):
+    socket, _, _ = guarded_sockets
+    monkeypatch.setattr(network_policy, "_kernel_socketpair", lambda: False)
+    with pytest.raises(ValueError):
+        socket.socketpair(socket.AF_INET, socket.SOCK_DGRAM)
