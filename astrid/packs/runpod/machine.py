@@ -1959,8 +1959,7 @@ class RunPodMachine:
         if directory and not cleaned:
             ops.exec(f"rm -rf {shlex.quote(directory)}", 120)  # the agent keeps at most 128 job folders
         lease.state.note("reset", "done", removed=result.get("removed"),
-                         realm_rows_before=result.get("realm_rows_before"),
-                         realm_reset=result.get("realm_reset"))
+                         realm_rows_before=result.get("realm_rows_before"))
         return result
 
     # -- helpers -------------------------------------------------------------

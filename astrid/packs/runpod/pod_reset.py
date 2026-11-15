@@ -315,12 +315,7 @@ def reset(*, run_dir: Path | None = None, job_dir: Path | None = None,
                 steps["realm_rows_before"] = realm_job_rows(root)
             except Exception:  # noqa: BLE001 - diagnostic only; the reset proceeds unchanged
                 steps["realm_rows_before"] = None
-            rows = steps["realm_rows_before"]
-            if template.exists() and isinstance(rows, dict) and rows and not any(rows.values()):
-                # The job left nothing in the realm (no job rows, no stored files): it already
-                # equals the empty template. Any count error or a non-zero count resets as before.
-                steps["replace"] = {"state": "skipped", "reason": "realm_clean"}
-            elif template.exists():
+            if template.exists():
                 reason = "template_restore"
                 steps["replace"] = replace_realm(current["endpoint"], _owner_token(data_root), template=template,
                                                  realm_root=root)
@@ -359,8 +354,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print(json.dumps({"reset": "ok", "removed": len(steps["removed"]),
                       "template": "taken" if "template" in steps else "restored",
-                      "realm_rows_before": steps.get("realm_rows_before"),
-                      "realm_reset": "skipped" if steps.get("replace", {}).get("state") == "skipped" else "done"}))
+                      "realm_rows_before": steps.get("realm_rows_before")}))
     return 0
 
 
