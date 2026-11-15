@@ -633,3 +633,91 @@ def test_installed_bundle_refuses_stale_provisioned_registry(tmp_path, monkeypat
     run._write_registry_state(project, {"content_hashes": {"effects": "a" * 64}})
     with pytest.raises(RuntimeError, match="stale generated element registries"):
         run._regenerate_element_registries_locked(project, None)
+
+
+def test_concurrent_first_consumers_share_one_validation(installed_runtime, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier, Event
+    from astrid.packs.rendering.rendering.renderers.remotion import lock
+
+    world = installed_runtime
+    monkeypatch.setattr(os, "environ", dict(world.environment))
+    entered, release = Event(), Event()
+    callers = Barrier(4)
+    calls = []
+
+    def prepare():
+        assert lock.remotion_render_lock_held()
+        calls.append("validate")
+        entered.set()
+        assert release.wait(10)
+        os.environ.update(world.reference)
+
+    gate = runtime.DeferredRemotionValidation(prepare)
+    monkeypatch.setattr(runtime, "_deferred_validation", gate)
+
+    def consume():
+        callers.wait(timeout=10)
+        return runtime.resolve_remotion_runtime_tools(world.project)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(consume) for _ in range(4)]
+        try:
+            assert entered.wait(10)
+            assert calls == ["validate"]
+            assert not any(future.done() for future in futures)
+        finally:
+            release.set()
+        for future in futures:
+            tools, error = future.result(timeout=10)
+            assert error is None and tools.node_executable == world.node
+    assert calls == ["validate"] and gate.done
+    # A consumer outside host preflight must not strand other render routes.
+    assert runtime.remotion_validation_deferred()
+
+
+def test_first_consumer_already_holding_render_lock(installed_runtime, monkeypatch):
+    world = installed_runtime
+    monkeypatch.setattr(os, "environ", dict(world.environment))
+    calls = []
+
+    def transaction(**kwargs):
+        assert remotion_run.remotion_lock.remotion_render_lock_held()
+        calls.append(kwargs)
+        return world.reference
+
+    monkeypatch.setattr(runtime, "_prepare_remotion_validation_locked", transaction)
+    gate = runtime.DeferredRemotionValidation(
+        lambda: os.environ.update(runtime.prepare_remotion_validation())
+    )
+    monkeypatch.setattr(runtime, "_deferred_validation", gate)
+    with remotion_run.remotion_lock.remotion_render_lock():
+        entry = runtime._validated_runtime(world.project)
+    assert entry["node_version"] == "v20.19.4"
+    assert len(calls) == 1
+
+
+def test_failed_deferred_validation_keeps_existing_error_and_never_retries(
+    installed_runtime, monkeypatch, tmp_path,
+):
+    from astrid.sdk import host_bootstrap
+
+    world = installed_runtime
+    monkeypatch.setattr(os, "environ", dict(world.environment))
+    calls = []
+
+    def refuse(**kwargs):
+        calls.append(kwargs)
+        raise runtime.RemotionValidationError("partial npm installation")
+
+    monkeypatch.setattr(runtime, "prepare_remotion_validation", refuse)
+    gate = runtime.DeferredRemotionValidation(lambda: host_bootstrap._prepare_render_validation(
+        tmp_path, os.environ, tmp_path, sys.executable,
+    ))
+    monkeypatch.setattr(runtime, "_deferred_validation", gate)
+    for _ in range(2):
+        tools, error = runtime.resolve_remotion_runtime_tools(world.project)
+        assert tools is None
+        assert error == "missing or invalid launch validation; explicit owned validation required"
+    assert len(calls) == 1 and gate.done
+    assert not runtime.remotion_validation_deferred()

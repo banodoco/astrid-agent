@@ -21,7 +21,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import wraps
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any, Callable, Iterator, Mapping
 
 from runtime_protocol import platform
 
@@ -146,6 +146,53 @@ def remotion_render_lock() -> Iterator[None]:
         return
     with lock.remotion_render_lock():
         yield
+
+
+class DeferredRemotionValidation:
+    """One launch-owner transaction, delayed until a runtime consumer needs it.
+
+    The render lock serializes first uses, including callers already holding
+    it. There is no second mutex to invert against the renderer's lock, and
+    both success and failure are retained for the lifetime of this launch.
+    """
+
+    def __init__(self, prepare: Callable[[], None]):
+        self._prepare = prepare
+        self.done = False
+        self._error: BaseException | None = None
+
+    def ensure(self) -> None:
+        if not self.done:
+            with remotion_render_lock():
+                if not self.done:
+                    try:
+                        self._prepare()
+                    except BaseException as exc:
+                        self._error = exc
+                    finally:
+                        self.done = True
+        if self._error is not None:
+            raise self._error
+
+
+# Set only by the explicit host launch path, never from a task/environment
+# request. Workers receive the resulting artifact through the existing env.
+_deferred_validation: DeferredRemotionValidation | None = None
+
+
+def ensure_remotion_validation() -> None:
+    if _deferred_validation is not None:
+        _deferred_validation.ensure()
+
+
+def remotion_validation_deferred() -> bool:
+    """May accept work pending full preflight; never a runtime proof."""
+    validation = _deferred_validation
+    return validation is not None and (
+        not validation.done or (
+            validation._error is None and bool(os.environ.get(ASTRID_REMOTION_VALIDATION_PATH))
+        )
+    )
 
 
 def _validation_timing(phase: str):
@@ -962,9 +1009,9 @@ def _settle_registries(project: Path, contexts: Mapping[str, Any], python: str, 
 
 @_validation_timing("launch_transaction")
 def _prepare_remotion_validation(**kwargs: Any) -> dict[str, str]:
-    from astrid.packs.rendering.rendering.renderers.remotion.lock import remotion_render_lock
     # Keep the existing lock continuously through all four-file readback,
     # owned validation, final bindings and exclusive readiness publication.
+    # A deferred first consumer may already own it; use the held-lock path.
     with remotion_render_lock():
         return _prepare_remotion_validation_locked(**kwargs)
 
@@ -1185,6 +1232,7 @@ def prepare_remotion_validation(**kwargs: Any) -> dict[str, str]:
 
 def _validated_runtime(project_dir: Path, *, environment: Mapping[str, str] | None = None,
                        python_executable: str | None = None) -> dict[str, Any]:
+    ensure_remotion_validation()
     if _UNRESOLVED_PROBE_CUSTODY:
         raise _UNRESOLVED_PROBE_CUSTODY[0]
     env = os.environ if environment is None else environment
