@@ -254,6 +254,7 @@ def _local_models(paths) -> frozenset[str]:
 def _download_gaps(client, entry_id: str, mode: str):
     """Missing role files of the entry on the attached server, each with its server folder."""
     from astrid.core.model_catalog.registry import ModelRegistry
+
     from .backends.comfy_target import _COMFY_MODEL_FOLDERS, _resolve_roles
 
     _entry, mode_spec = ModelRegistry.load_default().get_by_mode(entry_id, mode)
