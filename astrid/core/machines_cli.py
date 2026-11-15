@@ -238,7 +238,8 @@ def _release(machine_id: str, *, as_json: bool, release: Callable[[], Any] | Non
         message = f"{machine_id} is not held by this host: not released"
         if still_live:
             message += f"; the CLI journal still lists {machine_id} as live"
-        message += "; check `astrid machines ls`, or release it from the host that holds it"
+        message += ("; check `astrid machines`, or run the release from the host that holds it;"
+                    " if this host lost the claim, stop the pod in the provider console")
         print(json.dumps({**payload, "ok": False, "error": message}, sort_keys=True, default=str)
               if as_json else message)
         return 1
