@@ -185,3 +185,9 @@ def test_host_refusal_recovers_logs_using_only_supported_bounded_exec(tmp_path):
     assert deadlines == [run.lease.claim.ops.deadline]
     assert ended == ['observer']
     assert 2 <= len(commands) <= 8  # marker read plus bounded archive chunks and EOF
+
+
+def test_cancelled_output_fetch_skips_independent_log_observation(tmp_path):
+    owner = object.__new__(machine.RunPodMachine)
+    run = SimpleNamespace(cancelled=lambda: True)
+    assert owner._collect_fetch_failure_logs(run, tmp_path) == {'unavailable': 'cancelled'}

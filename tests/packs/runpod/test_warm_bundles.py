@@ -90,6 +90,9 @@ def test_finish_including_manifest_launches_exactly_one_process(tmp_path):
     assert rm.MANIFEST_MARK in done.stdout
     assert rm.OUTPUT_ARCHIVE_MARK in done.stdout
     assert (root / 'out/logs/wrapper-manifest.json').is_file()
+    manifest = json.loads((root / 'out' / rm.MANIFEST_NAME).read_text())
+    size = rm._last_marked(done.stdout, rm.OUTPUT_BYTES_MARK).removeprefix(rm.OUTPUT_BYTES_MARK)
+    assert int(size) == sum(entry['size'] for entry in manifest['files'].values())
 
 
 @pytest.mark.parametrize('fault', ['digest', 'manifest', 'content', 'size', 'path', 'absolute',
@@ -207,7 +210,7 @@ def test_failed_job_collects_all_declared_logs_with_one_verified_download(tmp_pa
     assert all(Path(row['path']).is_file() for row in logs['files'])
 
 
-def _faulting_finish(tmp_path, fault):
+def _faulting_finish(tmp_path, fault, *, persistent=False):
     root, job = tmp_path / 'run', tmp_path / 'job'
     out = root / 'out'
     out.mkdir(parents=True)
@@ -218,12 +221,30 @@ def _faulting_finish(tmp_path, fault):
     counter = tmp_path / 'launches'
     interpreter = tmp_path / 'python'
     interpreter.write_text(f'''#!{sys.executable}
-import errno, pathlib, sys, tarfile
+import builtins, errno, os, pathlib, sys, tarfile
 with open({str(counter)!r}, 'a') as stream:
     stream.write('launch\\n')
 original = tarfile.open
+original_open = builtins.open
+original_os_open = os.open
+failed = False
+def checked_open(file, mode='r', *args, **kwargs):
+    if {persistent!r} and failed and any(flag in mode for flag in 'wax'):
+        raise OSError(errno.ENOSPC, 'persistent disk full')
+    return original_open(file, mode, *args, **kwargs)
+builtins.open = checked_open
+def checked_os_open(path, *args, **kwargs):
+    if {fault!r} in ('vanished-log', 'unreadable-log') and str(path).endswith('job.stdout.log'):
+        if {fault!r} == 'vanished-log':
+            pathlib.Path(path).unlink(missing_ok=True)
+        else:
+            raise PermissionError('log became unreadable')
+    return original_os_open(path, *args, **kwargs)
+os.open = checked_os_open
 def checked(name, *args, **kwargs):
+    global failed
     if pathlib.Path(name).name == {fault!r}:
+        failed = True
         # Log sealing must happen after a complete, authenticated output bundle.
         if {fault!r} == 'logs.tar':
             with original({str(root / 'outputs.tar')!r}, 'r:') as archive:
@@ -250,7 +271,9 @@ def test_log_seal_failure_delivers_verified_outputs_in_one_process_and_download(
     assert 0 < len(done.stderr) <= 65536
     assert rm.LOGS_MANIFEST_MARK not in done.stdout
     manifest = json.loads((root / 'out' / rm.MANIFEST_NAME).read_text())
-    assert manifest['logs_unavailable'] == 'OSError'
+    assert rm.LOGS_UNAVAILABLE_MARK + 'OSError' in done.stdout
+    with tarfile.open(root / 'outputs.tar') as archive:
+        assert json.load(archive.extractfile(rm.MANIFEST_NAME)) == manifest
     digest = rm._last_marked(done.stdout, rm.MANIFEST_MARK).removeprefix(rm.MANIFEST_MARK)
     calls = []
 
@@ -320,3 +343,28 @@ def test_log_archive_failure_alone_keeps_verified_job_warm(machine_case, tmp_pat
     assert c.read()['lease']['state'] == 'idle'
     assert c.read()['lease']['reset']['state'] == 'ready'
     assert c.creates == 1 and c.deletes == []
+
+
+@pytest.mark.parametrize('fault', ['vanished-log', 'unreadable-log'])
+def test_log_lost_between_hash_and_archive_does_not_fail_outputs(tmp_path, fault):
+    done, root = _faulting_finish(tmp_path, fault)
+    assert done.returncode == 0, done.stderr
+    assert rm.OUTPUT_ARCHIVE_MARK in done.stdout
+    manifest = json.loads((root / 'out' / rm.MANIFEST_NAME).read_text())
+    assert manifest['logs_unavailable'] in {'FileNotFoundError', 'PermissionError'}
+    with tarfile.open(root / 'outputs.tar') as archive:
+        assert archive.extractfile('image.png').read() == b'image'
+        assert 'logs/job.stdout.log' not in archive.getnames()
+        assert json.load(archive.extractfile(rm.MANIFEST_NAME)) == manifest
+
+
+def test_persistent_enospc_after_first_output_seal_preserves_bundle(tmp_path):
+    done, root = _faulting_finish(tmp_path, 'logs.tar', persistent=True)
+    assert done.returncode == 0, done.stderr
+    assert rm.OUTPUT_ARCHIVE_MARK in done.stdout
+    digest = rm._last_marked(done.stdout, rm.MANIFEST_MARK).removeprefix(rm.MANIFEST_MARK)
+    with tarfile.open(root / 'outputs.tar') as archive:
+        body = archive.extractfile(rm.MANIFEST_NAME).read()
+        assert hashlib.sha256(body).hexdigest() == digest
+        assert archive.extractfile('image.png').read() == b'image'
+    assert (root / 'out' / rm.MANIFEST_NAME).read_bytes() == body

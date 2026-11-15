@@ -73,6 +73,11 @@ JOB_NAME = "job.json"
 MAX_PROGRESS_BYTES = 64 * 1024
 OUTPUT_ARCHIVE = "outputs.tar"
 OUTPUT_ARCHIVE_MARK = "OUTPUT_ARCHIVE=" + OUTPUT_ARCHIVE
+OUTPUT_BYTES_MARK = "OUTPUT_BYTES="
+LOGS_UNAVAILABLE_MARK = "LOGS_UNAVAILABLE="
+OUTPUT_FETCH_MIN_SECONDS = 30.0
+OUTPUT_FETCH_MAX_SECONDS = 600.0
+OUTPUT_FETCH_BYTES_PER_SECOND = 1 << 20
 LOGS_ARCHIVE = "logs.tar"
 LOGS_ARCHIVE_MARK = "LOGS_ARCHIVE=" + LOGS_ARCHIVE
 PROGRESS_MARK = "JOB_PROGRESS="
@@ -460,26 +465,67 @@ def generation_command(entry: str | None, remote_root: str, *, mode: str | None,
     )
 
 
-def _archive_script(destination: str, marker: str) -> str:
+def _archive_script(destination: str, marker: str, *, best_effort_logs: bool = False) -> str:
     return '''
-import stat, tarfile
-with tarfile.open(ARCHIVE_DESTINATION, "w") as archive:
-    for relative in ["wrapper-manifest.json", *sorted(files)]:
-        fd = os.open(os.path.join(root, relative), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        with os.fdopen(fd, "rb") as stream:
-            info = os.fstat(stream.fileno())
-            if not stat.S_ISREG(info.st_mode):
-                raise ValueError("output archive source is not regular")
-            member = tarfile.TarInfo(relative)
-            member.size = info.st_size
-            archive.addfile(member, stream)
+import contextlib, stat, tarfile, tempfile
+with contextlib.ExitStack() as stack:
+    snapshots = {}
+    logs_changed = False
+    if BEST_EFFORT_LOGS:
+        # Read logs completely before starting the archive. A disappearing or
+        # unreadable log can then be omitted without leaving a partial member.
+        for relative in list(files):
+            if not relative.startswith("logs/"):
+                continue
+            try:
+                fd = os.open(os.path.join(root, relative), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                with os.fdopen(fd, "rb") as stream:
+                    info = os.fstat(stream.fileno())
+                    if not stat.S_ISREG(info.st_mode):
+                        raise ValueError("log archive source is not regular")
+                    snapshot = stack.enter_context(tempfile.TemporaryFile())
+                    digest = hashlib.sha256()
+                    for chunk in iter(lambda: stream.read(1 << 20), b""):
+                        digest.update(chunk)
+                        snapshot.write(chunk)
+                    if (snapshot.tell() != files[relative]["size"]
+                            or digest.hexdigest() != files[relative]["sha256"]):
+                        raise ValueError("log changed while sealing")
+                    snapshot.seek(0)
+                    snapshots[relative] = snapshot
+            except (OSError, ValueError) as error:
+                logs_unavailable = type(error).__name__
+                del files[relative]
+                logs_changed = True
+        if logs_changed:
+            manifest_digest = write_manifest()
+    with tarfile.open(ARCHIVE_DESTINATION, "w") as archive:
+        for relative in ["wrapper-manifest.json", *sorted(files)]:
+            stream = snapshots.get(relative)
+            if stream is None:
+                fd = os.open(os.path.join(root, relative), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                stream = os.fdopen(fd, "rb")
+            with stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode):
+                    raise ValueError("output archive source is not regular")
+                member = tarfile.TarInfo(relative)
+                member.size = info.st_size
+                archive.addfile(member, stream)
+print(manifest_marker + manifest_digest)
+if BEST_EFFORT_LOGS:
+    print("OUTPUT_BYTES=" + str(sum(entry["size"] for entry in files.values())))
+    if logs_unavailable:
+        print("LOGS_UNAVAILABLE=" + logs_unavailable)
 print(ARCHIVE_MARKER)
-'''.replace("ARCHIVE_DESTINATION", destination).replace("ARCHIVE_MARKER", repr(marker))
+'''.replace("ARCHIVE_DESTINATION", destination).replace("ARCHIVE_MARKER", repr(marker)).replace(
+        "BEST_EFFORT_LOGS", repr(best_effort_logs))
 
 
 def output_manifest_command(remote_root: str) -> str:
     """Seal the output manifest and transport archive in the same pod process."""
-    program = _MANIFEST_SCRIPT + _archive_script("sys.argv[2]", OUTPUT_ARCHIVE_MARK)
+    program = "defer_manifest_marker = True\n" + _MANIFEST_SCRIPT + _archive_script(
+        "sys.argv[2]", OUTPUT_ARCHIVE_MARK, best_effort_logs=True)
     return (f"{POD_VENV}/bin/python -c {shlex.quote(program)} "
             f"{shlex.quote(remote_root + '/out')} {shlex.quote(remote_root + '/' + OUTPUT_ARCHIVE)}")
 
@@ -506,14 +552,12 @@ except Exception as error:  # logs are best-effort, including collection
     logs_unavailable = type(error).__name__
     finish_diagnostic()
 '''
-    manifest = _MANIFEST_SCRIPT.replace(
-        '{"schema_version": 1, "files": files}',
-        '{"schema_version": 1, "files": files, '
-        '**({"logs_unavailable": logs_unavailable} if logs_unavailable else {})}')
-    output_seal = '\nimport sys\nsys.argv = [sys.argv[0], str(output_root)]\n' + manifest
-    output_seal += _archive_script('str(output_root.parent / "outputs.tar")', OUTPUT_ARCHIVE_MARK)
+    output_seal = '\nimport sys\nsys.argv = [sys.argv[0], str(output_root)]\ndefer_manifest_marker = True\n'
+    output_seal += _MANIFEST_SCRIPT
+    output_seal += _archive_script('str(output_root.parent / "outputs.tar")', OUTPUT_ARCHIVE_MARK,
+                                   best_effort_logs=True)
     source += '\ndef seal_outputs():\n' + textwrap.indent(output_seal, "    ")
-    log_seal = '\nimport sys\nsys.argv = [sys.argv[0], str(output_root / "logs")]\n'
+    log_seal = '\nimport sys\nsys.argv = [sys.argv[0], str(output_root / "logs")]\ndefer_manifest_marker = True\n'
     log_seal += _MANIFEST_SCRIPT.replace(MANIFEST_MARK, LOGS_MANIFEST_MARK)
     log_seal += _archive_script('str(output_root.parent / "logs.tar")', LOGS_ARCHIVE_MARK)
     source += '\ndef seal_logs():\n' + textwrap.indent(log_seal, "    ")
@@ -531,11 +575,9 @@ if logs_unavailable is None:
         logs_unavailable = type(error).__name__
         finish_diagnostic()
         log_markers = io.StringIO()
-        output_markers = io.StringIO()
-        # Publish an authenticated manifest carrying the failure, retaining all
-        # output files. This extra local sealing pass happens only on log error.
-        with contextlib.redirect_stdout(output_markers):
-            seal_outputs()
+        # The first authenticated output seal is immutable, even under ENOSPC.
+        # Later log-transport failures travel alongside its retained markers.
+        print("LOGS_UNAVAILABLE=" + logs_unavailable)
 print(log_markers.getvalue(), end="")
 print(output_markers.getvalue(), end="")
 try:
@@ -680,10 +722,26 @@ def _fetch_output_archive(ops: Any, remote: str, destination: Path, scratch: Pat
                 # first rename. No archive bytes are written through caller files.
                 for relative in staged:
                     _archive_destination(destination, relative)
-                for relative, source in staged.items():
-                    local = _archive_destination(destination, relative)
-                    local.parent.mkdir(parents=True, exist_ok=True)
-                    os.replace(source, local)
+                backups, published = {}, []
+                try:
+                    # Keep every original until the entire new set is in place.
+                    for index, relative in enumerate(staged):
+                        local = _archive_destination(destination, relative)
+                        local.parent.mkdir(parents=True, exist_ok=True)
+                        if local.exists():
+                            backup = Path(temporary) / f"original-{index}"
+                            os.replace(local, backup)
+                            backups[relative] = backup
+                    for relative, source in staged.items():
+                        local = _archive_destination(destination, relative)
+                        os.replace(source, local)
+                        published.append(local)
+                except BaseException:
+                    for local in reversed(published):
+                        local.unlink()
+                    for relative, backup in backups.items():
+                        os.replace(backup, destination / relative)
+                    raise
             return files
     except (tarfile.TarError, EOFError) as error:
         raise DigestMismatch("downloaded output archive is invalid") from error
@@ -1374,25 +1432,73 @@ class RunPodMachine:
         except ValueError:
             raise MachineError("remote result is not JSON") from None
         placement._check_deadline("fetch")
-        files = self._fetch_verified(ops, f"{run.remote_root}/out", destination, run.scratch,
-                                     manifest_line[len(MANIFEST_MARK):].strip(),
-                                     remote_archive=(f"{run.remote_root}/{OUTPUT_ARCHIVE}"
-                                                     if OUTPUT_ARCHIVE_MARK in lines else None))
+        size_line = _last_marked(stdout, OUTPUT_BYTES_MARK)
+        total_bytes = 0
+        if size_line is not None:
+            size = size_line[len(OUTPUT_BYTES_MARK):]
+            if not size.isascii() or not size.isdigit() or len(size) > 20:
+                raise MachineError("remote output size is invalid")
+            total_bytes = int(size)
+        with self._output_downloads(run, total_bytes) as downloads:
+            files = self._fetch_verified(downloads, f"{run.remote_root}/out", destination, run.scratch,
+                                         manifest_line[len(MANIFEST_MARK):].strip(),
+                                         remote_archive=(f"{run.remote_root}/{OUTPUT_ARCHIVE}"
+                                                         if OUTPUT_ARCHIVE_MARK in lines else None))
         from astrid.core.execution.phase_timing import ingest_job_run
         ingest_job_run(timing, files)
         self._checkpoint_installed(run, files)
         state.note("fetch", "done", files=len(files))
         _stamp(timing, "collection_ended_at")
         pid = str(record.get("pid") or "").strip()
+        logs_unavailable = _last_marked(stdout, LOGS_UNAVAILABLE_MARK)
         return {"files": files, "result": result if isinstance(result, Mapping) else {},
+                **({"logs_unavailable": logs_unavailable[len(LOGS_UNAVAILABLE_MARK):]}
+                   if logs_unavailable else {}),
                 **({"policy_notice": run.lease.policy_notice} if run.lease.policy_notice is not None else {}),
                 "manifest_sha256": manifest_line[len(MANIFEST_MARK):].strip(),
                 "progress": list(run.progress),
                 # The remote detached job's own process evidence (its pid on the pod).
                 "process_id": int(pid) if pid.isdigit() else None, "returncode": 0}
 
+    @contextmanager
+    def _output_downloads(self, run: MachineRun, total_bytes: int) -> Iterator[Any]:
+        """One size-scaled transfer budget, within paid custody and host cancellation."""
+        owner = self._require().lease_owner
+        observer_key = None
+        downloads = None
+        with _cancellable(run.lease, getattr(run, "cancelled", None)):
+            try:
+                started = time.monotonic()
+                budget = min(OUTPUT_FETCH_MAX_SECONDS, max(
+                    OUTPUT_FETCH_MIN_SECONDS, total_bytes / OUTPUT_FETCH_BYTES_PER_SECOND))
+                with owner.lock:
+                    current = owner.preparation_claim(run.lease.lease)
+                    remaining = current["lease"]["paid_expires_at"] - owner.clock()
+                    if remaining <= 0:
+                        raise MachineError("output transfer paid deadline expired")
+                    deadline = started + min(budget, remaining)
+                    observer_key, abort_event = owner.begin_failure_observation(
+                        run.lease.lease, run.lease.claim.pod_id)
+                original_ops = run.lease.claim.ops
+                transport_deadline = getattr(original_ops, "deadline", None)
+                if transport_deadline is not None:
+                    deadline = min(deadline, transport_deadline)
+                downloads = original_ops.bounded(deadline, abort_event=abort_event)
+                yield downloads
+            finally:
+                try:
+                    unreaped = getattr(downloads, "unreaped_child", None)
+                    if unreaped is not None:
+                        _fence_observer(owner, run.lease.lease, run.lease.claim.pod_id, downloads, unreaped)
+                finally:
+                    if observer_key is not None:
+                        owner.end_failure_observation(observer_key)
+
     def _collect_fetch_failure_logs(self, run: MachineRun, destination: Path) -> dict[str, Any]:
         """Collect host-refusal evidence before reset, within cancellable paid time."""
+        cancelled = getattr(run, "cancelled", None)
+        if cancelled is not None and cancelled():
+            return {"unavailable": "cancelled"}
         owner = self._require().lease_owner
         observer_key = None
         ops = None
@@ -1414,6 +1520,8 @@ class RunPodMachine:
             if transport_deadline is not None:
                 deadline = min(deadline, transport_deadline)
             ops = bounded(deadline, abort_event=abort_event)
+            if cancelled is not None and hasattr(ops, "cancellable"):
+                ops = ops.cancellable(cancelled)
             return self._fetch_failure_logs(_FailureLogDownloads(ops), run, "", destination)
         except Exception as exc:  # noqa: BLE001 - evidence must never mask the original refusal
             return {"unavailable": type(exc).__name__}

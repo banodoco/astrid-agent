@@ -4,6 +4,8 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -51,6 +53,11 @@ def test_remote_logs_are_collectable_by_host_after_machine_is_gone(tmp_path, exi
         stdout.write(f'{RESULT_MARK}{{}}\n{MANIFEST_MARK}{manifest_digest}\n')
 
     class Ops:
+        def bounded(self, deadline, *, abort_event):
+            assert deadline <= time.monotonic() + machine.OUTPUT_FETCH_MIN_SECONDS
+            assert not abort_event.is_set()
+            return self
+
         def exec(self, command, timeout):
             result = subprocess.run(['bash', '-c', command], capture_output=True,
                                     text=True, timeout=timeout, check=False)
@@ -67,11 +74,17 @@ def test_remote_logs_are_collectable_by_host_after_machine_is_gone(tmp_path, exi
 
     scratch = tmp_path / 'scratch'
     scratch.mkdir()
-    lease = machine.MachineLease(None, SimpleNamespace(ops=Ops()),
+    lease = machine.MachineLease(None, SimpleNamespace(ops=Ops(), pod_id='local-fake'),
                                  SimpleNamespace(note=lambda *_args, **_kwargs: None), {}, False)
     run = machine.MachineRun(lease, 'j1', str(job_dir), str(run_root), scratch / 'progress', scratch)
     owner = object.__new__(machine.RunPodMachine)
-    owner._require = lambda: SimpleNamespace(placement=SimpleNamespace(_check_deadline=lambda _stage: None))
+    lease_owner = SimpleNamespace(
+        lock=threading.RLock(), clock=time.time,
+        preparation_claim=lambda _: {'lease': {'paid_expires_at': time.time() + 60}},
+        begin_failure_observation=lambda *_: ('local-fake', threading.Event()),
+        end_failure_observation=lambda _: None)
+    owner._require = lambda: SimpleNamespace(
+        placement=SimpleNamespace(_check_deadline=lambda _stage: None), lease_owner=lease_owner)
     owner._checkpoint = lambda *args: None
     owner._checkpoint_installed = lambda *_args: None
     destination = tmp_path / 'download'

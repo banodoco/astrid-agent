@@ -390,21 +390,34 @@ _MANIFEST_SCRIPT = r'''
 import hashlib, json, os, sys
 root = sys.argv[1]
 files = {}
+logs_unavailable = globals().get("logs_unavailable")
 for dirpath, _dirs, names in os.walk(root):
     for name in names:
         path = os.path.join(dirpath, name)
         rel = os.path.relpath(path, root)
         if rel == "%(manifest)s" or os.path.islink(path):
             continue
-        digest = hashlib.sha256()
-        with open(path, "rb") as stream:
-            for chunk in iter(lambda: stream.read(1 << 20), b""):
-                digest.update(chunk)
-        files[rel] = {"sha256": digest.hexdigest(), "size": os.path.getsize(path)}
-body = json.dumps({"schema_version": 1, "files": files}, sort_keys=True, indent=2) + "\n"
-with open(os.path.join(root, "%(manifest)s"), "w") as stream:
-    stream.write(body)
-print("%(mark)s" + hashlib.sha256(body.encode()).hexdigest())
+        try:
+            digest = hashlib.sha256()
+            with open(path, "rb") as stream:
+                for chunk in iter(lambda: stream.read(1 << 20), b""):
+                    digest.update(chunk)
+            files[rel] = {"sha256": digest.hexdigest(), "size": os.path.getsize(path)}
+        except OSError as error:
+            if not rel.startswith("logs/"):
+                raise
+            logs_unavailable = type(error).__name__
+def write_manifest():
+    body = json.dumps({"schema_version": 1, "files": files,
+                       **({"logs_unavailable": logs_unavailable} if logs_unavailable else {})},
+                      sort_keys=True, indent=2) + "\n"
+    with open(os.path.join(root, "%(manifest)s"), "w") as stream:
+        stream.write(body)
+    return hashlib.sha256(body.encode()).hexdigest()
+manifest_marker = "%(mark)s"
+manifest_digest = write_manifest()
+if not locals().get("defer_manifest_marker", False):
+    print(manifest_marker + manifest_digest)
 ''' % {"manifest": MANIFEST_NAME, "mark": MANIFEST_MARK}
 
 
@@ -1184,7 +1197,7 @@ class _HttpsOps:
 
     def bounded(self, deadline: float, *, abort_event: threading.Event | None = None) -> "_HttpsOps":
         return type(self)(self.pod_id, self.token, deadline=deadline, base_url=self.base_url,
-                          abort_event=abort_event, connection=self._connection)
+                          abort_event=abort_event, cancelled=self.cancelled, connection=self._connection)
 
     def observer_fenced(self) -> None:
         """The lease owner now owns the handle; no view may transfer or call it again."""
@@ -1305,7 +1318,7 @@ class _HttpsOps:
                 message, reason=Reason(stage="boot", step="provider_contract", gate="provider", code=code)
             )
 
-        if self.deadline is not None and name not in {"execute_command", "detached_start", "detached_poll", "detached_cancel"}:
+        if self.deadline is not None and name not in {"execute_command", "detached_start", "detached_poll", "detached_cancel", "get"}:
             raise RemotePlacementError("unsupported bounded pod operation")
         remaining = deadline - time.monotonic()
         if remaining <= 0:
