@@ -155,6 +155,13 @@ def _write_evidence() -> None:
     _EVIDENCE.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
 
 
+def _loopback_address(address: Any) -> bool:
+    try:
+        return ipaddress.ip_address(str(address[0])).is_loopback
+    except (TypeError, ValueError, IndexError):
+        return False
+
+
 def _patch_socket(originals: Mapping[tuple[Any, str], Any]) -> None:
     def getaddrinfo(host: Any, port: Any, *args: Any, **kwargs: Any):
         value = originals[(socket, "getaddrinfo")](host, port, *args, **kwargs)
@@ -169,7 +176,25 @@ def _patch_socket(originals: Mapping[tuple[Any, str], Any]) -> None:
             raise NetworkPolicyError(f"network policy denied dns destination {name}")
         return value
 
+    # socket.socketpair() is a kernel call on POSIX. On Windows the standard library
+    # builds the pair from a loopback listener on an ephemeral port and connects to
+    # it in Python (asyncio's event loop does this for its self-pipe), which the
+    # connect guard would refuse. Only that internal connect, on the calling thread
+    # and to a loopback address, is let through; it reaches nothing outside the process.
+    pairing = threading.local()
+
+    def socketpair(*args: Any, **kwargs: Any):
+        pairing.active = True
+        try:
+            return originals[(socket, "socketpair")](*args, **kwargs)
+        finally:
+            pairing.active = False
+
     def connect(self: socket.socket, address: Any):
+        if getattr(pairing, "active", False) and _loopback_address(address):
+            host, port = _endpoint_parts(address)
+            _record("tcp", host=host, port=port, allowed=True, detail="local-socketpair")
+            return originals[(socket.socket, "connect")](self, address)
         _check("tcp" if self.type & socket.SOCK_STREAM else "udp", address)
         return originals[(socket.socket, "connect")](self, address)
 
@@ -182,6 +207,8 @@ def _patch_socket(originals: Mapping[tuple[Any, str], Any]) -> None:
         return originals[(socket.socket, "sendto")](self, data, address, *args)
 
     originals[(socket, "getaddrinfo")] = socket.getaddrinfo
+    originals[(socket, "socketpair")] = socket.socketpair
+    socket.socketpair = socketpair  # type: ignore[assignment]
     originals[(socket.socket, "connect")] = socket.socket.connect
     originals[(socket.socket, "connect_ex")] = socket.socket.connect_ex
     originals[(socket.socket, "sendto")] = socket.socket.sendto

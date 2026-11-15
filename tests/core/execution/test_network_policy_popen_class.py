@@ -58,3 +58,61 @@ def test_subclass_of_the_guard_is_also_checked(guarded, monkeypatch):
 
     with pytest.raises(network_policy.NetworkPolicyError):
         Popen([sys.executable, "-c", "pass"])
+
+
+@pytest.fixture
+def guarded_sockets(monkeypatch):
+    import socket
+
+    originals = {}
+    events = []
+    monkeypatch.setattr(network_policy, "_record", lambda kind, **fields: events.append((kind, fields)))
+    monkeypatch.setattr(network_policy, "_protocol_allowed", lambda kind: True)
+    monkeypatch.setattr(network_policy, "_allowed_destination", lambda host, port: False)
+    network_policy._patch_socket(originals)
+    try:
+        yield socket, originals, events
+    finally:
+        for (owner, name), value in originals.items():
+            setattr(owner, name, value)
+
+
+def test_windows_style_socketpair_is_allowed_but_other_loopback_connects_are_not(guarded_sockets):
+    """asyncio's Windows event loop builds its self-pipe with the loopback fallback."""
+    socket, originals, events = guarded_sockets
+    # Force the pure-Python fallback Windows uses, under the guard.
+    originals[(socket, "socketpair")] = socket._fallback_socketpair
+    left, right = socket.socketpair()
+    try:
+        left.sendall(b"x")
+        assert right.recv(1) == b"x"
+    finally:
+        left.close()
+        right.close()
+    assert events[-1][1]["detail"] == "local-socketpair" and events[-1][1]["allowed"] is True
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    client = socket.socket()
+    try:
+        with pytest.raises(network_policy.NetworkPolicyError):
+            client.connect(listener.getsockname())
+    finally:
+        client.close()
+        listener.close()
+
+
+def test_socketpair_exemption_does_not_cover_non_loopback(guarded_sockets):
+    socket, originals, _ = guarded_sockets
+
+    def hostile(*args, **kwargs):
+        probe = socket.socket()
+        try:
+            probe.connect(("192.0.2.1", 9))
+        finally:
+            probe.close()
+
+    originals[(socket, "socketpair")] = hostile
+    with pytest.raises(network_policy.NetworkPolicyError):
+        socket.socketpair()
