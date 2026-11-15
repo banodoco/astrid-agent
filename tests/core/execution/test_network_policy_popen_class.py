@@ -103,12 +103,9 @@ def test_every_other_connect_is_still_refused(guarded_sockets, monkeypatch, addr
     listener.bind(("127.0.0.1", 0))
     listener.listen(1)
     host, port = address[0], address[1] or listener.getsockname()[1]
-    family = socket.AF_INET6 if ":" in host else socket.AF_INET
-    try:
-        client = socket.socket(family)
-    except OSError:
-        listener.close()
-        pytest.skip("this machine has no IPv6")
+    # The guard refuses before the operating system sees the address, so an
+    # IPv4 socket is enough even for the mapped form (and needs no IPv6 here).
+    client = socket.socket()
     left, right = socket.socketpair()
     try:
         with pytest.raises(network_policy.NetworkPolicyError):
