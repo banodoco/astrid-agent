@@ -609,3 +609,30 @@ def test_hostwedge_restart_live_job_fences_claim_until_exact_recovery(machine_ca
     assert c.pod.cancelled == [old.job_id]
     assert c.deletes == ["pod-1"] and c.creates == 1
     assert c.read()["state"] == "cleanup_complete"
+
+
+def test_warm_second_job_operation_budget(request, monkeypatch):
+    from tests.packs.runpod._budget import RemoteBudget
+
+    c = request.getfixturevalue("machine_case")
+
+    def no_network(*args, **kwargs):
+        pytest.fail("warm CPU budget must not reach a real service")
+
+    monkeypatch.setattr("socket.socket.connect", no_network)
+    budget = RemoteBudget()
+    budget.machine_case(c, monkeypatch)
+    claim(c)
+    run(c, job(c, 1))
+    paid = c.read()["paid_limits"]
+    budget.counts.clear()
+    run(c, job(c, 2))
+    budget.assert_within({
+        "exec": 19, "put": 5, "get": 5, "job_start": 2, "job_poll": 3, "job_cancel": 0,
+        "process_start": 19, "provider.read_exact_pod": 2,
+        "provider.get_network_volumes": 2, "provider.list_pods": 1,
+        "provider.confirm_acquired_machine": 1, "provider.get_pod_status": 1,
+        "provider.observe_mounts": 1,
+    })
+    assert c.creates == 1 and c.read()["paid_limits"] == paid
+    assert c.read()["lease"]["state"] == "idle"

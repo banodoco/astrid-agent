@@ -360,7 +360,7 @@ def test_hung_stats_are_bounded_when_finishing_job(tmp_path):
         thread.join(timeout=2)
 
 
-PHASE_KEYS = {"verify_models", "engine_start_or_reuse", "queue_wait", "execute", "collect"}
+PHASE_KEYS = {"whole_job", "unaccounted", "verify_models", "engine_start_or_reuse", "queue_wait", "execute", "collect"}
 
 
 def _assert_phase_record(record):
@@ -472,3 +472,56 @@ def test_engine_phase_includes_readiness_health_time(monkeypatch):
     assert prep._time_engine(runner.check_health) == ("skipped", {"healthy": True})
     assert prep.engine_start_seconds == 5.0
     assert prep.engine_reused is False
+
+
+def test_whole_job_budget_includes_process_entry_and_unaccounted(tmp_path, monkeypatch):
+    from astrid.core.execution.phase_timing import PhaseTiming
+    from astrid.core.generation import job_evidence
+
+    clock = SimpleNamespace(now=20.0)
+    monkeypatch.setattr(job_evidence, "_process_entry", lambda: (10.0, "process entry"))
+    monkeypatch.setattr(job_evidence, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    monkeypatch.setattr(JobEvidence, "_vram", lambda *args: None)
+    prep = SimpleNamespace(root=str(tmp_path / "engine"), recipe=SimpleNamespace(
+        engine="comfyui", start=SimpleNamespace(port=1)), verification_seconds=2.0,
+        engine_start_seconds=1.0)
+    evidence = JobEvidence(tmp_path / "out", prep)
+    evidence.timing = PhaseTiming(clock=lambda: clock.now)
+    evidence.start_execution()
+    clock.now = 24.0
+    evidence.start_collect()
+    clock.now = 25.0
+    evidence.finish()
+    record = json.loads((tmp_path / "out/job-run.json").read_text())
+    assert record["phases"]["whole_job"] == 15.0
+    assert record["phases"]["unaccounted"] == 7.0, record["phases"]
+    assert record["phases"]["whole_job"] == sum(
+        value for key, value in record["phases"].items() if key != "whole_job")
+
+
+def test_process_entry_uses_kernel_birth_before_imports(monkeypatch):
+    from astrid.core.generation import job_evidence
+
+    fields = ["S"] + ["0"] * 18 + ["1000"]
+    # A process name can itself contain spaces and closing parentheses.
+    monkeypatch.setattr(Path, "read_text", lambda path: "42 (python ) worker) " + " ".join(fields))
+    monkeypatch.setattr(job_evidence.os, "sysconf", lambda name: 100)
+    monkeypatch.setattr(job_evidence, "time", SimpleNamespace(
+        CLOCK_BOOTTIME=7, clock_gettime=lambda clock: 20.0, monotonic=lambda: 15.0))
+    entry, source = job_evidence._process_entry()
+    assert entry == 5.0
+    assert "/proc/self/stat" in source
+
+
+def test_whole_job_is_unknown_when_process_entry_is_unavailable(tmp_path, monkeypatch):
+    from astrid.core.generation import job_evidence
+
+    monkeypatch.setattr(job_evidence, "_process_entry", lambda: (None, "process entry unavailable"))
+    monkeypatch.setattr(JobEvidence, "_vram", lambda *args: None)
+    prep = SimpleNamespace(root=str(tmp_path / "engine"), recipe=SimpleNamespace(
+        engine="comfyui", start=SimpleNamespace(port=1)), verification_seconds=0.0)
+    JobEvidence(tmp_path / "out", prep).finish()
+    record = json.loads((tmp_path / "out/job-run.json").read_text())
+    assert record["phases"]["whole_job"] is None
+    assert record["phases"]["unaccounted"] is None
+    assert "unavailable" in record["phase_sources"]["whole_job"]

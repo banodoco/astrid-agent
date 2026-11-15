@@ -1078,6 +1078,8 @@ class RunPodMachine:
         placement._check_deadline("fetch")
         files = self._fetch_verified(ops, f"{run.remote_root}/out", destination, run.scratch,
                                      manifest_line[len(MANIFEST_MARK):].strip())
+        from astrid.core.execution.phase_timing import ingest_job_run
+        ingest_job_run(timing, files)
         self._checkpoint_installed(run, files)
         state.note("fetch", "done", files=len(files))
         _stamp(timing, "collection_ended_at")
@@ -1148,6 +1150,9 @@ class RunPodMachine:
                 local = Path(destination) / "logs"
                 verified = self._fetch_verified(ops, f"{run.remote_root}/out/logs", local, run.scratch,
                                                 line[len(LOGS_MANIFEST_MARK):].strip())
+                from astrid.core.execution.phase_timing import ingest_job_run
+                ingest_job_run(getattr(run.lease, "timing", None),
+                               {"logs/" + name: path for name, path in verified.items()})
                 rows = run_logs.read_index(Path(destination))
                 for row in rows:
                     if row.get("role") == "run" and row.get("file") in verified:

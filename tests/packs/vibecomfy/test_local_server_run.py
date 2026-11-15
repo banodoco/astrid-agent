@@ -773,3 +773,51 @@ def test_explicit_trust_preserves_unrelated_target_schema_refusals(comfy, tmp_pa
             canonical.python_path, tmp_path / 'trust-schema-attempt/outputs', task_identity='schema-task',
             attempt_identity='schema-attempt', comfy_url=comfy.url, profile_id='local_server')
     assert not comfy.prompts
+
+
+def test_history_poll_budget_and_prompt_deadline(comfy, tmp_path, monkeypatch):
+    import asyncio
+    import os
+    import socket
+
+    from vibecomfy.runtime import session
+    from vibecomfy.workflow import VibeWorkflow, WorkflowSource
+    from vibecomfy.workflow_bundle import emit_bundle
+
+    clock = SimpleNamespace(now=0.0)
+    sleeps = []
+
+    async def sleep(seconds):
+        sleeps.append(seconds)
+        clock.now += seconds
+
+    # Exercise Astrid's actual configuration boundary and the pinned native
+    # history loop, with HTTP served by this file's loopback Comfy fake.
+    monkeypatch.delenv("VIBECOMFY_HISTORY_POLL_INTERVAL_SEC", raising=False)
+    monkeypatch.setattr(session, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    monkeypatch.setattr(session, "asyncio", SimpleNamespace(**(vars(asyncio) | {"sleep": sleep})))
+    connect = socket.socket.connect
+
+    def loopback_only(sock, address):
+        if isinstance(address, tuple) and address[0] not in {"127.0.0.1", "::1"}:
+            raise OSError("CPU history test allows loopback only")
+        return connect(sock, address)
+
+    monkeypatch.setattr(socket.socket, "connect", loopback_only)
+    monkeypatch.setattr(local_server_engine, "_LOCAL_PROMPT_TIMEOUT_SEC", 0.45)
+    authored = VibeWorkflow("history-budget", WorkflowSource("history-budget"))
+    seed = authored.add_node("SeedImage", _id="1", uid="seed", seed=42, asset="installed.safetensors")
+    seed.native_output_names, seed.native_output_types, seed.native_output_slots = ["IMAGE"], ["IMAGE"], [0]
+    sink = authored.add_node("SaveImage", _id="2", uid="sink", filename_prefix="budget")
+    sink.native_input_names, sink.native_input_types = ["images"], ["IMAGE"]
+    authored.connect("1.0", "2.images")
+    canonical = emit_bundle(authored, tmp_path / "authored/workflow.py", {"operation": "authored"})
+    comfy.pending = True
+    with pytest.raises(Exception, match="ours-1.*did not complete"):
+        production_engine.run_workflow_result_path(
+            canonical.python_path, tmp_path / "attempt" / "outputs", task_identity="task-1",
+            comfy_url=comfy.url, profile_id="local_server")
+    assert sleeps == pytest.approx([0.2, 0.2, 0.05]), sleeps
+    assert clock.now == 0.45
+    assert "VIBECOMFY_HISTORY_POLL_INTERVAL_SEC" not in os.environ
+    assert ("POST", "/queue", {"delete": ["ours-1"]}) in comfy.calls
