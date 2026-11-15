@@ -7569,6 +7569,8 @@ class GenericPackHost:
             phase_timing.attach(terminal.get("machine"), timing)
         terminal["machine"] = {**terminal.get("machine", {}), "manifest_sha256": fetched.get("manifest_sha256"),
                                "files": sorted(fetched.get("files", {})), "process_id": fetched.get("process_id")}
+        if fetched.get("logs_unavailable"):
+            terminal["machine"]["logs_unavailable"] = fetched["logs_unavailable"]
         return SimpleNamespace(payload={}, output_root=output_root, process_id=fetched.get("process_id"),
                                returncode=fetched.get("returncode"))
 
