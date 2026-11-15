@@ -138,8 +138,20 @@ class ComfyTargetClient:
         return value
 
     def witness_prompt(self, prompt_id: str) -> None:
-        """Import acceptance witnessed in this attempt's private journal only."""
-        self._witnessed_prompts.add(self._prompt_id(prompt_id))
+        """Record this attempt's acceptance response or private-journal witness.
+
+        An HTTP acknowledgement alone does not prove the journal was written.
+        Artifact custody must also check that durable acceptance record.
+        """
+        prompt_id = self._prompt_id(prompt_id)
+        with self._prompt_lock:
+            self._witnessed_prompts.add(prompt_id)
+
+    def owns_prompt(self, prompt_id: str) -> bool:
+        """Check this attempt's prompt witness without sharing its set."""
+        prompt_id = self._prompt_id(prompt_id)
+        with self._prompt_lock:
+            return prompt_id in self._witnessed_prompts
 
     @staticmethod
     def _read_bounded(response, limit: int, deadline: float) -> bytes:
@@ -307,7 +319,7 @@ class ComfyTargetClient:
 
     def cancel_prompt(self, prompt_id: str) -> None:
         prompt_id = self._prompt_id(prompt_id)
-        if prompt_id not in self._witnessed_prompts:
+        if not self.owns_prompt(prompt_id):
             raise ValueError("Comfy cancellation requires witnessed prompt acceptance")
         self.request_json("/queue", {"delete": [prompt_id]})
         queue = self.request_json("/queue")

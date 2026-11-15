@@ -36,6 +36,8 @@ class TargetRuntimeClient:
         return await asyncio.to_thread(self.client.submit_prompt, {"prompt": prompt})
 
     async def history(self, prompt_id: str) -> Any:
+        if not self.client.owns_prompt(prompt_id):
+            raise ValueError("runtime history requires this attempt's witnessed prompt")
         return await asyncio.to_thread(self.client.history, prompt_id)
 
 
@@ -59,8 +61,12 @@ class AttachedArtifacts:
         root = Path(local_root)
         attempt = json.loads((root.parent / "attempt.json").read_text(encoding="utf-8"))
         prompt_id = attempt.get("prompt_id")
+        acceptance = attempt.get("queue_acceptance")
         if (not isinstance(prompt_id, str)
-                or prompt_id not in self.client._witnessed_prompts):
+                or not isinstance(acceptance, dict)
+                or acceptance.get("status") != "accepted"
+                or acceptance.get("prompt_id") != prompt_id
+                or not self.client.owns_prompt(prompt_id)):
             raise ValueError("artifact custody requires this attempt's witnessed prompt")
         artifacts = attempt.get("artifacts")
         if not isinstance(artifacts, list) or not artifacts:
