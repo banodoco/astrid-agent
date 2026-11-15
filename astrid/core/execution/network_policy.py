@@ -288,6 +288,16 @@ def _command_label(command: Any) -> str:
     return str(command)
 
 
+def _program_name(token: str) -> str:
+    """Name of the program a command starts, as the allow rules spell it.
+
+    On Windows the resolved program is ``ffprobe.exe`` or ``C:\\...\\git.exe``; the rules
+    name ``ffprobe`` and ``git``.
+    """
+    name = str(token).replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return name[:-4] if name.endswith(".exe") else name
+
+
 def _local_media_tool(command: Any) -> bool:
     """Allow only offline ffmpeg/ffprobe descendants with local arguments.
 
@@ -306,7 +316,7 @@ def _local_media_tool(command: Any) -> bool:
         return False
     if not tokens:
         return False
-    executable = Path(tokens[0]).name.lower()
+    executable = _program_name(tokens[0])
     if executable not in {"ffmpeg", "ffprobe"}:
         return False
     network_prefixes = ("http://", "https://", "rtmp://", "rtsp://", "tcp:", "udp:")
@@ -328,7 +338,7 @@ def _local_identity_tool(command: Any) -> bool:
     if not isinstance(command, (list, tuple)):
         return False
     tokens = [str(value) for value in command]
-    if not tokens or Path(tokens[0]).name.lower() != "git":
+    if not tokens or _program_name(tokens[0]) != "git":
         return False
     # ``git -c key=value`` is a configuration override; ``ls-files -c`` is a
     # harmless cache selector and is one of the attestation probes below.
