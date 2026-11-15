@@ -22,11 +22,33 @@ from runtime_protocol import platform
 from astrid.core.foundation.hash import canonical_json_digest
 
 BOOT_MANIFEST_FILENAME = "boot-manifest.json"
+_PRE_RESTAMP_SUFFIX = ".pre-restamp"
 BOOT_MANIFEST_SCHEMA_VERSION = 1
 _DEFAULT_PROFILE_ORDER: tuple[str, ...] = ()
-# Retired by 9f00e2ae2 (pip_embedded) and a26030e78 (checkout_server).
-# Older releases stamped these derived rows into persistent runtime support.
-_REMOVED_BOOT_PROFILES = frozenset({"pip_embedded", "checkout_server"})
+# Exact stamp written by R9 709492fa5f4850b9caf0cea4a4c543023b73fa0a,
+# R10 6e9c4f9c8f4b53aa7c16d4e3e098ab75218bdc45,
+# R11 a105de3a4852cb61b9647dfe2c920118bd29f272, and
+# R12 0e1543e0da2215db9cb3320cfd1083174c3c62a9 (byte-identical).
+# Captures: tests/fixtures/boot_manifest/r9-stamp.json and sibling provenance.
+# Only this complete historical identity may migrate to the empty R13 registry;
+# recognizing a retired profile name alone does not authenticate its digests.
+_LEGACY_BOOT_MANIFEST = {
+    "conformance_digest": "6bb502e7e495fa1041cd2726561588326aaf1d97c34ba0c7d779bbd7a57460f3",
+    "fixture_digests": {
+        "attempt-output-fixture.json": "951b9b4ce85dfc3ab999af705c4a3732acaa1d45468fa0ce0eaaf9edc941b31e",
+        "fake-runner-transcript.json": "379c7821ecf6213ced2ede36c2fb991d82c56167616d7e21aa23d7e3890e43e0",
+        "host-instance-paired-fixture.json": "4171922e65ea94a2c1af9f9abb7c8d5559125e354ca6ebb7f5efe1266ca22b4f",
+        "portable-capability-fixture.json": "9284b056aa8a38f884599a7634be0fe0cb7fbfbd117823960e563375b3aa43b7",
+        "task-resource-fixture.json": "ddc2d00bb893ea214d000bf618f67785c89c81d68d892864d9676d3c8b8d5164",
+    },
+    "profile_digests": {
+        "checkout_server": "3bc043a13d64fb7ae3efb683edadd4a95754aef2035e4fc626914ab37637dd18",
+        "pip_embedded": "dce36735a51bf3a26a475666dcd54ed889414907d0bed6f2e472e711eca663f9",
+    },
+    "profile_order": ["pip_embedded", "checkout_server"],
+    "registry_digest": "09cde0e29e4ea063f248153628182be23290d835acf4d2d8dfa701cb8be19dc3",
+    "schema_version": 1,
+}
 _REGISTRY_ENTRY_FIELDS = ("definition_version", "binding", "output_policy", "probe")
 _SECRET_WORDS = ("secret", "token", "password", "credential", "api_key", "private_key")
 
@@ -374,6 +396,61 @@ def _load_stored(path: Path) -> dict[str, Any]:
     return raw
 
 
+def _preserve_pre_restamp(path: Path, stored: Mapping[str, Any]) -> None:
+    """Publish a durable byte copy before restamping, without clobbering it."""
+    backup = path.with_name(path.name + _PRE_RESTAMP_SUFFIX)
+    _reject_lexical_symlinks(backup, label="pre-restamp backup")
+    handle = tempfile.NamedTemporaryFile("wb", dir=path.parent, prefix=".boot-manifest-", suffix=".tmp", delete=False)
+    try:
+        handle.write(path.read_bytes())
+        handle.flush()
+        os.fsync(handle.fileno())
+        handle.close()
+        try:
+            # Linking a complete sibling publishes atomically and never replaces
+            # an earlier backup, including on a replay after an interrupted update.
+            os.link(handle.name, backup)
+        except FileExistsError:
+            if not backup.is_file() or _load_stored(backup) != stored:
+                raise BootManifestCorrupt(f"pre-restamp backup disagrees with legacy stamp: {backup}") from None
+    finally:
+        handle.close()
+        Path(handle.name).unlink(missing_ok=True)
+
+
+def restore_pre_restamp_boot_manifest(
+    support_root: str | Path, *, remove_if_missing: bool = True,
+) -> None:
+    """Restore retained provenance after stopping the candidate, before rollback.
+
+    Keep the backup for interrupted rollback replay. Without one, an older
+    release can stamp its own fresh identity, even for a same-schema update.
+    A full workspace restore may already have restored the old stamp.
+    """
+    root = Path(support_root)
+    if not root.exists():
+        return
+    path = validate_manifest_path(root / "astrid-host" / BOOT_MANIFEST_FILENAME,
+                                  root, require_existing=False)
+    backup = path.with_name(path.name + _PRE_RESTAMP_SUFFIX)
+    _reject_lexical_symlinks(backup, label="pre-restamp backup")
+    if not backup.exists():
+        if remove_if_missing:
+            path.unlink(missing_ok=True)
+        return
+    _load_stored(backup)
+    handle = tempfile.NamedTemporaryFile("wb", dir=path.parent, prefix=".boot-manifest-", suffix=".tmp", delete=False)
+    try:
+        handle.write(backup.read_bytes())
+        handle.flush()
+        os.fsync(handle.fileno())
+        handle.close()
+        platform.replace_path(handle.name, path)
+    finally:
+        handle.close()
+        Path(handle.name).unlink(missing_ok=True)
+
+
 def stamp_boot_manifest(
     manifest_path: str | Path,
     *,
@@ -381,7 +458,13 @@ def stamp_boot_manifest(
     registry: Mapping[str, Any] | None = None,
     fixtures: Iterable[Any] | None = None,
     profile_order: Iterable[str] = _DEFAULT_PROFILE_ORDER,
+    write: bool = True,
 ) -> dict[str, Any]:
+    """Validate live identity; publish only when the caller admits a new host.
+
+    ``write=False`` previews the same drift checks and live identity without
+    creating a stamp, backup or directory, or changing resident provenance.
+    """
     raw_path = Path(manifest_path).expanduser()
     if raw_path.is_symlink() or (raw_path.exists() and not raw_path.is_file()):
         raise BootManifestCorrupt(
@@ -408,17 +491,19 @@ def stamp_boot_manifest(
         stored = _load_stored(path)
         if stored == current:
             return current
-        stored_order = set(stored["profile_order"])
-        removed_profiles = sorted(stored_order & _REMOVED_BOOT_PROFILES)
         stale_legacy = (
-            stored["profile_order"] != current["profile_order"]
-            and bool(removed_profiles)
-            and stored_order <= _REMOVED_BOOT_PROFILES | set(current["profile_order"])
+            stored == _LEGACY_BOOT_MANIFEST
+            and current["profile_order"] == []
         )
         if not stale_legacy:
             drift = sorted(set(stored) | set(current))
             details = "; ".join(f"key={key} stamped={stored.get(key)!r} live={current.get(key)!r}" for key in drift if stored.get(key) != current.get(key))
             raise BootManifestDrift(f"boot manifest disagrees with live registry/fixtures at {path}: {details}")
+        removed_profiles = sorted(stored["profile_order"])
+        if write:
+            _preserve_pre_restamp(path, stored)
+    if not write:
+        return current
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, prefix=".boot-manifest-", suffix=".tmp", delete=False)
     try:
@@ -474,5 +559,6 @@ __all__ = [
     "manifest_hash",
     "normalize_sha256_digest",
     "registry_scope",
+    "restore_pre_restamp_boot_manifest",
     "stamp_boot_manifest",
 ]

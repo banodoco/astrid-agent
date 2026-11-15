@@ -715,11 +715,13 @@ def compose_profile_handoff(
     support_root: str | "Path",
     registry: "Mapping[str, Any] | None" = None,
     fixtures: "Iterable[Any] | None" = None,
+    write: bool = True,
 ) -> dict[str, Any]:
     """Verify-or-stamp the B-6 handoff at the application composition root.
 
     This is intentionally separate from transport dispatch.  The generic host
     consumes the resulting stamp, but never discovers profiles or emits it.
+    Use ``write=False`` while a resident host may still be reused or refused.
     """
 
     from astrid.core._shared.boot_manifest import (
@@ -742,6 +744,7 @@ def compose_profile_handoff(
         support_root=support_root,
         registry=active_registry,
         fixtures=active_fixtures,
+        write=write,
     )
     return {
         "path": str(validated_manifest_path),

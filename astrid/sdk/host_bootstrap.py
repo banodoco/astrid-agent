@@ -2245,7 +2245,7 @@ def ensure_pack_host(
         from astrid.core.gateway.dispatch import compose_profile_handoff
         try:
             boot_handoff = compose_profile_handoff(
-                boot_manifest_path, support_root=runtime_support
+                boot_manifest_path, support_root=runtime_support, write=False
             )
         except Exception as exc:
             raise PackHostBootstrapError(
@@ -2321,6 +2321,18 @@ def ensure_pack_host(
                     _retire_host_locked(current, runtime_support)
                 else:
                     _retire_host_locked(current, runtime_support, attach_reason=attach_reason)
+        # Only a new host may publish new provenance. Busy, supervised or
+        # unretirable residents must keep the bytes they started against.
+        try:
+            boot_handoff = compose_profile_handoff(
+                boot_manifest_path, support_root=runtime_support
+            )
+        except Exception as exc:
+            raise PackHostBootstrapError(
+                f"generic Astrid pack boot manifest could not be composed; {reconfigure_action}"
+            ) from exc
+        boot_manifest_hash = str(boot_handoff["sha256"])
+        expected["boot_manifest_hash"] = boot_manifest_hash
         ready_path.unlink(missing_ok=True)
         log_path = runtime_support / "generic-host.log"
         try:

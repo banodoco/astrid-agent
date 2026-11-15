@@ -321,6 +321,15 @@ def rollback_transaction(root: Path, data: Path, backend, transaction: dict, *,
         save("recovering")
         if backup is not None and restore_workspace and kind == "migration":
             backend.restore(old, data, realm, backup)
+        if candidate is not None and old.release < 13 <= candidate.release:
+            from astrid.core._shared.boot_manifest import restore_pre_restamp_boot_manifest
+
+            # R13 retires the R9--R12 boot rows even without a Runtime schema
+            # change (and therefore without an installer workspace backup).
+            # The host support root is the runtime directory under the data root.
+            restore_pre_restamp_boot_manifest(
+                Path(data) / "runtime", remove_if_missing=not (backup is not None and restore_workspace and kind == "migration"),
+            )
         switch_old(old, candidate)
         save("rollback_selected")
         activate_old(old, data, realm)
