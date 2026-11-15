@@ -54,6 +54,7 @@ from .remote_placement import (
     RemotePlacement,
     RemotePlacementError,
     RemoteRun,
+    job_https_scope,
     manifest_command,
     sha256_file,
 )
@@ -544,6 +545,13 @@ class MachineRun:
     cancelled: Callable[[], bool] | None = None
 
 
+def _fence_observer(owner: Any, invocation: Any, pod_id: str, ops: Any, child: Any) -> None:
+    owner.fence_unreaped_observer(invocation, pod_id, child)
+    fenced = getattr(ops, "observer_fenced", None)
+    if fenced is not None:
+        fenced()
+
+
 @contextmanager
 def _cancellable(
     lease: MachineLease, cancelled: Callable[[], bool] | None,
@@ -671,6 +679,12 @@ class RunPodMachine:
     # -- claim ---------------------------------------------------------------
 
     def claim(self, job: Any, *, cancelled: Callable[[], bool] | None = None) -> MachineLease:
+        """Attach one job with one transport lifetime, including watchdog writes."""
+        with job_https_scope() as https_slot:
+            return self._claim(job, cancelled=cancelled, https_slot=https_slot)
+
+    def _claim(self, job: Any, *, cancelled: Callable[[], bool] | None,
+               https_slot: list[Any]) -> MachineLease:
         """Attach ``job`` to a claimed pod; retain only verified preparation."""
         from astrid.core.generation.interfaces import RunPodPreparationRequest
         from astrid.packs.vibecomfy.shared.bundle_inputs import staged_workflow_path
@@ -772,6 +786,9 @@ class RunPodMachine:
                     prepared.lease.claim["lease"]["paid_expires_at"] - owner.clock()))
             except BaseException as exc:
                 if acquired:
+                    child = getattr(https_slot[0], "unreaped_child", None)
+                    if child is not None:
+                        _fence_observer(owner, acquired[0], acquired[0].claim["pod_id"], https_slot[0], child)
                     context = {"acquired": True, "preparation_job": False}
                     setattr(exc, "claim_context", context)
                     try:
@@ -1122,7 +1139,7 @@ class RunPodMachine:
                     # If fencing itself fails, release still sees this exact
                     # handle through the lease's existing observer cleanup.
                     run.lease.claim.ops = ops
-                    owner.fence_unreaped_observer(run.lease.lease, run.lease.claim.pod_id, unreaped)
+                    _fence_observer(owner, run.lease.lease, run.lease.claim.pod_id, run.lease.claim.ops, unreaped)
                     run.lease.claim.ops = original_ops
             finally:
                 if observer_key is not None:
@@ -1293,7 +1310,7 @@ class RunPodMachine:
                 unreaped = getattr(run.lease.claim.ops, "unreaped_child", None)
                 if unreaped is not None:
                     from .worker_preparation import AcquisitionUnresolvedError
-                    owner.fence_unreaped_observer(run.lease.lease, run.lease.claim.pod_id, unreaped)
+                    _fence_observer(owner, run.lease.lease, run.lease.claim.pod_id, run.lease.claim.ops, unreaped)
                     # The owner now holds the handle; failure release must not
                     # discover and transfer it a second time.
                     run.lease.claim.ops = original_ops
@@ -1348,12 +1365,22 @@ class RunPodMachine:
                 _logger.debug("Could not begin failure observation; continuing release", exc_info=True)
                 pass  # _release_impl still fences unsafe custody and reconciles exact release.
         try:
-            self._release_impl(lease, warm, reason=reason, failure=failure, stage=stage,
-                               abort_event=abort_event, observer_key=observer_key)
+            with job_https_scope(lease.claim.ops):
+                self._release_impl(lease, warm, reason=reason, failure=failure, stage=stage,
+                                   abort_event=abort_event, observer_key=observer_key)
         finally:
             _stamp(getattr(lease, "timing", None), "released_at")
             if observer_key is not None:
                 owner.end_failure_observation(observer_key)
+            close = getattr(lease.claim.ops, "close", None)
+            if close is not None:
+                try:
+                    close()
+                except RemotePlacementError:
+                    child = getattr(lease.claim.ops, "unreaped_child", None)
+                    if child is not None:
+                        _fence_observer(owner, lease.lease, lease.claim.pod_id, lease.claim.ops, child)
+                    raise
 
     def _release_impl(self, lease: MachineLease, warm: bool, *, reason: str,
                       failure: BaseException | None, stage: str,
@@ -1518,7 +1545,7 @@ class RunPodMachine:
             self._save_installation(owner, lease, preparation, {"state": "stale_after_failure"})
         unreaped = getattr(lease.claim.ops, "unreaped_child", None)
         if unreaped is not None:
-            owner.fence_unreaped_observer(lease.lease, lease.claim.pod_id, unreaped)
+            _fence_observer(owner, lease.lease, lease.claim.pod_id, lease.claim.ops, unreaped)
             lease.claim.ops = original_ops
             raise AcquisitionUnresolvedError("bounded pod observer remains alive; exact custody is pending")
         from astrid.core.execution.machine_run import MachineRunCancelled
