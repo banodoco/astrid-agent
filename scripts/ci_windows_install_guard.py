@@ -40,6 +40,14 @@ def prepare():
     # top-level directory. The bootstrap builds these exact commit archives.
     for name in ("agent", "runtime"):
         manifest[name] = {"sha": sources[name]["sha"]}
+    # The App's published manifest carries the last release's engine pins. The
+    # installer refuses a manifest whose pins differ from the candidate Agent's
+    # own, so take them from the checkout under test.
+    pins = json.loads((root / "astrid" / "packs" / "runpod" / "pins.json").read_text(encoding="utf-8"))["sources"]
+    manifest["lifecycle"] = {"repo": pins["lifecycle"]["repository"],
+                             "sha": pins["lifecycle"]["revision"],
+                             "version": pins["lifecycle"]["version"]}
+    manifest["vibecomfy"] = {"sha": pins["vibecomfy"]["revision"]}
     windows.save("install-manifest.json", manifest)
     windows.save("sources.json", sources)
 

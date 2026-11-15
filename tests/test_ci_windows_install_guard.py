@@ -93,6 +93,13 @@ def test_prepare_selects_checkout_archives_without_local_git_sources(tmp_path, m
         "runtime": {"sha": "0" * 40, "schema_digest": "old"},
     }))
     (tmp_path / "runtime.lock.json").write_text(json.dumps({"source_commit": "b" * 40}))
+    pins = tmp_path / "astrid" / "packs" / "runpod"
+    pins.mkdir(parents=True)
+    (pins / "pins.json").write_text(json.dumps({"sources": {
+        "lifecycle": {"repository": "https://example.invalid/lifecycle.git",
+                      "revision": "c" * 40, "version": "1.2.3"},
+        "vibecomfy": {"repository": "https://example.invalid/vibecomfy.git", "revision": "d" * 40},
+    }}))
     monkeypatch.setattr(guard.windows, "ROOT", tmp_path)
     monkeypatch.setattr(guard.windows, "EVIDENCE", tmp_path / "evidence")
     monkeypatch.setattr(guard.windows, "source", lambda path: {
@@ -105,3 +112,7 @@ def test_prepare_selects_checkout_archives_without_local_git_sources(tmp_path, m
     assert manifest["runtime"] == {"sha": "b" * 40}
     assert manifest["tools"] == {"unchanged": True}
     assert manifest["release"] == 13
+    # The candidate's own engine pins replace the published manifest's.
+    assert manifest["lifecycle"] == {"repo": "https://example.invalid/lifecycle.git",
+                                     "sha": "c" * 40, "version": "1.2.3"}
+    assert manifest["vibecomfy"] == {"sha": "d" * 40}
