@@ -83,6 +83,10 @@ def _present(models_root: Path, row: Any) -> bool:
     path = models_root / _key(row)
     if not path.is_file():
         return False
+    if row.get("url") and row.get("sha256") is None:
+        # A source-backed declaration without an identity must pass through
+        # fetch, which records the bytes, even if a filename already exists.
+        return False
     return row.get("size") is None or path.stat().st_size == row["size"]
 
 
@@ -156,6 +160,7 @@ class ComfyUIEngine:
             for asset in metadata.get("model_assets", []):
                 row = {"name": asset["name"], "subdir": asset.get("subdir") or "", "url": asset.get("url"),
                        "sha256": asset.get("sha256"), "size": asset.get("size_bytes")}
+                row.update({key: asset[key] for key in ("hf_revision", "revision") if asset.get(key) is not None})
                 models.setdefault((row["subdir"], row["name"]), row)
             requirements = metadata.get("requirements") or {}
             base = base or (requirements.get("runtime") or {}).get("comfy_commit")

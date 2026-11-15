@@ -28,7 +28,7 @@ def test_catalog_entries_with_required_inputs_dry_run_to_admission(cell, tmp_pat
 
 
 @pytest.mark.parametrize("error", [
-    "managed model has no declared digest: fixture.safetensors",
+    "managed invalid model declaration: fixture.safetensors",
     "ready template render failed",
 ])
 def test_catalog_dry_run_refuses_invalid_ready_template_declarations(tmp_path, monkeypatch, error):

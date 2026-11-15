@@ -50,7 +50,7 @@ def test_preparation_engine_copies_table_entry_and_refuses_missing(monkeypatch):
 
 
 @pytest.mark.parametrize('missing_field', ['sha256', 'size'])
-def test_judge_declarations_reports_every_unpinned_ready_model(tmp_path, monkeypatch, missing_field):
+def test_judge_declarations_accepts_ready_models_resolved_during_download(tmp_path, monkeypatch, missing_field):
     import importlib.util
     from astrid.core.generation.managed_preparation import judge_declarations
     from vibecomfy.registry.ready import workflow_from_ready
@@ -82,11 +82,22 @@ def test_judge_declarations_reports_every_unpinned_ready_model(tmp_path, monkeyp
     # of corrupting canonical workflow metadata before it is serialized.
     monkeypatch.setattr(engine, 'workflow_requirements', incomplete_requirements)
 
-    with pytest.raises(IntegrityError, match='no declared digest') as caught:
-        judge_declarations(workflow, tmp_path / 'scratch', engine)
-
-    assert str(caught.value).endswith(', '.join(model_names))
+    manifest, source_format = judge_declarations(workflow, tmp_path / 'scratch', engine)
+    assert [row['name'] for row in manifest['models']] == model_names
+    assert all(row[missing_field] is None for row in manifest['models'])
+    assert source_format == 'ready_template'
     assert (tmp_path / 'scratch/canonical/workflow.py').is_file()
+
+
+@pytest.mark.parametrize('field,value', [('sha256', 'invalid'), ('sha256', 'a' * 63),
+    ('sha256', 42), ('size', -1), ('size', True), ('size', '10')])
+def test_managed_model_declarations_still_refuse_malformed_integrity(field, value):
+    from astrid.core.generation.managed_preparation import _validate_model_declaration
+
+    row = {'name': 'model.bin', 'subdir': 'checkpoints', 'url': 'https://example.test/model.bin',
+           'sha256': None, 'size': None}
+    with pytest.raises(IntegrityError, match='invalid model declaration'):
+        _validate_model_declaration({**row, field: value})
 
 
 @pytest.mark.parametrize('change', ['task', 'mode', 'verified', 'manifest-extra', 'partial-inputs', 'relative-models', 'relative-output', 'source-drift'])
@@ -1141,6 +1152,104 @@ def test_fetch_preflight_accepts_real_vibecomfy_receipt(fetch_volume, generation
     assert value == {'trust_unchanged': True, 'hashed': 0, 'skipped': 1,
                      'files': [{'path': 'checkpoints/have.bin', 'outcome': 'trusted_vibecomfy_receipt'}]}
     assert len(list((c.models / '.astrid/model-verification').glob('*.json'))) == 1
+
+
+@pytest.mark.parametrize('published_digest,mismatch', [(True, False), (True, True), (False, False)],
+                         ids=['published-sha', 'sha-mismatch', 'hash-on-download'])
+def test_managed_preparation_looks_up_verifies_and_records(
+    fetch_volume, monkeypatch, published_digest, mismatch,
+):
+    """Actual planning -> capacity check -> native fetch -> managed verification."""
+    import argparse
+    from contextlib import contextmanager
+
+    import httpx
+    from vibecomfy import fetch
+    from vibecomfy.commands import fetch as fetch_command
+
+    c = fetch_volume
+    revision = 'c' * 40
+    url = 'https://huggingface.co/acme/repo/resolve/main/need.bin'
+    expected = hashlib.sha256(b'need-more').hexdigest()
+    c.rows[1].update(url=url, sha256=None, size=None)
+    requests, budgeted = [], []
+
+    @contextmanager
+    def stream(method, requested_url, **kwargs):
+        requests.append((method, requested_url, kwargs))
+        headers = {'x-linked-size': '9', 'x-repo-commit': revision}
+        if published_digest:
+            headers['x-linked-etag'] = expected
+        yield httpx.Response(200, headers=headers if method == 'HEAD' else {},
+            content=None if method == 'HEAD' else (b'bad-model' if mismatch else b'need-more'),
+            request=httpx.Request(method, requested_url))
+
+    monkeypatch.setattr(fetch.httpx, 'stream', stream)
+    monkeypatch.setenv('VIBECOMFY_MODELS_ROOT', str(c.models))
+    assets = [{'name': 'have.bin', 'subdir': 'checkpoints', 'url': None,
+               'sha256': hashlib.sha256(b'have').hexdigest(), 'size_bytes': 4},
+              {'name': 'need.bin', 'subdir': 'checkpoints', 'url': url,
+               'sha256': None, 'size_bytes': None}]
+    workflow = SimpleNamespace(metadata={'model_assets': assets})
+    monkeypatch.setattr(fetch_command, 'get_schema_provider', lambda *_: None)
+    monkeypatch.setattr(fetch_command, 'load_workflow_reference', lambda *a, **kw: workflow)
+    original_preflight = c.prep._preflight_model_storage
+
+    def preflight(manifest):
+        budgeted.append(manifest['models'][1]['size'])
+        assert [method for method, *_ in requests] == ['HEAD']
+        return original_preflight(manifest)
+
+    c.prep._preflight_model_storage = preflight
+
+    def native(_program, *argv, step):
+        assert step == 'fetch'
+        c.native.append(step)
+        assert '--model-plan' in argv
+        result = fetch_command._cmd_fetch(argparse.Namespace(workflow=argv[1], force=False,
+            dry_run=False, model_plan=argv[argv.index('--model-plan') + 1]))
+        if result:
+            raise IntegrityError('managed fetch failed')
+
+    c.prep._native = native
+    stop_after_alignment = c.prep._verify_alignment
+
+    def verify_then_stop(*args):
+        c.prep._verify_models(args[3])
+        return stop_after_alignment(*args)
+
+    c.prep._verify_alignment = verify_then_stop
+    if mismatch:
+        with pytest.raises(IntegrityError, match='managed fetch failed'):
+            c.fetch()
+        assert fetch.recorded_model_identity(assets[1], root=c.models) is None
+        assert fetch.read_resolution_receipt(assets[1], root=c.models) is None
+        assert c.rows[1]['sha256'] == expected
+    else:
+        c.fetch()
+        assert c.rows[1]['sha256'] == expected
+        assert c.rows[1]['size'] == 9
+        assert c.rows[1]['resolved_revision'] == revision
+        record = fetch.read_resolution_receipt(assets[1], root=c.models)
+        assert record['observed_sha256'] == expected
+        assert record['size_bytes'] == 9
+        assert record['resolved_revision'] == revision
+    assert budgeted == [9]
+    assert c.native == ['fetch']
+    assert [method for method, *_ in requests] == ['HEAD', 'GET']
+    assert requests[1][1] == url.replace('/main/', f'/{revision}/')
+
+
+def test_preparation_report_accepts_resolved_model_identity(preparation, monkeypatch):
+    body, source = preparation
+    body['manifest']['models'] = [{'name': 'model.bin', 'subdir': 'checkpoints',
+        'url': 'https://huggingface.co/acme/repo/resolve/main/model.bin', 'sha256': 'a' * 64,
+        'size': 9, 'hf_revision': 'main', 'resolved_revision': 'c' * 40}]
+    body['manifest_sha256'] = digest(body['manifest'])
+    monkeypatch.setenv(PREPARATION_ENV, json.dumps(body))
+    result = read_preparation(task='task', attempt='attempt', endpoint=body['endpoint'],
+                            execution_identity='execution', inputs={'workflow': source})
+    assert result['manifest']['models'] == body['manifest']['models']
 
 
 @pytest.fixture

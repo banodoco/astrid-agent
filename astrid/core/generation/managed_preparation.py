@@ -251,14 +251,19 @@ def read_preparation(*, task: str, attempt: str | None, endpoint: str,
             or body["mode"] == "check" and alignment["missing"]):
         raise ValueError("managed engine preparation has invalid requirements or alignment")
     for row in manifest["models"]:
-        if (not isinstance(row, dict) or set(row) != {"name", "subdir", "url", "sha256", "size"}
+        if (not isinstance(row, dict)
+                or not {"name", "subdir", "url", "sha256", "size"} <= set(row)
+                or set(row) - {"name", "subdir", "url", "sha256", "size", "hf_revision", "revision", "resolved_revision"}
                 or not isinstance(row["name"], str) or not row["name"] or Path(row["name"]).name != row["name"]
                 or not isinstance(row["subdir"], str) or Path(row["subdir"]).is_absolute()
                 or any(part in {".", ".."} for part in row["subdir"].split("/"))
                 or row["url"] is not None and not isinstance(row["url"], str)
                 or row["sha256"] is not None and (not isinstance(row["sha256"], str)
                     or re.fullmatch(r"(?:sha256:)?[0-9a-f]{64}", row["sha256"]) is None)
-                or row["size"] is not None and (type(row["size"]) is not int or row["size"] < 0)):
+                or row["size"] is not None and (type(row["size"]) is not int or row["size"] < 0)
+                or any(not isinstance(row[key], str) or not row[key]
+                       for key in ("hf_revision", "revision", "resolved_revision") if key in row)
+                or "resolved_revision" in row and re.fullmatch(r"[0-9a-f]{40}", row["resolved_revision"]) is None):
             raise ValueError("managed engine preparation has an invalid model row")
     for node in manifest["extra"]["nodes"]:
         if (not isinstance(node, dict) or set(node) != {"repo", "commit"}
@@ -269,6 +274,17 @@ def read_preparation(*, task: str, attempt: str | None, endpoint: str,
             for name, expected in body["inputs"].items()):
         raise ValueError("managed engine preparation input bytes differ from this attempt")
     return body
+
+
+def _validate_model_declaration(model):
+    """Missing download facts are resolvable; malformed authored facts are not."""
+    sha, size = model.get("sha256"), model.get("size")
+    if (sha is not None and (not isinstance(sha, str)
+            or re.fullmatch(r"(?:sha256:)?[0-9a-f]{64}", sha) is None)
+            or size is not None and (type(size) is not int or size < 0)):
+        raise IntegrityError("managed invalid model declaration: " + str(model.get("name", "<unnamed>")))
+    if (sha is None or size is None) and not model.get("url"):
+        raise IntegrityError("managed model has no downloadable source: " + str(model.get("name", "<unnamed>")))
 
 
 def judge_declarations(workflow, scratch, engine):
@@ -298,10 +314,8 @@ def judge_declarations(workflow, scratch, engine):
     manifest = engine.workflow_requirements([workflow])
     if engine.workflow_requirements([selected.workflow]) != manifest:
         raise IntegrityError("managed CLI workflow requirements differ from the admitted workflow")
-    missing = [model["name"] for model in manifest["models"]
-               if not model.get("sha256") or model.get("size") is None]
-    if missing:
-        raise IntegrityError("managed model has no declared digest: " + ", ".join(missing))
+    for model in manifest["models"]:
+        _validate_model_declaration(model)
     return manifest, source_format
 
 
@@ -487,6 +501,7 @@ class ManagedEnginePreparation:
                                    for path in native_members if path.is_file()}
         staged_digests.update(self._canonical_members)
         manifest = {**manifest, "engine": DEFAULT_ENGINE, "models_root": configured_models_root(root=self.root)}
+        self._plan_model_downloads(manifest)
         self._has_declared_nodes = bool((manifest.get("extra") or {}).get("nodes"))
         commands_type = type(engine).requirements.__globals__["VibeComfyCommands"]
         self.scratch.mkdir(parents=True, exist_ok=True)
@@ -618,6 +633,13 @@ class ManagedEnginePreparation:
         from .engine_contracts import IntegrityError
         for model in manifest["models"]:
             self.check()
+            if model.get("sha256") is None or model.get("size") is None:
+                from vibecomfy.fetch import recorded_model_identity
+
+                entry = self._model_download_entry(model)
+                facts = recorded_model_identity(entry, root=Path(manifest["models_root"]))
+                if facts is not None:
+                    self._apply_model_identity(model, facts)
             path = str(Path(manifest["models_root"]) / model["subdir"] / model["name"])
             expected = str(model.get("sha256") or "").removeprefix("sha256:")
             fact = self._model_fact(path, manifest["models_root"], expected)
@@ -625,6 +647,40 @@ class ManagedEnginePreparation:
                     or fact.bytes != model["size"] or not re.fullmatch(r"[0-9a-f]{64}", expected)
                     or fact.sha256 != expected):
                 raise IntegrityError("managed model bytes differ from the declared digest: " + model["name"])
+
+    @staticmethod
+    def _model_download_entry(model):
+        return {"name": model["name"], "subdir": model["subdir"], "url": model.get("url"),
+                "sha256": model.get("sha256"), "size_bytes": model.get("size"),
+                **{key: model[key] for key in ("hf_revision", "revision", "resolved_revision") if key in model}}
+
+    @staticmethod
+    def _apply_model_identity(model, entry):
+        for source, target in (("sha256", "sha256"), ("size_bytes", "size"),
+                               ("resolved_revision", "resolved_revision")):
+            value = entry.get(source)
+            if value is None:
+                continue
+            previous = model.get(target)
+            if target == "sha256" and isinstance(previous, str):
+                previous = previous.removeprefix("sha256:")
+            if previous is not None and previous != value:
+                raise IntegrityError("managed model identity disagrees with declaration: " + model["name"])
+            model[target] = value
+
+    def _plan_model_downloads(self, manifest):
+        """VibeComfy resolves source identity before the storage preflight."""
+        from vibecomfy.fetch import plan_downloads
+
+        rows = manifest["models"]
+        try:
+            entries = plan_downloads([self._model_download_entry(model) for model in rows],
+                root=Path(manifest["models_root"]), lookup=self.mode == "align")
+        except (ValueError, RuntimeError) as error:
+            raise IntegrityError("managed model download planning failed") from error
+        for model, entry in zip(rows, entries):
+            self._apply_model_identity(model, entry)
+        self._model_download_plan = entries
 
     def _preflight_model_storage(self, manifest):
         """Budget native VibeComfy fetch's full writes; that path ignores `.part`."""
@@ -645,7 +701,8 @@ class ManagedEnginePreparation:
             self.check()
             path = root / model["subdir"] / model["name"]
             fact = files.file_fact(str(path), hash_bytes=False, deadline=self.deadline)
-            present = fact.exists and fact.regular and not fact.symlink and fact.bytes == model["size"]
+            present = (fact.exists and fact.regular and not fact.symlink and fact.bytes == model["size"]
+                       and (model.get("sha256") is not None or not model.get("url")))
             candidates.append((model, path, present))
         if all(present for _, _, present in candidates):
             # align does not fetch when every file has the expected size. Its
@@ -659,6 +716,11 @@ class ManagedEnginePreparation:
                 fact = self._model_fact(str(path), str(root), expected)
                 if fact.sha256 == expected:
                     continue
+            if model.get("size") is None:
+                from types import SimpleNamespace
+                self._keep_step_output("storage", SimpleNamespace(stdout="",
+                    stderr="model download size is unknown; storage preflight cannot budget all downloads\n"))
+                continue
             directory = path.parent.resolve(strict=False)
             demand[directory] = demand.get(directory, 0) + model["size"]
         if demand:
@@ -826,6 +888,10 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
             # This is the host's own canonical renderer output, never admitted
             # Python. Its exact bytes are checked before and after the command.
             argv = [*argv, "--yes"]
+        if argv[0] == "fetch" and getattr(self, "_model_download_plan", None):
+            # The native CLI consumes the same canonical declarations and the
+            # exact metadata used for capacity planning: no second HEAD race.
+            argv = [*argv, "--model-plan", json.dumps(self._model_download_plan)]
         if argv[0] == "doctor":
             return self._doctor(argv)
         if argv[0] == "prepare":
