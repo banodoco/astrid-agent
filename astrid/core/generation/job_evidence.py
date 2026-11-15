@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from datetime import datetime, timezone
@@ -38,6 +39,8 @@ class JobEvidence:
     def __init__(self, out: Path, preparation: Any):
         self.out = Path(out)
         self.started_at = datetime.now(timezone.utc).isoformat()
+        self.preparation_started = time.monotonic()
+        self.preparation_ended: float | None = None
         self.timing = PhaseTiming()
         self.preparation = preparation
         self.path = engine_log_path(str(preparation.root), preparation.recipe.engine)
@@ -53,6 +56,8 @@ class JobEvidence:
         self.timing.stamp("capacity_wait_started_at", first=True)
 
     def start_execution(self) -> None:
+        if self.preparation_ended is None:
+            self.preparation_ended = time.monotonic()
         self.timing.stamp("job_started_at", first=True)
 
     def start_collect(self) -> None:
@@ -90,6 +95,8 @@ class JobEvidence:
     def finish(self) -> None:
         if self.finished:
             return
+        if self.preparation_ended is None:
+            self.preparation_ended = time.monotonic()
         self.start_collect()
         self.finished = True
         after = self._vram("after")
@@ -121,6 +128,9 @@ class JobEvidence:
             "execute": self._block_seconds(block, "execute", "execution"),
             "collect": self._block_seconds(block, "collect", "collection"),
         }
+        accounted = [phases[name] for name in ("verify_models", "engine_start_or_reuse", "queue_wait")]
+        preparation_other = (None if any(value is None for value in accounted) else max(
+            0.0, self.preparation_ended - self.preparation_started - sum(accounted)))
         reused = getattr(self.preparation, "engine_reused", None)
         if type(reused) is not bool:
             reused = False
@@ -129,12 +139,18 @@ class JobEvidence:
                   "vram_free_after_bytes": after, "model_verification_seconds": verify,
                   "started_at": self.started_at, "ended_at": datetime.now(timezone.utc).isoformat(),
                   "phases": phases, "engine_reused": reused,
+                  # Preserve v1's fixed phase vocabulary. This disjoint remainder
+                  # accounts for the formerly invisible receipt/source/env,
+                  # canonical workflow, native alignment and evidence work.
+                  "additional_phases": {"preparation_other": preparation_other},
+                  "preparation_steps": dict(getattr(self.preparation, "phase_seconds", {})),
                   "phase_sources": {
                       "verify_models": "managed preparation verification_seconds; model_verification_seconds is an alias",
                       "engine_start_or_reuse": "sum of supervisor probe/start and readiness-health calls, including doctor preparation",
                       "queue_wait": "phase-timing.v1 capacity_wait: local engine custody admission",
                       "execute": "phase-timing.v1 execution: dispatch through producer result; includes ComfyUI prompt queue",
                       "collect": "phase-timing.v1 collection: local finalization and evidence capture; excludes record serialization",
+                      "preparation_other": "monotonic construction-to-dispatch (or failure), less queue_wait, verify_models and engine_start_or_reuse; preparation_steps are overlapping detail",
                   }, "notes": self.notes}
         with suppress(Exception):
             path = self.out / "job-run.json"

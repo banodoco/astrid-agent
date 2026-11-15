@@ -49,6 +49,21 @@ def test_preparation_engine_copies_table_entry_and_refuses_missing(monkeypatch):
         assert str(caught.value) == f"no generation.engine contribution for {expected!r}"
 
 
+def test_preparation_steps_time_success_and_preserve_refusals(monkeypatch):
+    import astrid.core.generation.managed_preparation as module
+
+    prep = object.__new__(ManagedEnginePreparation)
+    prep.phase_seconds = {}
+    ticks = iter([10.0, 12.0, 20.0, 23.0])
+    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: next(ticks)))
+    with prep._phase("installation_verification"):
+        pass
+    with pytest.raises(IntegrityError, match="unchanged refusal"):
+        with prep._phase("runtime_requirements"):
+            raise IntegrityError("unchanged refusal")
+    assert prep.phase_seconds == {"installation_verification": 2.0, "runtime_requirements": 3.0}
+
+
 @pytest.mark.parametrize('missing_field', ['sha256', 'size'])
 def test_judge_declarations_reports_every_unpinned_ready_model(tmp_path, monkeypatch, missing_field):
     import importlib.util

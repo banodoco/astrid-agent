@@ -340,6 +340,20 @@ class ManagedEnginePreparation:
         self.engine_reused: bool | None = None
         self.evidence_waiting: Any = None
         self.evidence_start: Any = None
+        self.phase_seconds: dict[str, float] = {}
+
+    @contextmanager
+    def _phase(self, name):
+        """Name local pod work without changing any custody/integrity decision."""
+        started = None
+        with suppress(Exception):
+            started = time.monotonic()
+        try:
+            yield
+        finally:
+            with suppress(Exception):
+                if started is not None:
+                    self.phase_seconds[name] = self.phase_seconds.get(name, 0.0) + max(0.0, time.monotonic() - started)
 
     def check(self):
         if self.cancelled():
@@ -468,15 +482,18 @@ class ManagedEnginePreparation:
             raise IntegrityError("managed engine helper identity differs")
         # These checks read the saved environment identities; they do not
         # re-enter the install lock or require the HTTP service to be running.
-        for step in plan.steps:
-            if step.kind in {"source", "environment"}:
-                runner.execute(step, readonly=True)
+        with self._phase("installation_verification"):
+            for step in plan.steps:
+                if step.kind in {"source", "environment"}:
+                    runner.execute(step, readonly=True)
         if runner.locks != receipt.requirements_locks or runner.commits != receipt.source_commits:
             raise IntegrityError("managed installation evidence differs from its receipt")
         self._runtime_requirements = None
-        self._guard_runtime(canonical_workflow, runner, post=False)
+        with self._phase("runtime_requirements"):
+            self._guard_runtime(canonical_workflow, runner, post=False)
         engine = _preparation_engine(DEFAULT_ENGINE)
-        manifest, source_format = judge_declarations(canonical_workflow, self.scratch, engine)
+        with self._phase("workflow_judgment"):
+            manifest, source_format = judge_declarations(canonical_workflow, self.scratch, engine)
         self._native_generated_scratchpad = source_format == "scratchpad"
         canonical_path = self.scratch / "canonical" / "workflow.py"
         # CLI preparation owns only this emitted copy.
@@ -496,11 +513,13 @@ class ManagedEnginePreparation:
         self._alignment_runner = runner
         self._alignment_verification = (canonical_workflow, runner, staged_digests, manifest, receipt)
         if self.mode == "align":
-            self._preflight_model_storage(manifest)
+            with self._phase("model_storage_preflight"):
+                self._preflight_model_storage(manifest)
         callback = getattr(self, "on_phase", None)
         if callback is not None:
             callback("align")
-        alignment = engine.align(manifest, self.mode, workflow=canonical_path)
+        with self._phase("alignment"):
+            alignment = engine.align(manifest, self.mode, workflow=canonical_path)
         if alignment.get("status") == "missing":
             raise IntegrityError("managed engine is missing declared models: " + ", ".join(alignment["missing"]))
         self.check()

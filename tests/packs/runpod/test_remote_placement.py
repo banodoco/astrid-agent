@@ -82,14 +82,23 @@ class FakePod:
             path = command.split(" ", 2)[2].strip("'")
             return (0 if path in self.files else 1), "", ""
         if command.startswith("sha256sum "):
-            path = command.split(" ", 1)[1].strip("'")
-            if path not in self.files:
+            import shlex
+            paths = [path for path in shlex.split(command)[1:] if path != "--"]
+            if any(path not in self.files for path in paths):
                 return 1, "", "missing"
-            return 0, f"{_sha(self.files[path])}  {path}\n", ""
+            return 0, "".join(f"{_sha(self.files[path])}  {path}\n" for path in paths), ""
         if "engines status" in command:
             body = {"status": "installed", "health": {"status": "healthy"}} if self.installed else None
             return 0, json.dumps(body) + "\n", ""
         if command.startswith("cat ") or command.startswith("tail "):
+            if " && rm -rf " in command:
+                read, remove = command.split(" && ", 1)
+                path = read.split()[-1].strip("'")
+                data = self.files.get(path, b"").decode()
+                gone = remove.split(" ", 2)[2].strip("'")
+                for path in [p for p in self.files if p.startswith(gone + "/")]:
+                    del self.files[path]
+                return 0, data, ""
             path = command.split()[-1].strip("'")
             return 0, self.files.get(path, b"").decode(), ""
         if "generate list --json" in command:
@@ -102,6 +111,22 @@ class FakePod:
         self.files[remote] = data + b"X" if self.corrupt_put else data
 
     def get(self, remote, local):
+        if remote.endswith("/outputs.tar"):
+            # Model the job's sealed transport archive, including the same
+            # per-file corruption injection the individual downloads use.
+            import io
+            import tarfile
+            prefix = remote.removesuffix("outputs.tar") + "out/"
+            with tarfile.open(local, "w") as archive:
+                for path, data in sorted(self.files.items()):
+                    if not path.startswith(prefix):
+                        continue
+                    if self.corrupt_get and path.endswith(self.corrupt_get):
+                        data += b"tampered"
+                    info = tarfile.TarInfo(path[len(prefix):])
+                    info.size = len(data)
+                    archive.addfile(info, io.BytesIO(data))
+            return
         data = self.files[remote]
         if self.corrupt_get and remote.endswith(self.corrupt_get):
             data = data + b"tampered"
@@ -229,7 +254,8 @@ def _fake_generate(pod: "FakePod", command: str) -> str:
     files = {path[len(out) + 1:]: {"sha256": _sha(data), "size": len(data)} for path, data in tree.items()}
     body = json.dumps({"schema_version": 1, "files": files}, sort_keys=True, indent=2) + "\n"
     pod.files[f"{out}/{rp.MANIFEST_NAME}"] = body.encode()
-    return f"{rp.RESULT_MARK}{json.dumps({'status': 'succeeded'})}\n{rp.MANIFEST_MARK}{_sha(body.encode())}\n"
+    return (f"{rp.RESULT_MARK}{json.dumps({'status': 'succeeded'})}\n{rp.MANIFEST_MARK}{_sha(body.encode())}\n"
+            "OUTPUT_ARCHIVE=outputs.tar\n")
 
 
 FakePod._generate = _fake_generate
