@@ -1506,7 +1506,9 @@ class GenerationFacade:
         settings_snapshot = generation_settings.read(controls.get('client'))
         pinned = (generation_defaults.pinned_entry(modality, mode, settings_snapshot)
                   if model is None and workflow_entry is None else None)
-        preferred = generation_defaults.ordered_ids(modality, mode, settings_snapshot)
+        # An explicit selection validates only itself; saved defaults rank automatic selection.
+        preferred = (generation_defaults.ordered_ids(modality, mode, settings_snapshot)
+                     if model is None and workflow_entry is None else ())
         def rank(candidate: Any) -> tuple[int, str]:
             identifier = candidate[1].id if candidate[0] == "catalog" else candidate[1]["id"]
             return (preferred.index(identifier) if identifier in preferred else len(preferred), identifier)

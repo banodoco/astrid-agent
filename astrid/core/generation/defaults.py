@@ -61,7 +61,7 @@ def pack_candidates(registry: Any = None) -> list[Candidate]:
     return rows
 
 
-def known_entries(registry: Any = None) -> list[dict[str, Any]]:
+def known_entries(registry: Any = None, *, entry_id: str | None = None) -> list[dict[str, Any]]:
     """Real entries as ``{pack, entry, kind, modes}``; a pin must name one of these."""
     rows: list[dict[str, Any]] = []
     for candidate in pack_candidates(registry):
@@ -80,7 +80,12 @@ def known_entries(registry: Any = None) -> list[dict[str, Any]]:
     try:
         from astrid.core.generation import entries as workflow_entries
 
-        for row in [*workflow_entries.user_entries(), *workflow_entries.ready_entries()]:
+        # Named/pinned validation concerns this entry only: an unrelated broken
+        # ready workflow must not refuse a valid pin. Full listings still load all.
+        users = workflow_entries.user_entries()
+        ready = (workflow_entries.ready_entries() if entry_id is None
+                 else workflow_entries._ready_entries_for(entry_id))
+        for row in [*users, *ready]:
             rows.append({"pack": "vibecomfy", "entry": row["id"], "kind": row["kind"], "modes": set(row["modes"])})
         for row in workflow_entries.action_entries():
             rows.append({"pack": "generation", "entry": row["id"], "kind": row["kind"], "modes": set(row["modes"])})
@@ -122,6 +127,15 @@ def check_pin(slot: str, pin: Any, entries: Iterable[Mapping[str, Any]]) -> dict
     return pin
 
 
+def _check_named_pin(slot: str, pin: Any, registry: Any = None) -> dict[str, str]:
+    pin = settings.validate_pin(slot, pin)
+    entries = known_entries(registry, entry_id=pin["entry"])
+    if not any(row["entry"] == pin["entry"] and row["pack"] == pin["pack"] for row in entries):
+        # Preserve the complete available-entry hint, paying for it only on refusal.
+        entries = known_entries(registry)
+    return check_pin(slot, pin, entries)
+
+
 def resolve(kind: str, mode: str, *, pins: Mapping[str, Any], candidates: Iterable[Candidate],
             entries: Iterable[Mapping[str, Any]] | None = None, origin: str = "") -> Resolved:
     slot = f"{kind}.{mode}"
@@ -129,7 +143,8 @@ def resolve(kind: str, mode: str, *, pins: Mapping[str, Any], candidates: Iterab
                      key=lambda c: (-c.priority, c.pack, c.entry))
     pin = pins.get(slot)
     if pin is not None:
-        pin = check_pin(slot, pin, list(entries) if entries is not None else known_entries())
+        pin = (check_pin(slot, pin, list(entries)) if entries is not None
+               else _check_named_pin(slot, pin))
         return Resolved(kind, mode, pin["pack"], pin["entry"], "user pin", None, origin, tuple(offered))
     if offered:
         top = offered[0]
@@ -157,7 +172,7 @@ def pinned_entry(kind: str, mode: str, snapshot: settings.Snapshot) -> str | Non
     pin = snapshot.content.get("defaults", {}).get(f"{kind}.{mode}")
     if pin is None:
         return None
-    return check_pin(f"{kind}.{mode}", pin, known_entries())["entry"]
+    return _check_named_pin(f"{kind}.{mode}", pin)["entry"]
 
 
 def _placement_name(placement: Mapping[str, Any], client: Any = None) -> tuple[str, str | None]:
@@ -241,7 +256,7 @@ def restore_command(kind: str, mode: str, previous: Mapping[str, Any] | None, en
 def set_default_reporting(kind: str, mode: str, entry: str, *, pack: str | None = None, client: Any = None,
                           registry: Any = None) -> tuple[settings.Snapshot, dict[str, Any] | None]:
     """``set_default``, also returning the user pin it replaced (``None`` when there was none)."""
-    entries = known_entries(registry)
+    entries = known_entries(registry, entry_id=entry)
     packs = sorted({row["pack"] for row in entries if row["entry"] == entry
                     and row["kind"] == kind and mode in row["modes"]})
     if pack is None:
@@ -251,6 +266,8 @@ def set_default_reporting(kind: str, mode: str, entry: str, *, pack: str | None 
                                                else f"no entry {entry!r} supports {kind}/{mode}"),
                 key=f"defaults.{kind}.{mode}", options=packs)
         pack = packs[0]
+    if not any(row["entry"] == entry and row["pack"] == pack for row in entries):
+        entries = known_entries(registry)
     pin = check_pin(f"{kind}.{mode}", {"pack": pack, "entry": entry}, entries)
     previous: dict[str, Any] | None = None
 
@@ -271,6 +288,5 @@ def check_pins(document: Mapping[str, Any], registry: Any = None) -> None:
     """Refuse every pin of a whole document that names no real entry for its slot."""
     pins = document.get("defaults", {})
     if pins:
-        entries = known_entries(registry)
         for slot, pin in pins.items():
-            check_pin(slot, pin, entries)
+            _check_named_pin(slot, pin, registry)
