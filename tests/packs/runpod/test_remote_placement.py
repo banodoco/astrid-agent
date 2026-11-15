@@ -402,6 +402,57 @@ def test_volume_is_sized_by_the_job_manifest_rows_not_the_model_lock():
     assert installation.model_bytes(()) == 1  # a warm job needs no model bytes
 
 
+@pytest.mark.parametrize("userinfo", [
+    "install-url-token", "alice:install-password", "x-access-token:install-secret", "alice:",
+    "alice%40example.test:p%3Ass%2Fword", "install%2Dtoken%40only",
+])
+def test_install_artifact_redaction_keeps_remote_operation_budget(tmp_path, sources, monkeypatch, userinfo):
+    from astrid.core.generation.engine_custody import engine_log_path
+
+    provider = _provider(sources)
+    claim = provider.claim(rp.ClaimSpec())
+    pod = claim.ops
+    pod.fail_jobs = {"engines install"}
+    root, engine = rp.ENGINE_ROOT, rp.ENGINE_ID
+    registry = f"{root}/runtime/out/sessions/{engine}"
+    text = (
+        f"https://{userinfo}@github.com/owner/repo "
+        f"git+https://{userinfo}@example.test/other git@github.com:owner/repo\n"
+    )
+    for source in (
+        engine_log_path(root, engine), f"{registry}/daemon.log",
+        f"{root}/.astrid-engine/session/session.json", f"{registry}/config.json",
+    ):
+        pod.files[source] = text.encode()
+    counts = dict.fromkeys(("job_start", "job_poll", "job_cancel", "exec", "put", "get"), 0)
+
+    def counted(name, operation):
+        def call(*args, **kwargs):
+            counts[name] += 1
+            return operation(*args, **kwargs)
+        return call
+
+    for name in counts:
+        monkeypatch.setattr(pod, name, counted(name, getattr(pod, name)))
+    state = rp.RemoteRun("redaction", "/unused", tmp_path / "out", claim=claim)
+    with pytest.raises(RemotePlacementError, match="engine install"):
+        _wrapper(provider, sources)._run_job(state, "engines install", "engine install")
+
+    # Existing failure collection: one job, one poll, two stream reads/transfers,
+    # plus one redaction, transfer and cleanup for each of the four artifacts.
+    assert counts == {"job_start": 1, "job_poll": 1, "job_cancel": 0, "exec": 10, "put": 0, "get": 6}
+    assert sum("/bin/python -c " in command for command in pod.exec_log) == 4
+    index = json.loads((state.local_out / "logs/index.json").read_text())
+    artifacts = [row for row in index["logs"] if row["name"].startswith("engine.install.")]
+    assert len(artifacts) == 4
+    for row in artifacts:
+        assert not row["missing"]
+        assert (state.local_out / "logs" / row["file"]).read_text() == (
+            "https://<redacted>@github.com/owner/repo "
+            "git+https://<redacted>@example.test/other git@github.com:owner/repo\n"
+        )
+
+
 def test_ordinary_connector_uses_only_the_verified_claim_and_existing_https_ops(monkeypatch):
     from tests.packs.runpod.test_worker_preparation import _claim_handle
 

@@ -21,7 +21,7 @@ _SECRET_TEXT = re.compile(r"(?i)(['\"]?(?:[A-Z0-9]{1,32}_){0,8}(?:authorization|
 _BEARER = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
 _PRIVATE_KEY_BEGIN = re.compile(r"^-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")
 _PRIVATE_KEY_END = re.compile(r"^-----END [A-Z0-9 ]*PRIVATE KEY-----")
-_URL_CREDENTIALS = re.compile(r"(?i)(https?://)[^/@\s:]+:[^/@\s]+@")
+_URL_CREDENTIALS = re.compile(r"(?i)([a-z][a-z0-9+.-]*://)[^/?#@\s<>\"']+@")
 _SECRET_KEY = re.compile(r"(?i)(?:credential|token|secret|password|api[_-]?key|authorization|owner_id)")
 _USER_PATH = re.compile(r"(?i)(?:[a-z]:[\\/](?:users|documents and settings)[\\/]|/(?:users|home)/)[^\s\"'<>;,)]*")
 _CHAT_CONTENT_KEY = re.compile(r"(?i)^(?:chat|chats|conversation|conversations|transcript|transcripts|messages|prompt|prompts|completion|completions|content)$")

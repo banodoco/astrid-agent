@@ -3,6 +3,8 @@ import os
 import zipfile
 from dataclasses import dataclass
 
+import pytest
+
 from astrid.core.gateway import dispatch, doctor_bundle
 
 
@@ -14,6 +16,51 @@ def test_redact_log_removes_token_and_credential_values():
     for secret in ("sk-test", "pass-123", "secret-value"):
         assert secret not in redacted
     assert "<redacted>" in redacted
+
+
+@pytest.mark.parametrize("scheme", ["http", "https", "git+https", "ssh", "ftp", "custom.v1-scheme"])
+@pytest.mark.parametrize("userinfo", [
+    "url-token-only", "alice:url-password", "x-access-token:url-secret", "alice:",
+    "alice%40example.test:p%3Ass%2Fword", "url%2Dtoken%40only",
+])
+def test_redact_log_removes_any_url_userinfo(scheme, userinfo):
+    text = f"fetch {scheme}://{userinfo}@github.com/owner/repo\n"
+
+    assert doctor_bundle.redact_log(text) == f"fetch {scheme}://<redacted>@github.com/owner/repo\n"
+
+
+def test_redact_log_handles_multiple_urls_without_changing_paths_or_scp_git():
+    text = (
+        "https://first-url-token@github.com/owner/repo "
+        "git+https://alice:second-url-password@example.test/other "
+        "git@github.com:owner/repo https://example.test/path/keep@value "
+        "https://example.test/?contact=keep@value\n"
+    )
+
+    assert doctor_bundle.redact_log(text) == (
+        "https://<redacted>@github.com/owner/repo "
+        "git+https://<redacted>@example.test/other "
+        "git@github.com:owner/repo https://example.test/path/keep@value "
+        "https://example.test/?contact=keep@value\n"
+    )
+
+
+def test_bundle_redacts_url_userinfo_in_text_and_json_logs(tmp_path, monkeypatch):
+    log = tmp_path / "runtime.log"
+    log.write_text(
+        "fetch https://bundle-url-token@github.com/owner/repo git@github.com:owner/repo\n"
+        '{"remote":"git+https://encoded%40token@example.test/owner/repo"}\n'
+    )
+    monkeypatch.setattr(doctor_bundle, "_logs", lambda *_args: [log])
+
+    archive_path = doctor_bundle.write_bundle(tmp_path / "urls.zip", {"ok": True}, None)
+
+    with zipfile.ZipFile(archive_path) as archive:
+        contents = archive.read("logs/0-runtime.log").decode()
+    assert "bundle-url-token" not in contents and "encoded%40token" not in contents
+    assert "https://<redacted>@github.com/owner/repo" in contents
+    assert json.loads(contents.splitlines()[1]) == {"remote": "<redacted>"}
+    assert "git@github.com:owner/repo" in contents
 
 
 def test_redact_log_handles_json_environment_urls_and_private_keys():
