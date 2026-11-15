@@ -161,7 +161,7 @@ def test_a_job_runs_ships_fetches_and_settles_warm(machine_case, tmp_path):
                                                            "reset": "taken"}
     # The job's one command extracts the selection and checks the entry, then runs.
     generation = next(line for line in c.pod.job_log if " generate cpu-image " in line)
-    assert ("/selection/selection.json" in generation and "--check-entry" in generation
+    assert ("tar -xzf" in generation and "/selection/selection.json" in generation and "--check-entry" in generation
             and "generate list" not in generation)
     # After the fetch, before settle: the reset removed the run and job folders.
     reset = c.pod.resets[-1]

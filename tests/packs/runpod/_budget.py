@@ -416,12 +416,6 @@ else:
             value = {'offset': len(state['data']), 'complete': complete}
         elif path == '/download-chunk':
             from runpod_lifecycle.https import CHUNK
-            if body['path'] not in self.pod.files and body['path'].endswith(('/outputs.tar', '/logs.tar')):
-                # W-B's fake seals archives lazily at get(), like its manifest.
-                local = self.local(body['path'])
-                local.parent.mkdir(parents=True, exist_ok=True)
-                self.pod.get(body['path'], local)
-                self.pod.files[body['path']] = local.read_bytes()
             if body['path'] not in self.pod.files:
                 return httpx.Response(400, json={'error': 'missing'})
             data = self.pod.files[body['path']]

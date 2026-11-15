@@ -10,7 +10,6 @@ from types import SimpleNamespace
 from astrid.core._shared import run_logs
 from astrid.packs.runpod import failure_receipt, machine
 
-
 ERROR = "Traceback (most recent call last):\nRuntimeError: CUDA out of memory. Tried to allocate 2.00 GiB"
 
 

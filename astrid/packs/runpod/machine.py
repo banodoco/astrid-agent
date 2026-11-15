@@ -1785,8 +1785,17 @@ class RunPodMachine:
             self._checkpoint(lease, {"id": job_id, "state": "exited"})
         directory = str(started.get("dir") or "")
         stdout = ""
+        cleaned = False
         if directory:
-            _c, stdout, _e = ops.exec(f"cat {shlex.quote(directory)}/stdout", 120)
+            command = f"cat {shlex.quote(directory)}/stdout"
+            # This exact job is already durably checkpointed exited. Capture
+            # its stdout and remove its folder in one caller-path request;
+            # failed/bounded observations retain their original evidence path.
+            cleaned = (not backoff and verify_deadline is None and record.get("id") == job_id
+                       and type(record.get("exit_code")) is int and record["exit_code"] == 0)
+            if cleaned:
+                command += f" && rm -rf {shlex.quote(directory)}"
+            _c, stdout, _e = ops.exec(command, 120)
         result = parse_reset(stdout)
         exit_code = record.get("exit_code")
         if (record.get("id") != job_id or type(exit_code) is not int
@@ -1795,7 +1804,7 @@ class RunPodMachine:
 
             safe_code = exit_code if type(exit_code) is int and 0 <= exit_code <= 255 else "unknown"
             raise MachineError(f"pod reset failed (exit {safe_code}): {reset_failure_reason(result)}")
-        if directory:
+        if directory and not cleaned:
             ops.exec(f"rm -rf {shlex.quote(directory)}", 120)  # the agent keeps at most 128 job folders
         lease.state.note("reset", "done", removed=result.get("removed"),
                          realm_rows_before=result.get("realm_rows_before"))

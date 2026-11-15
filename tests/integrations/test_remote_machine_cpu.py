@@ -20,7 +20,6 @@ import re
 import shlex
 import socket
 import subprocess
-import tarfile
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -36,7 +35,6 @@ from astrid.core.generation import engine_recipe, engine_runner
 from astrid.core.generation.delivery import deliver_generation
 from astrid.packs.runpod import remote_placement, target_selection
 from astrid.packs.runpod.cuda_versions import DEFAULT_ALLOWED_CUDA_VERSIONS
-from astrid.packs.runpod.machine import OUTPUT_ARCHIVE_MARK
 from astrid.sdk import AstridClient
 from astrid.sdk.generation import GenerationFacade
 from astrid.sdk.remote import RemoteAstridClient
@@ -229,13 +227,6 @@ class MachineProviderHTTP:
             lines = self.files.get(str(IDENTITY_LOG_PATH), b"").decode().splitlines()
             reports = [line for line in lines if line.startswith(IDENTITY_MARK)]
             return 0, reports[-1] + "\n" if reports else ""
-        if command.startswith("grep -a -E "):
-            argv = shlex.split(command)
-            assert len(argv) == 9 and argv[3] == "^LOGS_(MANIFEST_SHA256|ARCHIVE)="
-            assert argv[5:] == ["|", "tail", "-n", "2"]
-            reports = [line for line in self.files.get(argv[4], b"").splitlines()
-                       if line.startswith((b"LOGS_MANIFEST_SHA256=", b"LOGS_ARCHIVE="))]
-            return 0, b"\n".join(reports[-2:]).decode(errors="replace")
         if command.startswith("grep -a '^LOGS_MANIFEST_SHA256=' "):
             argv = shlex.split(command)
             assert len(argv) == 8 and argv[:3] == ["grep", "-a", "^LOGS_MANIFEST_SHA256="]
@@ -243,24 +234,6 @@ class MachineProviderHTTP:
             reports = [line for line in self.files.get(argv[3], b"").split(b"\n")
                        if line.startswith(b"LOGS_MANIFEST_SHA256=")]
             return 0, (reports[-1] + b"\n").decode(errors="replace") if reports else ""
-        if "DISPATCH_VERIFIED" in command:
-            import sys
-            import tempfile
-
-            # W-B: execute the real stdlib verifier against the virtual pod's bytes.
-            argv = shlex.split(command)
-            remote, destination = argv[3:5]
-            with tempfile.TemporaryDirectory() as work:
-                landing, extracted = Path(work) / "dispatch.tar", Path(work) / "run"
-                landing.write_bytes(self.files[remote])
-                result = subprocess.run([sys.executable, *argv[1:3], str(landing), str(extracted), *argv[5:]],
-                                        capture_output=True, text=True, timeout=120)
-                if result.returncode == 0:
-                    for path in extracted.rglob("*"):
-                        if path.is_file():
-                            self.files[destination + "/" + path.relative_to(extracted).as_posix()] = path.read_bytes()
-                    self.files.pop(remote, None)
-                return result.returncode, result.stdout
         if command.startswith("/opt/astrid/bin/python -c ") and "import collection_receipt;" in command:
             # W-A: this virtual pod has no witness; exercise the canonical fallback.
             argv = shlex.split(command)
@@ -418,7 +391,7 @@ class MachineProviderHTTP:
         root = argv[argv.index("--job") + 1].rsplit("/", 1)[0]
         job = json.loads(self.files[root + "/job.json"])
         assert f"export ASTRID_PACKS_PATH={root}/selection/packs" in detached
-        # The same-process entry guard reads the verified selection for every job.
+        # The same-process entry guard reads the shipped selection for every job.
         shipped = self._shipped(root)
         if argv[2] != "workflow":
             # The entry resolves from the pod's built-ins or the shipped selection only.
@@ -475,41 +448,32 @@ class MachineProviderHTTP:
         files = {path[len(out) + 1:]: {"sha256": _sha(data), "size": len(data)} for path, data in tree.items()}
         body = json.dumps({"schema_version": 1, "files": files}, sort_keys=True, indent=2) + "\n"
         self.files[f"{out}/{remote_placement.MANIFEST_NAME}"] = body.encode()
-        # W-B: seal the same manifest and per-file bytes the controller verifies.
-        bundle = io.BytesIO()
-        with tarfile.open(fileobj=bundle, mode="w") as archive:
-            for path, data in sorted({**tree, f"{out}/{remote_placement.MANIFEST_NAME}": body.encode()}.items()):
-                member = tarfile.TarInfo(path[len(out) + 1:])
-                member.size = len(data)
-                archive.addfile(member, io.BytesIO(data))
-        self.files[root + "/outputs.tar"] = bundle.getvalue()
         printed = _sha(b"not the manifest") if self.corrupt_manifest else _sha(body.encode())
         stdout = (f"{remote_placement.RESULT_MARK}{json.dumps(result)}\n"
-                  f"{remote_placement.MANIFEST_MARK}{printed}\n"
-                  f"{OUTPUT_ARCHIVE_MARK}\n").encode()
+                  f"{remote_placement.MANIFEST_MARK}{printed}\n").encode()
         job["state"] = "exited"
         self._exit(directory, 0, stdout)
 
     listed = ()
 
     def _shipped(self, root):
-        """Entry ids extracted by the real W-B dispatch verifier."""
-        import yaml
+        """Entry ids the job's selection.tar.gz makes resolvable on the pod, from its real bytes."""
+        import tarfile
 
-        prefix = root + "/selection/"
-        manifest = json.loads(self.files[prefix + "selection.json"])
-        self.selections.append(manifest)
+        import yaml
+        data = self.files[root + "/selection.tar.gz"]
         ids = []
-        for path, data in sorted(self.files.items()):
-            if not path.startswith(prefix):
-                continue
-            name = path[len(prefix):]
-            parts = name.split("/")
-            if len(parts) == 3 and parts[0] == "entries" and parts[2] == "entry.json":
-                ids.append(json.loads(data)["id"])
-            if (len(parts) == 5 and parts[0] == "packs" and parts[2] == "extensions"
-                    and parts[3] == "vibecomfy.workflows" and name.endswith((".yaml", ".yml"))):
-                ids += [row["id"] for row in (yaml.safe_load(data) or {}).get("entries", [])]
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
+            names = archive.getnames()
+            manifest = json.loads(archive.extractfile("selection.json").read())
+            self.selections.append(manifest)
+            for name in names:
+                parts = name.split("/")
+                if len(parts) == 3 and parts[0] == "entries" and parts[2] == "entry.json":
+                    ids.append(json.loads(archive.extractfile(name).read())["id"])
+                if (len(parts) == 5 and parts[0] == "packs" and parts[2] == "extensions"
+                        and parts[3] == "vibecomfy.workflows" and name.endswith((".yaml", ".yml"))):
+                    ids += [row["id"] for row in (yaml.safe_load(archive.extractfile(name).read()) or {}).get("entries", [])]
         return ids
 
     def kill_pod(self):
@@ -613,9 +577,7 @@ class MachineProviderHTTP:
 
             target = body["path"]
             directory, _, name = target.rpartition("/")
-            if target.endswith("/outputs.tar") and body["offset"] == 0:
-                self.events.append(("fetch-manifest", target.removesuffix("/outputs.tar")))
-            elif target.endswith("/out/" + remote_placement.MANIFEST_NAME):
+            if target.endswith("/out/" + remote_placement.MANIFEST_NAME):
                 self.events.append(("fetch-manifest", target.rsplit("/out/", 1)[0]))
             if name == "exit" and directory in self.detached:
                 self._advance(directory)  # detached_poll reads status, then exit
@@ -845,10 +807,10 @@ def test_cold_run_then_warm_second_run_reuses_the_machine(journey):
     assert provider.deploys == 1
     assert len(provider.kinds("pod_bootstrap.sh")) == 1
     assert len(provider.kinds("engines install comfyui")) == 1
-    # W-D checks the selected entry after W-B's verified dispatch extraction.
+    # W-D checks the selected entry after extracting the shipped selection.
     assert len(provider.kinds("--check-entry")) == 1
     assert not provider.kinds("generate list --json")
-    assert len(provider.kinds("DISPATCH_VERIFIED")) == 1
+    assert len([c for c in provider.kinds("--check-entry") if "tar -xzf" in c]) == 1
     # T5f: the fresh pod's claim takes the template; the job's reset runs after the
     # digest-verified fetch and before settle (the lease is still the job's, not idle).
     claim_reset, job_reset = provider.resets
