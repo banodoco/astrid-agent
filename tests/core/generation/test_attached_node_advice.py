@@ -131,3 +131,117 @@ def test_attached_live_preflight_missing_node_names_no_align(comfy, tmp_path):
     assert "astrid generate" not in message
     assert "update ComfyUI" in message
     assert not comfy.prompts
+
+
+PINNED = "0123456789abcdef0123456789abcdef01234567"
+LOCK_TEXT = f"""
+[nodepacks.ComfyUI-Fake]
+name = "ComfyUI-Fake"
+url = "https://github.com/example/ComfyUI-Fake.git"
+commit = "{PINNED}"
+git_commit_sha = "{PINNED}"
+class_set = ["AstridFakeNode", "AstridFakeNodeTwo"]
+"""
+PINNED_FAKE = CustomNodePack(
+    name="ComfyUI-Fake", repo="https://github.com/example/ComfyUI-Fake.git",
+    classes=frozenset({"AstridFakeNode", "AstridFakeNodeTwo"}),
+)
+
+
+@pytest.fixture
+def fake_pack_with_lock(monkeypatch, tmp_path):
+    """The fake pack, locked at PINNED; the lock file is real so the commit comes from it."""
+    monkeypatch.setattr("vibecomfy.node_packs.resolve_node_packs",
+                        lambda class_types, *, lockfile_path=None:
+                        [PINNED_FAKE] if set(class_types) & PINNED_FAKE.classes else [])
+    lock = tmp_path / "custom_nodes.lock"
+    lock.write_text(LOCK_TEXT)
+    return lock
+
+
+def test_attached_url_pack_commands_with_pinned_commit(fake_pack_with_lock):
+    readiness = asset_gaps.attached_asset_readiness(
+        "z-image", nodes=["AstridFakeNode"], lockfile_path=fake_pack_with_lock,
+        custom_nodes="/srv/ComfyUI/custom_nodes")
+    issue = readiness["issues"][0]
+    folder = "/srv/ComfyUI/custom_nodes/ComfyUI-Fake"
+    expected = [["git", "clone", "https://github.com/example/ComfyUI-Fake.git", folder],
+                ["git", "-C", folder, "checkout", PINNED]]
+    assert issue["details"]["commands"] == expected
+    assert issue["details"]["after"] == asset_gaps.PACK_AFTER
+    assert readiness["fixes"][0]["details"]["commands"] == expected
+    assert readiness["fixes"][0]["scope"] == "attached_target"
+    message = issue["message"]
+    assert message.startswith("Your ComfyUI does not have AstridFakeNode, which comes from the custom node pack ComfyUI-Fake.")
+    assert f"Commands: git clone https://github.com/example/ComfyUI-Fake.git /srv/ComfyUI/custom_nodes/ComfyUI-Fake ; " \
+           f"git -C /srv/ComfyUI/custom_nodes/ComfyUI-Fake checkout {PINNED}. " in message
+    assert message.endswith(asset_gaps.PACK_AFTER)
+    _assert_no_align(readiness)
+
+
+def test_attached_url_pack_commands_without_pinned_commit(known_packs, tmp_path):
+    readiness = asset_gaps.attached_asset_readiness(
+        "z-image", nodes=["AstridFakeNode"], lockfile_path=tmp_path / "missing.lock")
+    details = readiness["issues"][0]["details"]
+    placeholder = "<your ComfyUI folder>/custom_nodes/ComfyUI-Fake"
+    assert details["commands"] == [["git", "clone", "https://github.com/example/ComfyUI-Fake.git", placeholder]]
+    assert len(readiness["fixes"][0]["details"]["commands"]) == 1
+    assert "checkout" not in readiness["issues"][0]["message"]
+    assert "Commands: git clone https://github.com/example/ComfyUI-Fake.git '<your ComfyUI folder>/custom_nodes/ComfyUI-Fake'" \
+        in readiness["issues"][0]["message"]
+    _assert_no_align(readiness)
+
+
+def test_attached_windows_custom_nodes_path_with_space_is_quoted(fake_pack_with_lock):
+    readiness = asset_gaps.attached_asset_readiness(
+        "z-image", nodes=["AstridFakeNode"], lockfile_path=fake_pack_with_lock,
+        custom_nodes="C:\\My ComfyUI\\custom_nodes")
+    folder = "C:\\My ComfyUI\\custom_nodes\\ComfyUI-Fake"
+    assert readiness["issues"][0]["details"]["commands"][0] == [
+        "git", "clone", "https://github.com/example/ComfyUI-Fake.git", folder]
+    message = readiness["issues"][0]["message"]
+    assert (f'Commands: git clone https://github.com/example/ComfyUI-Fake.git "{folder}" ; '
+            f'git -C "{folder}" checkout {PINNED}. ') in message
+    assert "\\" in message and "/My" not in message
+
+
+def test_attached_two_nodes_from_one_pack_give_one_fix(fake_pack_with_lock):
+    readiness = asset_gaps.attached_asset_readiness(
+        "z-image", nodes=["AstridFakeNode", "AstridFakeNodeTwo"], lockfile_path=fake_pack_with_lock,
+        custom_nodes="/srv/custom_nodes")
+    assert len(readiness["issues"]) == 2
+    assert all(issue["details"]["pack"] == "ComfyUI-Fake" for issue in readiness["issues"])
+    assert len(readiness["fixes"]) == 1
+    assert readiness["fixes"][0]["details"]["commands"][0][0:2] == ["git", "clone"]
+    assert len(readiness["fixes"][0]["details"]["commands"]) == 2
+    _assert_no_align(readiness)
+
+
+def test_attached_core_node_has_no_commands(known_packs):
+    readiness = asset_gaps.attached_asset_readiness("z-image", nodes=["CLIPLoader"])
+    assert "commands" not in readiness["issues"][0]["details"]
+    assert readiness["fixes"] == [{"scope": "attached_target", "details": {"action": "Update ComfyUI, then retry."}}]
+
+
+def test_attached_pack_without_url_is_unchanged(monkeypatch, tmp_path):
+    local = CustomNodePack(name="LocalPack", repo="local-copy", classes=frozenset({"AstridFakeNode"}))
+    monkeypatch.setattr("vibecomfy.node_packs.resolve_node_packs",
+                        lambda class_types, *, lockfile_path=None: [local])
+    readiness = asset_gaps.attached_asset_readiness("z-image", nodes=["AstridFakeNode"],
+                                                    lockfile_path=tmp_path / "x.lock")
+    issue = readiness["issues"][0]
+    assert issue["details"] == {"node": "AstridFakeNode", "pack": "LocalPack", "repository": None}
+    assert issue["message"].endswith(
+        "Install LocalPack in your ComfyUI's custom_nodes folder, then restart ComfyUI yourself and retry.")
+    assert readiness["fixes"][0]["details"] == {
+        "action": "Install LocalPack in your ComfyUI's custom_nodes folder, then restart ComfyUI yourself and retry."}
+    _assert_no_align(readiness)
+
+
+def test_attached_url_pack_message_keeps_user_in_charge(fake_pack_with_lock):
+    readiness = asset_gaps.attached_asset_readiness(
+        "z-image", nodes=["AstridFakeNode"], lockfile_path=fake_pack_with_lock)
+    message = readiness["issues"][0]["message"]
+    assert "restart ComfyUI yourself" in message
+    assert "your ComfyUI" in message
+    assert "Astrid will" not in message and "Astrid installs" not in message
