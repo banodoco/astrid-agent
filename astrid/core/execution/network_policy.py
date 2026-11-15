@@ -155,6 +155,12 @@ def _write_evidence() -> None:
     _EVIDENCE.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
 
 
+def _kernel_socketpair() -> bool:
+    import _socket
+
+    return hasattr(_socket, "socketpair")
+
+
 def _patch_socket(originals: Mapping[tuple[Any, str], Any]) -> None:
     def getaddrinfo(host: Any, port: Any, *args: Any, **kwargs: Any):
         value = originals[(socket, "getaddrinfo")](host, port, *args, **kwargs)
@@ -169,6 +175,45 @@ def _patch_socket(originals: Mapping[tuple[Any, str], Any]) -> None:
             raise NetworkPolicyError(f"network policy denied dns destination {name}")
         return value
 
+    # socket.socketpair() is a kernel call on POSIX. Where the kernel has none
+    # (Windows), the standard library builds the pair from a loopback listener and
+    # connects to it in Python; asyncio's event loop needs that pair, and the connect
+    # guard would refuse the ephemeral port. Rather than relax the guard for a window
+    # of time, the pair is built here: the only unchecked connect is the one to the
+    # listener this call itself just opened, and the two ends are verified to be
+    # connected to each other before they are returned.
+    def socketpair(family: int = socket.AF_INET, type: int = socket.SOCK_STREAM, proto: int = 0):
+        if _kernel_socketpair():
+            return originals[(socket, "socketpair")](family, type, proto)
+        host = {socket.AF_INET: "127.0.0.1", socket.AF_INET6: "::1"}.get(family)
+        if host is None or type != socket.SOCK_STREAM or proto != 0:
+            raise ValueError("Only AF_INET and AF_INET6 stream socket pairs are supported")
+        listener = socket.socket(family, type, proto)
+        try:
+            listener.bind((host, 0))
+            listener.listen()
+            target = listener.getsockname()[:2]
+            client = socket.socket(family, type, proto)
+            try:
+                client.setblocking(False)
+                try:
+                    originals[(socket.socket, "connect")](client, target)
+                except (BlockingIOError, InterruptedError):
+                    pass
+                client.setblocking(True)
+                server, _ = listener.accept()
+            except BaseException:
+                client.close()
+                raise
+        finally:
+            listener.close()
+        if server.getsockname() != client.getpeername() or client.getsockname() != server.getpeername():
+            server.close()
+            client.close()
+            raise ConnectionError("Unexpected peer connection")
+        _record("tcp", host=str(target[0]), port=int(target[1]), allowed=True, detail="local-socketpair")
+        return server, client
+
     def connect(self: socket.socket, address: Any):
         _check("tcp" if self.type & socket.SOCK_STREAM else "udp", address)
         return originals[(socket.socket, "connect")](self, address)
@@ -182,6 +227,8 @@ def _patch_socket(originals: Mapping[tuple[Any, str], Any]) -> None:
         return originals[(socket.socket, "sendto")](self, data, address, *args)
 
     originals[(socket, "getaddrinfo")] = socket.getaddrinfo
+    originals[(socket, "socketpair")] = socket.socketpair
+    socket.socketpair = socketpair  # type: ignore[assignment]
     originals[(socket.socket, "connect")] = socket.socket.connect
     originals[(socket.socket, "connect_ex")] = socket.socket.connect_ex
     originals[(socket.socket, "sendto")] = socket.socket.sendto
@@ -314,7 +361,7 @@ def _patch_native_descendants(originals: Mapping[tuple[Any, str], Any]) -> None:
     """Fail closed when a Python provider tries to escape via a native child."""
     original_popen = subprocess.Popen
 
-    def guarded_popen(*args: Any, **kwargs: Any):
+    def check(args: tuple[Any, ...], kwargs: Mapping[str, Any]) -> None:
         command = args[0] if args else kwargs.get("args", "")
         local_media = _local_media_tool(command)
         local_identity = _local_identity_tool(command)
@@ -336,10 +383,18 @@ def _patch_native_descendants(originals: Mapping[tuple[Any, str], Any]) -> None:
             raise NetworkPolicyError(
                 "network policy denied native descendant; use a validated observable proxy or OS broker"
             )
-        return original_popen(*args, **kwargs)
+
+    # A class, not a function: the standard library subclasses subprocess.Popen
+    # (asyncio.windows_utils does at import on Windows), and callers use isinstance.
+    class GuardedPopen(original_popen):  # type: ignore[misc, valid-type]
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            check(args, kwargs)
+            super().__init__(*args, **kwargs)
+
+    GuardedPopen.__name__ = GuardedPopen.__qualname__ = "Popen"
 
     originals[(subprocess, "Popen")] = original_popen
-    subprocess.Popen = guarded_popen  # type: ignore[assignment]
+    subprocess.Popen = GuardedPopen  # type: ignore[misc]
 
     for name in ("execv", "execve", "execvp", "execvpe", "execl", "execle", "execlp", "execlpe"):
         original = getattr(os, name, None)

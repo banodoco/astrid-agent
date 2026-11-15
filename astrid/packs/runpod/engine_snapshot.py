@@ -54,9 +54,12 @@ INPUT_KEYS = ("schema", "engine", "platform", "recipe_sha256", "helper_sha256", 
               "python_versions", "python_abi", "machine")
 PARTIAL_GRACE_SECONDS = 3600
 SPACE_MARGIN = 1.10
-_DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-_READ = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
-_CREATE = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+# Imported by controller-side inspection too; only the pod uses these flags.
+_DIR = _READ = _CREATE = 0
+if os.name != 'nt' and hasattr(os, 'O_DIRECTORY'):
+    _DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    _READ = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
+    _CREATE = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
 _LOCKISH = re.compile(r"(\.lock|\.flock|\.owner)$|^owner")
 _MANIFEST_LIMIT = 1024 * 1024
 _COMFY_MUTABLE = frozenset({"output", "input", "temp", "user"})
@@ -104,6 +107,8 @@ def identity_of(inputs):
 
 class _Clock:
     def __init__(self, seconds):
+        if os.name == 'nt':
+            raise RuntimeError('Engine snapshots must run on the Linux engine machine')
         self.end = time.monotonic() + seconds
         self.durations = {}
         self._start = time.monotonic()

@@ -4,24 +4,26 @@ from __future__ import annotations
 
 import hashlib
 import json
+import ntpath
 import os
 import re
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
+import unicodedata
 import urllib.parse
 import urllib.request
 import zipfile
-import unicodedata
-from urllib.parse import urlsplit
 from pathlib import Path, PurePosixPath
+from urllib.parse import urlsplit
 
 from runtime_protocol import platform
 
 from ..core.generation.vibecomfy_dependency import VIBECOMFY_FORK_URL
 from ..version import ASTRID_VERSION
-from ._pack_cleanup import remove_pack_tree
+from ._pack_cleanup import remove_pack_tree, remove_tree_after_release
 
 ENCODERS = {"libx264", "libx265", "libvpx-vp9", "libaom-av1", "libopus"}
 FILTERS = {"ebur128", "silencedetect", "astats", "signalstats", "blackdetect",
@@ -158,8 +160,10 @@ def asset_downloads(asset: dict) -> list[tuple[str, str | None]]:
 def download(url: str, target: Path, *, sha256: str | None = None) -> None:
     if not url.startswith("https://"):
         raise ValueError("Installer downloads require HTTPS.")
+    from .tls_fallback import urlopen_with_tls_fallback
+
     request = urllib.request.Request(url, headers={"User-Agent": f"astrid-installer/{ASTRID_VERSION}"})
-    with urllib.request.urlopen(request, timeout=120) as response, target.open("wb") as output:
+    with urlopen_with_tls_fallback(request, timeout=120) as response, target.open("wb") as output:
         shutil.copyfileobj(response, output)
     if sha256 and hashlib.sha256(target.read_bytes()).hexdigest() != sha256:
         raise ValueError(f"Download checksum mismatch: {url}")
@@ -172,16 +176,48 @@ def archive_path(name: str) -> Path:
     return Path(*value.parts)
 
 
-def extract(archive: Path, destination: Path, *, reject_links: bool = False) -> None:
+def archive_destinations(entries: list[tuple[str, bool]], destination: Path, *,
+                         platform_name: str, strip_root: bool = False) -> list[Path]:
+    """Plan from the index, before writes; count Windows UTF-16 path units.
+
+    Keep paths usable by ordinary Win32 consumers too, without depending on
+    the machine's long-path registry setting. mkdir needs MAX_PATH - 12 room.
+    Only the redundant single archive directory may be removed, never a file.
+    """
+    relatives = [archive_path(name) for name, _ in entries]
+    if strip_root:
+        roots = {path.parts[0] for path in relatives if path.parts}
+        if (len(roots) != 1 or any(not path.parts or (len(path.parts) == 1 and not directory)
+                                   for path, (_, directory) in zip(relatives, entries))):
+            raise ValueError("Unexpected source archive layout.")
+        relatives = [Path(*path.parts[1:]) for path in relatives]
+    targets = [destination / path for path in relatives]
+    if platform_name == "win32":
+        def length(path):
+            return len(ntpath.abspath(str(path)).encode("utf-16-le")) // 2
+
+        longest = max((length(path) for path in targets), default=length(destination))
+        directories = [path if directory else path.parent
+                       for path, (_, directory) in zip(targets, entries)]
+        longest_directory = max(map(length, directories), default=length(destination))
+        if longest >= 260 or longest_directory >= 248:
+            raise ValueError("Astrid's files need a shorter Windows path; rerun the same command with --root C:\\Astrid.")
+    return targets
+
+
+def extract(archive: Path, destination: Path, *, reject_links: bool = False,
+            strip_root: bool = False, platform_name: str | None = None) -> None:
     """Extract regular files/directories only, including on Python 3.11/Windows."""
-    destination.mkdir(parents=True, exist_ok=True)
+    platform_name = platform_name or sys.platform
     if zipfile.is_zipfile(archive):
         with zipfile.ZipFile(archive) as bundle:
-            for zip_member in bundle.infolist():
-                relative = archive_path(zip_member.filename)
+            members = bundle.infolist()
+            targets = archive_destinations([(m.filename, m.is_dir()) for m in members], destination,
+                                           platform_name=platform_name, strip_root=strip_root)
+            destination.mkdir(parents=True, exist_ok=True)
+            for zip_member, target in zip(members, targets):
                 if stat.S_ISLNK(zip_member.external_attr >> 16):
                     raise ValueError(f"Archive contains a link: {zip_member.filename}")
-                target = destination / relative
                 if zip_member.is_dir():
                     target.mkdir(parents=True, exist_ok=True)
                 else:
@@ -191,8 +227,11 @@ def extract(archive: Path, destination: Path, *, reject_links: bool = False) -> 
                     target.chmod(0o755 if zip_member.external_attr >> 16 & 0o111 else 0o644)
         return
     with tarfile.open(archive) as bundle:
-        for member in bundle:
-            target = destination / archive_path(member.name)
+        members = bundle.getmembers()
+        targets = archive_destinations([(m.name, m.isdir()) for m in members], destination,
+                                       platform_name=platform_name, strip_root=strip_root)
+        destination.mkdir(parents=True, exist_ok=True)
+        for member, target in zip(members, targets):
             if member.isdir():
                 target.mkdir(parents=True, exist_ok=True)
             elif member.isfile():
@@ -214,12 +253,14 @@ def extract(archive: Path, destination: Path, *, reject_links: bool = False) -> 
 
 
 def fetch_archive(url: str, destination: Path, *, sha256: str | None = None,
-                  reject_links: bool = False) -> None:
+                  reject_links: bool = False, strip_root: bool = False,
+                  platform_name: str | None = None) -> None:
     archive = destination.with_name(destination.name + ".download")
     archive.parent.mkdir(parents=True, exist_ok=True)
     try:
         download(url, archive, sha256=sha256)
-        extract(archive, destination, reject_links=reject_links)
+        extract(archive, destination, reject_links=reject_links, strip_root=strip_root,
+                platform_name=platform_name)
     finally:
         archive.unlink(missing_ok=True)
 
@@ -249,14 +290,42 @@ def source_repo(value: str) -> str | Path:
     return local_repository(value)
 
 
-def _source_git() -> str:
+def git_required_message(platform_name: str) -> str:
+    where = ("Git for Windows from https://git-scm.com/download/win" if platform_name == "win32"
+             else "Git with xcode-select --install" if platform_name == "darwin"
+             else "Git using your distribution's package manager (for example, sudo apt install git)")
+    return f"Astrid needs Git; install {where}, then run the same command again."
+
+
+def require_git(*, recorded: str | None = None, platform_name: str | None = None) -> str:
+    """Check before downloads, including a prior install's recorded executable."""
+    platform_name = platform_name or sys.platform
+    env = {}
+
+    def probe(argv, **kwargs):
+        return subprocess.run(argv, check=True, capture_output=True, text=True,
+                              **kwargs).stdout
+
+    _record_installing_git(env, probe, windows=platform_name == "win32",
+                           recorded=recorded or os.environ.get("ASTRID_GIT_EXECUTABLE"))
+    if "ASTRID_GIT_EXECUTABLE" not in env:
+        raise ValueError(git_required_message(platform_name))
+    return env["ASTRID_GIT_EXECUTABLE"]
+
+
+def source_git_command(executable: str, *, platform_name: str | None = None) -> list[str]:
+    return [executable, *(["-c", "core.longpaths=true"]
+                         if (platform_name or sys.platform) == "win32" else [])]
+
+
+def _source_git(recorded: str | None = None) -> str:
     """Use the install-recorded Git or a safe absolute PATH entry for staging."""
     from .git_lookup import _git_executable
 
     git = _git_executable(os.environ.get("PATH", os.defpath), windows=os.name == "nt",
-                          cwd=os.getcwd(), recorded=os.environ.get("ASTRID_GIT_EXECUTABLE"))
+                          cwd=os.getcwd(), recorded=recorded or os.environ.get("ASTRID_GIT_EXECUTABLE"))
     if git is None:
-        raise ValueError("Source staging operations require Git on PATH or a valid recorded Git executable.")
+        raise ValueError(git_required_message(sys.platform))
     return git
 
 
@@ -291,10 +360,10 @@ def repository_identity(value: str) -> tuple[str, str] | None:
     return url.netloc.lower(), path
 
 
-def local_source(repo: str, sha: str, archive: Path) -> None:
+def local_source(repo: str, sha: str, archive: Path, *, git_executable: str | None = None) -> None:
     """Archive a committed Git tree, without consulting the checkout's worktree."""
     repository = local_repository(repo)
-    executable = _source_git()
+    command = source_git_command(git_executable or _source_git())
     # Inherited Git overrides must not redirect reads to some other repository.
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     env.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
@@ -302,10 +371,10 @@ def local_source(repo: str, sha: str, archive: Path) -> None:
 
     def git(*args, **kwargs):
         try:
-            result = subprocess.run([executable, "-C", str(repository), *args], env=env,
+            result = subprocess.run([*command, "-C", str(repository), *args], env=env,
                                     stderr=subprocess.PIPE, check=False, **kwargs)
         except FileNotFoundError as error:
-            raise ValueError("Source staging operations require Git on PATH or a valid recorded Git executable.") from error
+            raise ValueError(git_required_message(sys.platform)) from error
         if result.returncode:
             detail = result.stderr.decode("utf-8", errors="replace").strip()
             raise ValueError(f"Cannot read local source {repository} at {sha}: {detail}")
@@ -322,12 +391,12 @@ def local_source(repo: str, sha: str, archive: Path) -> None:
         git("archive", "--format=tar", sha, stdout=output)
 
 
-def clone_source(repo: str, sha: str, destination: Path) -> Path:
+def clone_source(repo: str, sha: str, destination: Path, *, git_executable: str | None = None) -> Path:
     """Clone all refs and tags, then admit only the manifest's immutable commit."""
     if not re.fullmatch(r"[0-9a-f]{40}", sha):
         raise ValueError("A source must be pinned to a full git SHA.")
     repository = source_repo(repo)
-    executable = _source_git()
+    command = source_git_command(git_executable or _source_git())
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(destination.name + ".clone")
     if temporary.exists():
@@ -336,25 +405,28 @@ def clone_source(repo: str, sha: str, destination: Path) -> Path:
     env.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
                 "GIT_NO_REPLACE_OBJECTS": "1"})
     try:
-        result = subprocess.run([executable, "clone", "--quiet", "--tags", "--no-checkout",
-                                 "--no-hardlinks", "--no-single-branch", str(repository), str(temporary)],
+        # Retain the setting for build-backend Git probes in this owned clone.
+        clone_options = ["--config", "core.longpaths=true"] if sys.platform == "win32" else []
+        result = subprocess.run([*command, "clone", "--quiet", "--tags", "--no-checkout",
+                                 "--no-hardlinks", "--no-single-branch", *clone_options,
+                                 str(repository), str(temporary)],
                                 env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 check=False, timeout=1800)
         if result.returncode:
             detail = result.stderr.decode("utf-8", errors="replace").strip()
             raise ValueError(f"Cannot clone pinned source repository: {detail}")
-        check = subprocess.run([executable, "-C", str(temporary), "cat-file", "-t", sha],
+        check = subprocess.run([*command, "-C", str(temporary), "cat-file", "-t", sha],
                                env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                check=False, timeout=60)
         if check.returncode or check.stdout.strip() != b"commit":
             raise ValueError("The pinned source SHA is not a commit in the cloned repository.")
-        checkout = subprocess.run([executable, "-C", str(temporary), "checkout", "--quiet",
+        checkout = subprocess.run([*command, "-C", str(temporary), "checkout", "--quiet",
                                   "--detach", sha], env=env, stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE, check=False, timeout=60)
         if checkout.returncode:
             detail = checkout.stderr.decode("utf-8", errors="replace").strip()
             raise ValueError(f"Cannot check out pinned source commit: {detail}")
-        head = subprocess.run([executable, "-C", str(temporary), "rev-parse", "HEAD"], env=env,
+        head = subprocess.run([*command, "-C", str(temporary), "rev-parse", "HEAD"], env=env,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True,
                               timeout=60).stdout.decode("ascii").strip()
         if head != sha:
@@ -367,29 +439,35 @@ def clone_source(repo: str, sha: str, destination: Path) -> Path:
     return destination
 
 
-def source(name: str, sha: str, destination: Path, *, repo: str | None = None) -> Path:
+def source(name: str, sha: str, destination: Path, *, repo: str | None = None,
+           git_executable: str | None = None, platform_name: str | None = None) -> Path:
     if not re.fullmatch(r"[0-9a-f]{40}", sha):
         raise ValueError(f"The {name} source must be pinned to a full git SHA.")
-    staging = destination.with_name(destination.name + ".unpack")
+    windows = (platform_name or sys.platform) == "win32"
+    staging = destination.with_name(destination.name + (".u" if windows else ".unpack"))
     archive = destination.with_name(destination.name + ".source.tar")
     try:
         if repo is not None:
-            local_source(repo, sha, archive)
-            extract(archive, staging)
+            local_source(repo, sha, archive, git_executable=git_executable)
+            extract(archive, staging, **({"platform_name": "win32"} if windows else {}))
             platform.replace_path(staging, destination)
         else:
             repository = (VIBECOMFY_FORK_URL.removesuffix(".git") if name == "vibecomfy"
                           else f"https://github.com/banodoco/astrid-{name}")
-            fetch_archive(f"{repository}/archive/{sha}.tar.gz", staging)
+            fetch_archive(f"{repository}/archive/{sha}.tar.gz", staging,
+                          **({"strip_root": True, "platform_name": "win32"} if windows else {}))
+            if windows:
+                platform.replace_path(staging, destination)
+                return destination
             children = list(staging.iterdir())
             if len(children) != 1 or not children[0].is_dir():
                 raise ValueError(f"Unexpected {name} source archive layout.")
-            # Discard GitHub's long SHA directory name to keep Windows paths shallow.
+            # Match the prefix-free installed layout used on Windows.
             platform.replace_path(children[0], destination)
     finally:
         archive.unlink(missing_ok=True)
         if staging.exists():
-            shutil.rmtree(staging)
+            remove_tree_after_release(staging)
     return destination
 
 
@@ -492,18 +570,29 @@ def _install_omp_source(selected: dict, recipe: dict, root: Path, target: str, r
     if native is None:
         raise ValueError(f"There is no pinned OMP native build for {target}.")
     root.mkdir(parents=True, exist_ok=True)
-    container = root / "source-archive"
+    # On Windows the archive's wrapper folder (name plus 40-character commit) and a
+    # long staging name push deep source files past MAX_PATH; unpack without the
+    # wrapper into a staging folder there. The file set is identical either way.
+    # The staging name must be at least as long as the final "source" name below:
+    # archive_destinations checks paths under the staging folder, and a shorter
+    # name would let a tree pass the Windows path budget and then fail at the rename.
+    windows = sys.platform == "win32"
+    container = root / ("sources" if windows else "source-archive")
     source_url = omp_source_url(selected["repo"], selected["sha"])
     if source_url:
-        fetch_archive(source_url, container, reject_links=True)
-        children = list(container.iterdir())
-        if len(children) != 1 or not children[0].is_dir():
-            raise ValueError("Unexpected OMP source directory layout.")
-        source_root = children[0]
+        fetch_archive(source_url, container, reject_links=True, strip_root=windows)
+        if windows:
+            source_root = container
+        else:
+            children = list(container.iterdir())
+            if len(children) != 1 or not children[0].is_dir():
+                raise ValueError("Unexpected OMP source directory layout.")
+            source_root = children[0]
     else:
         archive = root / "source.download"
         try:
-            local_source(selected["repo"], selected["sha"], archive)
+            local_source(selected["repo"], selected["sha"], archive,
+                         git_executable=env.get("ASTRID_GIT_EXECUTABLE"))
             extract(archive, container)
         finally:
             archive.unlink(missing_ok=True)
@@ -513,7 +602,7 @@ def _install_omp_source(selected: dict, recipe: dict, root: Path, target: str, r
     normalized = root / "source"
     platform.replace_path(source_root, normalized)
     if container.exists():
-        shutil.rmtree(container)
+        remove_tree_after_release(container)
     source_root = normalized
     tree_sha256 = source_tree_sha256(source_root)
     _check_omp_lock(source_root, recipe["bun_lock_sha256"])
@@ -539,7 +628,7 @@ def _install_omp_source(selected: dict, recipe: dict, root: Path, target: str, r
                 raise ValueError(f"The pinned OMP native archive is missing {name}.")
             platform.replace_path(native_file, destination / name)
     finally:
-        shutil.rmtree(native_archive)
+        remove_tree_after_release(native_archive)
     # Import the producer's CPU-aware loader, then enforce the exact ABI marker
     # even in workspace mode, where the producer normally omits that guard.
     probe = ("import {pathToFileURL} from 'node:url';"
@@ -624,9 +713,8 @@ def _record_installing_git(env: dict[str, str], run, *, windows: bool, note=None
     The service PATH is built deliberately (no user profile PATH), so a Git for
     Windows install under Program Files is invisible to the launcher. A prior
     selection or an absolute git on the installing PATH must answer
-    ``git --version``. Git is optional for the install: without a working git
-    nothing is recorded, the install continues, and pack installs from git
-    report that Git is missing.
+    ``git --version``. This lookup is also used by the mandatory preflight;
+    callers decide whether an absent selection is an error.
     """
     from .git_lookup import _git_executable
 

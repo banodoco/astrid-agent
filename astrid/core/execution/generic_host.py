@@ -45,6 +45,7 @@ import tempfile
 import threading
 import time
 import zipfile
+
 from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field, is_dataclass, replace
 from datetime import datetime, timezone
@@ -72,16 +73,22 @@ from astrid.core.source_identity import (
     source_checkout_closure_digest,
 )
 
-# Startup observations use only the existing private stderr sink. Regular-file
-# latency is not bounded; this diagnostic never changes descriptor flags.
-_STARTUP_OBSERVATION_ENABLED = __name__ == "__main__" and "--ready-file" in sys.argv
+# Preserve the private-fd diagnostic and also time startup through the service
+# stderr sink. Writes are best effort; descriptor flags are never changed.
+_STARTUP_OBSERVATION_ENABLED = __name__ == "__main__" and any(
+    flag in sys.argv for flag in ("--ready-file", "--service")
+)
 _STARTUP_OBSERVATION_STARTED = time.monotonic()
+_STARTUP_TIMING_LAST = _STARTUP_OBSERVATION_STARTED
+_STARTUP_TIMING_SEEN: set[str] = set()
 _STARTUP_OBSERVATION_PHASES = frozenset({
     "module_import_begin", "module_import_done", "cli_args_parsed",
     "startup_identity_begin", "startup_identity_done",
     "host_constructor_begin", "host_constructor_done", "discovery_begin",
     "discovery_done", "preflight_begin", "preflight_done",
     "registration_begin", "registration_done", "ready_written",
+    "bootstrap_begin", "bootstrap_inventory_done", "bootstrap_identity_done",
+    "bootstrap_health_done", "bootstrap_manifest_done", "bootstrap_launch_done",
 })
 
 
@@ -90,13 +97,27 @@ def _is_posix() -> bool:
 
 
 def _emit_startup_phase(phase: str) -> None:
-    """One best-effort fixed row to an existing owner-only regular fd2.
+    """Fixed private-fd diagnostics plus service timing for each startup phase.
 
     A file write can stall before startup/cleanup. No nonblocking guarantee,
     new sink, retry, descriptor flag change or diagnostic thread is implied.
     """
     if not _STARTUP_OBSERVATION_ENABLED or type(phase) is not str or phase not in _STARTUP_OBSERVATION_PHASES:
         return
+    global _STARTUP_TIMING_LAST
+    # Runtime service stderr is often a pipe, so the private-fd diagnostic
+    # below alone misses service starts. One path-free timing row per startup
+    # checkpoint also goes through the ordinary service log sink.
+    if phase not in _STARTUP_TIMING_SEEN:
+        now = time.monotonic()
+        elapsed = max(0, round((now - _STARTUP_TIMING_LAST) * 1000))
+        _STARTUP_TIMING_LAST = now
+        _STARTUP_TIMING_SEEN.add(phase)
+        try:
+            print(json.dumps({"event": "astrid.host_startup_timing", "phase": phase,
+                              "elapsed_ms": elapsed}), file=sys.stderr, flush=True)
+        except (OSError, ValueError):
+            pass
     try:
         info = os.fstat(2)
         if (not stat.S_ISREG(info.st_mode) or not owned_by_current_user(2, info, mode=0o600)):
@@ -8089,7 +8110,9 @@ class GenericPackHost:
 
     def preflight(self, capability_id: str | None = None) -> tuple[CapabilityRecord, ...]:
         """Full readiness validation for initial/explicit registration or work."""
-        return self._preflight(capability_id, full_remotion=True)
+        return self._preflight(capability_id, full_remotion=not (
+            capability_id is None and getattr(self, "_defer_startup_remotion", False)
+        ))
 
     def _preflight(self, capability_id: str | None = None, *, full_remotion: bool) -> tuple[CapabilityRecord, ...]:
         from astrid.core.generation.gpu_environment import windows_gpu_status
@@ -8160,9 +8183,14 @@ class GenericPackHost:
                     try:
                         from astrid.core.rendering.remotion_runtime import (
                             RemotionProbeCleanupError,
+                            ensure_remotion_validation,
                             remotion_runtime_status,
                         )
                         if remotion_status is None:
+                            ensure_remotion_validation()
+                            # First use publishes the launch reference. Cache
+                            # readiness against that completed context.
+                            remotion_context = self._remotion_idle_context()
                             remotion_status = remotion_runtime_status(require_explicit_project=True)
                         status = remotion_status
                     except RemotionProbeCleanupError as exc:
@@ -8199,12 +8227,23 @@ class GenericPackHost:
                     else:
                         self._forget_failed_remotion_observation(record.id, remotion_context)
                 else:
+                    from astrid.core.rendering.remotion_runtime import remotion_validation_deferred
+
                     owner = self._handoff_accounting_owner
                     with owner._handoff_condition:
                         prior = owner._remotion_full_preflight.get(record.id)
                     checks["remotion"] = (
                         dict(prior[1]) if remotion_context is not None and prior is not None
                         and prior[0] == remotion_context else {
+                            # Claim admission always runs full preflight before
+                            # dispatch. Pending means able to accept a task,
+                            # never permission to render on unvalidated tools.
+                            "ok": True, "pending": True,
+                            "reason": "Remotion validation deferred until first use",
+                        } if remotion_validation_deferred() and (
+                            "remotion" not in record.preflight
+                            or record.preflight["remotion"].get("pending")
+                        ) else {
                             "ok": False,
                             "reason": "full Remotion validation required for current host context",
                         }
@@ -9996,6 +10035,10 @@ class GenericPackHost:
         callers clear it in their ``finally`` block.  No credential is placed
         in request JSON, evidence, or diagnostics.
         """
+        if _record_may_render(record):
+            from astrid.core.rendering.remotion_runtime import ensure_remotion_validation
+
+            ensure_remotion_validation()
         declared = _required_secret_names(record)
         secrets = {
             name: value
@@ -18098,6 +18141,9 @@ def _log_cli_exit_failure(error: BaseException) -> None:
 
 
 def _cli() -> int:
+    global _STARTUP_OBSERVATION_ENABLED
+    if "--ready-file" in sys.argv:
+        _STARTUP_OBSERVATION_ENABLED = True
     managed_shutdowns: list[Any] = []
     try:
         return _cli_impl(managed_shutdowns)
@@ -18139,6 +18185,7 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
     parser.add_argument("--source-inventory-identity", help="verified managed source inventory identity bound to this host")
     parser.add_argument("--boot-manifest-path", help="existing explicit boot-manifest path")
     parser.add_argument("--remotion-validation-launch-id", help=argparse.SUPPRESS)
+    parser.add_argument("--defer-remotion-validation", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--boot-manifest-hash", help="expected SHA-256 hash of the boot manifest")
     parser.add_argument("--readiness-profile-path", help="Worker-published readiness profile")
     parser.add_argument("--readiness-profile-hash", help="expected SHA-256 hash of the readiness profile")
@@ -18168,6 +18215,10 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
         parser.error("Remotion readiness reference belongs to a foreign launch")
     if declared_validation and os.environ.get(ASTRID_REMOTION_VALIDATION_ROLE) != "host":
         parser.error("Remotion readiness context is not the host launch context")
+    if args.defer_remotion_validation and (
+        declared_validation or not args.source_checkout or not args.support_root
+    ):
+        parser.error("deferred Remotion validation requires fresh explicit host launch roots")
     if args.attempt_root and args.attempt_base:
         parser.error("--attempt-root and --attempt-base are mutually exclusive")
     if (args.readiness_profile_path is None) != (args.readiness_profile_hash is None):
@@ -18458,6 +18509,34 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
         boot_manifest_hash=boot_manifest_hash,
     )
     _emit_startup_phase("host_constructor_done")
+    if args.defer_remotion_validation:
+        from astrid.core.rendering import remotion_runtime
+        from astrid.sdk.host_bootstrap import _prepare_render_validation
+
+        validation_environment = dict(os.environ)
+
+        def prepare_render_validation() -> None:
+            try:
+                _prepare_render_validation(
+                    source_checkout, validation_environment, support_root, sys.executable,
+                    tuple(Path(root) for root in args.pack_root),
+                    identity_attestation["source"].get("closure_digest"),
+                )
+            except BaseException:
+                # Ordinary optional failures return no reference, as before.
+                # Escaping errors (notably unresolved probe custody) remain
+                # fatal to this launch, even though readiness was published.
+                host._invalidate_ready_registration()
+                host._shutdown.set()
+                raise
+            os.environ.update({key: validation_environment[key]
+                               for key in remotion_runtime._REF_ENV_KEYS
+                               if key in validation_environment})
+
+        remotion_runtime._deferred_validation = remotion_runtime.DeferredRemotionValidation(
+            prepare_render_validation
+        )
+        host._defer_startup_remotion = True
     # Only verified host startup arguments populate this private context. A
     # child's payload/environment is never accepted as launch/source identity.
     host._child_import_host_context = {
@@ -18640,6 +18719,7 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
             ready_path.unlink(missing_ok=True)
             stdin_shutdown.wait_for_shutdown_cleanup()
             return 1
+    host._defer_startup_remotion = False
     if args.run_task:
         if client is None or not args.lease_token:
             parser.error("--run-task requires --runtime-endpoint, --credential-file, and --lease-token")
@@ -18666,6 +18746,15 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
         )
         supervisor.serve(sys.stdin, sys.stdout)
     return 0
+
+
+if sys.platform == "win32":
+    # OpenBLAS (loaded with numpy by workflow tooling) starts worker threads inside
+    # DllMain. Doing that under the Windows loader lock while the heartbeat thread
+    # is running deadlocked the task host on a tester's machine (astrid-dev#651).
+    # One thread means none are created at load. Children inherit the setting.
+    # `os` in this module is the Runtime filesystem adapter, so use the stdlib module.
+    __import__("os").environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 
 
 if __name__ == "__main__":

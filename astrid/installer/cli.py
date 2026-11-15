@@ -35,7 +35,15 @@ from .core import (
     write_json,
 )
 from .installation import Installation, State
-from .outcome import RECORD, Request, clear_record, journal_before_stop, receipt_warnings, settle, write_record
+from .outcome import (
+    RECORD,
+    Request,
+    clear_record,
+    journal_before_stop,
+    receipt_warnings,
+    settle,
+    write_record,
+)
 from .progress import HINT as PROGRESS_HINT
 from .progress import Progress
 from .service import (
@@ -47,7 +55,7 @@ from .service import (
     pinokio_owned,
 )
 from .support import FAILURE_MESSAGE, default_doctor_bundle
-from .tools import download, validate_manifest
+from .tools import download, require_git, validate_manifest
 
 PINOKIO_UPDATE_UNINSTALL_REFUSAL = (
     "Astrid on this computer was installed with Pinokio. Choose Pinokio's Update or Uninstall button."
@@ -334,6 +342,14 @@ def _prepare_log(path: Path, *protected: Path) -> Path | None:
     except (OSError, ValueError):
         return None
     return path
+
+
+def _download_manifest(root: Path, destination: Path) -> None:
+    # Even the small manifest download waits for the prerequisite check. Stage
+    # repeats it for local manifests and programmatic update entry points.
+    prior = current(root)
+    require_git(recorded=prior.env.get("ASTRID_GIT_EXECUTABLE") if prior else None)
+    download("https://astrid.haus/install-manifest.json", destination)
 
 
 def _retained_r0_roots(service) -> list[Path]:
@@ -650,7 +666,7 @@ def main(argv: list[str] | None = None) -> int:
                     raise ValueError("Run the install line to provide the pinned user-local uv.")
                 manifest_path = args.manifest or root / "install-manifest.json"
                 if not args.manifest:
-                    download("https://astrid.haus/install-manifest.json", manifest_path)
+                    _download_manifest(root, manifest_path)
                 manifest = run.manifest(validate_manifest(read_json(manifest_path)))
                 outcomes = (update_app(root, backend, manifest) if args.update_app
                             else update_pinokio(root, backend, manifest, force=args.update))
@@ -838,7 +854,7 @@ def main(argv: list[str] | None = None) -> int:
                             raise ValueError("Run the install line to provide the pinned user-local uv.")
                         path = args.manifest or root / "install-manifest.json"
                         if not args.manifest:
-                            download("https://astrid.haus/install-manifest.json", path)
+                            _download_manifest(root, path)
                         return run.manifest(validate_manifest(read_json(path)))
 
                     # R0's data stays read-only. This must precede legacy
@@ -938,7 +954,7 @@ def main(argv: list[str] | None = None) -> int:
                 if mode not in {"uninstall", "doctor"}:
                     if not args.manifest:
                         args.manifest = root / "install-manifest.json"
-                        download("https://astrid.haus/install-manifest.json", args.manifest)
+                        _download_manifest(root, args.manifest)
                     manifest = validate_manifest(read_json(args.manifest))
                     if settled:
                         run.manifest(manifest)
@@ -990,8 +1006,11 @@ def main(argv: list[str] | None = None) -> int:
                     print(details)
         elif isinstance(failure, VerificationError) and failure.safe_message:
             print(failure.safe_message)
+        else:
+            print(f"{type(failure).__name__}: {failure}")
         if log is not None and not settled:
             print(f"Details: {log}")  # settled runs name it in the receipt's closing lines
         if settled:
+            run.log = log  # Include the actual traceback log, including update-job logs.
             return run.finish(failure=failure)
         return 1

@@ -1,0 +1,150 @@
+name: Windows fresh user install guard
+
+# A fresh-user install with Windows long paths disabled and a long profile path.
+# Keep the failure blocking: no continue-on-error, retries, or installer patches.
+on:
+  workflow_dispatch:
+    inputs:
+      app_ref:
+        description: Optional full 40-character banodoco/astrid-app commit SHA; defaults to main
+        required: false
+        type: string
+  pull_request:
+    paths:
+      - "astrid/installer/**"
+      - "astrid/core/generation/**"
+      - "astrid/core/execution/**"
+      - "astrid/packs/vibecomfy/**"
+      - "tests/test_windows_posix_guard.py"
+      - "tests/core/generation/test_windows_target_files.py"
+      - "tests/fixtures/comfyui_protocol/**"
+      - ".github/workflows/windows-install-guard.yml"
+      - ".github/workflows/windows-journey.yml"
+      - "scripts/ci_windows_install_guard.py"
+      - "scripts/ci_windows_journey.py"
+      - "tests/test_ci_windows_install_guard.py"
+      - "runtime.lock.json"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  windows-install-guard:
+    name: Fresh Windows install (long paths off, long user name, TLS, private DACL)
+    runs-on: windows-latest
+    timeout-minutes: 75
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out this Agent candidate
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up the journey driver (not the installed Python)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Resolve App ref and the Runtime commit from the Agent lock
+        id: refs
+        env:
+          INPUT_APP_REF: ${{ inputs.app_ref }}
+        run: |
+          $appRef = if ([string]::IsNullOrWhiteSpace($env:INPUT_APP_REF)) { "main" } else { $env:INPUT_APP_REF.Trim() }
+          if (-not [string]::IsNullOrWhiteSpace($env:INPUT_APP_REF) -and $appRef -notmatch '^[0-9a-fA-F]{40}$') {
+            throw "app_ref must be a full 40-character commit SHA (or empty for main)"
+          }
+          $runtimeRef = (Get-Content runtime.lock.json -Raw | ConvertFrom-Json).source_commit
+          if ($runtimeRef -notmatch '^[0-9a-f]{40}$') { throw "Invalid Runtime source_commit" }
+          "app=$appRef" >> $env:GITHUB_OUTPUT
+          "runtime=$runtimeRef" >> $env:GITHUB_OUTPUT
+
+      - name: Check out the locked Runtime
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-runtime
+          ref: ${{ steps.refs.outputs.runtime }}
+          path: journey-runtime
+          persist-credentials: false
+
+      - name: Check out the selected App bootstrap
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-app
+          ref: ${{ steps.refs.outputs.app }}
+          path: journey-app
+          persist-credentials: false
+
+      - name: Prepare local manifest for the exact checkout archives (no published release)
+        run: python -u scripts/ci_windows_install_guard.py prepare
+
+      - name: "B1/B2 long-path guard: disable and verify Windows long paths"
+        run: |
+          reg add HKLM\SYSTEM\CurrentControlSet\Control\FileSystem /v LongPathsEnabled /t REG_DWORD /d 0 /f
+          if ($LASTEXITCODE -ne 0) { throw "Could not disable long paths" }
+          $value = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem').LongPathsEnabled
+          if ($value -ne 0) { throw "Long-path guard requires LongPathsEnabled=0; got $value" }
+
+      - name: "B1 long-path guard: create a fresh long user-like LOCALAPPDATA"
+        run: |
+          $local = 'C:\Users\AstridLongUserName_Tester01\AppData\Local'
+          if (Test-Path -LiteralPath $local) { throw "Fresh profile path already exists" }
+          New-Item -ItemType Directory -Path $local -Force | Out-Null
+
+      - name: "Real candidate install: B1 long paths, B3 Git missing, F1 TLS, F4 DACL"
+        id: install
+        run: |
+          # Process-scoped changes: later steps and actions keep the runner PATH.
+          $env:LOCALAPPDATA = 'C:\Users\AstridLongUserName_Tester01\AppData\Local'
+          $env:UV_CACHE_DIR = Join-Path $env:RUNNER_TEMP 'windows-install-guard-uv-cache'
+          # Git stays on PATH: the installer requires Git and now says so before any
+          # download (unit-tested, and checked by a tester on a machine without Git).
+          # This job proves the install itself with long paths off.
+          Remove-Item Env:ASTRID_GIT_EXECUTABLE -ErrorAction SilentlyContinue
+          if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) {
+            throw "Guard setup failed: Git is not discoverable"
+          }
+          $value = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem').LongPathsEnabled
+          if ($value -ne 0) { throw "B1 long-path guard setup drifted" }
+          # No TLS prewarming, trust-store edits, verification bypass or seeded
+          # Astrid directory ACLs. Run the real App bootstrap exactly once.
+          python -u scripts/ci_windows_install_guard.py install
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Installed command and attached ComfyUI smoke
+        run: |
+          $env:LOCALAPPDATA = 'C:\Users\AstridLongUserName_Tester01\AppData\Local'
+          python -u scripts/ci_windows_install_guard.py smoke
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: "F4 DACL diagnostics: retain paths, owners and SDDL after installation"
+        if: always()
+        run: |
+          $evidence = Join-Path $env:RUNNER_TEMP 'windows-install-guard'
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          $local = 'C:\Users\AstridLongUserName_Tester01\AppData\Local'
+          $rows = foreach ($path in @($local, "$local\Astrid Installer", "$local\Astrid Runtime", "$local\Astrid Runtime\logs", "$local\Astrid")) {
+            if (Test-Path -LiteralPath $path) {
+              $acl = Get-Acl -LiteralPath $path
+              @{path=$path; owner=$acl.Owner; sddl=$acl.Sddl; protected=$acl.AreAccessRulesProtected}
+            } else { @{path=$path; status='not created'} }
+          }
+          ConvertTo-Json -InputObject @($rows) -Depth 4 | Set-Content (Join-Path $evidence 'dacl.json')
+
+      - name: Upload failed install.log, failure receipts and guard diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Windows-fresh-user-install-failure
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/windows-install-guard/*.log
+            ${{ runner.temp }}/windows-install-guard/*.json
+            ${{ runner.temp }}/windows-install-guard/generation-failure/**

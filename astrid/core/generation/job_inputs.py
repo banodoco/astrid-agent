@@ -46,7 +46,7 @@ def write_archive(path: Path, values: Mapping[str, Any], ports: list[dict[str, A
             if isinstance(value, (str, Path)):
                 document = regular_file(value)
                 document_parent = document.parent
-                value = json.loads(document.read_text())
+                value = json.loads(document.read_text(encoding="utf-8-sig"))
             if not isinstance(value, Mapping):
                 raise ValueError(f'entry input {name!r} must be a file map')
             def map_member(item):

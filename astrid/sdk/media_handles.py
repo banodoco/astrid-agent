@@ -25,8 +25,8 @@ first, then character/style, then brand); one handle per port.
 from __future__ import annotations
 
 import mimetypes
-import os
 import re
+import sys
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -421,7 +421,7 @@ def annotate_output_rows(client: Any, project: str | None, rows: list[Any]) -> l
                 project_scope = str(row.get("project_id") or project)
                 source = verified_cas_path(client, project_scope, digest, size=size)
                 row["path"] = str(save_media(client, digest, target, project=project_scope))
-                row["path_storage"] = "apfs-clone" if source is not None and os.uname().sysname == "Darwin" else "verified-copy"
+                row["path_storage"] = "apfs-clone" if source is not None and sys.platform == "darwin" else "verified-copy"
             except Exception:  # noqa: BLE001 - a view copy is a convenience, never a failure
                 pass
         annotated.append(row)

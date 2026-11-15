@@ -75,3 +75,19 @@ def test_shared_browser_reinstall_skips_second_download():
         capture_output=True, text=True, timeout=30, check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_remotion_failed_install_says_rendering_is_unavailable_and_where_the_log_is(tmp_path, capsys):
+    agent = tmp_path / "source"
+    remotion = agent / "remotion"
+    remotion.mkdir(parents=True)
+    (remotion / "package-lock.json").write_text('{}\n')
+    log = tmp_path / "install.log"
+    backend = Backend(tmp_path, log, Path("uv"))
+    backend.run = Mock(side_effect=subprocess.CalledProcessError(1, "npm"))
+
+    backend.install_remotion_dependencies(agent, {"ASTRID_NODE_EXECUTABLE": "node"}, Path("npm-cli.js"))
+
+    out = capsys.readouterr().out
+    assert "Rendering unavailable" in out
+    assert str(log) in out

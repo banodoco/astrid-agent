@@ -1,4 +1,4 @@
-"""Private descriptor-relative filesystem building blocks for Linux contexts.
+"""Private descriptor-relative filesystem building blocks for engine files.
 
 This is an incomplete A2 slice, not an ExecutionContext or install authority.
 """
@@ -13,12 +13,20 @@ import stat
 import time
 from collections.abc import Mapping
 from contextlib import contextmanager
+from pathlib import PureWindowsPath
+
+# POSIX (including the rented engine machine, where only this file and two
+# Runtime modules are shipped) uses ordinary os. On Windows the Runtime adapter
+# retains native directory handles, refuses reparse points and compares final
+# paths and file identities; it does not protect against same-user byte edits.
+if not hasattr(os, 'O_DIRECTORY'):  # Windows
+    from runtime_protocol.dirfd import filesystem as os
 
 from .engine_contracts import DeadlineExceeded, FileFact, RecipeValidationError, UnsafePathError
 
 _JSON_LIMIT = 4 * 1024 * 1024
-_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-_FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
+_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, 'O_CLOEXEC', 0)
+_FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, 'O_CLOEXEC', 0) | os.O_NONBLOCK
 
 
 def _check(deadline):
@@ -41,18 +49,36 @@ def _parts(path):
 
 class _TargetFiles:
     def __init__(self, root):
-        self._root = tuple(_parts(root))
+        self._anchor, self._root = self._split(root)
+
+    @staticmethod
+    def _split(path):
+        if os.name != 'nt':
+            return '/', tuple(_parts(path))
+        if not isinstance(path, str) or any(ord(c) < 32 for c in path):
+            raise UnsafePathError("unsafe target path")
+        value = PureWindowsPath(path)
+        # The Runtime adapter additionally rejects device names, ADS, trailing
+        # dots/spaces and reparses, including junctions, at the actual open.
+        raw = path.replace('\\', '/').split('/')
+        if (not value.is_absolute() or len(value.parts) < 2
+                or any(p in ('.', '..') for p in raw)
+                or any(':' in p for p in value.parts[1:])):
+            raise UnsafePathError("unsafe target path")
+        return value.anchor, tuple(value.parts[1:])
 
     def _relative(self, path):
-        parts = _parts(path)
-        if tuple(parts[:len(self._root)]) != self._root:
+        anchor, parts = self._split(path)
+        normalize = str.casefold if os.name == 'nt' else str
+        if (normalize(anchor) != normalize(self._anchor)
+                or tuple(map(normalize, parts[:len(self._root)])) != tuple(map(normalize, self._root))):
             raise UnsafePathError("target path outside install root")
         return parts
 
     @contextmanager
     def _directory(self, parts, deadline, *, create=False):
         _check(deadline)
-        fd = os.open('/', _DIR_FLAGS)
+        fd = os.open(self._anchor, _DIR_FLAGS)
         try:
             for part in parts:
                 _check(deadline)
@@ -200,7 +226,7 @@ class _TargetFiles:
                 except FileNotFoundError:
                     pass
                 temp = '.a2-' + secrets.token_hex(16) + '.tmp'
-                fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, 'O_CLOEXEC', 0),
                              0o600, dir_fd=parent)
                 try:
                     view = memoryview(data)

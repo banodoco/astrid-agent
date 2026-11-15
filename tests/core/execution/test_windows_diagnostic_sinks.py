@@ -69,3 +69,31 @@ def test_windows_startup_diagnostic_requires_private_handle_and_fixed_fields(mon
         assert row["phase"] == "preflight_begin" and row["process_id"] == 123
     else:
         assert rows == []
+
+
+def test_service_startup_timing_reaches_pipe_once_per_phase(monkeypatch, capsys):
+    monkeypatch.setattr(generic_host, "_STARTUP_OBSERVATION_ENABLED", True)
+    monkeypatch.setattr(generic_host, "_STARTUP_TIMING_SEEN", set())
+    monkeypatch.setattr(generic_host, "_STARTUP_TIMING_LAST", 10.0)
+    monkeypatch.setattr(generic_host.time, "monotonic", lambda: 10.125)
+    monkeypatch.setattr(generic_host, "os", SimpleNamespace(
+        fstat=lambda fd: SimpleNamespace(st_mode=stat.S_IFIFO),
+    ))
+    generic_host._emit_startup_phase("discovery_done")
+    generic_host._emit_startup_phase("discovery_done")
+    generic_host._emit_startup_phase("/home/private-name/not-a-phase")
+    rows = [json.loads(line) for line in capsys.readouterr().err.splitlines()]
+    assert rows == [{"event": "astrid.host_startup_timing", "phase": "discovery_done",
+                     "elapsed_ms": 125}]
+
+
+def test_foreground_bootstrap_enables_service_timing_when_imported(monkeypatch, capsys):
+    from astrid.sdk import host_bootstrap
+
+    monkeypatch.setattr(generic_host, "_STARTUP_OBSERVATION_ENABLED", False)
+    monkeypatch.setattr(generic_host, "_STARTUP_TIMING_SEEN", set())
+    # A minimal handoff returns before discovery or any runtime connection.
+    assert host_bootstrap.ensure_pack_host({}, reconfigure_action="restart", _foreground=True) == {}
+    rows = [json.loads(line) for line in capsys.readouterr().err.splitlines()]
+    assert any(row.get("event") == "astrid.host_startup_timing"
+               and row["phase"] == "bootstrap_begin" for row in rows)

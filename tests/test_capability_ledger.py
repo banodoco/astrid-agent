@@ -202,3 +202,24 @@ def test_reviewed_v3_source_occurrence_removal_is_reported_by_name(monkeypatch):
     row = load_capability_ledger(Path("config/astrid-beta-capabilities.json"))["sources"]["coverage"]["source_labels"]
     assert row["status"] == "drift"
     assert "generation.generate_audio" in row["missing"]
+
+
+def test_provenance_census_does_not_validate_external_pack_compatibility(tmp_path, caplog):
+    import shutil
+    from astrid.core.execution.capability_ledger import _quarantine_snapshot
+    from astrid.core.pack.loader import scan_pack_roots
+
+    # A bundled pack copied to the provenance checkout is outside PACKAGE_ROOT
+    # and lacks external pack_api compatibility, just like an installed host.
+    copied = tmp_path / "astrid" / "packs" / "rendering"
+    shutil.copytree(Path("astrid/packs/rendering"), copied)
+    labels, records = _quarantine_snapshot(tmp_path)
+    assert labels == {} and records == []
+    assert "quarantined optional pack" not in caplog.text
+
+    # The executing inventory still refuses exactly the same external copy.
+    inventory = scan_pack_roots((copied,), source_records={})
+    assert not inventory.packs
+    assert any(row.pack_id == "rendering" and "pack_api" in row.error
+               for row in inventory.quarantined)
+    assert "quarantined optional pack" in caplog.text

@@ -49,6 +49,7 @@ from .tools import (
     clone_source,
     install_tools,
     repository_identity,
+    require_git,
     source,
     validate_pack_build,
 )
@@ -510,7 +511,7 @@ class Backend:
                 self.run([env["ASTRID_NODE_EXECUTABLE"], npm, "ci", "--no-audit", "--no-fund"],
                          cwd=remotion, extra_env=env)
             except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-                self.say(f"Rendering unavailable: Remotion npm ci failed ({self._command_failure(exc)}). Check the installer log and retry the install.")
+                self.say(f"Rendering unavailable: Remotion npm ci failed ({self._command_failure(exc)}). Details are in the installer log at {self.log}; retry the install.")
                 return False
             marker.write_text(lock_hash + "\n", encoding="ascii")
         # Renders never download: fetch Remotion's browser now, once per Remotion
@@ -1332,10 +1333,28 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             raise ValueError("Run the install line to provide the pinned user-local uv.")
         if self.run([self.uv, "--version"]).split()[1] != manifest["tools"]["uv"]["version"]:
             raise ValueError("The installer needs the manifest's pinned uv.")
+        prior = current(root) or self.existing(data)
+        git = require_git(recorded=prior.env.get("ASTRID_GIT_EXECUTABLE") if prior else None)
         folder = root / "versions" / new_version_id(manifest)
         folder.mkdir(parents=True)
+        try:
+            return self._stage(manifest, folder, data, prior=prior, git=git, copy_from=copy_from)
+        except BaseException as failure:
+            # Only this newly created candidate is ours to remove; selection and
+            # the old Runtime have not changed during prepare.
+            try:
+                remove_pack_tree(folder)
+            except OSError as cleanup:
+                failure.add_note(f"Partial installation remains at {folder}: {cleanup}")
+                self.say(f"Partial installation remains at {folder}; run the same command again.")
+            raise
+
+    def _stage(self, manifest: dict, folder: Path, data: Path, *, prior: Version | None,
+               git: str, copy_from: Path | None = None) -> Version:
+        root = folder.parent.parent
         windows_private(folder)  # Parent of version.json, profile.json and services.json.
         agent = source("agent", manifest["agent"]["sha"], folder / "a",
+                       git_executable=git,
                        **({"repo": manifest["agent"]["repo"]} if "repo" in manifest["agent"] else {}))
         _check_lifecycle_pin(manifest, agent)
         if "vibecomfy" in manifest:
@@ -1346,14 +1365,17 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         manifest = {**manifest, "vibecomfy": manifest.get("vibecomfy", {"sha": VIBECOMFY_ENGINE_REVISION})}
         write_json(folder / "manifest.json", manifest)
         runtime = source("runtime", manifest["runtime"]["sha"], folder / "r",
+                         git_executable=git,
                          **({"repo": manifest["runtime"]["repo"]} if "repo" in manifest["runtime"] else {}))
         vibecomfy = source("vibecomfy", manifest["vibecomfy"]["sha"], folder / "v",
+                          git_executable=git,
                           **({"repo": manifest["vibecomfy"]["repo"]} if "repo" in manifest["vibecomfy"] else {}))
         sibling_sources = []
         source_install_env = {}
         if "lifecycle" in manifest:
             pin = manifest["lifecycle"]
-            sibling_sources.append(clone_source(pin["repo"], pin["sha"], folder / "lifecycle"))
+            sibling_sources.append(clone_source(pin["repo"], pin["sha"], folder / "lifecycle",
+                                                git_executable=git))
             source_install_env["SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUNPOD_LIFECYCLE"] = pin["version"]
         self._verify_local_timeline_schema(agent)
         environment = folder / "py"
@@ -1370,9 +1392,8 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         self.run([self.uv, "pip", "install", *link_mode, "--python", python, "--no-deps", runtime,
                   runtime / "packages" / "python", agent, vibecomfy, *sibling_sources],
                  extra_env=source_install_env)
-        prior = current(root) or self.existing(data)
         env = install_tools(manifest, folder / "tools", platform_target(), self.run, note=self.diagnostic,
-                            recorded_git=prior.env.get("ASTRID_GIT_EXECUTABLE") if prior else None)
+                            recorded_git=git)
         env.update({"ASTRID_RUNTIME_DATA_ROOT": str(data),
                     "ASTRID_INSTALL_UV": str(self.uv),
                     "ASTRID_RUNTIME_DOOR_PORT": os.environ.get(

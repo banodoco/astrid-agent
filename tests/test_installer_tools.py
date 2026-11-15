@@ -289,6 +289,7 @@ def test_update_stages_recorded_git_from_restricted_service_environment(tmp_path
     monkeypatch.setattr(backend_module, "source", lambda _name, _sha, destination, **_kw: destination)
     monkeypatch.setattr(installer, "_verify_local_timeline_schema", lambda *_args: None)
     monkeypatch.setattr(installer, "run", run)
+    monkeypatch.setattr(backend_module, "require_git", lambda **kwargs: str(git))
     captured = {}
     original_install_tools = backend_module.install_tools
 
