@@ -1109,10 +1109,15 @@ def warm_case(tmp_path, monkeypatch):
                  ('config', 'user.name', 'CPU'), ('add', '.'), ('commit', '--allow-empty', '-m', 'fixture')]:
         subprocess.run(['git', '-C', str(checkout), *args], check=True, capture_output=True)
     (checkout / 'tracked.py').write_text('verified = True\n')
+    node_lock = checkout / 'custom_nodes.lock'
+    node_lock.write_text('verified node pins\n')
     subprocess.run(['git', '-C', str(checkout), 'add', '.'], check=True)
     subprocess.run(['git', '-C', str(checkout), 'commit', '-m', 'source'], check=True, capture_output=True)
     head = subprocess.check_output(['git', '-C', str(checkout), 'rev-parse', 'HEAD'], text=True).strip()
     recipe = replace(recipe, sources=(replace(recipe.sources[0], pin=replace(recipe.sources[0].pin, revision=head)),))
+    from astrid.core.generation.engine_contracts import SourceFileRef
+    recipe = replace(recipe, environments=(replace(recipe.environments[0], node_lock=SourceFileRef(
+        recipe.sources[0].name, 'custom_nodes.lock', hashlib.sha256(node_lock.read_bytes()).hexdigest())),))
     locks = {recipe.environments[0].name: 'b' * 64}
     lockfile = state_dir / 'environments' / recipe.environments[0].name / 'requirements.lock'
     lockfile.parent.mkdir(parents=True)
@@ -1159,6 +1164,7 @@ def warm_case(tmp_path, monkeypatch):
     monkeypatch.setattr(engine_runner, 'require_current_receipt', lambda *a: None)
     monkeypatch.setattr(engine_runner, '_Runner', Runner)
     monkeypatch.setattr(engine_runner, 'refresh_installed_launch', lambda *a, **kw: 'c' * 64)
+    read_trust = settings.model_trust_unchanged
     monkeypatch.setattr(settings, 'model_trust_unchanged', lambda: state.trust)
     state.trust = True
     monkeypatch.setattr(managed_preparation, 'configured_models_root', lambda **kw: str(root / 'runtime/ComfyUI/models'))
@@ -1197,7 +1203,13 @@ def warm_case(tmp_path, monkeypatch):
                 raise IntegrityError('doctor failed')
         commands = SimpleNamespace(nodes_restore=lambda rows: calls.append('nodes'),
             prepare_deps_sync=lambda: calls.append('prepare'), doctor=doctor)
-        monkeypatch.setattr(entries, 'engine_table', lambda: {'comfyui': mod.ComfyUIEngine(commands)})
+        engine = mod.ComfyUIEngine(commands)
+        original_align = engine.align
+        def align(*args, **kwargs):
+            calls.append('engine-align')
+            return original_align(*args, **kwargs)
+        engine.align = align
+        monkeypatch.setattr(entries, 'engine_table', lambda: {'comfyui': engine})
         try:
             return prep._prepare(source, execution_identity='execution', inputs={},
                                  canonical_workflow=workflow, input_digests={})
@@ -1207,7 +1219,7 @@ def warm_case(tmp_path, monkeypatch):
 
     return SimpleNamespace(run=run, state=state, calls=calls, logs=logs, root=root, checkout=checkout,
         lockfile=lockfile, attestation=state_dir / 'warm-attestation.json', recipe_digest=recipe_digest,
-        runner=Runner, raw=raw, plan=plan)
+        runner=Runner, raw=raw, plan=plan, read_trust=read_trust)
 
 
 def test_warm_attestation_second_job_skips_expensive_steps(warm_case):
@@ -1219,6 +1231,115 @@ def test_warm_attestation_second_job_skips_expensive_steps(warm_case):
     log = json.loads([body for step, body in c.logs if step == 'warm_attestation'][-1])
     assert log['warm_attestation']['used'] is True
     assert 'doctor' in log['warm_attestation']['skipped']
+
+
+def test_local_managed_warm_second_job_skips_audits(warm_case):
+    c = warm_case
+    c.state.claim = None
+    c.run()
+    c.calls.clear()
+    c.run()
+    assert not set(c.calls) & {'source', 'environment', 'runtime', 'nodes', 'prepare', 'doctor',
+                               'alignment', 'engine-align', 'git-inventory'}
+    saved = json.loads(c.attestation.read_text())
+    assert 'claim_id' not in saved['identity']
+    assert saved['identity']['supervisor'] == c.state.birth
+    log = json.loads([body for step, body in c.logs if step == 'warm_attestation'][-1])
+    assert log['warm_attestation']['used'] is True
+
+
+def test_local_managed_supervisor_restart_reverifies_fully(warm_case):
+    c = warm_case
+    c.state.claim = None
+    c.run()
+    assert c.attestation.exists()
+    c.state.birth = {**c.state.birth, 'start_ticks': '999'}
+    c.calls.clear()
+    c.run()
+    assert {'source', 'environment', 'runtime', 'nodes', 'prepare', 'doctor', 'alignment'} <= set(c.calls)
+    assert json.loads(c.attestation.read_text())['identity']['supervisor'] == c.state.birth
+
+
+def test_local_managed_requirement_set_survives_t2i_edit_t2i(warm_case):
+    warm_case.state.claim = None
+    test_warm_attestation_requirement_set_survives_t2i_edit_t2i(warm_case)
+
+
+@pytest.mark.parametrize('damage', ['absent', 'corrupt', 'schema', 'false', 'invalid-settings', 'unreadable-settings'])
+def test_local_managed_attestation_fails_closed(warm_case, monkeypatch, damage):
+    from astrid.core.generation import settings
+    c = warm_case
+    c.state.claim = None
+    c.run()
+    assert c.attestation.exists()
+    if damage == 'absent':
+        c.attestation.unlink()
+    elif damage == 'corrupt':
+        c.attestation.write_text('{')
+    elif damage == 'schema':
+        saved = json.loads(c.attestation.read_text())
+        saved['schema'] = 'wrong-schema'
+        c.attestation.write_text(json.dumps(saved))
+    elif damage == 'false':
+        c.state.trust = False
+    else:
+        monkeypatch.setattr(settings, 'model_trust_unchanged', c.read_trust)
+        def read(*args):
+            raise OSError('unreadable settings') if damage == 'unreadable-settings' else ValueError('invalid settings')
+        monkeypatch.setattr(settings, 'read', read)
+    c.calls.clear()
+    c.run()
+    assert {'source', 'environment', 'runtime', 'nodes', 'prepare', 'doctor', 'alignment'} <= set(c.calls)
+
+
+@pytest.mark.parametrize('first,second', [('claim-1', 'claim-2'), ('claim-1', None), (None, 'claim-1')])
+def test_warm_attestation_claim_presence_and_identity_must_match(warm_case, first, second):
+    c = warm_case
+    c.state.claim = first
+    c.run()
+    assert c.attestation.exists()
+    c.state.claim = second
+    c.calls.clear()
+    c.run()
+    assert {'source', 'environment', 'runtime', 'nodes', 'prepare', 'doctor', 'alignment'} <= set(c.calls)
+
+
+@pytest.mark.parametrize('change', ['node-lock', 'node-pin', 'source-pin'])
+def test_warm_attestation_binds_engine_and_node_pins(warm_case, change):
+    from dataclasses import replace
+    c = warm_case
+    c.run()
+    saved = json.loads(c.attestation.read_text())
+    environment = c.state.recipe.environments[0]
+    assert saved['identity']['node_locks'] == {environment.name: environment.node_lock.sha256}
+    if change == 'node-lock':
+        (c.checkout / 'custom_nodes.lock').write_text('changed node pins\n')
+    elif change == 'node-pin':
+        c.state.recipe = replace(c.state.recipe, environments=(replace(environment,
+            node_lock=replace(environment.node_lock, sha256='f' * 64)),))
+    else:
+        source = c.state.recipe.sources[0]
+        c.state.recipe = replace(c.state.recipe, sources=(replace(source,
+            pin=replace(source.pin, revision='f' * 40)),))
+    c.calls.clear()
+    c.run()
+    assert {'source', 'environment', 'runtime', 'nodes', 'prepare', 'doctor', 'alignment'} <= set(c.calls)
+
+
+def test_warm_attestation_retains_storage_and_model_verification(warm_case, monkeypatch):
+    c = warm_case
+    c.run()
+    c.calls.clear()
+    original = ManagedEnginePreparation._verify_models
+    def verify(self, manifest):
+        c.calls.append('models')
+        return original(self, manifest)
+    monkeypatch.setattr(ManagedEnginePreparation, '_verify_models', verify)
+    monkeypatch.setattr(ManagedEnginePreparation, '_preflight_model_storage',
+                        lambda *args: c.calls.append('storage'))
+    c.run()
+    assert {'storage', 'models'} <= set(c.calls)
+    assert not {'source', 'environment', 'doctor', 'alignment'} & set(c.calls)
 
 
 def test_warm_attestation_requirement_set_survives_t2i_edit_t2i(warm_case):
@@ -1315,6 +1436,25 @@ def test_warm_attestation_requirement_digest_ignores_graph_parameters():
     assert requirement_digest(other, manifest) == before
     assert requirement_digest(other, {'models': [], 'extra': {'nodes': [
         {'repo': 'https://example.invalid/edit.git', 'commit': 'e' * 40}]}}) != before
+
+
+@pytest.mark.parametrize('change', ['class', 'custom-nodes', 'custom-refs', 'pip'])
+def test_warm_attestation_requirement_digest_binds_canonical_requirements(change):
+    from astrid.core.generation.warm_attestation import requirement_digest
+    from vibecomfy.workflow import VibeWorkflow, WorkflowSource
+    workflow = VibeWorkflow('warm', WorkflowSource('warm'))
+    manifest = {'models': [], 'extra': {'nodes': []}}
+    before = requirement_digest(workflow, manifest)
+    if change == 'class':
+        workflow.add_node('NewRequiredClass', _id='1', uid='new')
+    elif change == 'custom-nodes':
+        workflow.requirements.custom_nodes = ['new-pack']
+    elif change == 'custom-refs':
+        workflow.requirements.custom_node_refs = [{'slug': 'new-pack', 'source': 'git',
+            'url': 'https://example.invalid/new.git', 'commit': 'f' * 40}]
+    else:
+        workflow.requirements.runtime = {'packages': {'new-package': '==1.0'}}
+    assert requirement_digest(workflow, manifest) != before
 
 
 @pytest.mark.parametrize('change', ['outputs', 'tracked-output'])

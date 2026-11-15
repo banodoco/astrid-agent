@@ -1,9 +1,11 @@
-"""Per-claim witnesses for fully verified managed workflow requirements.
+"""Supervisor-local witnesses for fully verified managed workflow requirements.
 
 Same-user writers are trusted, as in model_verification. This file is not
 tamper-proof against code running as the engine user; a separate isolation
-boundary would be needed for that. Container-local storage deliberately loses
-these witnesses with the pod. models.trust_unchanged: false disables both kinds
+boundary would be needed for that. Install-local storage works on local-managed
+hosts and deliberately loses pod witnesses with the container. A claim ID is an
+additional binding only for jobs running under a claim, never a prerequisite.
+models.trust_unchanged: false disables both kinds
 of witness. Metadata observations invalidate cached source/installed dependency
 checks; they never claim to defend against a trusted writer forging metadata.
 """
@@ -24,7 +26,7 @@ from ._engine_target_files import _TargetFiles
 from .engine_contracts import EngineError
 
 CLAIM_ID: ContextVar[str | None] = ContextVar('warm_attestation_claim', default=None)
-SCHEMA = 'astrid.warm-attestation.v1'
+SCHEMA = 'astrid.warm-attestation.v2'
 _SHA = re.compile(r'[0-9a-f]{64}\Z')
 
 
@@ -44,8 +46,16 @@ def requirement_digest(workflow, manifest):
     """Canonical requirement declarations, never graph/prompt/seed bytes."""
     from vibecomfy.runtime.dependencies import runtime_requirements_from_workflow
     runtime = runtime_requirements_from_workflow(workflow)
+    # Doctor consumes typed IR requirements as well as the transport manifest
+    # (for example custom-node version/schema constraints). Retain those and
+    # the required class set without including graph literals or node IDs.
+    declarations = {name: sorted(getattr(workflow.requirements, name), key=_digest)
+                    for name in ('models', 'custom_nodes', 'custom_node_refs',
+                                 'missing_models', 'missing_nodes', 'unsupported')}
     return _digest({'models': sorted(manifest['models'], key=_digest),
                     'nodes': sorted(manifest['extra']['nodes'], key=_digest),
+                    'declarations': declarations,
+                    'classes': sorted({node.class_type for node in workflow.nodes.values()}),
                     'runtime': runtime.to_dict() if runtime else None})
 
 
@@ -165,7 +175,7 @@ class WarmAttestation:
     def __init__(self, root, recipe, runner, claim_id, deadline, *, enabled):
         self.root, self.recipe, self.runner = Path(root), recipe, runner
         self.claim_id, self.deadline = claim_id, deadline
-        self.enabled = enabled and isinstance(claim_id, str) and bool(claim_id)
+        self.enabled = enabled is True and (claim_id is None or isinstance(claim_id, str) and bool(claim_id))
         self.files = _TargetFiles(str(self.root))
         self.path = str(self.root / '.astrid-engine/warm-attestation.json')
         self.saved = None
@@ -208,8 +218,12 @@ class WarmAttestation:
         supervisor = saved['identity'].get('supervisor')
         if (not isinstance(supervisor, dict) or set(supervisor) != {'pid', 'start_ticks', 'uid'}
                 or type(supervisor['pid']) is not int or type(supervisor['uid']) is not int
-                or not isinstance(supervisor['start_ticks'], str)):
+                or supervisor['pid'] <= 0 or supervisor['uid'] < 0
+                or not isinstance(supervisor['start_ticks'], str) or not supervisor['start_ticks'].isdigit()):
             raise ValueError('warm supervisor witness')
+        if 'claim_id' in saved['identity'] and (not isinstance(saved['identity']['claim_id'], str)
+                                               or not saved['identity']['claim_id']):
+            raise ValueError('warm claim witness')
         for row in saved['model_rows']:
             if (not isinstance(row, dict) or set(row) != {'name', 'subdir', 'url', 'sha256', 'size'}
                     or not isinstance(row['name'], str) or not row['name'] or Path(row['name']).name != row['name']
@@ -233,20 +247,29 @@ class WarmAttestation:
             source_rows[source.name] = {'head': source.pin.revision, 'porcelain_clean': True,
                 'git_sha256': _git_identity(root, self.deadline),
                 'tree_sha256': _tree(root, sources[source.name]['ignored'], sources[source.name]['tracked'], self.deadline)}
-        locks = {}
+        locks, node_locks = {}, {}
         for environment in self.recipe.environments:
             path = self.root / '.astrid-engine/environments' / environment.name / 'requirements.lock'
             fact = self.files.file_fact(str(path), hash_bytes=True, deadline=self.deadline)
             if not fact.regular or fact.symlink or not fact.sha256:
                 raise ValueError('warm environment lock')
             locks[environment.name] = fact.sha256
+            if environment.node_lock is not None:
+                ref = environment.node_lock
+                source = next(source for source in self.recipe.sources if source.name == ref.source)
+                node = self.files.file_fact(str(self.root / source.relative_path / ref.path),
+                                            hash_bytes=True, deadline=self.deadline)
+                if not node.regular or node.symlink or node.sha256 != ref.sha256:
+                    raise ValueError('warm node lock differs from pinned source file')
+                node_locks[environment.name] = node.sha256
         info = models_root.stat()
         if models_root.is_symlink() or not stat.S_ISDIR(info.st_mode):
             raise ValueError('warm models root')
-        return {'claim_id': self.claim_id,
+        return {**({'claim_id': self.claim_id} if self.claim_id is not None else {}),
                 'supervisor': supervisor_incarnation(self.runner.context.service_client, self.deadline),
                 'recipe_sha256': recipe_digest(self.recipe), 'helper_sha256': self.runner.helper_sha256,
                 'receipt_sha256': _receipt_identity(raw), 'sources': source_rows, 'requirements_locks': locks,
+                'node_locks': node_locks,
                 'runtime_dependency_sha256': _dependencies(self.root, self.recipe, self.deadline),
                 'models_root_receipt': {'root': str(models_root), 'receipt_id': raw['receipt_id'],
                                         'dev': info.st_dev, 'inode': info.st_ino}}
@@ -334,7 +357,7 @@ class WarmAttestation:
 
 
 def collection_receipt(*, root, engine, platform, claim_id, deadline, trust_unchanged):
-    """Optional pod-local status shortcut, under the same install custody.
+    """Optional pod-local preparation/collection status shortcut under install custody.
 
     The controller still validates and independently reads the canonical receipt.
     Misses (including an unreadable witness) retain canonical status verification.

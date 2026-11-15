@@ -471,7 +471,8 @@ class ManagedEnginePreparation:
             raise IntegrityError("managed engine helper identity differs")
         from .warm_attestation import WarmAttestation, requirement_digest
         warm = WarmAttestation(self.root, self.recipe, runner, getattr(self, "claim_id", None), self.deadline,
-                               enabled=self._model_verification.trust_unchanged and self.mode == "align")
+                               enabled=(self._model_verification.trust_unchanged and self.mode == "align"
+                                        and canonical_workflow is not None))
         self._warm_claim_matched = warm.matched
         if warm.matched:
             runner.locks.update(receipt.requirements_locks)
@@ -502,9 +503,9 @@ class ManagedEnginePreparation:
             self._configure_runtime(canonical_workflow, runner, warm.saved["protected_packages"])
         skipped = (["source", "environment", "runtime_inspect"] if warm.matched else [])
         if warm_used:
-            skipped += ["nodes_restore", "pip_bootstrap", "fetch", "prepare_deps_sync", "doctor", "verify_alignment"]
+            skipped += ["alignment", "nodes_restore", "pip_bootstrap", "prepare_deps_sync", "doctor", "verify_alignment"]
         from types import SimpleNamespace
-        if getattr(self, "claim_id", None):
+        if warm.enabled or getattr(self, "claim_id", None):
             self._keep_step_output("warm_attestation", SimpleNamespace(stdout=json.dumps(
                 {"warm_attestation": {"used": warm_used, "skipped": skipped}}, sort_keys=True) + "\n", stderr=""))
         self._has_declared_nodes = bool((manifest.get("extra") or {}).get("nodes"))
@@ -517,11 +518,13 @@ class ManagedEnginePreparation:
         self.check()
         self._alignment_runner = runner
         self._alignment_verification = (canonical_workflow, runner, staged_digests, manifest, receipt)
-        if self.mode == "align" and not warm_used:
+        if self.mode == "align":
             self._preflight_model_storage(manifest)
         callback = getattr(self, "on_phase", None)
         if callback is not None:
             callback("align")
+        # Storage preflight above and model verification below still observe
+        # every model. Only native alignment is attested; W3 stays independent.
         alignment = ({"mode": self.mode, "missing": [], "fetched": [], "verified": True, "status": "ready"}
                      if warm_used else engine.align(manifest, self.mode, workflow=canonical_path))
         if alignment.get("status") == "missing":
@@ -529,6 +532,9 @@ class ManagedEnginePreparation:
         self.check()
         if not warm_used:
             self._verify_alignment(*self._alignment_verification)
+        else:
+            self._verify_canonical_bytes(staged_digests)
+            self._verify_model_alignment(manifest)
         runner.step_id = "start"
         if callback is not None:
             callback("start_engine")
@@ -593,9 +599,24 @@ class ManagedEnginePreparation:
         """Attest mutation results before executing the engine, and again after doctor."""
         from .engine_contracts import IntegrityError
         self.check()
+        self._verify_canonical_bytes(staged_digests)
+        self._verify_model_alignment(manifest)
+        if not getattr(self, "_warm_claim_matched", False):
+            self._guard_runtime(workflow, runner, post=True)
+            for step in runner.plan.steps:
+                if step.kind in {"source", "environment"}:
+                    runner.execute(step, readonly=True)
+        if runner.locks != receipt.requirements_locks or runner.commits != receipt.source_commits:
+            raise IntegrityError("managed alignment changed the installed base")
+        self.check()
+
+    def _verify_canonical_bytes(self, staged_digests):
+        from .engine_contracts import IntegrityError
         if any(path.is_symlink() or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected
                for path, expected in staged_digests.items()):
             raise IntegrityError("managed alignment changed the canonical workflow bytes")
+
+    def _verify_model_alignment(self, manifest):
         if self.mode != "trust":
             self.verification_attempted = True
             started = time.monotonic()
@@ -605,14 +626,6 @@ class ManagedEnginePreparation:
                 # Timing is evidence only; it must never replace a verification error.
                 with suppress(Exception):
                     self.verification_seconds = getattr(self, "verification_seconds", 0.0) + time.monotonic() - started
-        if not getattr(self, "_warm_claim_matched", False):
-            self._guard_runtime(workflow, runner, post=True)
-            for step in runner.plan.steps:
-                if step.kind in {"source", "environment"}:
-                    runner.execute(step, readonly=True)
-        if runner.locks != receipt.requirements_locks or runner.commits != receipt.source_commits:
-            raise IntegrityError("managed alignment changed the installed base")
-        self.check()
 
     def _begin_model_verification(self):
         from .model_verification import ModelVerification

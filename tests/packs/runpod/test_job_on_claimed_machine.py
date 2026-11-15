@@ -629,7 +629,9 @@ def test_hostwedge_restart_live_job_fences_claim_until_exact_recovery(machine_ca
 
 
 @pytest.mark.parametrize('match,trust', [(True, True), (False, True), (True, False)])
-def test_collection_warm_attestation_selects_status_only_on_miss(machine_case, monkeypatch, match, trust):
+@pytest.mark.parametrize('verification_seconds', [None, 30], ids=['preparation', 'collection'])
+def test_collection_warm_attestation_selects_status_only_on_miss(machine_case, monkeypatch, match, trust,
+                                                               verification_seconds):
     """Execute the shipped pod Python; fake only its attestation and OS/provider edges."""
     import contextlib
     import io
@@ -680,7 +682,7 @@ def test_collection_warm_attestation_selects_status_only_on_miss(machine_case, m
 
     monkeypatch.setattr(pod, 'exec', execute)
     with settings.using_model_trust_unchanged(trust):
-        assert c.placement._canonical_installed(state, verification_seconds=30)
+        assert c.placement._canonical_installed(state, verification_seconds=verification_seconds)
     assert bool(helper_calls) is trust
     assert observed == ([] if match and trust else ['status'])
 
