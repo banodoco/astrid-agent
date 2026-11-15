@@ -12,7 +12,8 @@ from tests.helpers.bootmanifest2_r12 import LEGACY_FIXTURE, r12_export, r12_prob
 
 
 def _state(tmp_path):
-    support = tmp_path / "support"
+    # The installer passes the DATA root; the host support root is data/runtime.
+    support = tmp_path / "data" / "runtime"
     path = support / "astrid-host/boot-manifest.json"
     path.parent.mkdir(parents=True)
     # Preserve formatting too: the rollback promise is byte-for-byte.
@@ -35,7 +36,7 @@ def _rollback(tmp_path, support, activate, *, backup=None, kind="migration", res
         assert result == "PASS", events
 
     rollback_transaction(
-        tmp_path, support, backend, transaction,
+        tmp_path, support.parent, backend, transaction,
         stop=lambda *a: events.append("stop"),
         switch_old=lambda *a: events.append("switch_old"),
         save=lambda step: events.append(step), activate_old=activate_old,

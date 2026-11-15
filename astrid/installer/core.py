@@ -326,8 +326,9 @@ def rollback_transaction(root: Path, data: Path, backend, transaction: dict, *,
 
             # R13 retires the R9--R12 boot rows even without a Runtime schema
             # change (and therefore without an installer workspace backup).
+            # The host support root is the runtime directory under the data root.
             restore_pre_restamp_boot_manifest(
-                data, remove_if_missing=not (backup is not None and restore_workspace and kind == "migration"),
+                Path(data) / "runtime", remove_if_missing=not (backup is not None and restore_workspace and kind == "migration"),
             )
         switch_old(old, candidate)
         save("rollback_selected")
