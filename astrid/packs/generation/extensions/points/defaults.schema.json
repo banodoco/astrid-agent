@@ -1,0 +1,21 @@
+{
+  "type": "object",
+  "required": ["defaults"],
+  "additionalProperties": false,
+  "properties": {
+    "defaults": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind", "mode", "entry", "priority"],
+        "additionalProperties": false,
+        "properties": {
+          "kind": {"enum": ["image", "video", "audio"]},
+          "mode": {"type": "string", "minLength": 1},
+          "entry": {"type": "string", "minLength": 1},
+          "priority": {"type": "integer"}
+        }
+      }
+    }
+  }
+}

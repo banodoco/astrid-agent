@@ -24,5 +24,5 @@ def managed_file_digest(value: Any, name: str) -> str:
         "caller-local paths are not available to executor workers. Import the file with "
         "client.media.import_file(project=..., path=..., idempotency_key=...) and pass "
         "its digest/object_id descriptor. Package declared dependencies inside JSON "
-        "explicitly (h3_av.transform does this automatically)."
+        "explicitly."
     )

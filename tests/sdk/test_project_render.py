@@ -43,7 +43,7 @@ class _Runtime:
             "task_id": task_id,
             "capability_id": "rendering.render",
             "state": "completed",
-            "spec": {"inputs": {"output_name": "review.mp4"}},
+            "spec": {"spec": {"inputs": {"output_name": "review.mp4"}}},
             "result": {"outputs": [{
                 "output_port": "video",
                 "managed_object_reference": "O-video",
@@ -293,10 +293,10 @@ def test_open_default_timeline_uses_only_runs_with_explicit_provenance(monkeypat
     # fixture overrides spec only to exercise timeline scope selection.
     runtime.get_task = lambda task_id: {
         **original_get_task(task_id),
-        "spec": {
+        "spec": {"spec": {
             "timeline_ref": "TL-main" if "main" in task_id else "TL-other",
             "inputs": {"output_name": "review.mp4"},
-        },
+        }},
     }
     monkeypatch.setattr("astrid.sdk.project_render.platform.system", lambda: "Darwin")
     monkeypatch.setattr("astrid.sdk.project_render.subprocess.run", lambda argv, check: None)
@@ -369,7 +369,7 @@ def test_open_hydrates_lightweight_run_rows_for_provenance(monkeypatch, tmp_path
     }
     original_get_task = runtime.get_task
     runtime.get_task = lambda task_id: original_get_task(task_id) | {
-        "spec": {"timeline_ref": "TL-main", "inputs": {"output_name": "review.mp4"}}
+        "spec": {"spec": {"timeline_ref": "TL-main", "inputs": {"output_name": "review.mp4"}}}
     }
     monkeypatch.setattr("astrid.sdk.project_render.platform.system", lambda: "Darwin")
     monkeypatch.setattr("astrid.sdk.project_render.subprocess.run", lambda argv, check: None)

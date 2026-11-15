@@ -307,7 +307,7 @@ def test_source_staging_rejects_current_directory_git(repository, tmp_path, monk
     monkeypatch.setenv("PATH", os.pathsep.join(["", ".", str(work)]))
     destination = tmp_path / "installed"
 
-    with pytest.raises(ValueError, match="require Git on PATH"):
+    with pytest.raises(ValueError, match="Astrid needs Git"):
         if method == "archive":
             tools.source("agent", sha, destination, repo=str(repo))
         else:
@@ -362,7 +362,7 @@ def test_local_source_reports_missing_git(repository, tmp_path, monkeypatch):
         raise FileNotFoundError("git")
 
     monkeypatch.setattr(tools.subprocess, "run", missing_git)
-    with pytest.raises(ValueError, match="require Git on PATH"):
+    with pytest.raises(ValueError, match="Astrid needs Git"):
         tools.source("agent", sha, tmp_path / "installed", repo=str(repo))
 
 
@@ -403,7 +403,7 @@ def test_stage_uses_source_overrides_and_records_manifest(
                {"owner": LABEL, "data_root": str(tmp_path / "data"), **({"managed_by": managed_by} if managed_by else {})})
     calls = []
 
-    def materialize(name, sha, destination, *, repo=None):
+    def materialize(name, sha, destination, *, repo=None, git_executable=None):
         calls.append((name, sha, destination, repo))
         if name == "agent":
             shutil.copytree(Path(__file__).parents[1] / "astrid/packs", destination / "astrid/packs")
@@ -905,3 +905,199 @@ def test_staged_recipe_pin_comes_from_target_and_rejects_corruption(tmp_path):
     (packs / "runpod/pins.json").write_text('{}')
     with pytest.raises(ValueError, match="digest mismatch"):
         Backend._staged_vibecomfy_revision(tmp_path)
+
+
+def test_staged_pin_reader_accepts_the_real_repository_tree_and_returns_the_canonical_revision(tmp_path):
+    # Copy the real tree of this commit (no hand-written fixture) so a change to
+    # where the Agent declares its pins cannot merge without breaking this reader.
+    from astrid.core.generation.canonical_pins import canonical_pin
+
+    shutil.copytree(Path(__file__).parents[1] / "astrid/packs", tmp_path / "astrid/packs")
+    revision = Backend._staged_vibecomfy_revision(tmp_path)
+    assert revision == VIBECOMFY_ENGINE_REVISION
+    assert revision == canonical_pin("vibecomfy")["revision"]
+
+
+def _stage_with_lifecycle(tmp_path, monkeypatch, lifecycle):
+    """Run the real stage() up to the staged-Agent pin check; the staged Agent is the real pins.json."""
+    root = Path(__file__).resolve().parents[1]
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    value = manifest()
+    if lifecycle is not None:
+        value["lifecycle"] = lifecycle
+    backend = Backend(tmp_path / "program", tmp_path / "log", tmp_path / "uv")
+    backend.uv.touch()
+    reached = []
+
+    def materialize(name, sha, destination, *, repo=None, git_executable=None):
+        if name == "agent":
+            target = destination / "astrid/packs/runpod/pins.json"
+            target.parent.mkdir(parents=True)
+            target.write_bytes((root / "astrid/packs/runpod/pins.json").read_bytes())
+        else:
+            reached.append(name)
+            raise RuntimeError("past the lifecycle check")
+        return destination
+
+    monkeypatch.setattr("astrid.installer.backend.source", materialize)
+    monkeypatch.setattr(backend, "run", lambda *_a, **_k: "uv 1.2.3")
+    return backend, value, reached
+
+
+def _canonical_lifecycle():
+    root = Path(__file__).resolve().parents[1]
+    pin = json.loads((root / "astrid/packs/runpod/pins.json").read_text())["sources"]["lifecycle"]
+    return {"repo": pin["repository"], "sha": pin["revision"], "version": pin["version"]}
+
+
+def test_stage_accepts_a_lifecycle_pin_that_matches_the_staged_agent(tmp_path, monkeypatch):
+    backend, value, reached = _stage_with_lifecycle(tmp_path, monkeypatch, _canonical_lifecycle())
+    with pytest.raises(RuntimeError, match="past the lifecycle check"):
+        backend.stage(value, tmp_path / "program", tmp_path / "data")
+    assert reached == ["runtime"]
+
+
+@pytest.mark.parametrize("field,changed", [("sha", "d" * 40), ("version", "9.9.9"),
+                                           ("repo", "https://github.com/example/other.git")])
+def test_stage_refuses_a_lifecycle_pin_that_differs_from_the_staged_agent(tmp_path, monkeypatch, field, changed):
+    pin = _canonical_lifecycle()
+    canonical = dict(pin)
+    pin[field] = changed
+    backend, value, reached = _stage_with_lifecycle(tmp_path, monkeypatch, pin)
+    with pytest.raises(ValueError, match="lifecycle pin differs") as caught:
+        backend.stage(value, tmp_path / "program", tmp_path / "data")
+    text = str(caught.value)
+    assert changed in text and canonical[field] in text
+    assert "release manifest whose pins match this Agent" in text and "astrid/packs/runpod/pins.json" in text
+    assert reached == []
+
+
+def test_stage_lifecycle_refusal_never_prints_url_credentials(tmp_path, monkeypatch):
+    bad_repositories = (
+        "https://user%3AFAKE_SECRET%40example.invalid/l.git", "https://[::1]/l.git",
+        "https://127.0.0.1/l.git", "https://git\nhub.com/l.git", "https://github.com/l.git//",
+        " https://github.com/l.git", "https://github.com/l.git ", "HTTPS://github.com/l.git",
+        "https://github.com/l.git?", "https://github.com/l.git#", "https://github.com:/l.git",
+        "https://github.com/a\\b", "https://github.com/" + "a" * 10000,
+    )
+    for index, bad_repo in enumerate(bad_repositories):
+        base = tmp_path / str(index)
+        pin = {**_canonical_lifecycle(), "repo": bad_repo}
+        backend, value, _ = _stage_with_lifecycle(base, monkeypatch, pin)
+        with pytest.raises(ValueError, match="lifecycle pin differs") as caught:
+            backend.stage(value, base / "program", base / "data")
+        assert "FAKE_SECRET" not in str(caught.value)
+        assert "repository <invalid>" in str(caught.value)
+
+
+def test_stage_accepts_lifecycle_repository_with_trailing_slash(tmp_path, monkeypatch):
+    pin = _canonical_lifecycle()
+    pin["repo"] += "/"
+    backend, value, reached = _stage_with_lifecycle(tmp_path, monkeypatch, pin)
+    with pytest.raises(RuntimeError, match="past the lifecycle check"):
+        backend.stage(value, tmp_path / "program", tmp_path / "data")
+    assert reached == ["runtime"]
+
+
+def test_legacy_manifest_without_lifecycle_stages(tmp_path, monkeypatch):
+    backend, value, reached = _stage_with_lifecycle(tmp_path, monkeypatch, None)
+    with pytest.raises(RuntimeError, match="past the lifecycle check"):
+        backend.stage(value, tmp_path / "program", tmp_path / "data")
+    assert reached == ["runtime"]
+
+
+@pytest.mark.parametrize("previous_install", [False, True])
+def test_failed_prepare_removes_only_its_candidate_and_uses_recorded_git(
+        repository, tmp_path, monkeypatch, previous_install):
+    repo, sha = repository
+    executable = os.path.realpath(shutil.which("git"))
+    backend = Backend(tmp_path / "program", tmp_path / "log", tmp_path / "uv")
+    backend.uv.touch()
+    monkeypatch.setattr(backend, "run", lambda *a, **k: "uv 1.2.3")
+    monkeypatch.setattr(backend, "existing", lambda data: None)
+    old_root = backend.root / "versions" / "old"
+    old_root.mkdir(parents=True)
+    sentinel = old_root / "keep"
+    sentinel.write_text("previous version")
+    if previous_install:
+        old = Version(old_root, Path(sys.executable), old_root / "profile.json",
+                      {"ASTRID_GIT_EXECUTABLE": executable}, release=12)
+        write_json(old_root / "version.json", old.document())
+        switch(backend.root, old)
+        monkeypatch.setenv("PATH", "")
+        monkeypatch.delenv("ASTRID_GIT_EXECUTABLE", raising=False)
+    else:
+        monkeypatch.setenv("ASTRID_GIT_EXECUTABLE", executable)
+    seen = []
+
+    def materialize(name, revision, destination, **kwargs):
+        seen.append((name, kwargs["git_executable"]))
+        if name == "agent":
+            result = tools.source(name, revision, destination, **kwargs)
+            assert (result / "nested/file.txt").read_text() == "nested content\n"
+            return result
+        raise RuntimeError("prepare failed after the Agent")
+
+    monkeypatch.setattr("astrid.installer.backend.source", materialize)
+    pins = manifest()
+    pins["agent"] = {"sha": sha, "repo": str(repo)}
+    with pytest.raises(RuntimeError, match="prepare failed after the Agent"):
+        backend.stage(pins, backend.root, tmp_path / "data")
+    assert seen == [("agent", executable), ("runtime", executable)]
+    assert list((backend.root / "versions").iterdir()) == [old_root]
+    assert sentinel.read_text() == "previous version"
+    if previous_install:
+        assert core.current(backend.root).root == old_root
+
+
+def test_prepare_cleanup_failure_keeps_original_error_and_names_residue(tmp_path, monkeypatch):
+    from astrid.installer import backend as backend_module
+
+    backend = Backend(tmp_path / "program", tmp_path / "log", tmp_path / "uv")
+    backend.uv.touch()
+    messages = []
+    backend.say = messages.append
+    monkeypatch.setattr(backend, "run", lambda *a, **k: "uv 1.2.3")
+    monkeypatch.setattr(backend, "existing", lambda data: None)
+    monkeypatch.setattr(backend_module, "require_git", lambda **k: "/selected/git")
+
+    def fail_stage(*args, **kwargs):
+        raise RuntimeError("original preparation error")
+
+    def locked(*args, **kwargs):
+        raise PermissionError("locked")
+
+    monkeypatch.setattr(backend, "_stage", fail_stage)
+    monkeypatch.setattr(backend_module, "remove_pack_tree", locked)
+    with pytest.raises(RuntimeError, match="original preparation error") as caught:
+        backend.stage(manifest(), backend.root, tmp_path / "data")
+    assert "Partial installation remains at" in messages[0]
+    assert "locked" in caught.value.__notes__[0]
+
+
+@pytest.mark.parametrize("method", ["archive", "clone"])
+def test_every_windows_source_git_command_enables_long_paths(repository, tmp_path, monkeypatch, method):
+    repo, sha = repository
+    executable = shutil.which("git")
+    real_run = subprocess.run
+    commands = []
+
+    def run(argv, **kwargs):
+        commands.append(argv)
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(tools.sys, "platform", "win32")
+    monkeypatch.setattr(tools.subprocess, "run", run)
+    # Exercise Windows argv on Linux; native MoveFileEx has its own retry tests.
+    monkeypatch.setattr(tools.platform, "replace_path", os.replace)
+    destination = tmp_path / "staged"
+    if method == "archive":
+        tools.local_source(str(repo), sha, tmp_path / "source.tar", git_executable=executable)
+    else:
+        tools.clone_source(str(repo), sha, destination, git_executable=executable)
+    assert commands
+    assert all(command[:3] == [executable, "-c", "core.longpaths=true"] for command in commands)
+    if method == "clone":
+        result = real_run([executable, "-C", str(destination), "config", "--get", "core.longpaths"],
+                          check=True, capture_output=True, text=True)
+        assert result.stdout.strip() == "true"

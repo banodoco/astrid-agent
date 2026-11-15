@@ -13,6 +13,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -211,6 +212,39 @@ def _pinokio_candidates(
     return candidates, apps_by_port
 
 
+def _workflow_listing(entries: list[Any]) -> tuple[list[str], list[dict[str, Any]]]:
+    """Name saved workflows newest first; entries without edit times keep server order.
+
+    ComfyUI's /userdata returns {"path", "size", "modified"} objects with `modified`
+    in epoch milliseconds when full_info=true, and plain path strings from older servers.
+    """
+    dated: list[tuple[str, int]] = []
+    undated: list[str] = []
+    for entry in entries:
+        if isinstance(entry, str):
+            undated.append(entry)
+        elif isinstance(entry, dict) and isinstance(entry.get("path"), str):
+            modified = entry.get("modified")
+            if isinstance(modified, (int, float)) and not isinstance(modified, bool):
+                dated.append((entry["path"], int(modified)))
+            else:
+                undated.append(entry["path"])
+    dated.sort(key=lambda item: (-item[1], item[0]))
+    names = [name for name, _ in dated] + undated
+    detail: list[dict[str, Any]] = [
+        {"name": name, "modified": _iso_utc_from_epoch_ms(modified)} for name, modified in dated
+    ] + [{"name": name, "modified": None} for name in undated]
+    return names, detail
+
+
+def _iso_utc_from_epoch_ms(value: int) -> str | None:
+    try:
+        moment = datetime.fromtimestamp(value / 1000, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+    return moment.isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
 def _probe_server(
     port: int,
     *,
@@ -275,13 +309,13 @@ def _probe_server(
     except (OSError, urllib.error.URLError, http.client.HTTPException, TimeoutError, ValueError) as exc:
         errors.append(_error(port, "/internal/folder_paths", exc))
     try:
-        query = urllib.parse.urlencode({"dir": "workflows"})
+        query = urllib.parse.urlencode({"dir": "workflows", "full_info": "true", "recurse": "true"})
         workflows = get_json("/userdata?" + query)
     except (OSError, urllib.error.URLError, http.client.HTTPException, TimeoutError, ValueError) as exc:
         errors.append(_error(port, "/userdata?dir=workflows", exc))
     else:
         if isinstance(workflows, list):
-            server["workflows"] = workflows
+            server["workflows"], server["workflows_detail"] = _workflow_listing(workflows)
         else:
             errors.append({
                 "port": port,
@@ -417,6 +451,25 @@ def scan(ports: list[int]) -> dict[str, Any]:
     }
 
 
+def wan2gp_folder(path: str) -> dict[str, Any]:
+    """Read-only check of a user's Wan2GP folder: file presence only, nothing is run."""
+    folder = Path(path).expanduser()
+    result: dict[str, Any] = {
+        "path": str(folder),
+        "exists": folder.is_dir(),
+        "is_wan2gp": False,
+        "outputs": None,
+    }
+    if not result["exists"]:
+        return result
+    entrypoint = folder / "wgp.py"
+    result["is_wan2gp"] = entrypoint.is_file()
+    outputs = folder / "outputs"
+    if outputs.is_dir():
+        result["outputs"] = str(outputs)
+    return result
+
+
 def pack_images(out_path: str, images: list[str]) -> dict[str, Any]:
     """Write the canonical managed_assets archive accepted by vibecomfy.run."""
     target = Path(out_path).expanduser()
@@ -461,6 +514,8 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     scan_parser = commands.add_parser("scan", help="discover running loopback ComfyUI servers")
     scan_parser.add_argument("--ports", default="8188,8000")
+    wan2gp_parser = commands.add_parser("wan2gp", help="read-only check of a Wan2GP folder")
+    wan2gp_parser.add_argument("path")
     images_parser = commands.add_parser("pack-images", help="build a managed_assets ZIP")
     images_parser.add_argument("out")
     images_parser.add_argument("images", nargs="+")
@@ -492,6 +547,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(result, ensure_ascii=False, sort_keys=True))
                 return 0
             result = scan(ports)
+        elif args.command == "wan2gp":
+            result = wan2gp_folder(args.path)
         else:
             result = pack_images(args.out, args.images)
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))

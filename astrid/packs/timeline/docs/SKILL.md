@@ -6,8 +6,10 @@ description: >-
 ---
 # Timeline editing
 
+Astrid commands here run through the launcher; its path on each OS is in the [astrid-setup skill's Launcher paths](../../setup/docs/SKILL.md#launcher-paths), and the blocks show the Linux path.
+
 Start with the Astrid skill for the current project. Find timelines with
-`python3 -m astrid timelines list --recent`; if more than one fits,
+`"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" timelines list --recent`; if more than one fits,
 ask the user and name the candidates. Never guess from files. Run SDK scripts
 with the same Python that runs Astrid.
 
@@ -40,7 +42,7 @@ The function runs on the latest timeline; if someone changed it first,
 ## Create a timeline
 
 ```bash
-python3 -m astrid timelines create --project <project> --slug <timeline> --name "Opening"
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" timelines create --project <project> --slug <timeline> --name "Opening"
 python3 -c '
 from astrid.sdk.timeline.api import Timeline; tl = Timeline.open("<project>", "<timeline>")
 clips = [("<clip-one>", 0), ("<clip-two>", 4)]; tl.commit(lambda t: [t.add(path, at=at, track="V1") for path, at in clips], label="Add clips", idempotency_key="opening-clips")'
@@ -51,7 +53,7 @@ Add all files in one commit, so one undo removes them.
 ## Look and report
 
 ```bash
-python3 -m astrid timelines visualize <timeline> --project <project> --at 0 --mode inputs
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" timelines visualize <timeline> --project <project> --at 0 --mode inputs
 ```
 
 For a vague span such as "the intro", look first, say what you mean, then edit.

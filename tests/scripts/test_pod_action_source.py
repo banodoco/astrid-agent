@@ -330,7 +330,7 @@ def test_source_bound_installer_dispatch_and_identity(candidate, tmp_path, monke
     assert proof["agent_head"] == selected["agent_head"] and proof["identity"]["dirty"] is False
     assert selected["agent_root"] not in json.dumps(proof) and selected["runtime_root"] not in json.dumps(proof)
     argv = json.loads((engine_root / ".astrid-engine/argv.json").read_text())
-    assert argv[:2] == ["install", "vibecomfy-h3"]
+    assert argv[:2] == ["install", "comfyui"]
     assert argv[argv.index("--root") + 1] == str(engine_root)
     assert argv[argv.index("--placement") + 1] == "local"
     if install_code:

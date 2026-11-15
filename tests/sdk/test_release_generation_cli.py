@@ -1,4 +1,4 @@
-"""CLI path: `astrid generate release --engine comfyui --target managed --json` into AstridClient."""
+"""CLI path: `astrid generate release --engine comfyui --placement managed --json` into AstridClient."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from astrid.core.generation import cli
 from astrid.sdk.client import AstridClient
 from tests.sdk.test_release_generation_client import _FakeComfy, _registered
 
-ARGV = ["release", "--engine", "comfyui", "--target", "managed", "--json"]
+ARGV = ["release", "--engine", "comfyui", "--placement", "managed", "--json"]
 
 
 def test_cli_release_succeeds_and_prints_only_proven_claims(monkeypatch, capsys):
@@ -34,7 +34,7 @@ def test_cli_release_failure_exits_nonzero(monkeypatch, capsys):
 
 def test_cli_attached_target_is_refused(monkeypatch, capsys):
     monkeypatch.setattr(cli, "_open_client", lambda: AstridClient(remote=object()))
-    code = cli.main(["release", "--engine", "comfyui", "--target", "http://127.0.0.1:8188", "--json"])
+    code = cli.main(["release", "--engine", "comfyui", "--placement", "http://127.0.0.1:8188", "--json"])
     assert code != 0
 
 

@@ -11,6 +11,7 @@ import stat
 import subprocess
 import sys
 import time
+import urllib.parse
 import urllib.request
 import uuid
 import webbrowser
@@ -42,7 +43,16 @@ from .core import (
 from .launcher import install_shim, owned_shim, remove_owned_command
 from .service import LABEL, Service, bootstrap_root, platform_target, venv_python
 from .support import reveal_bundle
-from .tools import asset_downloads, binary, clone_source, install_tools, source, validate_pack_build
+from .tools import (
+    asset_downloads,
+    binary,
+    clone_source,
+    install_tools,
+    repository_identity,
+    require_git,
+    source,
+    validate_pack_build,
+)
 
 
 class _HttpsRedirect(urllib.request.HTTPRedirectHandler):
@@ -183,7 +193,11 @@ def _secure_installed_schema_inputs(folder: Path, product_root: Path) -> None:
     """Secure only the new venv's guarded inputs, detaching shared file inodes."""
     if os.name == "nt":
         return  # Windows admission uses ACLs rather than POSIX modes.
-    from ..core.rendering._local_schema import READER_INPUTS, SCHEMA_RELATIVE_PATH, runtime_lock_path
+    from ..core.rendering._local_schema import (
+        READER_INPUTS,
+        SCHEMA_RELATIVE_PATH,
+        runtime_lock_path,
+    )
 
     venv_root = folder / "py"
     try:
@@ -381,6 +395,50 @@ def _runtime_json(output: str) -> dict:
     return json.loads(output[start:])
 
 
+_PIN_REMEDY = ("Install a release manifest whose pins match this Agent, or change "
+               "astrid/packs/runpod/pins.json in the Agent checkout to the pin you want to test.")
+
+
+def _public_pin(value: object) -> str:
+    return value if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}", value) else "<invalid>"
+
+
+def _public_repository(value: object) -> str:
+    identity = repository_identity(value)
+    return f"https://{identity[0]}{identity[1]}" if identity is not None else "<invalid>"
+
+
+def _public_version(value: object) -> str:
+    return value if isinstance(value, str) and re.fullmatch(
+        r"[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:\.dev[0-9]+)?", value) else "<invalid>"
+
+
+def _check_lifecycle_pin(manifest: dict, agent: Path) -> None:
+    """Refuse at install a lifecycle pin the staged Agent would refuse at every RunPod run.
+
+    Stdlib only: the installer's import closure is a fixed file list.
+    """
+    pin = manifest.get("lifecycle")
+    if pin is None:
+        return  # older release manifests carry no lifecycle source
+    path = agent / "astrid" / "packs" / "runpod" / "pins.json"
+    try:
+        canonical = json.loads(path.read_text(encoding="utf-8"))["sources"]["lifecycle"]
+        expected = (canonical["repository"], canonical["revision"], canonical["version"])
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise ValueError("The staged Agent has no readable lifecycle pin in astrid/packs/runpod/pins.json.") from exc
+    given = (pin.get("repo"), pin.get("sha"), pin.get("version"))
+    equivalent = (repository_identity(given[0]) == repository_identity(expected[0])
+                  and given[1:] == expected[1:])
+    if not equivalent:
+        raise ValueError(
+            "The manifest's lifecycle pin differs from the staged Agent's canonical pin. "
+            f"Manifest: repository {_public_repository(given[0])} revision {_public_pin(given[1])} "
+            f"version {_public_version(given[2])}. "
+            f"Agent (astrid/packs/runpod/pins.json): repository {_public_repository(expected[0])} "
+            f"revision {_public_pin(expected[1])} version {_public_version(expected[2])}. {_PIN_REMEDY}")
+
+
 class Backend:
     def __init__(self, root: Path, log: Path, uv: Path, *, say=print,
                  process_control: str | None = None, managed_by: str | None = None):
@@ -401,7 +459,8 @@ class Backend:
         # unvalidated service definition still requires an ownership check.
         self._foreground_stop_retired = False
 
-    def run(self, argv, *, extra_env=None, cwd=None, timeout=1800, clean_bun_env=False) -> str:
+    def run(self, argv, *, extra_env=None, cwd=None, timeout=1800, clean_bun_env=False,
+            separate_stderr=False) -> str:
         # Never inherit a developer's Python import path or Runtime connection.
         env = {k: v for k, v in os.environ.items() if k not in {
             "PYTHONPATH", "PYTHONHOME", "ASTRID_WORKSPACE_ENDPOINT",
@@ -411,10 +470,15 @@ class Backend:
                and not (clean_bun_env and (k.startswith("BUN_") or k == "NODE_OPTIONS"))}
         env.update({"PYTHONIOENCODING": "utf-8"})
         env.update(extra_env or {})
+        # A caller that parses stdout as a machine-readable result keeps stderr
+        # (warnings, log lines) out of it; both still reach the install log.
         result = subprocess.run([str(s) for s in argv], cwd=cwd, env=env, check=False,
-                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE if separate_stderr else subprocess.STDOUT,
                                 encoding="utf-8", errors="replace", timeout=timeout)
         self.diagnostic(result.stdout)
+        if separate_stderr and result.stderr:
+            self.diagnostic(result.stderr)
         if result.returncode:
             raise subprocess.CalledProcessError(result.returncode, [str(argv[0])], output=result.stdout)
         return result.stdout.strip()
@@ -447,7 +511,7 @@ class Backend:
                 self.run([env["ASTRID_NODE_EXECUTABLE"], npm, "ci", "--no-audit", "--no-fund"],
                          cwd=remotion, extra_env=env)
             except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-                self.say(f"Rendering unavailable: Remotion npm ci failed ({self._command_failure(exc)}). Check the installer log and retry the install.")
+                self.say(f"Rendering unavailable: Remotion npm ci failed ({self._command_failure(exc)}). Details are in the installer log at {self.log}; retry the install.")
                 return False
             marker.write_text(lock_hash + "\n", encoding="ascii")
         # Renders never download: fetch Remotion's browser now, once per Remotion
@@ -619,7 +683,8 @@ class Backend:
             return False
         env["ASTRID_ACP_COMMAND"] = default
         write_json(path, declaration)
-        self.say("Previous chat command is unavailable or belongs to a versioned install; using the selected version's default.")
+        # Handled here without the user's help, so it belongs in the log, not the terminal.
+        self.diagnostic("Previous chat command is unavailable or belongs to a versioned install; using the selected version's default.")
         return True
 
     def _declare_services(self, *, folder: Path, agent: Path, data: Path, python: Path,
@@ -628,7 +693,7 @@ class Backend:
         chat_cwd, chat_options = self._selected_chat_settings(old, data, copy_from=copy_from)
         command = chat_options.get("ASTRID_ACP_COMMAND")
         if command and not self._external_chat_command(command):
-            self.say("Previous chat command is unavailable or belongs to a versioned install; using the selected version's default.")
+            self.diagnostic("Previous chat command is unavailable or belongs to a versioned install; using the selected version's default.")
             chat_options.pop("ASTRID_ACP_COMMAND", None)
         # Mask inherited commands so the selected package chooses its default.
         chat_options.setdefault("ASTRID_ACP_COMMAND", "")
@@ -1231,32 +1296,22 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
 
     @staticmethod
     def _staged_vibecomfy_revision(agent: Path) -> str:
-        """Read the target Agent's digest-bound engine recipe using only stdlib."""
-        root = agent / "astrid"
+        """Read the target Agent's VibeComfy pin from its runpod pins file, stdlib only.
 
-        def referenced(ref):
-            path = ref["path"]
-            if not isinstance(path, str) or not path.startswith("packs/") or any(
-                part in {"", ".", ".."} for part in path.split("/")
-            ) or "\\" in path or ":" in path:
+        packs/runpod/pins.json is the single declaration (one revision for all
+        platforms). Its digest is bound by the Windows recipe's pins reference.
+        """
+        root = agent / "astrid"
+        try:
+            recipe = json.loads((root / "packs/vibecomfy/recipe.windows-cu130.json").read_bytes())
+            ref = recipe["pins"]
+            if ref["path"] != "packs/runpod/pins.json":
                 raise ValueError("Invalid staged Agent recipe reference.")
-            content = (root / path).read_bytes()
+            content = (root / ref["path"]).read_bytes()
             if hashlib.sha256(content).hexdigest() != ref["sha256"]:
                 raise ValueError("Staged Agent recipe digest mismatch.")
-            return json.loads(content)
-
-        try:
-            index = json.loads((root / "packs/engine-index.json").read_bytes())
-            entries = [entry for entry in index["entries"] if entry["engine"] == "vibecomfy"
-                       and entry["platform"] == "windows-x86_64-cu130"]
-            if len(entries) != 1:
-                raise ValueError("Invalid staged Agent VibeComfy recipe selection.")
-            recipe = referenced(entries[0]["recipe"])
-            bindings = [entry for entry in recipe["source_bindings"] if entry["name"] == "vibecomfy"]
-            if len(bindings) != 1:
-                raise ValueError("Invalid staged Agent VibeComfy source binding.")
-            pins = referenced(recipe["pins"])
-            revision = pins["sources"][bindings[0]["pin"]]["revision"]
+            source = json.loads(content)["sources"]["vibecomfy"]
+            revision = source["revision"]
             if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision):
                 raise ValueError("Invalid staged Agent VibeComfy revision.")
             return revision
@@ -1278,11 +1333,30 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             raise ValueError("Run the install line to provide the pinned user-local uv.")
         if self.run([self.uv, "--version"]).split()[1] != manifest["tools"]["uv"]["version"]:
             raise ValueError("The installer needs the manifest's pinned uv.")
+        prior = current(root) or self.existing(data)
+        git = require_git(recorded=prior.env.get("ASTRID_GIT_EXECUTABLE") if prior else None)
         folder = root / "versions" / new_version_id(manifest)
         folder.mkdir(parents=True)
+        try:
+            return self._stage(manifest, folder, data, prior=prior, git=git, copy_from=copy_from)
+        except BaseException as failure:
+            # Only this newly created candidate is ours to remove; selection and
+            # the old Runtime have not changed during prepare.
+            try:
+                remove_pack_tree(folder)
+            except OSError as cleanup:
+                failure.add_note(f"Partial installation remains at {folder}: {cleanup}")
+                self.say(f"Partial installation remains at {folder}; run the same command again.")
+            raise
+
+    def _stage(self, manifest: dict, folder: Path, data: Path, *, prior: Version | None,
+               git: str, copy_from: Path | None = None) -> Version:
+        root = folder.parent.parent
         windows_private(folder)  # Parent of version.json, profile.json and services.json.
         agent = source("agent", manifest["agent"]["sha"], folder / "a",
+                       git_executable=git,
                        **({"repo": manifest["agent"]["repo"]} if "repo" in manifest["agent"] else {}))
+        _check_lifecycle_pin(manifest, agent)
         if "vibecomfy" in manifest:
             revision = self._staged_vibecomfy_revision(agent)
             if manifest["vibecomfy"]["sha"] != revision:
@@ -1291,14 +1365,17 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         manifest = {**manifest, "vibecomfy": manifest.get("vibecomfy", {"sha": VIBECOMFY_ENGINE_REVISION})}
         write_json(folder / "manifest.json", manifest)
         runtime = source("runtime", manifest["runtime"]["sha"], folder / "r",
+                         git_executable=git,
                          **({"repo": manifest["runtime"]["repo"]} if "repo" in manifest["runtime"] else {}))
         vibecomfy = source("vibecomfy", manifest["vibecomfy"]["sha"], folder / "v",
+                          git_executable=git,
                           **({"repo": manifest["vibecomfy"]["repo"]} if "repo" in manifest["vibecomfy"] else {}))
         sibling_sources = []
         source_install_env = {}
         if "lifecycle" in manifest:
             pin = manifest["lifecycle"]
-            sibling_sources.append(clone_source(pin["repo"], pin["sha"], folder / "lifecycle"))
+            sibling_sources.append(clone_source(pin["repo"], pin["sha"], folder / "lifecycle",
+                                                git_executable=git))
             source_install_env["SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUNPOD_LIFECYCLE"] = pin["version"]
         self._verify_local_timeline_schema(agent)
         environment = folder / "py"
@@ -1315,9 +1392,8 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         self.run([self.uv, "pip", "install", *link_mode, "--python", python, "--no-deps", runtime,
                   runtime / "packages" / "python", agent, vibecomfy, *sibling_sources],
                  extra_env=source_install_env)
-        prior = current(root) or self.existing(data)
         env = install_tools(manifest, folder / "tools", platform_target(), self.run, note=self.diagnostic,
-                            recorded_git=prior.env.get("ASTRID_GIT_EXECUTABLE") if prior else None)
+                            recorded_git=git)
         env.update({"ASTRID_RUNTIME_DATA_ROOT": str(data),
                     "ASTRID_INSTALL_UV": str(self.uv),
                     "ASTRID_RUNTIME_DOOR_PORT": os.environ.get(
@@ -1733,7 +1809,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
     def _run_skills(self, version: Version, argv: list, *, action: str = "sync") -> dict:
         failed = False
         try:
-            output = self.run(argv, extra_env=version.env, timeout=60)
+            output = self.run(argv, extra_env=version.env, timeout=60, separate_stderr=True)
             report = json.loads(output)
             actions = report.get("actions", [])
             destinations = sorted({

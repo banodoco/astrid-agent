@@ -51,9 +51,9 @@ def test_installed_module_generate_subprocesses(tmp_path):
         "  def __init__(self, values): self.values = values\n"
         "  def to_dict(self): return self.values\n"
         "def image(self, **kwargs):\n"
-        "  if kwargs['target'].startswith('http'):\n"
-        "    urlopen(kwargs['target'] + '/system_stats', timeout=5).read()\n"
-        "  return Result({'entry': kwargs['entry'], 'target': kwargs['target'], 'dry_run': kwargs['dry_run']})\n"
+        "  if kwargs['placement'].startswith('http'):\n"
+        "    urlopen(kwargs['placement'] + '/system_stats', timeout=5).read()\n"
+        "  return Result({'entry': kwargs['entry'], 'target': kwargs['placement'], 'dry_run': kwargs['dry_run']})\n"
         "type(generate).image = image\n"
         "cli._open_client = lambda: nullcontext(object())\n"
     )
@@ -62,7 +62,7 @@ def test_installed_module_generate_subprocesses(tmp_path):
     try:
         dry = subprocess.run(
             [sys.executable, "-m", "astrid", "generate", "image", "--entry", "z-image",
-             "--mode", "t2i", "--target", "managed", "--dry-run", "--json", "a studio test image"],
+             "--mode", "t2i", "--placement", "managed", "--dry-run", "--json", "a studio test image"],
             cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30,
         )
         assert dry.returncode == 0, dry.stdout + dry.stderr
@@ -71,7 +71,7 @@ def test_installed_module_generate_subprocesses(tmp_path):
         url = f"http://127.0.0.1:{server.server_port}"
         live = subprocess.run(
             [sys.executable, "-m", "astrid", "generate", "image", "--entry", "z-image",
-             "--mode", "t2i", "--target", url, "--json", "a studio test image"],
+             "--mode", "t2i", "--placement", url, "--json", "a studio test image"],
             cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30,
         )
         assert live.returncode == 0, live.stdout + live.stderr

@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from astrid.installer.outcome import PUBLIC_INSTALL_LINE, PUBLIC_INSTALL_LINE_WINDOWS
+
 
 ROOT = Path(__file__).resolve().parents[2]
 LIVE_DOCS = (
@@ -53,16 +55,17 @@ def test_live_docs_name_runtime_bootstrap_and_authority() -> None:
     assert "[Set up Astrid →](docs/getting-started.md)" in readme
     setup_guide = (ROOT / "docs" / "setup" / "README.md").read_text(encoding="utf-8")
     assert re.search(r"\[Getting Started\]\(\.\./getting-started\.md\)", setup_guide)
-    assert "curl -fsSL https://astrid.haus/install | sh" not in setup_guide
-    assert "irm https://astrid.haus/install.ps1 | iex" not in setup_guide
+    # The approved installer lines live in astrid/installer/outcome.py; read them, so this check cannot go stale again.
+    assert PUBLIC_INSTALL_LINE not in setup_guide
+    assert PUBLIC_INSTALL_LINE_WINDOWS not in setup_guide
     for path in LIVE_DOCS:
         if path == ROOT / "README.md":
             continue
         text = path.read_text(encoding="utf-8")
         assert re.search(r"(?:astrid|workspace)\s+runtime", text, re.I), path
     getting_started = (ROOT / "docs" / "getting-started.md").read_text(encoding="utf-8")
-    assert "curl -fsSL https://astrid.haus/install | sh" in getting_started
-    assert "irm https://astrid.haus/install.ps1 | iex" in getting_started
+    assert PUBLIC_INSTALL_LINE in getting_started
+    assert PUBLIC_INSTALL_LINE_WINDOWS in getting_started
     assert "astrid-runtime up" not in getting_started
 
 

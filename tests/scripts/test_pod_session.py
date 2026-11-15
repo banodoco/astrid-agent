@@ -1040,8 +1040,8 @@ def test_install_sets_the_gpu_sanity_command(tmp_path, video):
     install = job_commands(pod, "install")[0]
     sanity = "/opt/astrid/bin/python /root/bundle/src/astrid-agent/scripts/gpu_sanity.py"
     assert f"export ASTRID_ENGINE_SANITY_CMD='{sanity}'" in install
-    assert ("--root /root/astrid/engines/vibecomfy-h3" in install and "--deadline 14400" in install
-            and "engines install vibecomfy-h3 --placement local" in install)
+    assert ("--root /root/astrid/engines/comfyui" in install and "--deadline 14400" in install
+            and "engines install comfyui --placement local" in install)
     # the export comes before the install command, and the script the command names ships in this repo
     assert install.index("ASTRID_ENGINE_SANITY_CMD") < install.index("astrid engines install")
     assert (SCRIPT.parent / "gpu_sanity.py").is_file()
@@ -1373,6 +1373,9 @@ def test_provider_attachment_through_real_lifecycle_json_guards_probe_bundle_ins
         if case == "malformed-collection": return {"data":{"pod":[observed]}}
         return {"data":{"pod":None if case == "absent-pod" else observed}}
     monkeypatch.setattr(ctl_commands, "run_graphql_query", graphql)
+    # runpod_lifecycle.graphql._run resolves the query function from runpod.api.graphql at call time.
+    import runpod.api.graphql as sdk_graphql
+    monkeypatch.setattr(sdk_graphql, "run_graphql_query", graphql)
     monkeypatch.setattr(api, "runpod", runpod)
     monkeypatch.setattr(cli, "_resolve_api_key", lambda _: "synthetic")
     original_execute = pod.execute_command
@@ -1465,8 +1468,8 @@ def test_cache_mount_and_live_handshake_order_are_bound_to_claim(tmp_path, video
     assert session.state["runtime_ready"]["volume_id"] == session.state["storage"]["volume_id"]
     assert session.state["runtime_ready"]["runtime_lock_sha256"] == json.loads((session.workdir / "source-identity.json").read_text())["runtime_lock_sha256"]
     install = job_commands(pod, "install")[0]
-    assert "--model-cache-root /workspace/astrid/engines/vibecomfy-h3/models" in install
-    assert "--root /root/astrid/engines/vibecomfy-h3" in install
+    assert "--model-cache-root /workspace/astrid/engines/comfyui/models" in install
+    assert "--root /root/astrid/engines/comfyui" in install
 
 
 def test_synthetic_successful_storage_observation_is_private_and_in_progress(tmp_path, video, monkeypatch):
@@ -1780,6 +1783,9 @@ def test_actual_legacy_sdk_mount_path_projection_refuses_before_private_upload(t
         assert query == ctl_commands.pod_queries.QUERY_POD and "volumeMountPath" in query
         return {"data":{"myself":{"pods":[{"id":pod.pod,"name":"fixture","volumeMountPath":path,"runtime":{"ports":[]}}]}}}
     monkeypatch.setattr(ctl_commands,"run_graphql_query",graphql)
+    # runpod_lifecycle.graphql._run resolves the query function from runpod.api.graphql at call time.
+    import runpod.api.graphql as sdk_graphql
+    monkeypatch.setattr(sdk_graphql,"run_graphql_query",graphql)
     monkeypatch.setattr(api,"runpod",runpod)
     monkeypatch.setattr(cli,"_resolve_api_key",lambda _:"synthetic")
     monkeypatch.setattr(api.httpx,"get",lambda *a,**kw:SimpleNamespace(status_code=200,json=lambda:[{"id":pod.pod,"networkVolume":{"id":"vol187"}}]))

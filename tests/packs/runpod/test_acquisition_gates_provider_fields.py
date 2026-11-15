@@ -11,6 +11,7 @@ import asyncio
 import json
 import socket
 from types import SimpleNamespace
+from pathlib import Path
 
 import pytest
 
@@ -69,9 +70,11 @@ def gate(case, monkeypatch):  # noqa: F811
     case.owner.observed_hourly_usd = lambda pod: 1.19
     case.grant = PaidRunConsent(
         "invocation-1", offer.digest(case.prefs), 3.0, "2026-11-01T02:00:00Z", ("paid",), 30, 30, 60)
-    state = SimpleNamespace(case=case, pod=POD_GRAPHQL, gpus=GPU_TYPES,
-                            rest={"id": POD_ID, "volumeMountPath": "/workspace", "networkVolumeId": case.prefs.volume_id,
-                                  "machine": {}})
+    fixture = Path(__file__).parents[2] / "providers/runpod/fixtures/rest-get-pod-include-network-volume.json"
+    rest = json.loads(fixture.read_text())
+    rest.update(id=POD_ID)
+    rest["mounts"]["network"][0]["volumeId"] = case.prefs.volume_id
+    state = SimpleNamespace(case=case, pod=POD_GRAPHQL, gpus=GPU_TYPES, rest=rest)
 
     def run_graphql_query(query, api_key=None):
         return state.gpus if "gpuTypes" in query else state.pod
@@ -94,7 +97,7 @@ def gate(case, monkeypatch):  # noqa: F811
 
 
 def _select(gate):
-    return asyncio.run(gate.case.owner.select(gate.case.grant))
+    return asyncio.run(gate.case.owner._select(gate.case.grant))
 
 
 def _journal(gate):
@@ -168,7 +171,7 @@ def _past_expiry(gate, rate):
 @pytest.mark.parametrize("name", ["volume", "GPU", "datacenter", "rate", "lifetime", "machine"])
 def test_each_failing_gate_names_itself_in_the_error_and_the_journal(gate, name):
     if name == "volume":
-        gate.rest["volumeMountPath"] = "/wrong"
+        gate.rest["mounts"]["network"][0]["path"] = "/wrong"
     elif name == "GPU":
         gate.pod = {"data": {"pod": {"gpuCount": 1, "machine": {"gpuDisplayName": "RTX 4090", "dataCenterId": "EU-RO-1"}}}}
     elif name == "datacenter":
@@ -183,7 +186,10 @@ def test_each_failing_gate_names_itself_in_the_error_and_the_journal(gate, name)
         _select(gate)
     assert f"unconfirmed {name} gate" in str(caught.value)
     assert "price or lifetime" not in str(caught.value)
-    assert caught.value.gate == name
+    assert caught.value.runpod_gate == name
+    assert caught.value.gate == {"volume": "storage", "GPU": "hardware", "datacenter": "region",
+                                 "machine": "hardware"}.get(name, name)
+    assert caught.value.custody == "exact"
     record = _journal(gate)
     assert record["state"] == "cleanup_pending" and record["failed_gate"] == name
     assert record["pod_id"] == POD_ID  # release behavior unchanged

@@ -297,28 +297,35 @@ def test_generic_host_materializes_named_sibling_inputs_and_settles_four_outputs
         "report"
     ][2]
 
-    assert [item["filename"] for item in runtime.uploaded_outputs] == [
+    product_uploads = [
+        item for item in runtime.uploaded_outputs
+        if item["filename"] in {output[0] for output in outputs.values()}
+    ]
+    assert [item["filename"] for item in product_uploads] == [
         item[0] for item in outputs.values()
     ]
-    assert [item["data"] for item in runtime.uploaded_outputs] == [
+    assert [item["data"] for item in product_uploads] == [
         item[2] for item in outputs.values()
     ]
-    assert [item["digest"] for item in runtime.uploaded_outputs] == [
+    assert [item["digest"] for item in product_uploads] == [
         _sha256(item[2]) for item in outputs.values()
     ]
     assert all(
-        item["project_id"] == "fixture-project" for item in runtime.uploaded_outputs
+        item["project_id"] == "fixture-project" for item in product_uploads
     )
 
     settled_outputs = runtime.settlements[0][2]["outputs"]
-    assert [item["name"] for item in settled_outputs] == list(outputs)
-    assert [item["digest"] for item in settled_outputs] == [
+    product_outputs = [item for item in settled_outputs if item.get("role") != "log"]
+    log_outputs = [item for item in settled_outputs if item.get("role") == "log"]
+    assert {item["filename"] for item in log_outputs} == {"job.stdout.log", "job.stderr.log"}
+    assert [item["name"] for item in product_outputs] == list(outputs)
+    assert [item["digest"] for item in product_outputs] == [
         _sha256(item[2]) for item in outputs.values()
     ]
-    assert [item["size"] for item in settled_outputs] == [
+    assert [item["size"] for item in product_outputs] == [
         len(item[2]) for item in outputs.values()
     ]
-    assert [item["media_type"] for item in settled_outputs] == [
+    assert [item["media_type"] for item in product_outputs] == [
         item[1] for item in outputs.values()
     ]
-    assert all("path" not in item for item in settled_outputs)
+    assert all("path" not in item for item in product_outputs)

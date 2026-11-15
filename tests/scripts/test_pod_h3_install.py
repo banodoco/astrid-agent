@@ -26,7 +26,7 @@ def install_harness(tmp_path, monkeypatch, canonical_setup):
     plan = runner.plan_install(context.recipe, root=root, placement="local")
     receipt_path = Path(root, runner._RECEIPT)
     monkeypatch.setattr(local, "_engines_dir", lambda: tmp_path / "engine-registry")
-    local.record_engine_root("vibecomfy-h3", root)
+    local.record_engine_root("comfyui", root)
     monkeypatch.setenv(local.ENGINE_ROOT_ENV, str(tmp_path / "unused-default-root"))
 
     write_json = context.write_json_atomic
@@ -58,7 +58,7 @@ def install_harness(tmp_path, monkeypatch, canonical_setup):
     identity = {"managed_by": "source", "dirty": False, "agent_head": "a" * 40,
                 "runtime_head": "b" * 40}
     monkeypatch.setattr(source, "verify_selection", lambda _selected: (object(), identity))
-    args = ["engines", "install", "vibecomfy-h3", "--placement", "local", "--root", root,
+    args = ["engines", "install", "comfyui", "--placement", "local", "--root", root,
             "--deadline", "45"]
     return plan, context, adapter, root, receipt_path, selection, identity, args
 
@@ -76,7 +76,7 @@ def test_install_selected_recovers_legacy_receipt_and_returns_ready_attestation(
     receipt_bytes = receipt_path.read_bytes()
 
     assert result == {
-        "schema": "astrid.pod-h3-install.v1", "engine": "vibecomfy-h3", "root": root,
+        "schema": "astrid.pod-h3-install.v1", "engine": "comfyui", "root": root,
         "status": "ready", "receipt_sha256": hashlib.sha256(receipt_bytes).hexdigest(),
         "receipt_id": json.loads(receipt_bytes)["receipt_id"],
     }
@@ -84,8 +84,8 @@ def test_install_selected_recovers_legacy_receipt_and_returns_ready_attestation(
     assert receipt["status"] == "installed"
     assert all(step["action"] == "skipped" and step["validation"] == "passed"
                for step in receipt["steps"])
-    from astrid.packs.h3_av.actions.transform import run as transform
-    endpoint = transform._resolve_local_engine()
+    from astrid.core.generation.engine_local_endpoint import local_engine_endpoint
+    endpoint = local_engine_endpoint("comfyui")
     assert endpoint.endpoint.state == "ready"
     assert endpoint.endpoint.attestation.install_receipt_sha256 == result["receipt_sha256"]
 
@@ -96,10 +96,10 @@ def test_fresh_canonical_install_refuses_nonprivate_volume_before_any_process(
     import os
     from astrid.core.generation import engine_custody
 
-    root = str(tmp_path / "workspace/astrid/runtime/h3/vibecomfy-h3")
-    cache = str(tmp_path / "workspace/astrid/engines/vibecomfy-h3/models")
+    root = str(tmp_path / "workspace/astrid/runtime/h3/comfyui")
+    cache = str(tmp_path / "workspace/astrid/engines/comfyui/models")
     monkeypatch.setattr(local, "_engines_dir", lambda: tmp_path / "registry")
-    local.record_engine_root("vibecomfy-h3", root)
+    local.record_engine_root("comfyui", root)
     mkdir = os.mkdir
 
     def mounted_mkdir(path, mode=0o777, *, dir_fd=None):
@@ -114,7 +114,7 @@ def test_fresh_canonical_install_refuses_nonprivate_volume_before_any_process(
     # lock, helper dispatch and directory validation are the canonical code.
     monkeypatch.setattr(os, "mkdir", mounted_mkdir)
     monkeypatch.setattr(engine_custody.subprocess, "Popen", no_process)
-    args = ["engines", "install", "vibecomfy-h3", "--root", root,
+    args = ["engines", "install", "comfyui", "--root", root,
             "--model-cache-root", cache, "--deadline", "15"]
     with pytest.raises(ValueError, match="canonical engine installation failed"):
         source.install_selected(args, {}, {})
@@ -133,9 +133,9 @@ def test_install_selected_requires_existing_registered_root_before_install(
         install_harness, registered):
     _plan, context, _adapter, root, _receipt, selection, identity, args = install_harness
     if registered is None:
-        local._record_path("vibecomfy-h3").unlink()
+        local._record_path("comfyui").unlink()
     else:
-        local.record_engine_root("vibecomfy-h3", str(Path(root).parent / "wrong-root"))
+        local.record_engine_root("comfyui", str(Path(root).parent / "wrong-root"))
     before = list(context.events)
 
     with pytest.raises(ValueError, match="existing registered root"):
@@ -295,7 +295,7 @@ def test_receipt_only_diagnostic_is_private_and_cannot_start_or_repair(
 
 def test_receipt_diagnostic_refuses_unregistered_root_before_reading(install_harness, monkeypatch):
     _plan, context, _adapter, root, _receipt, selection, _identity, _args = install_harness
-    local._record_path("vibecomfy-h3").unlink()
+    local._record_path("comfyui").unlink()
     monkeypatch.setattr(source, "DIAGNOSTIC_ENGINE_ROOT", root)
     from astrid.core.generation._engine_target_files import _TargetFiles
     monkeypatch.setattr(_TargetFiles, "file_fact", lambda *_a, **_kw: pytest.fail("unregistered receipt read"))

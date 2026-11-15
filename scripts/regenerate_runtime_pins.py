@@ -12,6 +12,7 @@ import argparse
 import difflib
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -19,6 +20,8 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+# The packaged copy must stay byte-identical to the root lock (the single source).
+PACKAGED_LOCK = "astrid/resources/runtime.lock.json"
 SHA = re.compile(r"^[0-9a-f]{40}$")
 SCHEMA_DIGEST = re.compile(r"^SCHEMA_DIGEST\s*=\s*['\"](sha256:[0-9a-f]{64})['\"]", re.M)
 
@@ -129,7 +132,10 @@ def build_outputs(agent_root: Path, app_root: Path, runtime_repo: Path,
     for root, lock, files in ((agent_root, agent_lock, agent_files), (app_root, app_lock, app_files)):
         for consumer, payload in files.items():
             outputs[target_path(root, consumer)] = payload
-        outputs[target_path(root, "runtime.lock.json")] = (json.dumps(lock, indent=2, sort_keys=True) + "\n").encode()
+        lock_bytes = (json.dumps(lock, indent=2, sort_keys=True) + "\n").encode()
+        outputs[target_path(root, "runtime.lock.json")] = lock_bytes
+        if root == agent_root:
+            outputs[target_path(root, PACKAGED_LOCK)] = lock_bytes
     outputs[target_path(app_root, "public/install-manifest.json")] = (json.dumps(install_manifest, indent=2) + "\n").encode()
     return outputs
 
@@ -148,12 +154,20 @@ def preview(outputs: dict[Path, bytes]) -> None:
 
 def apply(outputs: dict[Path, bytes]) -> None:
     # All Git objects, manifests, mappings, and hashes are checked before this
-    # function is reached. Keep individual writes simple and preserve modes.
+    # function is reached. Each file is written to a temp file beside it and moved
+    # into place with os.replace, so a failure never leaves a half-written lock.
     for path, value in sorted(outputs.items(), key=lambda item: str(item[0])):
         if path.is_file() and path.read_bytes() == value:
             continue
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(value)
+        temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        try:
+            temp.write_bytes(value)
+            if path.is_file():
+                os.chmod(temp, path.stat().st_mode & 0o7777)
+            os.replace(temp, path)
+        finally:
+            temp.unlink(missing_ok=True)
         print(f"updated {path}")
 
 

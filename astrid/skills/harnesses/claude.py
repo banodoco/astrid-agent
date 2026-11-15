@@ -10,6 +10,7 @@ from ..discovery import SkillDescriptor
 from astrid.core.contracts.errors import AstridError
 from .base import (
     Action,
+    sync_target_name,
     HarnessAdapter,
     PlannedStep,
     ensure_symlink,
@@ -30,10 +31,7 @@ class ClaudeAdapter(HarnessAdapter):
         return self.home / "skills"
 
     def target_for(self, descriptor: SkillDescriptor) -> Path:
-        if descriptor.pack_id == "_core":
-            # Preserve the existing manual symlink path.
-            return self.skills_dir / "astrid"
-        return self.skills_dir / f"astrid-{descriptor.skill_id}"
+        return self.skills_dir / sync_target_name(descriptor)
 
     def plan(self, action: Action, descriptors: Iterable[SkillDescriptor], **opts) -> list[PlannedStep]:
         steps: list[PlannedStep] = []

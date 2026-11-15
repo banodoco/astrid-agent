@@ -39,6 +39,10 @@ EXIT_CODES = {"updated": 0, "already-current": 0, "repaired": 0,
 
 PUBLIC_INSTALL_LINE = "curl -fsSL https://astrid.haus/install | sh"
 PUBLIC_INSTALL_LINE_WINDOWS = "& ([scriptblock]::Create((irm https://astrid.haus/install.ps1)))"
+# The hand-off sentence. The setup skill owns the words (astrid/packs/setup/docs/SKILL.md);
+# this is the one copy in Agent code. scripts/render_readme.py imports it, and
+# tests/test_handoff_sentence.py asserts it equals the skill's sentence.
+HANDOFF_SENTENCE = "Next: set up generation with the astrid-setup skill."
 
 
 def _repair_next() -> str:
@@ -84,8 +88,8 @@ REASONS = {
     "declined": "you declined the setup, so nothing was changed.",
     "recovered-previous-version": "an earlier update was interrupted and Astrid restored the version before it; run the same command again to update.",
     "runtime-not-running": "the new release was installed, but the running Astrid did not restart onto it.",
-    "refused": "the installer refused to continue; the message above says why.",
-    "error": "the run stopped with an error; the message above says why.",
+    "refused": "the installer could not continue.",
+    "error": "setup stopped with an error.",
     "installer-bug": "the installer finished without installing the new release. This is a bug in Astrid, not something you did.",
 }
 
@@ -115,6 +119,7 @@ class Outcome:
     target_source: str | None = None
     # The installer log, shown last on a warned success; never inside a program root.
     details: str | None = None
+    runtime_running: bool = False
 
     @property
     def exit_code(self) -> int:
@@ -129,7 +134,7 @@ class Outcome:
             if self.details:
                 lines.append(f"Details: {self.details}")
         if self.exit_code != 0:
-            lines += next_steps(self.log, self.reason)
+            lines += next_steps(self.log, self.reason, runtime_running=self.runtime_running)
         return lines
 
     def _lines(self) -> list[str]:
@@ -141,7 +146,7 @@ class Outcome:
                  if self.kind in SUCCESS and self.warnings else "")
         if self.kind == "updated":
             if self.start is None:
-                return [f"Astrid installed: {release(self.target)}{notes}."]
+                return [f"Astrid installed: {release(self.target)}{notes}.", HANDOFF_SENTENCE]
             return [f"Astrid updated: {release(self.start)} → {release(self.target)}{notes}."]
         if self.kind == "already-current":
             return [f"Astrid is already up to date ({release(self.still)}){notes}. Nothing was changed."]
@@ -168,8 +173,8 @@ class Outcome:
                     "Run the same command again. If it fails twice, do the next step."]
         if self.still is None and self.start is None:
             # A fresh install that failed has nothing to update; it was not installed.
-            return [f"Astrid was NOT installed: {why}", "Nothing was installed."]
-        still = "Nothing was installed." if self.still is None else f"Astrid is still {release(self.still)}."
+            return [f"Astrid was NOT installed: {why}", "Setup did not finish; some downloaded files may remain."]
+        still = "Setup did not finish; some downloaded files may remain." if self.still is None else f"Astrid is still {release(self.still)}."
         return [f"Astrid did NOT update: {why}", still]
 
     def record(self) -> dict:
@@ -219,10 +224,11 @@ def next_step(reason: str | None) -> str:
     return NEXT_STEPS.get(reason or "installer-bug", NEXT_STEPS["installer-bug"])
 
 
-CONSOLE_DETAILS = "Details: shown above in this window (the installer log was not used)."
+CONSOLE_DETAILS = "Details: see the error in this window."
 
 
-def next_steps(log: str | Path | None = None, reason: str | None = None) -> list[str]:
+def next_steps(log: str | Path | None = None, reason: str | None = None, *,
+               runtime_running: bool = False) -> list[str]:
     """The two closing lines of every non-zero outcome; the one place they are written.
 
     The Next line is ``reason``'s own action (``next_step``).
@@ -231,7 +237,10 @@ def next_steps(log: str | Path | None = None, reason: str | None = None) -> list
     use it safely (before selection, or a log inside a selected root), the
     diagnostics went to this window instead, and the line says so.
     """
-    return [next_step(reason), f"Details: {Path(log).absolute()}" if log else CONSOLE_DETAILS]
+    action = next_step(reason)
+    if not runtime_running and "Settings > Updates" in action:
+        action = "Next: run the same command again; if it fails again, send the error and install log to support."
+    return [action, f"Details: {Path(log).absolute()}" if log else CONSOLE_DETAILS]
 
 
 # Refusals that name their own reason on the exception; the enum (REASONS) is their only source of copy.
@@ -341,6 +350,7 @@ def settle(request: Request, before, resolver, *, failure: BaseException | None 
     except Exception:  # noqa: BLE001 - an unreadable installation is an observation
         after = None
     live = _live(after)
+    runtime_running = after is not None and after.live_release is not None
     # A plain install or repair that recovered an interrupted update is a repair. The pointer is
     # not its start when no live owner was observed; --update keeps its own receipt rule.
     recovered = request.reason == "recovered-previous-version" and request.mode != "update"
@@ -363,12 +373,12 @@ def settle(request: Request, before, resolver, *, failure: BaseException | None 
     if failure is not None:
         kind = "rolled-back" if rolled_back else "failed"
         return Outcome(kind, live if live is not None else start, start, target, reason_of(failure), request.mode,
-                       target_source=source)
+                       target_source=source, runtime_running=runtime_running)
     if request.refused:
         # Refused before any work: nothing was changed, whatever else is running.
         reason: str | None = request.reason or "other-runtime-running"
         return Outcome("not-updated", live if live is not None else start, start, target, reason, request.mode,
-                       target_source=source)
+                       target_source=source, runtime_running=runtime_running)
     # A second live Runtime is a warning on a success, and a refusal otherwise.
     success_warnings = tuple(warnings) + (("other-copy-running",) if others else ())
     if request.mode == "update":
@@ -376,18 +386,18 @@ def settle(request: Request, before, resolver, *, failure: BaseException | None 
         if live is not None and target is not None and live == target:
             kind = "updated" if start != target else "already-current"
             return Outcome(kind, live, start, target, None, request.mode, warnings=success_warnings,
-                           target_source=source, details=details)
+                           target_source=source, details=details, runtime_running=runtime_running)
     elif live is not None and after is not None and live == after.selected_release:
         # A plain install or repair (including Pinokio finishing an interrupted
         # update): the target is "the selected version is live and healthy".
         # A recovery that ends healthy is repaired; its reason stays as detail.
         kind = "repaired" if recovered or start == live else "updated"
         return Outcome(kind, live, start, live, request.reason, request.mode, warnings=success_warnings,
-                       target_source=source, details=details)
+                       target_source=source, details=details, runtime_running=runtime_running)
     if others:
         reason = request.reason or "other-runtime-running"
         return Outcome("not-updated", live if live is not None else start, start, target, reason, request.mode,
-                       target_source=source)
+                       target_source=source, runtime_running=runtime_running)
     reason = request.reason
     if reason is None:
         # The selected version advanced but the live Runtime did not follow it.
@@ -395,7 +405,7 @@ def settle(request: Request, before, resolver, *, failure: BaseException | None 
         reason = ("runtime-not-running" if selected is not None and selected != start
                   and selected == (target if request.mode == "update" else selected) else "installer-bug")
     return Outcome("not-updated", live if live is not None else start, start, target, reason, request.mode,
-                   target_source=source)
+                   target_source=source, runtime_running=runtime_running)
 
 
 def clear_record(path: Path) -> None:

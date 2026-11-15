@@ -1555,6 +1555,22 @@ def test_successful_managed_outputs_have_verified_public_projection(world):
     b.finish()
 
 
+def test_child_bridge_returns_one_product_when_task_has_logs(world):
+    setup(world)
+    b = bridge(world)
+    child = b.dispatch(request(world))
+    claim = world.service.claim_next({"executor_id": "worker", "capability_ids": [CHILD], "runtime_epoch": 1}, idempotency_key="claim-output-logs", identity=world.identity)
+    product, log = b"verified-output", b"task log"
+    world.service.settle_attempt(claim["attempt_id"], {**{k: claim[k] for k in ("lease_id", "fence", "runtime_epoch")},
+        "outputs": [{"name": "logs", "role": "log", "digest": digest(log), "data_base64": base64.b64encode(log).decode()},
+                    {"name": "answer", "digest": digest(product), "data_base64": base64.b64encode(product).decode()}]}, idempotency_key="settle-output-logs", identity=world.identity)
+    assert len(world.service.managed_outputs(child["task_id"])) == 2
+    rows = b.dispatch({"v": 1, "request_id": 2, "op": "outputs", "child_key": "child", "task_id": child["task_id"]})
+    assert len(rows) == 1
+    assert rows[0]["object_id"] == digest(product)
+    b.finish()
+
+
 def _staged_producer_readback(world, monkeypatch, producer_fields):
     """Real staged admission/settlement; override only the readback under test."""
     setup(world, staged=True)
@@ -1741,7 +1757,7 @@ def test_stale_host_claim_identity_cannot_issue_authority(world, field):
     assert not world.service.store.delegated_children(world.task["id"], world.claim["attempt_id"])
 
 
-@pytest.mark.parametrize("frame", [b'{}\n', b'{"v":1,"v":1}\n', b'[]\n', b'{"x":NaN}\n', b'x' * 1048577])
+@pytest.mark.parametrize("frame", [b'{}\n', b'{"v":1,"v":1}\n', b'[]\n', b'{"x":NaN}\n', pytest.param(b'x' * 1048577, id='oversized-1MiB-frame')])
 def test_malformed_channel_is_revoked_without_fallback(world, frame):
     setup(world)
     b = bridge(world)
@@ -3165,11 +3181,14 @@ def test_declared_command_outputs_expand_and_settle_through_normal_host(world):
     task = world.service.task(claim["task_id"])["task"]
     assert task["status"] == "completed" and result
     rows, cursor = world.client.generated.list_managed_outputs(claim["task_id"])
+    rows = [resource(row) for row in rows]
+    assert {row["variant_key"] for row in rows if row.get("role") == "log"} == {"job.stdout", "job.stderr"}
+    rows = [row for row in rows if row.get("output_port") == "report"]
     assert cursor is None and len(rows) == 1
-    row = resource(rows[0])
+    row = rows[0]
     assert row["output_port"] == "report" and row["digest"] == digest(b"host-declared-output")
     assert world.client.get_object(row["digest"][7:]) == b"host-declared-output"
-    assert [(item.get("output_port", item["name"]), item["digest"], item["size"]) for item in task["result"]["outputs"]] == [
+    assert [(item.get("output_port", item["name"]), item["digest"], item["size"]) for item in task["result"]["outputs"] if item.get("role") != "log"] == [
         (row["output_port"], row["digest"], row["size"])]
 
 
@@ -3204,13 +3223,16 @@ def test_declared_command_output_collision_keeps_materialized_input_and_independ
     task = world.service.task(claim["task_id"])["task"]
     assert result and task["status"] == "completed"
     rows, cursor = world.client.generated.list_managed_outputs(claim["task_id"])
+    rows = [resource(row) for row in rows]
+    assert {row["variant_key"] for row in rows if row.get("role") == "log"} == {"job.stdout", "job.stderr"}
+    rows = [row for row in rows if row.get("output_port") == "source"]
     assert cursor is None and len(rows) == 1
-    row = resource(rows[0])
+    row = rows[0]
     assert row["output_port"] == "source" and row["digest"] == digest(b"independent-host-output")
     assert row["digest"] != descriptor["digest"]
     assert world.client.get_object(descriptor["digest"][7:]) == original
     assert world.client.get_object(row["digest"][7:]) == b"independent-host-output"
-    assert [(item.get("output_port", item["name"]), item["digest"], item["size"]) for item in task["result"]["outputs"]] == [
+    assert [(item.get("output_port", item["name"]), item["digest"], item["size"]) for item in task["result"]["outputs"] if item.get("role") != "log"] == [
         (row["output_port"], row["digest"], row["size"])]
 
 
@@ -4166,8 +4188,9 @@ def test_f05_incomplete_interactive_conjunction_stays_bounded(world, monkeypatch
     assert check is None
 
 
-@pytest.mark.parametrize("loss", ["cancel", "expiry", "fence", "epoch", "binding", "readback"])
-def test_f05_qualified_child_loses_authority_immediately(world, monkeypatch, loss):
+@pytest.mark.parametrize("loss", ["cancel", "expiry", "fence", "epoch", "binding", "readback", "health_readback",
+                                 "malformed", "forbidden", "retired_route", "stale_metadata"])
+def test_f05_qualified_child_loses_authority_only_on_runtime_verdict(world, monkeypatch, loss):
     from astrid.core.execution._child_bridge import task_resource
     host, parent, pc, child, cc = _f05_runtime_review_pair(world)
     check = _f05_authority(host, child, cc)
@@ -4188,9 +4211,68 @@ def test_f05_qualified_child_loses_authority_immediately(world, monkeypatch, los
             if tid == pc["task_id"]: value["execution_binding"]["status"] = "stale"
             return value
         monkeypatch.setattr(host.client, "task", read)
+    elif loss == "health_readback":
+        monkeypatch.setattr(host.client, "health", lambda: (_ for _ in ()).throw(TimeoutError("health readback lost")))
+    elif loss in {"malformed", "stale_metadata"}:
+        original = host.client.task
+        def read(tid):
+            value = task_resource(original(tid))
+            if loss == "malformed":
+                value["runtime_epoch"] = "1"
+            else:
+                value["lease_expires_at"] = "2000-01-01T00:00:00Z"
+            return value
+        monkeypatch.setattr(host.client, "task", read)
+    elif loss in {"forbidden", "retired_route"}:
+        from astrid_runtime_client import ApiError
+        monkeypatch.setattr(host.client, "task", lambda tid: (_ for _ in ()).throw(
+            ApiError(403 if loss == "forbidden" else 410, loss, "typed Runtime response")))
     else:
         monkeypatch.setattr(host.client, "task", lambda tid: (_ for _ in ()).throw(OSError("readback lost")))
-    with pytest.raises(Exception): check()
+    if loss in {"stale_metadata", "readback", "health_readback", "malformed", "retired_route"}:
+        reads = []
+        method = "health" if loss == "health_readback" else "task"
+        unknown_read = getattr(host.client, method)
+
+        def recorded_read(*args, **kwargs):
+            reads.append((args, kwargs))
+            return unknown_read(*args, **kwargs)
+
+        monkeypatch.setattr(host.client, method, recorded_read)
+        check()
+        assert reads
+        assert callable(check)
+    else:
+        from astrid.core.execution.generic_host import HostLeaseLost
+        with pytest.raises(HostLeaseLost, match="interactive|Runtime"):
+            check()
+
+
+@pytest.mark.parametrize("machine_id", ["different-machine", None, 7])
+def test_f05_typed_placement_change_is_an_authority_verdict(world, monkeypatch, machine_id):
+    from astrid.core.execution._child_bridge import task_resource
+    from astrid.core.execution.generic_host import HostLeaseLost
+
+    host, parent, pc, child, cc = _f05_runtime_review_pair(world)
+    check = _f05_authority(host, child, cc)
+    assert callable(check)
+    original = host.client.task
+    reads = []
+
+    def read(tid):
+        reads.append(tid)
+        value = task_resource(original(tid))
+        if tid == pc["task_id"]:
+            value["execution_binding"]["actual_target"]["id"] = machine_id
+        return value
+
+    monkeypatch.setattr(host.client, "task", read)
+    if isinstance(machine_id, str):
+        with pytest.raises(HostLeaseLost, match="placement changed"):
+            check()
+    else:
+        check()
+        assert pc["task_id"] in reads
 
 
 @pytest.mark.parametrize("mode", ["interactive", "absolute_cap", "finite_timeout", "cancel", "evidence", "heartbeat"])
@@ -4202,13 +4284,19 @@ def test_f05_host_execution_uses_one_lifetime_through_collection(world, monkeypa
     now = [100.0]
     monkeypatch.setattr(generic_host.time, "monotonic", lambda: now[0])
     actual_heartbeat = host.client.heartbeat
+    heartbeat_faults, terminals = [], []
+    original_impl = host._run_task_impl
+
+    def capture_terminal(*args, _terminal, **kwargs):
+        terminals.append(_terminal)
+        return original_impl(*args, _terminal=_terminal, **kwargs)
+
+    monkeypatch.setattr(host, "_run_task_impl", capture_terminal)
 
     def heartbeat_for_execution_clock(*args, **kwargs):
-        # Runtime's wall clock does not advance with this synthetic execution
-        # clock. Keep its real fenced RPC, and omit the unrelated wall-clock
-        # expiry from the acknowledgement so a virtual hour is not lease loss.
-        value = resource(actual_heartbeat(*args, **kwargs))
-        return {key: item for key, item in value.items() if key != "lease_expires_at"}
+        # Keep the real fenced receipt. Virtual execution time is independent
+        # of the Runtime's wall clock and its lease metadata.
+        return resource(actual_heartbeat(*args, **kwargs))
 
     monkeypatch.setattr(host.client, "heartbeat", heartbeat_for_execution_clock)
     if mode == "evidence": host.execution_policy = ExecutionGuardPolicy(evidence_cap_bytes=65536)
@@ -4228,7 +4316,9 @@ def test_f05_host_execution_uses_one_lifetime_through_collection(world, monkeypa
                 raise generic_host.HostCancelled("execution guard stopped fixture command")
         if mode == "heartbeat":
             (attempt / ".astrid-progress.json").write_text('{"phase":"done"}')
-            def heartbeat(*args, **kwargs): raise OSError("lease heartbeat lost")
+            def heartbeat(*args, **kwargs):
+                heartbeat_faults.append(now[0])
+                raise OSError("lease heartbeat lost")
             monkeypatch.setattr(host.client, "heartbeat", heartbeat)
         return SimpleNamespace(payload={}, process_id=12345, returncode=0)
     monkeypatch.setattr(host, "_run_command_definition", execute)
@@ -4238,15 +4328,9 @@ def test_f05_host_execution_uses_one_lifetime_through_collection(world, monkeypa
     if mode == "evidence":
         with pytest.raises(HostError, match="evidence cap"):
             host.run_task({"task": task}, lease_token=cc["lease_id"], attempt_id=cc["attempt_id"], fence=cc["fence"])
-    elif mode == "heartbeat":
-        # The adopted lease guard raises after the failed attempt is recorded;
-        # it cannot return a successful cancellation acknowledgement.
-        with pytest.raises(HostError, match="^execution lease lost$"):
-            host.run_task({"task": task}, lease_token=cc["lease_id"], attempt_id=cc["attempt_id"], fence=cc["fence"])
-        assert world.service.task(child["task_id"])["task"]["status"] == "failed"
     else:
         result = host.run_task({"task": task}, lease_token=cc["lease_id"], attempt_id=cc["attempt_id"], fence=cc["fence"])
-        if mode == "interactive":
+        if mode in {"interactive", "heartbeat"}:
             assert checks == [False, False, False]
             assert world.service.task(child["task_id"])["task"]["status"] == "completed"
             payload = world.service.task(child["task_id"])["task"]["result"]
@@ -4254,6 +4338,9 @@ def test_f05_host_execution_uses_one_lifetime_through_collection(world, monkeypa
             assert guards["lifetime"] == "lease_bound_interactive"
             assert guards["deadline_seconds"] is None
             assert guards["collection_seconds"] == 3600
+            if mode == "heartbeat":
+                assert heartbeat_faults
+                assert terminals[0]["lease_diagnostic"]["category"] == "heartbeat_exception"
         elif mode in {"absolute_cap", "finite_timeout"}:
             assert result["status"] == "failed" and result["deadline_exceeded"] is True
             assert checks == ([False, False, True] if mode == "absolute_cap" else [True])

@@ -506,7 +506,6 @@ def load_pack_manifest(path: str | Path, *, expected_pack_id: str | None = None)
         pack_api=data.get("pack_api"),
         dependencies=dict(data.get("dependencies", {})),
         cli=dict(data.get("cli", {})),
-        engines=dict(data.get("engines", {})),
         **taxonomy,
     )
 

@@ -19,20 +19,6 @@
    "required_packages": []
   },
   {
-   "id": "comfy_wrap.run",
-   "disposition": "optional",
-   "evidence_reason": "Optional local-generation wrapper; retained with truthful VibeComfy preflight.",
-   "adapter_family": "local_generation",
-   "resource_keys": [
-    "gpu"
-   ],
-   "required_env": [],
-   "required_binaries": [],
-   "required_packages": [
-    "vibecomfy"
-   ]
-  },
-  {
    "id": "capture.web_page",
    "disposition": "optional",
    "external_pack": "capture",
@@ -495,78 +481,6 @@
    "required_packages": []
   },
   {
-   "id": "h3_av.compile",
-   "disposition": "required",
-   "evidence_reason": "Deterministic H3 request compilation is a CPU-bound local contract step.",
-   "adapter_family": "cpu",
-   "resource_keys": [
-    "cpu"
-   ],
-   "required_env": [],
-   "required_binaries": [],
-   "required_packages": []
-  },
-  {
-   "id": "h3_av.compose",
-   "disposition": "required",
-   "evidence_reason": "H3 candidate composition is a CPU-bound local contract step.",
-   "adapter_family": "cpu",
-   "resource_keys": [
-    "cpu"
-   ],
-   "required_env": [],
-   "required_binaries": [],
-   "required_packages": []
-  },
-  {
-   "id": "h3_av.prepare",
-   "disposition": "required",
-   "evidence_reason": "H3 request preparation is a CPU-bound local contract step.",
-   "adapter_family": "cpu",
-   "resource_keys": [
-    "cpu"
-   ],
-   "required_env": [],
-   "required_binaries": [],
-   "required_packages": []
-  },
-  {
-   "id": "h3_av.publication_finalizer",
-   "disposition": "required",
-   "evidence_reason": "H3 publication finalization verifies and stages the declared candidate using local CPU-bound file operations.",
-   "adapter_family": "cpu",
-   "resource_keys": [
-    "cpu"
-   ],
-   "required_env": [],
-   "required_binaries": [],
-   "required_packages": []
-  },
-  {
-   "id": "h3_av.verify",
-   "disposition": "required",
-   "evidence_reason": "H3 candidate verification is a CPU-bound local contract step.",
-   "adapter_family": "cpu",
-   "resource_keys": [
-    "cpu"
-   ],
-   "required_env": [],
-   "required_binaries": [],
-   "required_packages": []
-  },
-  {
-   "id": "h3_av.transform",
-   "disposition": "optional",
-   "evidence_reason": "Tracked local orchestration parent waits on seven delegated children without an exclusive execution resource. Each child retains its own resource reservation, admission and readiness.",
-   "adapter_family": "orchestration",
-   "resource_keys": [],
-   "required_env": [],
-   "required_binaries": [],
-   "required_packages": [
-    "vibecomfy"
-   ]
-  },
-  {
    "id": "video_editing.sync_draft_voiceover",
    "disposition": "optional",
    "external_pack": "video_editing",
@@ -940,6 +854,16 @@
    "required_packages": []
   },
   {
+   "id": "runpod.claim",
+   "disposition": "optional",
+   "evidence_reason": "Claim a retained target through the existing host owner.",
+   "adapter_family": "cpu",
+   "resource_keys": ["cpu"],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
    "id": "runpod.exec",
    "disposition": "optional",
    "evidence_reason": "Optional remote execution integration; excluded from local beta readiness.",
@@ -947,6 +871,16 @@
    "resource_keys": [
     "provider"
    ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "runpod.keep",
+   "disposition": "optional",
+   "evidence_reason": "Keep a retained target through the existing host owner.",
+   "adapter_family": "cpu",
+   "resource_keys": ["cpu"],
    "required_env": [],
    "required_binaries": [],
    "required_packages": []

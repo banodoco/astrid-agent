@@ -16,7 +16,13 @@ EXPECTED = {
     "generate_list", "generate_image", "generate_video", "generate_describe",
     "generate_workflow", "generate_targets", "generate_launch", "generate_release",
     "tasks_create", "tasks_list", "tasks_show", "tasks_cancel", "tasks_retry",
-    "tasks_events", "tasks_follow", "engines_install",
+    "tasks_events", "tasks_follow", "tasks_logs", "engines_install",
+    "generate_audio", "generate_align",  # r13/compose
+    "generate_failure",  # r13/compose: the read-only diagnostic after a failed run
+    "generate_defaults_set", "generate_defaults_unset",  # r13/compose
+    "generate_settings_checkout", "generate_settings_checkin",  # r13/compose
+    "generate_fetch_models", "generate_scan",  # Plan 20 phase 4
+    "generate_settings_set", "generate_settings_unset",  # Plan 20 phase 4
 }
 
 
@@ -56,17 +62,28 @@ def test_phase_one_tools_list_and_parser_registration():
     assert set(tools) & EXPECTED == EXPECTED
     assert {name for name in tools if name.startswith(("generate_", "tasks_", "engines_"))} == EXPECTED
     assert "engines_status" not in tools
-    assert "generate_audio" not in tools and "generate_speech" not in tools
+    # R4.J: generate audio is an MCP tool in R13 (tts, sfx, music); orchestrator ruling 14 Nov.
+    assert "generate_speech" not in tools
     assert "tasks_submit" not in tools and "tasks_get" not in tools
 
     from astrid.core.cli.domain_product import family_parsers
     task_names = {"tasks_" + path[-1] for path, _, _ in mcp_server._leaves(
         family_parsers()["tasks"], ("tasks",), "")}
     from astrid.core.generation.cli import _parser as generation_parser
-    gen_names = {"generate_" + path[-1] for path, _, _ in mcp_server._leaves(
-        generation_parser(), ("generate",), "")}
-    assert task_names == {"tasks_create", "tasks_list", "tasks_show", "tasks_cancel", "tasks_retry", "tasks_events", "tasks_follow"}
-    assert gen_names == {"generate_list", "generate_image", "generate_video", "generate_describe", "generate_workflow", "generate_targets", "generate_launch", "generate_release"}
+    gen_paths = [path for path, _, _ in mcp_server._leaves(generation_parser(), ("generate",), "")]
+    gen_names = {mcp_server._tool_name(path) for path in gen_paths}
+    # No two generate leaves (e.g. defaults set and settings set) share one MCP tool name.
+    assert len(gen_names) == len(gen_paths)
+    assert {name for name in tools if name.startswith("generate_")} == gen_names
+    assert task_names == {"tasks_create", "tasks_list", "tasks_show", "tasks_cancel", "tasks_retry", "tasks_events", "tasks_follow", "tasks_logs"}
+    assert gen_names == {"generate_list", "generate_image", "generate_video", "generate_describe", "generate_workflow", "generate_targets", "generate_launch", "generate_release",
+                         "generate_audio", "generate_align",  # r13/compose
+                         "generate_failure",  # r13/compose: the read-only diagnostic after a failed run
+                         "generate_defaults_set", "generate_defaults_unset",  # r13/compose
+                         "generate_settings_checkout", "generate_settings_checkin",  # r13/compose
+                         "generate_fetch_models", "generate_scan",  # Plan 20 phase 4
+                         "generate_settings_set", "generate_settings_unset"}  # Plan 20 phase 4
+    assert gen_names == {name for name in EXPECTED if name.startswith("generate_")}
 
     state = {"tools": tools, "prompts": {}}
     listed = mcp_server.handle({"jsonrpc": "2.0", "id": 8, "method": "tools/list"}, state)
@@ -145,18 +162,19 @@ def test_generate_schema_and_argv_for_all_leaves():
     expectations = {
         "generate_list": ({"kind": {"type": "string", "enum": ["image", "video", "audio", "generation", "fixture"]}}, [],
                           {"kind": "audio"}, ["generate", "list", "--kind", "audio", "--json"]),
-        "generate_describe": ({"workflow": "string", "entry": "string", "mode": "string", "target": "string", "engine": "string"}, [],
-                              {"workflow": "bundle/workflow.py", "entry": "entry-a", "mode": "video", "target": "runpod", "engine": "comfyui"},
-                              ["generate", "describe", "bundle/workflow.py", "--entry", "entry-a", "--mode", "video", "--target", "runpod", "--engine", "comfyui", "--json"]),
-        "generate_targets": ({"target": "string", "engine": "string", "save": "boolean", "input": "array"}, [],
-                             {"target": "local", "engine": "comfyui", "save": True, "input": ["a=1", "b=true"]},
-                             ["generate", "targets", "--target", "local", "--engine", "comfyui", "--save", "--input", "a=1", "--input", "b=true", "--json"]),
-        "generate_launch": ({"target": "string", "engine": "string", "consent": "array", "timeout": "number"}, [],
-                            {"target": "managed", "engine": "comfyui", "consent": ["user_env"], "timeout": 5},
-                            ["generate", "launch", "--target", "managed", "--engine", "comfyui", "--consent", "user_env", "--timeout", "5", "--json"]),
-        "generate_release": ({"engine": "string", "target": "string", "no_wait": "boolean"}, ["engine", "target"],
-                             {"engine": "engine-a", "target": "local", "no_wait": True},
-                             ["generate", "release", "--engine", "engine-a", "--target", "local", "--no-wait", "--json"]),
+        "generate_describe": ({"workflow": "string", "entry": "string", "mode": "string", "placement": "string", "engine": "string",
+        "gpu": "array", "datacenter": "string", "max_hourly_usd": "number"}, [],
+                              {"workflow": "bundle/workflow.py", "entry": "entry-a", "mode": "video", "placement": "runpod", "engine": "comfyui"},
+                              ["generate", "describe", "bundle/workflow.py", "--entry", "entry-a", "--mode", "video", "--placement", "runpod", "--engine", "comfyui", "--json"]),
+        "generate_targets": ({"placement": "string", "engine": "string", "save": "boolean", "input": "array"}, [],
+                             {"placement": "local", "engine": "comfyui", "save": True, "input": ["a=1", "b=true"]},
+                             ["generate", "targets", "--placement", "local", "--engine", "comfyui", "--save", "--input", "a=1", "--input", "b=true", "--json"]),
+        "generate_launch": ({"placement": "string", "engine": "string", "consent": "array", "timeout": "number"}, [],
+                            {"placement": "managed", "engine": "comfyui", "consent": ["user_env"], "timeout": 5},
+                            ["generate", "launch", "--placement", "managed", "--engine", "comfyui", "--consent", "user_env", "--timeout", "5", "--json"]),
+        "generate_release": ({"engine": "string", "placement": "string", "no_wait": "boolean"}, ["engine", "placement"],
+                             {"engine": "engine-a", "placement": "local", "no_wait": True},
+                             ["generate", "release", "--engine", "engine-a", "--placement", "local", "--no-wait", "--json"]),
     }
     for name, (types, required, arguments, argv_expected) in expectations.items():
         schema = tools[name]["definition"]["inputSchema"]
@@ -170,44 +188,47 @@ def test_generate_schema_and_argv_for_all_leaves():
 
     launch = tools["generate_launch"]["definition"]["inputSchema"]
     assert {key: value["type"] for key, value in launch["properties"].items()} == {
-        "target": "string", "engine": "string", "consent": "array", "timeout": "number"}
-    assert launch["properties"]["consent"]["items"]["enum"] == ["user_env", "paid"]
+        "placement": "string", "engine": "string", "consent": "array", "timeout": "number"}
+    assert launch["properties"]["consent"]["items"]["enum"] == ["user_env"]
     assert launch["additionalProperties"] is False
     describe = tools["generate_describe"]["definition"]["inputSchema"]
     assert {key: value["type"] for key, value in describe["properties"].items()} == {
-        "workflow": "string", "entry": "string", "mode": "string", "target": "string", "engine": "string"}
+        "workflow": "string", "entry": "string", "mode": "string", "placement": "string", "engine": "string",
+        "gpu": "array", "datacenter": "string", "max_hourly_usd": "number"}
 
     for name in ("generate_image", "generate_video"):
         props = tools[name]["definition"]["inputSchema"]["properties"]
         expected_types = {
             "prompt": "string", "named_prompt": "string", "model": "string", "entry": "string",
-            "inputs_json": "string", "mode": "string", "execution": "string", "target": "string",
+            "inputs_json": "string", "mode": "string", "execution": "string", "placement": "string",
             "project": "string", "out": "string", "dry_run": "boolean", "image_ref": "string",
             "width": "integer", "height": "integer", "steps": "integer", "seed": "integer",
             "guidance_scale": "number", "negative_prompt": "string", "frames": "integer", "fps": "number",
             "input": "array", "engine": "string", "no_wait": "boolean", "consent": "array",
-            "max_usd": "number", "deadline": "string", "recovery_path": "string", "inputs": "object",
+            "recovery_path": "string", "align": "string", "inputs": "object",
         }
+        if name == "generate_video":
+            expected_types["video_ref"] = "string"  # r13/compose: --video-ref on video (and audio)
         assert {key: value["type"] for key, value in props.items()} == expected_types
-        assert props["consent"]["items"]["enum"] == ["user_env", "paid"]
+        assert props["consent"]["items"]["enum"] == ["user_env"]
         assert tools[name]["definition"]["inputSchema"]["required"] == []
         arguments = {"prompt": "portrait", "named_prompt": "alternate", "model": "m", "entry": "e",
                      "inputs_json": "declared.json", "mode": "image", "execution": "catalog",
-                     "target": "local", "project": "p", "out": "out.png", "dry_run": True,
+                     "placement": "local", "project": "p", "out": "out.png", "dry_run": True,
                      "image_ref": "source.png", "width": 640, "height": 480, "steps": 22, "seed": 19,
                      "guidance_scale": 4.5, "negative_prompt": "blur", "frames": 9, "fps": 12.5,
                      "input": ["style=soft", "count=2"], "engine": "engine-a", "no_wait": False,
-                     "consent": ["user_env", "paid"], "max_usd": 1.5, "deadline": "2030-01-01T00:00:00Z", "recovery_path": "receipt.json",
+                     "consent": ["user_env"], "recovery_path": "receipt.json",
                      }
         argv, parsed = _parse_tool(tools[name], arguments)
         assert argv == ["generate", name.removeprefix("generate_"), "portrait", "--prompt", "alternate",
                         "--model", "m", "--entry", "e", "--inputs-json", "declared.json", "--mode", "image",
-                        "--execution", "catalog", "--target", "local", "--project", "p", "--out", "out.png",
+                        "--execution", "catalog", "--placement", "local", "--project", "p", "--out", "out.png",
                         "--dry-run", "--edit", "source.png", "--width", "640", "--height", "480", "--steps", "22",
                         "--seed", "19", "--cfg", "4.5", "--negative-prompt", "blur", "--frames", "9", "--fps", "12.5",
                         "--input", "style=soft", "--input", "count=2", "--engine", "engine-a", "--consent", "user_env",
-                        "--consent", "paid", "--max-usd", "1.5", "--deadline", "2030-01-01T00:00:00Z", "--recovery-path", "receipt.json", "--json"]
-        assert parsed.consent == ["user_env", "paid"] and parsed.width == 640 and parsed.fps == 12.5
+                        "--recovery-path", "receipt.json", "--json"]
+        assert parsed.consent == ["user_env"] and parsed.width == 640 and parsed.fps == 12.5
         assert parsed.recovery_path == "receipt.json"
         with pytest.raises(ValueError, match="unknown arguments"):
             mcp_server.argv_for(tools[name], {"invented": 1})
@@ -215,32 +236,32 @@ def test_generate_schema_and_argv_for_all_leaves():
     workflow = tools["generate_workflow"]
     schema = workflow["definition"]["inputSchema"]
     assert {key: value["type"] for key, value in schema["properties"].items()} == {
-        "workflow": "string", "as_entry": "string", "replace": "boolean", "inputs_json": "string",
-        "target": "string", "mode": "string", "project": "string", "out": "string", "prompt": "string",
+        "workflow": "string", "as_entry": "string", "replace": "boolean", "no_run": "boolean", "inputs_json": "string",
+        "placement": "string", "mode": "string", "project": "string", "out": "string", "prompt": "string",
         "negative_prompt": "string", "image_ref": "string", "width": "integer", "height": "integer",
         "seed": "integer", "frames": "integer", "fps": "number", "steps": "integer",
         "guidance_scale": "number", "dry_run": "boolean", "input": "array", "engine": "string",
-        "no_wait": "boolean", "consent": "array", "max_usd": "number", "deadline": "string", "recovery_path": "string", "inputs": "object",
+        "no_wait": "boolean", "consent": "array", "recovery_path": "string", "inputs": "object",
     }
-    assert schema["properties"]["consent"]["items"]["enum"] == ["user_env", "paid"]
+    assert schema["properties"]["consent"]["items"]["enum"] == ["user_env"]
     assert schema["required"] == ["workflow"]
     assert schema["properties"]["inputs"]["type"] == "object"
     args = {"workflow": "bundle.json", "as_entry": "new", "replace": True, "inputs_json": "in.json",
-            "target": "local", "mode": "video", "project": "p", "out": "o.mp4", "prompt": "p",
+            "placement": "local", "mode": "video", "project": "p", "out": "o.mp4", "prompt": "p",
             "negative_prompt": "n", "image_ref": "i.png", "width": 640, "height": 360, "seed": 4,
             "frames": 12, "fps": 24.0, "steps": 30, "guidance_scale": 7.0, "dry_run": True,
             "input": ["x=1", "y=2"], "engine": "engine-x", "no_wait": False,
-            "consent": ["paid"], "max_usd": 3.0, "deadline": "2030-01-01T00:00:00Z", "recovery_path": "receipt.json",
+            "consent": ["user_env"], "recovery_path": "receipt.json",
             "inputs": {"node:5.value": [1, 2]}}
     mcp_inputs = args.pop("inputs")
     argv, parsed = _parse_tool(workflow, args)
     assert argv == ["generate", "workflow", "bundle.json", "--as-entry", "new", "--replace", "--inputs-json", "in.json",
-                    "--target", "local", "--mode", "video", "--project", "p", "--out", "o.mp4", "--prompt", "p",
+                    "--placement", "local", "--mode", "video", "--project", "p", "--out", "o.mp4", "--prompt", "p",
                     "--negative-prompt", "n", "--edit", "i.png", "--width", "640", "--height", "360", "--seed", "4",
                     "--frames", "12", "--fps", "24.0", "--steps", "30", "--cfg", "7.0", "--dry-run", "--input",
-                    "x=1", "--input", "y=2", "--engine", "engine-x", "--consent", "paid", "--max-usd", "3.0",
-                    "--deadline", "2030-01-01T00:00:00Z", "--recovery-path", "receipt.json", "--json"]
-    assert parsed.workflow == "bundle.json" and parsed.consent == ["paid"]
+                    "x=1", "--input", "y=2", "--engine", "engine-x", "--consent", "user_env",
+                    "--recovery-path", "receipt.json", "--json"]
+    assert parsed.workflow == "bundle.json" and parsed.consent == ["user_env"]
     assert parsed.recovery_path == "receipt.json"
     assert mcp_inputs == {"node:5.value": [1, 2]}
 
@@ -251,23 +272,21 @@ def test_engine_install_schema_and_argv_including_defaults():
     assert schema["required"] == ["engine"]
     assert {key: value["type"] for key, value in schema["properties"].items()} == {
         "engine": "string", "platform": "string", "placement": "string", "root": "string",
-        "deadline": "number", "dry_run": "boolean", "model_cache_root": "string",
-        "model_cache_device": "integer", "model_cache_mount_id": "integer"}
+        "deadline": "number", "dry_run": "boolean", "models_root": "string"}
+    # The declared deadline type is the one the CLI parses (float seconds), so schema and argv agree.
+    assert schema["properties"]["deadline"]["type"] == "number"
     assert schema["properties"]["placement"]["enum"] == ["local", "runpod"]
     argv, parsed = _parse_tool(tool, {"engine": "engine-a", "platform": "linux-x86_64-cu130",
                                      "placement": "runpod", "root": "/engine", "deadline": 30.5,
-                                     "dry_run": True, "model_cache_root": "/cache",
-                                     "model_cache_device": 9, "model_cache_mount_id": 42})
+                                     "dry_run": True, "models_root": "/cache"})
     assert argv == ["engines", "install", "engine-a", "--platform", "linux-x86_64-cu130", "--placement", "runpod",
-                    "--root", "/engine", "--deadline", "30.5", "--dry-run", "--model-cache-root", "/cache",
-                    "--model-cache-device", "9", "--model-cache-mount-id", "42"]
+                    "--root", "/engine", "--deadline", "30.5", "--dry-run", "--models-root", "/cache"]
     assert (parsed.platform, parsed.placement, parsed.deadline, parsed.dry_run) == ("linux-x86_64-cu130", "runpod", 30.5, True)
     assert mcp_server.argv_for(tool, {"engine": "e"}) == ["engines", "install", "e"]
     _, defaults = _parse_tool(tool, {"engine": "e"})
     assert (defaults.platform, defaults.placement, defaults.deadline, defaults.dry_run) == (
         "linux-x86_64-cu130", "local", 3600.0, False)
-    assert (defaults.root, defaults.model_cache_root, defaults.model_cache_device,
-            defaults.model_cache_mount_id) == (None, None, None, None)
+    assert (defaults.root, defaults.models_root) == (None, None)
     for invalid in ([], ["e", "--placement", "invalid"]):
         with pytest.raises(SystemExit) as exc:
             _real_leaf(tool).parse_args(invalid)
@@ -321,17 +340,17 @@ def test_target_launch_cli_and_mcp_envelope(monkeypatch):
     tool = _tools()["generate_launch"]
     schema = tool["definition"]["inputSchema"]
     assert schema["required"] == []
-    assert schema["properties"]["target"]["type"] == "string"
+    assert schema["properties"]["placement"]["type"] == "string"
     assert schema["properties"]["engine"]["type"] == "string"
-    assert schema["properties"]["consent"]["items"]["enum"] == ["user_env", "paid"]
+    assert schema["properties"]["consent"]["items"]["enum"] == ["user_env"]
     assert schema["properties"]["timeout"]["type"] == "number"
-    arguments = {"target": "managed", "engine": "comfyui", "consent": ["user_env", "paid"], "timeout": 7}
+    arguments = {"placement": "managed", "engine": "comfyui", "consent": ["user_env"], "timeout": 7}
     argv, parsed = _parse_tool(tool, arguments)
-    expected_argv = ["generate", "launch", "--target", "managed", "--engine", "comfyui",
-                     "--consent", "user_env", "--consent", "paid", "--timeout", "7", "--json"]
+    expected_argv = ["generate", "launch", "--placement", "managed", "--engine", "comfyui",
+                     "--consent", "user_env", "--timeout", "7", "--json"]
     assert argv == expected_argv
-    assert (parsed.target, parsed.engine, parsed.consent, parsed.timeout) == (
-        "managed", "comfyui", ["user_env", "paid"], 7.0)
+    assert (parsed.placement, parsed.engine, parsed.consent, parsed.timeout) == (
+        "managed", "comfyui", ["user_env"], 7.0)
 
     calls = []
     envelope = {"status": "launched", "target": "managed", "engine": "comfyui"}
@@ -369,14 +388,12 @@ def test_runpod_generation_follow_and_release_cli_and_mcp_envelopes(monkeypatch)
 
     monkeypatch.setattr(mcp_server, "_run", fake_run)
     state = {"tools": tools, "prompts": {}}
-    generation_args = {"prompt": "a red paper boat", "target": "runpod", "engine": "comfyui",
-                       "consent": ["paid"], "max_usd": 1.25, "deadline": "2030-01-01T00:00:00Z",
-                       "recovery_path": "runpod-receipt.json", "no_wait": False}
+    generation_args = {"prompt": "a red paper boat", "placement": "runpod", "engine": "comfyui",
+                       "consent": ["user_env"], "recovery_path": "runpod-receipt.json", "no_wait": False}
     generated = mcp_server.handle({"jsonrpc": "2.0", "id": 32, "method": "tools/call",
                                    "params": {"name": "generate_image", "arguments": generation_args}}, state)["result"]
-    expected_generation = ["generate", "image", "a red paper boat", "--target", "runpod", "--engine", "comfyui",
-                           "--no-wait", "--consent", "paid", "--max-usd", "1.25",
-                           "--deadline", "2030-01-01T00:00:00Z", "--recovery-path", "runpod-receipt.json", "--json"]
+    expected_generation = ["generate", "image", "a red paper boat", "--placement", "runpod", "--engine", "comfyui",
+                           "--no-wait", "--consent", "user_env", "--recovery-path", "runpod-receipt.json", "--json"]
     assert calls[-1] == expected_generation
     assert generated == {"content": [{"type": "text", "text": json.dumps(admission)}],
                          "isError": False, "structuredContent": admission}
@@ -389,10 +406,10 @@ def test_runpod_generation_follow_and_release_cli_and_mcp_envelopes(monkeypatch)
     assert calls[-1] == expected_follow
     assert followed == {"content": [{"type": "text", "text": follow_text.strip()}], "isError": False}
 
-    release_args = {"engine": "comfyui", "target": "runpod", "no_wait": True}
+    release_args = {"engine": "comfyui", "placement": "runpod", "no_wait": True}
     released = mcp_server.handle({"jsonrpc": "2.0", "id": 34, "method": "tools/call",
                                   "params": {"name": "generate_release", "arguments": release_args}}, state)["result"]
-    expected_release = ["generate", "release", "--engine", "comfyui", "--target", "runpod", "--no-wait", "--json"]
+    expected_release = ["generate", "release", "--engine", "comfyui", "--placement", "runpod", "--no-wait", "--json"]
     assert calls[-1] == expected_release
     assert released == {"content": [{"type": "text", "text": json.dumps(release)}],
                         "isError": False, "structuredContent": release}
@@ -483,11 +500,9 @@ def test_engine_install_success_and_coded_error_envelopes(monkeypatch):
 
     monkeypatch.setattr(engine_cli, "load_recipe", lambda engine, platform: Recipe(id=engine, platform=platform))
     monkeypatch.setattr(engine_cli, "_root", lambda args: "/fake/engine")
-    monkeypatch.setattr(engine_cli, "plan_install", lambda recipe, root, placement: Plan(
+    monkeypatch.setattr(engine_cli, "plan_install", lambda recipe, root, placement, models_root=None: Plan(
         root=root, platform=recipe["platform"], placement=placement))
-    monkeypatch.setattr(engine_cli, "validate_model_cache_root", lambda *args, **kwargs: None)
-    monkeypatch.setattr(engine_cli, "load_model_lock", lambda *args: type("Models", (), {"models": []})())
-    monkeypatch.setattr(engine_cli, "_disk_anchor", lambda root: ("/", 1, 1, 100))
+    monkeypatch.setattr(engine_cli, "_disk_anchor", lambda root: ("/", 1, 1, 100 * 1024 ** 3))
     monkeypatch.setattr(engine_cli, "_custody_preflight", lambda root: None)
     monkeypatch.setattr(engine_cli, "install_engine", lambda *args, **kwargs: {"status": "installed", "engine": "e"})
     monkeypatch.setattr(engine_cli, "_default_backend", lambda **kwargs: (object(), object()))
@@ -524,5 +539,20 @@ def test_engine_install_success_and_coded_error_envelopes(monkeypatch):
     assert dry_run["structuredContent"] == {
         "plan": {"root": "/fake/engine", "platform": "linux-x86_64-cu130", "placement": "local"},
         "recipe": {"id": "e", "platform": "linux-x86_64-cu130"},
-        "disk_check": {"required_bytes": 0, "free_bytes": 100, "status": "ok", "basis": "locked_model_bytes"},
+        "disk_check": {"required_bytes": engine_cli.ENGINE_INSTALL_MIN_FREE_BYTES, "free_bytes": 100 * 1024 ** 3,
+                       "status": "ok", "basis": "minimum_free_space_floor"},
     }
+
+
+def test_generation_mcp_rejects_non_object_inputs_before_invocation(monkeypatch):
+    def unexpected(*args, **kwargs):
+        pytest.fail("invalid inputs must not invoke the CLI")
+    monkeypatch.setattr(mcp_server, "_run", unexpected)
+    result = mcp_server.call_tool(mcp_server._generation_tools()["generate_image"],
+                                  {"entry": "example", "inputs": ["invalid"]})
+    assert result["isError"]
+    payload = result["structuredContent"]
+    assert payload["status"] == "blocked"
+    assert payload["issues"][0]["code"] == "input_rejected"
+    assert payload["issues"][0]["message"] == "inputs must be an object"
+    assert json.loads(result["content"][0]["text"]) == payload

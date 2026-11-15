@@ -2,7 +2,13 @@
 """Keep the agent-first README setup prompt aligned with its generated block."""
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+# The hand-off sentence lives in one place in Agent code; import it from the package.
+sys.path.insert(0, str(ROOT))
+from astrid.installer.outcome import HANDOFF_SENTENCE  # noqa: E402
 
 START_MARKER = "<!-- BEGIN GENERATED AGENT BANNER -->"
 END_MARKER = "<!-- END GENERATED AGENT BANNER -->"
@@ -10,13 +16,18 @@ BANNER = """
 ### Give this to your agent (recommended)
 
 ```text
-Help me set up Astrid on this computer. Follow:
-https://github.com/banodoco/astrid-agent/blob/main/docs/setup/SKILL.md
+Help me set up Astrid on this computer.
 
-Preserve my existing work and credentials, confirm that the
-Runtime is connected, and help me begin at https://astrid.haus.
+Read this setup guide and follow its steps in order:
+https://github.com/banodoco/astrid-agent/blob/main/docs/setup/SKILL.md
+Do not install the guide itself as a skill.
+
+Before you install, show me the setup choices, recommending my current settings, and let me change them.
+If Astrid is already installed, keep my saved choices unless I ask to change one.
+Keep my existing work and credentials.
+Confirm that astrid.haus shows Connected, then help me begin at https://astrid.haus.
 ```
-"""
+""" + "\n" + HANDOFF_SENTENCE + "\n"
 
 
 def main() -> None:

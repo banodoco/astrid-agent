@@ -8,7 +8,7 @@
 
 PY ?= $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
 
-.PHONY: help test check ci preflight structure doc-refs doctor ruff mypy cycles remotion-install remotion-typecheck renderer-parity wheel editable lock-build lock-runtime lock-proof lock-validate toolchain-record
+.PHONY: help test check ci preflight structure doc-refs doctor ruff mypy cycles collection remotion-install remotion-typecheck renderer-parity wheel editable lock-build lock-runtime lock-proof lock-validate toolchain-record
 
 help:
 	@echo "make check   - blocking gates: structure, doc-refs, doctor, ruff, mypy, cycles, Remotion, renderer parity"
@@ -59,6 +59,9 @@ mypy:
 cycles:
 	@$(PY) -m scripts.reshape.import_cycles --baseline scripts/reshape/baselines/import_cycles.json
 	@echo "✓ import cycles (no new cross-package cycle)"
+
+collection:
+	@$(PY) -m scripts.check_collection
 
 remotion-install:
 	@$(PY) scripts/reshape/remotion_gate.py install

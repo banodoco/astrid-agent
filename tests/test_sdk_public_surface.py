@@ -38,6 +38,39 @@ SURFACE_EXECUTOR = "sdk_surface.arrange"
 SURFACE_ASSEMBLE_EXECUTOR = "sdk_surface.assemble"
 
 
+def _surface_video_registry(registry):
+    """Supply the video contract exercised by these facade tests."""
+    from astrid.core.model_catalog.registry import ModelRegistry
+    from astrid.core.model_catalog.schema import BackendSpec, ModeSpec, ModelEntry
+
+    cloud = {"cloud": BackendSpec(endpoint="fixture/video")}
+    entry = ModelEntry(id="wan-2.2", modality="video", modes={
+        "t2v": ModeSpec(supports=("prompt", "duration"), backends=cloud),
+        "flf": ModeSpec(supports=("prompt", "image_ref", "image_end_ref"), backends=cloud),
+    })
+    return ModelRegistry([item for item in registry.list_all(include_closed=True)
+                          if item.id != entry.id] + [entry])
+
+
+def _surface_video_availability():
+    from astrid.core.generation.availability import availability_declaration
+
+    declaration = dict(availability_declaration())
+    declaration["models"] = {key: value for key, value in declaration["models"].items()
+                             if key != "wan-2.2"}
+    return declaration
+
+
+@pytest.fixture
+def surface_video_registry(monkeypatch):
+    from astrid.core.generation import availability
+    sdk = importlib.import_module("astrid.sdk")
+    registry = _surface_video_registry(sdk._load_model_registry())
+    declaration = _surface_video_availability()
+    monkeypatch.setattr(sdk, "_load_model_registry", lambda **kwargs: registry)
+    monkeypatch.setattr(availability, "availability_declaration", lambda **kwargs: declaration)
+
+
 def _fresh_import_probe() -> dict[str, Any]:
     script = """
 import importlib
@@ -171,6 +204,17 @@ def test_generate_facade_is_lazy_public_surface() -> None:
         # surfaces) agrees with sys.modules again.
         if "astrid.sdk" in popped and popped["astrid.sdk"] is not None:
             setattr(astrid, "sdk", popped["astrid.sdk"])
+
+
+@pytest.mark.parametrize("kind", ["image", "video", "audio"])
+@pytest.mark.parametrize("placement", [None, "auto"])
+def test_generate_facade_rejects_retired_target_keyword(kind, placement) -> None:
+    astrid = _import_public_module()
+
+    with pytest.raises(TypeError, match="use placement="):
+        getattr(astrid.generate, kind)(
+            target="http://127.0.0.1:8123", placement=placement, prompt="one boat",
+        )
 
 
 def test_representative_top_level_submodule_imports_resolve() -> None:
@@ -1482,6 +1526,7 @@ def test_generate_image_reconstructs_typed_result_from_generation_payload(
     assert seen["kwargs"]["inputs"]["prompt"] == "a lantern in fog"
 
 
+@pytest.mark.usefixtures("surface_video_registry")
 def test_generate_facade_maps_contract_failures_and_openai_route(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1639,6 +1684,7 @@ def test_astrid_generate_lazy_access_does_not_load_generation_executor_modules()
     assert probe["sdk_loaded"] is True, "astrid.sdk should be loaded after facade access"
 
 
+@pytest.mark.usefixtures("surface_video_registry")
 def test_generate_video_reconstructs_typed_result_from_generation_payload(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1751,6 +1797,7 @@ def test_generate_facade_rejects_missing_generation_result_key_for_image(
         )
 
 
+@pytest.mark.usefixtures("surface_video_registry")
 def test_generate_facade_rejects_non_mapping_payload(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1873,6 +1920,7 @@ def test_generate_facade_handles_from_dict_on_minimal_payload(
     assert result.model_actual == ""
 
 
+@pytest.mark.usefixtures("surface_video_registry")
 def test_generate_facade_handles_error_generation_result(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2128,20 +2176,30 @@ def test_image_execution_inference_single_backend(
     assert seen["kwargs"]["inputs"]["mode"] == "t2i"
 
 
-def test_image_execution_ambiguous_rejected(
+def test_image_omitted_and_auto_select_declared_local(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """When multiple backends are available and no execution is given,
-    the facade raises a diagnostic asking the caller to choose."""
+    """Omitted placement and auto select a catalog-declared local route."""
     astrid = _import_public_module()
+    from astrid.sdk.generation import GenerationFacade
+    seen = []
+    monkeypatch.setattr(GenerationFacade, "_generate_on_target",
+                        lambda self, **kwargs: seen.append(kwargs) or "routed")
 
-    # z-image t2i has both local and cloud
-    with pytest.raises(astrid.CapabilityValidationError, match="Ambiguous execution"):
-        astrid.generate.image(
-            model="z-image",
-            out=tmp_path,
-            prompt="test",
-        )
+    registry = importlib.import_module("astrid.sdk")._load_model_registry()
+    entry = next(candidate for candidate in registry.list_all(include_closed=True)
+                 if candidate.modality == "image" and "t2i" in candidate.modes
+                 and "local" in candidate.modes["t2i"].backends
+                 and len(candidate.modes["t2i"].backends) > 1)
+    common = {"model": entry.id, "mode": "t2i", "out": tmp_path, "prompt": "test"}
+    assert astrid.generate.image(**common) == "routed"
+    assert astrid.generate.image(**common, placement="auto") == "routed"
+    assert [(row["placement"], row["model"], row["mode"], row["inputs"])
+            for row in seen] == [
+        ("auto", entry.id, "t2i", {"prompt": "test"}),
+        ("auto", entry.id, "t2i", {"prompt": "test"}),
+    ]
 
 
 def test_image_explicit_execution_validated_against_backends(
@@ -2186,6 +2244,7 @@ def test_image_explicit_execution_rejected_when_unavailable(
         )
 
 
+@pytest.mark.usefixtures("surface_video_registry")
 def test_video_mode_inference_t2v_no_refs(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2210,22 +2269,33 @@ def test_video_mode_inference_t2v_no_refs(
 
 
 def test_video_mode_inference_i2v_image_ref(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     """When mode is omitted and image_ref is present (but not image_end_ref),
-    i2v is inferred.  wan-2.2 i2v has both local and cloud → ambiguous
-    execution is rejected."""
+    i2v is inferred and omitted placement matches auto."""
     astrid = _import_public_module()
+    from astrid.sdk.generation import GenerationFacade
+    seen = []
+    monkeypatch.setattr(GenerationFacade, "_generate_on_target",
+                        lambda self, **kwargs: seen.append(kwargs) or "routed")
 
-    # wan-2.2 i2v has both local and cloud — ambiguous execution
-    with pytest.raises(astrid.CapabilityValidationError, match="Ambiguous execution"):
-        astrid.generate.video(
-            model="wan-2.2",
-            out=tmp_path,
-            image_ref="https://example.com/frame.png",
-        )
+    registry = importlib.import_module("astrid.sdk")._load_model_registry()
+    entry = next(candidate for candidate in registry.list_all(include_closed=True)
+                 if candidate.modality == "video" and "i2v" in candidate.modes
+                 and "local" in candidate.modes["i2v"].backends)
+    common = {"model": entry.id, "out": tmp_path,
+              "image_ref": "https://example.com/frame.png"}
+    assert astrid.generate.video(**common) == "routed"
+    assert astrid.generate.video(**common, placement="auto") == "routed"
+    assert [(row["placement"], row["model"], row["mode"], row["inputs"])
+            for row in seen] == [
+        ("auto", entry.id, "i2v", {"image_ref": "https://example.com/frame.png"}),
+        ("auto", entry.id, "i2v", {"image_ref": "https://example.com/frame.png"}),
+    ]
 
 
+@pytest.mark.usefixtures("surface_video_registry")
 def test_video_mode_inference_flf_both_refs(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2251,6 +2321,7 @@ def test_video_mode_inference_flf_both_refs(
     assert seen["kwargs"]["inputs"]["execution"] == "cloud"
 
 
+@pytest.mark.usefixtures("surface_video_registry")
 def test_video_explicit_mode_validated(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2272,33 +2343,87 @@ def test_video_explicit_mode_validated(
     assert seen["kwargs"]["inputs"]["mode"] == "t2v"
 
 
-def test_video_execution_inference_single_backend(
+def test_video_execution_inference_single_backend_declared_local_target_route(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     """Video mode with a single backend auto-infers execution."""
     astrid = _import_public_module()
-    sdk = importlib.import_module("astrid.sdk")
-    preflight = importlib.import_module("astrid.core.generation.preflight")
-    fake_invoke, seen = _make_success_invoke(astrid, tmp_path)
-    monkeypatch.setattr(sdk, "invoke", fake_invoke)
-    monkeypatch.setattr(
-        preflight,
-        "require_local_generation_readiness",
-        lambda *_args, **_kwargs: None,
+    from astrid.sdk.generation import GenerationFacade
+    seen = []
+    monkeypatch.setattr(GenerationFacade, "_generate_on_target",
+                        lambda self, **kwargs: seen.append(kwargs) or "routed")
+    registry = importlib.import_module("astrid.sdk")._load_model_registry()
+    entry = next(candidate for candidate in registry.list_all(include_closed=True)
+                 if candidate.modality == "video"
+                 and any(tuple(mode.backends) == ("local",) for mode in candidate.modes.values()))
+    mode_name = next(name for name, mode in entry.modes.items()
+                     if tuple(mode.backends) == ("local",))
+    result = astrid.generate.video(
+        model=entry.id,
+        mode=mode_name,
+        out=tmp_path,
+        project="demo",
     )
 
-    # ltx-2.3 flf only has local
+    assert result == "routed"
+    assert len(seen) == 1
+    assert seen[0]["placement"] == "auto"
+    assert seen[0]["model"] == entry.id
+    assert seen[0]["mode"] == mode_name
+    assert seen[0]["execution"] is None
+    assert importlib.import_module("astrid.sdk")._resolve_execution(
+        entry, mode_name, None, model=entry.id,
+    ) == "local"
+
+
+def test_video_single_provider_backend_reconstructs_generation_result(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A single qualified provider backend is inferred and its result reconstructed."""
+    astrid = _import_public_module()
+    sdk = importlib.import_module("astrid.sdk")
+    from astrid.core.generation.availability import model_availability
+
+    registry = sdk._load_model_registry()
+    selected = None
+    for candidate in registry.list_all(include_closed=True):
+        if candidate.modality != "video":
+            continue
+        for mode_name, mode in candidate.modes.items():
+            if len(mode.backends) != 1:
+                continue
+            backend = next(iter(mode.backends))
+            if backend == "local":
+                continue
+            if model_availability(candidate.id, mode_name, backend).get("available") is not True:
+                continue
+            required = set(mode.requires)
+            if not required <= {"prompt"}:
+                continue
+            selected = (candidate, mode_name, backend)
+            break
+        if selected is not None:
+            break
+    assert selected is not None, "expected a qualified single-backend video route"
+    entry, mode_name, backend = selected
+
+    fake_invoke, seen = _make_success_invoke(astrid, tmp_path)
+    monkeypatch.setattr(sdk, "invoke", fake_invoke)
     result = astrid.generate.video(
-        model="ltx-2.3",
-        mode="flf",
+        model=entry.id,
+        mode=mode_name,
+        prompt="test",
         out=tmp_path,
         project="demo",
     )
 
     assert result.ok is True
-    assert seen["kwargs"]["inputs"]["mode"] == "flf"
-    assert seen["kwargs"]["inputs"]["execution"] == "local"
+    assert result.model_actual == entry.id
+    assert result.image_paths == [tmp_path / "out.png"]
+    assert seen["kwargs"]["inputs"]["execution"] == backend
+    assert seen["kwargs"]["inputs"]["mode"] == mode_name
 
 
 def test_unknown_model_raises_validation_error(
@@ -2399,6 +2524,7 @@ def test_video_explicit_mode_rejected_when_not_supported(
         )
 
 
+@pytest.mark.usefixtures("surface_video_registry")
 def test_video_explicit_execution_validated_against_backends(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2444,28 +2570,38 @@ def test_video_explicit_execution_rejected_when_unavailable(
         )
 
 
-def test_ambiguous_execution_diagnostic_includes_available_backends(
+def test_conflicting_placement_diagnostic_names_declared_execution_and_valid_placements(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """When multiple backends exist and none is specified, the error
-    message must list every available backend (sorted)."""
+    """Provider-only catalog entries reject concrete target placement clearly."""
     astrid = _import_public_module()
+    from astrid.sdk.generation import GenerationFacade
+    def unexpected_io(self, *args, **kwargs):
+        raise AssertionError(f"target route invoked unexpectedly: {kwargs!r}")
+    monkeypatch.setattr(GenerationFacade, "_generate_on_target",
+                        unexpected_io)
+    monkeypatch.setattr(GenerationFacade, "_invoke", unexpected_io)
 
-    # z-image t2i has both local and cloud → ambiguous
+    registry = importlib.import_module("astrid.sdk")._load_model_registry()
+    entry = next(candidate for candidate in registry.list_all(include_closed=True)
+                 if candidate.modality == "image"
+                 and any("local" not in mode.backends for mode in candidate.modes.values()))
+    mode_name, mode = next((name, mode) for name, mode in entry.modes.items()
+                           if "local" not in mode.backends)
     with pytest.raises(astrid.CapabilityValidationError) as excinfo:
-        astrid.generate.image(
-            model="z-image",
-            out=tmp_path,
-            prompt="test",
-        )
-
+        astrid.generate.image(model=entry.id, mode=mode_name, placement="runpod",
+                              out=tmp_path, prompt="test", dry_run=True)
     message = str(excinfo.value)
-    assert "Ambiguous execution" in message
-    assert "Available backends:" in message
-    assert "cloud" in message
-    assert "local" in message
-    # Verify the backends are in alphabetical order
-    assert message.index("cloud") < message.index("local")
+    assert entry.id in message
+    assert "declares execution" in message
+    assert "valid placements" in message
+    execution = importlib.import_module("astrid.sdk")._resolve_execution(
+        entry, mode_name, None, model=entry.id,
+    )
+    assert execution in message
+    assert excinfo.value.details["execution"] == execution
+    assert excinfo.value.details["valid_placements"] == [None, "auto"]
 
 
 # ---------------------------------------------------------------------------
@@ -2531,6 +2667,7 @@ def test_generate_explicit_out_routing_image(
     assert seen["kwargs"]["project"] == "demo"
 
 
+@pytest.mark.usefixtures("surface_video_registry")
 def test_generate_explicit_out_routing_video(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2577,6 +2714,7 @@ def test_generate_explicit_project_routing_image(
     assert seen["kwargs"]["project"] == "my-project"
 
 
+@pytest.mark.usefixtures("surface_video_registry")
 def test_generate_explicit_project_routing_video(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2625,6 +2763,7 @@ def test_generate_attached_project_resolution_image(
     assert seen["kwargs"]["project"] == "autouse-session-demo"
 
 
+@pytest.mark.usefixtures("surface_video_registry")
 def test_generate_attached_project_resolution_video(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2676,6 +2815,7 @@ def test_generate_out_wins_over_project_image(
     assert seen["kwargs"]["project"] == "ignored-project"
 
 
+@pytest.mark.usefixtures("surface_video_registry")
 def test_generate_out_wins_over_project_video(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2743,7 +2883,13 @@ def fake_invoke(capability_id, **kwargs):
         }},
     )
 
-with patch.object(sdk, "invoke", fake_invoke):
+from astrid.core.generation import availability
+from tests.test_sdk_public_surface import _surface_video_availability, _surface_video_registry
+registry = _surface_video_registry(sdk._load_model_registry())
+declaration = _surface_video_availability()
+with patch.object(sdk, "invoke", fake_invoke), \
+     patch.object(sdk, "_load_model_registry", lambda **kwargs: registry), \
+     patch.object(availability, "availability_declaration", lambda **kwargs: declaration):
     old_stderr = sys.stderr
     sys.stderr = stderr_capture
     try:
@@ -3145,3 +3291,22 @@ def test_generate_facade_maps_contract_failures_and_openai_rejection(
             out=tmp_path,
             project="demo",
         )
+
+
+def test_video_mode_inference_v2v_video_ref(monkeypatch, tmp_path):
+    """A lone video reference selects v2v; an explicit mode still wins."""
+    astrid = _import_public_module()
+    from astrid.sdk.generation import GenerationFacade
+
+    monkeypatch.setattr(importlib.import_module("astrid.sdk"), "_load_model_registry",
+                        lambda **kwargs: object())
+    seen = []
+    monkeypatch.setattr(GenerationFacade, "_generate_on_target",
+                        lambda self, **kwargs: seen.append(kwargs) or "routed")
+    common = {"placement": "runpod", "out": tmp_path,
+              "prompt": "a red bicycle", "video_ref": "clip.mp4"}
+    assert astrid.generate.video(**common) == "routed"
+    assert astrid.generate.video(**common, mode="video-edit") == "routed"
+    assert [row["mode"] for row in seen] == ["v2v", "video-edit"]
+    assert all(row["inputs"] == {"prompt": "a red bicycle", "video_ref": "clip.mp4"}
+               for row in seen)

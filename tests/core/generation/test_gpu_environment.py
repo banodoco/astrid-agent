@@ -30,7 +30,7 @@ def test_plan_is_platform_specific_and_does_not_install(tmp_path, monkeypatch, p
             platform_name = {"linux": "Linux", "darwin": "macOS"}[platform]
             assert plan["reason"] == (
                 f"Astrid doesn't install ComfyUI on {platform_name} yet. Run your own ComfyUI, "
-                "then pass `comfy_url` (find it with `python3 -m astrid.packs.vibecomfy.local scan`)."
+                "then pass `comfy_url` (find it with `astrid generate scan`)."
             )
         else:
             assert "admitted Wan2GP checkout and interpreter" in plan["reason"]
@@ -85,7 +85,7 @@ def test_unmanaged_comfy_provision_rejection_gives_bring_your_own_path(platform,
         gpu.provision_environment(plan)
     assert str(exc.value) == (
         f"Astrid doesn't install ComfyUI on {platform_name} yet. Run your own ComfyUI, "
-        "then pass `comfy_url` (find it with `python3 -m astrid.packs.vibecomfy.local scan`)."
+        "then pass `comfy_url` (find it with `astrid generate scan`)."
     )
 
 
@@ -106,7 +106,7 @@ def test_provisioning_a_windows_plan_on_linux_names_the_current_host(monkeypatch
         gpu.provision_environment({"managed": True, "pack": "vibecomfy", "platform": "win32"})
 
 
-@pytest.mark.parametrize("capability", ["wan2gp.generate_video", "vibecomfy.run", "vibecomfy.generate_image", "vibecomfy.video_enhance", "comfy_wrap.run"])
+@pytest.mark.parametrize("capability", ["wan2gp.generate_video", "vibecomfy.run", "vibecomfy.generate_image", "vibecomfy.video_enhance"])
 @pytest.mark.parametrize("opt_in", ["", "true", "0", "1"])
 def test_unqualified_label_is_a_warning_and_the_retired_opt_in_changes_nothing(capability, opt_in):
     status = gpu.windows_gpu_status(capability, platform="win32", environ={gpu.ALLOW_UNQUALIFIED_ENV: opt_in}, detection=DEVICE)
@@ -125,7 +125,7 @@ def test_unqualified_label_is_a_warning_and_the_retired_opt_in_changes_nothing(c
 @pytest.mark.parametrize("platform", ["linux", "darwin"])
 def test_other_platforms_do_not_probe_or_change_readiness(platform, monkeypatch):
     monkeypatch.setattr(gpu, "detect_nvidia", lambda: pytest.fail("non-Windows probe"))
-    for capability in ("wan2gp.generate_video", "vibecomfy.run", "comfy_wrap.run"):
+    for capability in ("wan2gp.generate_video", "vibecomfy.run"):
         assert gpu.windows_gpu_status(capability, platform=platform) is None
 
 
@@ -145,7 +145,7 @@ def test_qualification_table_is_specific_to_pack_os_and_gpu(monkeypatch):
     assert gpu.windows_gpu_status("wan2gp.generate_video", platform="win32", environ={}, detection=other)["ok"] is True
 
 
-@pytest.mark.parametrize("capability", ["vibecomfy.run", "vibecomfy.generate_image", "comfy_wrap.run"])
+@pytest.mark.parametrize("capability", ["vibecomfy.run", "vibecomfy.generate_image"])
 def test_vibecomfy_readiness_does_not_require_detected_nvidia(capability):
     status = gpu.windows_gpu_status(
         capability, platform="win32", environ={},
@@ -323,17 +323,28 @@ def test_solver_version_must_match_before_environment_creation(tmp_path, monkeyp
     assert not Path(plan["root"]).exists()
 
 
-@pytest.mark.parametrize("content", [None, "{not json", "null", "{}", '["comfy_wrap.run", 3]'])
+@pytest.mark.parametrize("content", [None, "{not json", "null", "{}", '["fixture_gpu.run", 3]'])
 def test_a_missing_or_malformed_vibecomfy_gpu_declaration_means_no_aliases_and_never_raises(content, tmp_path, monkeypatch):
     packs = tmp_path / "packs"
     (packs / "vibecomfy").mkdir(parents=True)
     if content is not None:
         (packs / "vibecomfy" / "gpu-capabilities.json").write_text(content, encoding="utf-8")
     monkeypatch.setattr(gpu, "_PACKS", packs)
-    assert gpu.gpu_pack("comfy_wrap.run") is None
+    assert gpu.gpu_pack("fixture_gpu.run") is None
     assert gpu.gpu_pack("unrelated.action") is None
     assert gpu.gpu_pack("vibecomfy.run") == "vibecomfy"
 
 
-def test_the_shipped_vibecomfy_gpu_declaration_routes_comfy_wrap_run():
-    assert gpu.gpu_pack("comfy_wrap.run") == "vibecomfy"
+def test_the_shipped_vibecomfy_gpu_declaration_has_no_aliases():
+    # cause a45dd06c4; ruling: machines 07:44 UTC Sat
+    assert json.loads((gpu._PACKS / "vibecomfy/gpu-capabilities.json").read_text()) == []
+    assert gpu.gpu_pack("vibecomfy.run") == "vibecomfy"
+
+
+def test_a_valid_vibecomfy_gpu_declaration_routes_its_alias(tmp_path, monkeypatch):
+    packs = tmp_path / "packs"
+    (packs / "vibecomfy").mkdir(parents=True)
+    (packs / "vibecomfy/gpu-capabilities.json").write_text('["fixture_gpu.run"]')
+    monkeypatch.setattr(gpu, "_PACKS", packs)
+    assert gpu.gpu_pack("fixture_gpu.run") == "vibecomfy"
+    assert gpu.gpu_pack("unrelated.action") is None

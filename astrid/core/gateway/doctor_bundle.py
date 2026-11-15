@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import getpass
+import getpass as getpass
 import json
 import os
 import re
@@ -11,102 +11,52 @@ import sys
 import uuid
 import zipfile
 from pathlib import Path
-from typing import Any
 
-from astrid.core.gateway.diagnostics import redact_for_shared
+from astrid.core._shared.log_redaction import (
+    _BEARER as _BEARER,
+)
+from astrid.core._shared.log_redaction import (
+    _CHAT_CONTENT_KEY as _CHAT_CONTENT_KEY,
+)
+from astrid.core._shared.log_redaction import (
+    _PRIVATE_KEY_BEGIN as _PRIVATE_KEY_BEGIN,
+)
+from astrid.core._shared.log_redaction import (
+    _PRIVATE_KEY_END as _PRIVATE_KEY_END,
+)
+from astrid.core._shared.log_redaction import (
+    _SECRET_KEY as _SECRET_KEY,
+)
+from astrid.core._shared.log_redaction import (
+    _SECRET_TEXT as _SECRET_TEXT,
+)
+from astrid.core._shared.log_redaction import (
+    _URL_CREDENTIALS as _URL_CREDENTIALS,
+)
+from astrid.core._shared.log_redaction import (
+    _USER_PATH as _USER_PATH,
+)
+from astrid.core._shared.log_redaction import (
+    _redact_identity as _redact_identity,
+)
+from astrid.core._shared.log_redaction import (
+    _redact_identity_value as _redact_identity_value,
+)
+from astrid.core._shared.log_redaction import (
+    _redact_log_value as _redact_log_value,
+)
+from astrid.core._shared.log_redaction import (
+    _redact_private_key_blocks as _redact_private_key_blocks,
+)
+from astrid.core._shared.log_redaction import (
+    redact_for_shared as redact_for_shared,
+)
+from astrid.core._shared.log_redaction import (
+    redact_log as redact_log,
+)
 
 _MAX_LOG_BYTES = 256 * 1024
 _MAX_TOTAL_LOG_BYTES = 1024 * 1024
-_SECRET_TEXT = re.compile(r"(?i)(['\"]?(?:[A-Z0-9]{1,32}_){0,8}(?:authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|credential|password|secret|token|signature|sig)['\"]?\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;}]+)")
-_BEARER = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
-_PRIVATE_KEY_BEGIN = re.compile(r"^-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")
-_PRIVATE_KEY_END = re.compile(r"^-----END [A-Z0-9 ]*PRIVATE KEY-----")
-_URL_CREDENTIALS = re.compile(r"(?i)(https?://)[^/@\s:]+:[^/@\s]+@")
-_SECRET_KEY = re.compile(r"(?i)(?:credential|token|secret|password|api[_-]?key|authorization)")
-_USER_PATH = re.compile(r"(?i)(?:[a-z]:[\\/](?:users|documents and settings)[\\/]|/(?:users|home)/)[^\s\"'<>;,)]*")
-_CHAT_CONTENT_KEY = re.compile(r"(?i)^(?:chat|chats|conversation|conversations|transcript|transcripts|messages|prompt|prompts|completion|completions|content)$")
-
-
-def _redact_identity(text: str) -> str:
-    home = str(Path.home())
-    for spelling in {home, home.replace("\\", "/"), home.replace("/", "\\")}:
-        if spelling not in {"/", "\\", "."}:
-            text = re.sub(re.escape(spelling), "<redacted:home>", text, flags=re.IGNORECASE)
-    text = _USER_PATH.sub("<redacted:path>", text)
-    try:
-        users = {getpass.getuser(), Path.home().name}
-    except OSError:
-        users = {Path.home().name}
-    for user in users - {""}:
-        text = re.sub(r"(?<![\w-])" + re.escape(user) + r"(?![\w-])", "<redacted:user>", text, flags=re.IGNORECASE)
-    return text
-
-
-def _redact_identity_value(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {name: _redact_identity_value(item) for name, item in value.items()}
-    if isinstance(value, list):
-        return [_redact_identity_value(item) for item in value]
-    return _redact_identity(value) if isinstance(value, str) else value
-
-
-def _redact_log_value(value: Any, key: str = "") -> Any:
-    if _SECRET_KEY.search(key) or _CHAT_CONTENT_KEY.fullmatch(key):
-        return "<redacted>"
-    if isinstance(value, dict):
-        return {str(name): _redact_log_value(item, str(name)) for name, item in value.items()}
-    if isinstance(value, list):
-        return [_redact_log_value(item, key) for item in value]
-    value = redact_for_shared(value)
-    return _redact_identity(value) if isinstance(value, str) else value
-
-
-def _redact_private_key_blocks(text: str) -> str:
-    """Remove PEM blocks and any tail prefix ending in a truncated PEM block."""
-    output: list[str] = []
-    inside = False
-    safe_length = 0
-    for line in text.splitlines(keepends=True):
-        if _PRIVATE_KEY_BEGIN.match(line):
-            if not inside:
-                output.append("<redacted private key>\n")
-            inside = True
-        elif _PRIVATE_KEY_END.match(line):
-            if inside:
-                inside = False
-                safe_length = len(output)
-            else:
-                # The tail started after a key's BEGIN; discard that fragment.
-                output = output[:safe_length]
-                output.append("<redacted truncated private key>\n")
-                safe_length = len(output)
-        elif not inside:
-            output.append(line)
-    return "".join(output)
-
-
-def redact_log(text: str) -> str:
-    """Redact structured and text credentials before logs enter a support archive."""
-    text = _redact_private_key_blocks(text)
-    text = _URL_CREDENTIALS.sub(r"\1<redacted>@", text)
-    text = _BEARER.sub("Bearer <redacted>", text)
-    try:
-        value = json.loads(text)
-    except (ValueError, TypeError):
-        value = None
-    if value is not None:
-        return json.dumps(_redact_log_value(value), sort_keys=True) + "\n"
-    lines: list[str] = []
-    for line in text.splitlines(keepends=True):
-        try:
-            value = json.loads(line)
-        except (ValueError, TypeError):
-            value = None
-        if value is not None:
-            lines.append(json.dumps(_redact_log_value(value), sort_keys=True) + ("\n" if line.endswith("\n") else ""))
-        else:
-            lines.append(_SECRET_TEXT.sub(r"\1<redacted>", line))
-    return _redact_identity("".join(lines))
 
 
 def _installed_record() -> tuple[Path | None, Path | None]:

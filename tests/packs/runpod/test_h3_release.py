@@ -280,7 +280,7 @@ def test_lifecycle_payload_cpu_gpu_and_strict_get(monkeypatch):
         return httpx.Response(404 if request.url.path.endswith("missing") else 503)
     provider = build.RunPodProvider("TEST-KEY")
     provider.http.close()
-    provider.http = httpx.Client(base_url="https://test/v1/", transport=httpx.MockTransport(response))
+    provider.http = httpx.Client(base_url="https://test/v2/", transport=httpx.MockTransport(response))
     try:
         volume = build.normalize_volume(Provider().volume("vol"), "vol")
         provider.create(volume, "image", "cpu", "name")
@@ -498,11 +498,11 @@ def test_real_lock_and_recipe_pins():
     }
     assert inputs["recipe"]["source"] == {
         "repository": "https://github.com/Comfy-Org/ComfyUI.git",
-        "revision": "ee71d5c4993f29086b27fde1629a945ae48425bf",
+        "revision": "6bfaacc67c2103481e5f0c84d75257cd0581d86a",
     }
     assert windows["source"] == {
         "repository": "https://github.com/Comfy-Org/ComfyUI.git",
-        "revision": "423cbd20511becb1f16122ab518e92e58bfa03d9",
+        "revision": "6bfaacc67c2103481e5f0c84d75257cd0581d86a",
     }
     assert inputs["recipe"]["custom_nodes"] == windows["custom_nodes"]
     assert inputs["recipe"]["torch"] == windows["torch"]
@@ -687,12 +687,13 @@ def test_legacy_tiny_redirect_part_is_quarantined_before_resume(tmp_path):
 def test_rest_observation_enriches_datacenter_from_existing_sdk(monkeypatch):
     from runpod_lifecycle import api
     provider = build.RunPodProvider("test-key")
-    monkeypatch.setattr(provider,"request",lambda *a: {"id":"p","gpuCount":1,"networkVolumeId":"v"})
+    monkeypatch.setattr(provider,"request",lambda *a: {"id": "p", "gpu": {"count": 1},
+        "mounts": {"network": [{"volumeId": "v", "path": "/workspace"}]}})
     monkeypatch.setattr(api,"_get_runpod",lambda: SimpleNamespace(get_pod=lambda *a,**kw: {"machine":{"dataCenterId":"EUR-NO-1"}}))
     result=provider.get("p")
     assert result["machine"]["dataCenterId"] == "EUR-NO-1"
     assert result["computeType"] == "GPU"
-    assert result["networkVolumeId"] == "v"
+    assert result["networkVolume"]["id"] == "v"
 
 
 def test_bootstrap_packages_exact_product_sources_deterministically():

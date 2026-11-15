@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a bug, ask a question, or tell us what you noticed
+    url: https://github.com/banodoco/astrid-dev/issues/new/choose
+    about: All Astrid issues live in one place, astrid-dev.

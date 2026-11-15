@@ -14,14 +14,20 @@ def terminal(*, ok=True):
                 'bytes': 23, 'filename': 'executed-api.json'}
     association = {'association_id': 'assoc-manifest', 'output_port': 'result_manifest',
                    'object_id': 'sha256:' + 'c' * 64, 'filename': 'managed-generation-result.json'}
+    log_output = {'role': 'log', 'variant_key': 'engine', 'filename': 'engine.log',
+                  'media_type': 'text/plain', 'size_bytes': 10, 'digest': 'sha256:' + 'd' * 64}
+    artifact_output = {'role': 'artifact', 'variant_key': 'preview', 'filename': 'preview.png',
+                       'media_type': 'image/png', 'size_bytes': 20, 'digest': 'sha256:' + 'e' * 64}
     settled = {'manifest_ref': association['object_id'], 'inputs': {'effective_settings': settings},
-               'manifest_path': '/deleted/spool/result.json'}
+               'manifest_path': '/deleted/spool/result.json',
+               'outputs': [log_output, artifact_output]}
     task = {'task_id': 'task-1', 'state': 'succeeded' if ok else 'failed',
             'spec': {'inputs': {'source': source}}, 'result': settled}
     result = InvocationResult('vibecomfy.run', 'executor', 'command', ok,
                               kernel_task_id='task-1', error=None if ok else {'message': 'producer failed'},
                               raw_result={'task': task, 'managed_outputs': [association]})
-    return SimpleNamespace(result=result, source=source, settings=settings, association=association)
+    return SimpleNamespace(result=result, source=source, settings=settings, association=association,
+                           log_output=log_output)
 
 
 def test_terminal_projection_uses_task_manifest_and_input_refs():
@@ -34,6 +40,14 @@ def test_terminal_projection_uses_task_manifest_and_input_refs():
     assert result.effective_settings_ref == fixture.settings
     assert '/deleted/spool' not in str(result.to_dict())
     assert GenerationResult.from_dict(result.to_dict()) == result
+
+
+def test_success_json_projects_only_task_log_outputs_and_roundtrips():
+    fixture = terminal()
+    result = _reconstruct_generation_result(fixture.result)
+    serialized = result.to_dict()
+    assert serialized['logs'] == [fixture.log_output]
+    assert GenerationResult.from_dict(serialized) == result
 
 
 def test_manifest_association_alone_is_a_durable_projection():

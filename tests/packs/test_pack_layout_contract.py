@@ -47,8 +47,8 @@ _PRESERVED_HELPER_PACKAGE_MARKERS = (
 # manifests), so the expected set is pinned here: adding or removing a shipped
 # pack must be a deliberate edit of this test. No shipped pack is local-only.
 _SHIPPED_PACK_IDS = frozenset({
-    "comfy_wrap", "developer", "generation", "h3_av", "local", "rendering",
-    "runpod", "timeline", "training", "vibecomfy", "wan2gp",
+    "developer", "generation", "h3_av", "local", "rendering",
+    "runpod", "setup", "timeline", "training", "vibecomfy", "wan2gp",
 })
 _TRACKED_SHIPPED_PACK_IDS = _SHIPPED_PACK_IDS
 
@@ -382,7 +382,6 @@ def test_v2_integration_packs_are_discoverable() -> None:
     integration_ids = {
         "runpod",
         "vibecomfy",
-        "comfy_wrap",
     }
     discovered = discover_packs(_PACKS_ROOT)
     discovered_ids = {pack.id for pack in discovered}

@@ -461,8 +461,10 @@ def test_concurrent_submission_during_child_wait(tmp_path, isolated, channel):
         waiting = pool.submit(call, root, inputs={"message": "hello"}, child_key="waiting", wait=True,
                               timeout_seconds=0.2, poll_seconds=0.01)
         admitted = pool.submit(call, root, inputs={"message": "hello"}, child_key="other")
-        assert admitted.result(timeout=1).ok
-        timed = waiting.result(timeout=1)
+        # The futures bound only the harness wait; the product timeout under test is timeout_seconds=0.2 above. One hosted
+        # shard run raised TimeoutError at the old 1 s bound; the test passes locally on R12 and R13.
+        assert admitted.result(timeout=10).ok
+        timed = waiting.result(timeout=10)
     assert not timed.ok and timed.error["code"] == "task_wait_timeout"
     assert timed.error["sdk_category"] == "runtime"
     assert any(m["op"] == "submit" and m["child_key"] == "other" for m in messages)
@@ -481,7 +483,8 @@ def test_cancelled_and_strict_output_semantics(tmp_path, isolated, channel):
         call(root, wait=True)
 
 
-@pytest.mark.parametrize("reply", [b"invalid\n", b'{"v":1,"request_id":999,"ok":true,"data":{}}\n', b"x" * (1024 * 1024 + 1)])
+@pytest.mark.parametrize("reply", [b"invalid\n", b'{"v":1,"request_id":999,"ok":true,"data":{}}\n',
+                                     pytest.param(b"x" * (1024 * 1024 + 1), id="oversized-1MiB-reply")])
 def test_invalid_channel_reply_is_bounded_and_revokes(reply):
     local, host = socket.socketpair()
     bridge = bridge_module.ChildBridge(local, io_timeout_seconds=0.2)
@@ -767,8 +770,8 @@ def test_snapshot_invalid_request_never_reaches_host(snapshot_channel, field, va
     assert len(requests) == 1 and requests[0]["request_id"] == 1
 
 
-@pytest.mark.parametrize("field,value", [("filename", "x" * 1024 * 1024),
-                                         ("output_port", "x" * 1024 * 1024),
+@pytest.mark.parametrize("field,value", [pytest.param("filename", "x" * 1024 * 1024, id="oversized-1MiB-filename"),
+                                         pytest.param("output_port", "x" * 1024 * 1024, id="oversized-1MiB-output_port"),
                                          ("filename", "state\ud800.json")])
 def test_snapshot_strict_request_bounds_precede_transmission(snapshot_channel, field, value):
     bridge, requests, _ = snapshot_channel
@@ -1185,7 +1188,8 @@ def test_materialize_protocol_corruption_closes_channel(tmp_path,
 
 @pytest.mark.parametrize("raw_reply", [b'{"v":1,"v":1,"request_id":4,"ok":true,"data":{}}\n',
                                       b'{}\n{}\n', b'not-json\n',
-                                      b'{"padding":"' + b'a' * (1024 * 1024) + b'"}\n'])
+                                      pytest.param(b'{"padding":"' + b'a' * (1024 * 1024) + b'"}\n',
+                                                   id="oversized-1MiB-frame")])
 @pytest.mark.usefixtures("isolated")
 def test_materialize_malformed_json_and_frame_bound_revoke(tmp_path,
                                                          materialization_channel, raw_reply):

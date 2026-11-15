@@ -7,7 +7,7 @@ import jsonschema
 import pytest
 import yaml
 
-from astrid.packs.h3_av.actions.compile.compile import compile_preparation
+from astrid.packs.h3_av.shared.compile import compile_preparation
 from astrid.packs.h3_av.shared.request import H3RequestError, normalize_request
 
 

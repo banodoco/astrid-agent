@@ -6,9 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from astrid.packs.h3_av.actions.compile.run import main as compile_executor_main
-from astrid.packs.h3_av.actions.compile.compile import CompilationError, compile_preparation
-from astrid.packs.h3_av.actions.prepare.prepare import prepare_request
+from astrid.packs.h3_av.shared.compile import CompilationError, compile_preparation
+from astrid.packs.h3_av.shared.prepare import prepare_request
 from astrid.packs.h3_av.shared.request import normalize_request
 
 
@@ -95,23 +94,3 @@ def test_compilation_manifest_round_trips(tmp_path: Path) -> None:
     assert persisted["capabilities"]["operation"] == "continue"
 
 
-def test_compile_executor_publishes_selected_bundle_members(tmp_path: Path) -> None:
-    from astrid.packs.h3_av.shared.input_bundle import build_input_bundle, bundle_digest, materialize_input_bundle
-
-    source = tmp_path / "source.mp4"
-    source.write_bytes(b"fixture-video")
-    preparation = prepare_request(_request(), asset_map={"source": str(source)})
-    bundle = build_input_bundle(_request(), {"source": str(source)}, tmp_path / "inputs.zip")
-    _, preparation["assets"] = materialize_input_bundle(_request(), bundle, tmp_path / "prepare-assets")
-    preparation["input_bundle_sha256"] = bundle_digest(bundle)
-    preparation_path = tmp_path / "preparation.json"
-    preparation_path.write_text(json.dumps(preparation), encoding="utf-8")
-    output = tmp_path / "compile-output"
-
-    assert compile_executor_main(["--preparation", str(preparation_path), "--input-bundle", str(bundle), "--out", str(output)]) == 0
-
-    for filename in ("workflow.py", "workflow.vibe.json", "source.json"):
-        assert (output / filename).is_file()
-    manifest = json.loads((output / "compilation.json").read_text(encoding="utf-8"))
-    for filename in ("workflow.py", "workflow.vibe.json", "source.json"):
-        assert hashlib.sha256((output / filename).read_bytes()).hexdigest() == manifest["workflow"][filename]["sha256"]

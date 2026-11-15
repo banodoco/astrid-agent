@@ -400,7 +400,7 @@ def _prepare_args(setup: Mapping[str, Any], transport: LocalPreparationTransport
         "custom_nodes_lock_path": setup["lock"],
         "custom_node_roots": setup["node_roots"],
         "python_executable": setup["python"],
-        "engine_mode": "checkout_server",
+        "engine_mode": "local_server",
         "workflow_path": setup["sources"]["workflow"],
         "workflow_inputs": {},
         "capability_id": "runtime_smoke",

@@ -21,7 +21,7 @@ def main():
     if manifest is not None and manifest['python'] != release['interpreter_identity']():
         raise ValueError('release requires its exact build interpreter/platform')
     if manifest is not None and (not manifest['complete'] or manifest['fixture']):
-        if operation != 'cli' or args != ['engines', 'install', 'vibecomfy-h3',
+        if operation != 'cli' or args != ['engines', 'install', 'comfyui',
                                          '--placement', 'local', '--dry-run']:
             raise ValueError('incomplete fixture permits only canonical planning')
     sys.path.insert(0, str(root / 'site'))
@@ -47,10 +47,10 @@ def main():
     if operation != 'check' or args:
         raise ValueError('unsupported release operation')
     from astrid.console import main as console
-    if console(['engines', 'install', 'vibecomfy-h3', '--placement', 'local', '--dry-run']):
+    if console(['engines', 'install', 'comfyui', '--placement', 'local', '--dry-run']):
         raise ValueError('installed CLI dry-run failed')
     from astrid.core.generation.engine_recipe import load_recipe
-    recipe = load_recipe('vibecomfy-h3', 'linux-x86_64-cu130')
+    recipe = load_recipe('comfyui', 'linux-x86_64-cu130')
     from astrid.core.generation.engine_runner_target import _entries
     for environment in recipe.environments:
         ref = environment.requirements.packaged_lock

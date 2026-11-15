@@ -83,7 +83,7 @@ class ExtensionPoint:
     description: str
     version: int
     min_supported: int  # loadable iff min_supported <= api <= version
-    side: Literal["client"]
+    side: Literal["client", "agent"]
     cardinality: Literal["many", "one"]
     effects_allowed: frozenset[str]  # subset of {"none", "read", "edit"}
     io_allowed: frozenset[str]  # subset of {"media.read"}
@@ -425,7 +425,7 @@ def parse_point(path: Path, *, owner: str, text: str | None = None) -> Extension
         description=data["description"],
         version=data["version"],
         min_supported=data["min_supported"],
-        side="client",
+        side=data["side"],
         cardinality=data["cardinality"],
         effects_allowed=levels,
         io_allowed=io,

@@ -228,7 +228,7 @@ def test_cpu_selection_and_reference_digest_are_exact():
 
 def test_engine_id_selection_cannot_use_legacy_transport():
     reference, readiness, _ = _selected()
-    reference.session_ref = "vibecomfy-h3"
+    reference.session_ref = "comfyui"
     transport = SessionTransport()
     owner = RunPodManagedVibeComfySessionOwner(transport, session_config_type=ConfigFactory)
     with pytest.raises(ManagedSessionError, match="installed registry observation"):
@@ -240,10 +240,10 @@ def test_engine_id_absence_never_starts_legacy_daemon_even_with_old_selection():
     from dataclasses import replace
 
     owner, transport, selection, _ = _owner()
-    selected = replace(selection, session_ref="vibecomfy-h3")
+    selected = replace(selection, session_ref="comfyui")
     with pytest.raises(ManagedSessionError, match="legacy start is forbidden"):
         owner.start(selected)
-    assert transport.calls == [("session status", "vibecomfy-h3")]
+    assert transport.calls == [("session status", "comfyui")]
 
 
 def test_original_composition_keeps_legacy_nonproof_mode():

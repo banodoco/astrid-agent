@@ -362,7 +362,7 @@ def test_failing_run_ends_with_the_outcome_lines_and_details_last(tmp_path, monk
     assert lines[-1] == f"Details: {log.absolute()}"
     assert lines[-2].startswith("Next: ")
     assert lines[-4].startswith("Astrid was NOT installed: ")
-    assert lines[-3] == "Nothing was installed."
+    assert lines[-3] == "Setup did not finish; some downloaded files may remain."
 
 
 def test_setup_summary_and_failure_json_go_to_install_log_not_the_terminal(tmp_path, monkeypatch, capsys):
@@ -393,3 +393,19 @@ def test_a_changed_choice_still_shows_its_choice_line(tmp_path, monkeypatch, cap
     assert "Your choice: the astrid command is off" not in out
     lines = [line for line in out.splitlines() if line.strip()]
     assert lines[-1].startswith("Details: ")  # the choice lines come before the receipt
+
+
+@pytest.mark.parametrize("failure", [FileNotFoundError("archive destination is too long"),
+                                      OSError("download connection failed"),
+                                      RuntimeError("source preparation failed")])
+def test_first_install_prints_actual_error_and_existing_log_without_settings(
+        tmp_path, monkeypatch, capsys, failure):
+    code, log = _failing_cli(tmp_path, monkeypatch, failure=failure)
+    output = capsys.readouterr().out
+    assert code == 1
+    assert str(failure) in output
+    assert str(failure) in log.read_text(encoding="utf-8")
+    assert f"Details: {log.absolute()}" in output
+    assert "log was not used" not in output
+    assert "Settings > Updates" not in output
+    assert "Nothing was installed" not in output

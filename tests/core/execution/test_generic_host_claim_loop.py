@@ -105,26 +105,20 @@ def world(tmp_path, monkeypatch):
             return None
         slot.client.heartbeat(task_id, lease_token, attempt_id=attempt_id, fence=fence)
         owned = SimpleNamespace(task_id=task_id, killed=False, finished=False)
-        # The process/bridge/session/warmth mutations mirror the ownership
-        # fields that real run_task uses; every serving slot must isolate them.
+        # Record process ownership for each serving slot.
         with slot._process_lock:
             slot._active_processes.add(OwnedProcess(owned))
-        slot._vibecomfy_current_warmth_hint = task_id
-        previous = slot._vibecomfy_warmth_hint
         with backend.condition:
             backend.active += 1
             backend.peak = max(backend.peak, backend.active)
             backend.started.append({"host": slot, "task": task_id, "attempt": attempt_id,
-                                    "session": slot.managed_tool_session, "previous_warmth": previous,
+                                    "session": slot.managed_tool_session,
                                     "thread": threading.get_ident(), "owned": owned})
             backend.condition.notify_all()
         try:
             while not backend.release.wait(0.01):
                 if slot._shutdown.is_set():
                     break
-            assert slot._vibecomfy_current_warmth_hint == task_id
-            slot._vibecomfy_warmth_hint = task_id
-            slot._last_cleanup_receipt = {"path": task_id, "status": "deleted"}
             return {"task_id": task_id}
         finally:
             owned.finished = True
@@ -174,7 +168,7 @@ def test_capacity_and_finite_claim_allowance_isolate_session_and_attempt_owners(
         assert len({id(row["session"]) for row in started}) == capacity
         assert len({id(row["host"].client) for row in started}) == capacity
         assert len({id(row["host"].client.heartbeat_session) for row in started}) == capacity
-        assert host._active_processes == set() and host._vibecomfy_warmth_hint is None
+        assert host._active_processes == set()
         backend.release.set()
         thread.join(timeout=3)
         assert not thread.is_alive() and "error" not in outcome
@@ -201,8 +195,6 @@ def test_single_slot_and_once_keep_synchronous_compatibility(world, once, limit)
         assert len(result) == (1 if once else 2)
         assert backend.peak == 1 and backend.clients == []
         assert {row["thread"] for row in backend.started} == {caller}
-        if not once:
-            assert backend.started[1]["previous_warmth"] == "0"
     finally:
         host.shutdown()
 

@@ -47,8 +47,8 @@ Product families:
 
 Generation:
   python3 -m astrid generate image "a dog eating an ice cream" --project PROJECT
-      [--model ENTRY] [--target auto|managed|LOOPBACK_URL|runpod] [--dry-run]
-  python3 -m astrid generate video PROMPT --project PROJECT [--target TARGET]
+      [--model ENTRY] [--placement auto|managed|LOOPBACK_URL|runpod] [--dry-run]
+  python3 -m astrid generate video PROMPT --project PROJECT [--placement TARGET]
 
 Timeline evidence:
   python3 -m astrid timelines visualize --project PROJECT [--timeline-slug REF]
@@ -66,7 +66,6 @@ Operational families:
   python3 -m astrid auth {{login,status,logout,revoke}}
 
 External tools:
-  python3 -m astrid h3 {{plan,run,compose,edit}} ...
   python3 -m astrid hivemind search QUERY [--limit N] [--json]
 
 Nested mounts (manifest-owned):
@@ -139,7 +138,6 @@ Generation:
   generate    [SDK facade] image/video through a selected Comfy target
 
 External tools:
-  h3          [pack: h3_av] plan/run/compose/edit audiovisual requests
   hivemind    [managed pack] search current messages and resources
   installed pack routes are discovered from pack manifests; packs without a
   declared CLI command remain available through ``astrid agent``

@@ -143,7 +143,8 @@ def test_reserved_caller_extent_stripped_outside_native_layers(tmp_path, native,
     assert (adapted.window is not None) == native
 
 
-@pytest.mark.parametrize("raw", [None, True, 300, 300.0, "", "0", "-1", "1.5", "NaN", "Infinity", "true", " 300", "+300", "0300", "3e2", "9007199254740992", "9" * 5000])
+@pytest.mark.parametrize("raw", [None, True, 300, 300.0, "", "0", "-1", "1.5", "NaN", "Infinity", "true", " 300", "+300", "0300", "3e2", "9007199254740992",
+                                 pytest.param("9" * 5000, id="oversized-5000-digits")])
 def test_reserved_extent_rejects_malformed_request_values(tmp_path, raw):
     request = SimpleNamespace(metadata={EXTENT_KEY: raw})
     with pytest.raises(ValueError, match="positive safe integer"):

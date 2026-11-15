@@ -10,6 +10,78 @@ import pytest
 _RUNPOD_LIFECYCLE_AVAILABLE = importlib.util.find_spec("runpod_lifecycle") is not None
 _INSTALL = 'pip install -e ".[dev]" (the dev extra pins runpod-lifecycle to a public Git revision)'
 
+
+@pytest.fixture
+def pod_watchdog_transport(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
+    """A reachable pod whose read-only probe cannot confirm delete rights."""
+    from runpod_lifecycle import https
+
+    from astrid.packs.runpod.remote_placement import _HttpsOps
+
+    token = "test-only-" + "x" * 40
+    if "retained" in request.fixturenames:
+        # The complete pod fixture installs its own transport and captures the
+        # real bounded caller for its deadline/cancellation regressions.
+        return token
+
+    class Transport:
+        def __init__(self, pod_id, https_token, *, deadline=None):
+            assert pod_id
+
+        def execute_command(self, command, timeout):
+            assert command.startswith("python3 -c ")
+            return 1, "pod_watchdog:termination_unknown\n", ""
+
+        def disconnect(self):
+            pass
+
+    monkeypatch.setattr(https, "HttpsPodTransport", Transport)
+    monkeypatch.setattr(_HttpsOps, "_bounded_call", _HttpsOps._call_direct)
+    return token
+
+
+@pytest.fixture(autouse=True)
+def lease_https_transport(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
+    """Complete the small lease's fake provider with its HTTPS command edge."""
+    if ("small_lease" not in request.fixturenames
+            or "retained" in request.fixturenames):
+        return
+
+    from runpod_lifecycle import https
+    from runpod_lifecycle.config import RunPodConfig
+
+    from astrid.packs.runpod.remote_placement import _HttpsOps
+
+    case = request.getfixturevalue("lease_selection_case")
+    config = case.owner.config_factory
+    token = "test-only-" + "x" * 40
+
+    def https_config(offer):
+        values = vars(config(offer)).copy()
+        values["gpu_type"] = values.pop("gpu_type_candidates")
+        values.pop("https_token", None)
+        return RunPodConfig(**values, transport="https", https_token=token)
+
+    case.owner.config_factory = https_config
+    # Production writes the token file, reference and watchdog acknowledgement.
+    case.owner.https_token_file = case.owner.path.with_name("https-token")
+
+    class Transport:
+        def __init__(self, pod_id, https_token, *, deadline=None):
+            assert any(pod["id"] == pod_id for pod in case.pods)
+            assert https_token == token
+
+        def execute_command(self, command, timeout):
+            assert command.startswith("python3 -c ")
+            return 0, "", ""
+
+        def disconnect(self):
+            pass
+
+    monkeypatch.setattr(https, "HttpsPodTransport", Transport)
+    # The fake provider and transport live in this process, as in retained.
+    monkeypatch.setattr(_HttpsOps, "_bounded_call", _HttpsOps._call_direct)
+
 # NOTE: do NOT use pytest.importorskip at conftest module scope. When pytest
 # loads a conftest during the INITIAL conftest discovery pass, a module-level
 # skip/importorskip raises Skipped through the loader and aborts the whole run
@@ -36,6 +108,7 @@ def forbid_provider_gpu_rate_lookup(request: pytest.FixtureRequest, monkeypatch:
         return
 
     from runpod_lifecycle import api as runpod_api
+
     from astrid.packs.runpod.shared import common
 
     attempts: list[tuple[tuple[object, ...], dict[str, object]]] = []

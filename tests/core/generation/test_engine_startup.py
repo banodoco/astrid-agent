@@ -66,7 +66,7 @@ raise SystemExit(7 if mode == 'failure' else 0)
 
 def _fixture(tmp_path, mode='success'):
     root = tmp_path / 'engine'
-    recipe = load_recipe('vibecomfy-h3', 'linux-x86_64-cu130')
+    recipe = load_recipe('comfyui', 'linux-x86_64-cu130')
     plan = plan_install(recipe, root=str(root), placement='local')
     models = load_model_lock(recipe.models_lock)
     stamp = '2026-10-27T22:00:00+00:00'
@@ -227,6 +227,21 @@ def test_existing_attempt_and_symlink_paths_refused(tmp_path):
     kwargs['observations'] = link
     with pytest.raises(Exception):
         startup.run_sequence(**kwargs)
+
+
+@pytest.mark.parametrize('stale_field', ['recipe', 'step-layout'])
+def test_startup_output_refuses_stale_install_evidence(tmp_path, stale_field):
+    from astrid.core.generation.engine_contracts import IntegrityError
+
+    kwargs, _ = _fixture(tmp_path)
+    template = Path(kwargs['cli_prefix'][5])
+    value = json.loads(template.read_text())
+    if stale_field == 'recipe':
+        value['recipe_sha256'] = 'e' * 64
+    else:
+        value['steps'][0]['id'] = 'retired-source-step'
+    with pytest.raises(IntegrityError, match='installed but stale.*astrid engines install'):
+        startup._validate_output(json.dumps(value), root=kwargs['root'], rerun=False)
 
 
 def test_shutdown_uncertainty_preserves_existing_recovery_handle(tmp_path):

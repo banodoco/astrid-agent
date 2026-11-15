@@ -7,20 +7,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from astrid.packs.h3_av.actions.transform.run import (
-    _retrieve_muxed_generation,
-    _write_generated_bundle,
-)
 from astrid.packs.h3_av.shared.compose import (
     CompositionError,
     _sample_digest,
     compose_candidate,
 )
-from astrid.packs.h3_av.actions.compile.compile import compile_preparation
-from astrid.packs.h3_av.actions.prepare.prepare import prepare_request
+from astrid.packs.h3_av.shared.compile import compile_preparation
+from astrid.packs.h3_av.shared.prepare import prepare_request
 from astrid.packs.h3_av.shared.request import normalize_request
 from astrid.packs.h3_av.shared.timing import ContinuationTimingError, plan_continuation
-from astrid.packs.h3_av.actions.verify.verify import verify_candidate
+from astrid.packs.h3_av.shared.verify import verify_candidate
 
 
 def _request():
@@ -202,68 +198,5 @@ def test_muxed_continuation_composes_real_suffix_and_rejects_prior_noop(tmp_path
     assert suffix_red != source_blue
 
 
-@pytest.mark.ffmpeg
-def test_separate_video_audio_outputs_remain_supported_for_continuation(tmp_path: Path) -> None:
-    source = tmp_path / "source.mkv"
-    video = tmp_path / "generated-video.mkv"
-    audio = tmp_path / "generated-audio.flac"
-    _av(source, frames=120, color="blue", frequency=440)
-    _video(video, frames=154, color="red")
-    _audio(audio, frames=154, frequency=880)
-    preparation = prepare_request(_request(), asset_map={"source": str(source)})
-
-    def row(role: str, path: Path) -> dict[str, str]:
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        return {
-            "sha256": digest,
-            "object_id": f"sha256:{digest}",
-            "output_port": role,
-        }
-
-    bundle = _write_generated_bundle(
-        {"video": (video, row("video", video)), "audio": (audio, row("audio", audio))},
-        tmp_path / "generated-av.zip",
-    )
-    composition = compose_candidate(
-        preparation=preparation,
-        generated=bundle,
-        source=source,
-        out_dir=tmp_path / "composed",
-    )
-    report = verify_candidate(
-        preparation=preparation,
-        composition=composition,
-        source=source,
-    )
-
-    assert composition["composition"]["output_roles"] == ["video", "audio"]
-    assert composition["coverage"]["candidate"]["video"]["frames"] == 144
-    assert report["status"] == "verified"
 
 
-def test_muxed_runtime_retrieval_keeps_one_result_without_inventing_audio_role(tmp_path: Path) -> None:
-    payload = b"muxed-av"
-    digest = "sha256:" + hashlib.sha256(payload).hexdigest()
-    row = {
-        "name": "vibecomfy_run",
-        "object_id": digest,
-        "digest": digest,
-        "size": len(payload),
-        "filename": "continuation.mp4",
-        "role": "result",
-        "producer": {"output_port": "continuation", "producer_output_id": "vibecomfy:continuation:0"},
-    }
-
-    class Media:
-        def read_bytes(self, object_id: str) -> bytes:
-            assert object_id == digest
-            return payload
-
-    path, settled = _retrieve_muxed_generation(
-        SimpleNamespace(media=Media()),
-        SimpleNamespace(capability_id="vibecomfy.run", outputs={"managed_outputs": [row]}, raw_result={}),
-        tmp_path,
-    )
-
-    assert path.read_bytes() == payload
-    assert settled["object_id"] == digest

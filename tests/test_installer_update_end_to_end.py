@@ -33,7 +33,7 @@ IDENTITY = {"release": 7, "managed_by": None}
 PROXY_ENV = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy")
 
 
-_SOURCE_SUFFIXES = (".py", ".json", ".toml")
+_SOURCE_SUFFIXES = (".py", ".json", ".toml", ".yaml")
 
 
 def _copy_sources(package_dir: Path, destination: Path) -> None:

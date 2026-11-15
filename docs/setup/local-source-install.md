@@ -17,7 +17,10 @@ irm https://astrid.haus/install.ps1 | iex
 
 Run the same line to repair or restart an existing installation. It keeps the
 installed version and your workspace. To update, pass `--update` to the script
-(`sh -s -- --update` after the pipe on macOS/Linux). Updates back up the selected
+(`sh -s -- --update` after the pipe on macOS/Linux). On Windows, `irm ... | iex`
+cannot take arguments, so run
+`& ([scriptblock]::Create((irm https://astrid.haus/install.ps1))) --update`.
+Updates back up the selected
 workspace and keep the previous program version until the new door is verified.
 
 The scripts get pinned uv and Python, then invoke the shared `astrid install`
@@ -25,7 +28,9 @@ core. It installs user-local tools and registers a login service. No administrat
 access is needed. Without a systemd user service on Linux, run the line to get
 Astrid running again or to apply changed service settings.
 Installation ends with `Open https://astrid.haus` and opens the connection page.
-On failure, report the sentence and the `Details:` path to `install.log`. The
+On failure, report the sentence and the `Details:` path to `install.log`. On
+Windows, the program folder is `%LOCALAPPDATA%\Astrid`, and the logs are in
+`%LOCALAPPDATA%\Astrid Runtime\logs`, including `install.log`. The
 Runtime writes `runtime.log` and the login service writes `runtime-service.log`
 in the same log folder. A doctor bundle includes redacted tails of all three logs.
 
@@ -113,7 +118,8 @@ entry's `sha` from `git -C /absolute/path/to/scratch/repo rev-parse HEAD`. The
 installer reads the commit with `git archive`; it leaves the original repository
 untouched and ignores worktree edits and untracked files. Git archive attributes
 apply. Source trees containing tracked symlinks or submodules are rejected.
-Git must be on `PATH` for local source overrides; hosted installs do not need it.
+Git must be on `PATH` for every install, hosted installs included. On Windows,
+install Git for Windows (https://git-scm.com/download/win) first.
 
 With a disposable test home and separate empty program and data directories,
 serve the directory containing the local manifest on localhost. In that

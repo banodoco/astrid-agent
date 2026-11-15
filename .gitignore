@@ -28,6 +28,7 @@ __pycache__/
 venv/
 *.py[cod]
 .pytest_cache/
+/.tmp-tests/
 .mypy_cache/
 .ruff_cache/
 .coverage

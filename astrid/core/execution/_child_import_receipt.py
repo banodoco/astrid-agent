@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 import socket
 import stat
@@ -18,6 +17,8 @@ import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+
+from runtime_protocol.dirfd import filesystem as os
 
 from .process_group import process_birth_identity
 
@@ -28,12 +29,11 @@ _UNAVAILABLE = "unavailable"
 _MODULES = (
     "__main__", "astrid.core.execution.generic_host",
     "astrid.core.execution.generic_host_worker", "astrid.core.execution._child_bridge",
-    "astrid.sdk._child_bridge", "astrid.packs.h3_av.actions.transform.run",
+    "astrid.sdk._child_bridge",
     "astrid.packs.vibecomfy.actions.validate.run",
     "astrid.core.execution.orchestrator.runner",
 )
 _ACTIONS = {
-    "h3_av.transform": "astrid.packs.h3_av.actions.transform.run",
     "vibecomfy.validate": "astrid.packs.vibecomfy.actions.validate.run",
 }
 _BINDING_KEYS = (
@@ -190,7 +190,7 @@ def _validate(packet, pid, birth):
 
 
 class ChildImportReceipt:
-    """One bounded private channel per owned H3/validator launch, never authority."""
+    """One bounded private channel per owned audiovisual/validator launch, never authority."""
 
     def __init__(self, host, capability_id, binding=None):
         self.host = host

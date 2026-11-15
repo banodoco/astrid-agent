@@ -103,6 +103,8 @@ def _fixture_rows(rows: list[dict], entry_id: str = ENTRY_ID) -> list[dict]:
     return [row for row in rows if row["id"] == entry_id]
 
 
+# Measured 172 s on a hosted run (CI 43348849041); the suite default is 120 s.
+@pytest.mark.timeout(300)
 def test_real_selected_manifest_composes_through_generation_cli(monkeypatch, tmp_path, capsys):
     selected_root = tmp_path / "selected-packs"
     unselected_root = tmp_path / "unselected-packs"

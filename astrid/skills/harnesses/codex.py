@@ -20,6 +20,7 @@ from astrid.core.contracts.errors import AstridError
 from ..discovery import SkillDescriptor
 from .base import (
     Action,
+    sync_target_name,
     HarnessAdapter,
     InstallRecord,
     PlannedStep,
@@ -49,9 +50,7 @@ class CodexAdapter(HarnessAdapter):
         return self.home / "AGENTS.md"
 
     def target_for(self, descriptor: SkillDescriptor) -> Path:
-        if descriptor.pack_id == "_core":
-            return self.skills_dir / "astrid"
-        return self.skills_dir / f"astrid-{descriptor.skill_id}"
+        return self.skills_dir / sync_target_name(descriptor)
 
     def plan(self, action: Action, descriptors: Iterable[SkillDescriptor], **opts) -> list[PlannedStep]:
         steps: list[PlannedStep] = []

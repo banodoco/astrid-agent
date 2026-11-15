@@ -2,20 +2,90 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from functools import lru_cache
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
+logger = logging.getLogger(__name__)
+
+# The one set of generation kinds, shared by every entry source.
+_KINDS = frozenset({'image', 'video', 'audio'})
+# Mode tried first when an entry declares modes but the caller names none, per kind.
+_DEFAULT_MODE_CANDIDATES = {'image': ('t2i',), 'video': ('t2v',), 'audio': ('music',)}
+
+
+class MissingRequiredEntryInputsError(ValueError):
+    """Entry validation failed because one or more required inputs are absent."""
+
 
 def user_entries() -> list[dict[str, Any]]:
+    """Saved entries (``VIBECOMFY_ENTRIES_DIR``), then entries contributed through ``vibecomfy.workflows``."""
     try:
         from vibecomfy.entries import discover_entries
     except ImportError:
         return []
-    return discover_entries()
+    rows = discover_entries()
+    return rows + contributed_entries(exclude={row.get("id") for row in rows})
+
+
+def _yaml(path: Path) -> Any:
+    import yaml
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def contributed_entries(*, exclude: Any = ()) -> list[dict[str, Any]]:
+    """Thin entries of every ``vibecomfy.workflows`` contribution, from each pack's manifests.
+
+    Reads YAML only (no registry, no import, no hook). The registry still
+    validates a contribution wherever it is run.
+    """
+    try:
+        from astrid.core.extensions.scopes import contribution_roots
+        roots = contribution_roots()
+    except Exception:  # noqa: BLE001 - best-effort fallback; diagnostic at debug, never a user-facing traceback
+        # Contributions are optional; preserve the prior empty projection if discovery fails.
+        logger.debug('Could not discover workflow contribution roots', exc_info=True)
+        return []
+    rows, seen = [], set(exclude)
+    for root in roots:
+        path = Path(root.path)
+        if not path.is_dir():
+            continue
+        try:
+            packs = (path,) if (path / "pack.yaml").is_file() else tuple(p for p in path.iterdir() if p.is_dir())
+        except OSError:
+            continue
+        for pack in packs:
+            folder = pack / "extensions" / "vibecomfy.workflows"
+            if not folder.is_dir():
+                continue
+            for manifest in sorted(folder.glob("*.y*ml")):
+                try:
+                    data = _yaml(manifest)
+                    ready = (manifest.parent / str(data["ready_root"])).resolve()
+                    listed = data.get("entries") or []
+                except Exception:  # noqa: BLE001 - best-effort fallback; diagnostic at debug, never a user-facing traceback
+                    # A malformed or unavailable third-party manifest is skipped independently.
+                    logger.debug('Could not read workflow contribution manifest %s', manifest, exc_info=True)
+                    continue
+                if not ready.is_relative_to(pack.resolve()):
+                    continue
+                for raw in listed:
+                    if not isinstance(raw, Mapping) or raw.get("id") in seen:
+                        continue
+                    bundle = Path(str(raw.get("bundle", "")))
+                    declared = [name for name in ("build", "after_outputs") if data.get(name)]
+                    rows.append({"needs": [], "binds": {}, "defaults": {}, **raw,
+                                 **({"hooks_declared": declared} if declared else {}),
+                                 "bundle": str(bundle if bundle.is_absolute() else (ready / bundle).resolve()),
+                                 "contribution": f"{pack.name}.{manifest.stem}", "contribution_scope": root.scope,
+                                 "pack_root": str(pack.resolve())})
+                    seen.add(raw.get("id"))
+    return rows
 
 
 def _ready_entries_for(entry_id: str | None = None) -> list[dict[str, Any]]:
@@ -83,7 +153,10 @@ def _ready_entries_for(entry_id: str | None = None) -> list[dict[str, Any]]:
             binds = {name: name for name in workflow.inputs}
         except ShippedResourceMissingError:
             raise
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort fallback; diagnostic at debug, never a user-facing traceback
+            # Workflow metadata is best-effort; preserve declared entry visibility on load errors.
+            logger.debug('Could not load ready workflow metadata for %s',
+                         item.get('id') if isinstance(item, dict) else None, exc_info=True)
             needs, binds = [], {}
             model_assets = []
             ambiguity = 'ready workflow metadata could not be loaded'
@@ -121,7 +194,7 @@ def action_entries(discovery: Any | None = None) -> list[dict[str, Any]]:
         ports = {port.name: port for port in capability.inputs}
         local_files = declaration.get("producer_local_inputs", [])
         if (not isinstance(declaration.get("id"), str) or not declaration["id"]
-                or declaration.get("kind") not in {"image", "video", "audio"}
+                or declaration.get("kind") not in _KINDS
                 or not isinstance(declaration.get("modes"), list)
                 or not declaration["modes"]
                 or not all(isinstance(mode, str) and mode for mode in declaration["modes"])
@@ -183,7 +256,8 @@ def _input_type(value: Any) -> str:
     token = str(value or 'unknown').lower()
     return {'int': 'integer', 'float': 'number', 'bool': 'boolean',
             'str': 'string', 'text': 'string', 'path': 'file',
-            'choice': 'string', 'combo': 'string'}.get(token, token)
+            'choice': 'string', 'combo': 'string',
+            'files': 'file_map', 'file-map': 'file_map'}.get(token, token)
 
 
 def _declared_default(port: dict[str, Any]) -> dict[str, Any]:
@@ -229,7 +303,7 @@ def _catalog_inputs(kind: str, spec: Any, mode: str | None = None) -> list[dict[
             workflow = _load_pinned_catalog_workflow(backend)
         except (ImportError, OSError, ValueError, KeyError):
             return result  # retained declared inputs remain useful offline
-        fields = _workflow_inputs({'binds': {}, 'defaults': {}}, mode or 'workflow', workflow=workflow)
+        fields = _workflow_inputs({'binds': _entry_bindings(workflow, None, mode or 'workflow', backend.param_map), 'defaults': {}}, mode or 'workflow', workflow=workflow)
         for row in fields:
             if {row['name'], *row.get('aliases', ())} & set(spec.requires):
                 row['required'] = True
@@ -432,6 +506,12 @@ def merge_input_values(*sources: Mapping[str, Any], assignments=()) -> dict[str,
     return result
 
 
+def _declared_inputs(entry: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """An entry's declared ``inputs`` as ports: name, normalized type, required, description."""
+    return [{**port, 'type': _input_type(port.get('type')), 'required': bool(port.get('required', False))}
+            for port in entry['inputs']]
+
+
 def describe_entry(entry_id: str, mode: str | None = None, *, registry: Any = None,
                    _native: bool = False) -> dict[str, Any]:
     """Project the shared entry contract using local declarations only.
@@ -452,9 +532,10 @@ def describe_entry(entry_id: str, mode: str | None = None, *, registry: Any = No
         raise ValueError(f'ambiguous generation entry {entry_id!r}')
     if actions:
         entry = actions[0]
-        base = {key: entry[key] for key in ('id', 'kind', 'action', 'requirements', 'isolation_requirements') if key in entry}
+        base = {key: entry[key] for key in ('id', 'kind', 'action', 'isolation_requirements') if key in entry}
+        base['requirements'] = None
         base['source'] = 'action'
-        base['engine'] = 'comfyui' if entry['action'] == 'h3_av.transform' else None
+        base['engine'] = None
         modes = entry['modes']
         schemas = {name: [{**port, 'type': _input_type(port.get('type'))} for port in entry['inputs']]
                    for name in modes}
@@ -464,12 +545,18 @@ def describe_entry(entry_id: str, mode: str | None = None, *, registry: Any = No
             raise ValueError(f'unknown generation entry {entry_id!r}')
         entry = {**matches[0], 'source': 'user-entry' if users else 'ready-template'}
         modes = entry['modes']
-        if not modes or entry.get('kind') not in {'image', 'video', 'audio'}:
+        if not modes or entry.get('kind') not in _KINDS:
             raise ValueError(f'entry {entry_id!r} kind or mode requires review')
         base = {'id': entry_id, 'kind': entry['kind'], 'source': 'workflow', 'engine': 'comfyui',
+                **({'default_mode': entry['default_mode']} if entry.get('default_mode') in modes else {}),
                 **({'license_notice': entry['license_notice']} if entry.get('license_notice') else {})}
-        workflow = _load_entry_workflow(entry)
-        schemas = {name: _workflow_inputs(entry, name, workflow=workflow) for name in modes}
+        if entry.get('inputs') and entry.get('contribution'):
+            # The entry declares its own inputs (a contribution whose build picks the graph): the
+            # bundle's widgets are not its interface.
+            schemas = {name: _declared_inputs(entry) for name in modes}
+        else:
+            workflow = _load_entry_workflow(entry)
+            schemas = {name: _workflow_inputs(entry, name, workflow=workflow) for name in modes}
     else:
         modes = list(catalog.modes)
         base = {'id': entry_id, 'kind': catalog.modality, 'source': 'catalog',
@@ -506,8 +593,8 @@ def describe_entry(entry_id: str, mode: str | None = None, *, registry: Any = No
     return description if _native else public_description(description)
 
 
-def describe_workflow(path: Path, mode: str | None = None, *, _native=False) -> dict[str, Any]:
-    """Describe raw/canonical Comfy work through the same offline input path."""
+def describe_workflow(path: Path, mode: str | None = None, *, _native=False, comfy_url: str = '') -> dict[str, Any]:
+    """Describe raw/canonical Comfy work; ``comfy_url`` (an attached server) converts UI JSON against its schema."""
     from vibecomfy.entries import draft_entry
 
     from astrid.packs.vibecomfy.production_engine import load_workflow_path
@@ -515,7 +602,7 @@ def describe_workflow(path: Path, mode: str | None = None, *, _native=False) -> 
     if path.is_dir():
         path = path / 'workflow.py'
     with TemporaryDirectory(prefix='astrid-workflow-describe-') as scratch:
-        loaded = load_workflow_path(path, scratch, comfy_url='')
+        loaded = load_workflow_path(path, scratch, comfy_url=comfy_url)
         workflow = loaded.resolved.workflow
         entry = draft_entry(workflow, 'workflow', bundle=str(path.resolve()))
         selected = mode or (entry['modes'][0] if len(entry['modes']) == 1 else 'workflow')
@@ -525,8 +612,9 @@ def describe_workflow(path: Path, mode: str | None = None, *, _native=False) -> 
     return result if _native else public_description(result)
 
 
-def resolve_workflow_inputs(path: Path, inputs: Mapping[str, Any], *, mode=None):
-    description = describe_workflow(path, mode=mode, _native=True)
+def resolve_workflow_inputs(path: Path, inputs: Mapping[str, Any], *, mode=None, comfy_url: str = ''):
+    """Validate inputs against the workflow's description, read on the attached server when ``comfy_url`` names one."""
+    description = describe_workflow(path, mode=mode, _native=True, comfy_url=comfy_url)
     values = validate_inputs(description, _dimension_values(description, inputs))
     return public_description(description), values
 
@@ -553,6 +641,32 @@ def _dimension_values(description, inputs):
             raise ValueError('invalid dimensions')
         values.update(width=dimensions[0], height=dimensions[1])
     return values
+
+
+def file_map_is_valid(value: Any) -> bool:
+    """A nonempty map of id to file path: string ids without '/', string (or Path) paths that are not blank."""
+    return (isinstance(value, Mapping) and bool(value)
+            and all(isinstance(key, str) and key and '/' not in key
+                    and isinstance(path, (str, Path)) and bool(str(path).strip())
+                    for key, path in value.items()))
+
+
+def read_file_map_document(value: Any) -> Any:
+    """A ``file_map`` given as a path to its JSON document becomes the map; anything else is returned as is."""
+    if not isinstance(value, (str, Path)):
+        return value
+    document = Path(str(value)).expanduser()
+    if not document.is_file():
+        return value  # a missing path is reported by the caller's map check
+    try:
+        raw = json.loads(document.read_text(encoding='utf-8'))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f'file map document {str(value)!r} is not readable JSON: {exc}') from exc
+    if not file_map_is_valid(raw):
+        raise ValueError(f'file map document {str(value)!r} must be a nonempty JSON object of id to file path '
+                         '(ids without "/", non-blank string paths)')
+    return {key: (item if Path(item).is_absolute() else str((document.parent / item).resolve()))
+            for key, item in raw.items()}
 
 
 def validate_inputs(description: dict[str, Any], inputs: Mapping[str, Any], *, required: bool = True) -> dict[str, Any]:
@@ -606,6 +720,16 @@ def validate_inputs(description: dict[str, Any], inputs: Mapping[str, Any], *, r
                 managed = True
             if managed:
                 raise ValueError(f'entry input {name!r} requires a string producer-local file path, not a managed digest')
+        elif kind == 'file_map':
+            # {id: path}; shipped in the managed-assets archive, one binding per id (asset_manifest.file_map_bindings).
+            if isinstance(value, (str, Path)) and Path(str(value)).expanduser().is_file():
+                # A path to the map's JSON document: read when the job is built
+                # (``entry_job``), not here, so describing and dry-running do not open the media.
+                value = str(value)
+            elif not file_map_is_valid(value):
+                raise ValueError(f'entry input {name!r} requires a nonempty map of id to file path')
+            else:
+                value = {key: str(path) for key, path in value.items()}
         elif kind in {'string', 'file'}:
             if not isinstance(value, str):
                 raise ValueError(f'entry input {name!r} requires a string')
@@ -639,7 +763,7 @@ def validate_inputs(description: dict[str, Any], inputs: Mapping[str, Any], *, r
                    and (name in values and (values[name] is None or isinstance(values[name], str) and not values[name].strip())
                         or name not in values and (port.get('_explicit_required') or port.get('default') in (None, '')))]
         if missing:
-            raise ValueError('missing required entry inputs: ' + ', '.join(missing))
+            raise MissingRequiredEntryInputsError('missing required entry inputs: ' + ', '.join(missing))
     return values
 
 
@@ -650,6 +774,7 @@ def resolve_entry_inputs(entry_id: str, inputs: Mapping[str, Any], *, mode: str 
         raise ValueError(f'entry {entry_id!r} does not support {kind}')
     if description['mode'] is None:
         supported = description['modes']
+        candidates: Sequence[str]
         if inputs.get('image_ref') and inputs.get('image_end_ref'):
             candidates = ['flf']
         elif inputs.get('video_ref'):
@@ -657,33 +782,30 @@ def resolve_entry_inputs(entry_id: str, inputs: Mapping[str, Any], *, mode: str 
         elif inputs.get('image_ref'):
             candidates = ['i2v'] if description['kind'] == 'video' else ['i2i', 'edit']
         else:
-            candidates = {'image': ['t2i'], 'video': ['t2v'], 'audio': ['music']}[description['kind']]
+            candidates = _DEFAULT_MODE_CANDIDATES[description['kind']]
         selected = next((name for name in candidates if name in supported), None)
+        if selected is None and description.get('default_mode') in supported:
+            selected = description['default_mode']  # the entry's graph does not depend on the mode (the entry's build picks it)
         if selected is None:
             raise ValueError(f'entry {entry_id!r} requires an explicit mode')
         description = {**description, **description['mode_descriptions'][selected]}
     values = _dimension_values(description, inputs)
-    validation = description
-    ports = {port['name']: port for port in description['inputs']}
-    primary = ('request', 'asset_map')
-    if (description.get('action') == 'h3_av.transform'
-            and all(ports.get(name, {}).get('file_custody') == 'producer_local'
-                    for name in primary)):
-        # Older H3 callers supplied managed objects. Validate a complete managed
-        # pair at its original boundary, without reinterpreting either object as
-        # a producer-local path or admitting it through the new producer route.
-        from astrid.core.execution.managed_inputs import managed_file_digest
-        try:
-            for name in primary:
-                managed_file_digest(values.get(name), name)
-        except ValueError:
-            pass
-        else:
-            validation = {**description, 'inputs': [
-                {key: value for key, value in port.items() if key != 'file_custody'}
-                if port['name'] in primary else port for port in description['inputs']]}
-            description = {**description, 'runtime_parent_required': True}
-    return public_description(description), validate_inputs(validation, values)
+    if description['kind'] == 'audio' and description['mode'] == 'tts' and 'prompt' in values:
+        ports = {port['name']: port for port in description['inputs']}
+        declared_names = set(ports) | {alias for port in ports.values() for alias in port.get('aliases', [])}
+        text = ports.get('text')
+        # The convenience prompt is only an alias for canonical TTS text. Never
+        # override a workflow's declared prompt or choose among other text ports.
+        if 'prompt' not in declared_names:
+            if text is None or _input_type(text.get('type')) != 'string':
+                raise ValueError('TTS prompt has no unambiguous text input; use declared --input NAME=VALUE')
+            explicit_text = {'text', *text.get('aliases', [])}
+            if text.get('_binding'):
+                explicit_text.add('node:' + '.'.join(text['_binding']))
+            if explicit_text.intersection(values):
+                raise ValueError('duplicate/conflicting TTS prompt and text; pass only --input text=...')
+            values = {('text' if name == 'prompt' else name): value for name, value in values.items()}
+    return public_description(description), validate_inputs(description, values)
 
 
 def infer_kind(workflow: Any) -> str:
@@ -734,7 +856,8 @@ def prepare(path: Path, *, target_client: Any, mode: str, binds: dict[str, Any] 
         loaded = load_workflow_path(path, scratch, comfy_url=target_client.target.url if target_client else "")
         workflow = loaded.resolved.workflow
         return apply_workflow_inputs(workflow, mode=mode, binds=binds, values=values,
-                                     defaults=defaults, param_map=param_map)
+                                     defaults=defaults, param_map=param_map,
+                                     saved_seed_controls=loaded.saved_seed_controls)
 
 
 def _output_prefix_binding(workflow: Any, requested: dict[str, Any], binds) -> dict[str, str]:
@@ -755,8 +878,37 @@ def _output_prefix_binding(workflow: Any, requested: dict[str, Any], binds) -> d
     return {'filename_prefix': _resolve_binding(workflow, 'filename_prefix', f'{node.id}.filename_prefix')}
 
 
+def prepare_execution_bindings(workflow: Any, bindings: Mapping[str, Any] | None = None, *,
+                               saved_seed_controls: Mapping[str, Mapping[str, Any]] | None = None) -> dict[str, Any]:
+    """Resolve run randomness once, before sealing, and retain it as native bindings.
+
+    The same helper prepares catalog, entry, hook and direct workflow executions.
+    An explicit or replayed seed is authoritative; independent seedless preparations stay fresh.
+    ``saved_seed_controls`` is only given for a person's own saved UI workflow (the seed and control
+    read from the file, ``production_engine.saved_ui_seed_controls``): its seed is kept when the
+    control is ``fixed`` (as ComfyUI queues it); ``randomize``, ``increment`` and ``decrement`` stay fresh.
+    """
+    import secrets
+
+    prepared = dict(bindings or {})
+    if "seed" in getattr(workflow, "inputs", {}) and "seed" not in prepared:
+        saved = _saved_fixed_seed(workflow, saved_seed_controls)
+        prepared["seed"] = saved if saved is not None else secrets.randbelow(2**32)
+    return prepared
+
+
+def _saved_fixed_seed(workflow: Any, controls: Mapping[str, Mapping[str, Any]] | None) -> int | None:
+    """The saved seed when its control is ``fixed``; None for any other control or without saved controls."""
+    seed = getattr(workflow, "inputs", {}).get("seed")
+    saved = (controls or {}).get(str(getattr(seed, "node_id", "")))
+    if saved is None or saved.get("field") != seed.field or saved.get("control") != "fixed":
+        return None
+    value = saved.get("value")
+    return value if type(value) is int and 0 <= value < 2**32 else None
+
+
 def apply_workflow_inputs(workflow: Any, *, mode: str, values: dict[str, Any],
-                          binds=None, defaults=None, param_map=None):
+                          binds=None, defaults=None, param_map=None, saved_seed_controls=None):
     """One validated native binding path for catalog, entry and raw workflows."""
     kind = infer_kind(workflow)
     binds = {**_output_prefix_binding(workflow, {**(defaults or {}), **values}, binds), **(binds or {})}
@@ -801,7 +953,10 @@ def apply_workflow_inputs(workflow: Any, *, mode: str, values: dict[str, Any],
             assets[public] = Path(value)
         else:
             workflow.set_input(public, value)
-    return workflow, {"kind": kind, "bindings": applied, "unbound": sorted(unbound)}, assets
+    prepared = prepare_execution_bindings(workflow, applied, saved_seed_controls=saved_seed_controls)
+    for name in prepared.keys() - applied.keys():
+        workflow.set_input(name, prepared[name])
+    return workflow, {"kind": kind, "bindings": prepared, "unbound": sorted(unbound)}, assets
 
 
 # RunPod engines in their declared preference order: the lighter recipe first.
@@ -810,75 +965,47 @@ RUNPOD_PLATFORM = "linux-x86_64-cu130"
 
 @lru_cache(maxsize=1)
 def runpod_engines() -> tuple[str, ...]:
-    """RunPod engines in engine-index order: the index rows for the RunPod platform."""
+    """RunPod engines, from the generation.engine recipe rows for the RunPod platform."""
     from astrid.core.generation.engine_recipe import _index_rows
     return tuple(row["engine"] for row in _index_rows() if row["platform"] == RUNPOD_PLATFORM)
 
 
-def _model_requirements(entry: Mapping[str, Any]) -> tuple[list[str], set[str]]:
-    """Model destinations (or bare loader values) the entry needs, and those it pins itself.
+@lru_cache(maxsize=1)
+def engine_table() -> dict[str, Any]:
+    """Engines by name, built from the generation.engine contributions."""
+    from astrid.core.extensions.registry import ExtensionRegistry
+    registry = ExtensionRegistry().load()
+    table = {}
+    for contribution in registry.contributions("generation.engine"):
+        engine = registry.entry(contribution)
+        table[getattr(engine, "name", contribution.id.rsplit(".", 1)[-1])] = engine
+    return table
 
-    An action entry provisions the revision-pinned model assets its own graphs
-    declare (H3 owns its Ref2V LoRA this way), so the engine lock need not.
+
+def requirements(entry: Mapping[str, Any], inputs: Any = None) -> dict[str, Any]:
+    """The one requirements manifest: {engine, base, models[name, subdir, url, sha256, size], extra}.
+
+    The entry's engine builds it and validates its own ``extra``.
     """
-    import re
-    if entry.get("action"):
-        import yaml
-
-        from astrid.core.pack.loader import packs_root
-        pack = packs_root() / entry["action"].split(".")[0]
-        workflows = [_load_entry_workflow({"bundle": str(pack / yaml.safe_load(
-            (pack / ref).read_text(encoding="utf-8"))["workflow"])}) for ref in entry.get("requirements") or ()]
-        from vibecomfy.model_assets import _referenced_model_values
-        sources = [(workflow.metadata.get("model_assets", []), _referenced_model_values(workflow))
-                   for workflow in workflows]
-    else:
-        sources = [(entry.get("model_assets", []), entry.get("needs", []))]
-    required: set[str] = set()
-    pinned: set[str] = set()
-    for assets, needs in sources:
-        names = {asset["name"] for asset in assets}
-        for asset in assets:
-            value = f"{asset['subdir']}/{asset['name']}" if asset.get("subdir") else asset["name"]
-            required.add(value)
-            if entry.get("action") and re.search(r"/resolve/[0-9a-f]{40}/", asset.get("url") or ""):
-                pinned.add(value)
-        required.update(need["value"] for need in needs
-                        if need.get("value") and Path(need["value"]).name not in names)
-    return sorted(required), pinned
-
-
-def _lock_coverage(entry: Mapping[str, Any], engine: str) -> tuple[list[str], int]:
-    """(models the engine's own pinned lock must supply but lacks, models it supplies)."""
-    from astrid.core.generation.engine_recipe import load_recipe_model_lock
-    destinations = [model.destination for model in load_recipe_model_lock(engine, RUNPOD_PLATFORM).models]
-    required, pinned = _model_requirements(entry)
-    covered = [value for value in required
-               if any(path == value or path.endswith("/" + value) for path in destinations)]
-    return [value for value in required if value not in covered and value not in pinned], len(covered)
-
-
-def _missing_locked_models(entry: Mapping[str, Any], engine: str) -> list[str]:
-    return _lock_coverage(entry, engine)[0]
+    carried = entry.get("requirements")
+    if isinstance(carried, Mapping) and {"engine", "base", "models", "extra"} <= set(carried):
+        return dict(carried)  # a described entry already carries its manifest
+    engine = engine_table().get(entry.get("engine") or "comfyui")
+    if engine is None:
+        raise ValueError(f"no generation.engine contribution for {entry.get('engine')!r}")
+    return engine.requirements(entry, inputs)
 
 
 def runpod_engine(entry: Mapping[str, Any] | None) -> str:
-    """The one RunPod engine choice, from each engine's own pinned models lock.
-
-    Engines that leave nothing missing qualify; the one supplying the most of
-    the entry's models wins, and ties keep the declared preference order.
-    """
+    """Choose the preferred RunPod recipe; the machine aligns the job manifest."""
     from astrid.core.contracts.errors import AstridError
-    if entry is not None:
-        engines = runpod_engines()
-        coverage = {engine: _lock_coverage(entry, engine) for engine in engines}
-        qualified = [engine for engine in engines if not coverage[engine][0]]
-        if qualified:
-            return max(qualified, key=lambda engine: (coverage[engine][1], -engines.index(engine)))
+    engines = runpod_engines()
+    if entry is not None and engines:
+        return engines[0]
     identifier = (entry or {}).get("id")
-    raise AstridError(f"No RunPod engine lock covers the models of {identifier!r}; nothing was created.",
+    raise AstridError(f"No RunPod engine is available for {identifier!r}; nothing was created.",
                       code="runpod_engine_unavailable", field="target",
-                      state_snapshot={"entry": identifier, "engines": list(runpod_engines())})
+                      state_snapshot={"entry": identifier, "engines": list(engines)})
 
 
 def _workflow_description(entry: Mapping[str, Any]) -> dict[str, Any]:
@@ -896,20 +1023,6 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: 
         if need.get("ambiguity"):
             raise ValueError(f"entry requires review: {need['ambiguity']}")
     if client is None:
-        missing = _missing_locked_models(entry, engine) if engine is not None else []
-        if missing:
-            # No live target: the chosen engine's pinned lock is the inventory.
-            from astrid.core.generation.preflight import (
-                GenerationReadinessError,
-                readiness_envelope,
-            )
-            raise GenerationReadinessError(readiness_envelope(
-                entry=_workflow_description(entry),
-                target=dict(pending_target) if pending_target is not None else {'engine': engine},
-                issues=[{'code': 'missing_model', 'severity': 'error',
-                         'message': f'{engine} model lock is missing {value!r}',
-                         'details': {'engine_code': 'comfyui.models_missing', 'model': value, 'bytes': None}}
-                        for value in missing]))
         return None
     from types import SimpleNamespace
 
@@ -918,11 +1031,16 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: 
     observed = client.object_info()
     if not isinstance(observed, dict):
         raise ValueError("target model inventory is malformed")
+    if align == 'trust':
+        from .target_inventory import trust_declared_loader_choices
+        observed = trust_declared_loader_choices(observed, workflow)
     from astrid.core.generation.preflight import GenerationReadinessError, readiness_envelope
     issues = []
     for class_type in sorted({node.class_type for node in workflow.runtime_nodes().values()} - observed.keys()):
         issues.append({'code': 'missing_node_pack', 'severity': 'error',
-                       'message': f'target is missing node {class_type!r}',
+                       'message': (f'target is missing node {class_type!r}; '
+                                   'install it on the requested ComfyUI target, '
+                                   'or choose a target that provides it.'),
                        'details': {'engine_code': 'comfyui.missing_node', 'node': class_type, 'bytes': None}})
     roles = {}
     needs_by_key = {}
@@ -951,16 +1069,89 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: 
             fixes=[{'argv': align_argv(entry.get('registry_id') or entry.get('id')),
                     'scope': 'user_env', 'details': {'action': 'Install missing locked assets; unlocked assets require a manifest.'}}]))
     custody = {}
-    if client.target.kind == "managed" and client.target.facts.get("model_root") is not None:
+    if align != 'trust' and client.target.kind == "managed" and client.target.facts.get("model_root") is not None:
         from .model_root import validate_model_root_binding
         # This selected local managed target was provisioned through its lock.
         # Re-verify local bytes before projecting its inventory; no host registry
         # or graph picker can supply a missing target asset.
         binding = validate_model_root_binding(client.target.facts["model_root"], verify_files=True)
+        inventory = {(row['name'], row['subdir']): row for row in binding.inventory}
+        for asset in workflow.metadata.get('model_assets', []):
+            if not isinstance(asset, Mapping):
+                continue
+            digest, size = asset.get('sha256'), asset.get('size_bytes')
+            if not isinstance(digest, str) and type(size) is not int:
+                continue
+            name = asset.get('name', asset.get('filename'))
+            subdir = asset.get('subdir', asset.get('directory', '')) or ''
+            row = inventory.get((name, '' if subdir == '.' else subdir))
+            if (row is None
+                    or (isinstance(digest, str) and row['sha256'].removeprefix('sha256:')
+                        != digest.removeprefix('sha256:'))
+                    or (type(size) is int and row['size'] != size)):
+                raise ValueError(f"model-root declaration mismatch: {asset.get('name')}")
         workflow.metadata["models_root"] = str(binding.path)
         custody = {"auxiliary_model_custody": "target", "target_model_assets": binding.inventory}
     if align == 'trust':
         from .target_inventory import declared_rows
         custody = {"auxiliary_model_custody": "target", "target_model_assets": list(declared_rows(workflow))}
-    return TargetSchemaProvider.from_object_info(observed, server_url=client.http_origin,
-        model_availability="target", refresh_object_info=client.object_info, **custody)
+    provider = TargetSchemaProvider.from_object_info(observed, server_url=client.http_origin,
+        model_availability="target",
+        refresh_object_info=(lambda: trust_declared_loader_choices(client.object_info(), workflow))
+                            if align == 'trust' else client.object_info, **custody)
+    if align == 'trust':
+        provider.trust_model_assets(declared_rows(workflow))
+    return provider
+
+
+def entry_hooks(entry: Mapping[str, Any], registry: Any = None) -> dict[str, Any]:
+    """The ``build`` / ``after_outputs`` callables of a contributed entry, or ``{}``.
+
+    Only entries whose YAML declares a hook (``hooks_declared``) touch the registry.
+    """
+    if not entry.get('hooks_declared'):
+        return {}
+    from astrid.core.extensions.registry import ExtensionRegistry
+    from astrid.core.generation import workflows
+    for row in workflows.workflow_entries(registry or ExtensionRegistry().load()):
+        if row['id'] == entry['id'] and row.get('contribution') == entry.get('contribution'):
+            return dict(row.get('hooks') or {})
+    return {}
+
+
+def entry_job(entry: Mapping[str, Any], inputs: Mapping[str, Any], job_dir: Any, *, hooks: Mapping[str, Any],
+              align: str = 'check') -> dict[str, Any]:
+    """The engine job for a hooked entry: its declared file inputs go in ``files``.
+
+    A ``file_map`` given as the path of its JSON document is read here, when the job is built.
+    """
+    types = {port['name']: _input_type(port.get('type')) for port in entry.get('inputs', [])}
+    inputs = {name: (read_file_map_document(value) if types.get(name) == 'file_map' else value)
+              for name, value in inputs.items()}
+    files = {name: value for name, value in inputs.items() if types.get(name) in {'file', 'file_map'}}
+    return {'hooks': dict(hooks), 'inputs': inputs, 'files': files,
+            'job_dir': job_dir, 'mode': align, 'entry': entry['id']}
+
+
+def attach_hooks(entry: Mapping[str, Any], inputs: Mapping[str, Any], job_dir: Any, *, registry: Any = None) -> dict[str, Any]:
+    """The entry with what the engine's ``requirements`` and ``prepare`` read: hooks, files, inputs, job_dir.
+
+    ``registry`` is the ExtensionRegistry (the facade's model catalog is a different object).
+    """
+    hooks = entry_hooks(entry, registry)
+    if not hooks:
+        return dict(entry)
+    job = entry_job(entry, inputs, job_dir, hooks=hooks)
+    return {**entry, 'hooks': hooks, 'files': job['files'], 'job_dir': job_dir, 'job_inputs': job['inputs']}
+
+
+def build_entry(entry: Mapping[str, Any], inputs: Mapping[str, Any], job_dir: Any, *, registry: Any = None,
+                check_runtime: bool = False) -> dict[str, Any] | None:
+    """Run the entry's ``build`` through the engine's ``prepare``: ``{workflow, bindings, plan, ...}``, or None."""
+    attached = entry if entry.get('hooks') else attach_hooks(entry, inputs, job_dir, registry=registry)
+    if not attached.get('hooks'):
+        return None
+    job = entry_job(entry, inputs, job_dir, hooks=attached['hooks'])
+    if check_runtime:
+        job['check_runtime'] = True
+    return engine_table()[entry.get('engine') or 'comfyui'].prepare(job)

@@ -1,15 +1,15 @@
 {
   "schema": "astrid.engine-recipe.v1",
-  "engine": "vibecomfy",
+  "engine": "comfyui",
   "platform": "windows-x86_64-cu130",
   "pins": {
     "path": "packs/runpod/pins.json",
-    "sha256": "b7ba074fa02423312dc033b5fcb3b3d952ac12393130e23064b9401811c8d18c"
+    "sha256": "e1b0b8ce00a01a09113cbe4de34264cdf82a66d40512dea52ca2b69ac96e5c4a"
   },
   "source_bindings": [
     {
       "name": "comfyui",
-      "pin": "comfyui-plain",
+      "pin": "comfyui",
       "relative_path": "runtime/ComfyUI"
     },
     {
@@ -56,8 +56,8 @@
           }
         ],
         "constraints": [
-          "comfy-kitchen==0.2.40",
-          "comfy-aimdo==0.6.0",
+          "comfy-kitchen==0.2.35",
+          "comfy-aimdo==0.5.5",
           "opencv-python-headless==5.0.0.93",
           "setuptools==80.9.0",
           "wheel==0.46.3"
@@ -100,7 +100,9 @@
       "--listen",
       "127.0.0.1",
       "--port",
-      "{port}"
+      "{port}",
+      "--models-directory",
+      "{models_root}"
     ],
     "cwd": "{comfy_root}",
     "env": {

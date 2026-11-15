@@ -68,7 +68,13 @@ def retained_producer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
                "comfy_process_birth_id": "listener-birth", "launch_token": "fixture-launch",
                "source_revision": "fixture-revision", "source_content_digest": _digest(b"vibe-source"),
                "config_digest": _digest(config_bytes)}
-    readiness = {"launch": {"model_root": model_root}, "vibecomfy_session": copy.deepcopy(session)}
+    # The engine identity is the attested install receipt; the VibeComfy source
+    # is recorded under the installed provenance, never as a checkout session.
+    identity = {"engine": "comfyui", "receipt_sha256": _digest(b"install-receipt"), "root": str(runtime_root)}
+    readiness = {"launch": {"model_root": model_root}, "engine_identity": copy.deepcopy(identity),
+                 "installed_provenance": {"source": {"vibecomfy": {
+                     "revision": session["source_revision"], "content_digest": session["source_content_digest"],
+                     "verified": True}}}}
     owner = {"pid": 7001, "uid": os.getuid(), "birth_id": "runtime-birth",
              "runtime_instance_id": "epoch", "coordinator_epoch": "epoch"}
     selected = {"profile_id": "fixture", "workspace_uuid": "realm", "realm_root": str(tmp_path / "realm"),
@@ -101,7 +107,7 @@ def retained_producer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     preparation.result = {"version": host._LOCAL_PREPARATION_VERSION, "status": "prepared",
                           "operation_id": "operation", "channel_id": "channel", "owner_epoch": "epoch",
                           **copy.deepcopy(measured)}
-    preparation.graph = SimpleNamespace(readiness_profile={"vibecomfy_session": copy.deepcopy(session)},
+    preparation.graph = SimpleNamespace(readiness_profile={"engine_identity": copy.deepcopy(identity)},
                                         report=lambda: copy.deepcopy(measured))
     preparation._retained_relay_actor = SimpleNamespace(verify=lambda: copy.deepcopy(owner))
     preparation._activation_grant = {"fixture": "already activated"}
@@ -152,7 +158,7 @@ def test_retained_host_prepares_frozen_recipe_without_admission(retained_produce
     binding = result["binding"]
     assert binding["source_closure_digest"] == CLOSURE
     assert binding["model_root"] == fixture.readiness["launch"]["model_root"]
-    assert binding["session"] == fixture.session
+    assert binding["engine_url"] == fixture.selected["engine_endpoint"]
     assert binding["processes"] == fixture.measured["processes"]
     assert binding["profile_digest"] == fixture.selected["profile_digest"]
     assert binding["profile_binding_digest"] == _digest(_canonical(fixture.selected))
@@ -162,7 +168,7 @@ def test_retained_host_prepares_frozen_recipe_without_admission(retained_produce
     assert args == ()
     assert kwargs["inputs"] == {"prompt": fixture.prompt, **fixture.request["controls"]}
     assert kwargs["model_root"].path == fixture.root
-    assert kwargs["target_client"].target.url == fixture.session["server_url"]
+    assert kwargs["target_client"].target.url == fixture.selected["engine_endpoint"]
     assert fixture.preparation.result["version"] == host._LOCAL_PREPARATION_VERSION
     assert not fixture.preparation._aborted
 
@@ -199,7 +205,7 @@ def test_private_dispatch_freezes_real_installed_producer_recipe(retained_produc
     assert all(item["inventory"] in recipe["model_root"]["inventory"] for item in recipe["model_references"])
     assert set(recipe["members"]) == {"workflow.py", "workflow.vibe.json", "source.json"}
     assert recipe["approval"]["api_projection"] and recipe["approval"]["ui_projection"]
-    assert observed and set(observed) == {fixture.session["server_url"]}
+    assert observed and set(observed) == {fixture.selected["engine_endpoint"]}
     # Runtime can verify/retain every returned member after scratch teardown.
     monkeypatch.setattr(Path, "read_bytes", forbidden)
     for member in recipe["members"].values():
@@ -307,7 +313,7 @@ def test_managed_input_bytes_and_descriptor_are_verified_before_producer(retaine
 
 @pytest.mark.parametrize("case", ["missing_peer", "wrong_peer", "unresolved", "aborted", "error", "no_graph",
                                   "no_activation", "no_claim_host", "wrong_host", "changed_graph",
-                                  "wrong_closure", "wrong_module", "wrong_protocol", "session_mismatch",
+                                  "wrong_closure", "wrong_module", "wrong_protocol", "receipt_mismatch",
                                   "config_mismatch", "model_bytes"])
 def test_live_retained_authority_is_rechecked_before_preparation(retained_producer, case):
     fixture = retained_producer
@@ -325,7 +331,7 @@ def test_live_retained_authority_is_rechecked_before_preparation(retained_produc
     elif case == "wrong_closure": fixture.selected["host_protocol"]["source_closure_digest"] = "4" * 64
     elif case == "wrong_module": fixture.selected["host_protocol"]["module"] = "caller.host"
     elif case == "wrong_protocol": fixture.selected["host_protocol"]["version"] = "future"
-    elif case == "session_mismatch": preparation.graph.readiness_profile["vibecomfy_session"]["comfy_pid"] += 1
+    elif case == "receipt_mismatch": preparation.graph.readiness_profile["engine_identity"]["receipt_sha256"] = _digest(b"other-receipt")
     elif case == "config_mismatch": (fixture.session_root / "config.json").write_text("{}")
     elif case == "model_bytes": fixture.model.write_bytes(b"tampered model bytes")
     with pytest.raises((host.HostError, ValueError)):
@@ -359,8 +365,6 @@ def test_selected_model_root_cannot_be_redirected_by_session(retained_producer, 
         fixture.selected["session_config_digest"] = digest
         fixture.measured["session_config_digest"] = digest
         fixture.preparation.result["session_config_digest"] = digest
-        fixture.readiness["vibecomfy_session"]["config_digest"] = digest
-        fixture.preparation.graph.readiness_profile["vibecomfy_session"]["config_digest"] = digest
         # Model this configuration as the initial immutable startup snapshot.
         fixture.preparation._producer_profile_json = _canonical(fixture.readiness)
     with pytest.raises((host.HostError, ValueError)):
@@ -387,7 +391,7 @@ def test_authority_drift_during_compilation_cannot_escape_as_prepared(retained_p
     def changed(*args, **kwargs):
         calls.append("prepare")
         if case == "model": fixture.model.write_bytes(b"model changed while compiling")
-        elif case == "session": fixture.preparation.graph.readiness_profile["vibecomfy_session"]["launch_token"] = "new-launch"
+        elif case == "session": fixture.preparation.graph.readiness_profile["engine_identity"]["receipt_sha256"] = _digest(b"drifted-receipt")
         else: fixture.preparation._retained_relay_actor = SimpleNamespace(verify=lambda: {**fixture.owner, "pid": 9999})
         return fixture.recipe_bytes
     monkeypatch.setattr(generation, "_prepare_verified_image_recipe", changed)

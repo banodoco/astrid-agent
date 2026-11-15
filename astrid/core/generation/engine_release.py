@@ -43,9 +43,9 @@ REQUIRED = (
 )
 
 
-# Default handoff remains H3. Explicit plain-ComfyUI selection uses its own
+# The default handoff stays with the audiovisual entry. Explicit plain-ComfyUI selection uses its own
 # hash-indexed recipe; expected identity always comes from the verified tree.
-HANDOFF_ENGINE = 'vibecomfy-h3'
+HANDOFF_ENGINE = 'comfyui'
 HANDOFF_PLATFORM = 'linux-x86_64-cu130'
 HANDOFF_SCHEMA = 'astrid.release-python.v1'
 # Bootstrap children get ONLY these inherited public variables plus the
@@ -424,28 +424,48 @@ def extract_release(archive_path, sha256, retained):
     return target
 
 
+def _recipe_rows(text):
+    """Rows of a generation.engine manifest's block-style ``recipes:`` list (no YAML library here)."""
+    rows, inside = [], False
+    for line in text.splitlines():
+        if re.fullmatch(r'recipes:\s*', line):
+            inside = True
+        elif inside and line.strip() and not line[0].isspace():
+            inside = False
+        elif inside and line.strip():
+            match = re.fullmatch(r'\s+(- )?(\w+): "?([^"\s]+)"?\s*', line)
+            if match is None or (not rows and not match.group(1)):
+                raise ReleaseError('invalid packaged recipe declaration')
+            if match.group(1):
+                rows.append({})
+            rows[-1][match.group(2)] = match.group(3)
+    return rows
+
+
 def _handoff_recipe(release, *, engine=HANDOFF_ENGINE):
     """Primary environment of the hash-indexed recipe inside a VERIFIED tree."""
-    if engine not in {HANDOFF_ENGINE, 'comfyui'}:
+    if engine != HANDOFF_ENGINE:
         raise ReleaseError('unsupported handoff engine')
     site = Path(release) / 'site/astrid'
     try:
-        index = _json((site / 'packs/engine-index.json').read_bytes())
-        if not isinstance(index, dict) or index.get('schema') != 'astrid.engine-index.v1':
-            raise ReleaseError('invalid packaged recipe index')
-        entries = [e for e in index['entries'] if isinstance(e, dict)
-                   and e.get('engine') == engine and e.get('platform') == HANDOFF_PLATFORM]
-        if len(entries) != 1 or set(entries[0]) != {'engine', 'platform', 'recipe'}:
+        entries = []
+        for manifest in sorted(site.glob('packs/*/extensions/generation.engine/*.yaml')):
+            if manifest.stem != engine:
+                continue
+            _regular(manifest)
+            entries += [{'engine': engine, **row} for row in _recipe_rows(manifest.read_bytes().decode())
+                        if row.get('platform') == HANDOFF_PLATFORM]
+        if len(entries) != 1 or set(entries[0]) != {'engine', 'platform', 'path', 'sha256'}:
             raise ReleaseError('release has no unique handoff recipe')
-        ref = entries[0]['recipe']
-        if (not isinstance(ref, dict) or set(ref) != {'path', 'sha256'}
-                or not isinstance(ref['sha256'], str) or not re.fullmatch('[0-9a-f]{64}', ref['sha256'])):
+        ref = {'path': entries[0]['path'], 'sha256': entries[0]['sha256']}
+        if (not isinstance(ref['path'], str) or not isinstance(ref['sha256'], str)
+                or not re.fullmatch('[0-9a-f]{64}', ref['sha256'])):
             raise ReleaseError('invalid handoff recipe reference')
         path = site / _relative(ref['path'])
         _regular(path)
         raw = path.read_bytes()
         if digest(raw) != ref['sha256']:
-            raise ReleaseError('handoff recipe differs from its index digest')
+            raise ReleaseError('handoff recipe differs from its declared digest')
         recipe = _json(raw)
         if (not isinstance(recipe, dict) or recipe.get('schema') != 'astrid.engine-recipe.v1'
                 or recipe.get('engine') != engine or recipe.get('platform') != HANDOFF_PLATFORM):

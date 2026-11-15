@@ -71,7 +71,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/system_stats":
             value = {"system": {"comfyui_version": "0.36.0"}, "devices": [{"vram_total": 24000, "vram_free": 20000}]}
         else:
-            value = {"MiniMaxH3ReferenceToVideo": {}, "VHS_VideoCombine": {}}
+            value = {"MiniMaxH3ReferenceToVideo": {}, "VHS_VideoCombine": {}, "UNETLoader": {}, "VAELoader": {}}
         data = json.dumps(value).encode()
         self.send_response(200)
         self.send_header("Content-Length", str(len(data)))
@@ -130,7 +130,7 @@ def test_real_service_launch_through_supervisor_keeps_pinned_source_clean(tmp_pa
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
-    base = load_recipe("vibecomfy-h3", platform)
+    base = load_recipe("comfyui", platform)
     argv = (sys.executable, str(root / "launch.py"), str(port), str(mode), str(started), str(record),
             str(source), str(root / "tiny_http.py"))
     recipe = replace(base, sources=tuple(replace(s, pin=replace(s.pin, revision=revision))
@@ -146,7 +146,7 @@ from dataclasses import replace
 from astrid.core.generation.engine_contracts import StartSpec
 from astrid.core.generation.engine_recipe import load_recipe
 from astrid.core.generation.engine_custody import _serve
-base = load_recipe({"vibecomfy-h3"!r}, {platform!r})
+base = load_recipe({"comfyui"!r}, {platform!r})
 recipe = replace(base, sources=tuple(replace(s, pin=replace(s.pin, revision={revision!r})) if s.name == "vibecomfy" else s for s in base.sources),
                  start=StartSpec({argv!r}, {str(comfy)!r}, {{"VIBECOMFY_HEADLESS": "1"}}, "127.0.0.1", {port}),
                  health=replace(base.health, timeout_seconds=4, poll_interval_seconds=0.02))
@@ -156,7 +156,8 @@ _serve(json.loads(sys.argv[1]), recipe, int(sys.argv[2]), sys.argv[4])
         sys.executable, "-c", program, _json(identity), str(lock_fd), "--launch-token", token])
     adapter = LinuxPlatformAdapter(platform)
     request = adapter.start_request(recipe, str(root), deadline=time.monotonic() + 5)
-    launch = {"argv": list(request.argv), "cwd": request.cwd, "env": dict(request.env)}
+    launch = {"argv": list(request.argv), "cwd": request.cwd,
+              "env": {**request.env, "CUDA_VISIBLE_DEVICES": None}}
     client = custody.LinuxEngineServiceClient(**identity)
     payload = {**identity, "schema": custody._SCHEMA, "launch": launch, "owner_id": None,
                "timeout_seconds": recipe.health.timeout_seconds,

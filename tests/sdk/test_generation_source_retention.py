@@ -57,7 +57,7 @@ def test_public_workflow_imports_before_description_converts_source(monkeypatch,
         return resolve(*args, **kwargs)
 
     monkeypatch.setattr(entries, 'resolve_workflow_inputs', describe)
-    result = admission.workflow_method(GenerationFacade(), workflow=path, target='managed',
+    result = admission.workflow_method(GenerationFacade(), workflow=path, placement='managed',
         inputs={'prompt': 'bound prompt'}, project='demo', client=admission.client, wait=False)
     assert result is admission.task
     assert admission.invoke.call_args.kwargs['source'] == {
@@ -84,7 +84,7 @@ def test_catalog_imports_exact_pinned_source_before_build(monkeypatch, admission
     # Bypass unrelated entry discovery; exercise the real pinned catalog load.
     monkeypatch.setattr(entries, 'find_entry', lambda name: None)
     result = GenerationFacade()._generate_on_target(
-        registry=registry, model='z-image', mode='t2i', modality='image', target='managed',
+        registry=registry, model='z-image', mode='t2i', modality='image', placement='managed',
         execution=None, inputs={'prompt': 'changed prompt', 'seed': 43}, dry_run=False,
         client=admission.client, project='demo', wait=False)
     assert result is admission.task
@@ -121,7 +121,7 @@ def test_submitted_source_bytes_survive_conversion_and_cleanup(monkeypatch, admi
     monkeypatch.setattr(entries, 'prepare', convert)
     result = GenerationFacade()._generate_on_target(
         registry=ModelRegistry([]), model='mine' if named_entry else None,
-        mode='t2i', modality='image', target='managed', execution=None,
+        mode='t2i', modality='image', placement='managed', execution=None,
         inputs={'prompt': 'changed prompt'}, dry_run=False,
         workflow_entry=None if named_entry else manifest,
         client=admission.client, project='demo', wait=False)
@@ -162,7 +162,7 @@ def test_public_workflow_freezes_execution_before_importer_changes_original(
         return result
 
     admission.client.media.import_file = replace_original
-    result = admission.workflow_method(GenerationFacade(), workflow=path, target='managed',
+    result = admission.workflow_method(GenerationFacade(), workflow=path, placement='managed',
         inputs={'prompt': 'requested'}, project='demo', client=admission.client, wait=False)
     assert result is admission.task
     supplied = admission.invoke.call_args.kwargs
@@ -189,14 +189,14 @@ def test_stale_bundle_rejects_before_target_or_admission(monkeypatch, tmp_path):
     bundle.python_path.with_suffix('.vibe.json').write_text('{}')
     monkeypatch.setattr(preflight, 'select_generation_target', lambda *a, **k: pytest.fail('target probe'))
     with pytest.raises(GenerationInputError, match='canonical workflow bundle'):
-        GenerationFacade().workflow(workflow=bundle.python_path, target='auto', dry_run=True)
+        GenerationFacade().workflow(workflow=bundle.python_path, placement='auto', dry_run=True)
 
 
 @pytest.mark.parametrize('inputs', [[], '', 1])
 def test_workflow_inputs_require_an_object_before_source_read(inputs):
     from astrid.sdk.generation import GenerationInputError
     with pytest.raises(GenerationInputError, match='must be an object'):
-        GenerationFacade().workflow(workflow='absent.py', target='auto', inputs=inputs)
+        GenerationFacade().workflow(workflow='absent.py', placement='auto', inputs=inputs)
 
 
 def test_missing_native_entry_api_returns_readiness_before_target(monkeypatch, tmp_path):
@@ -207,7 +207,7 @@ def test_missing_native_entry_api_returns_readiness_before_target(monkeypatch, t
     monkeypatch.setattr(entries, 'resolve_workflow_inputs', unavailable)
     monkeypatch.setattr(preflight, 'select_generation_target', lambda *a, **k: pytest.fail('target probe'))
     with pytest.raises(preflight.GenerationReadinessError) as raised:
-        GenerationFacade().workflow(workflow=source, target='auto', dry_run=True)
+        GenerationFacade().workflow(workflow=source, placement='auto', dry_run=True)
     issue = raised.value.to_envelope()['issues'][0]
     assert issue['code'] == 'missing_dependency'
     assert issue['details'] == {'field': 'workflow', 'module': 'vibecomfy.entries'}
@@ -231,10 +231,9 @@ def test_saved_entry_keeps_exact_source_when_original_changes(monkeypatch, admis
         source.unlink()
     else:
         source.write_bytes(b'the external source has changed')
-    monkeypatch.setattr(entries, 'action_entries', lambda: [])
     monkeypatch.setattr(entries, 'ready_entries', lambda: [])
     monkeypatch.setattr(sdk, '_load_model_registry', lambda **kwargs: ModelRegistry([]))
-    result = GenerationFacade().image(entry=saved['id'], target='managed',
+    result = GenerationFacade().image(entry=saved['id'], placement='managed',
         inputs={'prompt': 'requested'}, client=admission.client, project='demo', wait=False)
     assert result is admission.task
     digest = 'sha256:' + hashlib.sha256(data).hexdigest()

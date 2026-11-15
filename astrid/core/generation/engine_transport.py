@@ -76,7 +76,8 @@ class EngineEndpointTransport:
 
         self._endpoint = parse_endpoint(endpoint_to_dict(endpoint))
         expected = pod_url(pod_id, agent_port) + "/engines/" + endpoint.endpoint_id
-        if (endpoint.placement != "runpod" or endpoint.state != "ready"
+        from astrid.core.generation.placement import is_runpod_placement
+        if (not is_runpod_placement(endpoint.placement) or endpoint.state != "ready"
                 or endpoint.url != expected or endpoint.auth.kind != "bearer-file"
                 or endpoint.auth.token is None):
             raise AttestationError("endpoint differs from the original claimed agent origin")

@@ -37,6 +37,8 @@ agent:
   purpose: Choose this pack when you need ephemeral cloud GPU compute on RunPod —
     to spin up a pod, run a script remotely, retrieve artifacts/checkpoints, and shut
     it down. Prefer runpod.session for one-shot jobs that should always clean up.
+    These actions are operator tools and are not the generation path; generation is
+    `astrid generate ... --placement runpod`.
   do_not_use_for: Not for orchestrating LoRA training workflows end to end; use the
     training pack, which drives RunPod under the hood.
   normal_entrypoints:
@@ -49,10 +51,10 @@ actions:
   provision:
     name: RunPod Provision
     version: 0.1.0
-    short_description: Provision a RunPod GPU pod and emit a pod handle for later
+    short_description: Not for generation. Provision a RunPod GPU pod and emit a pod handle for later
       exec/teardown.
-    description: Provision a RunPod GPU pod and emit a pod_handle.json artifact. Does
-      not terminate.
+    description: Not the generation path; generation is `astrid generate ... --placement runpod`.
+      Provision a RunPod GPU pod and emit a pod_handle.json artifact. Does not terminate.
     keywords:
     - runpod
     - gpu
@@ -206,7 +208,6 @@ actions:
         - tcp
         allowed_destinations:
         - https://api.runpod.io:443
-        - https://rest.runpod.io:443
         - https://graphql.runpod.io:443
         - https://runpod.io:443
         allow_redirects: false
@@ -359,7 +360,6 @@ actions:
         - tcp
         allowed_destinations:
         - https://api.runpod.io:443
-        - https://rest.runpod.io:443
         - https://graphql.runpod.io:443
         - https://runpod.io:443
         dynamic_route_resolver: runpod_pod_handle_ssh
@@ -487,7 +487,6 @@ actions:
         - tcp
         allowed_destinations:
         - https://api.runpod.io:443
-        - https://rest.runpod.io:443
         - https://graphql.runpod.io:443
         - https://runpod.io:443
         allow_redirects: false
@@ -592,7 +591,6 @@ actions:
         - tcp
         allowed_destinations:
         - https://api.runpod.io:443
-        - https://rest.runpod.io:443
         - https://graphql.runpod.io:443
         - https://runpod.io:443
         allow_redirects: false
@@ -617,9 +615,10 @@ actions:
   session:
     name: RunPod Session
     version: 0.1.0
-    short_description: Composite provision → exec → teardown session with guaranteed
+    short_description: Not for generation. Composite provision → exec → teardown session with guaranteed
       cleanup.
-    description: Composite provision → exec → download → terminate session with guaranteed
+    description: Not the generation path; generation is `astrid generate ... --placement runpod`.
+      Composite provision → exec → download → terminate session with guaranteed
       cleanup via try/finally. Writes pod_handle.json as a sweeper breadcrumb immediately
       after provision and deletes it on graceful teardown.
     keywords:
@@ -826,7 +825,6 @@ actions:
         - tcp
         allowed_destinations:
         - https://api.runpod.io:443
-        - https://rest.runpod.io:443
         - https://graphql.runpod.io:443
         - https://runpod.io:443
         dynamic_route_resolver: runpod_pod_handle_ssh
@@ -857,7 +855,7 @@ actions:
     short_description: Inspect the retained target and optionally observe an offer.
     description: Read the retained host's target custody and current offer.
     inputs:
-    - name: target_policy
+    - name: placement_policy
       type: string
       required: true
       description: Provider policy snapshot.
@@ -872,7 +870,7 @@ actions:
     conditions: []
     graph: {consumes: [], provides: []}
     isolation: {mode: subprocess, network: false}
-    metadata: {host_target_operation: status}
+    metadata: {host_target_operation: status, storage_floor_exempt: true}
     invocation:
       kind: command
       command:
@@ -883,7 +881,7 @@ actions:
     short_description: Save validated RunPod preferences through the retained owner.
     description: Persist GPU, budget ceiling, volume and idle preferences without authorizing spend.
     inputs:
-    - name: target_policy
+    - name: placement_policy
       type: string
       required: true
       description: Explicit RunPod policy containing validated setup preferences.
@@ -893,7 +891,7 @@ actions:
     conditions: []
     graph: {consumes: [], provides: []}
     isolation: {mode: subprocess, network: false}
-    metadata: {host_target_operation: setup}
+    metadata: {host_target_operation: setup, project_scope: optional}
     invocation:
       kind: command
       command:
@@ -904,7 +902,7 @@ actions:
     short_description: List the retained owner's current RunPod lease, if any.
     description: Read zero or one lease from the retained owner without scanning the provider account.
     inputs:
-    - name: target_policy
+    - name: placement_policy
       type: string
       required: true
       description: Explicit policy selecting the retained RunPod owner.
@@ -925,7 +923,7 @@ actions:
     short_description: Release the exact retained target.
     description: Ask the retained host to drain and verify release of its target.
     inputs:
-    - name: target_policy
+    - name: placement_policy
       type: string
       required: true
       description: Provider policy snapshot.
@@ -935,7 +933,49 @@ actions:
     conditions: []
     graph: {consumes: [], provides: []}
     isolation: {mode: subprocess, network: false}
-    metadata: {host_target_operation: release}
+    metadata: {host_target_operation: release, storage_floor_exempt: true}
+    invocation:
+      kind: command
+      command:
+        argv: ['{python_exec}', '-c', 'pass']
+  claim:
+    name: Retained target claim
+    version: 0.1.0
+    short_description: Claim a machine with fresh paid consent.
+    description: Claim through the running host and retain within the initial paid limit.
+    inputs:
+    - name: placement_policy
+      type: string
+      required: true
+      description: Provider policy with fresh paid consent and finite initial retention.
+    outputs: []
+    resources: []
+    cache: {mode: none}
+    conditions: []
+    graph: {consumes: [], provides: []}
+    isolation: {mode: subprocess, network: false}
+    metadata: {host_target_operation: claim}
+    invocation:
+      kind: command
+      command:
+        argv: ['{python_exec}', '-c', 'pass']
+  keep:
+    name: Retained target keep
+    version: 0.1.0
+    short_description: Keep the exact rented machine with fresh paid consent.
+    description: Change the live owner's paid limit and optionally disable idle release within that limit.
+    inputs:
+    - name: placement_policy
+      type: string
+      required: true
+      description: Provider policy with the exact machine, fresh paid consent and until-release selection.
+    outputs: []
+    resources: []
+    cache: {mode: none}
+    conditions: []
+    graph: {consumes: [], provides: []}
+    isolation: {mode: subprocess, network: false}
+    metadata: {host_target_operation: keep}
     invocation:
       kind: command
       command:
@@ -951,6 +991,14 @@ extensions:
   astrid:
     output_result_exemptions:
       actions:
+        claim:
+          reasons:
+          - no-artifact
+          note: Claims a retained RunPod machine without producing a media artifact.
+        keep:
+          reasons:
+          - no-artifact
+          note: Changes the retained RunPod machine's paid limit without producing a media artifact.
         ls:
           reasons:
           - no-artifact

@@ -128,8 +128,8 @@ def _choices(parser: argparse.ArgumentParser) -> set[str]:
 def test_tasks_and_runs_expose_only_canonical_verbs() -> None:
     from astrid.core.cli.domain_tasks import COMMANDS as TASK_COMMANDS, build_parser as task_parser
     from astrid.core.cli.domain_runs import COMMANDS as RUN_COMMANDS, build_parser as run_parser
-    assert tuple(c.name for c in TASK_COMMANDS) == ("create", "list", "show", "cancel", "retry", "events", "follow")
-    assert _choices(task_parser(_Client())) == {"create", "list", "show", "cancel", "retry", "events", "follow"}
+    assert tuple(c.name for c in TASK_COMMANDS) == ("create", "list", "show", "cancel", "retry", "events", "follow", "logs")
+    assert _choices(task_parser(_Client())) == {"create", "list", "show", "cancel", "retry", "events", "follow", "logs"}
     assert tuple(c.name for c in RUN_COMMANDS) == ("list", "show", "cancel", "retry", "events", "open")
     assert _choices(run_parser(_Client())) == {"list", "show", "cancel", "retry", "events", "open"}
 
@@ -426,12 +426,14 @@ def test_runs_list_human_view_is_a_short_table_not_json(capsys) -> None:
     assert _run("runs", ["list", "--project", "P-1", "--capability", "rendering.render", "--limit", "2"], client) == 0
     out = capsys.readouterr().out
     lines = out.splitlines()
-    assert lines[0].split() == ["ID", "CAPABILITY", "STATE", "CREATED", "(UTC)", "DURATION", "OUTPUT"]
+    # The MACHINE column (the machine identity on each attempt) sits before OUTPUT, by design.
+    assert lines[0].split() == ["ID", "CAPABILITY", "STATE", "CREATED", "(UTC)", "DURATION", "MACHINE", "OUTPUT"]
     assert len(lines) == 4  # header, two rows, footer
     assert "spec" not in out and "{" not in out
     assert lines[1].split()[0] == f"{4:032x}"[:12]
-    assert "completed" in lines[1] and "hype.mp4" in lines[1]
-    assert "running" in lines[2] and "so far" in lines[2]
+    # These rows ran on no recorded machine, so the column is the compact '-', and the output name ends the line.
+    assert "completed" in lines[1] and lines[1].split()[-2:] == ["-", "hype.mp4"]
+    assert "running" in lines[2] and "so far" in lines[2] and lines[2].split()[-2:] == ["-", "-"]
     assert lines[-1].startswith("3 more: --limit N")
 
 
@@ -645,3 +647,17 @@ def test_all_pages_at_cap_succeeds_only_if_last_page_is_terminal() -> None:
     result = all_pages(paged, "P-1", max_pages=2)
     assert result.ok and result.data == [{"id": "1"}, {"id": "2"}]
     assert calls == [None, "last"]
+
+
+def test_output_labels_ignore_logs() -> None:
+    from astrid.core.cli.domain_tasks import _completed_line
+    from astrid.core.cli.list_narrow import primary_output_name
+
+    log = {"role": "log", "filename": "job.stderr"}
+    product = {"role": "result", "filename": "report.txt"}
+    assert primary_output_name({"result": {"outputs": [log, product]}}) == "report.txt"
+    assert primary_output_name({"result": {"outputs": [log]}}) is None
+    assert _completed_line({"outputs": [{"resource": log}, {"resource": product}]}) == (
+        "completed task=- run=- output=report.txt"
+    )
+    assert _completed_line({"outputs": [{"resource": log}]}) == "completed task=- run=- output=-"

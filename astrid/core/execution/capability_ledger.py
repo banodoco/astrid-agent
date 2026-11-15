@@ -210,7 +210,12 @@ def _quarantine_snapshot(repo_root: Path) -> tuple[dict[str, tuple[str, ...]], l
     """
     from astrid.core.pack.loader import _raw_declared_capabilities, scan_packs
 
-    scan = scan_packs(repo_root / "astrid" / "packs", strict=False)
+    # This is a provenance census, not the executing inventory. In an
+    # installed host the checkout is outside the bundled package root; running
+    # external-pack compatibility here falsely quarantines its bundled packs.
+    # Keep malformed-manifest accounting; real inventory admission validates
+    # compatibility against the complete selected set in scan_pack_roots.
+    scan = scan_packs(repo_root / "astrid" / "packs", strict=False, _validate=False)
     labels = {record.pack_id: _raw_declared_capabilities(record.manifest_path) for record in scan.quarantined}
     return labels, [record.to_dict() for record in scan.quarantined]
 

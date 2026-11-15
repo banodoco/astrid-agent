@@ -64,6 +64,9 @@ _discovery_cache: ContextVar[dict | None] = ContextVar("pack_discovery_cache", d
 @contextmanager
 def pack_discovery_scope():
     """Reuse admitted packs only while their complete discovery inputs match."""
+    if _discovery_cache.get() is not None:
+        yield
+        return
     token = _discovery_cache.set({})
     try:
         yield

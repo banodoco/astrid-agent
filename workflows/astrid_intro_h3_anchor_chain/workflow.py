@@ -25,9 +25,9 @@ READY_METADATA = ReadyMetadata.build(
         # The fresh RTX 5090 provider host exposes a CUDA 12.8-capable driver.
         # comfy-kitchen 0.2.34's CUDA-13 attention kernel cannot launch there,
         # so this revision uses torch cu128 plus core PyTorch attention.
-        "comfy_commit": "ee71d5c4993f29086b27fde1629a945ae48425bf",
+        "comfy_commit": "6bfaacc67c2103481e5f0c84d75257cd0581d86a",
         "comfy_version": "==0.36.0",
-        "packages": {"torch": "==2.10.0+cu128", "comfy-kitchen": "==0.2.34", "comfy-aimdo": "==0.5.3"},
+        "packages": {"torch": "==2.10.0+cu128", "comfy-kitchen": "==0.2.35", "comfy-aimdo": "==0.5.5"},
         "launch_flags": ["--lowvram", "--use-pytorch-cross-attention", "--disable-comfy-compiler"],
     }, "custom_node_refs": [
         {"slug": "ComfyUI-H3-Motion-Context-MultiRef", "source": "git", "url": "https://github.com/seitanism/ComfyUI-H3-Motion-Context-MultiRef.git", "commit": "361624fb406b63eb6694442eac6c895fc1533a70", "classes": ["MiniMaxH3ReferenceToVideo", "MiniMaxH3SigmaShift", "MiniMaxH3AudioVAECompatibility", "MiniMaxH3CustomKeyframes", "MiniMaxH3GeneratedAVMaskedContext"]},

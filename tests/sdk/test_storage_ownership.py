@@ -4,9 +4,12 @@ import os
 import time
 from pathlib import Path
 
+import pytest
+
+from astrid.packs.rendering.actions.timeline_visualize.fast_lane import _prune_runs
+from astrid.sdk import storage_ownership
 from astrid.sdk.media_views import clone_or_copy, verified_cas_path
 from astrid.sdk.storage_ownership import reclaim, register_owned_root, registered_roots
-from astrid.packs.rendering.actions.timeline_visualize.fast_lane import _prune_runs
 
 
 def test_registry_describes_all_reported_persistent_roots(tmp_path: Path) -> None:
@@ -134,3 +137,99 @@ def test_verified_cas_path_requires_runtime_attestation(tmp_path: Path) -> None:
             return {"storage": "runtime_cas", "verified": True, "digest": digest, "local_path": str(source)}
 
     assert verified_cas_path(Runtime(), "almost-ready", digest, size=len(data)) == source
+
+
+@pytest.mark.parametrize("damage", ["owner", "group-writable", "world-writable", "symlink"])
+@pytest.mark.parametrize("nested", [False, True])
+def test_hostwedge_reclaim_never_measures_unsafe_attempts(tmp_path, monkeypatch, damage, nested):
+    temporary = tmp_path / "tmp"
+    temporary.mkdir()
+    parent = temporary / "astrid-attempt-base"
+    parent.mkdir(mode=0o700)
+    root = parent / "astrid-attempt-task" if nested else parent
+    if nested:
+        root.mkdir(mode=0o700)
+    (root / "evidence.bin").write_bytes(b"keep")
+    if damage == "owner":
+        original = Path.lstat
+
+        def foreign(path, *args, **kwargs):
+            metadata = original(path, *args, **kwargs)
+            if path == root:
+                fields = list(metadata)
+                fields[4] = os.getuid() + 1
+                return os.stat_result(fields)
+            return metadata
+
+        monkeypatch.setattr(Path, "lstat", foreign)
+    elif damage == "symlink":
+        target = tmp_path / "outside"
+        root.rename(target)
+        root.symlink_to(target, target_is_directory=True)
+    else:
+        root.chmod(0o770 if damage == "group-writable" else 0o707)
+    old = time.time() - 3 * 86400
+    os.utime(root, (old, old))
+    if nested:
+        os.utime(parent, (old, old))
+    measured = []
+    original_bytes = storage_ownership._tree_bytes
+
+    def measure(path):
+        measured.append(path)
+        return original_bytes(path)
+
+    monkeypatch.setattr(storage_ownership, "_tree_bytes", measure)
+    report = reclaim(tmp_path / "data", temporary_root=temporary, cache_root=tmp_path / "cache")
+    row = next(item for item in report["roots"] if item["name"] == "attempt-roots")
+    assert row["count"] == 0 and row["reclaimed_bytes"] == 0
+    assert root not in measured and parent not in measured
+    assert (root / "evidence.bin").read_bytes() == b"keep"
+
+
+@pytest.mark.parametrize("marker,content", [
+    ("fail-request.json", b"garbage\xff"),
+    ("fail-request.json", b""),
+    ("cancel-request.json", None),
+    ("fail-request.json.reconciliation.json", b"broken\xff"),
+    ("only.reconciliation.json", b""),
+])
+@pytest.mark.parametrize("nested", [False, True])
+def test_hostwedge_reclaim_retains_markers_by_presence(tmp_path, monkeypatch, marker, content, nested):
+    temporary = tmp_path / "tmp"
+    temporary.mkdir()
+    base = temporary / "astrid-attempt-base"
+    base.mkdir(mode=0o700)
+    root = base / "astrid-attempt-task" if nested else base
+    if nested:
+        root.mkdir(mode=0o700)
+    evidence = root / marker
+    if content is None:
+        evidence.symlink_to(root / "missing-target")
+    else:
+        evidence.write_bytes(content)
+    (root / "evidence.bin").write_bytes(b"all bytes retained")
+    safe = temporary / "astrid-attempt-expired-safe"
+    safe.mkdir(mode=0o700)
+    (safe / "scratch.bin").write_bytes(b"expire")
+    old = time.time() - 3 * 86400
+    for path in (root, base, safe):
+        os.utime(path, (old, old))
+    measured = []
+    original_bytes = storage_ownership._tree_bytes
+
+    def measure(path):
+        measured.append(path)
+        return original_bytes(path)
+
+    monkeypatch.setattr(storage_ownership, "_tree_bytes", measure)
+    report = reclaim(tmp_path / "data", temporary_root=temporary, cache_root=tmp_path / "cache")
+    row = next(item for item in report["roots"] if item["name"] == "attempt-roots")
+    assert row["count"] == row["expired_count"] == 1
+    assert row["reclaimed_bytes"] == len(b"expire")
+    assert not safe.exists()
+    assert root not in measured and base not in measured
+    assert os.path.lexists(evidence)
+    assert (root / "evidence.bin").read_bytes() == b"all bytes retained"
+    if content is not None:
+        assert evidence.read_bytes() == content

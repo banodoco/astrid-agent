@@ -93,10 +93,8 @@ def _recipe_bytes(python_version=None, uv_version=None):
 def make_release(work, *, python, recipe=None, complete=True, index_sha=None):
     """Synthetic bootstrap-process fixture archive; see module docstring."""
     recipe = _recipe_bytes() if recipe is None else recipe
-    index = {'schema': 'astrid.engine-index.v1', 'entries': [{
-        'engine': 'vibecomfy-h3', 'platform': KEY,
-        'recipe': {'path': 'packs/runpod/recipe.linux-cu130.json',
-                   'sha256': index_sha or hashlib.sha256(recipe).hexdigest()}}]}
+    declaration = (f"recipes:\n  - platform: {KEY}\n    path: packs/runpod/recipe.linux-cu130.json\n"
+                   f"    sha256: \"{index_sha or hashlib.sha256(recipe).hexdigest()}\"\n")
     data = {
         'run.py': (GENERATION / '_engine_release_entry.py').read_bytes(),
         'site/astrid/core/generation/engine_release.py': (GENERATION / 'engine_release.py').read_bytes(),
@@ -106,7 +104,7 @@ def make_release(work, *, python, recipe=None, complete=True, index_sha=None):
         'site/astrid/__init__.py': PRODUCT_INIT,
         'site/astrid/console.py': CONSOLE,
         'site/astrid/packs/runpod/recipe.linux-cu130.json': recipe,
-        'site/astrid/packs/engine-index.json': json.dumps(index).encode(),
+        'site/astrid/packs/vibecomfy/extensions/generation.engine/comfyui.yaml': declaration.encode(),
         'site/astrid-0.0.0.dist-info/METADATA': b'Metadata-Version: 2.1\nName: astrid\nVersion: 0.0.0\n',
         'site/astrid-0.0.0.dist-info/entry_points.txt': b'[console_scripts]\nastrid = astrid.console:main\n',
     }
@@ -198,16 +196,16 @@ def _loader(python, operation, archive, sha, retain, root, *extra, env, seconds=
 
 
 REFUSED = 'release verification/build failed'
-CLI = ('engines', 'install', 'vibecomfy-h3', '--placement', 'local', '--platform', KEY, '--dry-run')
+CLI = ('engines', 'install', 'comfyui', '--placement', 'local', '--platform', KEY, '--dry-run')
 
 
 # ---- shared argv: one construction, byte-equivalent to the adapter -------------
 
 def test_shared_helper_is_adapter_argv_and_environment_for_real_recipe():
-    recipe = load_recipe('vibecomfy-h3', KEY)
+    recipe = load_recipe('comfyui', KEY)
     primary = next(e for e in recipe.environments if e.name == recipe.primary_environment)
     adapter = platform_adapter(KEY)
-    root = '/workspace/astrid/engines/vibecomfy-h3'
+    root = '/workspace/astrid/engines/comfyui'
     helper = shared.linux_bootstrap_commands(install_root=root, uv_version=primary.uv_version,
                                              python_version=primary.python_version,
                                              venv_relative_path=primary.relative_path)

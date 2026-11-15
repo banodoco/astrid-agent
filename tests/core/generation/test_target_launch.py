@@ -129,7 +129,9 @@ def test_sdk_launch_and_reprobe_require_fresh_consent_each_time(public_launch):
     result = facade.launch(consent=('user_env',), timeout=0.3)
     assert result['status'] == 'ready'
     assert result['target']['facts']['launch_observation']['birth_id'] == h.expected.birth_id
-    assert facade.launch(consent=('paid',))['status'] == 'blocked'
+    from astrid.sdk.generation import GenerationInputError
+    with pytest.raises(GenerationInputError, match='astrid machines claim'):
+        facade.launch(consent=('paid',))
     assert facade.launch(consent=('user_env',))['status'] == 'ready'
     assert len(h.spawned) == 1
 
@@ -141,7 +143,7 @@ def test_sdk_override_drops_saved_launch_authority(public_launch, monkeypatch, o
     url = h.target.endpoint if same_endpoint else 'http://127.0.0.1:8200'
     kwargs = {}
     if override == 'url':
-        kwargs['target'] = url
+        kwargs['placement'] = url  # b9a611eaa renamed the SDK's target= to placement=
     else:
         monkeypatch.setenv('VIBECOMFY_COMFYUI_URL', url)
     result = facade.launch(consent=('user_env',), **kwargs)

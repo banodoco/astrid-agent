@@ -70,7 +70,6 @@ From the worktree root, using
 | `$P -m pytest -q tests/test_agent_context.py tests/test_preferences_documents.py tests/test_omp_agent.py` | 81 passed |
 | `$P -m pytest -q tests/test_vibecomfy_production_engine.py tests/packs/test_vibecomfy_metadata.py tests/packs/vibecomfy/test_local_server_helpers.py tests/packs/test_vibecomfy_local.py tests/test_generic_host_vibecomfy_lifecycle.py` | 67 passed, 2 subtests passed; 1 integration test deselected and run below |
 | `ASTRID_RUNTIME_CHECKOUT=/home/user/banodoco/astrid-runtime $P -m pytest -q -m integration tests/packs/vibecomfy/test_local_server_run.py` | 15 passed |
-| `ASTRID_RUNTIME_CHECKOUT=/home/user/banodoco/astrid-runtime $P -m pytest -q -m integration tests/test_vibecomfy_production_engine.py -k pip_embedded_consumes_canonical_bundle_and_pinned_session_config` | 1 passed; 22 outside selection |
 
 Total: **164 passed, plus 2 subtests**. No unresolved test failures.
 The pinned VibeComfy emits one existing generated-template deprecation warning.

@@ -90,6 +90,22 @@ actions:
       required: false
       type: file
       artifact_type: prompt
+    - default: ''
+      description: Reference audio path or URL for audio enhancement modes.
+      name: audio_ref
+      required: false
+      type: string
+      artifact_type: audio
+    - default: ''
+      description: Output audio format for audio enhancement (backend-dependent).
+      name: audio_format
+      required: false
+      type: string
+    - default: ''
+      description: Output audio bitrate, e.g. '192k' (backend-dependent).
+      name: bitrate
+      required: false
+      type: string
     - description: Model ID from the generation model registry (e.g. 'stable-audio-3-medium',
         'minimax-music-3', 'ace-step').
       name: model

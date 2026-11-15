@@ -249,10 +249,8 @@ def test_specialized_publication_actions_opt_in_through_registered_metadata():
 
     declarations = (
         ("wan2gp.generate_video", "video", "generated_videos"),
-        ("fal.h3_video", "video", "generated_videos"),
         ("vibecomfy.character_animation", "video", "animated_video"),
         ("vibecomfy.video_enhance", "video", "enhanced_video"),
-        ("fal.fal_foley", "audio", "audio"),
     )
     for capability_id, modality, output_port in declarations:
         capability = get_capability(capability_id, kind="executor", include_elements=False)
@@ -280,46 +278,46 @@ def test_specialized_publication_actions_opt_in_through_registered_metadata():
 
 
 @pytest.fixture(scope="module")
-def registered_h3_finalizer():
+def registered_publication_capability():
     from astrid import sdk
     from astrid.sdk.invocation import get_capability
     registries = sdk._load_registries(include_elements=False)
-    capability = get_capability("h3_av.publication_finalizer", kind="executor", include_elements=False,
+    capability = get_capability("vibecomfy.video_enhance", kind="executor", include_elements=False,
                                 _registries=registries)
     return capability, registries[0].get(capability.id)
 
 
-def test_registered_h3_publication_selects_declared_port_and_retains_manifest(registered_h3_finalizer):
+def test_registered_publication_selects_declared_port_and_retains_manifest(registered_publication_capability):
     from astrid.core.execution.generic_host import _generation_selector_declarations
-    capability, definition = registered_h3_finalizer
+    capability, definition = registered_publication_capability
     intent = {"version": 1, "modality": "video", "partial_success_policy": "reject",
               "groups": [{"group_key": "main", "selectors": [{"selector": "main-0", "ordinal": 0,
-                                                             "variant_key": "final-composition"}]}]}
+                                                             "variant_key": "enhanced"}]}]}
     effect = _generation_publish_effect(capability, project="project-1", generation_intent=intent)
     port, selectors = _generation_selector_declarations(SimpleNamespace(definition=definition), intent)
-    assert port == "verified_candidate"
+    assert port == "enhanced_video"
     assert selectors[0]["output_port"] == port
     assert effect["payload"]["groups"][0]["selectors"][0]["output_port"] == port
-    assert [output.name for output in capability.outputs] == ["verified_candidate", "manifest"]
+    assert [output.name for output in capability.outputs] == ["enhanced_video", "video_manifest"]
     assert capability.definition["metadata"]["generation_publication"] == {
-        "version": 1, "modality": "video", "output_port": "verified_candidate"}
+        "version": 1, "modality": "video", "output_port": "enhanced_video"}
 
 
 @pytest.mark.parametrize("fault", ["unknown", "duplicate", "non-file", "manifest", "blank", "null",
                                   "boolean-version", "unsupported-version", "modality", "not-mapping"])
-def test_explicit_publication_invalid_metadata_rejects_without_fallback(registered_h3_finalizer, fault):
+def test_explicit_publication_invalid_metadata_rejects_without_fallback(registered_publication_capability, fault):
     from copy import deepcopy
     from dataclasses import replace
     from astrid.core.execution.generic_host import HostError, _generation_output_port
     from astrid.sdk.invocation import _generation_primary_output_port
-    capability, definition = registered_h3_finalizer
+    capability, definition = registered_publication_capability
     metadata = deepcopy(capability.definition["metadata"])
     declaration = metadata["generation_publication"]
     outputs = capability.outputs
     if fault == "unknown": declaration["output_port"] = "missing"
     elif fault == "duplicate": outputs = outputs + (outputs[0],)
     elif fault == "non-file": outputs = (replace(outputs[0], type="json"), outputs[1])
-    elif fault == "manifest": declaration["output_port"] = "manifest"
+    elif fault == "manifest": declaration["output_port"] = "video_manifest"
     elif fault == "blank": declaration["output_port"] = " "
     elif fault == "null": declaration["output_port"] = None
     elif fault == "boolean-version": declaration["version"] = True
@@ -334,15 +332,36 @@ def test_explicit_publication_invalid_metadata_rejects_without_fallback(register
         _generation_output_port(SimpleNamespace(definition=host_definition), {"modality": "video"})
 
 
-def test_absent_explicit_port_keeps_legacy_ambiguous_rejection(registered_h3_finalizer):
+def test_absent_explicit_port_keeps_legacy_ambiguous_rejection(registered_publication_capability):
     from copy import deepcopy
     from dataclasses import replace
     from astrid.core.execution.generic_host import HostError, _generation_output_port
     from astrid.sdk.invocation import _generation_primary_output_port
-    capability, definition = registered_h3_finalizer
+    capability, definition = registered_publication_capability
     metadata = deepcopy(capability.definition["metadata"])
     del metadata["generation_publication"]["output_port"]
+    # Two primary video files and no declared port: the choice is ambiguous.
+    outputs = capability.outputs + (replace(capability.outputs[0], name="second_video"),)
     with pytest.raises(CapabilityValidationError, match="exactly one primary"):
-        _generation_primary_output_port(replace(capability, definition={**capability.definition, "metadata": metadata}), "video")
+        _generation_primary_output_port(
+            replace(capability, outputs=outputs, definition={**capability.definition, "metadata": metadata}), "video")
     with pytest.raises(HostError, match="exactly one primary"):
-        _generation_output_port(SimpleNamespace(definition=replace(definition, metadata=metadata)), {"modality": "video"})
+        _generation_output_port(
+            SimpleNamespace(definition=replace(definition, outputs=outputs, metadata=metadata)), {"modality": "video"})
+
+
+def test_builtin_generation_modality_table_is_the_single_source():
+    from types import SimpleNamespace
+
+    from astrid.sdk import invocation
+
+    table = invocation._GENERATION_MODALITY_BY_CAPABILITY
+    assert table == {
+        "generation.generate_image": "image",
+        "generation.generate_image_codex": "image",
+        "generation.generate_image_openai": "image",
+        "generation.generate_video": "video",
+        "generation.generate_audio": "audio",
+    }
+    for capability_id, modality in table.items():
+        assert invocation._generation_capability_modality(SimpleNamespace(id=capability_id)) == modality

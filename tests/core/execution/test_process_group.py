@@ -882,6 +882,127 @@ def test_tree_parent_deadline_includes_first_census_and_remains_sticky(tmp_path,
     assert 200 not in owner._handles
 
 
+class _CountedObservationLock:
+    def __init__(self):
+        self.lock = threading.RLock()
+        self.acquisitions = 0
+
+    def acquire(self, *, timeout):
+        self.acquisitions += 1
+        return self.lock.acquire(timeout=timeout)
+
+    def release(self):
+        self.lock.release()
+
+    def _is_owned(self):
+        return self.lock._is_owned()
+
+    def __enter__(self):
+        return self.lock.__enter__()
+
+    def __exit__(self, *args):
+        return self.lock.__exit__(*args)
+
+
+@pytest.mark.parametrize("operation", ["observe_tree", "verify_tree_absent"])
+@pytest.mark.parametrize("parent_budget,spent", [(None, 1.25), (0.125, 0.25)])
+def test_nested_census_exhaustion_reports_spent_budget_under_owned_lock(
+        tmp_path, monkeypatch, operation, parent_budget, spent):
+    process, owner = _unadmitted_process(tmp_path, monkeypatch)
+    owner._lock = lock = _CountedObservationLock()
+    now, owned_at_census = [10.0], []
+    monkeypatch.setattr(custody.time, "monotonic", lambda: now[0])
+
+    def snapshot():
+        owned_at_census.append(lock._is_owned())
+        now[0] += spent
+        return _snapshot()
+
+    monkeypatch.setattr(groups, "_process_snapshot", snapshot)
+    deadline = None if parent_budget is None else 10.0 + parent_budget
+    with pytest.raises(custody.CustodyError) as caught:
+        getattr(groups, operation)(process, deadline=deadline)
+    assert owned_at_census == [True]
+    assert not isinstance(caught.value, custody.CustodyLockBusy)
+    assert "acquiring custody lock" not in str(caught.value), (
+        f"expiry while census owns the lock: {caught.value}")
+    assert "reconciliation budget ran out" in str(caught.value)
+    assert f"{spent:.6f}s" in str(caught.value)
+    assert "deadline" in str(caught.value)
+    assert lock.acquisitions == 1 and not lock._is_owned()
+    assert owner._uncertain is caught.value
+    assert process._astrid_tree_uncertain == str(caught.value)
+    assert set(owner._handles) == {100} and not owner._unadmitted_absent
+
+
+def test_nested_census_reuses_outer_guard_within_budget(tmp_path, monkeypatch):
+    process, owner = _unadmitted_process(tmp_path, monkeypatch)
+    owner._lock = lock = _CountedObservationLock()
+    now = [10.0]
+    monkeypatch.setattr(custody.time, "monotonic", lambda: now[0])
+
+    def snapshot():
+        assert lock._is_owned()
+        now[0] = 10.25
+        return {100: _snapshot()[100]}
+
+    monkeypatch.setattr(groups, "_process_snapshot", snapshot)
+    assert groups.observe_tree(process) == {100: "root"}
+    assert lock.acquisitions == 1 and not lock._is_owned()
+    assert owner._uncertain is None
+    assert not getattr(process, "_astrid_tree_uncertain", None)
+
+
+@pytest.mark.parametrize("invalid", ["inactive", "custody", "thread", "deadline"])
+def test_observation_transaction_cannot_escape_its_guard(tmp_path, monkeypatch, invalid):
+    _, owner = _unadmitted_process(tmp_path, monkeypatch)
+    monkeypatch.setattr(custody.time, "monotonic", lambda: 10.0)
+
+    def reject(transaction, target=owner, deadline=11.0):
+        with pytest.raises(custody.CustodyError, match="invalid custody observation transaction"):
+            with target._observation_guard(deadline, transaction=transaction):
+                pytest.fail("invalid transaction entered the guard")
+
+    with owner._observation_guard(11.0) as transaction:
+        if invalid == "custody":
+            _, other = _unadmitted_process(tmp_path / "other", monkeypatch)
+            reject(transaction, target=other)
+        elif invalid == "thread":
+            errors = []
+            def reuse_from_other_thread():
+                try:
+                    reject(transaction)
+                except BaseException as error:
+                    errors.append(error)
+            thread = threading.Thread(target=reuse_from_other_thread)
+            thread.start()
+            thread.join(timeout=1)
+            assert not thread.is_alive() and not errors
+        elif invalid == "deadline":
+            reject(transaction, deadline=12.0)
+    assert not transaction.active and not owner._lock._is_owned()
+    if invalid == "inactive":
+        reject(transaction)
+
+
+def test_competing_holder_expires_at_parent_deadline_without_observation(tmp_path, monkeypatch):
+    process, owner = _unadmitted_process(tmp_path, monkeypatch)
+    monkeypatch.setattr(groups, "_process_snapshot", lambda: pytest.fail("lock was never acquired"))
+    release, thread = _hold_custody_lock(owner)
+    assert thread.is_alive()
+    deadline = time.monotonic() + 0.05
+    try:
+        with pytest.raises(custody.CustodyLockBusy, match="acquiring custody lock"):
+            groups.observe_tree(process, deadline=deadline)
+        assert time.monotonic() >= deadline
+        assert owner._uncertain is None
+        assert not getattr(process, "_astrid_tree_uncertain", None)
+        assert set(owner._handles) == {100}
+    finally:
+        release.set()
+        thread.join()
+
+
 def test_renderer_expiry_during_census_finishes_custody_then_cleans_owned_tree(tmp_path, monkeypatch):
     from astrid.core.rendering import transport
     from astrid.core.rendering.errors import RendererTimeoutError

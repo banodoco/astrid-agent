@@ -21,7 +21,6 @@ from astrid.core.generation.backends.registry import (
 
 __all__ = [
     "BackendAdapter",
-    "CheckoutServerAdapter",
     "VibeComfyEngine",
     "discover_generation_backend_descriptors",
     "FalBackend",
@@ -35,15 +34,13 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    if name in {"CheckoutServerAdapter", "VibeComfyEngine", "VibeComfyBackend"}:
+    if name in {"VibeComfyEngine", "VibeComfyBackend"}:
         from astrid.core.generation.backends.vibecomfy import (
-            CheckoutServerAdapter,
             VibeComfyBackend,
             VibeComfyEngine,
         )
 
         return {
-            "CheckoutServerAdapter": CheckoutServerAdapter,
             "VibeComfyEngine": VibeComfyEngine,
             "VibeComfyBackend": VibeComfyBackend,
         }[name]

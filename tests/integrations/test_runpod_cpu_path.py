@@ -1,40 +1,41 @@
 """CPU RunPod journey: real ownership/composition, doubles only at HTTP I/O.
 
-The provider's pod agent reports synthetic install/inference evidence. No
-installer, provider, GPU, pod process or external socket is used by this test.
+The provider's pod agent reports synthetic install/inference evidence; the pod
+runs the job as a remote machine (Plan 32 T5, the fake in
+``test_remote_machine_cpu``). No installer, provider, GPU, pod process or
+external socket is used by this test.
 """
 from __future__ import annotations
 
-import base64
 import hashlib
-import io
 import json
 import os
-import re
-import shlex
 import socket
 import subprocess
 import sys
 import threading
-from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
 import requests
-from PIL import Image
 
 from astrid.core.execution.generic_host import GenericPackHost, RuntimeProtocolClient
-from astrid.core.generation import engine_recipe, engine_runner
+from astrid.core.generation import settings
 from astrid.core.generation.delivery import deliver_generation
-from astrid.packs.runpod import remote_placement, target_selection
-from astrid.packs.runpod.cuda_versions import DEFAULT_ALLOWED_CUDA_VERSIONS
+from astrid.packs.runpod import target_selection
 from astrid.sdk import AstridClient
 from astrid.sdk.generation import GenerationFacade
 from astrid.sdk.remote import RemoteAstridClient
 from astrid.sdk.workspace_client import WorkspaceClient
-from tests.integrations.test_runpod_host_endpoint_r5 import tuple_sources
+from tests.integrations.test_remote_machine_cpu import (
+    MachineProviderHTTP,
+    serve_pod_agent,
+    tuple_pins,
+)
+from tests.integrations.test_runpod_host_endpoint_r5 import tuple_sources  # noqa: F401  (fixture)
 
 pytestmark = pytest.mark.integration
 
@@ -167,227 +168,37 @@ def test_cpu_runpod_public_catalog_and_dry_run(tmp_path, monkeypatch, capsys):
     assert selected["template"] == "image/z_image_turbo"
     (tmp_path / "generate-list.json").write_text(json.dumps(inventory, indent=2))
     output = tmp_path / "dry.png"
-    # z-image has no pinned RunPod engine lock, so RunPod is refused explicitly
-    # before any pod is created (runpod_engine_unavailable; ledger M-42).
-    assert console.main(["generate", "image", "A red cube on a white tabletop.",
-        "--model", selected["id"], "--target", "runpod", "--engine", "comfyui",
+    # cause 889312e1f; ruling: machines 11:45 Sat
+    # A dry run plans without renting; paid consent and limits belong to machines claim.
+    argv = ["generate", "image", "A red cube on a white tabletop.",
+        "--model", selected["id"], "--placement", "runpod", "--engine", "comfyui",
         "--width", "1024", "--height", "1024", "--steps", "8", "--seed", "0",
-        "--out", str(output), "--consent", "paid", "--max-usd", "10",
-        "--deadline", (datetime.now(timezone.utc) + timedelta(minutes=90)).isoformat(),
-        "--preparation-seconds", "1800", "--execution-seconds", "900", "--idle-seconds", "1800",
-        "--dry-run", "--json"]) != 0
+        "--out", str(output), "--dry-run", "--json"]
+    assert console.main(argv) == 0
     refused = json.loads(capsys.readouterr().out)
-    assert "runpod_engine_unavailable" in json.dumps(refused)
     assert "z_image_turbo" in json.dumps(refused) or "z-image" in json.dumps(refused)
     assert not output.exists()
     (tmp_path / "generate-dry-run.json").write_text(json.dumps(refused, indent=2))
-
-
-class ProviderHTTP:
-    """RunPod GraphQL/REST and pod-agent HTTP contracts, with no host doubles."""
-
-    pod_id = "cpupod"
-
-    def __init__(self, source_root, claim_path):
-        self.claim_path = claim_path
-        self.events, self.commands, self.pods, self.jobs, self.files = [], [], [], {}, {}
-        self.marker = f"{remote_placement.BOOTSTRAP_ROOT}/{remote_placement.source_digest(source_root)}/ok"
-        self.schema = {
-            "SaveImage": {"input": {"required": {"filename_prefix": ["STRING", {"default": "cpu"}]}},
-                          "output": [], "output_node": True},
-            **{name: {"input": {"required": {}}, "output": [], "output_node": False}
-               for name in ("UNETLoader", "VAELoader")},
-        }
-        image = io.BytesIO()
-        Image.new("RGB", (16, 16), (12, 34, 56)).save(image, format="PNG")
-        self.image = image.getvalue()
-        self.prompts = []
-        self.receipt = self._install_receipt()
-
-    def _install_receipt(self):
-        from astrid.core.generation.engine_contracts import (
-            DownloadResult, HealthEvidence, InstallReceipt, StepReceipt,
-        )
-        recipe = engine_recipe.load_recipe("comfyui", "linux-x86_64-cu130")
-        root = "/root/astrid/engines/comfyui"
-        plan = engine_runner.plan_install(recipe, root=root, placement="local")
-        lock = engine_recipe.load_model_lock(recipe.models_lock)
-        stamp = datetime.now(timezone.utc).isoformat()
-        # Remote fixture evidence is synthesized from the selected recipe.
-        # Production parses and compares both live status and downloaded receipt.
-        receipt = InstallReceipt(
-            "astrid.engine-install.v1", "cpu-http-install", plan.engine, plan.platform, plan.placement,
-            root, "installed", False, plan.recipe_sha256, plan.models_lock_sha256,
-            {env.name: (env.requirements.packaged_lock.sha256 if env.requirements.packaged_lock
-                        else _sha(env.name.encode())) for env in recipe.environments},
-            {source.name: source.pin.revision for source in recipe.sources},
-            tuple(DownloadResult(model.name, root + "/models/" + model.destination, "downloaded",
-                                 model.bytes, model.sha256, True, 0) for model in lock.models),
-            tuple(StepReceipt(step.id, step.kind, "executed", "passed", {}) for step in plan.steps),
-            HealthEvidence("healthy", stamp, _sha(json.dumps(self.schema).encode()), True), stamp, stamp, None,
-        )
-        engine_runner._parse_receipt(asdict(receipt), plan)
-        return asdict(receipt)
-
-    def graphql(self, body):
-        query = body["query"]
-        variables = body.get("variables", {})
-        self.events.append(("graphql", query.split("{")[0], variables))
-        if "GpuCatalogue" in query:
-            return {"gpuTypes": [{"id": "gpu-exact", "displayName": "CPU fixture GPU"}]}
-        if "DataCenterStock" in query:
-            assert variables["availability"]["allowedCudaVersions"] == list(DEFAULT_ALLOWED_CUDA_VERSIONS)
-            return {"dataCenters": [{"id": "DC-unpinned", "storageSupport": False,
-                    "gpuAvailability": [{"gpuTypeId": "gpu-exact", "available": True, "stockStatus": "High"}]}]}
-        if "DataCenterPrices" in query:
-            assert variables["p0"]["dataCenterId"] == "DC-unpinned"
-            return {"gpuTypes": [{"id": "gpu-exact", "dc0": {"stockStatus": "High", "uninterruptablePrice": 1.0}}]}
-        if "query GpuTypes" in query:
-            # The actual SDK validates the accepted exact ID before create.
-            assert 'id: "gpu-exact"' in query
-            return {"gpuTypes": [{"id": "gpu-exact", "displayName": "CPU fixture GPU"}]}
-        if "podFindAndDeployOnDemand" in query:
-            record = json.loads(self.claim_path.read_text())
-            assert record["state"] == "allocation_pending"
-            assert record["lease"]["state"] == "preparing"
-            allowed = re.search(r"allowedCudaVersions: (\[[^\]]+\])", query)[1]
-            assert json.loads(allowed) == list(DEFAULT_ALLOWED_CUDA_VERSIONS)
-            assert "DC-unpinned" in query and "networkVolumeId" not in query
-            assert record["worker_image"] in query and record["request_name"] in query
-            assert 'gpuTypeId: "gpu-exact"' in query
-            self.pods.append({"id": self.pod_id, "name": record["request_name"],
-                "desiredStatus": "RUNNING", "actualStatus": "RUNNING", "costPerHr": 1.0,
-                "imageName": record["worker_image"], "networkVolumeId": None,
-                "dataCenterId": "DC-unpinned", "machineType": "CPU fixture GPU",
-                "machine": {"gpuTypeId": "gpu-exact", "gpuDisplayName": "CPU fixture GPU",
-                    "dataCenterId": "DC-unpinned"}})
-            return {"podFindAndDeployOnDemand": self.pods[0]}
-        if "myself" in query:
-            return {"myself": {"pods": self.pods}}
-        if "pod(" in query:
-            return {"pod": self.pods[0] if self.pods else None}
-        raise AssertionError("unexpected provider GraphQL operation")
-
-    def command(self, command):
-        self.commands.append(command)
-        if command.startswith("test -f "):
-            return (0 if shlex.split(command)[2] in self.files else 1), ""
-        if "base64 -d" in command and '"$d/command.sh"' in command:
-            directory = shlex.split(command.splitlines()[1])[0].removeprefix("d=")
-            encoded = re.search(r"printf %s (\S+) \| base64 -d", command)[1]
-            detached = base64.b64decode(encoded).decode()
-            self.commands.append(detached)
-            assert "pod_bootstrap.sh" in detached or "engines install comfyui --platform linux-x86_64-cu130" in detached
-            if "pod_bootstrap.sh" in detached:
-                self.files[self.marker] = b"ok"
-            else:
-                self.files["/root/astrid/engines/comfyui/.astrid-engine/install.json"] = json.dumps(self.receipt).encode()
-            self.files.update({directory + "/status": b"exited", directory + "/exit": b"0",
-                               directory + "/pid": b"123", directory + "/stdout": b"", directory + "/stderr": b""})
-            return 0, ""
-        if "engines status" in command:
-            installed = "/root/astrid/engines/comfyui/.astrid-engine/install.json" in self.files
-            return 0, json.dumps(self.receipt if installed else None)
-        if command.startswith(("cat ", "tail ")):
-            return 0, self.files[shlex.split(command)[-1]].decode()
-        if command.startswith("sha256sum "):
-            path = shlex.split(command)[1]
-            return 0, _sha(self.files[path]) + "  " + path
-        assert command.startswith("mkdir -p "), command
-        return 0, ""
-
-    def handle(self, request):
-        host, path, method = request.url.host, request.url.path, request.method
-        request.read()
-        body = (json.loads(request.content)
-                if request.content and request.headers.get("content-type", "").split(";", 1)[0] == "application/json"
-                else {})
-        self.events.append((method, host, path))
-        def reply(data, status=200):
-            encoded = json.dumps(data).encode()
-            return httpx.Response(status, stream=httpx.ByteStream(encoded), request=request,
-                headers={"Content-Type": "application/json", "Content-Length": str(len(encoded))})
-        if host in {"api.runpod.io", "graphql.runpod.io"}:
-            return reply({"data": self.graphql(body)})
-        if host == "rest.runpod.io":
-            assert path.startswith("/v1/pods"), "ephemeral route queried volumes"
-            if method == "DELETE":
-                assert path.endswith("/" + self.pod_id) and self.pods
-                assert json.loads(self.claim_path.read_text())["release_authorized"] is True
-                self.pods.clear()
-                return reply({}, 204)
-            assert method == "GET"
-            if path == "/v1/pods":
-                return reply(self.pods)
-            return reply(self.pods[0] if self.pods else {}, 200 if self.pods else 404)
-        if host == "astrid-egress-preflight-8000.proxy.runpod.net":
-            assert method == "GET" and path == "/health"
-            return reply({}, 404)
-        assert host == self.pod_id + "-8000.proxy.runpod.net", host
-        if path == "/health":
-            return reply({"ok": True, "protocol": 1})
-        if path == "/jobs" and method == "POST":
-            code, stdout = self.command(body["command"])
-            self.jobs[body["id"]] = (code, stdout.encode())
-            return reply({"id": body["id"]})
-        if path.startswith("/jobs/"):
-            code, stdout = self.jobs[path.rsplit("/", 1)[1]]
-            return reply({"status": "exited", "exit_code": code, "stdout": base64.b64encode(stdout).decode(),
-                          "stderr": "", "stdout_offset": len(stdout), "stderr_offset": 0,
-                          "stdout_eof": True, "stderr_eof": True})
-        if path == "/uploads":
-            upload_id = _sha(body["path"].encode())[:32]
-            self.jobs[upload_id] = body
-            self.files[body["path"]] = b""
-            return reply({"id": upload_id, "offset": 0, "complete": False})
-        if path.startswith("/uploads/"):
-            meta = self.jobs[path.rsplit("/", 1)[1]]
-            if method == "PUT":
-                self.files[meta["path"]] += request.content
-            data = self.files[meta["path"]]
-            return reply({"offset": len(data), "complete": len(data) == meta["size"] and _sha(data) == meta["sha256"]})
-        if path == "/download-chunk":
-            if body["path"] not in self.files:
-                return reply({}, 400)
-            data = self.files[body["path"]]
-            return reply({"data": base64.b64encode(data[body["offset"]:]).decode(), "offset": body["offset"],
-                          "total": len(data), "sha256": _sha(data[body["offset"]:]), "etag": _sha(data)})
-        if path == "/engine-proxy":
-            binding = json.loads(self.claim_path.read_text())["lease"]["endpoint_binding"]
-            assert binding["state"] == "binding" and binding["pod_id"] == self.pod_id
-            assert "loopback_url" not in binding
-            return reply({"ok": True})
-        if "/engines/" in path:
-            binding = json.loads(self.claim_path.read_text())["lease"]["endpoint_binding"]
-            assert binding["state"] in {"bound", "ready"}
-            assert binding["loopback_url"].startswith("http://127.0.0.1:")
-            operation = path.split("/", 3)[-1]
-            if operation == "object_info":
-                return reply(self.schema)
-            if operation == "system_stats":
-                return reply({"system": {"os": "linux"}})
-            if operation == "prompt":
-                self.prompts.append(body)
-                return reply({"prompt_id": "cpu-image", "number": 1, "node_errors": {}})
-            if operation.startswith("history/"):
-                sink = next(key for key, node in self.prompts[0]["prompt"].items() if node["class_type"] == "SaveImage")
-                return reply({"cpu-image": {"outputs": {sink: {"images": [
-                    {"filename": "cpu.png", "subfolder": "", "type": "output"}]}},
-                    "status": {"status_str": "success", "completed": True, "messages": []}}})
-            if operation == "view":
-                return httpx.Response(200, stream=httpx.ByteStream(self.image), request=request,
-                    headers={"Content-Type": "image/png", "Content-Length": str(len(self.image))})
-            if operation == "queue":
-                return reply({"queue_running": [], "queue_pending": []})
-        raise AssertionError((method, host, path))
+    for paid_option in (
+        ["--consent", "paid"], ["--max-usd", "10"],
+        ["--deadline", (datetime.now(timezone.utc) + timedelta(minutes=90)).isoformat()],
+        ["--preparation-seconds", "1800"], ["--execution-seconds", "900"],
+        ["--idle-seconds", "1800"],
+    ):
+        assert console.main([*argv, *paid_option]) == 2, paid_option
+        rejection = json.loads(capsys.readouterr().out)
+        assert rejection["issues"][0]["code"] == "input_rejected", rejection
+        assert "astrid machines claim" in rejection["issues"][0]["message"], rejection
+        assert not output.exists()
 
 
 def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sources):
-    from vibecomfy.workflow import VibeWorkflow, WorkflowSource, VibeOutput
+    from vibecomfy.workflow import VibeOutput, VibeWorkflow, WorkflowSource
     from vibecomfy.workflow_bundle import emit_bundle
 
     monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "machine"))
     monkeypatch.setattr('astrid.packs.runpod.managed_sources.ensure_managed_sources', lambda: Path(tuple_sources))
+    monkeypatch.setattr('astrid.packs.runpod.managed_sources._pins', lambda: tuple_pins(tuple_sources))
     monkeypatch.setenv("VIBECOMFY_ENTRIES_DIR", str(tmp_path / "entries"))
     preferences = {"provider_account_ref": "cpu-fixture", "gpu_types": ["CPU fixture GPU"],
         "image": "runpod/base:1.0.3-dev-fix-pytorch-version-verification-cuda1300-ubuntu2404"
@@ -395,9 +206,9 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
         "volume": {"id": None, "name": None, "size_gb": 0, "mount_path": "/workspace"},
         "idle_timeout_seconds": 1800,
         "credential_ref": "env:RUNPOD_RUNPOD_FAKE_CREDENTIAL", "budget_cap_usd": 2.0}
-    target_selection.save_runpod_preferences(preferences)
     claim_path = target_selection.canonical_claim_path("cpu-fixture")
-    provider = ProviderHTTP(tuple_sources, claim_path)
+    monkeypatch.setenv("ASTRID_MACHINE_POLL_SECONDS", "0.05")
+    provider = MachineProviderHTTP(claim_path, tmp_path / "attempts")
 
     # These are the only substitutions: provider HTTP, plus a fail-closed
     # socket guard. Runtime, host, admission, adapter, lease and transport run.
@@ -448,6 +259,10 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
     realm_id = daemon.service.realm["id"]
     owner = WorkspaceClient(daemon.endpoint, daemon.token)
     client = AstridClient(remote=RemoteAstridClient(owner))
+    # cause ee3015a5a; ruling: machines 11:55 Sat
+    # Setup and the SDK must share the real Runtime settings document.
+    settings.set_store_factory(lambda: owner)
+    target_selection.save_runpod_preferences(preferences, client=client)
     project = client.projects.create(name="CPU RunPod", slug="cpu-runpod", idempotency_key="project")
     assert project.ok, project.error
     project_id = project.data["project_id"]
@@ -458,34 +273,42 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
         credential_source={"RUNPOD_RUNPOD_FAKE_CREDENTIAL": "synthetic-only"})
     host.discover()
     host.preflight()
-    for name in ("runpod.setup", "runpod.ls", "runpod.status", "runpod.release", "vibecomfy.run"):
+    for name in ("runpod.setup", "runpod.ls", "runpod.status", "runpod.claim", "runpod.release", "vibecomfy.run"):
         assert host.capabilities[name].ready, host.capabilities[name].preflight
     host.register()
+    agent_server = serve_pod_agent(provider, monkeypatch)
     worker = threading.Thread(target=host.run, kwargs={"poll_seconds": 0.02}, daemon=True)
     worker.start()
     def setup(raw):
         return client.invoke_result("runpod.setup", kind="action", project=None,
-            inputs={"target_policy": json.dumps({"kind": "runpod", "engine": "comfyui", "preferences": raw})},
+            inputs={"placement_policy": json.dumps({"kind": "runpod", "engine": "comfyui", "preferences": raw})},
             wait=True, timeout_seconds=90, poll_seconds=0.02, read_managed_outputs=False)
     try:
         assert setup(preferences).ok
         retained = host._target_bindings.provider
         changed = {**preferences, "budget_cap_usd": 1.5}
+        # cause 8018aefbad; ruling: machines 11:55 Sat
+        # The saved budget ceiling still binds plain status to its setup owner.
         mismatch = client.invoke_result("runpod.status", kind="action", project=None,
-            inputs={"target_policy": json.dumps({"kind": "runpod", "engine": "comfyui", "preferences": changed})},
+            inputs={"placement_policy": json.dumps({"kind": "runpod", "engine": "comfyui", "preferences": changed})},
             wait=True, timeout_seconds=90, poll_seconds=0.02, read_managed_outputs=False)
         assert not mismatch.ok and "runpod.setup" in str(mismatch.to_dict())
         assert setup(changed).ok
         assert host._target_bindings.provider is not retained and retained.lease_owner.closed
         assert not provider.events, "setup observed provider stock"
-        quote = GenerationFacade().describe(target="runpod", client=client)
+        quote = GenerationFacade().describe(placement="runpod", client=client)
         assert quote["offer"]["datacenter_id"] == "DC-unpinned"
         assert target_selection.read_runpod_preferences().datacenter_id is None
-        result = GenerationFacade().image(entry="cpu-image", target="runpod", client=client,
-            project=project_id, consent=("paid",), max_usd=1.5,
+        # cause 889312e1f, f123e45c1; ruling: machines 11:55 Sat
+        # Paid authority belongs to the claim; generation uses that live machine.
+        consent = target_selection.PaidRunConsent(
+            invocation_id="cpu-http-claim", offer_digest=quote["offer_digest"], max_usd=1.5,
             deadline=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
-            offer_digest=quote["offer_digest"], preparation_seconds=120, execution_seconds=60,
-            idle_seconds=1800, wait=True)
+            consent=("paid",), preparation_seconds=0, execution_seconds=0, idle_seconds=1800)
+        claimed = GenerationFacade().claim(consent=consent, requested_idle_seconds=1800, client=client, wait=True)
+        assert claimed.ok, claimed.to_dict()
+        result = GenerationFacade().image(entry="cpu-image", placement="runpod", client=client,
+            project=project_id, wait=True)
         assert result.ok, result.to_dict()
         delivered = deliver_generation(result, client=client, out=tmp_path / "delivered", project=project_id)
         image_path = Path(delivered["image_paths"][0])
@@ -507,11 +330,37 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
         snapshot = claim_path.read_bytes()
         refusal = setup({**changed, "budget_cap_usd": 1.25})
         assert not refusal.ok and claim_path.read_bytes() == snapshot and len(provider.pods) == 1
-        release = GenerationFacade().release(engine="comfyui", target="runpod", client=client, wait=True)
+        # cause a5198a148; ruling: machines 14:00 Sat
+        # A corrupt on-disk settings store must not strand existing custody.
+        from astrid.sdk.generation import _runpod_operation
+
+        corrupt_path = tmp_path / "corrupt-generation-settings.json"
+        corrupt_path.write_text("{broken")
+        disk_store = SimpleNamespace(get_user_app_state=lambda key: json.loads(corrupt_path.read_text()))
+
+        def invoke_cleanup(*args, **kwargs):
+            kwargs["client"] = client
+            return client.invoke_result(*args, **kwargs)
+
+        broken_client = SimpleNamespace(get_user_app_state=disk_store.get_user_app_state,
+                                        invoke_result=invoke_cleanup)
+        paid_before_cleanup = dict(record["paid_limits"])
+        with monkeypatch.context() as corrupt:
+            corrupt.setattr(settings, "_store_factory", lambda: disk_store)
+            retained_owner = host._target_bindings.provider.lease_owner
+            corrupt.setattr(retained_owner, "claim", lambda *a, **k: pytest.fail("cleanup claimed"))
+            corrupt.setattr(retained_owner, "keep", lambda *a, **k: pytest.fail("cleanup extended"))
+            listing = _runpod_operation("ls", client=broken_client, wait=True)
+            assert listing.ok and provider.pod_id in json.dumps(listing.to_dict())
+            assert len(provider.pods) == 1 and provider.deploys == 1
+            release = GenerationFacade().release(engine="different-engine", placement="runpod",
+                                                 client=broken_client, wait=True)
         assert release.ok, release.to_dict()
         record = json.loads(claim_path.read_text())
+        assert record["paid_limits"] == paid_before_cleanup and provider.deploys == 1
         assert record["state"] == "cleanup_complete" and record["cleanup"]["absence"]["exact_get_status"] == 404
-        assert not provider.pods and len(provider.prompts) == 1
+        assert not provider.pods and len(provider.kinds(" generate cpu-image ")) == 1
+        assert not any("/engines/" in str(event) for event in provider.events)
         released_owner = host._target_bindings.provider
         observations = len(provider.events)
         assert setup({**changed, "budget_cap_usd": 1.25}).ok
@@ -529,6 +378,8 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
         assert not worker.is_alive()
         host.shutdown()
         daemon.stop()
+        agent_server.shutdown()
+        agent_server.server_close()
     evidence["selected_source"] = _same_root_lifecycle(tmp_path, tmp_path / "realm", realm_id)
     evidence["selected_source"]["agent_sha"] = subprocess.check_output(
         ["git", "-C", str(Path(__file__).resolve().parents[2]), "rev-parse", "HEAD"], text=True).strip()

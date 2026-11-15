@@ -5,9 +5,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from astrid.core.generation.backends.vibecomfy_workflow import VibeComfyWorkflowBackend
+from astrid.packs.vibecomfy.workflow_route import WorkflowRunner as VibeComfyWorkflowBackend
 from astrid.core.contracts.managed_generation_result import validate_evidence_reference
 from astrid.core.generation.producer_result import bind_executed_settings, stage_executed_settings
+from tests.local_engine_stub import LOCAL_ENGINE_URL
+
+# The engine's local run submits as local_server to the installed engine's endpoint (tests/local_engine_stub.py).
+_ENGINE_ROUTE = {'profile_id': 'local_server', 'comfy_url': LOCAL_ENGINE_URL}
 
 
 def envelope(root, *, status='failed', task='task-1'):
@@ -37,9 +41,8 @@ def envelope(root, *, status='failed', task='task-1'):
     return path
 
 
-@pytest.mark.parametrize('route', ['embedded', 'attached', 'runpod'])
 @pytest.mark.parametrize('cancelled', [False, True])
-def test_backend_exposes_existing_verified_partial_result(monkeypatch, tmp_path, route, cancelled):
+def test_backend_exposes_existing_verified_partial_result(monkeypatch, tmp_path, cancelled):
     import astrid.packs.vibecomfy.production_engine as producer
     status = 'cancelled' if cancelled else 'failed'
     root = tmp_path / 'out'
@@ -49,12 +52,8 @@ def test_backend_exposes_existing_verified_partial_result(monkeypatch, tmp_path,
     def fail(*args, **kwargs):
         raise error
     monkeypatch.setattr(producer, 'run_workflow_result_path', fail)
-    backend = VibeComfyWorkflowBackend(endpoint_checkout=(lambda **kw: None) if route == 'runpod' else None)
-    kwargs = {'task_identity': 'task-1', 'attempt_identity': 'attempt-1'}
-    if route == 'attached':
-        kwargs.update(profile_id='local_server', comfy_url='http://127.0.0.1:8188')
-    elif route == 'runpod':
-        kwargs.update(profile_id='checkout_server', hc03_profile={}, expected_execution_identity='exact-binding')
+    backend = VibeComfyWorkflowBackend()
+    kwargs = {'task_identity': 'task-1', 'attempt_identity': 'attempt-1', **_ENGINE_ROUTE}  # the 'embedded' route is retired
     with pytest.raises(type(error)) as caught:
         backend.workflow(tmp_path / 'workflow.py', root, **kwargs)
     assert caught.value is error
@@ -73,7 +72,7 @@ def test_wrapped_native_receipt_retains_nested_envelope(monkeypatch, tmp_path):
     monkeypatch.setattr(producer, 'run_workflow_result_path', fail)
     with pytest.raises(RuntimeError) as caught:
         VibeComfyWorkflowBackend().workflow(tmp_path / 'workflow.py', tmp_path / 'out',
-                                           task_identity='task-1', attempt_identity='attempt-1')
+                                           task_identity='task-1', attempt_identity='attempt-1', **_ENGINE_ROUTE)
     assert caught.value.managed_generation_result_path == path
 
 
@@ -92,7 +91,7 @@ def test_failure_without_partial_outputs_keeps_existing_result(monkeypatch, tmp_
     monkeypatch.setattr(producer, 'run_workflow_result_path', fail)
     with pytest.raises(RuntimeError) as caught:
         VibeComfyWorkflowBackend().workflow(tmp_path / 'workflow.py', root,
-                                           task_identity='task-1', attempt_identity='attempt-1')
+                                           task_identity='task-1', attempt_identity='attempt-1', **_ENGINE_ROUTE)
     assert caught.value.managed_generation_result_path == path
 
 
@@ -109,7 +108,7 @@ def test_foreign_or_corrupt_partial_result_is_not_exposed(monkeypatch, tmp_path,
     monkeypatch.setattr(producer, 'run_workflow_result_path', fail)
     with pytest.raises(RuntimeError) as caught:
         VibeComfyWorkflowBackend().workflow(tmp_path / 'workflow.py', root,
-                                           task_identity='task-1', attempt_identity='attempt-1')
+                                           task_identity='task-1', attempt_identity='attempt-1', **_ENGINE_ROUTE)
     assert caught.value is error
     assert not hasattr(caught.value, 'managed_generation_result_path')
 

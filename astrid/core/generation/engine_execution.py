@@ -79,29 +79,25 @@ class LocalLinuxExecutionContext:
     def file_fact(self, path, *, hash_bytes, deadline):
         return self._files.file_fact(path, hash_bytes=hash_bytes, deadline=deadline)
 
-    def download_model(self, model, *, models_root, deadline, model_cache_root=None,
-                       model_cache_device=None, model_cache_mount_id=None):
-        from .model_downloader import download_model
-        from .engine_runner import validate_model_cache_root
-        self._files._relative(models_root)
-        _check(deadline)
-        cache_root = validate_model_cache_root(model_cache_root, engine_root=self.root,
-                                               platform=self.platform, placement=self.placement)
-        cache = {} if cache_root is None else {"model_cache_root": cache_root}
-        for key, value in (("model_cache_device", model_cache_device), ("model_cache_mount_id", model_cache_mount_id)):
-            if value is not None:
-                cache[key] = value
-        return download_model(model, models_root=models_root, deadline=deadline, **cache)
-
-    def acquire_install_lock(self, root, *, deadline):
+    def acquire_install_lock(self, root, *, deadline, kind="job"):
         if root != self.root:
             raise UnsafePathError("install lock root differs")
-        return self.adapter.local_install_lock(root, deadline=deadline)
+
+        def on_contention(holder_kind):
+            if holder_kind == "install" and kind == "job":
+                from .engine_contracts import EngineBusy
+                raise EngineBusy("the local engine is being updated; try again when astrid engines install finishes")
+            if holder_kind == "job" and kind == "install":
+                from .engine_custody import refuse_busy_engine
+                refuse_busy_engine(root=root, engine=self.engine, platform=self.platform, deadline=deadline)
+
+        return self.adapter.local_install_lock(root, deadline=deadline, on_contention=on_contention,
+                                               kind=kind)
 
 
 def create_local_backend(*, engine, platform, placement, root, deadline):
     if placement != "local":
-        raise UnsupportedPlacement("RunPod execution awaits P2-SELF orchestration")
+        raise UnsupportedPlacement("This machine manages only its own engine; a remote machine prepares its engine when its job starts.")
     _check(deadline)
     from .engine_platforms import platform_adapter
     from .engine_recipe import load_recipe, recipe_digest

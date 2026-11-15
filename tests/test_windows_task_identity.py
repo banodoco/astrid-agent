@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.helpers.bounded_ids import bounded_id
 from astrid.installer.windows_task_identity import (
     TaskIdentity,
     TaskIdentityError,
@@ -70,7 +71,8 @@ def test_only_task_enabled_may_change(enabled):
     assert verify(expected=replace(EXPECTED, definition_xml=observed)) is None
 
 
-@pytest.mark.parametrize("observed,requested", [(XML, False), (edit("Settings/Enabled", "false"), True)])
+@pytest.mark.parametrize("observed,requested", [(XML, False), (edit("Settings/Enabled", "false"), True)],
+                         ids=bounded_id)
 def test_enabled_state_must_match_even_when_identity_matches(observed, requested):
     with pytest.raises(TaskIdentityError, match="enabled state"):
         verify(observed, enabled=requested)
@@ -102,7 +104,7 @@ def test_exact_root_folder_and_name_are_separate_from_xml(observation):
     ("Triggers/LogonTrigger/Repetition/Interval", "PT2M"),
     ("Triggers/LogonTrigger/Enabled", "false"),
     ("Triggers/TimeTrigger/StartBoundary", "2027-01-01T00:00:00Z"),
-])
+], ids=bounded_id)
 def test_identity_changes_are_refused(path, value):
     with pytest.raises(TaskIdentityError):
         verify(edit(path, value))
@@ -158,7 +160,7 @@ def test_missing_fields_are_not_defaulted_to_owned_or_absent(path):
     '<!DOCTYPE Task [<!ENTITY owner "Owner">]>' + XML[XML.index("<Task "):],
     '<!DOCTYPE Task SYSTEM "file:///must-not-read">' + XML[XML.index("<Task "):],
     " " * (128 * 1024 + 1), None, b"not decoded XML",
-])
+], ids=bounded_id)
 def test_unknown_xml_is_refused_even_if_frozen_snapshot_also_contains_it(xml):
     with pytest.raises(TaskIdentityError):
         verify(xml)

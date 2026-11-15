@@ -25,6 +25,7 @@ from astrid.core.pack.canonical import (
     ExternalPackSource,
     read_normalize_validate,
 )
+from astrid.core.pack.product_ids import product_pack_ids
 from astrid.installer._pack_cleanup import remove_pack_tree
 
 SOURCE_STATE_VERSION = 1
@@ -34,6 +35,7 @@ SOURCE_DECLARATIONS_ENV = "ASTRID_SOURCE_DECLARATIONS"
 SOURCE_STATE_ENV = "ASTRID_SOURCE_STATE"
 SOURCE_DATA_ENV = "ASTRID_SOURCE_DATA"
 _OID_LENGTHS = {40, 64}
+_LOGGED_SUPERSEDED: set[str] = set()
 
 
 class SourceSetupError(RuntimeError):
@@ -351,13 +353,23 @@ def _record_from_mapping(value: Mapping[str, Any]) -> InstalledSource:
     )
 
 
-def active_sources(*, state_path: str | Path | None = None, verify: bool = True) -> tuple[InstalledSource, ...]:
+def active_sources(
+    *, state_path: str | Path | None = None, verify: bool = True, include_superseded: bool = False,
+) -> tuple[InstalledSource, ...]:
     """Return the active managed roots, read-only and in stable id order."""
     state = load_source_state(state_path)
     disabled = {str(item) for item in state.get("disabled", [])}
     result: list[InstalledSource] = []
     for pack_id, raw in sorted(state["active"].items()):
         if pack_id in disabled:
+            continue
+        if not include_superseded and pack_id in product_pack_ids():
+            if pack_id not in _LOGGED_SUPERSEDED:
+                _LOGGED_SUPERSEDED.add(pack_id)
+                _LOGGER.warning(
+                    "managed copy of built-in pack %r is set aside; Astrid uses its built-in copy "
+                    "(legacy files at %s are kept)", pack_id, raw.get("pack_root", "unknown"),
+                )
             continue
         source = _record_from_mapping(raw)
         if source.pack_id != pack_id:

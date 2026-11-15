@@ -10,11 +10,8 @@ import pytest
 import yaml
 from PIL import Image
 
-from astrid.packs.h3_av.actions.transform.run import (
-    _authoritative_source_asset_id,
-    _write_generated_bundle,
-)
-from astrid.packs.h3_av.actions.compile.compile import CompilationError, compile_preparation
+from astrid.packs.h3_av.shared.stages import _authoritative_source_asset_id
+from astrid.packs.h3_av.shared.compile import CompilationError, compile_preparation
 from astrid.packs.h3_av.shared import compose as compose_module
 from astrid.packs.h3_av.shared.compose import (
     CompositionError,
@@ -23,10 +20,10 @@ from astrid.packs.h3_av.shared.compose import (
     compose_candidate,
 )
 from astrid.packs.h3_av.shared.generation import generation_timing
-from astrid.packs.h3_av.actions.prepare.prepare import prepare_request
+from astrid.packs.h3_av.shared.prepare import prepare_request
 from astrid.packs.h3_av.shared.request import normalize_request
 from astrid.packs.h3_av.shared.request_v2 import branch_for
-from astrid.packs.h3_av.actions.verify.verify import VerificationError, verify_candidate
+from astrid.packs.h3_av.shared.verify import VerificationError, verify_candidate
 
 PACK = Path(__file__).resolve().parents[3] / "astrid/packs/h3_av"
 
@@ -510,74 +507,6 @@ def test_v2_full_timeline_audio_composes_with_independent_video_permissions(
     assert candidate_prefix == source_prefix
 
 
-@pytest.mark.ffmpeg
-@pytest.mark.integration
-def test_v2_same_length_edit_binds_intervals_and_reaches_compose_verify(
-    tmp_path: Path,
-) -> None:
-    from vibecomfy.cli_loader import load_workflow_any
-    source = tmp_path / "source.mkv"
-    video = tmp_path / "generated.mkv"
-    audio = tmp_path / "generated.flac"
-    _av(source, frames=24, color="blue", frequency=440)
-    # The video container deliberately has the source tone; edited audio must
-    # come from the separately imported audio, not that container's soundtrack.
-    _av(video, frames=24, color="red", frequency=440)
-    subprocess.run(
-        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
-         "sine=frequency=880:sample_rate=48000", "-t", "1", str(audio)],
-        check=True, capture_output=True,
-    )
-    request = normalize_request({
-        "version": 2,
-        "prompt": "Edit independent portions of the source picture and soundtrack.",
-        "duration": 1,
-        "continuation": False,
-        "media": [{
-            "id": "source", "asset": "source.mkv", "role": "timeline",
-            "modality": "video", "at": {"frame": 0}, "range": [0, 1],
-            "edit": [
-                {"stream": "video", "during": [0.25, 0.5], "mask": {"full_frame": True}},
-                {"stream": "audio", "during": [0.5, 0.75], "text": "Hello."},
-            ],
-        }],
-        "settings": {},
-    })
-    preparation = prepare_request(request, asset_map={"source.mkv": str(source)})
-    schedule = preparation["mask_schedule"]
-    assert schedule["branch"] == "source_backed_v2v"
-    assert schedule["video"]["generated_intervals"] == [[0.25, 0.5]]
-    assert schedule["audio"]["generated_intervals"] == [[0.5, 0.75]]
-    assert schedule["video"]["protected_intervals"] == [[0.0, 0.25], [0.5, 1.0]]
-    assert schedule["audio"]["protected_intervals"] == [[0.0, 0.5], [0.75, 1.0]]
-    # Independent soundtrack regeneration has no native masked-edit binding.
-    # Keep the existing composition assertions below: imported AV outputs can
-    # still be composed, but this request cannot reach a legacy edit sampler.
-    with pytest.raises(CompilationError, match="Dialogue and channel conditioning are outside SPEC-MIN"):
-        compile_preparation(preparation, out_dir=tmp_path / "compiled")
-
-    bundle = _write_generated_bundle(
-        {role: (path, {"sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
-         for role, path in (("video", video), ("audio", audio))},
-        tmp_path / "generated.zip",
-    )
-    composition = compose_candidate(
-        preparation=preparation, generated=bundle, source=source,
-        out_dir=tmp_path / "composition",
-    )
-    verification = verify_candidate(
-        preparation=preparation, composition=composition, source=source,
-    )
-    assert composition["coverage"]["candidate"]["video"]["frames"] == 24
-    assert composition["composition"]["output_roles"] == ["video", "audio"]
-    assert composition["changed_permissions"] == {"video": [[0.25, 0.5]], "audio": [[0.5, 0.75]]}
-    assert verification["preservation"]["status"] == "protected_sample_evidence"
-    candidate = Path(composition["candidate"]["path"])
-    for stream, generated_path, start in (("video", video, 0.25), ("audio", audio, 0.5)):
-        candidate_digest, count = _sample_digest(candidate, stream, start, 0.25)
-        assert count > 0
-        assert candidate_digest == _sample_digest(generated_path, stream, start, 0.25)[0]
-        assert candidate_digest != _sample_digest(source, stream, start, 0.25)[0]
 
 
 @pytest.mark.integration

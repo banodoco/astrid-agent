@@ -296,6 +296,40 @@ def test_invoke_returns_admission_and_task_refs(monkeypatch):
     assert result["structuredContent"]["task_refs"] == [{"id": "T1"}]
 
 
+def test_invoke_text_is_the_whole_result(monkeypatch):
+    payload = {"ok": True, "task_id": "T1", "log": "x" * 30000, "outputs": ["out.mp4"]}
+
+    def fake_run(argv, cwd):
+        reply = {"content": [{"text": json.dumps(payload)}], "details": {"astridTaskRefs": []}}
+        return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(reply), stderr="")
+
+    monkeypatch.setattr(mcp_server, "_run", fake_run)
+    result = mcp_server.call_tool(mcp_server._extra_tools()["invoke"],
+                                  {"capability_id": "vibecomfy.run", "project": "demo", "inputs": {}})
+    assert json.loads(result["content"][0]["text"]) == result["structuredContent"]
+    assert result["structuredContent"]["outputs"] == ["out.mp4"]
+
+
+def test_long_skill_descriptions_are_served_whole(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from astrid.skills import discovery, registry
+
+    description = "Use this when " + "a long case, " * 120 + "and never for X."
+    skill = tmp_path / "packs" / "demo" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text(f'---\nname: demo\ndescription: "{description}"\n---\nBody\n', encoding="utf-8")
+    # Skills come from the declared skill registry; serve one pack's SKILL.md through it.
+    core = SimpleNamespace(pack_id="_core", skill_md=tmp_path / "absent.md", skill_dir=tmp_path / "core",
+                           skill_id="astrid")
+    demo = SimpleNamespace(pack_id="demo", skill_md=skill, skill_dir=skill.parent, skill_id="demo")
+    monkeypatch.setattr(discovery, "list_skills", lambda: [core, demo])
+    monkeypatch.setattr(discovery, "list_extras", lambda packs: [])
+    monkeypatch.setattr(registry, "render_registry_block", lambda packs, view_root: "")
+    prompts = mcp_server.build_prompts(selected_pack_ids=["demo"])
+    assert prompts["demo"]["definition"]["description"] == description
+
+
 def test_comfy_scan_runs_with_requested_ports(monkeypatch):
     calls = []
 

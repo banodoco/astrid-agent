@@ -140,7 +140,9 @@ def _tools_for_parsers(parsers) -> dict[str, dict[str, Any]]:
                     schema["description"] = "The file's text (written to a private temporary file for Astrid)."
                 # Paired flags share a dest (--wait/--detach): the first one names it.
                 properties.setdefault(action.dest, schema)
-                if action.required or (not action.option_strings and action.nargs not in ("?", "*")):
+                # MCP task calls name their project explicitly; CLI selection is local state.
+                if (action.required or (path[0] == "tasks" and action.dest == "project")
+                        or (not action.option_strings and action.nargs not in ("?", "*"))):
                     required.append(action.dest)
             description = summary or leaf.description or f"astrid-tools {' '.join(path)}"
             tools[_tool_name(path)] = {
@@ -264,7 +266,7 @@ def call_tool(tool: dict[str, Any], arguments: dict[str, Any], state: dict[str, 
         values = arguments.pop('inputs', {})
         if not isinstance(values, dict):
             from astrid.core.generation.preflight import generation_error
-            payload = generation_error(ValueError('inputs must be an object')).to_envelope()
+            payload = generation_error(ValueError('inputs must be an object'), code='input_rejected').to_envelope()
             return _text(json.dumps(payload), error=True, structured=payload)
         supplied = list(arguments.get('input') or [])
         supplied.extend(name + '=' + json.dumps(value) for name, value in values.items())
@@ -314,6 +316,7 @@ def call_tool(tool: dict[str, Any], arguments: dict[str, Any], state: dict[str, 
         if isinstance(done, dict):
             return done
         result = _cli_result(done)
+        _attach_open_url(tool, arguments, result)
         files = {dest: path.read_text(encoding="utf-8") for dest, path in outputs.items() if path.is_file()}
         for dest, text in files.items():
             result["content"].append({"type": "text", "text": f"{dest} contents:\n{text}"})
@@ -413,8 +416,34 @@ def _invoke(arguments: dict[str, Any], workdir: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         payload = {"ok": False, "error": payload}
     structured = {**payload, "task_refs": reply.get("details", {}).get("astridTaskRefs", [])}
-    return _text(json.dumps(structured, default=str)[:20000], error=done.returncode != 0 or payload.get("ok") is False,
+    return _text(json.dumps(structured, default=str), error=done.returncode != 0 or payload.get("ok") is False,
                  structured=structured)
+
+
+def _attach_open_url(tool: dict[str, Any], arguments: dict[str, Any], result: dict[str, Any]) -> None:
+    """Name the project's link on an admitted or completed generation, the same link the CLI prints."""
+    if result.get("isError"):
+        return
+    from astrid.core.generation.delivery import open_url_for
+    path = tool["path"]
+    envelope = result.get("structuredContent")
+    if tool.get("kind") == "generation" and path[-1] in {"image", "video", "workflow"}:
+        # Admission: the project the caller named, or the one the admitted task reports.
+        if not isinstance(envelope, dict):
+            return
+        target = envelope["data"] if isinstance(envelope.get("data"), dict) else envelope
+        project = target.get("project_id") or arguments.get("project")
+        if isinstance(project, str) and project.strip():
+            target["open_url"] = open_url_for(project)
+        return
+    if path == ("tasks", "show") and isinstance(envelope, dict):
+        task = envelope["data"] if isinstance(envelope.get("data"), dict) else envelope
+        state = str(task.get("state") or task.get("status") or "").lower()
+        if isinstance(task.get("generation_intent"), dict) and state in {"completed", "succeeded"}:
+            project = task.get("project_id") or arguments.get("project")
+            if isinstance(project, str) and project.strip():
+                task["open_url"] = open_url_for(project)
+        return
 
 
 def _cli_result(done: subprocess.CompletedProcess) -> dict[str, Any]:
@@ -520,7 +549,7 @@ def _extra_tools() -> dict[str, dict[str, Any]]:
               "execution_request": {"type": "object", "description": "Optional target-aware execution request."}},
              ["capability_id", "project"], kind="invoke"),
         tool("comfy_scan",
-             "Find the user's running ComfyUI (vibecomfy local scan): URL, output folder, saved "
+             "Find the user's running ComfyUI (astrid generate scan): URL, output folder, saved "
              "workflows, Manager, its Python. Read-only.",
              {"ports": {"type": "string", "description": "Comma-separated ports (default 8188,8000)."}},
              [], kind="comfy_scan"),
@@ -557,7 +586,13 @@ def _extra_tools() -> dict[str, dict[str, Any]]:
              {"document": document,
               "idempotency_key": {"type": "string", "description": "A new unique key for this publication."}},
              ["document", "idempotency_key"], kind="timeline_document", command="publish"),
-    ]), **_generation_tools(), **_engine_install_tools()}
+    ]), **_generation_tools(), **_engine_install_tools(), **_machine_tools()}
+
+
+def _machine_tools():
+    from astrid.core.machines_cli import _parser
+
+    return _tools_for_parsers({'machines': _parser()})
 
 
 def _engine_install_tools():
@@ -648,7 +683,7 @@ def build_prompts(*, developer: bool = False, selected_pack_ids=None) -> dict[st
         if fallback in {"astrid", "creative-work"}:
             body += "\n\n" + directory + "\n\n" + capability_index(packs)
         prompts[name] = {"definition": {"name": name, "title": f"Astrid skill: {name}",
-                                        "description": meta.get("description", "")[:1000], "arguments": []},
+                                        "description": meta.get("description", ""), "arguments": []},
                          "text": body.strip()}
 
     return prompts

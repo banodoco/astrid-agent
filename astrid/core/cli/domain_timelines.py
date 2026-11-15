@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping
 
+from astrid.core.cli.current_project import resolve_current_project
 from astrid.core.cli.registration import CommandSpec, register_product_commands
 from astrid.core.timeline import audio_curves
 
@@ -1410,25 +1411,6 @@ _parser_CURRENT_PROJECT_VERBS = frozenset(
 )
 
 
-def _parser_resolve_current_project(parsed: argparse.Namespace) -> str | None:
-    """The workspace's current project id, or None when none is selected (or the runtime cannot say)."""
-    projects = getattr(getattr(parsed, "client", None), "projects", None)
-    current = getattr(projects, "current", None)
-    if current is None:
-        return None
-    try:
-        result = current()
-    except Exception:  # noqa: BLE001 - unreachable runtime: the caller reports "no current project"
-        return None
-    if not getattr(result, "ok", False):
-        return None
-    data = result.data
-    row = data.get("project") if isinstance(data, dict) else None
-    if not isinstance(row, dict):
-        return None
-    ref = row.get("project_id") or row.get("id") or row.get("slug")
-    return ref.strip() if isinstance(ref, str) and ref.strip() else None
-
 
 class _parser_TimelinesParser(argparse.ArgumentParser):
     """``show TL --project P c41.mink``: a positional after the flags fills the verb's open positional
@@ -1454,7 +1436,7 @@ class _parser_TimelinesParser(argparse.ArgumentParser):
         if (getattr(parsed, "command", None) in _parser_CURRENT_PROJECT_VERBS
                 and not getattr(parsed, "project", None)
                 and (getattr(parsed, "command", None) == "commit" or not getattr(parsed, "file", None))):
-            project = _parser_resolve_current_project(parsed)  # an explicit --project always wins
+            project = resolve_current_project(parsed)  # an explicit --project always wins
             if project is None:
                 self.error(
                     f"{parsed.command}: no --project given and no current project is selected "

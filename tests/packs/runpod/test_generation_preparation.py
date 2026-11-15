@@ -4,25 +4,49 @@ from __future__ import annotations
 import json
 import socket
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from astrid.core.generation.interfaces import RunPodPreparationRequest
-from astrid.packs.runpod.generation import RunPodGenerationPreparer
-from astrid.packs.runpod.prepared_task import PreparedWorkerError, PreparedWorkerSelection, _claim_target
-from astrid.packs.runpod.remote_placement import Claim
+from astrid.packs.runpod.prepared_task import PreparedWorkerError
 from tests.packs.runpod.test_remote_placement import FakePod, _provider, _wrapper, sources as sources
-from tests.packs.runpod.test_target_selection import case as case
-from tests.packs.runpod.test_prepared_task import _Client, _Runtime, _task
 from tests.packs.runpod.test_warm_session import small_lease as small_lease, lease_selection_case as lease_selection_case
 
 
 def _selected_runtime_commit():
     repo_root = Path(__file__).resolve().parents[3]
     return json.loads((repo_root / "runtime.lock.json").read_text())["source_commit"]
+
+
+def _pod_plan(installation, command):
+    """The plan the pod's own ``engines install`` binds: the model root the command names (a saved volume cache)."""
+    from astrid.core.generation import engine_recipe, engine_runner
+
+    models_root = command.split("--models-root ", 1)[1].split()[0] if "--models-root " in command else None
+    recipe = engine_recipe.load_recipe(installation.engine, installation.platform)
+    return engine_runner.plan_install(recipe, root=installation.root, placement="local", models_root=models_root)
+
+
+def _claim(c):
+    """Create the finite, explicitly consented machine before a generation job."""
+    from dataclasses import replace
+
+    c.host.start_fresh_claim()
+    claim_consent = replace(c.grant, invocation_id="manual-claim", preparation_seconds=0,
+                            execution_seconds=0)
+    c.host.claim(claim_consent, requested_idle_seconds=claim_consent.idle_seconds)
+
+
+def _job(c, invocation_id="job-1"):
+    return c.host.job_limits(invocation_id)
+
+
+def _request_for_job(c, invocation_id="job-1"):
+    job = _job(c, invocation_id)
+    return replace(c.request, consent=job.consent, max_usd=job.max_usd, deadline=job.deadline), job
 
 
 @pytest.fixture
@@ -51,7 +75,10 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
         raw["volume"] = None
     c.prefs = RunPodPreferences.from_mapping(raw)
     recipe = engine_recipe.load_recipe("comfyui", "linux-x86_64-cu130")
-    plan = engine_runner.plan_install(recipe, root="/root/astrid/engines/comfyui", placement="local")
+    engine_base = tmp_path / "engines"
+    engine_root = str(engine_base / "comfyui")
+    monkeypatch.setattr(rp, "ENGINE_BASE", str(engine_base))
+    plan = engine_runner.plan_install(recipe, root=engine_root, placement="local")
     compatibility = RunPodLeaseCompatibility(
         "sha256:" + plan.recipe_sha256, "sha256:" + plan.models_lock_sha256,
         _selected_runtime_commit(), next(s for s in recipe.sources if s.name == "vibecomfy").pin.revision,
@@ -64,6 +91,11 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
     c.module = module
     c.dc, c.quote_rate, c.stock, c.actual_rate = "DC-accepted", 1.0, "available", 1.0
     c.actual_gpu_id = "gpu-provider-exact"
+    c.accepted_gpu_id = "gpu-provider-exact"
+    # Confirmation returns the provider catalog display name, not its GPU ID.
+    from astrid.packs.runpod import worker_preparation
+    monkeypatch.setattr(worker_preparation, "confirm_acquired_machine",
+                        lambda api_key, contract, *, timeout_seconds: (c.prefs.gpu_types[0], contract.datacenter_id))
     c.create_kwargs, c.quotes, c.git_reads = [], [], []
     c.lost_start, c.cancel_unknown, c.dirty_sources = False, False, False
     # Opt-in: the fake pod's install honours the command's own --deadline
@@ -78,7 +110,7 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
 
     async def availability(**kw):
         c.quotes.append(kw)
-        return SimpleNamespace(gpu_type_id="gpu-provider-exact", datacenters=[SimpleNamespace(
+        return SimpleNamespace(gpu_type_id=c.accepted_gpu_id, datacenters=[SimpleNamespace(
             status=c.stock, price_per_hour=c.quote_rate, datacenter_id=c.dc)])
 
     monkeypatch.setattr(api, "get_network_volumes", volumes)
@@ -98,7 +130,7 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
         assert journal["state"] == "allocation_pending" and journal["lease"]["state"] == "preparing"
         assert journal["network_volume_id"] == kw["network_volume_id"] == c.prefs.volume_id
         assert journal["network_volume_datacenter_id"] == kw["data_center_id"] == "DC-accepted"
-        assert journal["accepted_gpu_type_id"] == kw["gpu_type_id"] == "gpu-provider-exact"
+        assert journal["accepted_gpu_type_id"] == kw["gpu_type_id"] == c.accepted_gpu_id
         assert https.read_token_file(journal["https_token_file"]) == kw["https_token"]
         assert kw["https_token"] not in c.owner.path.read_text()
         c.create_kwargs.append(kw)
@@ -126,7 +158,7 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
         return SimpleNamespace(stdout=(" M source" if c.dirty_sources else "")
                                if "status" in argv else revision)
     monkeypatch.setattr(rp, "subprocess", SimpleNamespace(run=git_read))
-    installation = rp.RunPodInstallation(compatibility.as_mapping())
+    installation = rp.RunPodInstallation(compatibility.as_mapping(), root=engine_root)
     provider = _provider(sources)
     placement = _wrapper(provider, sources)
     # Reuse the canonical runner's fake OS/model/environment context. The
@@ -135,11 +167,23 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
     context = canonical.FakeContext()
     context.recipe = recipe
     context.health_objects = {node: {} for node in recipe.health.required_nodes}
-    context.deadline = time.monotonic() + 60
+    context.deadline = time.monotonic() + 600
     monkeypatch.setattr(engine_platforms, "platform_adapter", lambda key: context.adapter)
+
+    c.mount_id = 7
 
     class RetainedPod(FakePod):
         def exec(self, command, timeout=600):
+            if command.startswith("python3 -c ") and "ASTRID_STORAGE_DIAGNOSTIC" in command:
+                # The shipped storage probe: answer with the receipt it prints.
+                self.exec_log.append("storage-probe")
+                import base64, shlex
+                request = json.loads(base64.b64decode(shlex.split(command)[-1]))
+                mapping = request.pop("provider_mapping")
+                assert mapping["volume_mounts"][0]["volume_id"] == request["volume_id"]
+                return 0, json.dumps({**request, "cache_device": 64768, "cache_mount_id": c.mount_id,
+                                      "free_bytes": 10**12, "total_bytes": 2 * 10**12,
+                                      "local_free_bytes": 10**12}), ""
             if "engines status" in command:
                 self.exec_log.append(command)
                 if not self.installed:
@@ -152,13 +196,22 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
             return super().exec(command, timeout)
 
         def job_start(self, command, *, job_id):
-            preparation = c.read()["lease"]["preparation"]
-            assert preparation["job"] == {"id": job_id, "state": "starting"}
+            lease = c.read()["lease"]
+            # Preparation jobs and the machine's generation job are each checkpointed before start.
+            # The release-time reset is checkpointed on the lease; the claim-time one on the preparation.
+            custody = (lease["job"] if " generate " in command or ("pod_reset" in command and "--run-dir" in command)
+                       else lease["preparation"]["job"])
+            assert custody == {"id": job_id, "state": "starting"}
             old = super().job_start(command)
             self.jobs[job_id] = self.jobs.pop(old["id"])
             directory = "/workspace/.astrid-jobs/" + job_id
             for name in ("stdout", "stderr"):
                 self.files[directory + "/" + name] = self.files.pop(old["dir"] + "/" + name)
+            if self.active_job and self.active_job.get("job_dir") == old["dir"]:
+                self.active_job["job_dir"] = directory  # the agent folder under its checkpointed id
+            if "engines install" in command and not self.jobs[job_id]:
+                plan = _pod_plan(installation, command)
+                context.models_root = plan.models_root
             if "engines install" in command and not self.jobs[job_id] and c.install_uses_command_deadline:
                 seconds = float(command.split("--deadline ", 1)[1].split()[0])
                 try:
@@ -182,10 +235,13 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
             return {"id": job_id, "state": "missing" if c.cancel_unknown else "cancelled"}
 
     pod = RetainedPod({}, provider.marker)
+    c.transport_deadlines = []
     class Transport:
-        def __init__(self, pod_id, token):
+        def __init__(self, pod_id, token, *, deadline=None):
             assert pod_id == "pod-1"
             assert token == https.read_token_file(c.read()["https_token_file"])
+            self.deadline = deadline
+            c.transport_deadlines.append(deadline)
         def execute_command(self, *a): return pod.exec(*a)
         def put(self, *a): return pod.put(*a)
         def get(self, *a): return pod.get(*a)
@@ -194,10 +250,24 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
         def detached_cancel(self, *a): return pod.job_cancel(*a)
         def disconnect(self): pass
     monkeypatch.setattr(https, "HttpsPodTransport", Transport)
+    # The in-memory pod lives in this process. Real HTTPS deadline behavior is
+    # covered separately through a spawned observer and localhost transport.
+    from astrid.packs.runpod.remote_placement import _HttpsOps
+    c.real_bounded_call = _HttpsOps._bounded_call
+    monkeypatch.setattr(_HttpsOps, "_bounded_call", _HttpsOps._call_direct)
     c.host = c.fresh()
     c.installation, c.placement, c.pod, c.provider, c.context = installation, placement, pod, provider, context
     c.adapter = module.build_adapter(lease_owner=c.host, placement=placement, installation=installation,
                                     validate=lambda r: None)
+
+    def observe_mounts(pod_id, nonce):
+        # Shape of runpod_lifecycle.discovery.observe_pod_mounts (f2948817).
+        c.mount_observations = getattr(c, "mount_observations", 0) + 1
+        return {"schema": "runpod.provider-mounts.v1", "pod_id": pod_id, "nonce": nonce,
+                "volume_mounts": [{"volume_id": c.prefs.volume_id, "volume_type": "NETWORK_VOLUME",
+                                   "mount_path": c.prefs.mount_path, "read_only": False}],
+                "legacy_evidence": {"present": False, "valid": True, "conflict": False}}
+    c.adapter.observe_mounts = observe_mounts
     source, workflow = tmp_path / "entry.json", tmp_path / "compiled.py"
     source.write_text("{}")
     workflow.write_text("# CPU fake compiled workflow")
@@ -206,32 +276,19 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
     return c
 
 
-def test_inventory_is_the_parsed_receipt_rows_not_the_lock(retained):
-    """Cold and warm prepares carry the receipt's own model rows in memory, split under root/models."""
-    from astrid.core.generation import engine_runner
-    from astrid.core.generation.target_inventory import rows_from_receipt
-
+def test_preparation_refuses_paid_consent_without_claim(retained):
     c = retained
-    first = c.adapter.prepare(c.request, c.grant)
-    root = c.installation.root
-    receipt = engine_runner._parse_receipt(json.loads(c.pod.files[root + "/.astrid-engine/install.json"]),
-                                           c.installation.plan())
-    expected = rows_from_receipt(receipt.models, root)
-    assert first.models == expected and len(expected) == len(receipt.models) > 0
-    for row, model in zip(expected, receipt.models):
-        assert model.path == f"{root}/models/" + (row["subdir"] + "/" if row["subdir"] else "") + row["name"]
-        assert (row["size"], row["sha256"]) == (model.bytes, model.sha256.removeprefix("sha256:"))
-    assert "models" not in first.installed  # the strictly validated snapshot never carries rows
-    c.host.settle(first.lease)
-    second = c.adapter.prepare(c.request, replace(c.grant, invocation_id="invocation-2"))
-    assert second.models == expected  # reuse rebuilds the rows from the receipt again
-    c.host.settle(second.lease)
+    with pytest.raises(PreparedWorkerError, match="job preparation requires a claimed machine"):
+        c.adapter.prepare(c.request, c.grant)
+    assert c.creates == 0 and not c.owner.path.exists()
 
 
 @pytest.mark.parametrize("retained", [True, False, (True, False), (False, False)], indirect=True)
 def test_path_loaded_adapter_cold_and_warm_use_exact_placement_canonical_install_and_a3_release(retained):
     c = retained
-    first = c.adapter.prepare(c.request, c.grant)
+    _claim(c)
+    request, consent = _request_for_job(c)
+    first = c.adapter.prepare(request, consent)
     assert c.creates == 1 and c.provider.claims == c.provider.releases == 0
     assert all(q["require_network_volume"] == (c.prefs.volume_id is not None) for q in c.quotes)
     assert all(q["datacenter_ids"] == (["DC-accepted"] if c.prefs.volume_id or c.prefs.datacenter_id else None)
@@ -242,11 +299,12 @@ def test_path_loaded_adapter_cold_and_warm_use_exact_placement_canonical_install
     install_commands = [line for line in c.pod.job_log if "engines install" in line]
     assert len(install_commands) == 1
     assert "install comfyui --platform linux-x86_64-cu130 --placement local" in install_commands[0]
-    assert "vibecomfy-h3" not in install_commands[0]
+    assert "vibecomfy" + "-h3" not in install_commands[0]
     c.host.settle(first.lease)
     jobs = list(c.pod.job_log)
-    second = c.adapter.prepare(c.request, replace(c.grant, invocation_id="invocation-2"))
-    assert second.installed == first.installed and second.lease.generation == 2
+    request, consent = _request_for_job(c, "invocation-2")
+    second = c.adapter.prepare(request, consent)
+    assert second.installed == first.installed and second.lease.generation == first.lease.generation + 1
     assert c.creates == 1 and c.pod.job_log == jobs
     with pytest.raises(Exception, match="another holder"):
         c.host.settle(first.lease)
@@ -257,206 +315,42 @@ def test_path_loaded_adapter_cold_and_warm_use_exact_placement_canonical_install
     assert c.read()["cleanup"]["absence"]["exact_get_status"] == 404
 
 
-def test_retained_endpoint_records_custody_before_proxy_and_binds_once(retained, monkeypatch):
-    import hashlib
-    from runpod_lifecycle import engine_bridge, https
-    from astrid.core.generation.backends.comfy_target import ComfyTargetClient, HTTP_TRANSFER_SECONDS, MAX_JSON_BYTES
-
-    c = retained
-    events = []
-    monkeypatch.setattr(https.HttpsPodTransport, "enable_engine_proxy",
-                        lambda self, endpoint, port: events.append(("enable", endpoint, port)),
-                        raising=False)
-
-    class Bridge:
-        def __init__(self, transport, config):
-            assert c.read()["lease"]["endpoint_binding"]["state"] == "binding"
-            self.transport, self.url = transport, "http://127.0.0.1:12345"
-            events.append(("bridge", config))
-
-        def close(self):
-            events.append(("close",))
-            self.transport.disconnect()
-
-    def probe(self, path, *, timeout, response_limit):
-        assert c.read()["lease"]["endpoint_binding"]["state"] == "bound"
-        assert c.read()["lease"]["endpoint_binding"]["loopback_url"] == self.http_origin
-        assert timeout == HTTP_TRANSFER_SECONDS and response_limit == MAX_JSON_BYTES
-        events.append(("probe", path))
-        return c.context.health_objects
-
-    monkeypatch.setattr(engine_bridge, "EngineBridge", Bridge)
-    monkeypatch.setattr(ComfyTargetClient, "request_json", probe)
-    kept = []
-    prepared, evidence = c.adapter.bind_endpoint(
-        c.request, c.grant, begin_lease=lambda lease: None,
-        retain_bridge=lambda lease, bridge: kept.append((lease, bridge)),
-        retire_bridge=lambda lease, **kwargs: None)
-    assert len(kept) == 1 and kept[0][0] == prepared.lease
-    assert [event[0] for event in events] == ["enable", "bridge", "probe"]
-    assert evidence == c.read()["lease"]["endpoint_binding"]
-    assert evidence["state"] == "ready" and evidence["pod_id"] == "pod-1"
-    assert evidence["object_info_encoding"] == "json-utf8-sorted-v1"
-    canonical = json.dumps(c.context.health_objects, sort_keys=True, separators=(",", ":"),
-                           ensure_ascii=False, allow_nan=False).encode("utf-8")
-    assert evidence["object_info_sha256"] == "sha256:" + hashlib.sha256(canonical).hexdigest()
-    assert evidence["invocation_id"] == prepared.lease.invocation_id
-    assert evidence["installed_receipt_sha256"] == prepared.installed["receipt_sha256"]
-    kept[0][1].close()
-    c.host.release()
-    assert c.read()["state"] == "cleanup_complete"
-
-
-def test_retained_endpoint_failure_closes_bridge_and_releases_same_lease(retained, monkeypatch):
-    from runpod_lifecycle import engine_bridge, https
-    from astrid.core.generation.backends.comfy_target import ComfyTargetClient
-
-    c = retained
-    closed = []
-    monkeypatch.setattr(https.HttpsPodTransport, "enable_engine_proxy", lambda *args: None,
-                        raising=False)
-
-    class Bridge:
-        url = "http://127.0.0.1:12345"
-
-        def __init__(self, transport, config):
-            self.transport = transport
-
-        def close(self):
-            closed.append(True)
-            self.transport.disconnect()
-
-    monkeypatch.setattr(engine_bridge, "EngineBridge", Bridge)
-    monkeypatch.setattr(ComfyTargetClient, "request_json", lambda self, path, **kwargs: {})
-    with pytest.raises(ValueError, match="canonical readiness"):
-        c.adapter.bind_endpoint(c.request, c.grant, begin_lease=lambda lease: None,
-                                retain_bridge=lambda lease, bridge: None,
-                                retire_bridge=lambda lease, **kwargs: None)
-    assert closed == [True] and c.deletes == ["pod-1"]
-    assert c.read()["state"] == "cleanup_complete"
-
-
 def test_retained_installation_accepts_only_the_existing_h3_recipe_and_root():
     from astrid.core.generation import engine_recipe, engine_runner
     from astrid.packs.runpod.remote_placement import RunPodInstallation
     from astrid.packs.runpod.target_selection import RunPodLeaseCompatibility
 
-    recipe = engine_recipe.load_recipe("vibecomfy-h3", "linux-x86_64-cu130")
-    root = "/root/astrid/engines/vibecomfy-h3"
+    recipe = engine_recipe.load_recipe("comfyui", "linux-x86_64-cu130")
+    root = "/root/astrid/engines/comfyui"
     expected = engine_runner.plan_install(recipe, root=root, placement="local")
     vibe = next(source for source in recipe.sources if source.name == "vibecomfy")
     compatibility = RunPodLeaseCompatibility(
         "sha256:" + expected.recipe_sha256, "sha256:" + expected.models_lock_sha256,
         _selected_runtime_commit(), vibe.pin.revision,
     ).as_mapping()
-    installation = RunPodInstallation(compatibility, engine="vibecomfy-h3", root=root)
+    installation = RunPodInstallation(compatibility, engine="comfyui", root=root)
     assert installation.plan() == expected
     with pytest.raises(Exception, match="unsupported retained installation"):
-        replace(installation, root="/root/astrid/engines/comfyui").plan()
-
-
-@pytest.mark.parametrize("release_race", [False, True])
-def test_real_pack_host_binding_composes_retained_owner_adapter_and_release(retained, tmp_path, monkeypatch, release_race):
-    from astrid.core.execution.target_provider import resolve_target_provider
-    from astrid.core.generation.backends.comfy_target import ComfyTargetClient, HTTP_TRANSFER_SECONDS, MAX_JSON_BYTES
-    from astrid.packs.runpod import target_selection
-    from runpod_lifecycle import engine_bridge, https
-    from vibecomfy.workflow import VibeWorkflow, WorkflowSource
-    from vibecomfy.workflow_bundle import emit_bundle
-
-    c = retained
-    c.host.close()
-    c.clock.now = datetime.now(timezone.utc).timestamp()
-    monkeypatch.setattr(target_selection, "resolve_runtime_data_root", lambda: tmp_path / "machine")
-    monkeypatch.setattr(https.HttpsPodTransport, "enable_engine_proxy", lambda *args: None, raising=False)
-    events = []
-
-    class Bridge:
-        url = "http://127.0.0.1:12345"
-
-        def __init__(self, transport, config):
-            self.transport = transport
-            events.append("bridge")
-
-        def close(self):
-            events.append("close")
-            self.transport.disconnect()
-
-    monkeypatch.setattr(engine_bridge, "EngineBridge", Bridge)
-    def probe(self, path, *, timeout, response_limit):
-        assert c.read()["lease"]["endpoint_binding"]["state"] == "bound"
-        assert self.http_origin == Bridge.url and path == "/object_info"
-        assert timeout == HTTP_TRANSFER_SECONDS and response_limit == MAX_JSON_BYTES
-        events.append("probe")
-        return c.context.health_objects
-    monkeypatch.setattr(ComfyTargetClient, "request_json", probe)
-    roots = (Path(__file__).resolve().parents[3] / "astrid" / "packs",)
-    bindings = resolve_target_provider("runpod", roots).TargetProviderBindings(pack_roots=roots, holds=c.host.holds,
-        credentials=lambda name: "fake-only", environ={})
-    monkeypatch.setattr("astrid.packs.runpod.managed_sources.ensure_managed_sources", lambda: c.placement.source_root)
-    selection = {"kind": "runpod", "engine": "comfyui", "preferences": c.prefs.as_mapping()}
-    provider = bindings.get(**selection)
-    c.owner = provider.lease_owner.selection
-    provider.lease_owner.clock, provider.lease_owner.timer = c.clock, c.clock.timer
-    c.owner.clock = lambda: datetime.fromtimestamp(c.clock(), timezone.utc)
-    c.owners.append(provider.lease_owner)
-    quote = provider.quote()
-    deadline = (datetime.fromtimestamp(c.clock(), timezone.utc) + timedelta(hours=2)).isoformat()
-    policy = {**selection, "offer_digest": quote["offer_digest"], "consent": ["paid"],
-              "max_usd": 1.0, "deadline": deadline, "preparation_seconds": 60,
-              "execution_seconds": 60, "idle_seconds": 1800}
-
-    root = tmp_path / "canonical"
-    root.mkdir()
-    source = root / "source.json"
-    source.write_text(json.dumps({"nodes": [{"id": 1, "type": "SaveImage", "inputs": [],
-                                              "widgets_values": ["proof"]}], "links": []}))
-    workflow = VibeWorkflow("retained-proof", WorkflowSource("retained-proof"))
-    workflow.add_node("SaveImage", _id="1", uid="sink", filename_prefix="proof")
-    workflow.register_input("filename_prefix", "1", "filename_prefix", "proof", type="STRING")
-    emit_bundle(workflow, root / "workflow.py", {"operation": "authored"})
-    inputs = {"python": str(root / "workflow.py"), "companion": str(root / "workflow.vibe.json"),
-              "source": str(source), "workflow_inputs": "{}"}
-    import threading
-    cancelled = threading.Event()
-    owner, invocation, evidence = bindings.bind(policy, inputs, invocation_id="task:attempt:1",
-                                                scratch=tmp_path, cancel=cancelled)
-    assert owner is provider and events == ["bridge", "probe"] and c.creates == 1
-    assert c.read()["lease"]["endpoint_binding"] == evidence
-    foreign = {**selection, "preferences": {**selection["preferences"], "provider_account_ref": "foreign"}}
-    with pytest.raises(ValueError, match="preferences differ"):
-        bindings.operate(foreign, "release")
-    assert c.deletes == []
-    if release_race:
-        results, errors = [], []
-        def release():
-            try:
-                results.append(bindings.operate(selection, "release"))
-            except BaseException as exc:
-                errors.append(exc)
-        thread = threading.Thread(target=release)
-        thread.start()
-        assert cancelled.wait(timeout=10)
-        bindings.finish(owner, invocation, success=False)
-        thread.join(timeout=10)
-        assert not thread.is_alive() and not errors and results[0]["state"] == "cleanup_complete"
-    else:
-        bindings.finish(owner, invocation, success=True)
-        assert bindings.operate(selection, "status")["lease"]["state"] == "idle"
-        assert bindings.operate(selection, "release")["state"] == "cleanup_complete"
-    assert events == ["bridge", "probe", "close"] and c.deletes == ["pod-1"]
-    bindings.close()
+        replace(installation, root="/root/astrid/engines/other").plan()
 
 
 @pytest.mark.parametrize("change", ["denied", "cap", "rate", "datacenter", "stock", "engine", "tuple", "dirty", "validate"])
 def test_retained_adapter_refuses_unsupported_or_unconsented_routes_before_create(retained, change):
     c = retained
-    request, grant = c.request, c.grant
-    if change == "denied": grant = replace(grant, consent=()); request = replace(request, consent=())
-    if change == "cap": grant = replace(grant, max_usd=0.0001); request = replace(request, max_usd=0.0001)
-    if change == "rate": c.quote_rate = 2.0
-    if change == "datacenter": c.dc = "other"
-    if change == "stock": c.stock = "unavailable"
+    if change in {"rate", "datacenter", "stock"}:
+        if change == "rate": c.quote_rate = 2.0
+        if change == "datacenter": c.dc = "other"
+        if change == "stock": c.stock = "unavailable"
+        c.grant = replace(c.grant, wait_for_capacity=False)
+        with pytest.raises((ValueError, RuntimeError)):
+            _claim(c)
+        assert c.creates == 0 and not c.owner.path.exists()
+        assert not c.pod.job_log
+        return
+    _claim(c)
+    request, consent = _request_for_job(c)
+    if change == "denied": request = replace(request, consent=("user_env",))
+    if change == "cap": request = replace(request, max_usd=0.0001)
     if change == "engine": request = replace(request, entry={"engine": "wan"})
     if change == "tuple":
         c.adapter.installation = replace(c.installation, compatibility={**c.installation.compatibility, "model_lock_digest": "sha256:" + "f" * 64})
@@ -464,22 +358,25 @@ def test_retained_adapter_refuses_unsupported_or_unconsented_routes_before_creat
     if change == "validate":
         c.adapter.validate = lambda r: (_ for _ in ()).throw(ValueError("invalid workflow"))
     with pytest.raises((ValueError, RuntimeError)):
-        c.adapter.prepare(request, grant)
-    assert c.creates == 0 and not c.owner.path.exists()
+        c.adapter.prepare(request, consent)
+    assert c.creates == 1 and c.owner.path.exists()
     assert not c.pod.job_log
 
 
 def test_retained_unknown_detached_start_retains_exact_job_and_a3_reconciles_before_delete(retained):
     c = retained
+    _claim(c)
+    request, consent = _request_for_job(c)
     c.lost_start = c.cancel_unknown = True
     with pytest.raises(TimeoutError, match="lost detached-start"):
-        c.adapter.prepare(c.request, c.grant)
+        c.adapter.prepare(request, consent)
     record = c.read()
     job = record["lease"]["preparation"]["job"]
     assert record["state"] == "cleanup_pending" and job["state"] == "starting"
     assert c.pod.cancelled == [job["id"]]
-    with pytest.raises(Exception, match="unresolved"):
-        c.adapter.prepare(c.request, replace(c.grant, invocation_id="retry"))
+    with pytest.raises(Exception, match=r"machine pod-1 has an unresolved preparation: run `astrid machines release pod-1`, then claim again"):
+        request, consent = _request_for_job(c, "retry")
+        c.adapter.prepare(request, consent)
     assert c.creates == 1 and len(c.pod.job_log) == 1
     with pytest.raises(Exception, match="stop remains unresolved"):
         c.host.release()
@@ -490,89 +387,101 @@ def test_retained_unknown_detached_start_retains_exact_job_and_a3_reconciles_bef
     assert c.read()["lease"]["preparation"]["job"] == {"id": job["id"], "state": "cancelled"}
 
 
+def test_claimed_preparation_expiring_during_install_refuses_and_releases_exact_pod(retained):
+    c = retained
+    _claim(c)
+    operation_id = c.read()["operation_id"]
+    pod_id = c.read()["pod_id"]
+    paid_expires_at = c.read()["lease"]["paid_expires_at"]
+    paid_limits = c.read()["paid_limits"]
+    request, consent = _request_for_job(c)
+    original = c.placement.prepare_claimed
+
+    def expires_during_install(*args, **kwargs):
+        assert c.clock() < paid_expires_at
+        result = original(*args, **kwargs)
+        # Change the clock directly so the deadline check runs without firing
+        # the fake timer that would independently start release.
+        c.clock.now = paid_expires_at + 1
+        return result
+
+    c.placement.prepare_claimed = expires_during_install
+    with pytest.raises(PreparedWorkerError, match="preparation consumed its paid lifetime"):
+        c.adapter.prepare(request, consent)
+
+    record = c.read()
+    assert record["operation_id"] == operation_id and record["pod_id"] == pod_id == "pod-1"
+    assert record["state"] == "cleanup_pending"
+    assert record["lease"]["preparation"]["state"] == "unresolved"
+    assert record["paid_limits"] == paid_limits
+    assert len(c.pod.job_log) == 2
+    assert "pod_bootstrap.sh" in c.pod.job_log[0]
+    assert "engines install" in c.pod.job_log[1]
+    assert not any("generate " in command for command in c.pod.job_log)
+    assert c.creates == 1 and c.deletes == []
+
+    c.host.release()
+    assert c.deletes == [pod_id]
+    assert c.read()["operation_id"] == operation_id
+    assert c.read()["pod_id"] == pod_id
+    assert c.read()["state"] == "cleanup_complete"
+
+
 def test_retained_install_failure_stays_with_a3_and_does_not_replay(retained):
     c = retained
+    _claim(c)
+    request, consent = _request_for_job(c)
     c.pod.fail_jobs.add("engines install")
     with pytest.raises(Exception, match="engine install"):
-        c.adapter.prepare(c.request, c.grant)
+        c.adapter.prepare(request, consent)
     record = c.read()
     assert record["lease"]["preparation"]["job"]["state"] == "exited"
-    assert record["lease"]["preparation"]["state"] == "unresolved"
-    with pytest.raises(Exception, match="unresolved"):
-        c.adapter.prepare(c.request, replace(c.grant, invocation_id="retry"))
+    assert record["lease"]["preparation"]["state"] == "stale_after_failure"
+    assert c.creates == 1 and not c.deletes
+    from astrid.packs.runpod.worker_owner import RunPodLease
+    lease = record["lease"]
+    invocation = RunPodLease(record["operation_id"], lease["owner_epoch"], lease["generation"],
+                             lease["invocation_id"], record)
+    c.host.settle(invocation, outcome="failed")
+    with pytest.raises(Exception, match="engine install"):
+        request, consent = _request_for_job(c, "retry")
+        c.adapter.prepare(request, consent)
+    assert c.creates == 1 and not c.deletes
+    assert c.read()["lease"]["preparation"]["state"] == "stale_after_failure"
     c.host.release()
-    assert c.creates == 1 and c.deletes == ["pod-1"]
+    assert c.deletes == ["pod-1"]
 
 
-def test_retained_slow_model_download_stops_at_preparation_seconds_and_releases(retained, monkeypatch, tmp_path):
-    """--preparation-seconds bounds the whole preparation, including the model download."""
-    import time as real_time
-    from astrid.core.generation import engine_runner, model_downloader
-    from tests.core.generation import test_engine_runner as canonical
-
+def test_retained_install_is_model_free_and_settles_through_a3(retained):
+    """Plan 32 T5h: preparation installs the engine only. No model transfer starts during it,
+    so a slow model download cannot consume the preparation deadline, and A3 still settles
+    and cleans up the lease."""
     c = retained
-    assert c.grant.preparation_seconds == 60
-    # The paid claim lifetime (USD cap at the quoted rate) alone would not bound preparation.
-    assert c.grant.max_usd / c.actual_rate * 3600 > 10 * c.grant.preparation_seconds
+    downloads = []
 
-    class FakeTime:  # one fake clock for controller, pod-side runner and downloader
-        def __getattr__(self, name):
-            return getattr(real_time, name)
-        monotonic = staticmethod(c.clock)
-        sleep = staticmethod(lambda seconds: None)
-    for module in (engine_runner, model_downloader, canonical):
-        monkeypatch.setattr(module, "time", FakeTime())
-    c.placement._clock = c.clock
-    c.monotonic = c.clock
-    c.install_uses_command_deadline = True
-    c.context.deadline = c.clock() + 10 ** 7
-    started = c.clock()
-    transferred = []
+    def reject_download(model, **kwargs):
+        downloads.append(model)
+        raise AssertionError("model download reached during the model-free install")
 
-    class SlowRange:  # a stalled transfer: 1 KiB per 5 fake seconds, never complete
-        status = 206
-
-        def __init__(self, request):
-            offset, end = request.headers["Range"].removeprefix("bytes=").split("-")
-            self.headers = {"Content-Range": f"bytes {offset}-{end}/{self.total}"}
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
-        def read(self, size):
-            c.clock.now += 5
-            transferred.append(1024)
-            return b"\0" * min(1024, size)
-
-    def download(model, *, models_root, deadline):
-        SlowRange.total = model.bytes
-        return model_downloader.download_model(
-            model, models_root=str(tmp_path / "models"), deadline=deadline,
-            opener=lambda request, timeout: SlowRange(request))
-    c.context.download_model = download
-
-    with pytest.raises(Exception, match=r"preparation deadline of 60s exceeded during engine install"):
-        c.adapter.bind_endpoint(c.request, c.grant, begin_lease=lambda lease: None,
-                                retain_bridge=lambda lease, bridge: None,
-                                retire_bridge=lambda lease, **kwargs: None)
-    assert transferred, "the fake download never started"
-    assert c.clock() - started <= c.grant.preparation_seconds + 5
+    c.context.download_model = reject_download
+    _claim(c)
+    request, consent = _request_for_job(c)
+    prepared = c.adapter.prepare(request, consent)
+    assert downloads == []
     install = next(line for line in c.pod.job_log if "engines install" in line)
-    assert float(install.split("--deadline ", 1)[1].split()[0]) <= c.grant.preparation_seconds
-    record = c.read()
-    job = record["lease"]["preparation"]["job"]
-    assert record["lease"]["preparation"]["state"] == "unresolved"
-    assert c.pod.cancelled == [job["id"]] and job["state"] == "cancelled"
-    assert c.creates == 1 and c.deletes == ["pod-1"]
-    assert record["state"] == "cleanup_complete"
+    assert "--model-cache" not in install
+    assert c.read()["lease"]["preparation"]["state"] == "prepared"
+    c.host.settle(prepared.lease)
+    c.clock.advance(1800)
+    assert c.deletes == ["pod-1"]
+    assert c.read()["state"] == "cleanup_complete"
 
 
 def test_retained_snapshot_bytes_changed_refuses_warm_reinstall(retained):
     c = retained
-    prepared = c.adapter.prepare(c.request, c.grant)
+    _claim(c)
+    request, consent = _request_for_job(c)
+    prepared = c.adapter.prepare(request, consent)
     c.host.settle(prepared.lease)
     key = c.installation.root + "/.astrid-engine/install.json"
     raw = json.loads(c.pod.files[key])
@@ -580,7 +489,8 @@ def test_retained_snapshot_bytes_changed_refuses_warm_reinstall(retained):
     c.pod.files[key] = json.dumps(raw).encode()
     jobs = list(c.pod.job_log)
     with pytest.raises(Exception, match="differs from its canonical receipt"):
-        c.adapter.prepare(c.request, replace(c.grant, invocation_id="next"))
+        request, consent = _request_for_job(c, "next")
+        c.adapter.prepare(request, consent)
     assert c.pod.job_log == jobs and c.creates == 1
     c.host.release()
     assert c.deletes == ["pod-1"]
@@ -592,15 +502,18 @@ def test_retained_actual_gpu_id_mismatch_never_starts_preparation(retained, monk
     from astrid.packs.runpod import worker_preparation
     from astrid.packs.runpod.worker_preparation import TargetObservationError
     c = retained
+    _claim(c)
     c.actual_gpu_id = "wrong-provider-gpu"
 
+    confirmations = []
     def provider_confirmation(api_key, contract, *, timeout_seconds):
-        if contract.gpu_type == "gpu-provider-exact":
-            raise TargetObservationError(f"GPU mismatch: provider reports {c.actual_gpu_id!r}")
-        return contract.gpu_type, contract.datacenter_id
+        confirmations.append(contract)
+        raise TargetObservationError(f"GPU mismatch: provider reports {c.actual_gpu_id!r}", gate="GPU")
     monkeypatch.setattr(worker_preparation, "confirm_acquired_machine", provider_confirmation)
-    with pytest.raises(Exception, match="requires cleanup"):
-        c.adapter.prepare(c.request, c.grant)
+    request, consent = _request_for_job(c)
+    with pytest.raises(Exception, match="exact release or reconciliation required"):
+        c.adapter.prepare(request, consent)
+    assert len(confirmations) == 1
     assert c.creates == 1 and not c.pod.job_log
     assert c.read()["state"] == "cleanup_pending"
     c.host.release()
@@ -612,171 +525,6 @@ def no_network(monkeypatch):
     def forbidden(*args, **kwargs):
         pytest.fail("generation preparation test attempted network access")
     monkeypatch.setattr(socket.socket, "connect", forbidden)
-
-
-@pytest.fixture
-def generation(case, sources, tmp_path):
-    case.now = datetime.now(timezone.utc)
-    case.grant = replace(case.grant, deadline=(case.now + timedelta(hours=1)).isoformat())
-    events = []
-    provider = _provider(sources)
-    placement = _wrapper(provider, sources)
-    pod = FakePod({}, provider.marker)
-    source, workflow = tmp_path / "source.json", tmp_path / "workflow.py"
-    source.write_text('{"nodes": {}}')
-    workflow.write_text("# normalized fake workflow")
-    request = RunPodPreparationRequest(
-        {"engine": "comfyui", "id": "image/fake", "kind": "image"}, source, workflow,
-        {"seed": 17}, case.grant.consent, case.grant.max_usd, case.grant.deadline,
-    )
-    def validate(request):
-        events.append("validate")
-    def connect(claim):
-        events.append("connect")
-        return Claim(claim["pod_id"], pod, dict(claim))
-    def select(claim):
-        events.append("select-worker")
-        return PreparedWorkerSelection(case.owner.path, tmp_path / "profile", tmp_path / "staging",
-                                       tmp_path / "journal", _claim_target(claim), {}, {})
-    preparer = RunPodGenerationPreparer(
-        owner=case.owner, placement=placement, validate=validate, connect_claim=connect,
-        select_worker=select, consent=case.grant,
-    )
-    return SimpleNamespace(case=case, preparer=preparer, request=request, events=events,
-                           provider=provider, pod=pod)
-
-
-@pytest.mark.parametrize("entry", [
-    {"id": "image/fake", "kind": "image"}, {"id": "video/fake", "kind": "video"},
-    {"kind": "workflow"}, {"id": "h3_av", "kind": "video"},
-])
-def test_ordinary_entry_and_raw_workflow_prepare_exact_claim_without_transform(generation, entry):
-    g = generation
-    prepared = g.preparer.prepare(replace(g.request, entry={"engine": "comfyui", **entry}))
-    assert g.events == ["validate", "connect", "select-worker"]
-    assert g.case.creates == 1
-    assert g.provider.claims == g.provider.releases == 0
-    assert g.pod.installed
-    assert all("h3_av.transform" not in command for command in g.pod.job_log)
-    request = prepared.execution_request(None)
-    assert request["remote_activation_required"] is True
-    assert request["target"] == prepared.selection.target
-    assert request["target"]["mounts"][0]["target"] == "/workspace"
-    saved = json.loads(g.case.owner.path.read_text())
-    assert saved["ordinary_preparation"] == prepared.receipt
-    assert prepared.receipt["claim_operation_id"] == saved["operation_id"]
-    assert prepared.receipt["state"] == "prepared"
-    assert prepared.inputs == {"seed": 17}
-    assert "inputs" not in prepared.receipt  # CAS remains Runtime's responsibility.
-
-
-@pytest.mark.parametrize("change", [
-    {"entry": {"engine": "wan"}}, {"max_usd": 99}, {"consent": ()},
-])
-def test_unsupported_engine_or_undisclosed_limits_refuse_before_claim(generation, change):
-    g = generation
-    with pytest.raises(PreparedWorkerError):
-        g.preparer.prepare(replace(g.request, **change))
-    assert g.case.creates == 0
-    assert not g.case.owner.path.exists()
-
-
-def test_source_validation_failure_happens_before_claim_or_offer(generation):
-    g = generation
-    def invalid(request):
-        raise ValueError("invalid raw workflow input")
-    g.preparer.validate = invalid
-    g.case.owner.observe_offer = lambda: pytest.fail("invalid source reached offer observation")
-    with pytest.raises(ValueError, match="invalid raw workflow"):
-        g.preparer.prepare(g.request)
-    assert g.case.creates == 0
-
-
-def test_ambiguous_install_retains_cleanup_and_cannot_replay(generation):
-    g = generation
-    g.pod.fail_jobs.add("engines install")
-    with pytest.raises(Exception, match="engine install"):
-        g.preparer.prepare(g.request)
-    saved = json.loads(g.case.owner.path.read_text())
-    assert saved["state"] == "cleanup_pending"
-    assert saved["ordinary_preparation"]["state"] == "unresolved"
-    calls = list(g.pod.job_log)
-    with pytest.raises(PreparedWorkerError, match="unresolved"):
-        g.preparer.prepare(g.request)
-    assert g.case.creates == 1
-    assert g.pod.job_log == calls
-
-
-def test_preparation_expiry_never_admits_worker(generation):
-    from datetime import timedelta
-    g = generation
-    original = g.preparer.placement.prepare_claimed
-    def expires(*args, **kwargs):
-        result = original(*args, **kwargs)
-        g.case.now += timedelta(hours=2)
-        return result
-    g.preparer.placement.prepare_claimed = expires
-    with pytest.raises(PreparedWorkerError, match="paid lifetime"):
-        g.preparer.prepare(g.request)
-    assert "select-worker" not in g.events
-    assert json.loads(g.case.owner.path.read_text())["state"] == "cleanup_pending"
-
-
-def test_bound_client_hands_normalized_inputs_to_ordinary_prepared_boundary(generation):
-    g = generation
-    prepared = g.preparer.prepare(g.request)
-    calls = []
-    selection = replace(prepared.selection, composition_factory=lambda **kwargs: calls.append(kwargs) or object())
-    prepared = replace(prepared, selection=selection)
-    client = object()
-    bound = prepared.bind_client(client, workflow_path=g.request.workflow,
-                                 workflow_bundle_path=g.request.workflow.parent)
-    assert bound._client is client
-    assert calls[0]["workflow_inputs"] == {"seed": 17}
-    with pytest.raises(PreparedWorkerError, match="inputs changed"):
-        prepared.bind_client(client, workflow_path=g.request.workflow,
-                             workflow_bundle_path=g.request.workflow.parent, workflow_inputs={"seed": 18})
-
-
-@pytest.mark.parametrize("entry", [
-    {"id": "image/fake", "kind": "image"}, {"id": "video/fake", "kind": "video"},
-    {"kind": "workflow"}, {"id": "h3_av", "kind": "video"},
-])
-def test_preparation_no_wait_and_follow_keep_one_claim_and_exact_task(generation, entry, tmp_path):
-    """Exercise the pack handoff; the public A10 follow bridge is a separate dependency."""
-    g = generation
-    prepared = g.preparer.prepare(replace(g.request, entry={"engine": "comfyui", **entry}))
-    execution = prepared.execution_request(None)
-    binding = {"target": execution["target"]}
-    task = _task(execution_binding=binding)
-    settled = _task(state="succeeded", execution_binding=binding)
-    client = _Client([task, settled])
-    runtime = _Runtime(client.events)
-    selection = replace(prepared.selection, composition_factory=lambda **kwargs: runtime)
-    prepared = replace(prepared, selection=selection)
-    bound = prepared.bind_client(client, workflow_path=g.request.workflow,
-                                 workflow_bundle_path=g.request.workflow.parent)
-
-    assert bound.invoke_result(
-        "vibecomfy.run", kind="executor", wait=False,
-        recovery_path=str(tmp_path / "receipt.json"), execution_request=execution,
-    ) is client.first
-    bound.monitor_task(task)
-
-    assert [event[0] for event in client.events] == ["invoke", "show", "activate", "show", "retire"]
-    assert client.events[0][3]["execution_request"] == execution
-    assert client.events[-1] == ("retire", settled)
-    assert g.case.creates == 1
-    assert g.provider.claims == g.provider.releases == 0
-    assert sum("engines install" in command for command in g.pod.job_log) == 1
-
-
-def test_missing_sdk_cancel_bridge_retains_custody_and_reports_stop_unknown(generation):
-    admission = SimpleNamespace(task_id="task-exact")
-    assert generation.preparer.cancel(admission=admission, reason="user") == {
-        "task_id": "task-exact", "state": "cancellation_unresolved",
-        "custody_retained": True, "observed_stop": False,
-    }
 
 
 def test_host_adapter_composition_quotes_approved_cuda_version(monkeypatch, tmp_path):
@@ -830,19 +578,3 @@ def test_host_adapter_composition_quotes_approved_cuda_version(monkeypatch, tmp_
     finally:
         adapter.lease_owner.close()
 
-
-def test_host_refuses_bind_whose_receipt_differs_from_the_prepared_install():
-    from astrid.core.execution.generic_host import HostError, _target_inventory_document
-    from astrid.core.generation.target_inventory import parse_document
-
-    row = {"name": "a.bin", "subdir": "x", "size": 3, "sha256": "a" * 64}
-    installed = {"receipt_sha256": "sha256:" + "1" * 64}
-    evidence = {"installed_receipt_sha256": "sha256:" + "1" * 64, "loopback_url": "http://127.0.0.1:9"}
-    document = _target_inventory_document({"installed": installed, "models": (row,)}, evidence)
-    assert parse_document(document, evidence["loopback_url"]) == ("inventory", (row,))
-    for invocation, binding in (
-            ({"installed": installed, "models": (row,)}, {**evidence, "installed_receipt_sha256": "sha256:" + "2" * 64}),
-            ({"installed": {"receipt_sha256": "sha256:" + "2" * 64}, "models": (row,)}, evidence),
-            ({"models": (row,)}, evidence)):
-        with pytest.raises(HostError, match="receipt differs from the prepared installation"):
-            _target_inventory_document(invocation, binding)

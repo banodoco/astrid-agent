@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from astrid.core.execution.generic_host import RuntimeProtocolClient
+import pytest
+
+from astrid.core.execution.generic_host import HostError, RuntimeProtocolClient
 
 
 class Generated:
@@ -13,7 +15,10 @@ class Generated:
 
     def fail_attempt(self, attempt_id, **kwargs):
         self.calls.append(("fail", attempt_id, kwargs))
-        return {"task": {"result": self.result}}
+        # Runtime owns result.error and replaces any submitted value there.
+        stored = dict(self.result or {})
+        stored["error"] = {"code": "executor_failed", "message": "Runtime failure payload"}
+        return {"task": {"id": "task-1", "result": stored}}
 
     def get_task(self, task_id):
         return {"id": task_id, "attempt_id": "attempt-1", "version": 4,
@@ -32,7 +37,8 @@ def _client(result):
 
 
 def test_failure_forwards_outputs_and_flat_result_and_checks_readback():
-    result = {"status": "failed", "manifest_ref": {"object_id": "sha256:" + "a" * 64, "size": 12}}
+    result = {"status": "failed", "host_failure": {"code": "executor_failed", "message": "Host failure evidence"},
+              "manifest_ref": {"object_id": "sha256:" + "a" * 64, "size": 12}}
     client = _client(result)
     outputs = [{"name": "result_manifest", "output_port": "result_manifest", "role": "manifest"}]
 
@@ -45,6 +51,18 @@ def test_failure_forwards_outputs_and_flat_result_and_checks_readback():
     assert payload["outputs"] == outputs
     assert payload["result"] == result
     assert "outputs" not in payload["result"]
+    assert client._verify_terminal_evidence_readback(
+        "task-1", result, {"task": {"id": "task-1", "result": {
+            **result, "error": {"code": "executor_failed", "message": "Runtime failure payload"}}}}
+    )["task"]["result"]["host_failure"] == result["host_failure"]
+
+
+def test_failure_readback_missing_host_failure_fails_closed():
+    result = {"status": "failed", "host_failure": {"code": "executor_failed", "message": "Host evidence"}}
+    client = _client({"status": "failed", "error": {"code": "executor_failed", "message": "Runtime payload"}})
+    with pytest.raises(HostError, match="not present in durable task readback"):
+        client.fail("task-1", "lease-1", "producer failed", attempt_id="attempt-1", fence=3,
+                    result=result)
 
 
 def test_cancel_evidence_carries_complete_fence_and_unknown_stop():

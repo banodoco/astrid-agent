@@ -1503,6 +1503,8 @@ resources:
   path: shared/readiness-image.tsx
 extensions:
   astrid:
+    skills:
+      default: true
     output_result_exemptions:
       actions:
         render:

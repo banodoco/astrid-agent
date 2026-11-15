@@ -18,6 +18,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.installed_smoke
+# Measured 126 s on a hosted run (CI 43348849041); the suite default is 120 s.
+@pytest.mark.timeout(300)
 def test_fresh_wheel_cli(tmp_path: Path) -> None:
     if importlib.util.find_spec("build") is None or importlib.util.find_spec("wheel") is None:
         pytest.skip("wheel build toolchain is absent")
@@ -98,7 +100,7 @@ def test_fresh_wheel_cli(tmp_path: Path) -> None:
         assert result.returncode == 0, result.stdout + result.stderr
         if "--json" in args:
             assert isinstance(json.loads(result.stdout), (dict, list))
-    result = cli("astrid", "generate", "image", "a red boat", "--entry", "z-image", "--mode", "t2i", "--target", "managed", "--dry-run", "--json")
+    result = cli("astrid", "generate", "image", "a red boat", "--entry", "z-image", "--mode", "t2i", "--placement", "managed", "--dry-run", "--json")
     assert result.returncode == 2, result.stdout + result.stderr
     envelope = json.loads(result.stdout)
     assert envelope["status"] == "blocked"

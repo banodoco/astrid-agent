@@ -99,22 +99,30 @@ def test_c0_digest_gate_retains_approved_media_and_pending_proof():
 def test_generation_mcp_selectors_preserve_paid_and_release_controls():
     from astrid import mcp_server
     from astrid.core.generation.cli import _parser
+    from astrid.core.machines_cli import _parser as machine_parser
 
     tools = mcp_server._generation_tools()
     assert {"generate_list", "generate_targets", "generate_describe", "generate_launch",
             "generate_image", "generate_video", "generate_workflow", "generate_release"} <= set(tools)
     argv = mcp_server.argv_for(tools["generate_image"], {
-        "entry": "z-image", "mode": "t2i", "target": "runpod", "consent": ["paid"],
-        "max_usd": 2.0, "deadline": "2099-01-01T00:00:00Z", "no_wait": True,
+        "entry": "z-image", "mode": "t2i", "placement": "runpod", "no_wait": True,
     })
     parsed = _parser().parse_args(argv[1:])
-    assert (parsed.entry, parsed.target, parsed.consent, parsed.max_usd, parsed.deadline,
-            parsed.no_wait) == ("z-image", "runpod", ["paid"], 2.0, "2099-01-01T00:00:00Z", True)
+    assert (parsed.entry, parsed.placement, parsed.no_wait) == ("z-image", "runpod", True)
+    claim = mcp_server.argv_for(mcp_server._machine_tools()["machines_claim"], {
+        "consent": ["paid"], "max_usd": 2.0, "deadline": "2099-01-01T00:00:00Z",
+    })
+    parsed_claim = machine_parser().parse_args(claim[1:])
+    assert (parsed_claim.command, parsed_claim.consent, parsed_claim.max_usd, parsed_claim.deadline) == (
+        "claim", ["paid"], 2.0, "2099-01-01T00:00:00Z")
+    assert {"max_usd", "deadline", "allow_paid", "until_release"}.isdisjoint(
+        tools["generate_image"]["definition"]["inputSchema"]["properties"])
+    assert "paid" not in tools["generate_image"]["definition"]["inputSchema"]["properties"]["consent"]["items"]["enum"]
     release = mcp_server.argv_for(tools["generate_release"], {
-        "engine": "comfyui", "target": "runpod", "no_wait": True,
+        "engine": "comfyui", "placement": "runpod", "no_wait": True,
     })
     parsed = _parser().parse_args(release[1:])
-    assert (parsed.engine, parsed.target, parsed.no_wait) == ("comfyui", "runpod", True)
+    assert (parsed.engine, parsed.placement, parsed.no_wait) == ("comfyui", "runpod", True)
 
 
 def _snapshot(root):
@@ -221,6 +229,14 @@ class Result:
     def to_dict(self):
         return self.raw_result
 class Client:
+    # RunPod preferences are saved in the Runtime's generation settings document (machines.runpod),
+    # so describing the runpod placement reads them from this connection. The refusal without
+    # saved preferences is the intended T6d behaviour, not a regression.
+    def get_user_app_state(self, key):
+        assert key == 'generation'
+        return {'content': {'machines': {'runpod': {
+            'provider_account_ref': 'fixture-account', 'gpu_types': ['NVIDIA A40'],
+            'image': 'registry.example/worker@sha256:' + '0' * 64}}}, 'version': 1}
     def invoke_result(self, capability_id, *, kind, inputs, wait, **kwargs):
         events.append([capability_id, kind, wait])
         if capability_id == 'runpod.status':
@@ -229,8 +245,8 @@ class Client:
         return Result({'task_id': 'release-task-a', 'state': 'cleanup_pending',
                        'idempotency_key': 'runpod-release:operation-a'})
 cli._open_client = lambda: nullcontext(Client())
-description = command(['describe', '--target', 'runpod'])
-release = command(['release', '--engine', 'comfyui', '--target', 'runpod', '--no-wait'])
+description = command(['describe', '--placement', 'runpod'])
+release = command(['release', '--engine', 'comfyui', '--placement', 'runpod', '--no-wait'])
 assert events == [['runpod.status', 'action', True], ['runpod.release', 'action', False]]
 print(json.dumps({'origin': astrid.__file__, 'description': description, 'release': release}))
 """, saved_target=True)

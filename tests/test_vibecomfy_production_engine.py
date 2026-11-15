@@ -1,10 +1,9 @@
 from __future__ import annotations
 
+from tests.local_engine_stub import LOCAL_ENGINE_URL, local_engine_patch
 import hashlib
 import importlib
 import json
-import sys
-from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -148,7 +147,7 @@ def test_load_workflow_path_unions_ready_template_and_ui_canonicalization(
         "_load_workflow",
         Mock(return_value=ready_workflow),
     )
-    canonicalize = Mock(return_value=(ui_workflow, None))
+    canonicalize = Mock(return_value=(ui_workflow, None, {}))
     monkeypatch.setattr(production_engine, "_canonicalize_ui_workflow", canonicalize)
     monkeypatch.setattr(
         production_engine,
@@ -234,25 +233,68 @@ def test_run_executor_verifies_checkout_readiness_pair_and_selects_profile(
     engine_output.parent.mkdir(parents=True)
     engine_output.write_bytes(b"image")
     readiness = tmp_path / "readiness.json"
-    readiness_bytes = json.dumps({"vibecomfy_session": {}}).encode("utf-8")
+    readiness_bytes = json.dumps({"engine_identity": {}}).encode("utf-8")
     readiness.write_bytes(readiness_bytes)
     readiness_hash = "sha256:" + hashlib.sha256(readiness_bytes).hexdigest()
-    managed_run = Mock(return_value=(engine_output,))
+
+    def produce_managed_result(*args, **kwargs):
+        _fixture_envelope, payload = _managed_result_fixture(tmp_path)
+        payload["outputs"] = [{
+            "producer_output_id": "vibecomfy:image:0",
+            "output_port": "image",
+            "ordinal": 0,
+            "path": engine_output.relative_to(output_root).as_posix(),
+            "media_type": "image/png",
+            "bytes": engine_output.stat().st_size,
+            "sha256": hashlib.sha256(engine_output.read_bytes()).hexdigest(),
+        }]
+        payload["attempt_id"] = kwargs["attempt_identity"]
+        envelope = output_root / "managed-generation-result.json"
+        envelope.write_text(json.dumps(payload), encoding="utf-8")
+        production_engine._LAST_PRODUCTION_RESULT = production_engine.ProductionRunResult(
+            outputs=(engine_output,),
+            managed_generation_result_path=envelope,
+            managed_generation_result=payload,
+        )
+        return (engine_output,)
+
+    managed_run = Mock(side_effect=produce_managed_result)
     monkeypatch.setattr(production_engine, "run_workflow_path", managed_run)
 
-    run._run_and_settle(
-        workflow,
-        output_root,
-        task_identity="task-1",
-        execution_identity="execution-1",
-        readiness_profile_path=str(readiness),
-        readiness_profile_hash=readiness_hash,
-    )
+    # Stand in for owned preparation while retaining the real producer dispatch and settlement.
+    import astrid.core.generation.managed_preparation as managed_preparation
+    from astrid.packs.vibecomfy import local_job
 
-    assert managed_run.call_args.kwargs["profile_id"] == "checkout_server"
-    assert managed_run.call_args.kwargs["hc03_profile"] == {
-        "vibecomfy_session": {}
-    }
+    def run_owned_action(workflow_path, out, *, task_identity, attempt_identity, align,
+                         expected_execution_identity=None, **kwargs):
+        return run._run_and_settle(
+            workflow_path, out, task_identity=task_identity, attempt_identity=attempt_identity,
+            align=align, execution_identity=expected_execution_identity or "-",
+            comfy_url=LOCAL_ENGINE_URL, **kwargs,
+        )
+
+    def read_preparation(*, endpoint, execution_identity=None, **_kwargs):
+        if endpoint != LOCAL_ENGINE_URL:
+            return None
+        return {"placement": "managed", "alignment": {"mode": "check"},
+                "manifest": {"models": []}, "execution_identity": execution_identity}
+
+    monkeypatch.setattr(local_job, "run_owned_action", run_owned_action)
+    monkeypatch.setattr(managed_preparation, "read_preparation", read_preparation)
+
+    with local_engine_patch():
+        run._run_and_settle(
+            workflow,
+            output_root,
+            task_identity="task-1",
+            execution_identity="execution-1",
+            readiness_profile_path=str(readiness),
+            readiness_profile_hash=readiness_hash,
+        )
+
+    # The verified pair no longer selects the checkout route for a local run: the engine run is local_server.
+    assert managed_run.call_args.kwargs["profile_id"] == "local_server"
+    assert managed_run.call_args.kwargs["hc03_profile"] is None
     with pytest.raises(ValueError, match="must be supplied together"):
         run._run_and_settle(
             workflow,
@@ -268,21 +310,34 @@ def test_run_executor_rejects_outputs_outside_private_custody(
 ) -> None:
     monkeypatch.setenv("ASTRID_INTERNAL_INVOCATION", "1")
     run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
-    workflow = tmp_path / "workflow.json"
-    workflow.write_text('{"template_id":"image/a","bindings":{}}', encoding="utf-8")
+    from astrid.pack_api import AstridValueError
+
+    envelope, payload = _managed_result_fixture(tmp_path)
     outside = tmp_path / "outside.png"
     outside.write_bytes(b"image")
-    monkeypatch.setattr(
-        production_engine,
-        "run_workflow_path",
-        Mock(return_value=(outside,)),
+    escaped = envelope.parent / "outputs" / "escaped.png"
+    escaped.symlink_to(outside)
+    payload["outputs"][0].update(
+        path="outputs/escaped.png", media_type="image/png", bytes=outside.stat().st_size,
+        sha256=hashlib.sha256(outside.read_bytes()).hexdigest(),
+    )
+    envelope.write_text(json.dumps(payload), encoding="utf-8")
+    production = production_engine.ProductionRunResult(
+        outputs=(escaped,), managed_generation_result_path=envelope,
+        managed_generation_result=payload,
     )
 
-    with pytest.raises(FileNotFoundError, match="escaped output custody"):
-        run._run_and_settle(
-            workflow,
+    # Exercise the real envelope validator, before any host-owned output is copied.
+    with pytest.raises(
+        AstridValueError,
+        match="managed-generation result failed validation:.*escapes the assigned staging directory",
+    ):
+        run._materialize_managed_generation_result(
             tmp_path / "outputs",
+            production,
             task_identity="task-1",
+            attempt_identity="attempt-1",
+            workflow_path=tmp_path / "workflow.json",
         )
 
 
@@ -416,121 +471,6 @@ def test_managed_result_invalid_or_late_completion_fails_closed(
         )
 
 
-@pytest.fixture
-def _isolated_comfy_imports() -> Iterator[None]:
-    original_modules = {
-        name: module
-        for name, module in sys.modules.items()
-        if name == "comfy" or name.startswith("comfy.")
-    }
-    original_path = list(sys.path)
-    for name in original_modules:
-        sys.modules.pop(name, None)
-    try:
-        yield
-    finally:
-        for name in tuple(sys.modules):
-            if name == "comfy" or name.startswith("comfy."):
-                sys.modules.pop(name, None)
-        sys.modules.update(original_modules)
-        sys.path[:] = original_path
-
-
-def test_pip_embedded_fails_closed_when_embedded_client_is_missing(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    _isolated_comfy_imports: None,
-) -> None:
-    monkeypatch.delenv("COMFYUI_PATH", raising=False)
-
-    with pytest.raises(
-        production_engine.ProductionEngineError,
-        match=r"set COMFYUI_PATH, or use local_server mode \(comfy_url\) with your own ComfyUI",
-    ):
-        production_engine._run_profile(
-            object(),
-            "pip_embedded",
-            None,
-            model_id="z_image_turbo",
-            template_id="image/z_image",
-            task_identity="test-task",
-            destination=tmp_path / "outputs",
-        )
-
-
-def test_pip_embedded_inserts_tree_containing_embedded_client(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    _isolated_comfy_imports: None,
-) -> None:
-    root = tmp_path / "comfyui-embedded"
-    client = root / "comfy" / "client" / "embedded_comfy_client.py"
-    client.parent.mkdir(parents=True)
-    (root / "comfy" / "__init__.py").write_text("", encoding="utf-8")
-    (client.parent / "__init__.py").write_text("", encoding="utf-8")
-    client.write_text("class Comfy:\n    pass\n", encoding="utf-8")
-    monkeypatch.setenv("COMFYUI_PATH", str(root))
-
-    selected = production_engine._bootstrap_embedded_comfy_client()
-
-    assert selected == root.resolve()
-    assert sys.path[0] == str(root.resolve())
-    imported = sys.modules["comfy.client.embedded_comfy_client"]
-    assert imported.__file__ is not None
-    assert Path(imported.__file__).resolve() == client.resolve()
-
-
-@pytest.mark.integration
-def test_pip_embedded_consumes_canonical_bundle_and_pinned_session_config(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    _isolated_comfy_imports: None,
-) -> None:
-    root = tmp_path / "comfyui-embedded"
-    client = root / "comfy" / "client" / "embedded_comfy_client.py"
-    client.parent.mkdir(parents=True)
-    (root / "comfy" / "__init__.py").write_text("", encoding="utf-8")
-    (client.parent / "__init__.py").write_text("", encoding="utf-8")
-    client.write_text("class Comfy:\n    pass\n", encoding="utf-8")
-    monkeypatch.setenv("COMFYUI_PATH", str(root))
-
-    workflow = SimpleNamespace(metadata={"comfy_configuration": {"cache_none": True}})
-    bundle = SimpleNamespace(workflow=workflow)
-    record = object()
-    monkeypatch.setattr(
-        production_engine, "_canonical_bundle", lambda _resolved: (record, bundle)
-    )
-    runtime_run = importlib.import_module("vibecomfy.runtime.run")
-
-    output = tmp_path / "engine-output" / "image.png"
-    output.parent.mkdir(parents=True)
-    output.write_bytes(b"image")
-    run_embedded_sync = Mock(return_value=SimpleNamespace(outputs=[output]))
-    monkeypatch.setattr(runtime_run, "run_embedded_sync", run_embedded_sync)
-
-    result = production_engine._run_profile(
-        object(),
-        "pip_embedded",
-        None,
-        model_id="z-image",
-        template_id="image/z_image",
-        task_identity="task-1",
-        destination=tmp_path / "task-out",
-    )
-
-    assert result == (output.resolve(),)
-    assert run_embedded_sync.call_args.args == (record, bundle)
-    config = run_embedded_sync.call_args.kwargs["config"]
-    assert config.cache_policy == "none"
-    assert config.extra["base_directory"] == str(root.resolve())
-    assert config.extra["disable_known_models"] is True
-    assert config.extra["extra_model_paths_config"] == [
-        str((root / "extra_model_paths.yaml").resolve())
-    ]
-    assert config.runtime_root == (tmp_path / "task-out" / ".vibecomfy-runtime").resolve()
-    assert config.cwd == root.resolve()
-
-
 @pytest.mark.parametrize("extra", [
     {"source_video": "source.mp4"},
     {"readiness_profile_path": "/unused/profile.json", "readiness_profile_hash": "sha256:unused"},
@@ -550,11 +490,16 @@ def test_local_server_mode_selection_canonicalizes_url_and_requires_managed_resu
     action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
     run = Mock(return_value=production_engine.ProductionRunResult(outputs=()))
     monkeypatch.setattr(production_engine, "run_workflow_result_path", run)
+    from astrid.core.generation import entries
+    probed = []  # nothing listens on this port: the engine probe is a double here (real in test_local_run_site)
+    monkeypatch.setattr(type(entries.engine_table()["comfyui"]), "probe",
+                        lambda self, endpoint, timeout=5.0: probed.append(endpoint) or {"ready": True, "endpoint": endpoint})
     with pytest.raises(ValueError, match="managed_generation_result_path"):
         action._run_and_settle(
             tmp_path / "workflow.json", tmp_path / "attempt" / "outputs",
             task_identity="task-1", comfy_url="http://localhost:43217",
         )
+    assert probed == ["http://127.0.0.1:43217"]
     assert run.call_args.kwargs["profile_id"] == "local_server"
     assert run.call_args.kwargs["comfy_url"] == "http://127.0.0.1:43217"
     assert "comfy_output_dir" not in run.call_args.kwargs
@@ -584,7 +529,8 @@ def test_local_server_failure_has_runnable_discovery_hint(tmp_path, monkeypatch,
 
     error = capsys.readouterr().err
     assert "missing nodes: MissingNode" in error
-    assert "recovery: python3 -m astrid.packs.vibecomfy.local scan" in error
+    # R4.1: the runnable hint on an installed Astrid is the launcher's generate scan
+    assert "recovery: astrid generate scan" in error
     assert "astrid executors" not in error
 
 

@@ -33,6 +33,18 @@ def _safe_absolute(value: str | Path, *, base: Path) -> Path:
     return path
 
 
+def resolve_xdg_runtime_root() -> Path | None:
+    """Ignore malformed XDG sources before any normalization can hide '..'."""
+    raw = os.environ.get("XDG_RUNTIME_DIR", "").strip()
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    if not path.is_absolute() or ".." in path.parts:
+        print(f"Astrid ignored XDG_RUNTIME_DIR {raw!r}: expected an absolute path without '..'", file=sys.stderr)
+        return None
+    return path
+
+
 def _persistent_setup_selection_path() -> Path:
     """Return the existing Astrid skills/setup selection document path."""
 
@@ -149,7 +161,7 @@ def _ambiguous_roots_error(
     )
 
 
-def resolve_runtime_data_root() -> Path:
+def resolve_runtime_data_root(*, fallback: bool = True) -> Path | None:
     """Return one stable support root selected by existing config surfaces.
 
     An explicit ``ASTRID_RUNTIME_DATA_ROOT`` override wins. Otherwise a
@@ -157,7 +169,8 @@ def resolve_runtime_data_root() -> Path:
     Next a persisted Astrid setup selection is reused when available, followed
     by the checked-in install config. A wheel without these surfaces uses
     ``~/.astrid-data``. Existing selections are read only; this function never
-    creates a workspace or moves data.
+    creates a workspace or moves data. With ``fallback=False``, return None
+    when no existing configuration surface selects a root.
     """
 
     configured = os.environ.get(DATA_ROOT_ENV, "").strip()
@@ -190,7 +203,7 @@ def resolve_runtime_data_root() -> Path:
     # A wheel does not ship the source checkout's top-level config. Keep its
     # fallback persistent and cwd-independent rather than silently falling
     # back to the neutral launcher's old external support tree.
-    return _safe_absolute(Path.home() / ".astrid-data", base=Path.home())
+    return _safe_absolute(Path.home() / ".astrid-data", base=Path.home()) if fallback else None
 
 
 def ensure_no_unmigrated_runtime(data_root: Path) -> None:

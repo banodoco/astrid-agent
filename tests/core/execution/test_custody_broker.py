@@ -1985,7 +1985,7 @@ def test_command_diagnostic_decodes_argc_excludes_environment_and_redacts_secret
     assert evidence["environment"] == "EXCLUDED"
 
 
-@pytest.mark.parametrize("packet", [b"", b"x" * (65536 + 1), (257).to_bytes(4, sys.byteorder) + b"x\0", _procargs_packet(["a", "b"])[:10]])
+@pytest.mark.parametrize("packet", [b"", pytest.param(b"x" * (65536 + 1), id="oversized-64KiB-packet"), (257).to_bytes(4, sys.byteorder) + b"x\0", _procargs_packet(["a", "b"])[:10]])
 def test_command_diagnostic_malformed_or_overlimit_args_are_explicit(packet):
     with pytest.raises(custody.CustodyError):
         custody._diagnostic_argv(packet)
@@ -4916,3 +4916,35 @@ def test_linux_descendant_exiting_during_pidfd_bind_is_absent(observed_descendan
     monkeypatch.setattr(custody.platform, "pidfd_open", gone, raising=False)
     owner.observe_census({103: "birth-103"}, census=census, fresh_census=lambda: pytest.fail("unexpected"))
     assert 103 not in owner._handles and owner._uncertain is None
+
+
+def test_observation_transaction_construction_failure_releases_lock(
+    observed_descendant,
+):
+    owner, _, _ = _ordinary_census_fixture(observed_descendant)
+    failure = MemoryError("transaction allocation failed")
+
+    def fail_construction(self, custody_owner, deadline, started):
+        raise failure
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(custody._ObservationTransaction, "__init__", fail_construction)
+        with pytest.raises(MemoryError) as raised:
+            with owner._observation_guard(time.monotonic() + 1.0):
+                pytest.fail("transaction construction must fail before observation")
+
+    assert raised.value is failure
+    acquired = []
+
+    def acquire_from_another_thread():
+        locked = owner._lock.acquire(timeout=0.1)
+        acquired.append(locked)
+        if locked:
+            owner._lock.release()
+
+    thread = threading.Thread(target=acquire_from_another_thread)
+    thread.start()
+    thread.join(timeout=1.0)
+    assert not thread.is_alive()
+    assert acquired == [True]
+    assert owner._uncertain is failure

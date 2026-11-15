@@ -388,3 +388,44 @@ def test_opt_in_invocation_persists_explicit_managed_output_readback_choice(
     assert captured["read_managed_outputs"] is requested
     assert reads == ([TASK_ID] if requested else [])
     assert result.outputs.get("managed_outputs") == (output_rows if requested else None)
+
+
+def test_wait_reports_state_and_waiting_reason_changes_to_stderr(monkeypatch, capsys):
+    tasks = iter([
+        {**_task("queued"), "waiting_reason": "insufficient_storage", "realm_root": "/realm"},
+        {**_task("queued"), "waiting_reason": "waiting_for_worker", "holder_task_id": "other-task"},
+        _task("running"),
+        _task("succeeded"),
+    ])
+    client = SimpleNamespace(tasks=SimpleNamespace(show=lambda _: _result(next(tasks))))
+    monkeypatch.setattr(invocation.time, "sleep", lambda _: None)
+    result, ok, _ = invocation._wait_for_kernel_task_loop(
+        client, task_id=TASK_ID, run_id=RUN_ID, timeout_seconds=10, poll_seconds=0.001
+    )
+    captured = capsys.readouterr()
+    assert ok and result["state"] == "completed"
+    assert captured.out == ""
+    assert "insufficient_storage" in captured.err and "/realm" in captured.err and "1 GiB" in captured.err
+    assert "waiting_for_worker" in captured.err and "other-task" in captured.err
+    assert "running" in captured.err
+
+
+def test_wait_heartbeat_for_non_runpod(monkeypatch, capsys):
+    now = [0.0]
+    tasks = iter([{**_task("queued"), "waiting_reason": "waiting_for_gpu"},
+                  {**_task("queued"), "waiting_reason": "waiting_for_gpu"}, _task("succeeded")])
+    client = SimpleNamespace(tasks=SimpleNamespace(show=lambda _: _result(next(tasks))))
+    monkeypatch.setattr(invocation.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(invocation.time, "sleep", lambda _: now.__setitem__(0, 61.0))
+    invocation._wait_for_kernel_task_loop(client, task_id=TASK_ID, run_id=RUN_ID, timeout_seconds=120, poll_seconds=60)
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "60s" in captured.err or "1m" in captured.err
+    assert "waiting_for_gpu" in captured.err
+
+
+def test_runpod_policy_uses_runtime_task_envelope():
+    policy = {"kind": "runpod", "wait_for_capacity": True}
+    task = {"spec": {"spec": {"capability_id": "vibecomfy.run", "inputs": {"placement_policy": policy}}}}
+    assert invocation._runpod_generation_policy(task) == policy
+    assert invocation._runpod_generation_policy({"spec": task["spec"]["spec"]}) is None

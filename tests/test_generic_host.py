@@ -1593,7 +1593,7 @@ def test_runtime_protocol_client_uses_worker_token_contract_without_user_handsha
 
         def register_executor(self, executor, *, idempotency_key):
             self.registration_payloads.append(executor)
-            return {"executor_id": executor["executor_id"], "idempotency_key": idempotency_key}
+            return {**executor, "idempotency_key": idempotency_key}
 
     monkeypatch.setattr("astrid_runtime_client.WorkspaceClient", WorkerGenerated)
     client = RuntimeProtocolClient(
@@ -1604,9 +1604,9 @@ def test_runtime_protocol_client_uses_worker_token_contract_without_user_handsha
         capabilities=[],
         max_concurrency=1,
         resource_keys=[],
-        source_digest="sha256:" + "a" * 64,
-        dependency_digest="sha256:" + "b" * 64,
-        source_epoch="source-epoch-1",
+        source_digest="a" * 64,
+        dependency_digest="b" * 64,
+        source_epoch="c" * 64,
     )
 
     assert client.WORKER_SCOPES == (
@@ -1622,9 +1622,9 @@ def test_runtime_protocol_client_uses_worker_token_contract_without_user_handsha
     assert client.generated.handshake_called is False
     assert client.generated.timeout == 4.25
     wire = client.generated.registration_payloads[0]
-    assert wire["source_digest"] == "sha256:" + "a" * 64
-    assert wire["dependency_digest"] == "sha256:" + "b" * 64
-    assert wire["source_epoch"] == "source-epoch-1"
+    assert wire["source_digest"] == "a" * 64
+    assert wire["dependency_digest"] == "b" * 64
+    assert wire["source_epoch"] == "c" * 64
     assert "schema_digest" not in wire
 
 
@@ -1637,16 +1637,16 @@ def test_runtime_protocol_client_registration_retries_are_session_idempotent(
 
         def register_executor(self, executor, *, idempotency_key):
             self.keys.append(idempotency_key)
-            return {"executor_id": executor["executor_id"], "idempotency_key": idempotency_key}
+            return {**executor, "idempotency_key": idempotency_key}
 
     monkeypatch.setattr("astrid_runtime_client.WorkspaceClient", WorkerGenerated)
     kwargs = {
         "capabilities": [],
         "max_concurrency": 1,
         "resource_keys": [],
-        "source_digest": "sha256:" + "a" * 64,
-        "dependency_digest": "sha256:" + "b" * 64,
-        "source_epoch": "source-epoch-1",
+        "source_digest": "a" * 64,
+        "dependency_digest": "b" * 64,
+        "source_epoch": "c" * 64,
     }
     first = RuntimeProtocolClient("http://127.0.0.1:8765", "worker-token")
     first.register_executor("worker-1", **kwargs)
@@ -2068,6 +2068,45 @@ def test_terminal_sidecar_progress_is_heartbeated_before_settlement(tmp_path):
     ]
 
 
+def test_child_progress_path_is_the_attempt_root_the_heartbeat_reads(tmp_path):
+    """Plan 32 T5 check: ASTRID_PROGRESS_PATH (child env) and read_progress (terminal root) are one file."""
+    manifest_path = _write_manifest(tmp_path / "echo")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["command"]["argv"] = [
+        "{python_exec}",
+        "-c",
+        "import os, json; from pathlib import Path; out = Path('{out}'); "
+        "(out / 'answer.txt').write_text(json.dumps([os.environ['ASTRID_PROGRESS_PATH'], str(out.resolve())])); "
+        "Path(os.environ['ASTRID_PROGRESS_PATH']).write_text(json.dumps(dict(phase='submit')))",
+    ]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    runtime = FakeRuntime()
+    host = GenericPackHost(pack_roots=[tmp_path], client=runtime, attempt_base=tmp_path / "attempts")
+    host.discover()
+    host.register()
+    task = {"task": {"id": "task-progress-path", "capability": "test.echo", "project_id": "demo",
+                     "attempt_id": "attempt-progress-path", "fence": 1, "spec": {"spec": {"inputs": {}}}}}
+    runtime.tasks["task-progress-path"] = task
+    observed = []
+    original = GenericPackHost._prepare_producer_evidence
+
+    def capture(self, output_root, task_data, **kwargs):
+        observed.append(json.loads((output_root / "answer.txt").read_text(encoding="utf-8")))
+        return original(self, output_root, task_data, **kwargs)
+
+    GenericPackHost._prepare_producer_evidence = capture
+    try:
+        settled = host.run_task(task, lease_token="lease-progress-path")
+    finally:
+        GenericPackHost._prepare_producer_evidence = original
+    assert settled["task"]["status"] == "completed"
+    progress_path, out = observed[0]
+    # One directory, the attempt root: outputs/ and .astrid-progress.json are siblings.
+    assert Path(progress_path).parent == Path(out).parent
+    assert Path(progress_path).name == ".astrid-progress.json"
+    assert runtime.heartbeat_progress == [("task-progress-path", {"phase": "submit"})]
+
+
 def test_run_accepts_at_free_disk_floor_without_task_estimate(tmp_path, monkeypatch):
     _write_manifest(tmp_path / "echo")
     runtime = FakeRuntime()
@@ -2185,7 +2224,10 @@ def test_structure_pack_members_survive_harvest_cleanup_and_reopen(tmp_path):
         and item["filename"] == "manifest.json"
         for item in outputs
     )
-    assert len({item["digest"] for item in outputs}) == len(outputs)
+    non_log_outputs = [item for item in outputs if item.get("role") != "log"]
+    log_outputs = [item for item in outputs if item.get("role") == "log"]
+    assert len({item["digest"] for item in non_log_outputs}) == len(non_log_outputs)
+    assert len({item["name"] for item in log_outputs}) == len(log_outputs)
     assert not list(tmp_path.glob("astrid-attempt-*"))
 
     # Reopen the returned managed product from its runtime-owned bytes. This
@@ -3233,7 +3275,10 @@ def test_command_host_harvests_result_manifest_media(tmp_path: Path) -> None:
     runtime.tasks["task-collection"] = task
     publishing_host.run_task(task, lease_token="lease-1")
     settled = runtime.settlements[0][2]["outputs"]
-    assert [item["name"] for item in settled] == [
+    product_outputs = [item for item in settled if item.get("role") != "log"]
+    log_outputs = [item for item in settled if item.get("role") == "log"]
+    assert {item["variant_key"] for item in log_outputs} == {"job.stdout", "job.stderr"}
+    assert [item["name"] for item in product_outputs] == [
         "generated_videos",
         "generated_videos",
     ]
@@ -3243,13 +3288,13 @@ def test_command_host_harvests_result_manifest_media(tmp_path: Path) -> None:
             "name", "kind", "filename", "digest", "media_type", "size", "data_base64",
             "role", "is_primary", "ordinal",
         }
-        for item in settled
+        for item in product_outputs
     )
     # Declared ordinals are each row's identity on the port (generated_videos#0, #1);
     # without them the Runtime files both rows under #0.
-    assert [item["ordinal"] for item in settled] == [0, 1]
-    assert [item["filename"] for item in settled] == ["a.mp4", "b.mp4"]
-    assert all("path" not in item and "artifact_type" not in item for item in settled)
+    assert [item["ordinal"] for item in product_outputs] == [0, 1]
+    assert [item["filename"] for item in product_outputs] == ["a.mp4", "b.mp4"]
+    assert all("path" not in item and "artifact_type" not in item for item in product_outputs)
 
 
 def test_command_host_fail_closes_success_without_media(tmp_path: Path) -> None:
@@ -4769,7 +4814,16 @@ def test_native_persistent_capture_failure_contains_known_root_and_scrubs_fake_a
         assert process in host._active_processes and host._unresolved_task_scopes
         assert process._astrid_custody._uncertain is not None and process._astrid_tree_uncertain
         assert attempt.is_dir() and not fake_auth.exists()
-        assert runtime.uploaded_objects == {} and runtime.settlements == []
+        assert runtime.settlements == []
+        assert len(runtime.failures) == 1
+        failure_outputs = runtime.failures[0][3].get("outputs", [])
+        log_rows = [row for row in failure_outputs if row.get("role") == "log"]
+        assert log_rows, "capture failure should retain its declared job log"
+        assert all(row.get("output_port") == "logs" for row in log_rows)
+        uploaded_digests = {row.get("digest") for row in log_rows}
+        assert set(runtime.uploaded_objects) == uploaded_digests
+        assert all(b"never-a-real-credential" not in runtime.uploaded_objects[digest]["data"]
+                   for digest in uploaded_digests)
         # The doubt fails this task only: the host keeps admitting work.
         try:
             host.claim_once()
@@ -5834,3 +5888,31 @@ def test_runtime_registration_fence_removes_ready_marker(tmp_path, monkeypatch, 
 
     assert host._registration_admission_reason()
     assert not marker.exists()
+
+
+def test_host_admission_reaches_the_child_environment_as_align_and_entry(tmp_path, monkeypatch):
+    """admission {align, entry} -> _run_command_definition -> _child_environment -> the child's env (Plan 32 T4g)."""
+    _write_manifest(tmp_path / "vibecomfy-run", capability_id="vibecomfy.run")
+    host = GenericPackHost(pack_roots=[tmp_path])
+    record = host.discover()[0]
+    monkeypatch.setattr(generic_host, "_network_sandbox_argv", lambda argv, *_args: argv)
+    monkeypatch.setattr(generic_host, "_read_readiness_profile_document", lambda *a, **k: None)
+    monkeypatch.setattr(generic_host, "_verify_admitted_source", lambda admission: None)
+    captured = []
+
+    class ReachedOwnedLaunch(Exception):
+        pass
+
+    def launch(argv, **kwargs):
+        captured.append(kwargs["env"])
+        raise ReachedOwnedLaunch
+
+    monkeypatch.setattr(generic_host, "spawn_task_scope", launch)
+    attempt = tmp_path / "attempt"
+    attempt.mkdir()
+    task = {"generation_intent": {"metadata": {"model": "named-entry", "mode": "t2i", "align": "align"}}}
+    with pytest.raises(ReachedOwnedLaunch):
+        host._run_command_definition(record, {}, attempt / "outputs", attempt,
+                                     admission=generic_host._align_admission(task))
+    assert captured[0]["ASTRID_ALIGN"] == "align"
+    assert captured[0]["ASTRID_GENERATION_ENTRY"] == "named-entry"

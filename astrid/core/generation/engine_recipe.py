@@ -13,11 +13,29 @@ from typing import TYPE_CHECKING, Any, Mapping
 from urllib.parse import urlsplit
 
 from .engine_contracts import (
-    DataRef, EngineRecipe, EnvironmentSpec, HealthSpec, IntegrityError, ModelLock,
-    ModelLockValidationError, ModelSpec, RecipeIndex, RecipeIndexEntry,
-    RecipeValidationError, RequirementsSpec, SourceFileRef, SourceInstall,
-    SourcePath, SourcePin, SourceSpec, StartSpec, UnsupportedPlatform,
-    UnknownEngine, UnsafePathError, WheelSpec,
+    DataRef,
+    EngineRecipe,
+    EnvironmentSpec,
+    HealthSpec,
+    IntegrityError,
+    ModelLock,
+    ModelLockValidationError,
+    ModelSpec,
+    RecipeIndex,
+    RecipeIndexEntry,
+    RecipeValidationError,
+    RequirementsSpec,
+    SourceFileRef,
+    SourceInstall,
+    SourcePath,
+    SourcePatch,
+    SourcePin,
+    SourceSpec,
+    StartSpec,
+    UnknownEngine,
+    UnsafePathError,
+    UnsupportedPlatform,
+    WheelSpec,
 )
 
 if TYPE_CHECKING:
@@ -25,42 +43,42 @@ if TYPE_CHECKING:
 
 
 _ROOT = Path(__file__).resolve().parents[2]
-_INDEX_PATH = _ROOT / "packs" / "engine-index.json"
+_ENGINE_POINT = "extensions/generation.engine"
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _ENGINE = re.compile(r"^[a-z][a-z0-9-]*$")
 _PLATFORMS = {"linux-x86_64-cu124", "linux-x86_64-cu128", "linux-x86_64-cu130", "windows-x86_64-cu128", "windows-x86_64-cu130"}
-_PLACEHOLDERS = {"install_root", "python", "comfy_root", "models_root", "models_config", "host", "port"}
+_PLACEHOLDERS = {"install_root", "python", "comfy_root", "models_root", "host", "port"}
 
 
 def _object(value: Any, required: set[str], optional: set[str] | None = None, where: str = "object") -> dict[str, Any]:
     if not isinstance(value, dict):
-        raise RecipeValidationError(f"{where} must be an object")
+        raise RecipeValidationError(f"{where} must be an object", reason='recipe value must be an object')
     optional = set() if optional is None else optional
     missing, extra = required - value.keys(), value.keys() - required - optional
     if missing or extra:
         detail = []
         if missing: detail.append("missing " + ", ".join(sorted(missing)))
         if extra: detail.append("unknown " + ", ".join(sorted(extra)))
-        raise RecipeValidationError(f"{where}: " + "; ".join(detail))
+        raise RecipeValidationError(f"{where}: " + "; ".join(detail), reason='recipe object has missing or unknown fields')
     return value
 
 
 def _string(value: Any, where: str, *, nonempty: bool = True) -> str:
     if not isinstance(value, str) or (nonempty and not value):
-        raise RecipeValidationError(f"{where} must be a {'non-empty ' if nonempty else ''}string")
+        raise RecipeValidationError(f"{where} must be a {'non-empty ' if nonempty else ''}string", reason='recipe value must be a string with the required content')
     return value
 
 
 def _array(value: Any, where: str) -> list[Any]:
     if not isinstance(value, list):
-        raise RecipeValidationError(f"{where} must be an array")
+        raise RecipeValidationError(f"{where} must be an array", reason='recipe value must be an array')
     return value
 
 
 def _digest(value: Any, where: str) -> str:
     if not isinstance(value, str) or not _DIGEST.fullmatch(value):
-        raise RecipeValidationError(f"{where} must be a lowercase SHA-256 digest")
+        raise RecipeValidationError(f"{where} must be a lowercase SHA-256 digest", reason='recipe digest must be a lowercase SHA-256 digest')
     return value
 
 
@@ -69,7 +87,7 @@ def _relative(value: Any, where: str) -> str:
     path = PurePosixPath(raw)
     if ("\\" in raw or ":" in raw or path.is_absolute() or
             any(part in {"", ".", ".."} for part in raw.split("/"))):
-        raise UnsafePathError(f"{where} must be a safe normalized POSIX relative path")
+        raise UnsafePathError(f"{where} must be a safe normalized POSIX relative path", reason='recipe path must be a safe normalized POSIX relative path')
     return raw
 
 
@@ -77,7 +95,7 @@ def _https(value: Any, where: str) -> str:
     raw = _string(value, where)
     parsed = urlsplit(raw)
     if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
-        raise RecipeValidationError(f"{where} must be credential-free HTTPS")
+        raise RecipeValidationError(f"{where} must be credential-free HTTPS", reason='recipe URL must be credential-free HTTPS')
     return raw
 
 
@@ -85,7 +103,7 @@ def _json(path: Path) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise RecipeValidationError(f"packaged JSON is unreadable: {path.name}") from exc
+        raise RecipeValidationError(f"packaged JSON is unreadable: {path.name}", reason='packaged JSON is unreadable') from exc
 
 
 def _resolve_ref(raw: Any, where: str) -> DataRef:
@@ -96,9 +114,9 @@ def _resolve_ref(raw: Any, where: str) -> DataRef:
 def _check_ref_selection(ref: DataRef, allowed: Mapping[str, ResourceHandle] | None) -> None:
     if allowed is not None:
         if ref.path not in allowed:
-            raise RecipeValidationError(f"resource is not declared by the selected pack catalog: {ref.path}")
+            raise RecipeValidationError(f"resource is not declared by the selected pack catalog: {ref.path}", reason='resource is not declared by the selected pack catalog')
         if ref.sha256 != allowed[ref.path].sha256:
-            raise IntegrityError(f"selected pack resource digest differs from declaration: {ref.path}")
+            raise IntegrityError(f"selected pack resource digest differs from declaration: {ref.path}", reason='selected pack resource digest differs from declaration')
 
 
 def _read_ref(ref: DataRef, *, allowed: Mapping[str, ResourceHandle] | None = None) -> tuple[Path, bytes]:
@@ -107,12 +125,12 @@ def _read_ref(ref: DataRef, *, allowed: Mapping[str, ResourceHandle] | None = No
     try:
         resolved = path.resolve(strict=True)
         if not resolved.is_relative_to(_ROOT.resolve()) or path.is_symlink() or not resolved.is_file():
-            raise UnsafePathError(f"packaged data path escapes Astrid: {ref.path}")
+            raise UnsafePathError(f"packaged data path escapes Astrid: {ref.path}", reason='packaged data path escapes the package')
         payload = resolved.read_bytes()
     except OSError as exc:
-        raise IntegrityError(f"packaged data is unavailable: {ref.path}") from exc
+        raise IntegrityError(f"packaged data is unavailable: {ref.path}", reason='packaged data is unavailable') from exc
     if hashlib.sha256(payload).hexdigest() != ref.sha256:
-        raise IntegrityError(f"packaged data digest mismatch: {ref.path}")
+        raise IntegrityError(f"packaged data digest mismatch: {ref.path}", reason='packaged data digest mismatch')
     return resolved, payload
 
 
@@ -126,11 +144,11 @@ def _parse_pins(raw: Any) -> dict[str, SourcePin]:
             raise RecipeValidationError("pin keys must be non-empty strings")
         pin = _object(value, {"repository", "revision"}, {"version"}, where=f"pins.sources.{name}")
         if "version" in pin and (not isinstance(pin["version"], str) or not pin["version"].strip()):
-            raise RecipeValidationError(f"pins.sources.{name}.version must be a non-empty string")
+            raise RecipeValidationError(f"pins.sources.{name}.version must be a non-empty string", reason='pin version must be a non-empty string')
         repository = _https(pin["repository"], f"pins.sources.{name}.repository")
         revision = _string(pin["revision"], f"pins.sources.{name}.revision")
         if not _REVISION.fullmatch(revision):
-            raise RecipeValidationError(f"pins.sources.{name}.revision must be a full lowercase Git commit")
+            raise RecipeValidationError(f"pins.sources.{name}.revision must be a full lowercase Git commit", reason='pin revision must be a full lowercase Git commit')
         result[name] = SourcePin(repository, revision)
     return result
 
@@ -148,13 +166,13 @@ def _selected_resources(registry: BundledCatalog | None) -> Mapping[str, Resourc
         _read_ref(DataRef(manifest_path, entry.manifest.sha256))
         for handle in entry.resources:
             if not handle.resolved.is_relative_to(entry.root):
-                raise UnsafePathError(f"selected resource escapes its owner: {handle.path}")
+                raise UnsafePathError(f"selected resource escapes its owner: {handle.path}", reason='selected resource escapes its owner')
             try:
                 relative = handle.resolved.relative_to(_ROOT).as_posix()
             except ValueError as exc:
-                raise UnsafePathError(f"selected resource is outside this Astrid package: {handle.path}") from exc
+                raise UnsafePathError(f"selected resource is outside this Astrid package: {handle.path}", reason='selected resource is outside this package') from exc
             if relative in selected and selected[relative].sha256 != handle.sha256:
-                raise IntegrityError(f"conflicting selected resource digests: {relative}")
+                raise IntegrityError(f"conflicting selected resource digests: {relative}", reason='conflicting selected resource digests')
             selected[relative] = handle
     return MappingProxyType(selected)
 
@@ -162,12 +180,12 @@ def _selected_resources(registry: BundledCatalog | None) -> Mapping[str, Resourc
 def _load_pins(ref: DataRef, *, allowed: Mapping[str, ResourceHandle] | None = None,
                active: tuple[str, ...] = ()) -> tuple[dict[str, SourcePin], tuple[DataRef, ...]]:
     if ref.path in active:
-        raise RecipeValidationError(f"cyclic pin set reference: {ref.path}")
+        raise RecipeValidationError(f"cyclic pin set reference: {ref.path}", reason='cyclic pin set reference')
     _, payload = _read_ref(ref, allowed=allowed)
     try:
         raw = json.loads(payload)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise RecipeValidationError(f"pins are invalid JSON: {ref.path}") from exc
+        raise RecipeValidationError(f"pins are invalid JSON: {ref.path}", reason='pins are invalid JSON') from exc
     parsed = _parse_pins(raw)
     refs = [ref]
     for item in _array(raw.get("includes", []), "pins.includes"):
@@ -175,7 +193,7 @@ def _load_pins(ref: DataRef, *, allowed: Mapping[str, ResourceHandle] | None = N
         imported, imported_refs = _load_pins(included, allowed=allowed, active=(*active, ref.path))
         overlap = parsed.keys() & imported.keys()
         if overlap:
-            raise RecipeValidationError("duplicate pin authority: " + ", ".join(sorted(overlap)))
+            raise RecipeValidationError("duplicate pin authority: " + ", ".join(sorted(overlap)), reason='duplicate pin authority')
         parsed.update(imported)
         refs.extend(imported_refs)
     return parsed, tuple(refs)
@@ -200,12 +218,12 @@ def pin_set_refs(ref: DataRef) -> tuple[DataRef, ...]:
 def _placeholder_check(values: list[str], where: str) -> None:
     for value in values:
         if not isinstance(value, str):
-            raise RecipeValidationError(f"{where} values must be strings")
+            raise RecipeValidationError(f"{where} values must be strings", reason='recipe placeholder values must be strings')
         for match in re.findall(r"\{([^{}]+)\}", value):
             if match not in _PLACEHOLDERS:
-                raise RecipeValidationError(f"unknown recipe placeholder {{{match}}} in {where}")
+                raise RecipeValidationError(f"unknown recipe placeholder {{{match}}} in {where}", reason='unknown recipe placeholder')
         if "{" in re.sub(r"\{[^{}]+\}", "", value) or "}" in re.sub(r"\{[^{}]+\}", "", value):
-            raise RecipeValidationError(f"malformed recipe placeholder in {where}")
+            raise RecipeValidationError(f"malformed recipe placeholder in {where}", reason='malformed recipe placeholder')
 
 
 def _load_recipe(ref: DataRef, index_engine: str, index_platform: str, *,
@@ -214,8 +232,8 @@ def _load_recipe(ref: DataRef, index_engine: str, index_platform: str, *,
     try:
         raw = json.loads(payload)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise RecipeValidationError(f"recipe is invalid JSON: {ref.path}") from exc
-    top = _object(raw, {"schema", "engine", "platform", "pins", "source_bindings", "environments", "primary_environment", "models_lock", "start", "health"}, where="recipe")
+        raise RecipeValidationError(f"recipe is invalid JSON: {ref.path}", reason='recipe is invalid JSON') from exc
+    top = _object(raw, {"schema", "engine", "platform", "pins", "source_bindings", "environments", "primary_environment", "models_lock", "start", "health"}, {"source_patches"}, where="recipe")
     if top["schema"] != "astrid.engine-recipe.v1": raise RecipeValidationError("unknown recipe schema")
     engine = _string(top["engine"], "recipe.engine")
     platform = _string(top["platform"], "recipe.platform")
@@ -230,21 +248,37 @@ def _load_recipe(ref: DataRef, index_engine: str, index_platform: str, *,
         binding = _object(binding_raw, {"name", "pin", "relative_path"}, where=f"recipe.source_bindings[{i}]")
         name = _string(binding["name"], "source.name")
         key = _string(binding["pin"], "source.pin")
-        if name in names: raise RecipeValidationError(f"duplicate source name: {name}")
-        if key not in pins: raise RecipeValidationError(f"source references unknown pin: {key}")
+        if name in names: raise RecipeValidationError(f"duplicate source name: {name}", reason='duplicate source name')
+        if key not in pins: raise RecipeValidationError(f"source references unknown pin: {key}", reason='source references unknown pin')
         relative_path = _relative(binding["relative_path"], "source.relative_path")
         if relative_path in source_paths: raise RecipeValidationError("duplicate source path")
         names.add(name)
         source_paths.add(relative_path)
         sources.append(SourceSpec(name, pins[key], relative_path))
-    if not sources: raise RecipeValidationError("recipe must bind at least one source")
+    if not sources:
+        raise RecipeValidationError("recipe must bind at least one source")
+    patches, patch_keys = [], set()
+    for item in _array(top.get("source_patches", []), "recipe.source_patches"):
+        row = _object(item, {"source", "path", "sha256_before", "sha256_after", "replacement"}, where="source patch")
+        source = _string(row["source"], "patch.source")
+        path = _relative(row["path"], "patch.path")
+        if source not in names or (source, path) in patch_keys:
+            raise RecipeValidationError("unknown source or duplicate source patch")
+        patch_keys.add((source, path))
+        before = _digest(row["sha256_before"], "patch.sha256_before")
+        after = _digest(row["sha256_after"], "patch.sha256_after")
+        replacement = _relative(row["replacement"], "patch.replacement")
+        if not replacement.startswith("packs/"):
+            raise RecipeValidationError("patch replacement must be packaged data")
+        _read_ref(DataRef(replacement, after), allowed=allowed)
+        patches.append(SourcePatch(source, path, before, after, replacement))
     environments = []
     env_names = set()
     for i, env_raw in enumerate(_array(top["environments"], "recipe.environments")):
         where = f"recipe.environments[{i}]"
         env = _object(env_raw, {"name", "relative_path", "python_version", "uv_version", "requirements", "final_wheels", "node_lock", "source_installs"}, where=where)
         name = _string(env["name"], where + ".name")
-        if name in env_names: raise RecipeValidationError(f"duplicate environment name: {name}")
+        if name in env_names: raise RecipeValidationError(f"duplicate environment name: {name}", reason='duplicate environment name')
         env_names.add(name)
         req = _object(env["requirements"], {"mode", "packaged_lock", "input_paths", "constraints", "exclude_newer"}, where=where + ".requirements")
         mode = req["mode"]
@@ -312,7 +346,7 @@ def _load_recipe(ref: DataRef, index_engine: str, index_platform: str, *,
                 "\\" in value or "?" in value or "#" in value or
                 parsed_path.scheme or parsed_path.netloc or parsed_path.query or parsed_path.fragment or
                 ".." in value.split("/")):
-            raise RecipeValidationError(f"health.{field} must be a safe same-origin absolute URL path")
+            raise RecipeValidationError(f"health.{field} must be a safe same-origin absolute URL path", reason='health path must be a safe same-origin absolute URL path')
     timeout, interval = health_raw["timeout_seconds"], health_raw["poll_interval_seconds"]
     try:
         finite_timeout = type(timeout) in {int, float} and math.isfinite(timeout)
@@ -323,23 +357,62 @@ def _load_recipe(ref: DataRef, index_engine: str, index_platform: str, *,
             timeout <= 0 or interval <= 0 or interval > timeout):
         raise RecipeValidationError("health timeouts must be positive and poll interval cannot exceed timeout")
     health = HealthSpec(health_raw["path"], health_raw["object_info_path"], nodes, float(timeout), float(interval))
-    return EngineRecipe(top["schema"], engine, platform, pins_ref, tuple(sources), tuple(environments), primary, models_ref, StartSpec(argv, cwd, MappingProxyType(dict(start_env)), "127.0.0.1", port), health)
+    return EngineRecipe(top["schema"], engine, platform, pins_ref, tuple(sources), tuple(environments), primary, models_ref, StartSpec(argv, cwd, MappingProxyType(dict(start_env)), "127.0.0.1", port), health, tuple(patches))
+
+
+def declaration_paths() -> list[str]:
+    """Package-relative paths of the generation.engine contributions that declare recipe rows."""
+    return [m.relative_to(_ROOT).as_posix() for m in sorted((_ROOT / "packs").glob(f"*/{_ENGINE_POINT}/*.yaml"))]
+
+
+def parse_recipe_declarations(text: str, where: str = "contribution") -> list[dict[str, str]]:
+    """The ``recipes:`` rows of a generation.engine manifest: block-style ``platform``/``path``/``sha256``.
+
+    A fixed-shape reader, so the helper closure needs no YAML library on a fresh release interpreter.
+    """
+    rows: list[dict[str, str]] = []
+    inside = False
+    for line in text.splitlines():
+        if re.fullmatch(r"recipes:\s*", line):
+            inside = True
+        elif inside and line.strip() and not line[0].isspace():
+            inside = False
+        elif inside and line.strip():
+            match = re.fullmatch(r"\s+(- )?(\w+): \"?([^\"\s]+)\"?\s*", line)
+            if match is None: raise RecipeValidationError(f"{where}: unreadable recipes line", reason='unreadable recipes line')
+            dash, key, value = match.groups()
+            if dash: rows.append({})
+            if not rows: raise RecipeValidationError(f"{where}: recipes row must start with '- '", reason='recipes row must start with a list marker')
+            if key not in {"platform", "path", "sha256"}: raise RecipeValidationError(f"{where}: unknown {key}", reason='unknown recipes row field')
+            rows[-1][key] = value
+    for row in rows:
+        if row.keys() != {"platform", "path", "sha256"}: raise RecipeValidationError(f"{where}: recipes row needs platform, path, sha256", reason='recipes row needs platform, path and sha256')
+    return rows
+
+
+def _declared_rows() -> list[dict[str, Any]]:
+    """Recipe rows declared by the generation.engine contributions (``recipes:`` in each manifest)."""
+    rows: list[dict[str, Any]] = []
+    for manifest in sorted((_ROOT / "packs").glob(f"*/{_ENGINE_POINT}/*.yaml")):
+        try:
+            text = manifest.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise RecipeValidationError(f"engine contribution is unreadable: {manifest.name}", reason='engine contribution is unreadable') from exc
+        for row in parse_recipe_declarations(text, manifest.name):
+            rows.append({"engine": manifest.stem, "platform": row["platform"],
+                         "recipe": {"path": row["path"], "sha256": row["sha256"]}})
+    return rows
 
 
 def _index_rows() -> list[dict[str, Any]]:
-    raw = _json(_INDEX_PATH)
-    obj = _object(raw, {"schema", "entries"}, where="engine-index")
-    if obj["schema"] != "astrid.engine-index.v1": raise RecipeValidationError("unknown recipe index schema")
-    rows, seen = [], set()
-    prior = None
-    for i, item_raw in enumerate(_array(obj["entries"], "engine-index.entries")):
-        item = _object(item_raw, {"engine", "platform", "recipe"}, where=f"engine-index.entries[{i}]")
+    rows, seen = [], set[tuple[str, str]]()
+    for item in sorted(_declared_rows(), key=lambda r: (r["engine"], r["platform"])):
         engine, platform = _string(item["engine"], "index.engine"), _string(item["platform"], "index.platform")
-        if not _ENGINE.fullmatch(engine) or platform not in _PLATFORMS: raise RecipeValidationError("invalid index engine/platform")
-        key = (engine, platform)
-        if key in seen: raise RecipeValidationError("duplicate engine/platform index entry")
-        if prior is not None and key < prior: raise RecipeValidationError("index entries must be deterministically sorted")
-        seen.add(key); prior = key
+        if not _ENGINE.fullmatch(engine) or platform not in _PLATFORMS:
+            raise RecipeValidationError("invalid index engine/platform")
+        if platform in {p for _, p in seen}:
+            raise RecipeValidationError("more than one engine row for a platform")
+        seen.add((engine, platform))
         rows.append(item)
     return rows
 
@@ -372,56 +445,70 @@ def load_recipe(engine: str, platform: str, *, registry: BundledCatalog | None =
     recipe and its explicit pin imports are opened. A supplied catalog cannot
     fall back to a same-ID recipe in an unselected pack.
     """
-    if not isinstance(engine, str) or not _ENGINE.fullmatch(engine): raise UnknownEngine(engine)
+    if not isinstance(engine, str) or not _ENGINE.fullmatch(engine):
+        raise UnknownEngine('engine id has invalid syntax')
     allowed = _selected_resources(registry)
     matches = [item for item in _index_rows() if item["engine"] == engine and _selected_row(item, allowed)]
     if not matches:
-        raise UnknownEngine(f"engine is not registered in the selected catalog: {engine}")
-    if platform not in _PLATFORMS or not any(item["platform"] == platform for item in matches): raise UnsupportedPlatform(f"{engine} does not support {platform}")
+        raise UnknownEngine('engine is not registered in the selected catalog')
+    if platform not in _PLATFORMS or not any(item["platform"] == platform for item in matches):
+        raise UnsupportedPlatform('engine does not support the requested platform')
     entry = next(item for item in matches if item["platform"] == platform)
     return _load_recipe(_resolve_ref(entry["recipe"], "index.recipe"), engine, platform, allowed=allowed)
 
 
 def _load_model_lock_ref(ref: DataRef, *, allowed: Mapping[str, ResourceHandle] | None = None) -> ModelLock:
     _, payload = _read_ref(ref, allowed=allowed)
-    try: raw = json.loads(payload)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc: raise ModelLockValidationError(f"model lock is invalid JSON: {ref.path}") from exc
+    try:
+        raw = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ModelLockValidationError(f"model lock is invalid JSON: {ref.path}", reason='model lock is invalid JSON') from exc
     top = _object(raw, {"schema", "models"}, where="model lock")
-    if top["schema"] != "astrid.models-lock.v1": raise ModelLockValidationError("unknown model lock schema")
+    if top["schema"] != "astrid.models-lock.v1":
+        raise ModelLockValidationError("unknown model lock schema")
     models, names, destinations = [], set(), set()
     for i, row_raw in enumerate(_array(top["models"], "model lock.models")):
         row = _object(row_raw, {"name", "repository", "revision", "path", "url", "destination", "bytes", "sha256"}, where=f"models[{i}]")
         name = _string(row["name"], "model.name")
-        if name in names: raise ModelLockValidationError("duplicate model name")
+        if name in names:
+            raise ModelLockValidationError("duplicate model name")
         names.add(name)
         repo, revision, source_path, url = row["repository"], row["revision"], row["path"], row["url"]
         hf = all(value is not None for value in (repo, revision, source_path)) and url is None
         web = repo is None and revision is None and source_path is None and url is not None
-        if not (hf ^ web): raise ModelLockValidationError("model must have exactly one valid source form")
+        if not (hf ^ web):
+            raise ModelLockValidationError("model must have exactly one valid source form")
         if hf:
             _string(repo, "model.repository")
-            if not _REVISION.fullmatch(_string(revision, "model.revision")): raise ModelLockValidationError("model.revision must be an immutable lowercase commit")
+            if not _REVISION.fullmatch(_string(revision, "model.revision")):
+                raise ModelLockValidationError("model.revision must be an immutable lowercase commit")
             source_path = _relative(source_path, "model.path")
-        else: url = _https(url, "model.url")
+        else:
+            url = _https(url, "model.url")
         destination = _relative(row["destination"], "model.destination")
-        if destination in destinations: raise ModelLockValidationError("duplicate model destination")
+        if destination in destinations:
+            raise ModelLockValidationError("duplicate model destination")
         destinations.add(destination)
         size = row["bytes"]
-        if type(size) is not int or size <= 0: raise ModelLockValidationError("model.bytes must be a positive integer")
-        try: digest = _digest(row["sha256"], "model.sha256")
-        except RecipeValidationError as exc: raise ModelLockValidationError(str(exc)) from exc
+        if type(size) is not int or size <= 0:
+            raise ModelLockValidationError("model.bytes must be a positive integer")
+        try:
+            digest = _digest(row["sha256"], "model.sha256")
+        except RecipeValidationError as exc:
+            raise ModelLockValidationError(str(exc), reason='model digest must be a lowercase SHA-256 digest') from exc
         models.append(ModelSpec(name, repo, revision, source_path, url, destination, size, digest))
     return ModelLock(top["schema"], tuple(models))
 
 
 def load_model_lock(ref: DataRef, *, registry: BundledCatalog | None = None) -> ModelLock:
-    if not isinstance(ref, DataRef): raise ModelLockValidationError("load_model_lock requires a DataRef")
+    if not isinstance(ref, DataRef):
+        raise ModelLockValidationError("load_model_lock requires a DataRef")
     try:
         return _load_model_lock_ref(ref, allowed=_selected_resources(registry))
     except (ModelLockValidationError, UnsafePathError):
         raise
     except RecipeValidationError as exc:
-        raise ModelLockValidationError(str(exc)) from exc
+        raise ModelLockValidationError(str(exc), reason='model lock recipe validation failed') from exc
 
 
 def load_recipe_model_lock(engine: str, platform: str, *, registry: BundledCatalog | None = None) -> ModelLock:
@@ -434,7 +521,7 @@ def engine_source_revision(engine: str, platform: str, source: str, *, registry:
     for item in recipe.sources:
         if item.name == source:
             return item.pin.revision
-    raise RecipeValidationError(f"{engine} has no pinned source named {source}")
+    raise RecipeValidationError(f"{engine} has no pinned source named {source}", reason='engine has no pinned source with the requested name')
 
 
 def _plain(value: Any) -> Any:

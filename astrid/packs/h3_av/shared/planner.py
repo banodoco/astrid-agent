@@ -12,14 +12,14 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Mapping
 
-from astrid.core._shared.result_manifest import write_json_atomic
-from astrid.packs.h3_av.actions.compile.compile import CompilationError, compile_preparation
-from astrid.packs.h3_av.actions.prepare.prepare import prepare_request, write_preparation
-from astrid.packs.h3_av.actions.prepare.static_regions import resolve_static_region
-
+from .compile import CompilationError, compile_preparation
+from .engine_facts import facts
 from .generation import generation_timing
+from .prepare import prepare_request, write_preparation
 from .request import H3Request, H3RequestError, normalize_request
+from .request_v2 import json_times
 from .spec import H3Spec, canonical_spec, sampling_request_document
+from .static_regions import resolve_static_region
 from .timing import plan_continuation
 
 
@@ -128,7 +128,8 @@ def plan_request(
             "runtime_submission": "eligible" if compiled else "blocked_until_compilation",
             "capabilities": spec.capabilities, "plan_path": str(plan_path),
         }
-        write_json_atomic(plan_path, plan)
+        plan = json_times(plan)
+        facts().write_json_atomic(plan_path, plan)
         return plan
     preparation = prepare_request(request, asset_map=asset_map)
     if preparation["unresolved_assets"]:
@@ -194,7 +195,8 @@ def plan_request(
         "capabilities": spec.capabilities,
         "plan_path": str(plan_path),
     }
-    write_json_atomic(plan_path, plan)
+    plan = json_times(plan)
+    facts().write_json_atomic(plan_path, plan)
     return plan
 
 

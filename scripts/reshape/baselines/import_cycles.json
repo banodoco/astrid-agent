@@ -24,6 +24,14 @@
     [
       "astrid.core.execution",
       "astrid.core.rendering"
+    ],
+    [
+      "astrid.core.generation",
+      "astrid.core.pack"
+    ],
+    [
+      "astrid.core.rendering",
+      "astrid.core.timeline"
     ]
   ],
   "sccs": [
@@ -41,5 +49,20 @@
       "astrid.core.timeline"
     ]
   ],
-  "pair_count": 6
+  "pair_count": 8,
+  "known_before_release_13": {
+    "pairs": [
+      [
+        "astrid.core.generation",
+        "astrid.core.pack"
+      ],
+      [
+        "astrid.core.rendering",
+        "astrid.core.timeline"
+      ]
+    ],
+    "cause": "Predate Release 13: both reproduce at Release 12 main 0e1543e0, and Release 12's hosted gate never ran this step (CI 43155525231 skipped it after mypy failed). Not deliberate; Plan 39 removes them.",
+    "evidence": "pack/permissions.py:7 <-> generation/availability.py:23 and timeline/banodoco_schema.py:518 <-> rendering/profile.py:13; releases/13/deferred.md (Plan 39 section, 'Import cycles' row)",
+    "removal": "When Plan 39 removes a cycle, delete its pair from cycle_pairs, from this list and from the deferred.md row together."
+  }
 }

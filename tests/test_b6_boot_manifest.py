@@ -16,6 +16,7 @@ from astrid.core._shared.boot_manifest import (
     assert_secret_free,
     build_manifest,
     load_boot_manifest_hash,
+    stamp_boot_manifest,
     manifest_hash,
     normalize_sha256_digest,
     validate_manifest_path,
@@ -47,6 +48,8 @@ def test_manifest_is_canonical_and_profile_order_is_frozen() -> None:
     assert first == second
     assert first["profile_order"] == list(VIBE_PROFILE_ORDER)
     assert set(first["fixture_digests"]) == set(FROZEN_FIXTURE_DIGESTS)
+    assert FROZEN_FIXTURE_DIGESTS == {}  # the former checkout boot row is gone; no fixture files are frozen
+    assert first["profile_order"] == []
     assert manifest_hash(first) == manifest_hash(second)
 
 
@@ -112,12 +115,19 @@ def test_manifest_publish_retries_windows_sharing_violation(tmp_path: Path, monk
 
 
 def test_manifest_drift_refuses_existing_stamp(tmp_path: Path) -> None:
+    # The live boot registry is empty, so drift is exercised with a synthetic
+    # probe row, its fixture, and its explicit profile order.
     support, manifest = _paths(tmp_path)
-    compose_profile_handoff(manifest, support_root=support)
-    registry = {key: dict(value) for key, value in VIBE_PROFILE_REGISTRY.items()}
-    registry["pip_embedded"]["probe"] = "mutated"
+    registry = {"probe_only": {"definition_version": 1, "binding": "test.probe",
+                               "output_policy": "none", "probe": "accepted"}}
+    fixture = {"profile_id": "probe_only", "accepted_receipt_sha256": "a" * 64,
+               "fixture_digests": {}, "accepted_input": "test"}
+    stamp_boot_manifest(manifest, support_root=support, registry=registry,
+                        fixtures=[fixture], profile_order=["probe_only"])
+    registry["probe_only"]["probe"] = "mutated"
     with pytest.raises(BootManifestDrift, match="registry/fixtures"):
-        compose_profile_handoff(manifest, support_root=support, registry=registry)
+        stamp_boot_manifest(manifest, support_root=support, registry=registry,
+                            fixtures=[fixture], profile_order=["probe_only"])
 
 
 def test_manifest_validation_preserves_out_of_root_and_symlink_guards(tmp_path: Path) -> None:
@@ -229,7 +239,7 @@ def test_host_provenance_detects_startup_manifest_drift(tmp_path: Path) -> None:
         boot_manifest_hash=expected,
     )
     payload = json.loads(manifest.read_text(encoding="utf-8"))
-    payload["profile_order"] = list(reversed(payload["profile_order"]))
+    payload["profile_order"] = [*payload["profile_order"], "mutated"]  # the stamped order is empty, so any change alters the hash
     manifest.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(HostError, match="changed"):
         host.boot_manifest_provenance()

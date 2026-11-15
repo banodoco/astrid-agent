@@ -3,6 +3,8 @@ import os
 import zipfile
 from dataclasses import dataclass
 
+import pytest
+
 from astrid.core.gateway import dispatch, doctor_bundle
 
 
@@ -14,6 +16,51 @@ def test_redact_log_removes_token_and_credential_values():
     for secret in ("sk-test", "pass-123", "secret-value"):
         assert secret not in redacted
     assert "<redacted>" in redacted
+
+
+@pytest.mark.parametrize("scheme", ["http", "https", "git+https", "ssh", "ftp", "custom.v1-scheme"])
+@pytest.mark.parametrize("userinfo", [
+    "url-token-only", "alice:url-password", "x-access-token:url-secret", "alice:",
+    "alice%40example.test:p%3Ass%2Fword", "url%2Dtoken%40only",
+])
+def test_redact_log_removes_any_url_userinfo(scheme, userinfo):
+    text = f"fetch {scheme}://{userinfo}@github.com/owner/repo\n"
+
+    assert doctor_bundle.redact_log(text) == f"fetch {scheme}://<redacted>@github.com/owner/repo\n"
+
+
+def test_redact_log_handles_multiple_urls_without_changing_paths_or_scp_git():
+    text = (
+        "https://first-url-token@github.com/owner/repo "
+        "git+https://alice:second-url-password@example.test/other "
+        "git@github.com:owner/repo https://example.test/path/keep@value "
+        "https://example.test/?contact=keep@value\n"
+    )
+
+    assert doctor_bundle.redact_log(text) == (
+        "https://<redacted>@github.com/owner/repo "
+        "git+https://<redacted>@example.test/other "
+        "git@github.com:owner/repo https://example.test/path/keep@value "
+        "https://example.test/?contact=keep@value\n"
+    )
+
+
+def test_bundle_redacts_url_userinfo_in_text_and_json_logs(tmp_path, monkeypatch):
+    log = tmp_path / "runtime.log"
+    log.write_text(
+        "fetch https://bundle-url-token@github.com/owner/repo git@github.com:owner/repo\n"
+        '{"remote":"git+https://encoded%40token@example.test/owner/repo"}\n'
+    )
+    monkeypatch.setattr(doctor_bundle, "_logs", lambda *_args: [log])
+
+    archive_path = doctor_bundle.write_bundle(tmp_path / "urls.zip", {"ok": True}, None)
+
+    with zipfile.ZipFile(archive_path) as archive:
+        contents = archive.read("logs/0-runtime.log").decode()
+    assert "bundle-url-token" not in contents and "encoded%40token" not in contents
+    assert "https://<redacted>@github.com/owner/repo" in contents
+    assert json.loads(contents.splitlines()[1]) == {"remote": "<redacted>"}
+    assert "git@github.com:owner/repo" in contents
 
 
 def test_redact_log_handles_json_environment_urls_and_private_keys():
@@ -29,7 +76,7 @@ def test_redact_log_handles_json_environment_urls_and_private_keys():
 
     for secret in ("json-token", "nested-key", "workspace-secret", "openai-secret", "url-password", "private-key-bytes"):
         assert secret not in redacted
-    assert "credentials" in redacted and "<redacted private key>" in redacted
+    assert "credentials" in redacted and "<redacted PEM>" in redacted
 
 
 def test_bundle_contains_redacted_logs_and_safe_manifest_projection(tmp_path, monkeypatch):
@@ -352,3 +399,66 @@ def test_doctor_preserves_supervision_warning_when_runtime_is_unavailable(tmp_pa
     monkeypatch.setattr(service, "supervision_warning", lambda *_args: service.UNSUPERVISED_WARNING)
     assert dispatch._dispatch_doctor(["--json"]) == 1
     assert json.loads(capsys.readouterr().out)["warnings"] == [service.UNSUPERVISED_WARNING]
+
+
+@pytest.mark.parametrize("text", [
+    "a" * 20_000,
+    "https://" + "a" * 20_000,
+    "a://" * 5_000,
+    "x@" * 10_000,
+    "a-b.c+d" * 3_000,
+])
+def test_url_credential_redaction_is_linear_on_long_scheme_like_runs(text):
+    """W177: a long run of scheme-legal characters must not backtrack quadratically."""
+    import time
+    from astrid.core.gateway.doctor_bundle import redact_log
+
+    started = time.monotonic()
+    redact_log(text)
+    assert time.monotonic() - started < 0.2
+
+
+@pytest.mark.parametrize("length", [513, 4096])
+def test_redact_log_long_url_userinfo(length):
+    assert doctor_bundle.redact_log(f"https://{'a' * length}@example.test/keep") == (
+        "https://<redacted>@example.test/keep")
+
+
+@pytest.mark.parametrize("escaped", [False, True])
+def test_inline_pem_preserves_prefix_suffix_and_two_blocks(escaped):
+    key = "-----BEGIN RSA PRIVATE KEY-----\nkey-bytes\n-----END RSA PRIVATE KEY-----"
+    text = f"heading\nCause: issue_message={key} keep-middle {key} keep-end"
+    if escaped:
+        text = json.dumps({"tail": text})
+    result = doctor_bundle.redact_log(text)
+    if escaped:
+        result = json.loads(result)["tail"]
+    assert result == "heading\nCause: issue_message=<redacted PEM> keep-middle <redacted PEM> keep-end"
+
+
+def test_unterminated_json_pem_stops_at_field_boundary():
+    text = json.dumps({"tail": "before -----BEGIN PRIVATE KEY-----\nkey-bytes",
+                       "next": "keep-next", "count": 3})
+    assert json.loads(doctor_bundle.redact_log(text)) == {
+        "tail": "before <redacted PEM>", "next": "keep-next", "count": 3}
+
+
+def test_pem_end_must_match_begin_kind():
+    text = ("prefix -----BEGIN RSA PRIVATE KEY-----\nkey-bytes\n"
+            "-----END EC PRIVATE KEY-----\nstill-private\n-----END RSA PRIVATE KEY----- suffix")
+    assert doctor_bundle.redact_log(text) == "prefix <redacted PEM> suffix"
+
+
+@pytest.mark.parametrize("text", [
+    "a" * (1024 * 1024),
+    "https://" + "a" * (1024 * 1024 - 8),
+    "a://" * (1024 * 256),
+    "x@" * (1024 * 512),
+    ("a-b.c+d" * 149797)[:1024 * 1024],
+], ids=["letters", "https-letters", "schemes", "at-signs", "scheme-characters"])
+def test_redact_log_one_mib_cpu_budget(text):
+    import time
+
+    started = time.monotonic()
+    doctor_bundle.redact_log(text)
+    assert time.monotonic() - started < 1.0

@@ -15,7 +15,7 @@ class WorkflowBackendAdapter(Protocol):
         attempt_identity: str | None = None,
         expected_execution_identity: str | None = None,
         workflow_input_bindings: Mapping[str, Any] | None = None,
-        profile_id: str = "pip_embedded",
+        profile_id: str = "local_server",
         hc03_profile: Mapping[str, Any] | None = None,
         comfy_url: str = "", comfy_output_dir: str = "",
     ) -> ProductionRunResult: ...

@@ -118,6 +118,10 @@
             },
             "path": {
               "const": "docs/SKILL.md"
+            },
+            "sync_name": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9_-]*$"
             }
           }
         },
@@ -190,15 +194,6 @@
           "action": {"$ref": "#/$defs/non_blank"},
           "arguments": {"$ref": "#/$defs/relative_path"}
         }
-      }
-    },
-    "engines": {
-      "type": "object",
-      "additionalProperties": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["recipe"],
-        "properties": {"recipe": {"$ref": "#/$defs/relative_path"}}
       }
     },
     "resources": {

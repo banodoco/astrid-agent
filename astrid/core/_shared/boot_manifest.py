@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, is_dataclass
@@ -19,31 +20,60 @@ from typing import Any
 from runtime_protocol import platform
 
 from astrid.core.foundation.hash import canonical_json_digest
-
-BOOT_MANIFEST_FILENAME = "boot-manifest.json"
-BOOT_MANIFEST_SCHEMA_VERSION = 1
-_DEFAULT_PROFILE_ORDER = ("pip_embedded", "checkout_server")
-_REGISTRY_ENTRY_FIELDS = ("definition_version", "binding", "output_policy", "probe")
-_SECRET_WORDS = ("secret", "token", "password", "credential", "api_key", "private_key")
-
-_MANIFEST_FIELDS = frozenset(
-    {
-        "schema_version",
-        "profile_order",
-        "profile_digests",
-        "registry_digest",
-        "conformance_digest",
-        "fixture_digests",
-    }
+from astrid.installer.boot_restore import (
+    _PRE_RESTAMP_SUFFIX,
+    _load_stored,
+    _reject_lexical_symlinks,
+)
+from astrid.installer.boot_restore import (
+    BOOT_MANIFEST_FILENAME as BOOT_MANIFEST_FILENAME,
+)
+from astrid.installer.boot_restore import (
+    BootManifestCorrupt as BootManifestCorrupt,
+)
+from astrid.installer.boot_restore import (
+    BootManifestError as BootManifestError,
+)
+from astrid.installer.boot_restore import (
+    assert_secret_free as assert_secret_free,
+)
+from astrid.installer.boot_restore import (
+    restore_pre_restamp_boot_manifest as restore_pre_restamp_boot_manifest,
+)
+from astrid.installer.boot_restore import (
+    validate_manifest_path as validate_manifest_path,
+)
+from astrid.installer.boot_restore import (
+    validate_support_root as validate_support_root,
 )
 
-
-class BootManifestError(RuntimeError):
-    """Base error for invalid or unsafe boot-manifest state."""
-
-
-class BootManifestCorrupt(BootManifestError):
-    """A stamped manifest cannot be trusted."""
+BOOT_MANIFEST_SCHEMA_VERSION = 1
+_DEFAULT_PROFILE_ORDER: tuple[str, ...] = ()
+# Exact stamp written by R9 709492fa5f4850b9caf0cea4a4c543023b73fa0a,
+# R10 6e9c4f9c8f4b53aa7c16d4e3e098ab75218bdc45,
+# R11 a105de3a4852cb61b9647dfe2c920118bd29f272, and
+# R12 0e1543e0da2215db9cb3320cfd1083174c3c62a9 (byte-identical).
+# Captures: tests/fixtures/boot_manifest/r9-stamp.json and sibling provenance.
+# Only this complete historical identity may migrate to the empty R13 registry;
+# recognizing a retired profile name alone does not authenticate its digests.
+_LEGACY_BOOT_MANIFEST = {
+    "conformance_digest": "6bb502e7e495fa1041cd2726561588326aaf1d97c34ba0c7d779bbd7a57460f3",
+    "fixture_digests": {
+        "attempt-output-fixture.json": "951b9b4ce85dfc3ab999af705c4a3732acaa1d45468fa0ce0eaaf9edc941b31e",
+        "fake-runner-transcript.json": "379c7821ecf6213ced2ede36c2fb991d82c56167616d7e21aa23d7e3890e43e0",
+        "host-instance-paired-fixture.json": "4171922e65ea94a2c1af9f9abb7c8d5559125e354ca6ebb7f5efe1266ca22b4f",
+        "portable-capability-fixture.json": "9284b056aa8a38f884599a7634be0fe0cb7fbfbd117823960e563375b3aa43b7",
+        "task-resource-fixture.json": "ddc2d00bb893ea214d000bf618f67785c89c81d68d892864d9676d3c8b8d5164",
+    },
+    "profile_digests": {
+        "checkout_server": "3bc043a13d64fb7ae3efb683edadd4a95754aef2035e4fc626914ab37637dd18",
+        "pip_embedded": "dce36735a51bf3a26a475666dcd54ed889414907d0bed6f2e472e711eca663f9",
+    },
+    "profile_order": ["pip_embedded", "checkout_server"],
+    "registry_digest": "09cde0e29e4ea063f248153628182be23290d835acf4d2d8dfa701cb8be19dc3",
+    "schema_version": 1,
+}
+_REGISTRY_ENTRY_FIELDS = ("definition_version", "binding", "output_policy", "probe")
 
 
 class BootManifestDrift(BootManifestError):
@@ -232,133 +262,26 @@ def normalize_sha256_digest(value: str, *, label: str = "digest") -> str:
     return raw
 
 
-def assert_secret_free(manifest: Mapping[str, Any]) -> None:
-    """Reject unknown fields and recursively reject credential-shaped data."""
-    unknown = set(manifest) - _MANIFEST_FIELDS
-    if unknown:
-        raise BootManifestError(f"boot manifest carries unknown fields: {sorted(unknown)!r}")
-
-    def walk(value: Any, path: str = "manifest") -> None:
-        if isinstance(value, Mapping):
-            for key, item in value.items():
-                lowered = str(key).lower()
-                if any(word in lowered for word in _SECRET_WORDS):
-                    raise BootManifestError(f"boot manifest is not secret-free at {path}.{key}")
-                walk(item, f"{path}.{key}")
-        elif isinstance(value, (list, tuple)):
-            for index, item in enumerate(value):
-                walk(item, f"{path}[{index}]")
-
-    walk(manifest)
-    if isinstance(manifest.get("schema_version"), bool) or not isinstance(manifest.get("schema_version"), int):
-        raise BootManifestError("boot manifest schema_version must be an integer")
-    for field in ("registry_digest", "conformance_digest"):
-        value = manifest.get(field)
-        if (
-            not isinstance(value, str)
-            or len(value) != 64
-            or any(char not in "0123456789abcdef" for char in value)
-        ):
-            raise BootManifestError(
-                f"boot manifest field {field!r} must be a SHA-256 digest"
-            )
-    for field in ("profile_digests", "fixture_digests"):
-        values = manifest.get(field)
-        if not isinstance(values, Mapping):
-            raise BootManifestError(f"boot manifest field {field!r} must be an object")
-        for key, value in values.items():
-            if (
-                not isinstance(key, str)
-                or not isinstance(value, str)
-                or len(value) != 64
-                or any(char not in "0123456789abcdef" for char in value)
-            ):
-                raise BootManifestError(
-                    f"boot manifest field {field!r} contains an invalid digest"
-                )
-
-
-def _reject_lexical_symlinks(path: Path, *, label: str) -> None:
-    """Reject symlinks in a lexical path before any resolution occurs."""
-    cursor = path
-    while True:
-        if cursor.is_symlink():
-            raise BootManifestError(
-                f"{label} contains a symlink component: {cursor}"
-            )
-        parent = cursor.parent
-        if parent == cursor:
-            break
-        cursor = parent
-
-
-def validate_support_root(support_root: str | Path) -> Path:
-    """Require an explicit, existing non-symlink support directory."""
-    root = Path(support_root).expanduser()
-    if not root.is_absolute() or root.is_symlink() or not root.is_dir():
-        raise BootManifestError(
-            "boot manifest support root must be an existing absolute "
-            f"non-symlink directory: {root}"
-        )
-    return root.resolve()
-
-
-def validate_manifest_path(
-    manifest_path: str | Path,
-    support_root: str | Path,
-    *,
-    require_existing: bool = True,
-) -> Path:
-    """Validate a manifest location contained by the explicit support root."""
-    raw_root = Path(support_root).expanduser()
-    _reject_lexical_symlinks(raw_root, label="boot manifest support root")
-    root = validate_support_root(raw_root)
-    path = Path(manifest_path).expanduser()
-    if path.name != BOOT_MANIFEST_FILENAME:
-        raise BootManifestError(
-            f"boot manifest must be named {BOOT_MANIFEST_FILENAME}: {path}"
-        )
-    if (
-        not path.is_absolute()
-        or path.is_symlink()
-        or (require_existing and not path.is_file())
-        or (not require_existing and path.exists() and not path.is_file())
-    ):
-        raise BootManifestError(
-            "boot manifest must be an existing absolute regular non-symlink "
-            f"file: {path}"
-        )
-    lexical_root = Path(os.path.abspath(raw_root))
-    lexical_path = Path(os.path.abspath(path))
+def _preserve_pre_restamp(path: Path, stored: Mapping[str, Any]) -> None:
+    """Publish a durable byte copy before restamping, without clobbering it."""
+    backup = path.with_name(path.name + _PRE_RESTAMP_SUFFIX)
+    _reject_lexical_symlinks(backup, label="pre-restamp backup")
+    handle = tempfile.NamedTemporaryFile("wb", dir=path.parent, prefix=".boot-manifest-", suffix=".tmp", delete=False)
     try:
-        lexical_path.relative_to(lexical_root)
-    except ValueError as exc:
-        raise BootManifestError(
-            f"boot manifest must be contained by explicit support root: {lexical_path}"
-        ) from exc
-    _reject_lexical_symlinks(lexical_path, label="boot manifest path")
-    resolved = path.resolve()
-    try:
-        resolved.relative_to(root)
-    except ValueError as exc:
-        raise BootManifestError(
-            f"boot manifest must be contained by explicit support root: {resolved}"
-        ) from exc
-    return resolved
-
-
-def _load_stored(path: Path) -> dict[str, Any]:
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise BootManifestCorrupt(f"stamped boot manifest unreadable at {path}: {exc}") from None
-    if not isinstance(raw, dict):
-        raise BootManifestCorrupt(f"stamped boot manifest at {path} must be an object")
-    try:
-        assert_secret_free(raw)
-    except BootManifestError as exc:
-        raise BootManifestCorrupt(str(exc)) from exc
-    return raw
+        handle.write(path.read_bytes())
+        handle.flush()
+        os.fsync(handle.fileno())
+        handle.close()
+        try:
+            # Linking a complete sibling publishes atomically and never replaces
+            # an earlier backup, including on a replay after an interrupted update.
+            os.link(handle.name, backup)
+        except FileExistsError:
+            if not backup.is_file() or _load_stored(backup) != stored:
+                raise BootManifestCorrupt(f"pre-restamp backup disagrees with legacy stamp: {backup}") from None
+    finally:
+        handle.close()
+        Path(handle.name).unlink(missing_ok=True)
 
 
 def stamp_boot_manifest(
@@ -368,7 +291,18 @@ def stamp_boot_manifest(
     registry: Mapping[str, Any] | None = None,
     fixtures: Iterable[Any] | None = None,
     profile_order: Iterable[str] = _DEFAULT_PROFILE_ORDER,
+    write: bool = True,
 ) -> dict[str, Any]:
+    """Validate live identity; publish only when the caller admits a new host.
+
+    ``write=False`` previews the same drift checks and live identity without
+    creating a stamp, backup or directory, or changing resident provenance.
+    """
+    raw_path = Path(manifest_path).expanduser()
+    if raw_path.is_symlink() or (raw_path.exists() and not raw_path.is_file()):
+        raise BootManifestCorrupt(
+            f"stamped boot manifest must be a non-symlink regular file: {raw_path}"
+        )
     path = validate_manifest_path(
         manifest_path, support_root, require_existing=False
     )
@@ -385,12 +319,23 @@ def stamp_boot_manifest(
         raise BootManifestCorrupt(
             f"stamped boot manifest must be a regular file: {path}"
         )
+    removed_profiles: list[str] = []
     if path.exists():
         stored = _load_stored(path)
-        if stored != current:
+        if stored == current:
+            return current
+        stale_legacy = (
+            stored == _LEGACY_BOOT_MANIFEST
+            and current["profile_order"] == []
+        )
+        if not stale_legacy:
             drift = sorted(set(stored) | set(current))
             details = "; ".join(f"key={key} stamped={stored.get(key)!r} live={current.get(key)!r}" for key in drift if stored.get(key) != current.get(key))
             raise BootManifestDrift(f"boot manifest disagrees with live registry/fixtures at {path}: {details}")
+        removed_profiles = sorted(stored["profile_order"])
+        if write:
+            _preserve_pre_restamp(path, stored)
+    if not write:
         return current
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, prefix=".boot-manifest-", suffix=".tmp", delete=False)
@@ -407,6 +352,12 @@ def stamp_boot_manifest(
         finally:
             Path(handle.name).unlink(missing_ok=True)
         raise
+    if removed_profiles:
+        print(
+            "boot manifest restamped after removing legacy profiles: "
+            + ", ".join(removed_profiles),
+            file=sys.stderr,
+        )
     return current
 
 
@@ -441,5 +392,6 @@ __all__ = [
     "manifest_hash",
     "normalize_sha256_digest",
     "registry_scope",
+    "restore_pre_restamp_boot_manifest",
     "stamp_boot_manifest",
 ]

@@ -92,6 +92,7 @@ def capture_assembly(session, state, child_outputs, *, replace_clips,
 def read_assembly_proposal(session, task_id, attempt_id):
     """Read and hash Runtime's exact completed managed proposal bytes."""
     from astrid.core.contracts.runtime_orchestration import is_native_assembler_spec
+    from astrid.sdk.task_spec import task_executable_spec
 
     from .commands import _VALIDATOR
     from .commit import _digest
@@ -101,7 +102,7 @@ def read_assembly_proposal(session, task_id, attempt_id):
     transport = session.client._remote._transport
     task = transport.get_task(task_id)
     try:
-        spec = task['spec']['spec']
+        spec = task_executable_spec(task)
         if (task['task_id'] != task_id or task['project_id'] != session.project_id
                 or task['state'] != 'succeeded' or task['attempt_id'] != attempt_id
                 or task['capability_id'] != 'rendering.assemble_timeline'

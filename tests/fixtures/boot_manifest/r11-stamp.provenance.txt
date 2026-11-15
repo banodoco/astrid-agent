@@ -1,0 +1,35 @@
+Captured from the real R11 stamp_boot_manifest writer, without modifying its output.
+Agent commit: a105de3a4852cb61b9647dfe2c920118bd29f272
+Identity source: astrid-dev/plans/29-update-and-release/handoff.md, served Release 11 Agent.
+Detached worktree: /home/user/wt/bm-r11
+Registry and fixtures: astrid.core.gateway.boot_conformance.VIBE_PROFILE_REGISTRY and vibe_profile_specs().
+The release's frozen fixture definitions supply accepted_receipt_sha256,
+accepted_input and fixture_digests; no fixture or digest was invented.
+Python: Python 3.13 in the offline bootmanifest.env, cached Runtime wheel installed.
+
+Command (network disabled; run from the detached worktree):
+unshare -n env -i PATH=/usr/bin:/bin HOME=/home/user/wt/bootmanifest.env/home PYTHONPATH=/home/user/wt/bm-r11 PYTHONDONTWRITEBYTECODE=1 /home/user/wt/bootmanifest.env/venv/bin/python /home/user/cells/evidence/bootmanifest-diff/capture-all-stamps.py /home/user/cells/evidence/bootmanifest-diff/r11-stamp.json r11
+cmp /home/user/cells/evidence/bootmanifest-diff/r11-stamp.json /home/user/wt/bootmanifest/tests/fixtures/boot_manifest/r9-stamp.json
+
+capture-all-stamps.py contents:
+from pathlib import Path
+import sys
+import tempfile
+
+from astrid.core._shared.boot_manifest import stamp_boot_manifest
+if sys.argv[2] in ('r9', 'r10'):
+    from astrid.packs.shots.conformance import VIBE_PROFILE_REGISTRY, vibe_profile_specs
+else:
+    from astrid.core.gateway.boot_conformance import VIBE_PROFILE_REGISTRY, vibe_profile_specs
+
+with tempfile.TemporaryDirectory() as directory:
+    support = Path(directory)
+    path = support / 'astrid-host' / 'boot-manifest.json'
+    stamp_boot_manifest(path, support_root=support,
+                        registry=VIBE_PROFILE_REGISTRY, fixtures=vibe_profile_specs())
+    Path(sys.argv[1]).write_bytes(path.read_bytes())
+
+Observation: byte-identical to r9-stamp.json (also identical to R12).
+Only one JSON fixture is retained per distinct stamp.
+File SHA-256: b805612c0d150c5d9e31062e2463c4e5b5c8911401d0069d9aa6fbb35ccf6e73
+Canonical manifest hash: 30cd70e8a79ab2346ef172d3fb42e48c050e8c05544471c597acf77cdf7bead6

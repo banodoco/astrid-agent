@@ -63,8 +63,8 @@ CHILD = textwrap.dedent("""\
 
 
 def test_installed_qwen_managed_child_path(tmp_path: Path) -> None:
-    source_value = os.environ.get("VIBECOMFY_SOURCE")
-    assert source_value, "VIBECOMFY_SOURCE must name the pinned VibeComfy checkout"
+    source_value = os.environ.get("ASTRID_VIBECOMFY_CHECKOUT")
+    assert source_value, "ASTRID_VIBECOMFY_CHECKOUT must name the pinned VibeComfy checkout"
     source = Path(source_value).resolve()
     revision = subprocess.run(
         ["git", "-C", str(source), "rev-parse", "HEAD"],
@@ -72,7 +72,7 @@ def test_installed_qwen_managed_child_path(tmp_path: Path) -> None:
     )
     assert revision.returncode == 0, revision.stdout + revision.stderr
     assert revision.stdout.strip() == VIBECOMFY_ENGINE_REVISION, (
-        f"VIBECOMFY_SOURCE is {revision.stdout.strip()}, expected {VIBECOMFY_ENGINE_REVISION}"
+        f"ASTRID_VIBECOMFY_CHECKOUT is {revision.stdout.strip()}, expected {VIBECOMFY_ENGINE_REVISION}"
     )
 
     environment = tmp_path / "installed"
@@ -162,7 +162,7 @@ def test_installed_qwen_managed_child_path(tmp_path: Path) -> None:
         assert "Traceback (most recent call last)" in failed.stderr
         assert "ValueError" in failed.stderr
         assert "HTTPError" in failed.stderr  # original HTTP 500 remains chained
-        assert "run_local_server" in failed.stderr
+        assert "not ready" in failed.stderr  # the engine probe refuses before any submit
         failure_requests = comfy.requests[failure_start:]
         assert any(request.path == "/object_info" for request in failure_requests)
         assert not any(request.method == "POST" for request in failure_requests)

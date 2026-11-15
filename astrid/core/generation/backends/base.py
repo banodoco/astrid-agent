@@ -162,6 +162,7 @@ class GenerationResult:
     result_manifest: dict[str, Any] | None = None
     source_ref: dict[str, Any] | str | None = None
     effective_settings_ref: dict[str, Any] | str | None = None
+    logs: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -202,6 +203,7 @@ class GenerationResult:
             "result_manifest": self.result_manifest,
             "source_ref": self.source_ref,
             "effective_settings_ref": self.effective_settings_ref,
+            "logs": self.logs,
         }
         return result
 
@@ -249,6 +251,7 @@ class GenerationResult:
             result_manifest=data.get('result_manifest'),
             source_ref=data.get('source_ref'),
             effective_settings_ref=data.get('effective_settings_ref'),
+            logs=list(data.get('logs', [])),
         )
 
 

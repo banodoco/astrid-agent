@@ -3,16 +3,26 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import is_dataclass, replace
 from pathlib import Path
+from typing import Any
 
 from astrid.core._shared.result_manifest import (
     ResultManifestError,
     _validate_manifest,
     validate_result_manifest,
 )
+from astrid.core.generation.vibecomfy_runtime_root import vibecomfy_runtime_root
+
+
+def public_alignment_evidence(alignment: Mapping[str, Any]) -> dict[str, Any]:
+    """Project trust's public shape without changing detailed preparation evidence."""
+    if alignment.get("mode") == "trust":
+        return {key: alignment[key] for key in ("mode", "status", "verified")}
+    return dict(alignment)
 
 
 def _read_correlated_result(path: Path, *, task_id: str | None, attempt_id: str | None):
@@ -186,10 +196,8 @@ def _complete_evidence(payload: dict, *, source: dict | None,
 
 
 def workflow_transport(profile_id: str, comfy_url: str) -> dict:
-    """Keep route ownership explicit; checkout binding evidence comes from its owner."""
+    """Keep route ownership explicit for the local server profile."""
     from astrid.core.generation.targets import TargetRecord
-    if profile_id == 'checkout_server':
-        return {}
     return {'target': TargetRecord(owner='human' if profile_id == 'local_server' else 'astrid',
                                    endpoint=comfy_url or None).as_dict()}
 
@@ -240,7 +248,8 @@ def _native_failure_result(error, receipt: Path, destination: Path, *, task_id: 
 
     if (attempt_id is None or receipt.is_symlink()
             or any(parent.is_symlink() for parent in receipt.parents)
-            or not receipt.resolve().is_relative_to(destination.resolve())):
+            or not (receipt.resolve().is_relative_to(destination.resolve())
+                    or receipt.resolve().is_relative_to(Path(vibecomfy_runtime_root(destination)).resolve()))):
         raise ValueError('native receipt is outside this Runtime attempt')
     attempt = json.loads(receipt.read_bytes())
     runtime = attempt['runtime_evidence']
@@ -402,7 +411,7 @@ def preserve_result_on_error(destination: Path, *, task_id: str, attempt_id: str
     without replacing the exception or creating a second terminal profile.
     """
     destination = Path(destination).resolve()
-    previous_receipts = set(destination.glob('.vibecomfy-runtime/out/runs/*/attempt.json'))
+    previous_receipts = set(vibecomfy_runtime_root(destination).glob('out/runs/*/attempt.json'))
     try:
         yield
     except BaseException as error:
@@ -437,7 +446,7 @@ def preserve_result_on_error(destination: Path, *, task_id: str, attempt_id: str
                 error.add_note(f'Could not retain producer settings evidence: {evidence_error}')
             break
         else:
-            receipts.extend(path for path in destination.glob('.vibecomfy-runtime/out/runs/*/attempt.json')
+            receipts.extend(path for path in vibecomfy_runtime_root(destination).glob('out/runs/*/attempt.json')
                             if path not in previous_receipts)
             # An ambiguous native run is recovery work, never an invented run id.
             receipts = [path for path in dict.fromkeys(receipts)

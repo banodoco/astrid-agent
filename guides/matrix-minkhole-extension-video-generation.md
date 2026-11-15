@@ -174,6 +174,8 @@ The upstream node author's keyframe notes are also relevant:
 
 ## RunPod setup and handoff
 
+> `scripts/claim_runpod_5090_backup.py` is an operator tool, not the generation path; generation is `astrid generate video --entry ... --placement runpod`.
+
 The long-running claimant is the repo script
 [`scripts/claim_runpod_5090_backup.py`](../scripts/claim_runpod_5090_backup.py).
 Run it from the Astrid checkout with the repo virtualenv; the system Python may

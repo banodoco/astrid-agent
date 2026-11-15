@@ -49,8 +49,18 @@ def tuple_sources(tmp_path_factory, request):
         for name, source in selected.items():
             destination = root / "src" / name
             subprocess.run(["git", "clone", "--quiet", "--shared", str(source), str(destination)], check=True)
-            assert subprocess.check_output(["git", "-C", str(destination), "rev-parse", "HEAD"]) == subprocess.check_output(
-                ["git", "-C", str(source), "rev-parse", "HEAD"])
+            expected = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
+            if name == "astrid-runtime":
+                # The worker bootstrap is pinned by the Agent's lock, independently
+                # of the Runtime used to serve this controller-side test process.
+                expected = json.loads((selected["astrid-agent"] / "runtime.lock.json").read_text())["source_commit"]
+                present = subprocess.run(["git", "-C", str(destination), "cat-file", "-e", expected],
+                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if present.returncode:
+                    subprocess.run(["git", "-C", str(destination), "fetch", "--quiet", "--depth=1",
+                                    "https://github.com/banodoco/astrid-runtime", expected], check=True)
+                subprocess.run(["git", "-C", str(destination), "checkout", "--quiet", "--detach", expected], check=True)
+            assert subprocess.check_output(["git", "-C", str(destination), "rev-parse", "HEAD"], text=True).strip() == expected
         request.session.stash[_TUPLE_SOURCES] = root
         yield root
     finally:
@@ -225,7 +235,7 @@ def retained_host(retained, tmp_path, monkeypatch, real_runtime, tuple_sources):
             capability_type="executor", native_kind="command", task_id=task_id, run_id=task.get("run_id"),
             wait=True, timeout_seconds=90, poll_seconds=0.02)
     def release():
-        return GenerationFacade().release(engine="comfyui", target="runpod", client=client, wait=True)
+        return GenerationFacade().release(engine="comfyui", placement="runpod", client=client, wait=True)
     try:
         yield SimpleNamespace(c=c, client=client, host=host, bindings=bindings, paid=paid, selection=selection,
             project=project_id, paths=paths, output=output, state=state, tmp=tmp_path,
@@ -340,17 +350,17 @@ def test_runtime_claim_binds_one_endpoint_and_delivers(retained, comfy, tmp_path
 
         worker_thread = threading.Thread(target=serve, daemon=True)
         worker_thread.start()
-        quote = GenerationFacade().describe(target="runpod", client=client)
+        quote = GenerationFacade().describe(placement="runpod", client=client)
         retained_owner = host._target_bindings.provider.lease_owner
         deadline = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
-        result = GenerationFacade().workflow(workflow=comfy.workflow, target="runpod", client=client,
+        result = GenerationFacade().workflow(workflow=comfy.workflow, placement="runpod", client=client,
             project=project_id, consent=("paid",), max_usd=1.0, deadline=deadline,
             offer_digest=quote["offer_digest"], preparation_seconds=60, execution_seconds=60,
             idle_seconds=1800, wait=True, timeout_seconds=90, recovery_path=tmp_path / "recovery.json")
         delivered = deliver_generation(result, client=client, out=tmp_path / "delivered", project=project_id)
         assert len(delivered["image_paths"]) == 1 and comfy.prompts and c.creates == 1
         assert Path(delivered["image_paths"][0]).read_bytes() == (comfy.output / "astrid_1.png").read_bytes()
-        resumed = GenerationFacade().workflow(workflow=comfy.workflow, target="runpod", client=client,
+        resumed = GenerationFacade().workflow(workflow=comfy.workflow, placement="runpod", client=client,
             project=project_id, consent=("paid",), max_usd=1.0, deadline=deadline,
             offer_digest=quote["offer_digest"], preparation_seconds=60, execution_seconds=60,
             idle_seconds=1800, wait=True, timeout_seconds=90, recovery_path=tmp_path / "recovery.json",
@@ -364,11 +374,11 @@ def test_runtime_claim_binds_one_endpoint_and_delivers(retained, comfy, tmp_path
         assert observed.ok
         settled = observed.data["result"]
         assert settled.get("payload", settled)["target_binding"] == binding
-        status = GenerationFacade().describe(target="runpod", client=client)
+        status = GenerationFacade().describe(placement="runpod", client=client)
         assert status['pod_id'] == 'pod-1' and status['lease']['state'] == 'idle'
         assert host._target_bindings.provider.lease_owner is retained_owner
         assert c.read()['paid_limits']['idle_seconds'] == 1800
-        released = GenerationFacade().release(engine="comfyui", target="runpod", client=client, wait=True)
+        released = GenerationFacade().release(engine="comfyui", placement="runpod", client=client, wait=True)
         assert released.ok and c.read()["state"] == "cleanup_complete"
         assert host._target_bindings.provider.lease_owner is retained_owner and c.deletes == ['pod-1']
         assert c.read()['cleanup']['absence']['exact_get_status'] == 404

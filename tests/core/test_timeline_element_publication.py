@@ -203,7 +203,7 @@ def test_element_only_and_same_revision_keep_unknown_props(monkeypatch, configur
     assert all(write['path'][0] != 'params' for record in plan.records for write in record['writes'])
 
 
-@pytest.mark.parametrize('params', [{'seed': float('nan')}, {'seed': object()}, [], {'large': 'x' * 16385}])
+@pytest.mark.parametrize('params', [{'seed': float('nan')}, {'seed': object()}, [], pytest.param({'large': 'x' * 16385}, id='large-16385')])
 def test_invalid_json_params_refuse_before_commit(monkeypatch, configured, params):
     owner, _, ref = setup_owner(monkeypatch, configured)
     result = update(owner, ref, params=params)

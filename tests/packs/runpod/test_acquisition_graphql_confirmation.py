@@ -1,8 +1,7 @@
 """Acquisition is confirmed from GraphQL pod.machine, never from REST.
 
-Live pod 65dvlpzs5ejrnk: REST GET /v1/pods/{id} reports ``machine: {}`` (no
-gpuTypeId, no dataCenterId), so confirming from REST always failed a correct
-pod. The datacenter must equal the contract's exactly; the GPU passes only if
+Native REST v2 records provide GPU metadata without GraphQL machine evidence.
+Acquisition still confirms the machine through GraphQL. The datacenter must equal the contract's exactly; the GPU passes only if
 the provider's own gpuTypes catalog displayName for the contract's GPU type id
 equals ``machine.gpuDisplayName`` exactly. A missing GraphQL machine at the
 readiness timeout fails closed and the existing release path releases the pod.
@@ -14,6 +13,7 @@ import socket
 import pytest
 
 from astrid.packs.runpod import worker_preparation as preparation
+from astrid.packs.runpod.worker_owner import RunPodWorkerOwnerError
 from astrid.packs.runpod.worker_preparation import (
     AcquisitionUnresolvedError,
     RunPodTargetContract,
@@ -47,14 +47,15 @@ def _contract(**overrides):
 
 
 def _rest_pod():
-    # REST GET /v1/pods/{id} (and the inventory record) for the live pod: machine == {}.
-    return {"id": POD_ID, "name": "astrid-product-op", "desiredStatus": "RUNNING",
-            "actualStatus": "RUNNING", "imageName": IMAGE, "machine": {}}
+    # Native REST v2 inventory has no GraphQL machine evidence.
+    return {"id": POD_ID, "name": "astrid-product-op", "status": "RUNNING",
+            "image": IMAGE, "gpu": {"id": GPU_ID, "count": 1},
+            "runtime": None, "mounts": {}}
 
 
 @pytest.fixture
 def provider(monkeypatch):
-    """REST says machine {}; GraphQL answers with the recorded payloads."""
+    """REST supplies native v2 fields; GraphQL supplies machine evidence."""
     import runpod.api.ctl_commands as ctl
     import runpod.api.graphql as sdk_graphql
     from runpod_lifecycle import api
@@ -138,16 +139,18 @@ def test_missing_graphql_machine_fails_acquisition_and_the_release_path_is_reach
                         lambda key, contract, *, timeout_seconds: real(key, contract, timeout_seconds=0.05))
     owner = c.fresh()
 
-    with pytest.raises(AcquisitionUnresolvedError, match="provider acquisition remains unresolved"):
+    # 80bbf690: the exact created pod is released synchronously on this failure.
+    with pytest.raises(RunPodWorkerOwnerError,
+                       match="RunPod acquisition failed; created pod pod-1 was released") as caught:
         owner.acquire(c.grant)
 
     failed = c.read()
+    assert isinstance(caught.value.__cause__, AcquisitionUnresolvedError)
     assert failed["pod_id"] == "pod-1" and failed["failure_phase"] == "provider_contract"
     assert failed["failure_type"] == "TargetObservationError"
-    assert not c.deletes
-
-    c.clock.advance(1)  # the lease owner's scheduled recovery release (unchanged -4 path)
-
     record = c.read()
     assert c.deletes == ["pod-1"], record.get("cleanup_failure_type")
     assert record["state"] == "cleanup_complete"
+    assert record["cleanup"]["pod_id"] == "pod-1"
+    assert record["lease"]["release_reason"] == "custody_changed"
+    assert c.creates == 1 and c.pods == []

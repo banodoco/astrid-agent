@@ -21,12 +21,21 @@ from pathlib import Path
 from urllib.parse import quote
 
 from filelock import FileLock
+from runpod_lifecycle.rest import collect_pages, normalize_pod
+from runpod_lifecycle.rest import normalize_volume as normalize_rest_volume
 from runtime_protocol.deadline import bounded_operation
 
 from astrid.core.generation.engine_recipe import load_recipe, load_recipe_model_lock
 from astrid.packs.runpod import h3_release_bootstrap as bootstrap
 from astrid.packs.runpod import h3_release_remote as remote
 from astrid.packs.runpod.cuda_versions import DEFAULT_ALLOWED_CUDA_VERSIONS
+from astrid.packs.runpod.provider_urls import (
+    NETWORK_VOLUMES_URL,
+    POD_TERMINATE_METHOD,
+    POD_URL_TEMPLATE,
+    PODS_URL,
+    REST_BASE_URL,
+)
 
 _DATA = Path(__file__).parent
 
@@ -50,7 +59,7 @@ class AttachmentPending(BuildError):
 def release_inputs():
     # The remote builder retains its historic receipt vocabulary as an adapter,
     # while source pins and model rows come from the verified canonical files.
-    canonical = load_recipe("vibecomfy-h3", "linux-x86_64-cu130")
+    canonical = load_recipe("comfyui", "linux-x86_64-cu130")
     by_name = {source.name: {"repository": source.pin.repository, "revision": source.pin.revision}
                for source in canonical.sources}
     recipe = json.loads((_DATA / "environment.linux-cu130.json").read_text())
@@ -60,7 +69,7 @@ def release_inputs():
         {"name": "ComfyUI-H3-Motion-Context-MultiRef", **by_name["h3-motion-context"]},
         {"name": "ComfyUI-VideoHelperSuite", **by_name["videohelpersuite"]},
     ]
-    model_lock = load_recipe_model_lock("vibecomfy-h3", "linux-x86_64-cu130")
+    model_lock = load_recipe_model_lock("comfyui", "linux-x86_64-cu130")
     repository = model_lock.models[0].repository if model_lock.models else None
     lock = {"schema_version": 1, "repository": repository, "metadata_fetched_at": "2026-10-27",
             "models": [{"path": row.path, "destination": row.destination, "revision": row.revision,
@@ -73,6 +82,7 @@ def release_inputs():
 
 
 def normalize_volume(value, volume_id):
+    value = normalize_rest_volume(value)
     if value.get("id") != volume_id:
         raise BuildError("provider returned a different volume")
     size = value.get("size")
@@ -86,20 +96,26 @@ def normalize_volume(value, volume_id):
 
 
 def check_attachment(pod, volume, image, pod_type):
+    pod = normalize_pod(pod)
+    from .pod_fields import InvalidPodField, pod_field
+    try:
+        attached = pod_field(pod, "volume")
+        image_observed = pod_field(pod, "image")
+    except InvalidPodField:
+        raise BuildError("provider attachment evidence is invalid") from None
     network = pod.get("networkVolume") or {}
-    attached = pod.get("networkVolumeId") or network.get("id")
     machine = pod.get("machine") or {}
     dc = pod.get("dataCenterId") or machine.get("dataCenterId") or network.get("dataCenterId")
     observed = {"volume_id": attached, "datacenter": dc,
-                "mount": pod.get("volumeMountPath"), "image": pod.get("imageName")}
+                "mount": pod.get("volumeMountPath"), "image": image_observed}
     missing = [name for name, value in observed.items() if value is None or value == ""]
     if missing:
         raise AttachmentPending("provider attachment metadata pending: " + ", ".join(missing))
     if (attached != volume["id"] or dc != volume["datacenter"]
             or pod.get("volumeMountPath") != volume["mount"]
-            or pod.get("imageName") != image):
+            or image_observed != image):
         observed = {"volume_id": attached, "datacenter": dc,
-                    "mount": pod.get("volumeMountPath"), "image": pod.get("imageName")}
+                    "mount": pod.get("volumeMountPath"), "image": image_observed}
         raise BuildError("provider did not verify exact volume, data center, mount and image: " + json.dumps(observed, sort_keys=True))
     expected = "CPU" if pod_type == "cpu" else "GPU"
     observed_compute = pod.get("computeType")
@@ -132,7 +148,7 @@ def _cleanup(provider, handle, path, *, now=time.time, sleep=time.sleep):
                 break
             if absent:
                 handle["cleanup"] = {"status": "verified_absent", "pod_id": handle["pod_id"],
-                                     "verified_by": "GET /v1/pods/{id}: 404", "ended_at": now()}
+                                     "verified_by": "GET /v2/pods/{id}: 404", "ended_at": now()}
                 remote.atomic_json(path, handle)
                 return
             sleep(min(2, max(0, deadline - now())))
@@ -174,7 +190,7 @@ def build_release(provider, transport_factory, *, volume_id, handle_path, pod_ty
             if not matches and cleanup_only:
                 handle["state"] = "allocation_absent"
                 handle["reconciliation"] = {"status": "no_matching_pod", "observed_at": now(),
-                                            "verified_by": "GET /v1/pods: request_name absent"}
+                                            "verified_by": "GET /v2/pods: request_name absent"}
                 remote.atomic_json(handle_path, handle)
                 remote.atomic_json(handle_path.with_suffix(".receipt.json"), handle)
                 return handle
@@ -230,7 +246,7 @@ def build_release(provider, transport_factory, *, volume_id, handle_path, pod_ty
                     if observed is None:
                         raise BuildError("build pod disappeared")
                     handle["provider_observation"] = {key: observed.get(key) for key in (
-                        "id", "networkVolumeId", "networkVolume", "dataCenterId", "volumeMountPath", "imageName", "computeType", "gpuCount")}
+                        "id", "networkVolumeId", "networkVolume", "dataCenterId", "volumeMountPath", "imageName", "image", "computeType", "gpuCount", "gpu")}
                     remote.atomic_json(handle_path, handle)
                     try:
                         check_attachment(observed, volume, inputs["recipe"]["image"], pod_type)
@@ -306,8 +322,9 @@ def build_release(provider, transport_factory, *, volume_id, handle_path, pod_ty
 class RunPodProvider:
     """Lifecycle owns creation; exact REST GET/DELETE preserve strict custody."""
     def __init__(self, key, *, min_cuda_version=None, cpu_api="rest", cpu_instance_id=None, cpu_only_gpu_build=False, transport="ssh"):
-        import httpx
         import secrets
+
+        import httpx
         self.transport = transport
         self.https_token = secrets.token_urlsafe(32) if transport == "https" else None
         self._api_key = key
@@ -315,7 +332,7 @@ class RunPodProvider:
         self.cpu_api = cpu_api
         self.cpu_instance_id = cpu_instance_id
         self.cpu_only_gpu_build = cpu_only_gpu_build
-        self.http = httpx.Client(base_url="https://rest.runpod.io/v1/", timeout=20,
+        self.http = httpx.Client(base_url=REST_BASE_URL, timeout=20,
                                  headers={"Authorization": "Bearer " + key})
 
     def request(self, method, path, **kwargs):
@@ -349,10 +366,10 @@ class RunPodProvider:
         return response.json() if response.content else {}
 
     def volume(self, volume_id):
-        result = self.request("GET", "networkvolumes/" + quote(volume_id, safe=""))
+        result = self.request("GET", NETWORK_VOLUMES_URL + "/" + quote(volume_id, safe=""))
         if result is None:
             raise BuildError("network volume does not exist")
-        return result
+        return normalize_rest_volume(result)
 
     def preflight(self):
         from runpod_lifecycle.preflight import preflight_transport
@@ -385,27 +402,35 @@ class RunPodProvider:
             raise error(str(exc)) from None
 
     def get(self, pod_id):
-        pod = self.request("GET", "pods/" + quote(pod_id, safe=""))
+        pod = self.request("GET", POD_URL_TEMPLATE.format(pod_id=quote(pod_id, safe="")))
         if pod is None:
             return None
+        pod = normalize_pod(pod)
         if not pod.get("dataCenterId") and not (pod.get("machine") or {}).get("dataCenterId"):
             from runpod_lifecycle import api
             sdk = api._get_runpod()
             observed = sdk.get_pod(pod_id, api_key=self._api_key)
             if isinstance(observed, dict):
                 pod["machine"] = observed.get("machine") or pod.get("machine") or {}
-        if pod.get("computeType") is None and type(pod.get("gpuCount")) is int:
-            pod["computeType"] = "GPU" if pod["gpuCount"] > 0 else "CPU"
+        if pod.get("computeType") is None:
+            from .pod_fields import InvalidPodField, pod_field
+            try:
+                gpu_count = pod_field(pod, "gpu_count")
+            except InvalidPodField:
+                raise BuildError("provider GPU evidence is invalid") from None
+            if gpu_count is not None:
+                pod["computeType"] = "GPU" if gpu_count > 0 else "CPU"
         return pod
 
     def delete(self, pod_id):
-        self.request("DELETE", "pods/" + quote(pod_id, safe=""))
+        self.request(POD_TERMINATE_METHOD, POD_URL_TEMPLATE.format(pod_id=quote(pod_id, safe="")))
 
     def find(self, name):
-        pods = self.request("GET", "pods")
-        if not isinstance(pods, list):
-            raise BuildError("provider pod discovery returned malformed data")
-        return [pod for pod in pods if pod.get("name") == name]
+        try:
+            pods = collect_pages(lambda params: self.request("GET", PODS_URL, params=params), "pods")
+            return [normalize_pod(pod) for pod in pods if pod.get("name") == name]
+        except ValueError as exc:
+            raise BuildError("provider pod discovery returned malformed data") from exc
 
 
 class LifecycleTransport:
@@ -422,8 +447,12 @@ class LifecycleTransport:
                 raise ConnectionError("build pod HTTPS is not ready") from None
             return
         from runpod_lifecycle.ssh import SSHClient
-        port = (pod.get("portMappings") or {}).get("22")
-        ip = pod.get("publicIp")
+        pod = normalize_pod(pod)
+        routes = (pod.get("runtime") or {}).get("ports") or []
+        route = next((p for p in routes if p.get("privatePort") == 22 and p.get("type") == "tcp"), {})
+        direct = (pod.get("ssh") or {}).get("direct") or {}
+        port = route.get("publicPort") or direct.get("port") or (pod.get("portMappings") or {}).get("22")
+        ip = route.get("ip") or direct.get("host") or pod.get("publicIp")
         if not ip or not port:
             raise ConnectionError("SSH route is not ready")
         self.ssh = SSHClient(ip, int(port), "root", private_key_path=os.environ["RUNPOD_SSH_KEY_PATH"],

@@ -8,7 +8,7 @@ import pytest
 from astrid.core.execution.generic_host import GenericPackHost, HostError
 from astrid.core.generation import gpu_environment as gpu
 from tests.test_generic_host import FakeRuntime, _write_manifest
-
+from tests.packs.vibecomfy.test_local_server_run import comfy  # noqa: F401
 
 @pytest.fixture
 def windows_gpu(monkeypatch):
@@ -56,7 +56,7 @@ def test_missing_gpu_warns_for_vibecomfy_but_still_blocks_wan2gp(tmp_path, monke
 
 
 def test_unqualified_label_survives_other_readiness_failures(tmp_path, monkeypatch, windows_gpu):
-    path = _write_manifest(tmp_path / "comfy", capability_id="comfy_wrap.run")
+    path = _write_manifest(tmp_path / "comfy", capability_id="vibecomfy.run")
     manifest = json.loads(path.read_text())
     manifest["metadata"]["required_packages"] = ["astrid_missing_gpu_dependency"]
     path.write_text(json.dumps(manifest))
@@ -70,10 +70,21 @@ def test_unqualified_label_survives_other_readiness_failures(tmp_path, monkeypat
     assert "astrid_missing_gpu_dependency" in row["unavailable_reason"]
 
 
+def _write_attached_comfy_manifest(root):
+    path = _write_manifest(root, capability_id="vibecomfy.run")
+    manifest = json.loads(path.read_text())
+    manifest["metadata"]["network_policy"] = {
+        "allowed_protocols": ["dns", "tcp"],
+        "allowed_destinations": ["127.0.0.1:8188"],
+        "allow_redirects": False,
+    }
+    path.write_text(json.dumps(manifest))
+
+
 @pytest.mark.parametrize("opted_in", [False, True])
-def test_execution_runs_and_labels_settlement_without_opt_in(tmp_path, monkeypatch, windows_gpu, opted_in):
+def test_execution_runs_and_labels_settlement_without_opt_in(tmp_path, monkeypatch, windows_gpu, opted_in, comfy):
     packs = tmp_path / "packs"
-    _write_manifest(packs / "comfy", capability_id="comfy_wrap.run")
+    _write_attached_comfy_manifest(packs / "comfy")
     runtime = FakeRuntime()
     host = GenericPackHost(pack_roots=[packs], client=runtime, attempt_base=tmp_path / "attempts")
     host.discover()
@@ -88,8 +99,10 @@ def test_execution_runs_and_labels_settlement_without_opt_in(tmp_path, monkeypat
                                payload={"gpu_qualification": {"qualified": True}})
 
     monkeypatch.setattr(host, "_run_command_definition", run)
-    task = {"id": "gpu-test", "capability": "comfy_wrap.run", "project_id": "project",
-            "attempt_id": "attempt", "fence": 1, "spec": {"spec": {"inputs": {}}}}
+    # Exercise settlement with an attached server; command execution is stubbed.
+    workflow = comfy.workflow
+    task = {"id": "gpu-test", "capability": "vibecomfy.run", "project_id": "project",
+            "attempt_id": "attempt", "fence": 1, "spec": {"spec": {"inputs": {"workflow": str(workflow), "comfy_url": comfy.url}}}}
     runtime.tasks["gpu-test"] = task
     host.run_task(task, lease_token="lease")
     result = runtime.settlements[-1][2]["result"]
@@ -101,20 +114,20 @@ def test_execution_runs_and_labels_settlement_without_opt_in(tmp_path, monkeypat
 
 
 def test_vibecomfy_remains_ready_when_nvidia_detection_is_lost(tmp_path, monkeypatch, windows_gpu):
-    _write_manifest(tmp_path / "comfy", capability_id="comfy_wrap.run")
+    _write_manifest(tmp_path / "comfy", capability_id="vibecomfy.run")
     monkeypatch.setenv(gpu.ALLOW_UNQUALIFIED_ENV, "1")
     runtime = FakeRuntime()
     host = GenericPackHost(pack_roots=[tmp_path], client=runtime)
     host.register()
-    assert host.capabilities["comfy_wrap.run"].ready
+    assert host.capabilities["vibecomfy.run"].ready
     windows_gpu[0].update(available=False, devices=[], reason="No NVIDIA GPU was detected.")
-    host.preflight("comfy_wrap.run")
-    assert host.capabilities["comfy_wrap.run"].ready
-    assert host.capabilities["comfy_wrap.run"].preflight["gpu"]["warning"].startswith("VibeComfy uses your own ComfyUI")
+    host.preflight("vibecomfy.run")
+    assert host.capabilities["vibecomfy.run"].ready
+    assert host.capabilities["vibecomfy.run"].preflight["gpu"]["warning"].startswith("VibeComfy uses your own ComfyUI")
 
 
-def test_failed_opt_in_run_retains_unqualified_label(tmp_path, monkeypatch, windows_gpu):
-    _write_manifest(tmp_path / "comfy", capability_id="comfy_wrap.run")
+def test_failed_opt_in_run_retains_unqualified_label(tmp_path, monkeypatch, windows_gpu, comfy):
+    _write_attached_comfy_manifest(tmp_path / "comfy")
     monkeypatch.setenv(gpu.ALLOW_UNQUALIFIED_ENV, "1")
     runtime = FakeRuntime()
     host = GenericPackHost(pack_roots=[tmp_path], client=runtime)
@@ -124,7 +137,10 @@ def test_failed_opt_in_run_retains_unqualified_label(tmp_path, monkeypatch, wind
         raise RuntimeError("GPU execution failed")
 
     monkeypatch.setattr(host, "_run_command_definition", fail)
-    task = {"id": "failed", "capability": "comfy_wrap.run", "project_id": "project", "attempt_id": "failed-attempt", "fence": 1}
+    # Exercise settlement with an attached server; command execution is stubbed.
+    workflow = comfy.workflow
+    task = {"id": "failed", "capability": "vibecomfy.run", "project_id": "project", "attempt_id": "failed-attempt", "fence": 1,
+            "spec": {"spec": {"inputs": {"workflow": str(workflow), "comfy_url": comfy.url}}}}
     runtime.tasks["failed"] = task
     with pytest.raises(RuntimeError, match="GPU execution failed"):
         host.run_task(task, lease_token="lease")

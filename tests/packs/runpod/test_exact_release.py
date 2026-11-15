@@ -8,7 +8,6 @@ import httpx
 import pytest
 
 from astrid.packs.runpod import worker_preparation as preparation
-from astrid.packs.runpod.remote_placement import LifecyclePodProvider, RemotePlacementError
 from tests.packs.runpod.test_worker_preparation import _claim_handle, _pod, _volume, _quiescence
 
 
@@ -146,18 +145,6 @@ def test_status_preserving_exact_get_rejects_errors_and_null(monkeypatch, status
         with pytest.raises(preparation.TargetObservationError):
             preparation.read_exact_pod("fake", "pod-exact")
     assert calls[0][0].endswith("/pod-exact")
-
-
-def test_h3_provider_no_longer_collapses_error_to_absence(tmp_path, monkeypatch):
-    from runpod_lifecycle import RunPodConfig, api
-    monkeypatch.setattr(RunPodConfig, "from_env", lambda **kwargs: SimpleNamespace(api_key="fake"))
-    monkeypatch.setattr(api, "get_pod_status", lambda *args: pytest.fail("lossy GET forbidden"))
-    provider = LifecyclePodProvider(tmp_path)
-    monkeypatch.setattr(preparation, "read_exact_pod", lambda *args: (200, None))
-    with pytest.raises(RemotePlacementError):
-        provider.pod_exists("pod-exact")
-    monkeypatch.setattr(preparation, "read_exact_pod", lambda *args: (404, None))
-    assert provider.pod_exists("pod-exact") is False
 
 
 def test_real_lifecycle_delete404_fast_path_is_independently_verified(tmp_path, monkeypatch):

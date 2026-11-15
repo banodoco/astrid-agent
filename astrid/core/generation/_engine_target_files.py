@@ -1,4 +1,4 @@
-"""Private descriptor-relative filesystem building blocks for Linux contexts.
+"""Private descriptor-relative filesystem building blocks for engine files.
 
 This is an incomplete A2 slice, not an ExecutionContext or install authority.
 """
@@ -11,14 +11,22 @@ import os
 import secrets
 import stat
 import time
-from contextlib import contextmanager
 from collections.abc import Mapping
+from contextlib import contextmanager
+from pathlib import PureWindowsPath
+
+# POSIX (including the rented engine machine, where only this file and two
+# Runtime modules are shipped) uses ordinary os. On Windows the Runtime adapter
+# retains native directory handles, refuses reparse points and compares final
+# paths and file identities; it does not protect against same-user byte edits.
+if not hasattr(os, 'O_DIRECTORY'):  # Windows
+    from runtime_protocol.dirfd import filesystem as os
 
 from .engine_contracts import DeadlineExceeded, FileFact, RecipeValidationError, UnsafePathError
 
 _JSON_LIMIT = 4 * 1024 * 1024
-_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-_FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
+_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, 'O_CLOEXEC', 0)
+_FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, 'O_CLOEXEC', 0) | os.O_NONBLOCK
 
 
 def _check(deadline):
@@ -41,18 +49,36 @@ def _parts(path):
 
 class _TargetFiles:
     def __init__(self, root):
-        self._root = tuple(_parts(root))
+        self._anchor, self._root = self._split(root)
+
+    @staticmethod
+    def _split(path):
+        if os.name != 'nt':
+            return '/', tuple(_parts(path))
+        if not isinstance(path, str) or any(ord(c) < 32 for c in path):
+            raise UnsafePathError("unsafe target path")
+        value = PureWindowsPath(path)
+        # The Runtime adapter additionally rejects device names, ADS, trailing
+        # dots/spaces and reparses, including junctions, at the actual open.
+        raw = path.replace('\\', '/').split('/')
+        if (not value.is_absolute() or len(value.parts) < 2
+                or any(p in ('.', '..') for p in raw)
+                or any(':' in p for p in value.parts[1:])):
+            raise UnsafePathError("unsafe target path")
+        return value.anchor, tuple(value.parts[1:])
 
     def _relative(self, path):
-        parts = _parts(path)
-        if tuple(parts[:len(self._root)]) != self._root:
+        anchor, parts = self._split(path)
+        normalize = str.casefold if os.name == 'nt' else str
+        if (normalize(anchor) != normalize(self._anchor)
+                or tuple(map(normalize, parts[:len(self._root)])) != tuple(map(normalize, self._root))):
             raise UnsafePathError("target path outside install root")
         return parts
 
     @contextmanager
     def _directory(self, parts, deadline, *, create=False):
         _check(deadline)
-        fd = os.open('/', _DIR_FLAGS)
+        fd = os.open(self._anchor, _DIR_FLAGS)
         try:
             for part in parts:
                 _check(deadline)
@@ -86,7 +112,7 @@ class _TargetFiles:
             raise UnsafePathError("target is not a singly linked regular file")
         return info
 
-    def file_fact(self, path, *, hash_bytes, deadline):
+    def file_fact(self, path, *, hash_bytes, deadline, check=None, verification=None):
         parts = self._relative(path)
         if type(hash_bytes) is not bool:
             raise RecipeValidationError("hash selection must be boolean")
@@ -102,12 +128,15 @@ class _TargetFiles:
                     before = self._regular(fd)
                     if (before.st_dev, before.st_ino) != (info.st_dev, info.st_ino):
                         raise UnsafePathError("target changed during inspection")
-                    digest = None
-                    if hash_bytes:
+                    digest = (verification.lookup(before)
+                              if hash_bytes and verification is not None else None)
+                    if hash_bytes and digest is None:
                         h = hashlib.sha256()
                         count = 0
                         while True:
                             _check(deadline)
+                            if check is not None:
+                                check()
                             block = os.read(fd, 1024 * 1024)
                             if not block:
                                 break
@@ -118,7 +147,16 @@ class _TargetFiles:
                                 != (after.st_size, after.st_mtime_ns, after.st_ctime_ns)):
                             raise UnsafePathError("target changed during inspection")
                         digest = h.hexdigest()
+                        if verification is not None:
+                            verification.remember(before, digest)
+                    if hash_bytes and verification is not None:
+                        after = self._regular(fd)
+                        if ((before.st_dev, before.st_size, before.st_mtime_ns, before.st_ino, before.st_ctime_ns)
+                                != (after.st_dev, after.st_size, after.st_mtime_ns, after.st_ino, after.st_ctime_ns)):
+                            raise UnsafePathError("target changed during inspection")
                     _check(deadline)
+                    if check is not None:
+                        check()
                     return FileFact(True, True, False, before.st_size, digest)
                 finally:
                     os.close(fd)
@@ -168,13 +206,13 @@ class _TargetFiles:
         _check(deadline)
         return value
 
-    def write_json_atomic(self, path, value, *, deadline):
+    def write_json_atomic(self, path, value, *, deadline, ensure_ascii=False):
         parts = self._relative(path)
         if not isinstance(value, Mapping):
             raise RecipeValidationError("target JSON must be an object")
         try:
             data = json.dumps(dict(value), sort_keys=True, separators=(',', ':'),
-                              ensure_ascii=False, allow_nan=False).encode('utf-8')
+                              ensure_ascii=ensure_ascii, allow_nan=False).encode('utf-8')
         except (TypeError, ValueError, UnicodeError, RecursionError):
             raise RecipeValidationError("invalid target JSON") from None
         if len(data) > _JSON_LIMIT:
@@ -188,7 +226,7 @@ class _TargetFiles:
                 except FileNotFoundError:
                     pass
                 temp = '.a2-' + secrets.token_hex(16) + '.tmp'
-                fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, 'O_CLOEXEC', 0),
                              0o600, dir_fd=parent)
                 try:
                     view = memoryview(data)

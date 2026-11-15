@@ -172,8 +172,8 @@ def test_lost_original_supervisor_response_resumes_same_session_only(release_cas
     c = release_case
     owner, _transport, selected, _ = _owner()
     receipt = owner.start(selected)
-    selected = replace(selected, session_ref="vibecomfy-h3", account_ref="runpod-test-account", pod_id="pod-exact")
-    receipt = replace(receipt, session_ref="vibecomfy-h3", account_ref="runpod-test-account", pod_id="pod-exact")
+    selected = replace(selected, session_ref="comfyui", account_ref="runpod-test-account", pod_id="pod-exact")
+    receipt = replace(receipt, session_ref="comfyui", account_ref="runpod-test-account", pod_id="pod-exact")
     record = {**c.record, "managed_session": {
         "schema": "astrid.runpod.managed-session.v1", "claim_operation_id": c.record["operation_id"],
         "session_ref": selected.session_ref, "config_digest": selected.config_digest,

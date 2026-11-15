@@ -22,8 +22,8 @@ from typing import Any
 
 from filelock import FileLock
 
-_ALIASES = {"local": "comfyui", "vibecomfy": "comfyui", "vibecomfy-h3": "comfyui", "cloud": "fal"}
-_COMFY_TABLES = ("comfyui", "local", "vibecomfy", "vibecomfy-h3")
+_ALIASES = {"local": "comfyui", "vibecomfy": "comfyui", "cloud": "fal"}
+_COMFY_TABLES = ("comfyui", "local", "vibecomfy")
 _LAYOUTS = {"desktop", "git", "portable", "pinokio", "package", "unknown"}
 _DIRECTORIES = ("user_dir", "workflows_dir", "output_dir", "models_dir", "custom_nodes_dir")
 _LAUNCH = ("launch", "launch_argv", "launch_app", "argv", "app")
@@ -279,7 +279,12 @@ def _managed_record(record: TargetRecord) -> TargetRecord:
     """Resolve ownership and paths from existing root/install receipt authority."""
     from .engine_local_endpoint import recorded_engine_root
     from .engine_recipe import load_recipe
-    from .engine_runner import _parse_receipt, plan_install
+    from .engine_runner import (
+        _parse_receipt,
+        plan_from_receipt,
+        plan_install,
+        require_current_receipt,
+    )
 
     try:
         roots = {root for name in _COMFY_TABLES
@@ -298,6 +303,8 @@ def _managed_record(record: TargetRecord) -> TargetRecord:
             raise TargetConfigError("managed Comfy target needs an installed Comfy receipt")
         recipe = load_recipe(raw["engine"], raw["platform"])
         receipt = _parse_receipt(raw, plan_install(recipe, root=root, placement="local"))
+        plan = plan_from_receipt(recipe, receipt, root=root, placement="local")
+        require_current_receipt(receipt, plan, recipe)
         environment = next(e for e in recipe.environments if e.name == recipe.primary_environment)
         executable = "Scripts/python.exe" if recipe.platform.startswith("windows-") else "bin/python"
         python = str(Path(root) / environment.relative_path / executable)

@@ -53,8 +53,8 @@ keeping the low-resolution badge readable.
 
 | User intent | Read and use | Typical entrypoints |
 | --- | --- | --- |
-| Generate with the user's own ComfyUI or a saved ComfyUI workflow ("my ComfyUI", "my saved workflow", local generation) | [Run on your own ComfyUI](../../../vibecomfy/docs/SKILL.md#run-on-your-own-comfyui) | `vibecomfy.run` with `comfy_url` |
-| Generate an image, video, or audio asset from a prompt | [generation](../../../generation/docs/SKILL.md) | `generation.generate_image`, `generation.generate_video`, `generation.generate_audio` |
+| Generate with the user's own ComfyUI or a saved ComfyUI workflow ("my ComfyUI", "my saved workflow", local generation) | [Run on your own ComfyUI](../../../vibecomfy/docs/SKILL.md#run-on-your-own-comfyui) | `generate workflow` with the `attached` placement |
+| Generate an image, video, or audio asset from a prompt | [generation](../../../generation/docs/SKILL.md) | `generate(entry, inputs, placement)` and the image, video and audio aliases |
 | Inspect, edit, validate, or run a ComfyUI/VibeComfy graph | [vibecomfy](../../../vibecomfy/docs/SKILL.md) | `vibecomfy.inspect`, `vibecomfy.edit`, `vibecomfy.validate`, `vibecomfy.run` |
 | Understand or describe an image, audio clip, or video | Not installed by default. Add the `understanding` pack ([how](#add-a-pack-that-is-not-installed)), then read its `docs/SKILL.md` | `understanding.understand`, `understanding.scene_describe` |
 | Transcribe, detect scenes/shots, arrange clips, review, or validate editorial work | Not installed by default. Add the `editorial` pack ([how](#add-a-pack-that-is-not-installed)), then read its `docs/SKILL.md` | `editorial.transcribe`, `editorial.scenes`, `editorial.shots`, `editorial.arrange`, `editorial.validate` |

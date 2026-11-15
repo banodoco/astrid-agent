@@ -21,10 +21,12 @@ def test_local_foley_inventory_and_text_project_license(monkeypatch, capsys):
     rows = listing.generation_rows('audio')
     row = next(row for row in rows if row['id'] == 'audio/hunyuan_video_foley')
     assert (row['kind'], row['mode'], row['backend']) == ('audio', 'sfx', 'local')
-    assert row['license_notice'] == 'Tencent Hunyuan Community license excludes the EU, UK, and South Korea.'
+    assert 'license_notice' not in row
     monkeypatch.setattr(listing, 'generation_rows', lambda kind: [row])
     assert listing.main(['list', '--kind', 'audio']) == 0
-    assert row['license_notice'] in capsys.readouterr().out
+    text = capsys.readouterr().out
+    assert row['id'] in text
+    assert 'Tencent Hunyuan Community license excludes the EU, UK, and South Korea.' not in text
 
 
 def _row(**changes):
@@ -406,3 +408,22 @@ def test_declared_qualified_synthetic_action_is_retained(monkeypatch):
                           'vibecomfy.character_animation'):
             assert row['availability'] == 'unavailable'
             assert row['reason'] and row['fix']
+
+
+def test_many_missing_model_rows_on_one_attached_target_read_the_folder_list_once(comfy, monkeypatch):
+    from astrid.core.generation.backends.comfy_target import ComfyTargetClient
+
+    comfy[1].schema = _target_info(unets=(), vaes=())
+    folder_reads = []
+    real_request_json = ComfyTargetClient.request_json
+
+    def counting(self, path, payload=None, **kwargs):
+        if path == "/internal/folder_paths":
+            folder_reads.append(self.target.url)
+        return real_request_json(self, path, payload, **kwargs)
+
+    monkeypatch.setattr(ComfyTargetClient, "request_json", counting)
+    rows = [row for row in listing.generation_rows("image")
+            if row.get("backend") == "local" and row.get("registry_id") == "z-image" and row.get("ready") is False]
+    assert len(rows) >= 2
+    assert len(folder_reads) == 1

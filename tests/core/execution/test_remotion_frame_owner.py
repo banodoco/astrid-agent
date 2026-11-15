@@ -184,7 +184,7 @@ def test_every_start_failure_retains_pending_and_prevents_replacement(edge):
     assert lease(owner,72).generation==2
 
 
-@pytest.mark.parametrize('field,value',[('generation',2),('environment_digest','foreign'),('seq',0),('version','foreign'),('result','x'*65536),('status','unknown')])
+@pytest.mark.parametrize('field,value',[('generation',2),('environment_digest','foreign'),('seq',0),('version','foreign'),pytest.param('result','x'*65536,id='result-oversized-64KiB'),('status','unknown')])
 def test_wrong_or_oversize_reply_fences_without_replacement(field,value):
     owner,backend=setup_owner();active=lease(owner)
     backend.reply_change=lambda r:{**r,field:value}

@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Claim an RTX 5090 on the existing Astrid ``backup`` volume.
 
+Operator tool, not the generation path: ``astrid generate <image|video|audio> ...
+--placement runpod`` claims and releases its own machine. Do not use this script
+for generation.
+
 This is an operator-facing waiter, not a second RunPod client.  It uses the
 shared Astrid environment and the canonical ``runpod-lifecycle`` launch path:
 the exact GPU/storage request is retried until capacity appears.  The
@@ -66,7 +70,7 @@ DEFAULT_ALLOWED_CUDA_VERSIONS = ("13.0",)
 DEFAULT_RELEASE_ROOT = "/workspace/h3-golden/releases/h3-cu130-v1-candidate"
 # The engine installs into CANONICAL_RELEASE_ROOT. The old candidate path stays
 # accepted; any other root is refused before the pod is contacted.
-CANONICAL_RELEASE_ROOT = "/root/astrid/engines/vibecomfy-h3"
+CANONICAL_RELEASE_ROOT = "/root/astrid/engines/comfyui"
 ACCEPTED_RELEASE_ROOTS = (CANONICAL_RELEASE_ROOT, DEFAULT_RELEASE_ROOT)
 DEFAULT_HANDLE_PATH = Path(
     ".otto/runs/h3-av-simplicity-20260924-T2/runpod/claim-handle.json"
@@ -555,6 +559,7 @@ async def _claim(args: argparse.Namespace) -> dict[str, Any]:
         # Fresh claims never inherit a previous claim's bearer from ambient env.
         https_token=None,
         gpu_type=args.gpu_type,
+        ram_tiers_enabled=False,
         storage_name=args.storage_name,
         storage_volumes=(args.storage_name,),
         container_disk_gb=args.container_disk_gb,

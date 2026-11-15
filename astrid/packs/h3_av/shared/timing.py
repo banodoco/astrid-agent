@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import asdict, dataclass
+from fractions import Fraction
 from typing import Any, Mapping
 
 
@@ -25,14 +26,20 @@ class ContinuationTimingError(ValueError):
     """A continuation cannot be represented by the pinned H3 graph."""
 
 
-def frame_index(seconds: float, path: str, *, fps: int = H3_FPS) -> int:
+def frame_index(seconds: Fraction | int | float | str, path: str, *, fps: int = H3_FPS) -> int:
     """Convert frame-aligned seconds to an integer frame index."""
 
-    value = float(seconds)
-    frame = round(value * fps)
-    if abs(frame / fps - value) > 1e-6:
-        raise ContinuationTimingError(f"{path} must be aligned to the selected graph's {fps} fps frame grid")
-    return frame
+    # Exact request times never pass through the legacy float projection used
+    # by media coverage and v1 callers.
+    if not isinstance(seconds, float):
+        frame = Fraction(seconds) * fps
+        if frame.denominator == 1:
+            return frame.numerator
+    else:
+        frame = round(seconds * fps)
+        if abs(frame / fps - seconds) <= 1e-6:
+            return frame
+    raise ContinuationTimingError(f"{path} must be aligned to the selected graph's {fps} fps frame grid")
 
 
 def is_h3_run(frame_count: int) -> bool:
@@ -91,8 +98,8 @@ class ContinuationTiming:
 
 def plan_continuation(
     *,
-    source_end: float,
-    output_duration: float,
+    source_end: Fraction | int | float | str,
+    output_duration: Fraction | int | float | str,
     context_frames: int = H3_DEFAULT_CONTEXT_FRAMES,
 ) -> ContinuationTiming:
     """Plan one full-timeline continuation for the pinned Seitanism graph."""
@@ -143,11 +150,11 @@ def plan_from_preparation(preparation: Mapping[str, Any]) -> ContinuationTiming 
     source_range = source.get("range")
     if not isinstance(source_range, (list, tuple)) or len(source_range) != 2:
         raise ContinuationTimingError("continuation preparation is missing source.range")
-    if float(source_range[0]) != 0:
+    if Fraction(str(source_range[0])) != 0:
         raise ContinuationTimingError("native continuation requires source.range to start at zero")
     if "duration" not in output:
         raise ContinuationTimingError("continuation preparation is missing output.duration")
-    return plan_continuation(source_end=float(source_range[1]), output_duration=float(output["duration"]))
+    return plan_continuation(source_end=source_range[1], output_duration=output["duration"])
 
 
 __all__ = [

@@ -14,6 +14,7 @@ from astrid.core.generation import GENERATION_RESULT_KEY, preflight
 from astrid.core.generation.backends.base import GenerationResult
 from astrid.core.generation.backends.comfy_target import ComfyTarget, ComfyTargetClient
 from astrid.core.model_catalog.registry import ModelRegistry
+from astrid.core.model_catalog.schema import BackendSpec, ModeSpec, ModelEntry
 from astrid.sdk.generation import GenerationFacade
 from astrid.sdk.results import InvocationResult
 from tests.core.generation.availability_fixtures import declare_wan_unqualified
@@ -63,14 +64,30 @@ def z_image_only_registry(monkeypatch):
     monkeypatch.setattr(sdk, '_load_model_registry', lambda **kwargs: registry)
 
 
+@pytest.fixture
+def unqualified_video_registry(monkeypatch):
+    import astrid.sdk as sdk
+
+    entry = ModelEntry(id='wan-2.2', modality='video', modes={
+        'i2v': ModeSpec(supports=('prompt', 'image_ref'), requires=('prompt', 'image_ref'),
+                        backends={'local': BackendSpec(template='video/fixture')}),
+        'flf': ModeSpec(supports=('prompt', 'image_ref', 'image_end_ref'),
+                        requires=('prompt', 'image_ref', 'image_end_ref'),
+                        backends={'cloud': BackendSpec(endpoint='fixture/video')}),
+    })
+    monkeypatch.setattr(sdk, '_load_model_registry', lambda **kwargs: ModelRegistry([entry]))
+    declare_wan_unqualified(monkeypatch)
+
+
 def test_default_missing_on_target_owns_its_failure_without_fallback(network, monkeypatch):
     client, requests = install_target(network, target_info())
     attached_without_managed(monkeypatch)
     with pytest.raises(AstridError, match='qwen_image_2.1_turbo_int8_convrot') as caught:
-        GenerationFacade().image(target=client.target.url, prompt='one boat', dry_run=True)
+        GenerationFacade().image(placement=client.target.url, prompt='one boat', dry_run=True)
     assert caught.value.code == 'missing_model'
     assert caught.value.to_envelope()['entry']['id'] == 'qwen-image-2.1-turbo'
-    assert requests == [('GET', '/system_stats'), ('GET', '/object_info')]
+    # R4.L: P4.6b (62b47709) reads the ComfyUI folder list once per refusal to place missing models.
+    assert requests == [('GET', '/system_stats'), ('GET', '/object_info'), ('GET', '/internal/folder_paths')]
 
 
 @pytest.mark.parametrize('blocked_ids', [
@@ -108,7 +125,7 @@ def test_auto_filters_before_probe_and_preparation_preserving_qualified_order(mo
         raise ValueError('fake target missing candidate models')
     monkeypatch.setattr(generation, '_prepare_catalog_target_workflow', prepare)
     with pytest.raises(AstridError) as caught:
-        GenerationFacade().image(target='auto', prompt='boat', dry_run=True)
+        GenerationFacade().image(placement='auto', prompt='boat', dry_run=True)
     assert caught.value.code == 'missing_dependency'
     first = next(name for name in order if name not in blocked_ids)
     assert caught.value.to_envelope()['entry']['id'] == first
@@ -134,7 +151,7 @@ def test_auto_all_unqualified_names_each_route_and_reason_without_probe(monkeypa
     probe = Mock(side_effect=AssertionError('unqualified candidates reached target probe'))
     monkeypatch.setattr(preflight, 'select_generation_target', probe)
     with pytest.raises(AstridError) as caught:
-        GenerationFacade().image(target='auto', prompt='boat', dry_run=True)
+        GenerationFacade().image(placement='auto', prompt='boat', dry_run=True)
     assert caught.value.code == 'generation_route_unqualified'
     for text in ('blocked-a', 'blocked-b', 'video/wan_fake', 'missing model qualification',
                  'missing route evidence', 'missing template qualification'):
@@ -173,19 +190,18 @@ def test_qualified_first_candidate_is_probed_and_prepared_first(network, monkeyp
         prepared.append(kwargs['candidate'].id)
         return prepare(**kwargs)
     monkeypatch.setattr(generation, '_prepare_catalog_target_workflow', record_preparation)
-    plan = GenerationFacade().image(target=client.target.url, prompt='boat', dry_run=True)
+    plan = GenerationFacade().image(placement=client.target.url, prompt='boat', dry_run=True)
     assert plan['entry']['model'] == 'z-image'
     assert prepared == ['z-image']
     assert requests == [('GET', '/system_stats'), ('GET', '/object_info')]
 
 
 @pytest.mark.parametrize('target', ['auto', 'managed', 'http://127.0.0.1:8123'])
-def test_explicit_unqualified_catalog_is_refused_without_skipping_or_probe(monkeypatch, target):
-    declare_wan_unqualified(monkeypatch)
+def test_explicit_unqualified_catalog_is_refused_without_skipping_or_probe(monkeypatch, target, unqualified_video_registry):
     probe = Mock(side_effect=AssertionError('explicit unqualified route probed'))
     monkeypatch.setattr(preflight, 'select_generation_target', probe)
     with pytest.raises(AstridError) as caught:
-        GenerationFacade().video(model='wan-2.2', mode='i2v', target=target,
+        GenerationFacade().video(model='wan-2.2', mode='i2v', placement=target,
             prompt='boat', image_ref='start.png', dry_run=True)
     assert caught.value.code == 'generation_route_unqualified'
     assert 'wan-2.2' in str(caught.value) and 'not been qualified' in str(caught.value)
@@ -200,14 +216,13 @@ def test_explicit_unqualified_entry_uses_coded_refusal(monkeypatch):
     registry = ModelRegistry([entry])
     monkeypatch.setattr(sdk, '_load_model_registry', lambda **kwargs: registry)
     monkeypatch.setattr(entries, 'user_entries', lambda: [])
-    monkeypatch.setattr(entries, 'action_entries', lambda: [])
     monkeypatch.setattr(availability, 'availability_declaration', lambda: {'models': {
         entry.id: {'available': False, 'error': {'code': 'generation_route_unqualified',
                    'message': 'synthetic entry qualification missing'}}}})
     probe = Mock(side_effect=AssertionError('unqualified entry probed'))
     monkeypatch.setattr(preflight, 'select_generation_target', probe)
     with pytest.raises(AstridError) as caught:
-        GenerationFacade().image(entry=entry.id, target='auto', prompt='boat', dry_run=True)
+        GenerationFacade().image(entry=entry.id, placement='auto', prompt='boat', dry_run=True)
     assert caught.value.code == 'generation_route_unqualified'
     assert entry.id in str(caught.value) and 'synthetic entry qualification missing' in str(caught.value)
     assert caught.value.fix
@@ -216,14 +231,14 @@ def test_explicit_unqualified_entry_uses_coded_refusal(monkeypatch):
 
 @pytest.mark.parametrize('inputs,mode,match', [
     ({'prompt': 'boat'}, 'i2v', 'image_ref'),
-    ({'prompt': 'boat', 'image_ref': 'start.png'}, 'flf', 'Available backends: cloud'),
+    ({'prompt': 'boat', 'image_ref': 'start.png'}, 'flf', 'image_end_ref'),
 ])
-def test_explicit_unqualified_keeps_input_validation_before_probe(monkeypatch, inputs, mode, match):
+def test_explicit_unqualified_keeps_input_validation_before_probe(monkeypatch, inputs, mode, match, unqualified_video_registry):
     from astrid.sdk.exceptions import CapabilityValidationError, CapabilityMissingInputError
     probe = Mock(side_effect=AssertionError('invalid request probed'))
     monkeypatch.setattr(preflight, 'select_generation_target', probe)
     with pytest.raises((CapabilityValidationError, CapabilityMissingInputError), match=match):
-        GenerationFacade().video(model='wan-2.2', mode=mode, target='auto', dry_run=True, **inputs)
+        GenerationFacade().video(model='wan-2.2', mode=mode, placement='auto', dry_run=True, **inputs)
     probe.assert_not_called()
 
 
@@ -235,7 +250,7 @@ def test_explicit_bundled_template_is_not_filtered_or_dispatched(monkeypatch):
     probe = Mock(side_effect=AssertionError('unqualified template probed'))
     monkeypatch.setattr(preflight, 'select_generation_target', probe)
     with pytest.raises(AstridError) as caught:
-        GenerationFacade().video(model=manifest['id'], target='auto', mode='i2v', dry_run=True)
+        GenerationFacade().video(model=manifest['id'], placement='auto', mode='i2v', dry_run=True)
     assert caught.value.code == 'generation_route_unqualified'
     assert manifest['id'] in str(caught.value) and caught.value.fix
     probe.assert_not_called()
@@ -248,7 +263,6 @@ def test_user_entry_named_like_bundled_wan_is_not_filtered(monkeypatch, explicit
              'source': 'ready-template', 'bundle': 'authored.py'}
     monkeypatch.setattr(entries, 'user_entries', lambda: [entry])
     monkeypatch.setattr(entries, 'ready_entries', lambda: [])
-    monkeypatch.setattr(entries, 'action_entries', lambda: [])
     class Probed(Exception):
         pass
     probe = Mock(side_effect=Probed)
@@ -256,8 +270,63 @@ def test_user_entry_named_like_bundled_wan_is_not_filtered(monkeypatch, explicit
     with pytest.raises(Probed):
         GenerationFacade()._generate_on_target(registry=ModelRegistry([]),
             model=entry['id'] if explicit else None, mode='i2v', modality='video',
-            target='auto', execution=None, inputs={}, dry_run=True)
+            placement='auto', execution=None, inputs={}, dry_run=True)
     probe.assert_called_once()
+
+
+@pytest.mark.parametrize('selector', ['model', 'entry'])
+@pytest.mark.parametrize('placement', [None, 'auto', 'concrete'])
+def test_user_workflow_wins_over_same_id_provider_catalog(
+    network, monkeypatch, tmp_path, selector, placement,
+):
+    from vibecomfy.registry.ready import workflow_from_ready
+    from vibecomfy.workflow_bundle import emit_bundle
+
+    import astrid.sdk as sdk
+    from astrid.core.generation import entries, settings
+
+    registry = ModelRegistry.load_default()
+    info = target_info(vaes=('ae.safetensors',))
+    provider = next(entry for entry in registry.list_by_modality('image', include_closed=True)
+                    if 't2i' in entry.modes and 'local' not in entry.modes['t2i'].backends)
+    local = next(entry for entry in registry.list_by_modality('image', include_closed=True)
+                 if 't2i' in entry.modes and 'local' in entry.modes['t2i'].backends
+                 and 'diffusion' in entry.modes['t2i'].backends['local'].model_roles
+                 and any(name in info['UNETLoader']['input']['required']['unet_name'][0]
+                         for name in entry.modes['t2i'].backends['local'].model_roles['diffusion'].names))
+    identifier = 'authored-collision'
+    bundle_path = tmp_path / 'workflow.py'
+    workflow = workflow_from_ready(local.modes['t2i'].backends['local'].template)
+    emit_bundle(workflow, bundle_path, {'operation': 'authored'})
+    manifest = {'id': identifier, 'kind': 'image', 'modes': ['t2i'],
+                'bundle': str(bundle_path), 'binds': {}, 'defaults': {}, 'needs': []}
+    monkeypatch.setattr(entries, 'user_entries', lambda: [manifest])
+    monkeypatch.setattr(entries, 'ready_entries', lambda: [])
+    monkeypatch.setattr(entries, 'action_entries', lambda: [])
+    monkeypatch.setattr(sdk, '_load_model_registry', lambda **kwargs: ModelRegistry([
+        replace(provider, id=identifier),
+    ]))
+    client, requests = install_target(network, info)
+    attached_without_managed(monkeypatch)
+    monkeypatch.setattr(settings, 'placement_default', lambda *args, **kwargs: {
+        'kind': 'attached', 'endpoint': client.target.url,
+    })
+    provider_dispatch = Mock(side_effect=AssertionError('provider dispatched'))
+    monkeypatch.setattr(GenerationFacade, '_invoke', provider_dispatch)
+
+    result = GenerationFacade().image(
+        **{selector: identifier},
+        **({'placement': client.target.url if placement == 'concrete' else placement}
+           if placement is not None else {}),
+        prompt='one boat', seed=42, dry_run=True, project='demo', out=tmp_path,
+    )
+
+    provider_dispatch.assert_not_called()
+    assert result['entry']['id'] == identifier
+    assert result['entry']['model'] == identifier
+    assert result['entry']['mode'] == 't2i'
+    assert result['entry']['bindings']['seed'] == 42
+    assert requests == [('GET', '/system_stats'), ('GET', '/object_info')]
 
 
 def test_attached_default_binds_live_models_and_admits_one_canonical_workflow(network, monkeypatch, tmp_path):
@@ -306,7 +375,7 @@ def test_attached_default_binds_live_models_and_admits_one_canonical_workflow(ne
     monkeypatch.setattr(GenerationFacade, "workflow", lambda self, **kwargs: workflow(self, **kwargs))
     monkeypatch.setattr(GenerationFacade, "_invoke", Mock(side_effect=AssertionError("cloud action selected")))
     result = GenerationFacade().image(
-        target=client.target.url, client=runtime, project="demo", prompt="a silver paper boat", seed=42,
+        placement=client.target.url, client=runtime, project="demo", prompt="a silver paper boat", seed=42,
     )
     assert result.ok is True
     assert workflow.call_count == 1
@@ -349,7 +418,7 @@ def test_workflow_source_is_ingested_before_conversion_and_survives_cleanup(netw
     monkeypatch.setattr(GenerationFacade, 'workflow', lambda self, **kwargs: calls.append(kwargs) or admitted)
     result = GenerationFacade()._generate_on_target(
         registry=ModelRegistry([]), model=None, mode='t2i', modality='image',
-        target=client.target.url, execution=None, inputs={'prompt': 'new prompt'}, dry_run=False,
+        placement=client.target.url, execution=None, inputs={'prompt': 'new prompt'}, dry_run=False,
         workflow_entry={'id': 'workflow', 'kind': 'image', 'modes': ['t2i'], 'bundle': str(path)},
         client=runtime, project='demo', wait=False)
     assert result is admitted  # Admission remains separate from terminal readback.
@@ -379,7 +448,7 @@ def test_default_selects_mode_compatible_model_before_target_resolution(network,
         unavailable, replace(entry, id="ready-t2i", modes={"t2i": entry.modes["t2i"]}),
     ])
     monkeypatch.setattr(sdk, "_load_model_registry", lambda **kwargs: registry)
-    plan = GenerationFacade().image(target=client.target.url, prompt="one boat", dry_run=True)
+    plan = GenerationFacade().image(placement=client.target.url, prompt="one boat", dry_run=True)
     assert plan["entry"]["model"] == "ready-t2i"
     assert plan["entry"]["approval"]["status"] == "approved"
 
@@ -398,7 +467,7 @@ def test_default_skips_missing_target_model_and_uses_ready_candidate(network, mo
         replace(entry, id="ready", modes={"t2i": mode}),
     ])
     monkeypatch.setattr(sdk, "_load_model_registry", lambda **kwargs: registry)
-    plan = GenerationFacade().image(target=client.target.url, prompt="one boat", dry_run=True)
+    plan = GenerationFacade().image(placement=client.target.url, prompt="one boat", dry_run=True)
     assert plan["entry"]["model"] == "ready"
 
 
@@ -408,7 +477,7 @@ def test_attached_dry_run_resolves_and_approves_without_destination_or_admission
     z_image_only_registry(monkeypatch)
     monkeypatch.setattr(GenerationFacade, "workflow", Mock(side_effect=AssertionError("dry-run admitted")))
     output = tmp_path / "absent"
-    plan = GenerationFacade().image(target=client.target.url, prompt="one boat", out=output, dry_run=True)
+    plan = GenerationFacade().image(placement=client.target.url, prompt="one boat", out=output, dry_run=True)
     assert plan["entry"]["approval"]["status"] == "approved"
     assert plan["target"]["endpoint"] == client.target.url
     assert requests == [("GET", "/system_stats"), ("GET", "/object_info")]
@@ -443,17 +512,17 @@ def test_auto_probes_attached_before_managed_readiness(monkeypatch):
     workflow_admission = Mock(side_effect=AssertionError("workflow admission used"))
     monkeypatch.setattr(GenerationFacade, "workflow", workflow_admission)
     with pytest.raises(AstridError) as raised:
-        GenerationFacade().image(target="auto", prompt="one boat", project="demo")
+        GenerationFacade().image(placement="auto", prompt="one boat", project="demo")
     assert raised.value.code == "engine_not_found"
     fixes = raised.value.to_envelope()['fixes']
     import shlex
-    assert "--target http://127.0.0.1:8188" in shlex.join(fixes[1]['argv'])
+    assert "--placement http://127.0.0.1:8188" in shlex.join(fixes[1]['argv'])
     assert raised.value.fix == 'astrid engines install comfyui --platform linux-x86_64-cu130 --placement local'
     assert fixes[0]['argv'] == [
         'astrid', 'engines', 'install', 'comfyui', '--platform',
         'linux-x86_64-cu130', '--placement', 'local']
     assert fixes[1]['argv'] == [
-        'astrid', 'generate', 'image', '--target', 'http://127.0.0.1:8188']
+        'astrid', 'generate', 'image', '--placement', 'http://127.0.0.1:8188']
     assert events == ["/system_stats", "registered-managed"]
     module_probe.assert_not_called()
     runtime_probe.assert_not_called()
@@ -475,7 +544,7 @@ def test_auto_attached_does_not_require_managed_runtime(network, monkeypatch):
         return selection
 
     monkeypatch.setattr(targets, "resolve_target", default_to_fake)
-    plan = GenerationFacade().image(target="auto", prompt="one boat", dry_run=True)
+    plan = GenerationFacade().image(placement="auto", prompt="one boat", dry_run=True)
     assert plan["target"]["endpoint"] == client.target.url
     assert requests[0] == ("GET", "/system_stats")
 
@@ -491,7 +560,7 @@ def test_managed_retains_install_readiness_and_workflow_owner(monkeypatch, tmp_p
     admitted = Mock(return_value=terminal_result(tmp_path))
     runtime, _ = storage_client()
     monkeypatch.setattr(GenerationFacade, "workflow", admitted)
-    assert GenerationFacade().image(target="managed", client=runtime, project="demo", prompt="one boat").ok
+    assert GenerationFacade().image(placement="managed", client=runtime, project="demo", prompt="one boat").ok
     assert registered.call_count >= 1
     assert all(call.args == () and call.kwargs == {} for call in registered.call_args_list)
     legacy_probe.assert_not_called()
@@ -505,36 +574,53 @@ def test_managed_retains_install_readiness_and_workflow_owner(monkeypatch, tmp_p
 def test_unsupported_target_is_coded_before_admission(monkeypatch, target, code):
     monkeypatch.setattr(GenerationFacade, "workflow", Mock(side_effect=AssertionError("invalid target admitted")))
     with pytest.raises(AstridError) as raised:
-        GenerationFacade().image(target=target, prompt="one boat")
+        GenerationFacade().image(placement=target, prompt="one boat")
     assert raised.value.code == code
-    assert "--target" in raised.value.fix
+    assert "--placement" in raised.value.fix
 
 
-def test_runpod_requires_fresh_paid_authority_before_admission(monkeypatch):
+def test_generate_without_claimed_machine_refuses_before_admission(monkeypatch):
     import astrid.sdk as sdk
     monkeypatch.setattr(sdk, '_load_model_registry', lambda **kwargs: ModelRegistry([]))
-    monkeypatch.setattr(GenerationFacade, 'workflow', Mock(side_effect=AssertionError('unconsented RunPod admission')))
-    with pytest.raises(AstridError) as raised:
-        GenerationFacade().image(target='runpod', prompt='one boat')
-    envelope = raised.value.to_envelope()
-    assert envelope['status'] == 'blocked' and envelope['task_id'] is None
-    assert envelope['issues'][0]['code'] == 'input_rejected'
-    assert envelope['issues'][0]['details']['field'] == 'consent'
+    from astrid.core.generation import placement
+    import astrid.sdk.generation as generation
+    monkeypatch.setattr(placement, '_runpod_leases', lambda kind: [])
+    monkeypatch.setattr(generation, '_runpod_preferences',
+                        lambda *a, **k: pytest.fail('generate read saved machine preferences'))
+    monkeypatch.setattr(GenerationFacade, 'workflow',
+                        Mock(side_effect=AssertionError('no-machine request admitted')))
+    with pytest.raises(generation.GenerationInputError,
+                       match='^no machine: run `astrid machines claim`$'):
+        GenerationFacade().image(placement='runpod', prompt='one boat')
+
+
+def test_target_describe_directs_rental_to_machines_claim(monkeypatch):
+    from astrid.core.generation import placement
+    import astrid.sdk.generation as generation
+
+    monkeypatch.setattr(placement, 'resolve_placement', lambda *a, **k: placement.Placement(kind='runpod'))
+    monkeypatch.setattr(placement, 'validate_placement', lambda value: value)
+    monkeypatch.setattr(generation, '_runpod_preferences', lambda client: {})
+    monkeypatch.setattr(generation, '_runpod_status', lambda **kwargs: {'offer_digest': 'digest'})
+    description = GenerationFacade().describe(placement='runpod')
+    assert description['offer_digest'] == 'digest'
+    assert description['waiting_policy']['claim_command'] == 'astrid machines claim'
+    assert 'paid_consent_required' not in description['waiting_policy']
 
 
 def test_explicit_unready_target_names_working_recovery(monkeypatch):
     monkeypatch.setattr(ComfyTargetClient, "request_json", Mock(side_effect=OSError("offline")))
     with pytest.raises(AstridError) as raised:
-        GenerationFacade().image(target="http://127.0.0.1:8123", prompt="one boat")
+        GenerationFacade().image(placement="http://127.0.0.1:8123", prompt="one boat")
     assert raised.value.code == "target_unreachable"
     assert "http://127.0.0.1:8123" in raised.value.fix
     assert raised.value.to_envelope()['issues'][0]['details']['engine_code'] == 'COMFY_TARGET_UNAVAILABLE'
 
 def _installed_audio_entry(tmp_path, monkeypatch, mode):
-    """Install a canonical test entry and real, isolated target preferences."""
+    """Install a canonical test entry and expose an existing synthetic machine lease."""
     import json
     from astrid.core.generation import targets
-    from astrid.packs.runpod import target_selection
+    from astrid.core.generation import placement
     from vibecomfy.workflow import VibeWorkflow, WorkflowSource
     from vibecomfy.workflow_bundle import emit_bundle
 
@@ -542,8 +628,8 @@ def _installed_audio_entry(tmp_path, monkeypatch, mode):
     folder.mkdir(parents=True)
     monkeypatch.setenv('VIBECOMFY_ENTRIES_DIR', str(folder.parent))
     monkeypatch.setattr(targets, 'config_path', lambda: tmp_path / 'config.toml')
-    target_selection.save_runpod_preferences({'provider_account_ref': 'account-a', 'gpu_types': ['gpu-a'],
-        'image': 'worker@sha256:' + 'a' * 64})
+    monkeypatch.setattr(placement, '_runpod_leases', lambda kind: [
+        {'machine': 'pod-a', 'id': 'pod-a', 'live': True}])
     workflow = VibeWorkflow('00-audio-test', WorkflowSource('00-audio-test'))
     workflow.add_node('SaveAudio', _id='1', uid='sink', filename_prefix='audio')
     workflow.register_input('filename_prefix', '1', 'filename_prefix', 'audio', type='STRING')
@@ -568,29 +654,28 @@ def test_audio_runpod_workflow_admits_existing_receipt_and_policy(mode, explicit
                                 kernel_task_id='task-a', raw_result={'state': 'queued'})
     client.invoke_result = invoke
     receipt = tmp_path / 'admission.json'
-    result = GenerationFacade().audio(mode=mode, target='runpod', client=client, project='demo',
+    result = GenerationFacade().audio(mode=mode, placement={'kind': 'runpod', 'machine': 'pod-a'}, client=client, project='demo',
         **({'entry': '00-audio-test'} if explicit else {}),
-        filename_prefix='test', wait=False, recovery_path=receipt, consent=('paid',), max_usd=2,
-        deadline='2099-01-01T00:00:00Z', offer_digest='sha256:' + 'b' * 64,
-        preparation_seconds=60, execution_seconds=60, idle_seconds=1800)
+        filename_prefix='test', wait=False, recovery_path=receipt)
     assert result.kernel_task_id == 'task-a' and result.raw_result['state'] == 'queued'
     assert len(calls) == 1
     capability, kwargs = calls[0]
     assert capability == 'vibecomfy.run' and kwargs['recovery_path'] == receipt and not kwargs['wait']
     inputs = kwargs['inputs']
-    assert json.loads(inputs['target_policy'])['kind'] == 'runpod'
+    assert json.loads(inputs['placement_policy']) == {'kind': 'runpod', 'engine': 'comfyui', 'machine': 'pod-a'}
     assert json.loads(inputs['workflow_inputs'])['filename_prefix'] == 'test'
     assert inputs['generation_intent']['modality'] == 'audio'
     # Without an entry the slot's preferred default owns the route; its declared
     # output binds filename_prefix exactly as the installed entry's input does.
-    from astrid.sdk.generation import _DEFAULT_ENTRIES
-    selected = '00-audio-test' if explicit else _DEFAULT_ENTRIES[('audio', mode)][0]
+    from tests.helpers.generation_defaults import default_entries
+    SLOT_DEFAULTS = default_entries()
+    selected = '00-audio-test' if explicit else SLOT_DEFAULTS[('audio', mode)][0]
     assert inputs['generation_intent']['metadata'] == {'model': selected, 'mode': mode}
     assert all(inputs[name]['digest'].startswith('sha256:') for name in ('source', 'python', 'companion'))
 
 
 @pytest.mark.parametrize('explicit', [False, True])
-def test_foley_runpod_sound_effects_admits_with_target_policy(tmp_path, monkeypatch, explicit):
+def test_foley_runpod_sound_effects_admits_with_placement_policy(tmp_path, monkeypatch, explicit):
     """Sound effects is an ordinary slot: resolves, then admits one task with a RunPod target policy."""
     import json
     _installed_audio_entry(tmp_path, monkeypatch, 'sfx')
@@ -601,16 +686,14 @@ def test_foley_runpod_sound_effects_admits_with_target_policy(tmp_path, monkeypa
         return InvocationResult(capability, 'executor', 'command', True,
                                 kernel_task_id='task-a', raw_result={'state': 'queued'})
     client.invoke_result = invoke
-    result = GenerationFacade().audio(mode='sfx', target='runpod', client=client, project='demo',
+    result = GenerationFacade().audio(mode='sfx', placement={'kind': 'runpod', 'machine': 'pod-a'}, client=client, project='demo',
         **({'entry': '00-audio-test'} if explicit else {}),
-        filename_prefix='test', wait=False, consent=('paid',), max_usd=2,
-        deadline='2099-01-01T00:00:00Z', offer_digest='sha256:' + 'b' * 64,
-        preparation_seconds=60, execution_seconds=60, idle_seconds=1800)
+        filename_prefix='test', wait=False)
     assert result.kernel_task_id == 'task-a' and result.raw_result['state'] == 'queued'
     assert len(calls) == 1
     capability, kwargs = calls[0]
     assert capability == 'vibecomfy.run' and not kwargs['wait']
-    assert json.loads(kwargs['inputs']['target_policy'])['kind'] == 'runpod'
+    assert json.loads(kwargs['inputs']['placement_policy']) == {'kind': 'runpod', 'engine': 'comfyui', 'machine': 'pod-a'}
 
 
 @pytest.mark.parametrize('mode', ['music', 'tts'])
@@ -638,10 +721,14 @@ def test_audio_runpod_admission_persists_real_runtime_receipt(mode, tmp_path, mo
         host.preflight()
         host.register()
         receipt = tmp_path / 'receipt.json'
-        args = dict(entry='00-audio-test', mode=mode, target='runpod', client=client, project=project_id,
-                    filename_prefix='test', wait=False, recovery_path=receipt, consent=('paid',), max_usd=2,
-                    deadline='2099-01-01T00:00:00Z', offer_digest='sha256:' + 'b' * 64,
-                    preparation_seconds=60, execution_seconds=60, idle_seconds=1800)
+        from astrid.core.generation import placement
+        monkeypatch.setattr(placement, '_runpod_leases', lambda kind: [
+            {'machine': 'pod-a', 'id': 'pod-a', 'live': True}])
+        import astrid.sdk.generation as generation
+        monkeypatch.setattr(generation, '_runpod_preferences',
+                            lambda *a, **k: pytest.fail('generate read saved machine preferences'))
+        args = dict(entry='00-audio-test', mode=mode, placement={'kind': 'runpod', 'machine': 'pod-a'}, client=client, project=project_id,
+                    filename_prefix='test', wait=False, recovery_path=receipt)
         result = GenerationFacade().audio(**args)
         saved = json.loads(receipt.read_text())
         assert result.ok and result.kernel_task_id == saved['locator']['task_id']
@@ -787,7 +874,7 @@ def test_public_local_foley_stages_video_submits_and_delivers_through_runtime(wa
             receipt_path = tmp_path / 'admission.json'
             code = console.main(['generate', 'audio', '--mode', 'sfx', '--entry', 'audio/hunyuan_video_foley',
                 '--prompt', 'Copper bell at the exact frame.', '--video-ref', str(video),
-                '--target', f'http://127.0.0.1:{server.server_port}',
+                '--placement', f'http://127.0.0.1:{server.server_port}',
                 '--project', project.data['project_id'], '--recovery-path', str(receipt_path), '--no-wait', '--json'])
             captured = capsys.readouterr()
             assert code == 0, captured.out + captured.err
@@ -819,7 +906,7 @@ def test_public_local_foley_stages_video_submits_and_delivers_through_runtime(wa
             try:
                 code = console.main(['generate', 'audio', '--mode', 'sfx', '--entry', 'audio/hunyuan_video_foley',
                     '--prompt', 'Copper bell at the exact frame.', '--video-ref', str(video),
-                    '--target', f'http://127.0.0.1:{server.server_port}',
+                    '--placement', f'http://127.0.0.1:{server.server_port}',
                     '--project', project.data['project_id'], '--out', str(tmp_path / 'delivered'), '--json'])
             finally:
                 host.shutdown()
@@ -847,7 +934,7 @@ def test_public_local_foley_stages_video_submits_and_delivers_through_runtime(wa
         assert not thread.is_alive()
 
 
-@pytest.mark.parametrize(('given', 'forwarded'), [({}, 'check'), ({'align': 'trust'}, 'trust')])
+@pytest.mark.parametrize(('given', 'forwarded'), [({}, None), ({'align': 'trust'}, 'trust')])
 def test_workflow_target_forwards_align_without_a_name_error(given, forwarded, monkeypatch, tmp_path):
     """workflow(target=...) takes align like image/video/audio and hands it to the target route."""
     from vibecomfy.registry.ready import workflow_from_ready
@@ -857,13 +944,46 @@ def test_workflow_target_forwards_align_without_a_name_error(given, forwarded, m
     seen = []
     monkeypatch.setattr(GenerationFacade, '_generate_on_target',
                         lambda self, **kwargs: seen.append(kwargs) or 'routed')
-    assert GenerationFacade().workflow(workflow=tmp_path / 'workflow.py', target='http://127.0.0.1:8188',
+    assert GenerationFacade().workflow(workflow=tmp_path / 'workflow.py', placement='http://127.0.0.1:8188',
                                        dry_run=True, **given) == 'routed'
-    assert seen[0]['align'] == forwarded
+    assert seen[0].get('align') == forwarded  # unasked stays None: RunPod aligns, local checks
 
 
 def test_workflow_target_rejects_an_unknown_align(tmp_path):
     from astrid.sdk.generation import GenerationInputError
     with pytest.raises(GenerationInputError, match='align must be one of'):
-        GenerationFacade().workflow(workflow=tmp_path / 'workflow.py', target='http://127.0.0.1:8188',
+        GenerationFacade().workflow(workflow=tmp_path / 'workflow.py', placement='http://127.0.0.1:8188',
                                     align='maybe')
+
+
+@pytest.mark.parametrize('picker', [r'FLUX1\ae.safetensors', 'undeclared.safetensors'])
+def test_attached_authored_dry_run_omits_managed_declarations(network, monkeypatch, tmp_path, picker):
+    from astrid.core.generation import entries, managed_preparation
+    from vibecomfy.registry.ready import workflow_from_ready
+    from vibecomfy.workflow_bundle import emit_bundle
+
+    workflow = workflow_from_ready('image/z_image_turbo')
+    workflow.set_input('vae', picker)
+    # A target-owned picker needs no managed download declaration.
+    workflow.requirements.models = []
+    workflow.metadata['model_assets'] = []
+    path = tmp_path / 'workflow.py'
+    emit_bundle(workflow, path, {'operation': 'authored'})
+    client, requests = install_target(network, target_info(vaes=(picker,)))
+    attached_without_managed(monkeypatch)
+    judge = Mock(side_effect=AssertionError('attached workflow judged for managed preparation'))
+    monkeypatch.setattr(managed_preparation, 'judge_declarations', judge)
+    monkeypatch.setattr(GenerationFacade, 'workflow', Mock(side_effect=AssertionError('dry-run admitted')))
+
+    monkeypatch.setattr(entries, 'user_entries', lambda: [{
+        'id': 'attached-authored', 'kind': 'image', 'modes': ['t2i'], 'bundle': str(path),
+        'binds': {}, 'defaults': {}, 'needs': [],
+    }])
+    plan = GenerationFacade().image(entry='attached-authored', placement=client.target.url,
+                                    prompt='one boat', dry_run=True)
+
+    judge.assert_not_called()
+    assert plan['entry']['approval']['status'] == 'approved'
+    assert 'requirements' not in plan['entry']
+    assert plan['issues'] == []
+    assert requests == [('GET', '/system_stats'), ('GET', '/object_info')]

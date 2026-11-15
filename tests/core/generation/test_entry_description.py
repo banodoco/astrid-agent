@@ -18,7 +18,7 @@ def test_shipped_foley_description_preserves_explicit_sfx_video_and_license(tmp_
         {'prompt': 'gravel footsteps', 'video_ref': str(video)}, mode='sfx', kind='audio')
     assert description['kind'] == 'audio' and description['modes'] == ['sfx']
     assert description['mode'] == 'sfx'
-    assert description['license_notice'] == 'Tencent Hunyuan Community license excludes the EU, UK, and South Korea.'
+    assert 'license_notice' not in description
     assert {row['name']: row['type'] for row in description['inputs']}['video_ref'] == 'file'
     assert values == {'prompt': 'gravel footsteps', 'video_ref': str(video)}
     native = entries.describe_entry(identifier, mode='sfx', _native=True)
@@ -105,45 +105,6 @@ def test_workflow_nonstandard_input_binding_alias_default_and_range(monkeypatch)
         entries.resolve_entry_inputs('custom', {'texture_amount': 2}, registry=registry)
 
 
-def test_h3_producer_local_ports_describe_and_resolve_without_execution(monkeypatch, capsys):
-    # Reuse the real declarations during the port-validation matrix; repeated
-    # pack discovery is unrelated to validating each managed-file boundary.
-    declared_actions = entries.action_entries()
-    registry = ModelRegistry.load_default()
-    monkeypatch.setattr(entries, 'action_entries', lambda: declared_actions)
-    monkeypatch.setattr(ModelRegistry, 'load_default', classmethod(lambda cls, **kwargs: registry))
-    def forbidden(*args, **kwargs):
-        pytest.fail('execution/probe operation during entry discovery')
-    monkeypatch.setattr(entries, 'target_schema', forbidden)
-    monkeypatch.setattr(entries, '_ready_entries_for', forbidden)
-    monkeypatch.setattr(entries, '_load_entry_workflow', forbidden)
-    from astrid.sdk.generation import GenerationFacade
-    from astrid.sdk.client import AstridClient
-    monkeypatch.setattr(GenerationFacade, '_invoke', forbidden)
-    monkeypatch.setattr(AstridClient, 'open_from_launcher', forbidden)
-    description = entries.describe_entry('h3', _native=True)
-    assert description['mode'] == 'transform' and description['action'] == 'h3_av.transform'
-    ports = {row['name']: row for row in description['inputs']}
-    local = {'request', 'asset_map'}
-    assert {name for name, port in ports.items() if port.get('file_custody') == 'producer_local'} == local
-    assert all(ports[name]['type'] == 'file' for name in local)
-    managed = {'execution_request', 'worker_qualification', 'prepared_worker', 'cleanup_receipt'}
-    assert all(ports[name]['type'] == 'file' and 'file_custody' not in ports[name] for name in managed)
-    assert ports['request']['required'] and not ports['asset_map']['required']
-    from astrid import console
-    assert console.main(['generate', 'describe', '--entry', 'h3', '--json']) == 0
-    assert json.loads(capsys.readouterr().out) == entries.public_description(description)
-    values = {'request': '/tmp/request.json', 'asset_map': '/tmp/assets.json'}
-    assert entries.resolve_entry_inputs('h3', values)[1] == values
-    with pytest.raises(ValueError, match='requires a string'):
-        entries.resolve_entry_inputs('h3', {**values, 'request': {'digest': 'sha256:' + 'a' * 64}})
-    with pytest.raises(ValueError, match='unsupported entry inputs'):
-        entries.resolve_entry_inputs('h3', {**values, 'prompt': 'p'})
-    digest = 'sha256:' + 'a' * 64
-    for name in managed:
-        assert entries.resolve_entry_inputs('h3', {**values, name: {'digest': digest}})[1][name] == {'digest': digest}
-        with pytest.raises(ValueError, match='managed Runtime object'):
-            entries.resolve_entry_inputs('h3', {**values, name: '/tmp/local.json'})
 
 
 def test_other_action_file_ports_still_require_managed_descriptors(monkeypatch):
@@ -194,6 +155,25 @@ def test_unknown_declared_type_fails_closed():
         entries.validate_inputs(description, {'opaque': 'guess'})
 
 
+@pytest.mark.parametrize('entry_id', ['lava-sr', 'deepfilternet3'])
+def test_audio_enhancement_catalog_inputs_use_typed_action_ports(entry_id):
+    spec = ModelRegistry.load_default().get(entry_id).modes['sfx']
+    description = {'inputs': entries._catalog_inputs('audio', spec, 'sfx')}
+    fields = {row['name']: row for row in description['inputs']}
+    assert set(fields) == set(spec.supports)
+    assert all(row['type'] == 'string' for row in fields.values())
+    assert fields['audio_ref']['required']
+    values = {'audio_ref': 'reference.wav'}
+    if entry_id == 'lava-sr':
+        values.update(audio_format='wav', bitrate='192k')
+    assert entries.validate_inputs(description, values) == values
+    with pytest.raises(entries.MissingRequiredEntryInputsError, match='audio_ref'):
+        entries.validate_inputs(description, {})
+    for name in fields:
+        with pytest.raises(ValueError, match='requires a string'):
+            entries.validate_inputs(description, {**values, name: 7})
+
+
 def test_image_widget_is_a_file_only_for_load_image():
     workflow = VibeWorkflow('image', WorkflowSource('image'))
     workflow.nodes['1'] = VibeNode('1', 'LoadImage', inputs={'image': 'input.png'})
@@ -237,3 +217,28 @@ def build():
     workflow = entries._load_entry_workflow({'bundle': str(source)})
     assert workflow.inputs['grain'].default == 0.5
     assert {path: path.read_bytes() for path in tmp_path.rglob('*') if path.is_file()} == before
+
+
+def test_h3_declared_inputs_describe_and_resolve_without_execution(monkeypatch):
+    """h3 declares both request-document and plain-input ports without executing its bundle."""
+    monkeypatch.setattr(entries, 'target_schema', lambda *a, **k: pytest.fail('probe during entry discovery'))
+    monkeypatch.setattr(entries, '_load_entry_workflow', lambda *a, **k: pytest.fail('bundle loaded for declared inputs'))
+    description = entries.describe_entry('h3', _native=True)
+    assert description['source'] == 'workflow' and 'action' not in description
+    assert description['mode'] is None and description['modes'] == ['i2v', 'v2v', 'video-edit']
+    description = entries.describe_entry('h3', mode='v2v', _native=True)
+    ports = {row['name']: row for row in description['inputs']}
+    # h3 declares the kind's plain inputs (5fe9ed7a0): either input form is optional per port.
+    assert [(n, p['type'], p['required']) for n, p in ports.items()] == [
+        ('request', 'file', False), ('asset_map', 'file_map', False),
+        ('prompt', 'string', False), ('image_ref', 'file', False),
+        ('video_ref', 'file', False), ('frames', 'integer', False),
+        ('seed', 'integer', False), ('steps', 'integer', False)]
+    values = {'request': '/tmp/request.json', 'asset_map': {'source': '/tmp/source.mp4'}}
+    assert entries.resolve_entry_inputs('h3', values, mode='v2v')[1] == values
+    plain = {'prompt': 'p', 'video_ref': '/tmp/source.mp4'}
+    assert entries.resolve_entry_inputs('h3', plain, mode='v2v')[1] == plain
+    with pytest.raises(ValueError, match='nonempty map'):
+        entries.resolve_entry_inputs('h3', {**values, 'asset_map': '/tmp/assets.json'}, mode='v2v')
+    with pytest.raises(ValueError, match='unsupported entry inputs'):
+        entries.resolve_entry_inputs('h3', {**values, 'undeclared': 'p'}, mode='v2v')

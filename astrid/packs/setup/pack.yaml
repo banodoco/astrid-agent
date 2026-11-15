@@ -1,0 +1,12 @@
+schema_version: 3
+id: setup
+name: Astrid Setup
+version: 1.0.0
+documentation:
+  kind: skill
+  path: docs/SKILL.md
+  sync_name: astrid-setup
+extensions:
+  astrid:
+    skills:
+      default: true

@@ -4,6 +4,8 @@ description: Place and arrange clips around spoken words, beats, cuts, and music
 ---
 # Narrated timelines
 
+Astrid commands here run through the launcher; its path on each OS is in the [astrid-setup skill's Launcher paths](../../../setup/docs/SKILL.md#launcher-paths), and the commands show the Linux path.
+
 ## Place to a word or beat
 
 ```python
@@ -20,7 +22,7 @@ result = tl.commit(place_to_words, label="Place to narration",
 ```
 
 `"Astrid"` is the word's start; `after "Astrid"` is its end. List nearby beat
-addresses with `python3 -m astrid timelines words <timeline> Astrid --project <project> --beats`.
+addresses with `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" timelines words <timeline> Astrid --project <project> --beats`.
 
 ## Arrange selected shots
 
@@ -45,7 +47,7 @@ slots empty and refuses to overlap a shot you did not select.
 ## Re-flow narration
 
 Replace a line's take with
-`python3 -m astrid timelines edit <timeline> --project <project> --line <line-id> --take <take-id> --words <words-file>`.
+`"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" timelines edit <timeline> --project <project> --line <line-id> --take <take-id> --words <words-file>`.
 Clips on words follow the new word times. Clips on a removed line become
 orphans; move, keep, or remove each one before publishing.
 

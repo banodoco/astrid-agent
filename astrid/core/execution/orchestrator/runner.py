@@ -420,30 +420,6 @@ def _run_command_orchestrator(
         )
         import_receipt = None
         inherited_fds = ()
-        if orchestrator.id == "h3_av.transform":
-            from types import SimpleNamespace
-
-            from astrid.core.execution._child_import_receipt import ChildImportReceipt
-            from astrid.sdk.storage_root import resolve_runtime_data_root
-
-            # This parent is local, not a registered Runtime host. Do not
-            # invent Runtime task/attempt, closure or incarnation identity.
-            support_status = None
-            try:
-                support = resolve_runtime_data_root()
-                if support.is_dir():
-                    support_status = support / "evidence-status.json"
-            except Exception:
-                pass
-            context = SimpleNamespace(
-                evidence_status_path=support_status, executor_id="unavailable",
-                source_epoch="unavailable", runtime_state={},
-                pack_roots=((orchestrator.metadata["pack_root"],)
-                            if isinstance(orchestrator.metadata.get("pack_root"), str) else ()),
-                _child_import_host_context={"execution_profile": "local_orchestrator"},
-            )
-            import_receipt = ChildImportReceipt(context, orchestrator.id)
-            inherited_fds = import_receipt.prepare(effective_env)
         process = None
         try:
             process = popen_owned_process(list(command), cwd=cwd, env=effective_env,

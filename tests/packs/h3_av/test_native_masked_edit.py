@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from astrid.packs.h3_av.actions.compile.compile import CompilationError, compile_preparation
+from astrid.packs.h3_av.shared.compile import CompilationError, compile_preparation
 from astrid.packs.h3_av.shared.request import normalize_request
 
 PILL = {

@@ -1,14 +1,8 @@
-"""Remote (RunPod) placement wrapper for ``h3_av.transform --placement runpod``.
+"""RunPod pod custody helpers shared by the generation machine route.
 
-One module, seven steps (ROUTE-DECISION section 4):
-
-1. claim the pod         ``RemotePlacement._claim`` -> ``PodProvider.claim``
-2. bootstrap if missing  ``RemotePlacement._bootstrap``
-3. install if missing    ``RemotePlacement._install``
-4. upload inputs         ``RemotePlacement._upload_inputs``
-5. detached job + poll   ``RemotePlacement._run_job`` / ``_start_transform``
-6. download and verify   ``RemotePlacement._download`` / ``_verify``
-7. release, check 404    ``RemotePlacement._release``
+The machine contribution reuses ``RemotePlacement.prepare_claimed`` for
+bootstrap and installation on an existing claim, and the checked file-transfer
+and manifest helpers in this module.
 
 Money rules, enforced here and pinned by tests:
 
@@ -18,25 +12,24 @@ Money rules, enforced here and pinned by tests:
   the pod, unless the caller asked for ``leave_running`` and the run succeeded.
 * The spend cap is checked against the claimed pod's hourly cost before any
   work is sent to it, and one wall-clock deadline covers every later step.
-
-The provider boundary is the ``PodProvider``/``PodOps`` protocols. The default
-``LifecyclePodProvider`` reuses the existing claim script (``claim_runpod_5090_backup``),
-the exact-pod release helper in ``worker_preparation`` and the ``runpod-lifecycle``
-HTTPS transport (``execute_command``, ``put``, ``get``, ``detached_*``); it adds no
-provider path of its own. Tests stub the whole boundary.
 """
 
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import io
 import json
 import math
+import multiprocessing
 import os
+import re
 import shlex
 import subprocess
 import tarfile
+import tempfile
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -45,16 +38,18 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from astrid.core.contracts.errors import AstridError
 
+from .failure_reason import Reason, attach_reason, installation_reason
+from .failure_receipt import checkpoint_refusal
 from .pod_bootstrap import SCRIPT as POD_BOOTSTRAP_SCRIPT
 
 PLACEMENT = "runpod"
-ENGINE_ID = "vibecomfy-h3"
+ENGINE_ID = "comfyui"
 DATACENTER = "EUR-NO-1"
 STORAGE_NAME = "storage"
 # One pod storage root on the container disk. Attempts, outputs, engines, bootstrap and runs all derive
 # from it, so the task-storage free-space guard measures the device the models and outputs live on.
-# The network volume (mounted at /workspace, FUSE: it ignores mkdir's mode) holds only the verified
-# model cache, passed to the engine install as --model-cache-root; models are copied to the local root.
+# The network volume (mounted at /workspace, FUSE: it ignores mkdir's mode) is pinned by the storage probe.
+# The engine install is model-free: align fetches only the job manifest's missing rows.
 POD_ROOT = "/root/astrid"
 # Engine custody (astrid.core.generation.engine_custody) needs owner-only directories, which the
 # container disk honours; this is the scripts/pod_session.py route.
@@ -66,11 +61,20 @@ POD_VENV = "/opt/astrid"
 INSTALL_DEADLINE_SECONDS = 14400
 DEFAULT_MAX_SPEND_EUR = 10.0
 DEFAULT_DEADLINE_SECONDS = 6 * 3600
-POLL_SECONDS = 15.0
+POLL_SECONDS = 5.0
 MANIFEST_NAME = "wrapper-manifest.json"
 MANIFEST_MARK = "WRAPPER_MANIFEST_SHA256="
 RESULT_MARK = "WRAPPER_RESULT_JSON="
 FIXED_OUTPUTS = ("08-final-receipt.json", "operation-state.json")
+# Engine environment snapshot on the pinned network volume (engine_snapshot.py). The engine root
+# stays on container disk; restore copies the inert environment back and the install re-verifies.
+SNAPSHOT_MARK = "ENGINE_SNAPSHOT_JSON="
+SNAPSHOT_RESTORE_SECONDS = 900
+# The pod-side report (totals, stale-partial cleanup) runs after publish in the same detached
+# chain, bounded by its own --deadline. Nothing snapshot-related ever runs on a release path.
+SNAPSHOT_REPORT_SECONDS = 60
+SNAPSHOT_PUBLISH_LOG = f"{BOOTSTRAP_ROOT}/engine-snapshot-publish.log"
+SNAPSHOT_PUBLISH_PID = f"{BOOTSTRAP_ROOT}/engine-snapshot-publish.pid"
 SOURCE_DIRS = (
     "src/astrid-runtime",
     "src/runpod-lifecycle",
@@ -79,8 +83,32 @@ SOURCE_DIRS = (
 )
 
 
+_LABEL_RE = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
+
+
+def _safe_label(value: object) -> str:
+    """A fixed-vocabulary label safe for journals and messages; anything else is withheld."""
+    return value if isinstance(value, str) and _LABEL_RE.fullmatch(value) else "withheld"
+
+
 class RemotePlacementError(AstridError):
     """A remote placement step failed. The pod has been released unless stated."""
+
+
+class InstallationReceiptChanged(RemotePlacementError):
+    """The reachable installation differs from its canonical receipt."""
+
+
+class PlacementReasonError(RemotePlacementError):
+    """A refusal at the structured reason boundary."""
+
+    def __init__(self, message: str, *, reason: Reason):
+        super().__init__(message)
+        attach_reason(self, reason)
+
+
+class BoundedObserverUnreaped(RemotePlacementError):
+    """A local HTTPS caller survived kill; its exact custody remains pending."""
 
 
 class PreparationDeadlineExceeded(RemotePlacementError):
@@ -105,7 +133,7 @@ class PodOps(Protocol):
 
     def get(self, remote: str, local: Path) -> None: ...
 
-    def job_start(self, command: str) -> Mapping[str, Any]: ...
+    def job_start(self, command: str, *, job_id: str | None = None) -> Mapping[str, Any]: ...
 
     def job_poll(self, job_id: str) -> Mapping[str, Any]: ...
 
@@ -152,17 +180,21 @@ class RunPodInstallation:
     engine: str = "comfyui"
     platform: str = "linux-x86_64-cu130"
     root: str = f"{ENGINE_BASE}/comfyui"
+    # The saved volume's model cache; None keeps <root>/models (no volume saved).
+    models_root: str | None = None
 
     def plan(self):
         from astrid.core.generation import engine_recipe, engine_runner
+
         from .target_selection import RunPodLeaseCompatibility
 
         expected = RunPodLeaseCompatibility(**dict(self.compatibility)).as_mapping()
-        if (self.engine not in {"comfyui", "vibecomfy-h3"} or self.platform != "linux-x86_64-cu130"
+        if (self.engine not in {"comfyui"} or self.platform != "linux-x86_64-cu130"
                 or self.root != f"{ENGINE_BASE}/{self.engine}"):
             raise RemotePlacementError("unsupported retained installation route")
         recipe = engine_recipe.load_recipe(self.engine, self.platform)
-        plan = engine_runner.plan_install(recipe, root=self.root, placement="local")
+        plan = engine_runner.plan_install(recipe, root=self.root, placement="local",
+                                          models_root=self.models_root)
         vibe = next(s for s in recipe.sources if s.name == "vibecomfy")
         runtime_lock = Path(__file__).resolve().parents[3] / "runtime.lock.json"
         if (expected["recipe_digest"] != "sha256:" + plan.recipe_sha256
@@ -171,6 +203,13 @@ class RunPodInstallation:
                 or json.loads(runtime_lock.read_bytes())["source_commit"] != expected["runtime_commit"]):
             raise RemotePlacementError("installation differs from the accepted recipe/model/source tuple")
         return plan
+
+    def model_bytes(self, manifest_rows: Sequence[Mapping[str, Any]] = ()) -> int:
+        """Bytes the volume must have free: the job manifest's rows only, never the whole model lock.
+
+        Plan 32 T5h: an install is model-free and align fetches the manifest's missing rows.
+        """
+        return max(1, sum(int(row.get("size") or row.get("bytes") or 0) for row in manifest_rows))
 
     def validate_sources(self, source_root: Path | None) -> str:
         self.plan()
@@ -224,11 +263,22 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+_SOURCE_DIGEST_MEMO: dict[Path, tuple[str, str]] = {}
+
+
 def source_digest(source_root: Path) -> str:
-    """Same digest the pack's bootstrap payload computes over the four source dirs."""
-    lines: list[tuple[bytes, str]] = []
+    """Same digest the pack's bootstrap payload computes over the four source dirs.
+
+    A memo skips content hashing while every file's (relative path, size, mtime_ns,
+    inode) is unchanged. Like model verification records, it trusts same-user file
+    metadata: an edit that preserves all four would reuse the old digest, so the pod
+    could skip a bootstrap whose archive differs. The archive itself is always built
+    from the current files.
+    """
+    source_root = Path(source_root).resolve()
+    files: list[tuple[bytes, Path, int, int, int]] = []
     for directory in SOURCE_DIRS:
-        base = Path(source_root) / directory
+        base = source_root / directory
         if base.is_symlink() or not base.is_dir():
             raise RemotePlacementError(f"bootstrap source dir is missing: {directory}")
         for dirpath, dirnames, filenames in os.walk(base):
@@ -239,11 +289,52 @@ def source_digest(source_root: Path) -> str:
                 if name.endswith(".pyc"):
                     continue
                 full = Path(dirpath) / name
-                rel = full.relative_to(source_root).as_posix()
-                lines.append((rel.encode(), sha256_file(full)))
-    lines.sort(key=lambda item: item[0])
-    listing = "".join(f"{digest}  {rel.decode()}\n" for rel, digest in lines)
-    return hashlib.sha256(listing.encode()).hexdigest()[:16]
+                stat = full.stat()
+                files.append((full.relative_to(source_root).as_posix().encode(), full,
+                              stat.st_size, stat.st_mtime_ns, stat.st_ino))
+    files.sort(key=lambda item: item[0])
+    fingerprint = hashlib.sha256(json.dumps(
+        [(os.fsdecode(rel), size, mtime, ino) for rel, _, size, mtime, ino in files],
+        ensure_ascii=True, separators=(",", ":"),
+    ).encode()).hexdigest()
+    cache_path = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "astrid" / "source-digest-memo.json"
+    memo = _SOURCE_DIGEST_MEMO.get(source_root)
+    if memo is None:
+        try:
+            data = json.loads(cache_path.read_text(encoding="utf-8"))
+            entry = data[str(source_root)]
+            if isinstance(entry, dict) and isinstance(entry.get("fingerprint"), str) and re.fullmatch(
+                r"[0-9a-f]{16}", entry.get("digest", "")
+            ):
+                memo = (entry["fingerprint"], entry["digest"])
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            pass
+    if memo is not None and memo[0] == fingerprint:
+        _SOURCE_DIGEST_MEMO[source_root] = memo
+        return memo[1]
+    listing = "".join(f"{sha256_file(full)}  {rel.decode()}\n" for rel, full, *_ in files)
+    digest = hashlib.sha256(listing.encode()).hexdigest()[:16]
+    _SOURCE_DIGEST_MEMO[source_root] = (fingerprint, digest)
+    try:
+        try:
+            data = json.loads(cache_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                data = {}
+        except (OSError, ValueError):
+            data = {}
+        data[str(source_root)] = {"fingerprint": fingerprint, "digest": digest}
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=cache_path.parent, delete=False) as stream:
+            temporary = Path(stream.name)
+            try:
+                json.dump(data, stream)
+                stream.flush()
+                os.replace(temporary, cache_path)
+            finally:
+                temporary.unlink(missing_ok=True)
+    except OSError:
+        pass  # A cache failure must not prevent computing the digest.
+    return digest
 
 
 def pod_source_manifest(source_root: Path, pins: Mapping[str, tuple[str, str]] | None = None) -> bytes:
@@ -275,7 +366,9 @@ def _build_source_archive(source_root: Path, destination: Path,
     # verifier reads git state. Only bytecode is dropped. Every member is root-owned so the
     # archive is deterministic and extracts safely as root regardless of the local owner.
     manifest = pod_source_manifest(source_root, pins)
-    with tarfile.open(destination, "w:gz") as archive:
+    # Bootstrap runs inside the paid preparation window. Large source trees
+    # need fast compression, rather than gzip's default level 9.
+    with tarfile.open(destination, "w:gz", compresslevel=1) as archive:
         for directory in SOURCE_DIRS:
             archive.add(
                 Path(source_root) / directory,
@@ -288,33 +381,6 @@ def _build_source_archive(source_root: Path, destination: Path,
         info.size, info.mode, info.mtime = len(manifest), 0o644, 0
         archive.addfile(info, io.BytesIO(manifest))
     return destination
-
-
-# The ONE place the pod job's command is defined. Swap in the CLIP-COMMAND
-# (task 93) argv by changing this function, or pass ``command_argv=`` to
-# ``RemotePlacement``. The module CLI (python -m astrid.packs.h3_av...) refuses
-# direct invocation and must not be used.
-def clip_command_argv(
-    remote_args: Mapping[str, str],
-    remote_out: str,
-    *,
-    project: str | None = None,
-    editorial_approved: bool = False,
-) -> list[str]:
-    argv = [
-        f"{POD_VENV}/bin/astrid", "action", "run", "h3_av.transform",
-        "--request", remote_args["request"],
-        "--asset-map", remote_args["asset_map"],
-        "--placement", "local",
-        "--out", remote_out,
-    ]
-    if "execution_request" in remote_args:
-        argv += ["--execution-request", remote_args["execution_request"]]
-    if project:
-        argv += ["--project", project]
-    if editorial_approved:
-        argv.append("--editorial-approved")
-    return argv
 
 
 # Runs on the pod after the transform: digests every file under the out dir.
@@ -359,9 +425,9 @@ class RemoteRun:
     installation: RunPodInstallation | None = None
     checkpoint: Callable[[Mapping[str, Any]], None] | None = None
     installed: Mapping[str, Any] | None = None
-    # Parsed receipt model rows ({name, subdir, size, sha256}); in memory only, never in the snapshot.
-    models: tuple[Mapping[str, Any], ...] = ()
-    model_cache_root: str | None = None
+    install_unverified: str | None = None
+    # The pinned network volume ({"mount_path", "size_gb"}); None means no volume for this run.
+    volume: Mapping[str, Any] | None = None
 
     @property
     def remote_in(self) -> str:
@@ -372,7 +438,7 @@ class RemoteRun:
         return f"{self.remote_root}/out"
 
     def note(self, step: str, status: str, **detail: Any) -> None:
-        self.steps.append({"step": step, "status": status, **detail})
+        self.steps.append({"step": step, "status": status, "at": time.time(), **detail})
 
 
 # ----------------------------------------------------------------------------
@@ -389,9 +455,6 @@ class RemotePlacement:
         source_root: Path | None = None,
         leave_running: bool = False,
         pod_id: str | None = None,
-        verify_fn: Callable[[Path, Mapping[str, Any]], None] | None = None,
-        ffprobe_fn: Callable[[Path], None] | None = None,
-        command_argv: Callable[..., Sequence[str]] = clip_command_argv,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -400,43 +463,65 @@ class RemotePlacement:
         self.source_root = source_root
         self.leave_running = leave_running
         self.pod_id = pod_id
-        self._verify_fn = verify_fn or _default_verify
-        self._ffprobe_fn = ffprobe_fn or _default_ffprobe
-        self._command_argv = command_argv
         self._clock = clock
         self._sleep = sleep
         self._claims_made = 0
         self._deadline_at: float | None = None
         self._preparation_seconds: float | None = None
+        self._execution_seconds: float | None = None
 
     # -- public ------------------------------------------------------------
+
+    def begin_claimed(self, claim: Claim, *, out: Path, deadline_seconds: float) -> RemoteRun:
+        """Bookkeeping for commands on an exact existing claim, under one preparation bound."""
+        if not math.isfinite(deadline_seconds) or deadline_seconds <= 0:
+            raise RemotePlacementError("prepared claim has no remaining paid lifetime")
+        self._deadline_at = self._clock() + deadline_seconds
+        self._preparation_seconds = deadline_seconds
+        self._execution_seconds = None
+        out = Path(out)
+        out.mkdir(parents=True, exist_ok=True)
+        run_id = uuid.uuid4().hex
+        return RemoteRun(run_id, f"{RUNS_ROOT}/{run_id}", out, claim=claim)
 
     def prepare_claimed(self, claim: Claim, *, out: Path, deadline_seconds: float,
                         installation: RunPodInstallation | None = None,
                         checkpoint: Callable[[Mapping[str, Any]], None] | None = None,
                         reuse_snapshot: Mapping[str, Any] | None = None,
-                        model_cache_root: str | None = None) -> RemoteRun:
+                        volume: Mapping[str, Any] | None = None) -> RemoteRun:
         """Bootstrap/install an exact existing claim for ordinary prepared work.
 
         Claim/admission/release stay with their existing journal and Runtime
         owners. This method never claims a pod or invokes the H3 transform.
-        ``model_cache_root`` is the mounted volume cache for verified model bytes;
-        models are still installed under the local engine root.
+        The install is model-free; models arrive through align on the pod, row by row.
         """
         if not math.isfinite(deadline_seconds) or deadline_seconds <= 0:
             raise RemotePlacementError("prepared claim has no remaining paid lifetime")
         self._deadline_at = self._clock() + deadline_seconds
         self._preparation_seconds = deadline_seconds
+        self._execution_seconds = None
         out = Path(out)
         out.mkdir(parents=True, exist_ok=True)
         run_id = uuid.uuid4().hex
         if (installation is None) != (checkpoint is None):
             raise RemotePlacementError("retained installation requires its lease checkpoint")
         state = RemoteRun(run_id, f"{RUNS_ROOT}/{run_id}", out, claim=claim,
-                          installation=installation, checkpoint=checkpoint,
-                          model_cache_root=model_cache_root)
+                          installation=installation, checkpoint=checkpoint, volume=volume)
         try:
+            from .pod_watchdog import IDENTITY_LOG_PATH, IDENTITY_MARK, write_deadline
+            saved = (claim.handle or {}).get("self_stop")
+            write_deadline(claim.ops, saved["deadline"] if saved else time.time() + deadline_seconds,
+                           saved["generation"] if saved else 1)
+            # Keep the first-start report before bootstrap/install can fail or
+            # later engine-log slices exclude the watchdog's earlier line.
+            code, report, _ = self._exec(
+                state, f"grep '^{IDENTITY_MARK}' {shlex.quote(str(IDENTITY_LOG_PATH))} | tail -n 1", timeout=10)
+            if code == 0 and report.startswith(IDENTITY_MARK):
+                log = out / "logs" / "engine.log"
+                log.parent.mkdir(parents=True, exist_ok=True)
+                log.write_text(report, encoding="utf-8")
             if reuse_snapshot is not None:
+                assert self.source_root is not None
                 marker = f"{BOOTSTRAP_ROOT}/{source_digest(self.source_root)}/ok"
                 code, _, _ = self._exec(state, f"test -f {shlex.quote(marker)}", timeout=60)
                 if code != 0 or not self._canonical_installed(state) or state.installed != reuse_snapshot:
@@ -451,78 +536,27 @@ class RemotePlacement:
             if state.job_id is not None:
                 try:
                     stopped = claim.ops.job_cancel(state.job_id)
-                    if checkpoint is not None and stopped.get("state") in {"exited", "cancelled"}:
+                    if checkpoint is not None and stopped.get("id") == state.job_id and stopped.get("state") in {"exited", "cancelled"}:
                         checkpoint({"id": state.job_id, "state": stopped["state"]})
                 except Exception:
                     pass
             raise
         return state
 
-    def run(
-        self,
-        *,
-        request: Path,
-        asset_map: Path,
-        out: Path,
-        project: str | None = None,
-        editorial_approved: bool = False,
-        execution_request: Path | None = None,
-        cleanup_receipt: Path | None = None,
-    ) -> dict[str, Any]:
-        self._preflight(request, asset_map, execution_request, cleanup_receipt)
-        out = Path(out).expanduser().resolve()
-        out.mkdir(parents=True, exist_ok=True)
-        run_id = uuid.uuid4().hex
-        state = RemoteRun(run_id=run_id, remote_root=f"{RUNS_ROOT}/{run_id}", local_out=out)
-        failure: BaseException | None = None
-        result: dict[str, Any] | None = None
-        try:
-            self._claim(state)
-            self._bootstrap(state)
-            self._install(state)
-            remote_args = self._upload_inputs(
-                state, request, asset_map, execution_request
-            )
-            stdout = self._start_transform(
-                state, remote_args, project=project, editorial_approved=editorial_approved
-            )
-            result = self._download(state, stdout)
-            self._verify(state, result)
-        except BaseException as exc:  # release on ANY error, then re-raise
-            failure = exc
-        release_error = self._release(state, failed=failure is not None)
-        if failure is not None:
-            if release_error is not None:
-                failure.add_note(f"pod release also failed: {release_error}")
-            raise failure
-        if release_error is not None:
-            raise release_error
-        assert result is not None
-        return self._finish(state, result)
+
+    def begin_execution(self, *, deadline_seconds: float) -> None:
+        """Leave preparation once; retries must retain this execution bound."""
+        if self._preparation_seconds is None:
+            raise RemotePlacementError("execution deadline is already established")
+        self._check_deadline("execution handoff")
+        if not math.isfinite(deadline_seconds) or deadline_seconds <= 0:
+            raise RemotePlacementError("prepared claim has no remaining paid lifetime")
+        self._deadline_at = self._clock() + deadline_seconds
+        self._preparation_seconds = None
+        self._execution_seconds = deadline_seconds
 
     # -- preflight ---------------------------------------------------------
 
-    def _preflight(self, request, asset_map, execution_request, cleanup_receipt) -> None:
-        """Refuse before any claim: nothing here costs money."""
-        for label, path in (("request", request), ("asset map", asset_map)):
-            if not Path(path).is_file():
-                raise RemotePlacementError(f"{label} is not a file: {path}")
-        if cleanup_receipt is not None:
-            raise RemotePlacementError(
-                "--cleanup-receipt is not supported with --placement runpod; "
-                "the wrapper records pod release in the result"
-            )
-        if execution_request is not None:
-            document = json.loads(Path(execution_request).read_text(encoding="utf-8"))
-            target = document.get("target") if isinstance(document, dict) else None
-            if isinstance(target, Mapping) and target.get("kind") not in (None, "default"):
-                raise RemotePlacementError(
-                    "the remote H3 run takes a default execution-request target"
-                )
-        if not self.limits.max_spend_eur > 0 or not self.limits.deadline_seconds > 0:
-            raise RemotePlacementError("spend and deadline caps must be positive")
-        if self.source_root is not None:
-            source_digest(self.source_root)  # fail early if a source dir is missing
 
     # -- deadline ----------------------------------------------------------
 
@@ -537,6 +571,10 @@ class RemotePlacement:
                 raise PreparationDeadlineExceeded(
                     f"preparation deadline of {self._preparation_seconds:g}s exceeded during {step}"
                 )
+        elif self._execution_seconds is not None and now >= self._deadline_at:
+            raise RemotePlacementError(
+                f"execution deadline of {self._execution_seconds:g}s exceeded during {step}"
+            )
         elif now > self._deadline_at:
             raise RemotePlacementError(
                 f"deadline of {self.limits.deadline_seconds}s exceeded during {step}"
@@ -548,47 +586,6 @@ class RemotePlacement:
 
     # -- step 1 ------------------------------------------------------------
 
-    def _claim(self, state: RemoteRun) -> None:
-        if self._claims_made:
-            raise RemotePlacementError("a second pod claim is not allowed")
-        self._claims_made += 1
-        spec = ClaimSpec(
-            transport="https",
-            storage_name=self.limits.storage_name,
-            datacenter_id=self.limits.datacenter_id,
-            max_spend_eur=self.limits.max_spend_eur,
-            deadline_seconds=self.limits.deadline_seconds,
-            pod_id=self.pod_id,
-        )
-        try:
-            claim = self.provider.claim(spec)
-        except BaseException as exc:
-            partial = getattr(exc, "claim", None)
-            if isinstance(partial, Claim):
-                state.claim = partial  # custody exists: release it
-            raise
-        state.claim = claim
-        self._deadline_at = self._clock() + self.limits.deadline_seconds
-        self._preparation_seconds = None
-        if claim.transport != "https":
-            raise RemotePlacementError(f"claim used transport {claim.transport!r}, expected https")
-        if claim.datacenter_id != self.limits.datacenter_id:
-            raise RemotePlacementError(
-                f"claimed pod is in {claim.datacenter_id!r}, expected {self.limits.datacenter_id}"
-            )
-        if claim.storage_name != self.limits.storage_name:
-            raise RemotePlacementError(
-                f"claimed pod has storage {claim.storage_name!r}, expected {self.limits.storage_name}"
-            )
-        if claim.cost_per_hr_eur is None:
-            raise RemotePlacementError("claimed pod has no hourly cost; refusing without a spend bound")
-        worst_case = claim.cost_per_hr_eur * self.limits.deadline_seconds / 3600.0
-        if worst_case > self.limits.max_spend_eur:
-            raise RemotePlacementError(
-                f"worst-case spend {worst_case:.2f} EUR exceeds the cap of "
-                f"{self.limits.max_spend_eur:.2f} EUR"
-            )
-        state.note("claim", "done", pod_id=claim.pod_id)
 
     # -- remote command helper ----------------------------------------------
 
@@ -605,6 +602,8 @@ class RemotePlacement:
 
     def _run_job(self, state: RemoteRun, command: str, what: str) -> str:
         """Step 5 mechanism: detached job, then poll the durable status."""
+        from astrid.core._shared.log_redaction import redact_log
+
         assert state.claim is not None
         ops = state.claim.ops
         self._check_deadline(what)
@@ -621,6 +620,7 @@ class RemotePlacement:
             started = ops.job_start(command)
         job_id = str(started["id"])
         state.job_id = job_id
+        delay = min(1.0, self.limits.poll_seconds)
         while True:
             self._check_deadline(what)
             record = ops.job_poll(job_id)
@@ -628,7 +628,10 @@ class RemotePlacement:
                 break
             if record.get("state") in ("missing", "cancelled"):
                 raise RemotePlacementError(f"{what} job {job_id} is {record.get('state')}")
-            self._sleep(self.limits.poll_seconds)
+            self._check_deadline(what)
+            remaining = max(0.0, self._deadline_at - self._clock()) if self._deadline_at is not None else delay
+            self._sleep(min(delay, remaining))
+            delay = min(delay * 1.5, self.limits.poll_seconds)
         state.job_id = None
         if state.checkpoint is not None:
             state.checkpoint({"id": job_id, "state": "exited"})
@@ -637,12 +640,121 @@ class RemotePlacement:
         if directory:
             _c, stdout, _e = ops.exec(f"cat {shlex.quote(directory)}/stdout", 120)
             _c, stderr, _e = ops.exec(f"tail -c 4000 {shlex.quote(directory)}/stderr", 120)
-        if record.get("exit_code") != 0:
+        exit_code = record.get("exit_code")
+        if exit_code != 0 or (what == "pod reset" and type(exit_code) is not int):
             self._check_deadline(what)
+            log_paths: list[Path] = []
+            safe_what = re.sub(r"[^a-z0-9._-]+", "-", what.lower()).strip("-") or "job"
+            try:
+                from astrid.core._shared import run_logs
+
+                log_root = state.local_out / ".job-logs"
+                log_root.mkdir(parents=True, exist_ok=True)
+                staged: list[tuple[str, str, Path]] = []
+                declared_names: set[str] = set()
+                transfer_error: str | None = None
+                if directory:
+                    for stream_name, role in (("stdout", "stdout"), ("stderr", "stderr")):
+                        source = f"{directory}/{stream_name}"
+                        destination = log_root / f"{safe_what}.{stream_name}"
+                        try:
+                            ops.get(source, destination)
+                        except Exception as exc:  # noqa: BLE001 - collect the remaining logs
+                            transfer_error = transfer_error or type(exc).__name__
+                            destination.unlink(missing_ok=True)
+                        run_logs.declare(
+                            log_root,
+                            run_logs.LogDecl(
+                                name=f"{safe_what}-{stream_name}",
+                                role=role,
+                                path=str(destination.resolve()),
+                            ),
+                        )
+                        declared_names.add(f"{safe_what}-{stream_name}")
+                        staged.append((stream_name, role, destination))
+                if what == "engine install":
+                    from astrid.core.generation.engine_custody import engine_log_path
+
+                    installation = state.installation
+                    root = installation.root if installation is not None else ENGINE_ROOT
+                    engine = installation.engine if installation is not None else ENGINE_ID
+                    registry = f"{root}/runtime/out/sessions/{engine}"
+                    sources = (
+                        ("engine-log", engine_log_path(root, engine)),
+                        ("supervisor-log", f"{registry}/daemon.log"),
+                        ("session-marker", f"{root}/.astrid-engine/session/session.json"),
+                        ("registry-config", f"{registry}/config.json"),
+                    )
+                    program = (
+                        "import sys; from pathlib import Path; "
+                        "from astrid.core._shared.log_redaction import redact_log; "
+                        "p=Path(sys.argv[1]); q=Path(sys.argv[2]); "
+                        "q.write_text(redact_log(p.read_text(encoding='utf-8', errors='replace')), encoding='utf-8')"
+                    )
+                    for label, source in sources:
+                        destination = log_root / f"engine.install.{label}.log"
+                        remote_safe = f"/tmp/astrid-{uuid.uuid4().hex}-{label}.redacted"
+                        destination.unlink(missing_ok=True)
+                        try:
+                            code, _, _ = ops.exec(
+                                f"{POD_VENV}/bin/python -c {shlex.quote(program)} "
+                                f"{shlex.quote(source)} {shlex.quote(remote_safe)}", 120)
+                            if code == 0:
+                                ops.get(remote_safe, destination)
+                        except Exception as exc:  # noqa: BLE001 - collect the remaining logs
+                            transfer_error = transfer_error or type(exc).__name__
+                            destination.unlink(missing_ok=True)
+                        finally:
+                            try:
+                                ops.exec(f"rm -f {shlex.quote(remote_safe)}", 120)
+                            except Exception:  # noqa: BLE001 - preserve the job failure
+                                pass
+                        run_logs.declare(log_root, run_logs.LogDecl(
+                            name=f"engine.install.{label}", role="install", path=str(destination.resolve())))
+                        declared_names.add(f"engine.install.{label}")
+                rows = run_logs.collect(log_root)
+                by_name = {row.get("name"): row for row in rows}
+                for stream_name, _role, _source in staged:
+                    row = by_name.get(f"{safe_what}-{stream_name}")
+                    if not row or row.get("missing"):
+                        continue
+                    collected = log_root / "logs" / row["file"]
+                    final = state.local_out / "logs" / f"{safe_what}.{stream_name}"
+                    final.parent.mkdir(parents=True, exist_ok=True)
+                    collected.replace(final)
+                    row["file"] = final.name
+                    log_paths.append(final)
+                if what == "engine install":
+                    final_logs = state.local_out / "logs"
+                    final_logs.mkdir(parents=True, exist_ok=True)
+                    for row in rows:
+                        if row.get("name", "").startswith("engine.install.") and not row.get("missing"):
+                            (log_root / "logs" / row["file"]).replace(final_logs / row["file"])
+                    names = {row.get("name") for row in rows}
+                    existing = [row for row in run_logs.read_index(state.local_out) if row.get("name") not in names]
+                    (final_logs / "index.json").write_text(json.dumps(
+                        {"schema": "run-logs.collected.v1", "logs": existing + rows}, sort_keys=True) + "\n")
+                # Earlier steps can share the index; count only this step's declarations.
+                if not log_paths and all(row.get("missing") for row in rows
+                                         if row.get("name") in declared_names):
+                    state.note("logs", "unavailable", error=transfer_error or "missing")
+                else:
+                    state.note("logs", "kept", what=what, files=[str(path) for path in log_paths])
+            except Exception as exc:  # noqa: BLE001 - logs must never mask the job failure
+                state.note("logs", "unavailable", error=type(exc).__name__)
+            if what == "pod reset":
+                from .pod_reset import reset_failure_reason
+                safe_code = exit_code if type(exit_code) is int and 0 <= exit_code <= 255 else "unknown"
+                safe_job = job_id if re.fullmatch(r"[0-9a-f]{32}", job_id) else "unknown"
+                raise RemotePlacementError(
+                    f"pod reset job {safe_job} exited {safe_code}: reset reason: {reset_failure_reason(stdout)}"
+                    + (f" (full logs: {state.local_out / 'logs' / f'{safe_what}.stderr'})" if log_paths else "")
+                )
             raise RemotePlacementError(
-                f"{what} job {job_id} exited {record.get('exit_code')}: {stderr[-800:]}"
+                f"{what} job {job_id} exited {exit_code}: {redact_log(stderr)[-800:]}"
+                + (f" (full logs: {state.local_out / 'logs' / f'{safe_what}.stderr'})" if log_paths else "")
             )
-        return stdout
+        return redact_log(stdout) if what == "engine install" else stdout
 
     # -- step 2 ------------------------------------------------------------
 
@@ -653,8 +765,9 @@ class RemotePlacement:
                 state, f"ls {BOOTSTRAP_ROOT}/*/ok 2>/dev/null | head -n 1", timeout=60
             )
             if not out.strip():
-                raise RemotePlacementError(
-                    "pod is not bootstrapped and no source archives were provided"
+                raise PlacementReasonError(
+                    "pod is not bootstrapped and no source archives were provided",
+                    reason=Reason(stage="boot", step="bootstrap", gate="provider", code="provider_malformed"),
                 )
             state.note("bootstrap", "skipped", reason="marker present")
             return
@@ -684,7 +797,10 @@ class RemotePlacement:
         self._run_job(state, command, "bootstrap")
         code, _o, _e = self._exec(state, f"test -f {shlex.quote(marker)}", timeout=60)
         if code != 0:
-            raise RemotePlacementError(f"bootstrap finished without marker {marker}")
+            raise PlacementReasonError(
+                "bootstrap finished without its marker",
+                reason=Reason(stage="boot", step="bootstrap", gate="provider", code="provider_malformed"),
+            )
         state.note("bootstrap", "done", digest=digest)
 
     # -- step 3 ------------------------------------------------------------
@@ -697,7 +813,9 @@ class RemotePlacement:
             f"--root {shlex.quote(ENGINE_ROOT)}"
         )
         code, stdout, _err = self._exec(state, command, timeout=120)
+        state.install_unverified = None
         if code != 0:
+            state.install_unverified = _safe_label(f"status_exit_{code}")
             return False
         try:
             receipt = json.loads(stdout.strip().splitlines()[-1]) if stdout.strip() else None
@@ -709,64 +827,226 @@ class RemotePlacement:
         return isinstance(health, Mapping) and health.get("status") == "healthy"
 
     def _install(self, state: RemoteRun) -> None:
+        self._restore_engine_snapshot(state)
         if self._engine_installed_healthy(state):
             state.note("install", "skipped")
+            self._start_snapshot_publish(state)
             return
         installation = state.installation
-        cache = "" if state.model_cache_root is None else f" --model-cache-root {shlex.quote(state.model_cache_root)}"
+        models = (f" --models-root {shlex.quote(installation.models_root)}"
+                   if installation is not None and installation.models_root is not None else "")
         command = (
             f"{POD_VENV}/bin/astrid engines install {installation.engine} "
-            f"--platform {installation.platform} --placement local --root {shlex.quote(installation.root)} "
-            f"--deadline {min(INSTALL_DEADLINE_SECONDS, self._remaining())}{cache}"
+            f"--platform {installation.platform} --placement local --root {shlex.quote(installation.root)}{models} "
+            f"--deadline {min(INSTALL_DEADLINE_SECONDS, self._remaining())}"
         ) if installation is not None else (
             f"{POD_VENV}/bin/astrid engines install {ENGINE_ID} --placement local "
-            f"--root {shlex.quote(ENGINE_ROOT)} --deadline {INSTALL_DEADLINE_SECONDS}{cache}"
+            f"--root {shlex.quote(ENGINE_ROOT)} --deadline {INSTALL_DEADLINE_SECONDS}"
         )
         self._run_job(state, command, "engine install")
         if not self._engine_installed_healthy(state):
-            raise RemotePlacementError("engine install finished but status is not installed and healthy")
+            reason = getattr(state, "install_unverified", None) or "unclassified"
+            raise PlacementReasonError(
+                f"engine install finished but status is not installed and healthy (reason: {reason})",
+                reason=installation_reason(reason))
         state.note("install", "done")
+        self._start_snapshot_publish(state)
 
-    def _canonical_installed(self, state: RemoteRun) -> bool:
-        from astrid.core.generation import engine_runner
+    # -- engine environment snapshot (never on the failure path) -----------
+
+    def _snapshot_command(self, state: RemoteRun, action: str) -> str | None:
+        """The fixed module command, or None when no pinned volume serves the canonical root."""
+        volume, installation = state.volume, state.installation
+        mount = volume.get("mount_path") if isinstance(volume, Mapping) else None
+        if (not isinstance(mount, str) or not mount.startswith("/")
+                or installation is not None and installation.root != ENGINE_ROOT):
+            return None
+        engine = installation.engine if installation is not None else ENGINE_ID
+        platform = installation.platform if installation is not None else RunPodInstallation.platform
+        return (f"{POD_VENV}/bin/python -I -m astrid.packs.runpod.engine_snapshot {action} "
+                f"--root {shlex.quote(ENGINE_ROOT)} "
+                f"--cache {shlex.quote(f'{mount}/astrid/engine-envs/{engine}')} "
+                f"--engine {shlex.quote(engine)} --platform {shlex.quote(platform)}")
+
+    @staticmethod
+    def _snapshot_result(stdout: str) -> dict[str, Any] | None:
+        lines = [line for line in (stdout or "").splitlines() if line.startswith(SNAPSHOT_MARK)]
+        try:
+            result = json.loads(lines[-1][len(SNAPSHOT_MARK):]) if lines else None
+        except ValueError:
+            return None
+        if not isinstance(result, dict) or not isinstance(result.get("action"), str):
+            return None
+        durations = result.get("durations")
+        result["durations"] = ({_safe_label(k): float(v) for k, v in durations.items()
+                                if type(v) in (int, float) and math.isfinite(v)}
+                               if isinstance(durations, Mapping) else {})
+        return result
+
+    def _restore_engine_snapshot(self, state: RemoteRun) -> None:
+        """Restore the volume's environment snapshot onto an empty container-disk root.
+
+        Advisory only: every failure is noted as skipped and today's install runs unchanged.
+        """
+        command = self._snapshot_command(state, "restore")
+        if command is None:
+            return
+        try:
+            for relative, reason in ((".astrid-engine/install.json", "receipt_present"),
+                                     ("runtime", "runtime_present")):
+                code, _o, _e = self._exec(state, f"test -e {shlex.quote(f'{ENGINE_ROOT}/{relative}')}",
+                                          timeout=30)
+                if code == 0:
+                    state.note("engine_snapshot_restore", "skipped", reason=reason)
+                    return
+            bound = int(min(SNAPSHOT_RESTORE_SECONDS, self._remaining()))
+            code, stdout, _e = self._exec(state, f"{command} --deadline {bound}", timeout=bound + 30)
+        except Exception:  # noqa: BLE001 - restore is advisory; the install below decides
+            state.note("engine_snapshot_restore", "skipped", reason="restore_failed")
+            return
+        result = self._snapshot_result(stdout) if code == 0 else None
+        if result is None:
+            state.note("engine_snapshot_restore", "skipped",
+                       reason="restore_exit_nonzero" if code != 0 else "restore_output_unparsable")
+            return
+        state.note("engine_snapshot_restore", _safe_label(result["action"]),
+                   reason=_safe_label(result.get("reason", "none")), durations=result["durations"])
+
+    def _start_snapshot_publish(self, state: RemoteRun) -> None:
+        """Start publish, then report, detached on the pod; the module dedupes an existing snapshot.
+
+        Nothing waits on it: release never touches the snapshot. A pod stopped mid-publish leaves
+        a partial with no manifest, which restore never sees and a later report cleans up.
+        """
+        command = self._snapshot_command(state, "publish")
+        report = self._snapshot_command(state, "report")
+        if command is None or report is None:
+            return
+        size, mount = (state.volume or {}).get("size_gb"), (state.volume or {}).get("mount_path")
+        if type(size) is int and size > 0:
+            command += f" --mount {shlex.quote(mount)} --volume-size-gb {size}"
+        chain = f"{command}; {report} --deadline {SNAPSHOT_REPORT_SECONDS}"
+        launch = (f"mkdir -p {shlex.quote(BOOTSTRAP_ROOT)} && "
+                  f"nohup setsid sh -c {shlex.quote(chain)} > {shlex.quote(SNAPSHOT_PUBLISH_LOG)} 2>&1 "
+                  f"< /dev/null & echo $! > {shlex.quote(SNAPSHOT_PUBLISH_PID)}; "
+                  f"cat {shlex.quote(SNAPSHOT_PUBLISH_PID)}")
+        try:
+            code, stdout, _e = self._exec(state, launch, timeout=30)
+            pid = int(stdout.strip().splitlines()[-1]) if code == 0 and stdout.strip() else 0
+        except Exception:  # noqa: BLE001 - publish is off the critical path
+            pid = 0
+        if pid <= 0:
+            state.note("engine_snapshot_publish", "skipped", reason="publish_start_failed")
+            return
+        state.note("engine_snapshot_publish", "started", pid=pid)
+
+    def _canonical_installed(self, state: RemoteRun, *, verification_seconds: float | None = None) -> bool:
+        from astrid.core.generation import engine_recipe, engine_runner
 
         installation = state.installation
-        plan = installation.plan()
+        assert installation is not None
+        remaining = min(120, self._remaining() if verification_seconds is None else verification_seconds)
+        verification_deadline = time.monotonic() + remaining
+        if verification_seconds is not None:
+            assert state.claim is not None
+            transport_deadline = getattr(state.claim.ops, "deadline", None)
+            if transport_deadline is not None:
+                verification_deadline = min(verification_deadline, transport_deadline)
+            remaining = max(0, verification_deadline - time.monotonic())
+        state.install_unverified = None
+        if remaining <= 0:
+            state.install_unverified = "status_deadline_exhausted"
+            return False
         command = (f"{POD_VENV}/bin/astrid engines status {installation.engine} "
                    f"--platform {installation.platform} --placement local "
-                   f"--root {shlex.quote(installation.root)} --deadline {min(120, self._remaining())}")
-        code, stdout, _ = self._exec(state, command, timeout=120)
+                   f"--root {shlex.quote(installation.root)} --deadline {remaining}")
+        # Checkpoint verification is read-only and bounded by the original paid
+        # lease, independently of the execution timer that the job may exhaust.
+        if verification_seconds is None:
+            code, stdout, _ = self._exec(state, command, timeout=120)
+        else:
+            assert state.claim is not None
+            code, stdout, _ = state.claim.ops.exec(command, remaining)
         if code != 0 or stdout.strip() in {"", "null"}:
+            state.install_unverified = (_safe_label(f"status_exit_{code}") if code != 0
+                                        else "status_no_receipt")
             return False
         raw = json.loads(stdout)
         if raw.get("status") != "installed":
+            # engine_status returns only fixed vocabulary here (status, error_code,
+            # failed_step_id); re-validate so nothing else reaches a journal.
+            state.install_unverified = ";".join(
+                f"{key}={_safe_label(raw.get(key))}" for key in ("status", "error_code", "failed_step_id"))
             return False
         # Status re-verifies the actual source/model/environment/start/health
         # through the canonical runner. Parse with that same receipt boundary.
+        recipe = engine_recipe.load_recipe(installation.engine, installation.platform)
+        plan = engine_runner.plan_install(recipe, root=installation.root, placement="local")
         live = engine_runner._parse_receipt(raw, plan)
-        path = state.local_out / "installed.json"
-        try:
-            state.claim.ops.get(installation.root + "/.astrid-engine/install.json", path)
-            if path.is_symlink() or path.stat().st_size > 1024 * 1024:
-                raise RemotePlacementError("invalid canonical installation receipt file")
-            data = path.read_bytes()
-            saved = engine_runner._parse_receipt(json.loads(data), plan)
-        finally:
-            path.unlink(missing_ok=True)
+        plan = engine_runner.plan_from_receipt(
+            recipe, live,
+            root=installation.root, placement="local")
+        engine_runner.require_current_receipt(live, plan, recipe)
+        assert state.claim is not None
+        receipt = installation.root + "/.astrid-engine/install.json"
+        if verification_seconds is None:
+            path = state.local_out / "installed.json"
+            try:
+                state.claim.ops.get(receipt, path)
+                if path.is_symlink() or path.stat().st_size > 1024 * 1024:
+                    raise RemotePlacementError("invalid canonical installation receipt file")
+                data = path.read_bytes()
+            finally:
+                path.unlink(missing_ok=True)
+        else:
+            # Status and this fixed-file read share one verification window.
+            # Failure callers also bound transport and reset by that deadline.
+            # Do not stream an unbounded pod file into a controller journal.
+            script = ("import base64,os,stat,sys;"
+                      "fd=os.open(sys.argv[1],os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK);"
+                      "s=os.fstat(fd);"
+                      "(stat.S_ISREG(s.st_mode) and s.st_size<=1048576) or sys.exit(2);"
+                      "data=os.read(fd,1048577);"
+                      "len(data)<=1048576 or sys.exit(2);"
+                      "print(base64.b64encode(data).decode())")
+            remaining = max(0, verification_deadline - time.monotonic())
+            if remaining <= 0:
+                state.install_unverified = "status_deadline_exhausted"
+                return False
+            code, output, _ = state.claim.ops.exec(
+                f"{POD_VENV}/bin/python -c {shlex.quote(script)} {shlex.quote(receipt)}", remaining)
+            if code != 0 or len(output) > 1400000:
+                state.install_unverified = "receipt_read_failed"
+                return False
+            try:
+                data = base64.b64decode(output.strip(), validate=True)
+            except (ValueError, binascii.Error):
+                state.install_unverified = "receipt_read_failed"
+                return False
+            if len(data) > 1024 * 1024:
+                state.install_unverified = "receipt_read_failed"
+                return False
+        saved = engine_runner._parse_receipt(json.loads(data), plan)
+        plan = engine_runner.plan_from_receipt(
+            recipe, saved,
+            root=installation.root, placement="local")
+        engine_runner.require_current_receipt(saved, plan, recipe)
         if (saved.status != "installed" or live.receipt_id != saved.receipt_id
                 or live.source_commits != saved.source_commits
                 or live.requirements_locks != saved.requirements_locks
                 or live.health.object_info_sha256 != saved.health.object_info_sha256):
-            raise RemotePlacementError("live installation differs from its canonical receipt")
+            state.install_unverified = "installation_receipt_changed"
+            raise checkpoint_refusal(InstallationReceiptChanged("live installation differs from its canonical receipt"),
+                                     state.install_unverified)
+        if verification_seconds is not None and time.monotonic() >= verification_deadline:
+            state.install_unverified = "status_deadline_exhausted"
+            return False
         state.installed = {
             "schema": "astrid.runpod.installed-snapshot.v1", "engine": installation.engine,
             "platform": installation.platform, "root": installation.root,
             "compatibility": dict(installation.compatibility), "receipt_id": saved.receipt_id,
             "receipt_sha256": "sha256:" + hashlib.sha256(data).hexdigest(),
         }
-        from astrid.core.generation.target_inventory import rows_from_receipt
-        # The receipt parse above verified every row's sha256, bytes and path.
-        state.models = rows_from_receipt(saved.models, installation.root)
         return True
 
     # -- step 4 ------------------------------------------------------------
@@ -780,210 +1060,20 @@ class RemotePlacement:
         if actual != expected:
             raise DigestMismatch(f"upload of {local.name} did not verify (expected {expected}, got {actual or 'none'})")
 
-    def _upload_inputs(
-        self, state: RemoteRun, request: Path, asset_map: Path, execution_request: Path | None
-    ) -> dict[str, str]:
-        self._exec_ok(state, f"mkdir -p {shlex.quote(state.remote_in)} {shlex.quote(state.remote_out)}", "run directory")
-        remote_request = f"{state.remote_in}/request.json"
-        self._put_checked(state, Path(request), remote_request)
-        mapping = json.loads(Path(asset_map).read_text(encoding="utf-8"))
-        if not isinstance(mapping, dict):
-            raise RemotePlacementError("asset map must be a JSON object")
-        remote_mapping: dict[str, Any] = {}
-        for index, (asset_id, value) in enumerate(sorted(mapping.items())):
-            local = Path(str(value)).expanduser()
-            if not local.is_file():
-                raise RemotePlacementError(f"declared input {asset_id!r} is not a file: {local}")
-            remote = f"{state.remote_in}/assets/{index:03d}-{local.name}"
-            self._exec_ok(state, f"mkdir -p {shlex.quote(state.remote_in + '/assets')}", "asset directory")
-            self._put_checked(state, local, remote)
-            remote_mapping[asset_id] = remote
-        local_map = state.local_out / "remote-asset-map.json"
-        local_map.write_text(json.dumps(remote_mapping, sort_keys=True), encoding="utf-8")
-        remote_map = f"{state.remote_in}/asset-map.json"
-        self._put_checked(state, local_map, remote_map)
-        remote_args = {"request": remote_request, "asset_map": remote_map}
-        if execution_request is not None:
-            remote_exec = f"{state.remote_in}/execution-request.json"
-            self._put_checked(state, Path(execution_request), remote_exec)
-            remote_args["execution_request"] = remote_exec
-        state.note("upload", "done", inputs=len(remote_mapping))
-        return remote_args
 
     # -- step 5 ------------------------------------------------------------
 
-    def transform_command(
-        self,
-        state: RemoteRun,
-        remote_args: Mapping[str, str],
-        *,
-        project: str | None,
-        editorial_approved: bool,
-    ) -> str:
-        """The same local command, with ``--placement local`` and pod paths."""
-        argv = self._command_argv(
-            remote_args, state.remote_out, project=project, editorial_approved=editorial_approved
-        )
-        line = " ".join(shlex.quote(part) for part in argv)
-        return (
-            "set -u\n"
-            f"{line} > {shlex.quote(state.remote_root + '/result.json')}\n"
-            f"rc=$?\n"
-            f"if [ $rc -ne 0 ]; then exit $rc; fi\n"
-            f"printf '%s' {shlex.quote(RESULT_MARK)}; tr -d '\\n' < {shlex.quote(state.remote_root + '/result.json')}; echo\n"
-            f"{manifest_command(state.remote_out)}\n"
-        )
 
-    def _start_transform(self, state, remote_args, *, project, editorial_approved) -> str:
-        command = self.transform_command(
-            state, remote_args, project=project, editorial_approved=editorial_approved
-        )
-        stdout = self._run_job(state, command, "h3_av.transform")
-        state.note("job", "done")
-        return stdout
 
     # -- step 6 ------------------------------------------------------------
 
-    def _local_for(self, state: RemoteRun, remote: str) -> Path:
-        prefix = state.remote_out.rstrip("/") + "/"
-        if not remote.startswith(prefix):
-            raise RemotePlacementError(f"output path is outside the run directory: {remote}")
-        relative = remote[len(prefix):]
-        if ".." in Path(relative).parts:
-            raise RemotePlacementError(f"output path escapes the run directory: {remote}")
-        return state.local_out / relative
 
-    def _download(self, state: RemoteRun, stdout: str) -> dict[str, Any]:
-        assert state.claim is not None
-        ops = state.claim.ops
-        result_line = next((l for l in stdout.splitlines() if l.startswith(RESULT_MARK)), None)
-        manifest_line = next((l for l in stdout.splitlines() if l.startswith(MANIFEST_MARK)), None)
-        if result_line is None or manifest_line is None:
-            raise RemotePlacementError("remote job did not report a result and manifest digest")
-        try:
-            remote_result = json.loads(result_line[len(RESULT_MARK):])
-        except json.JSONDecodeError as exc:
-            raise RemotePlacementError("remote result is not JSON") from exc
-        if not isinstance(remote_result, dict):
-            raise RemotePlacementError("remote result is not a JSON object")
-        self._check_deadline("download")
-        manifest_local = state.local_out / MANIFEST_NAME
-        ops.get(f"{state.remote_out}/{MANIFEST_NAME}", manifest_local)
-        if sha256_file(manifest_local) != manifest_line[len(MANIFEST_MARK):].strip():
-            manifest_local.unlink(missing_ok=True)
-            raise DigestMismatch("downloaded manifest does not match the digest the job reported")
-        recorded = json.loads(manifest_local.read_text(encoding="utf-8")).get("files", {})
-        # Declared outputs: every path in the result, the receipt and the journal.
-        wanted: dict[str, Path] = {}
-        local_result: dict[str, Any] = {}
-        for key, value in remote_result.items():
-            if isinstance(value, str) and value.startswith(state.remote_out + "/"):
-                wanted[value] = self._local_for(state, value)
-                local_result[key] = str(wanted[value])
-            else:
-                local_result[key] = value
-        for name in FIXED_OUTPUTS:
-            remote = f"{state.remote_out}/{name}"
-            wanted.setdefault(remote, self._local_for(state, remote))
-        for remote, local in sorted(wanted.items()):
-            relative = remote[len(state.remote_out) + 1:]
-            entry = recorded.get(relative)
-            if not isinstance(entry, Mapping):
-                raise DigestMismatch(f"{relative} has no digest in the pod manifest")
-            local.parent.mkdir(parents=True, exist_ok=True)
-            ops.get(remote, local)
-            if sha256_file(local) != entry.get("sha256") or local.stat().st_size != entry.get("size"):
-                local.unlink(missing_ok=True)
-                raise DigestMismatch(f"downloaded {relative} does not match the pod manifest")
-        self._check_receipt_digests(local_result)
-        state.note("download", "done", files=len(wanted))
-        return local_result
 
-    @staticmethod
-    def _check_receipt_digests(result: Mapping[str, Any]) -> None:
-        """The composition manifest's candidate digest must match the downloaded candidate."""
-        composition, candidate = result.get("composition"), result.get("candidate")
-        if not composition or not candidate:
-            return
-        document = json.loads(Path(str(composition)).read_text(encoding="utf-8"))
-        expected = (document.get("candidate") or {}).get("sha256")
-        if expected is not None and expected != sha256_file(Path(str(candidate))):
-            raise DigestMismatch("downloaded candidate does not match the composition receipt digest")
 
-    def _verify(self, state: RemoteRun, result: Mapping[str, Any]) -> None:
-        candidate = result.get("candidate")
-        if candidate:
-            self._ffprobe_fn(Path(str(candidate)))
-        self._verify_fn(state.local_out, result)
-        state.note("verify", "done")
 
     # -- step 7 ------------------------------------------------------------
 
-    def _release(self, state: RemoteRun, *, failed: bool) -> RemotePlacementError | None:
-        claim = state.claim
-        if claim is None:
-            return None
-        if state.job_id is not None:
-            try:
-                claim.ops.job_cancel(state.job_id)
-            except BaseException:  # best effort; release is what stops the spend
-                pass
-        if self.leave_running and not failed:
-            state.note("release", "skipped", reason="leave_running")
-            return None
-        try:
-            self.provider.release(claim)
-            if self.provider.pod_exists(claim.pod_id):
-                raise RemotePlacementError(
-                    f"pod {claim.pod_id} still exists after release (GET did not return 404)"
-                )
-        except RemotePlacementError as exc:
-            state.note("release", "failed", error=str(exc))
-            return exc
-        except BaseException as exc:
-            state.note("release", "failed", error=type(exc).__name__)
-            return RemotePlacementError(f"pod {claim.pod_id} release failed: {type(exc).__name__}: {exc}")
-        state.released = True
-        state.note("release", "done", pod_id=claim.pod_id)
-        return None
 
-    def _finish(self, state: RemoteRun, result: dict[str, Any]) -> dict[str, Any]:
-        claim = state.claim
-        assert claim is not None
-        return {
-            **result,
-            "placement": PLACEMENT,
-            "pod": {
-                "pod_id": claim.pod_id,
-                "released": state.released,
-                "leave_running": self.leave_running,
-                "claim": dict(claim.identity),
-            },
-            "remote_steps": list(state.steps),
-        }
-
-
-# ----------------------------------------------------------------------------
-# Default verification on the downloaded copies
-# ----------------------------------------------------------------------------
-
-
-def _default_ffprobe(path: Path) -> None:
-    from astrid.packs.h3_av.actions.verify.verify import _probe_strict
-
-    _probe_strict(path)
-
-
-def _default_verify(out: Path, result: Mapping[str, Any]) -> None:
-    from astrid.packs.h3_av.actions.verify.verify import verify_candidate
-
-    preparation = json.loads(Path(str(result["preparation"])).read_text(encoding="utf-8"))
-    composition = json.loads(Path(str(result["composition"])).read_text(encoding="utf-8"))
-    verify_candidate(
-        preparation=preparation,
-        composition=composition,
-        candidate=Path(str(result["candidate"])),
-    )
 
 
 # ----------------------------------------------------------------------------
@@ -991,21 +1081,203 @@ def _default_verify(out: Path, result: Mapping[str, Any]) -> None:
 # ----------------------------------------------------------------------------
 
 
+class _OutstandingObserver:
+    """A surviving local caller and pipe reader; release waits for both to die."""
+
+    def __init__(self, process: Any, reader: threading.Thread | None,
+                 watchdog: threading.Thread | None, recv: Any, send: Any) -> None:
+        self.process, self.reader, self.watchdog = process, reader, watchdog
+        self.recv, self.send = recv, send
+
+    def is_alive(self) -> bool:
+        return (self.process.is_alive()
+                or self.reader is not None and self.reader.is_alive()
+                or self.watchdog is not None and self.watchdog.is_alive())
+
+    def join(self, timeout: float = 0) -> None:
+        end = time.monotonic() + timeout
+        if self.process.is_alive():
+            self.process.join(timeout=max(0, end - time.monotonic()))
+        for thread in (self.reader, self.watchdog):
+            if thread is not None and thread.is_alive():
+                thread.join(timeout=max(0, end - time.monotonic()))
+
+    def close(self) -> None:
+        if self.is_alive():
+            raise BoundedObserverUnreaped("bounded pod observer still lives")
+        self.process.close()
+        self.recv.close()
+        self.send.close()
+
+
 class _HttpsOps:
-    def __init__(self, pod_id: str, token: str) -> None:
-        self.pod_id, self.token = pod_id, token
+    def __init__(self, pod_id: str, token: str, *, deadline: float | None = None,
+                 base_url: str | None = None, abort_event: threading.Event | None = None,
+                 cancelled: Callable[[], bool] | None = None) -> None:
+        self.pod_id, self.token, self.deadline, self.base_url = pod_id, token, deadline, base_url
+        self.abort_event = abort_event
+        self.cancelled = cancelled
+
+    def cancellable(self, cancelled: Callable[[], bool]) -> "_HttpsOps":
+        return type(self)(self.pod_id, self.token, deadline=self.deadline, base_url=self.base_url,
+                          abort_event=self.abort_event, cancelled=cancelled)
+
+    def _check_cancelled(self) -> None:
+        if self.cancelled is not None and self.cancelled():
+            from astrid.core.execution.machine_run import MachineRunCancelled
+            raise MachineRunCancelled("generation cancelled during remote machine work")
+
+    def bounded(self, deadline: float, *, abort_event: threading.Event | None = None) -> "_HttpsOps":
+        return type(self)(self.pod_id, self.token, deadline=deadline, base_url=self.base_url,
+                          abort_event=abort_event)
 
     def _transport(self):
         from runpod_lifecycle.https import HttpsPodTransport
 
-        return HttpsPodTransport(self.pod_id, self.token)
+        return HttpsPodTransport(self.pod_id, self.token,
+                                 **({"deadline": self.deadline} if self.deadline is not None else {}),
+                                 **({"base_url": self.base_url} if self.base_url is not None else {}))
 
-    def _call(self, name: str, *args: Any, **kwargs: Any) -> Any:
+    def _call_direct(self, name: str, *args: Any, **kwargs: Any) -> Any:
+        self._check_cancelled()
         transport = self._transport()
         try:
-            return getattr(transport, name)(*args, **kwargs)
+            http = getattr(transport, "http", None)
+            if self.cancelled is not None and http is not None:
+                def before_request(request: Any) -> None:
+                    # execute_command's finally must still stop its agent job.
+                    # Detached stop/checkpoint uses the original ops after this scope.
+                    if request.method != "DELETE":
+                        self._check_cancelled()
+                # This public HTTPX hook runs for every upload chunk, command
+                # poll and retry without replacing the transport's custody logic.
+                http.event_hooks["request"].append(before_request)
+            result = getattr(transport, name)(*args, **kwargs)
+            self._check_cancelled()
+            return result
         finally:
             transport.disconnect()
+
+    def _bounded_call(self, name: str, *args: Any, **kwargs: Any) -> Any:
+        """Kill a slow-drip caller before it can hold the host's drain forever."""
+        assert self.deadline is not None
+        def refuse(code: str, message: str) -> PlacementReasonError:
+            return PlacementReasonError(
+                message, reason=Reason(stage="boot", step="provider_contract", gate="provider", code=code)
+            )
+
+        if name not in {"execute_command", "detached_start", "detached_poll", "detached_cancel"}:
+            raise RemotePlacementError("unsupported bounded pod operation")
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise refuse("deadline_exceeded", "bounded pod operation deadline expired")
+        if self.abort_event is not None and self.abort_event.is_set():
+            raise refuse("custody_unresolved", "bounded pod operation was interrupted")
+        context = multiprocessing.get_context("spawn")
+        recv, send = context.Pipe(duplex=False)
+        child = context.Process(target=_bounded_https_call_child,
+                                args=(send, self.pod_id, self.token, self.deadline, self.base_url, name, args, kwargs))
+        child.daemon = True
+        started = False
+        watchdog = None
+        reader = None
+        stop_watchdog = threading.Event()
+        # Reserve child termination and reaping inside the same absolute
+        # transport deadline; HTTP response time never consumes that reserve.
+        request_deadline = self.deadline - min(0.35, remaining / 2)
+        try:
+            child.start()
+            started = True
+            send.close()
+            # poll() can wake on a partial frame; recv_bytes() may then block
+            # indefinitely. The watchdog also observes exact owner release,
+            # killing the child so a paid timer can drain without waiting for
+            # the old verification deadline.
+            def expire() -> None:
+                while not stop_watchdog.wait(0.02):
+                    if time.monotonic() >= request_deadline or (
+                            self.abort_event is not None and self.abort_event.is_set()):
+                        break
+                if stop_watchdog.is_set():
+                    return
+                try:
+                    if child.is_alive():
+                        child.kill()
+                except (OSError, ValueError):
+                    pass
+            watchdog = threading.Thread(target=expire, daemon=True)
+            watchdog.daemon = True
+            watchdog.start()
+            # recv_bytes may block forever on a partial frame. Run it in a
+            # disposable reader and bound the parent wait independently; this
+            # uses only multiprocessing Pipe APIs supported on Windows too.
+            read_done = threading.Event()
+            received: dict[str, Any] = {}
+            def read_frame() -> None:
+                try:
+                    received["raw"] = recv.recv_bytes(maxlength=2 * 1024 * 1024)
+                except BaseException:
+                    received["error"] = True
+                finally:
+                    read_done.set()
+            reader = threading.Thread(target=read_frame, daemon=True)
+            reader.start()
+            while not read_done.wait(0.02):
+                if self.abort_event is not None and self.abort_event.is_set():
+                    raise refuse("custody_unresolved", "bounded pod operation was interrupted")
+                if time.monotonic() >= request_deadline:
+                    raise refuse("deadline_exceeded", "bounded pod operation deadline expired")
+            if received.get("error") or "raw" not in received:
+                if self.abort_event is not None and self.abort_event.is_set():
+                    raise refuse("custody_unresolved", "bounded pod operation was interrupted")
+                raise refuse("deadline_exceeded" if time.monotonic() >= request_deadline else "transport_failed",
+                             "bounded pod operation deadline expired" if time.monotonic() >= request_deadline
+                             else "bounded pod operation failed")
+            raw = received["raw"]
+            if self.abort_event is not None and self.abort_event.is_set():
+                raise refuse("custody_unresolved", "bounded pod operation was interrupted")
+            if time.monotonic() >= self.deadline:
+                raise refuse("deadline_exceeded", "bounded pod operation deadline expired")
+            payload = json.loads(raw)
+            if not isinstance(payload, dict) or set(payload) != {"ok", "value"} or payload["ok"] is not True:
+                raise refuse("transport_failed", "bounded pod operation failed")
+            if self.abort_event is not None and self.abort_event.is_set():
+                raise refuse("custody_unresolved", "bounded pod operation was interrupted")
+            return payload["value"]
+        except PlacementReasonError:
+            raise
+        except (OSError, EOFError, ValueError, TypeError, RuntimeError):
+            raise refuse("deadline_exceeded" if time.monotonic() >= request_deadline else "transport_failed",
+                         "bounded pod operation deadline expired" if time.monotonic() >= request_deadline
+                         else "bounded pod operation failed") from None
+        except KeyboardInterrupt:
+            raise refuse("custody_unresolved", "bounded pod operation was interrupted") from None
+        finally:
+            stop_watchdog.set()
+            if watchdog is not None:
+                watchdog.join(timeout=min(0.05, max(0, self.deadline - time.monotonic())))
+            if started:
+                child.join(timeout=min(0.02, max(0, self.deadline - time.monotonic())))
+                if child.is_alive():
+                    try:
+                        child.kill()
+                    except (OSError, ValueError):
+                        pass  # The composite handle below keeps custody pending.
+                    child.join(timeout=min(0.25, max(0, self.deadline - time.monotonic())))
+            if reader is not None:
+                reader.join(timeout=min(0.03, max(0, self.deadline - time.monotonic())))
+            if started and (child.is_alive() or reader is not None and reader.is_alive()
+                            or watchdog is not None and watchdog.is_alive()):
+                self.unreaped_child = _OutstandingObserver(child, reader, watchdog, recv, send)
+                raise BoundedObserverUnreaped("bounded pod observer could not be reaped")
+            if started:
+                child.close()
+            recv.close()
+            send.close()
+
+    def _call(self, name: str, *args: Any, **kwargs: Any) -> Any:
+        return (self._call_direct(name, *args, **kwargs) if self.deadline is None
+                else self._bounded_call(name, *args, **kwargs))
 
     def exec(self, command: str, timeout: float = 600) -> tuple[int, str, str]:
         return self._call("execute_command", command, timeout)
@@ -1024,6 +1296,25 @@ class _HttpsOps:
 
     def job_cancel(self, job_id: str) -> Mapping[str, Any]:
         return self._call("detached_cancel", job_id)
+
+
+def _bounded_https_call_child(send: Any, pod_id: str, token: str, deadline: float, base_url: str | None,
+                             name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
+    """One no-journal transport RPC; credentials arrive only on the private spawn pipe."""
+    try:
+        ops = _HttpsOps(pod_id, token, deadline=deadline, base_url=base_url)
+        value = ops._call_direct(name, *args, **kwargs)
+        payload = json.dumps({"ok": True, "value": value}, separators=(",", ":")).encode()
+        if len(payload) > 2 * 1024 * 1024:
+            payload = b'{"ok":false,"value":null}'
+        send.send_bytes(payload)
+    except BaseException:
+        try:
+            send.send_bytes(b'{"ok":false,"value":null}')
+        except Exception:
+            pass
+    finally:
+        send.close()
 
 
 def connect_claimed_for_preparation(record: Mapping[str, Any]) -> Claim:
@@ -1061,147 +1352,14 @@ def connect_claimed_for_preparation(record: Mapping[str, Any]) -> Claim:
     )
 
 
-class LifecyclePodProvider:
-    """Claims through ``scripts/claim_runpod_5090_backup.py`` and releases the exact pod."""
-
-    def __init__(self, handle_dir: Path, *, provider_account_ref: str | None = None) -> None:
-        self.handle_dir = Path(handle_dir)
-        self.provider_account_ref = provider_account_ref or os.environ.get("ASTRID_RUNPOD_ACCOUNT_REF")
-
-    @staticmethod
-    def _claim_module():
-        import importlib.util
-
-        path = Path(__file__).resolve().parents[3] / "scripts" / "claim_runpod_5090_backup.py"
-        spec = importlib.util.spec_from_file_location("astrid_claim_runpod_5090_backup", path)
-        module = importlib.util.module_from_spec(spec)
-        assert spec.loader is not None
-        spec.loader.exec_module(module)
-        return module
-
-    def claim(self, spec: ClaimSpec) -> Claim:
-        import asyncio
-
-        module = self._claim_module()
-        self.handle_dir.mkdir(parents=True, exist_ok=True)
-        handle_path = self.handle_dir / f"claim-{uuid.uuid4().hex}.json"
-        argv = [
-            "--transport", "https",
-            "--storage-name", spec.storage_name,
-            "--handle-path", str(handle_path),
-            "--release-root", module.CANONICAL_RELEASE_ROOT,
-            "--max-wait-seconds", str(min(spec.deadline_seconds, module.DEFAULT_MAX_WAIT_SECONDS)),
-            "--on-failure", "release",
-        ]
-        if self.provider_account_ref:
-            argv += ["--provider-account-ref", self.provider_account_ref]
-        if spec.pod_id:
-            argv += ["--pod-id", spec.pod_id, "--allow-pod-release"]
-        args = module._parser().parse_args(argv)
-        handle = asyncio.run(module._claim(args))
-        token = _read_token(handle)
-        cost = _lookup_cost(handle)
-        return Claim(
-            pod_id=str(handle["pod_id"]),
-            ops=_HttpsOps(str(handle["pod_id"]), token),
-            identity={
-                key: handle.get(key)
-                for key in ("operation_id", "request_name", "handle_path", "acquisition_mode",
-                            "network_volume_id", "claimed_at")
-            },
-            cost_per_hr_eur=cost,
-            datacenter_id=handle.get("network_volume_datacenter_id"),
-            transport=str(handle.get("transport", "https")),
-            storage_name=handle.get("network_volume_name") or handle.get("storage_name"),
-            handle=handle,
-        )
-
-    def release(self, claim: Claim) -> None:
-        import asyncio
-
-        from runpod_lifecycle import RunPodConfig
-
-        from astrid.packs.runpod.worker_preparation import (
-            _release_exact_target_after_quiescence,
-            unactivated_target_quiescence,
-        )
-
-        handle = dict(claim.handle)
-        config = RunPodConfig.from_env(
-            transport="https", https_token=_read_token(handle),
-            storage_name=handle.get("storage_name"), attach_only=True,
-        )
-
-        async def quiesce(record):
-            return unactivated_target_quiescence(record)
-
-        asyncio.run(_release_exact_target_after_quiescence(
-            config, handle_path=Path(handle["handle_path"]), attempt=handle,
-            quiesce_worker=quiesce,
-        ))
-
-    def pod_exists(self, pod_id: str) -> bool:
-        from runpod_lifecycle import RunPodConfig
-        from .worker_preparation import read_exact_pod
-
-        config = RunPodConfig.from_env(transport="https")
-        status, record = read_exact_pod(config.api_key, pod_id)
-        if status == 404 and record is None:
-            return False
-        if status == 200 and isinstance(record, dict) and record.get("id") == pod_id:
-            return True
-        raise RemotePlacementError("exact pod GET did not establish presence or 404")
-
-
 def _read_token(handle: Mapping[str, Any]) -> str:
     from runpod_lifecycle.https import read_token_file
 
     return read_token_file(handle["https_token_file"])
 
 
-def _lookup_cost(handle: Mapping[str, Any]) -> float | None:
-    from runpod_lifecycle import RunPodConfig, api
-
-    status = api.get_pod_status(str(handle["pod_id"]), RunPodConfig.from_env(transport="https").api_key)
-    value = (status or {}).get("cost_per_hr")
-    try:
-        return float(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None
-
-
 # ----------------------------------------------------------------------------
-# Entry used by h3_av.transform
+# Entry used by the RunPod machine
 # ----------------------------------------------------------------------------
 
 
-def run_remote_placement(
-    args: Any,
-    *,
-    provider: PodProvider | None = None,
-    env: Mapping[str, str] | None = None,
-    **overrides: Any,
-) -> dict[str, Any]:
-    """Run ``h3_av.transform`` args on a claimed RunPod pod and return the local result shape."""
-    env = os.environ if env is None else env
-    out = Path(args.out).expanduser().resolve()
-    from .managed_sources import ensure_managed_sources
-
-    source = ensure_managed_sources()
-    wrapper = RemotePlacement(
-        provider or LifecyclePodProvider(out / "runpod-claims"),
-        limits=Limits.from_env(env),
-        source_root=source,
-        leave_running=env.get("ASTRID_RUNPOD_LEAVE_RUNNING", "") in ("1", "true", "yes"),
-        pod_id=env.get("ASTRID_RUNPOD_POD_ID") or None,
-        **overrides,
-    )
-    return wrapper.run(
-        request=args.request,
-        asset_map=args.asset_map,
-        out=out,
-        project=getattr(args, "project", None),
-        editorial_approved=bool(getattr(args, "editorial_approved", False)),
-        execution_request=getattr(args, "execution_request", None),
-        cleanup_receipt=getattr(args, "cleanup_receipt", None),
-    )

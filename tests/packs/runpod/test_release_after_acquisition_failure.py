@@ -24,6 +24,7 @@ from types import SimpleNamespace
 import pytest
 
 from astrid.packs.runpod import worker_preparation as preparation
+from astrid.packs.runpod.worker_owner import RunPodWorkerOwnerError
 from astrid.packs.runpod.worker_preparation import AcquisitionUnresolvedError
 from tests.packs.runpod.test_warm_session import small_lease as small_lease, lease_selection_case as lease_selection_case  # noqa: F401
 
@@ -42,6 +43,50 @@ def _graphql_projection(pod):
     return projected
 
 
+def test_readiness_timeout_is_visible_and_releases_only_the_created_pod(small_lease, monkeypatch):
+    import runpod_lifecycle
+
+    c = small_lease
+    launch = runpod_lifecycle.launch_when_available
+    timeouts = []
+    secret = "provider-token-and-private-response"
+
+    async def unready_launch(*args, **kwargs):
+        pod = await launch(*args, **kwargs)
+
+        async def unready(*, timeout):
+            timeouts.append(timeout)
+            raise runpod_lifecycle.NotReadyTimeout(secret)
+
+        pod.wait_ready = unready
+        return pod
+
+    monkeypatch.setattr(runpod_lifecycle, "launch_when_available", unready_launch)
+    owner = c.fresh()
+    with pytest.raises(AcquisitionUnresolvedError, match="did not become ready within the startup timeout") as caught:
+        owner.acquire(c.grant)
+
+    assert secret not in str(caught.value)
+    assert "same journal" in str(caught.value)
+    assert timeouts == [900]
+    failed = c.read()
+    assert failed["pod_id"] == "pod-1" and failed["failure_phase"] == "readiness"
+    assert failed["failure_type"] == "NotReadyTimeout"
+    assert secret not in json.dumps(failed)
+    assert c.creates == 1 and not c.deletes
+
+    # f0535fef: the shared provider gate imposes a five-second recovery minimum.
+    c.clock.advance(10)
+
+    record = c.read()
+    assert c.deletes == ["pod-1"]
+    assert record["state"] == "cleanup_complete"
+    assert record["operation_id"] == failed["operation_id"]
+    assert record["cleanup"]["pod_id"] == "pod-1"
+    assert record["lease"]["release_reason"] == "recovery"
+    assert c.creates == 1
+
+
 def test_acquisition_failure_releases_the_created_pod_by_create_response_id(
         small_lease, monkeypatch, real_acquisition_confirmation):
     import runpod
@@ -57,24 +102,148 @@ def test_acquisition_failure_releases_the_created_pod_by_create_response_id(
         {"id": "NVIDIA GeForce RTX 5090", "displayName": "RTX 5090"}]}})
     owner = c.fresh()
 
-    with pytest.raises(AcquisitionUnresolvedError, match="provider acquisition remains unresolved"):
+    # 80bbf690: exact release runs synchronously before acquisition fails.
+    with pytest.raises(RunPodWorkerOwnerError,
+                       match="RunPod acquisition failed; created pod pod-1 was released") as caught:
         owner.acquire(c.grant)
 
     failed = c.read()
-    assert c.creates == 1 and [pod["id"] for pod in c.pods] == ["pod-1"]
+    assert isinstance(caught.value.__cause__, AcquisitionUnresolvedError)
+    assert c.creates == 1 and c.deletes == ["pod-1"]
+    assert c.pods == []
     # The create response's id is journaled before any acquisition check.
     assert failed["pod_id"] == "pod-1" and failed["failure_phase"] == "provider_contract"
     assert failed["failure_type"] == "TargetObservationError"
-    assert not c.deletes
-
-    c.clock.advance(1)  # the lease owner's scheduled recovery release
-
     record = c.read()
     assert c.deletes == ["pod-1"], record.get("cleanup_failure_type")
     assert record["state"] == "cleanup_complete"
     assert record["cleanup"]["pod_id"] == "pod-1"
-    assert record["lease"]["release_reason"] == "recovery"
+    assert record["lease"]["release_reason"] == "custody_changed"
     assert c.creates == 1  # release never creates a replacement
+
+
+@pytest.mark.parametrize("ended_record_fails", [False, True])
+def test_successful_exact_release_names_the_created_pod_and_preserves_acquisition_cause(
+        small_lease, monkeypatch, ended_record_fails):
+    # 80bbf690: the completed exact release must be reported even if later bookkeeping fails.
+    c = small_lease
+    owner = c.fresh()
+    original = []
+    acquire = owner._acquire
+
+    def fail_confirmation(*args, **kwargs):
+        raise preparation.TargetObservationError("private-acquisition-detail", gate="GPU")
+
+    def capture_acquisition_error(*args, **kwargs):
+        try:
+            return acquire(*args, **kwargs)
+        except preparation.TargetObservationError as exc:
+            original.append(exc)
+            raise
+
+    def fail_ended_record(*args):
+        raise RuntimeError("ended-record-bookkeeping-failed")
+
+    monkeypatch.setattr(preparation, "confirm_acquired_machine", fail_confirmation)
+    monkeypatch.setattr(owner, "_acquire", capture_acquisition_error)
+    if ended_record_fails:
+        monkeypatch.setattr(owner, "_record_ended", fail_ended_record)
+
+    with pytest.raises(RunPodWorkerOwnerError,
+                       match="^RunPod acquisition failed; created pod pod-1 was released$") as caught:
+        owner.acquire(c.grant)
+
+    assert len(original) == 1 and caught.value.__cause__ is original[0]
+    assert caught.value.release_identity is None
+    assert "private-acquisition-detail" not in str(caught.value)
+    assert c.deletes == ["pod-1"]
+    assert c.read()["state"] == "cleanup_complete"
+    assert c.read()["cleanup"]["pod_id"] == "pod-1"
+    assert c.creates == 1
+
+
+@pytest.mark.parametrize("release_failure", ["delete", "incomplete_result"])
+def test_failed_exact_release_keeps_custody_unresolved_until_recovery(
+        small_lease, monkeypatch, release_failure):
+    from runpod_lifecycle import api
+
+    # 80bbf690: attempted release is insufficient; exact cleanup must complete.
+    c = small_lease
+    owner = c.fresh()
+
+    def fail_confirmation(*args, **kwargs):
+        raise preparation.TargetObservationError("private-acquisition-detail", gate="GPU")
+
+    def fail_delete(*args, **kwargs):
+        raise RuntimeError("private-delete-detail")
+
+    monkeypatch.setattr(preparation, "confirm_acquired_machine", fail_confirmation)
+    with monkeypatch.context() as blocked:
+        if release_failure == "delete":
+            blocked.setattr(api, "terminate_pod", fail_delete)
+        else:
+            blocked.setattr(owner, "release", lambda **kwargs: c.read())
+        with pytest.raises(RunPodWorkerOwnerError, match=(
+                "^RunPod machine custody could not be verified; "
+                "exact release or reconciliation required$")) as caught:
+            owner.acquire(c.grant)
+        assert caught.value.release_identity is None
+        assert "was released" not in str(caught.value)
+        assert "private-" not in str(caught.value)
+        assert c.deletes == []
+        pending = c.read()
+        assert pending["pod_id"] == "pod-1" and pending["reconciliation_required"] is True
+        assert pending["state"] == ("cleanup_pending" if release_failure == "delete" else "allocated_unverified")
+
+    c.clock.advance(10)
+    assert c.deletes == ["pod-1"]
+    assert c.read()["state"] == "cleanup_complete"
+    assert c.read()["cleanup"]["pod_id"] == "pod-1"
+    assert c.read()["operation_id"] == pending["operation_id"]
+    assert c.creates == 1
+
+
+@pytest.mark.parametrize("cleanup", ["failed", "incomplete", "deferred", "complete"])
+def test_claim_failure_receipt_preserves_allocated_machine_and_verified_cleanup(
+        small_lease, monkeypatch, tmp_path, cleanup):
+    from runpod_lifecycle import api
+
+    from astrid.packs.runpod import failure_receipt
+    from astrid.packs.runpod.adapter import TargetProviderBindings
+
+    c = small_lease
+    owner = c.fresh()
+    root = tmp_path / "failure-receipts"
+    monkeypatch.setattr(failure_receipt, "failures_root", lambda: root)
+
+    def refuse_confirmation(*args, **kwargs):
+        raise preparation.TargetObservationError("private-provider-detail", gate="GPU")
+
+    def fail_delete(*args, **kwargs):
+        raise TimeoutError("private-delete-detail")
+
+    monkeypatch.setattr(preparation, "confirm_acquired_machine", refuse_confirmation)
+    bindings = TargetProviderBindings(pack_roots=(), holds=None, credentials=None, environ={})
+    failed = bindings.claim_failure_recorder(
+        task_id="claim-task", attempt_id="claim-attempt", invocation_id=c.grant.invocation_id)
+    with monkeypatch.context() as blocked:
+        if cleanup == "failed":
+            blocked.setattr(api, "terminate_pod", fail_delete)
+        elif cleanup == "incomplete":
+            blocked.setattr(owner, "release", lambda **kwargs: c.read())
+        with pytest.raises(RunPodWorkerOwnerError) as caught:
+            owner.acquire(c.grant, defer_unsafe_release=cleanup == "deferred")
+        failed(caught.value)
+
+    receipt = json.loads((root / "claim-task" / "failure-receipt.json").read_text())
+    assert receipt["identity"]["machine_id"] == "pod-1"
+    assert receipt["identity"]["lease"] == c.read()["operation_id"]
+    assert receipt["identity"]["task_id"] == "claim-task"
+    assert receipt["identity"]["attempt_id"] == "claim-attempt"
+    assert receipt["stage"] == "boot"
+    assert receipt["machine"]["after"] == ("released" if cleanup == "complete" else "unknown")
+    assert "private-" not in json.dumps(receipt)
+    owner.release()
 
 
 def _attempt2_journal():

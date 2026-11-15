@@ -9,6 +9,33 @@ from collections.abc import Mapping
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
+from urllib.parse import urlencode
+
+# The hosted App: the origin the installers open (installer/backend.py) and the one the README names.
+HOSTED_APP_ORIGIN = 'https://astrid.haus'
+
+
+def open_url_for(project: str) -> str:
+    """The one link that opens a project's gallery in the hosted App; the project id is its only parameter."""
+    return f'{HOSTED_APP_ORIGIN}/tools/video-editor?{urlencode({"project": project})}'
+
+
+def admitted_project(payload: Any, *, explicit: str | None = None, client: Any = None) -> str | None:
+    """The project an admitted generation runs in: the Runtime's own id, then the caller's, then the selection."""
+    project = payload.get('project_id') if isinstance(payload, Mapping) else None
+    if isinstance(project, str) and project.strip():
+        return project
+    if explicit:
+        return explicit
+    if client is None:
+        return None
+    from astrid.sdk.exceptions import CapabilityInvocationError
+    from astrid.sdk.invocation import _runtime_selected_project
+    try:
+        return _runtime_selected_project(client)
+    except CapabilityInvocationError:
+        # The generation is already admitted; a client that cannot name its selection gets no link.
+        return None
 
 
 def _sha256(value: Any) -> str:
@@ -29,27 +56,12 @@ def deliver_generation(result: Any, *, client: Any, out: str | Path | None, proj
     payload = result.to_dict() if hasattr(result, 'to_dict') else result
     if not isinstance(payload, dict):
         return payload
-    # The tracked H3 parent returns an InvocationResult, whose Runtime-owned
-    # associations include its universal manifest and final media separately.
-    # Project those references into the same delivery path as image results.
-    if payload.get('capability_id') == 'h3_av.transform':
-        associations = (payload.get('outputs') or {}).get('managed_outputs') or []
-        associations = [row for row in associations if isinstance(row, Mapping)]
-        manifests = [row for row in associations if row.get('output_port', row.get('name')) == 'manifest']
-        media = [row for row in associations if row.get('role', 'result') == 'result'
-                 and str(row.get('media_type') or '').startswith(('video/', 'audio/'))]
-        media.sort(key=lambda row: not str(row.get('media_type')).startswith('video/'))
-        payload = {**payload, 'task_id': payload.get('kernel_task_id'),
-                   'manifest_ref': (manifests[0].get('object_id') or manifests[0].get('digest'))
-                   if len(manifests) == 1 else None,
-                   'manifest': {'outputs': media}}
     manifest = payload.get('manifest') or {}
     rows = manifest.get('outputs', []) if isinstance(manifest, Mapping) else []
     rows = [row for row in rows if isinstance(row, Mapping)
             and row.get('role', 'result') == 'result']
     managed = bool(payload.get('manifest_ref') or any(row.get('object_id') for row in rows))
-    is_h3 = payload.get('capability_id') == 'h3_av.transform'
-    if not managed and not is_h3:
+    if not managed:
         # Older in-process providers already return caller-local media. Route
         # their files through the same export path when an export is requested.
         from .backends.base import GenerationResult
@@ -58,10 +70,6 @@ def deliver_generation(result: Any, *, client: Any, out: str | Path | None, proj
         if not rows:
             rows = [{'path': path} for path in payload.get('image_paths', [])]
     try:
-        if is_h3 and (len(manifests) != 1 or not payload['manifest_ref']):
-            raise ValueError('completed H3 generation has no unique Runtime manifest')
-        if is_h3 and not rows:
-            raise ValueError('completed H3 generation has no deliverable media')
         return _deliver(payload, rows, client=client, out=out, managed=managed, project=project)
     except Exception as exc:
         from .preflight import generation_error
@@ -133,8 +141,6 @@ def _deliver(payload, rows, *, client, out, managed, project):
                     isinstance(item, Mapping)
                     and _sha256(item.get('sha256') or item.get('digest') or item.get('content_hash') or item.get('object_id')) == digest
                     and item.get('bytes', item.get('size')) == size
-                    and (payload.get('capability_id') != 'h3_av.transform'
-                         or item.get('name') == row.get('output_port', row.get('name')))
                     for item in sealed_outputs
                 ):
                     raise ValueError('Runtime output is absent from the generation manifest')
@@ -166,4 +172,7 @@ def _deliver(payload, rows, *, client, out, managed, project):
         # No requested file is replaced until every object passes verification.
         for temporary, path in staged:
             os.replace(temporary, path)
-    return {**payload, 'image_paths': paths, 'run_dir': str(root)}
+    result = {**payload, 'image_paths': paths, 'run_dir': str(root)}
+    if project:
+        result['open_url'] = open_url_for(project)
+    return result

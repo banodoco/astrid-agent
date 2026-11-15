@@ -11,7 +11,7 @@ VALID = {
     "schema": "astrid.generation-placement.v1",
     "supported": ["local", "runpod"],
     "default": "runpod",
-    "engine": "vibecomfy-h3",
+    "engine": "comfyui",
     "requires_endpoint": True,
 }
 
@@ -75,9 +75,9 @@ def test_direct_constructor_also_validates(changes):
 @pytest.mark.parametrize("supported,default,engine,requires_endpoint", [
     (("local",), "local", None, False),
     (("runpod",), "runpod", "unindexed-engine", True),
-    (("local", "runpod"), "local", "vibecomfy-h3", True),
+    (("local", "runpod"), "local", "comfyui", True),
     (("local", "runpod"), "runpod", None, False),
-    (("local",), "local", "vibecomfy-h3", False),
+    (("local",), "local", "comfyui", False),
 ])
 def test_valid_combinations_do_not_require_a_recipe(supported, default, engine, requires_endpoint):
     descriptor = PlacementDescriptor("astrid.generation-placement.v1", supported, default, engine, requires_endpoint)

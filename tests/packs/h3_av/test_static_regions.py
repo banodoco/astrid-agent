@@ -5,7 +5,7 @@ from io import BytesIO
 import pytest
 from PIL import Image
 
-from astrid.packs.h3_av.actions.prepare.static_regions import StaticRegionError, resolve_static_region
+from astrid.packs.h3_av.shared.static_regions import StaticRegionError, resolve_static_region
 from astrid.packs.h3_av.shared.compose import iter_mask_frames, probe_mask
 from astrid.packs.h3_av.shared.spec import Region
 

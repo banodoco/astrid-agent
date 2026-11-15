@@ -8,6 +8,6 @@ test -x "$E/venv/bin/python" || { echo "ENV: run agent-setup.sh first in $CO" >&
 test -d "$E/lifecycle" || { echo "ENV: rerun agent-setup.sh (it fetches $E/lifecycle)" >&2; exit 3; }
 exec env -i PATH="$E/venv/bin:$(cat "$E/uv-dir"):/usr/local/bin:/usr/bin:/bin" HOME="$E/home" TMPDIR="$E/tmp" \
   XDG_CACHE_HOME="$E/cache" LANG=C.UTF-8 PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 PYTHONSAFEPATH=1 \
-  PYTHONPATH="$E/vibecomfy" VIBECOMFY_SOURCE="$E/vibecomfy" ASTRID_RUNTIME_CHECKOUT="$E/runtime" \
+  PYTHONPATH="$E/vibecomfy" ASTRID_RUNTIME_CHECKOUT="$E/runtime" \
   ASTRID_VIBECOMFY_CHECKOUT="$E/vibecomfy" ASTRID_TEST_LIFECYCLE_CHECKOUT="$E/lifecycle" \
   "$E/venv/bin/python" -m pytest -q -p no:cacheprovider --basetemp="$E/basetemp/$(date +%s%N)" -m integration "$@"

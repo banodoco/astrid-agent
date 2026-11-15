@@ -1,407 +1,271 @@
 ---
 name: generation
 description: >
-  Generate images and videos from text prompts using the elegant
-  `astrid.generate` facade.  Image, audio, and video generation route through
-  the same runtime-owned executor code path. Covers generate_image, generate_video, and
-  generate_audio, generate_speech, and generate_image_openai (executor-only).
+  Generate images, video and audio with `generate(entry, inputs, placement)`: pick
+  where it runs (this computer, the user's own ComfyUI, or RunPod), run a ComfyUI
+  workflow file, and set up or change the user's generation defaults.
 ---
 
 # Generation
 
-The generation pack provides a first-class **library facade** for image, audio,
-and video generation and also exposes the underlying executors for direct (SDK)
-and automation use.
+One front door: `generate(entry, inputs, placement)`. The entry says what it makes
+(image, video or audio); `placement` says where it runs. `image`, `video` and
+`audio` are the same call with the kind pinned.
 
-If the user wants their own running ComfyUI or one of their saved workflows
-("use my ComfyUI", "my portrait workflow"), this pack is the wrong route,
-including its `execution: "local"` mode, which uses Astrid's built-in engine.
-Follow [Run on your own ComfyUI](../../vibecomfy/docs/SKILL.md#run-on-your-own-comfyui)
-instead.
+## Set up my generation
 
-## Quick-start — runtime-backed generation
+Run this section at first use, and whenever the user says "set up my
+generation" or "connect my ComfyUI". Skip it when the user asked for one specific
+generation and the defaults already work.
 
-Use the runtime-backed SDK generation facade. Successful managed calls return
-runtime artifact references (digest, media type, size, and name); the runtime
-owns durable storage and task/run state.
+It only reads until a step asks the user. Never launch, restart or touch the
+user's ComfyUI or its queue. The one download is a default's missing models, and
+only on the user's yes in the astrid-setup skill's first-image step. Never read or
+print an API key; never write a change without that change's own yes.
 
-The synchronous `astrid generate image` CLI also delivers verified media to the
-caller. Use `--out image.png` for a file or `--out outputs/` for a directory;
-without `--out`, files land in `./outputs/<task-id>/`. JSON `image_paths` and
-`run_dir` identify these local files. For multiple results, a file destination
-receives the first result and numbered siblings receive the rest. Delivery
-uses `media open` and checks SHA-256 against the generation manifest. A delivery
-failure returns a nonzero exit with the completed task ID; `--no-wait` returns
-the admission without downloading files.
+Astrid commands here use the launcher; its path on each OS is in the
+[astrid-setup skill's Launcher paths](../../setup/docs/SKILL.md#launcher-paths).
+The blocks show the Linux path. Make a work folder first: `WORK=$(mktemp -d)`
+(PowerShell: `$WORK = New-Item -ItemType Directory -Path (Join-Path $env:TEMP ([guid]::NewGuid()))`).
+On Windows, replace the Linux prefix with `& "$env:LOCALAPPDATA\Astrid\run-astrid.cmd"`,
+for example `& "$env:LOCALAPPDATA\Astrid\run-astrid.cmd" generate defaults --json`.
+PowerShell continues lines with a backtick, not `\`.
 
-### Image
+1. **Read what is set.** `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate defaults --json` (each slot and
+   where its value came from) and `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate targets --json` (the placement).
+2. **Discover, read-only.** Scan for the user's ComfyUI, with its saved workflows:
+   `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate scan --json`
+   (its details are in the [VibeComfy skill](../../vibecomfy/docs/SKILL.md#find-their-comfyui)). Check provider keys by presence
+   only (for example `test -n "$FAL_KEY" && echo set`). For Wan2GP, ask for the
+   folder if the user knows it, then check it:
+   `python3 -m astrid.packs.vibecomfy.local wan2gp /abs/Wan2GP` (no launcher route for this one). Show one list of
+   what was found, and what was not.
+3. **Ask once which tool is primary**: their ComfyUI, Wan2GP, RunPod, or this
+   computer's built-in engine. Save the placement only on a yes:
+   `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate settings set placement URL`
+   (for a ComfyUI, `URL` is its address, such as `http://127.0.0.1:PORT`; see Placement).
+4. **One question per default slot, four answers.** Read readiness from
+   `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate list --json`, then ask with the evidence: "you have X's
+   models; set it as your image default?" No answer runs anything. Each has one undo:
+   - **Keep Astrid's**, with its readiness shown. Nothing is written. Undo: none needed.
+   - **Use one of yours**. Show their saved workflows from the scan, most recently
+     edited first (`workflows_detail`, by `modified`). On a yes, fetch the chosen one
+     read-only to `$WORK/workflow.json`, then save and pin it below as `FILE`:
+     `curl -fsS "http://127.0.0.1:PORT/userdata/workflows%2FWORKFLOW" -o "$WORK/workflow.json"`
+     (on Windows PowerShell, `curl.exe -fsS "http://127.0.0.1:PORT/userdata/workflows%2FWORKFLOW" -o "$WORK\workflow.json"`,
+     since PowerShell 5.1 aliases `curl`). `WORKFLOW` is its scan name,
+     percent-encoded: a space is `%20`, and a nested name keeps its `/` as `%2F`. Undo:
+     the `restore:` command that the pin's `defaults set` prints (below).
+   - **Another shipped entry**, or leave the slot to the pack default. Pin one from
+     `generate list --json` with `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate defaults set KIND MODE ENTRY`,
+     or drop the user's pin with `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate defaults unset KIND MODE`.
+     Undo: the `restore:` command that `defaults set` prints after `Previous pin: X`.
+     After a drop, pin the entry step 1 showed with `defaults set KIND MODE ENTRY` again.
+   - **Create a new default when none of those fits**: a workflow of theirs that is a
+     file on disk, not among the scan's. Save and pin it below as `FILE`. Undo:
+     the `restore:` command that the pin's `defaults set` prints (below).
+   - **Save and pin** (answers 2 and 4; `FILE` is the workflow, `NAME` the entry name).
+     Preview first, which writes nothing:
+     `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate workflow FILE --as-entry NAME --dry-run --json`.
+     On a yes, save, which queues nothing on any target:
+     `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate workflow FILE --as-entry NAME --no-run`.
+     Then pin it: `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate defaults set KIND MODE NAME`.
+     It prints `Previous pin: X; restore: CMD` (`previous` and `restore` with `--json`);
+     keep `CMD`, run through the launcher, as that pin's undo.
+     The saved entry stays; delete `${VIBECOMFY_ENTRIES_DIR:-$HOME/.vibecomfy/entries}/NAME`
+     only on a second yes.
+5. **Show how to run each one** (the commands in the sections below), then offer one
+   test generation. Run it only on a yes.
+6. **List every change and its undo.** Undo a placement with
+   `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate settings unset placement`; a pinned default with
+   the `restore:` command its `defaults set` printed. Say which changes were
+   made and which were not.
 
-```python
-import astrid.sdk as sdk
+If their ComfyUI is not running, say so, and ask the user to start it.
 
-# Simplest: text-to-image in the selected runtime project
-img = sdk.invoke(
-    "generation.generate_image",
-    kind="executor",
-    project="demo",
-    inputs={
-        "model": "flux-schnell",
-        "mode": "t2i",
-        "execution": "cloud",
-        "prompt": "a serene mountain lake at dawn",
-    },
-    wait=True,
-)
-img.outputs["artifacts"]  # runtime-published image artifact references
-img.ok                    # True on success
-```
-
-Mode (`t2i` / `i2i`) and execution (`cloud` / `local`) are inferred when
-possible (SD-002).  Pass them explicitly to override:
-
-```python
-# Image-to-image (image_ref triggers i2i inference); input files must be
-# runtime-owned references or an admitted materialization.
-img = astrid.generate.image(
-    model="flux-dev",
-    image_ref="./sketch.png",
-    prompt="turn this into a watercolor painting",
-    strength=0.7,
-)
-
-# Explicit mode + execution
-img = astrid.generate.image(
-    model="flux-dev",
-    mode="t2i",
-    execution="cloud",
-    prompt="cyberpunk city",
-    seed=42,
-)
-```
-
-`execution` is the sole facade backend parameter.  The retired `backend`
-spelling is rejected before invocation admission; an unavailable pair (for
-example `model="flux-schnell", execution="local"`) fails with the valid
-backend list and creates no run.
-
-> **Note:** `edit`, `inpaint`, `outpaint`, and `upscale` always require an
-> explicit `mode` argument — they cannot be inferred from inputs (SD-002).
-
-### Video
+## Generate
 
 ```python
-# Text-to-video (cloud)
-clip = sdk.invoke(
-    "generation.generate_video",
-    kind="executor",
-    project="demo",
-    inputs={
-        "model": "wan-2.2",
-        "mode": "t2v",
-        "execution": "cloud",
-        "prompt": "a wave crashing on rocks",
-    },
-    wait=True,
-)
-clip.outputs["artifacts"]  # runtime-published video artifact references
+from astrid.sdk import generate
+
+img = generate.generate("image/flux2_klein_4b_t2i", {"node:20.text": "a lighthouse keeper"}, placement="local")
+img.outputs["artifacts"]   # runtime artifact references
 ```
 
-### Audio
+The CLI has the same shape:
 
-```python
-# Audio currently has a cloud-only `music` route in the model catalog.
-sound = sdk.invoke(
-    "generation.generate_audio",
-    kind="executor",
-    project="demo",
-    inputs={
-        "model": "stable-audio-3-medium",
-        "mode": "music",
-        "execution": "cloud",
-        "prompt": "a two-second gentle water splash",
-        "duration": 2.0,
-    },
-    wait=True,
-)
-sound.ok
+```sh
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate list --json                  # entries and readiness
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate describe --entry ENTRY --json  # declared inputs, without checking readiness
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate image --entry image/flux2_klein_4b_t2i --inputs-json FILE --placement local --out outputs/
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate image --entry ENTRY --inputs-json FILE --json
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate video --entry h3 --inputs-json FILE --dry-run
 ```
 
-### Speech
+`--dry-run` prints the plan without running it. `--out` puts the result in a
+folder you name; without it, files land in `./outputs/<task-id>/`.
 
-`generation.generate_speech` creates one WAV file from exact text using Edge
-TTS. Invoke it through the SDK so the WAV and provenance manifest are stored as
-runtime-managed artifacts (pass your connected `AstridClient` as `client`):
+Until first-frame conditioning lands, image-to-video uses the image as a style and subject reference, not as the exact first frame; the first frame is not guaranteed to match the picture.
 
-```python
-speech = sdk.invoke(
-    "generation.generate_speech",
-    kind="executor",
-    project="demo",
-    inputs={
-        "text": "The train will arrive in five minutes.",
-        "provider": "edge-tts",
-        "voice": "en-US-ChristopherNeural",
-        "rate": "+0%",
-        "volume": "+0%",
-        "pitch": "+0Hz",
-    },
-    client=client, wait=True,
-)
-speech.outputs["artifacts"]  # managed WAV and speech_manifest provenance references
+To cancel a stuck or unwanted generation, run
+`"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" tasks cancel TASK_ID --project PROJECT`;
+over MCP, use the `tasks_cancel` tool. It removes only Astrid's own job from the user's ComfyUI queue;
+other jobs there are untouched.
+
+## Placement
+
+A placement is where a generation runs. Three kinds:
+
+- **`local`**: this computer, through Astrid's managed ComfyUI. Optional `device` picks a GPU index.
+  If that engine is not installed, the run reports the install and its download size.
+  The engine download runs only after the user's own yes.
+- **`attached`**: the user's own ComfyUI at a loopback address, given as the endpoint.
+  Astrid never starts or stops it. Pass the address as `--placement http://127.0.0.1:8188`.
+- **`runpod`**: a rented RunPod GPU. Pass `--placement runpod`; it uses an already claimed
+  machine. Claims and paid limits are in the [RunPod machine skill](../../runpod/docs/SKILL.md#runpod-generation-machines).
+
+Resolution, the same for every call: the request, then the user's default
+placement, then the built-in default (`local`). `--placement auto` means "use the
+default". Set the default in the generation settings, not per call, unless the user
+asks for one place just this time. Set a ComfyUI as the default, and undo it:
+
+```sh
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate settings set placement http://127.0.0.1:PORT
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate settings unset placement
 ```
 
-All three typed facades run the same read-only preflight before dry-run or
-live admission.  It validates the model → mode → execution matrix and required
-inputs.  In particular, `mode="flf"` requires both `image_ref` and
-`image_end_ref`; a missing end frame is a typed `CapabilityMissingInputError`
-and creates no run.  Local routes also require the VibeComfy/ComfyUI runtime;
-the preflight reports an install command and never falls back to cloud.
+Checking models: `--align check` (default) compares the workflow's models against
+the target's inventory and refuses if one is missing. `--align trust` accepts the
+workflow's declared models as present, unverified, and should be used only when the
+user asks. `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate align --entry ENTRY` inspects locked managed
+assets; `--apply --consent user_env` installs them and only with that explicit consent.
 
-```python
-# Image-to-video
-clip = astrid.generate.video(
-    model="wan-2.2",
-    mode="i2v",
-    image_ref="./start_frame.png",
-    prompt="continue this scene",
-)
+A default's missing models on the user's own ComfyUI: the first command shows the
+plan and writes nothing; the second downloads with that plan's digest, only on the
+user's yes:
+
+```sh
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate fetch-models ENTRY t2i --comfy-url URL
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate fetch-models ENTRY t2i --comfy-url URL --apply PLAN_SHA256
 ```
 
-```python
-# First-last-frame interpolation
-clip = astrid.generate.video(
-    model="wan-2.2",
-    mode="flf",
-    image_ref=["./first.png", "./last.png"],
-)
+**No local GPU or ComfyUI?** On Linux or Windows, run this once. On macOS, run
+`uname -m` instead:
+
+```sh
+nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 ```
 
-## Append a generation variant
+A capable Linux or Windows computer has one NVIDIA GPU with at least 12 GB of
+VRAM, or meets the declared requirement of the default generation, if there is
+one. Do not add memory across GPUs. Report what you found, and say if capability
+is unconfirmed. Then offer one of these, each on its own yes:
 
-Image, video, and audio facades share the Runtime publication controls. Pass a
-generation source as `variant_of={"generation_id": ..., "variant_id": ...}`
-and choose `primary="preserve"` (the default) or `primary="promote"`.
+**Astrid's managed engine** (`local`), on a capable computer where it is
+available. On Windows the managed engine is not available yet; use your own running ComfyUI or RunPod.
+Check the plan first. This installs nothing:
 
-```python
-edited = astrid.generate.image(
-    model="flux-dev", mode="i2i", execution="cloud",
-    image_ref="./source.png", prompt="make the light warmer", project="demo",
-    variant_of={"generation_id": "gen-123", "variant_id": "var-original"},
-    primary="promote",
-)
+```sh
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" engines install comfyui --dry-run
 ```
 
-Runtime resolves the source generation variant, admits its managed object as
-an immutable input, and settles through generation-version CAS. `preserve`
-keeps the current primary; `promote` atomically demotes the old primary and
-makes the settled output primary. An ordinary call with no `variant_of` still
-publishes a new generation through the Runtime generation-publication effect
-named `publish_v1`.
+Run this only after its own yes. It installs a new ComfyUI on this computer and
+leaves the user's own one alone:
 
-New generation capabilities opt in through a manifest declaration; the
-executor does not implement lineage or promotion:
-
-```yaml
-metadata:
-  generation_publication:
-    modality: image
-    variant_of: {type: object}
-    primary: {type: string, enum: [preserve, promote], default: preserve}
+```sh
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" engines install comfyui
 ```
 
-This generation lineage is separate from `client.media.relate(kind="variant_of")`,
-which links arbitrary managed objects; `references.set_primary`, which chooses
-canonical media for a reusable reference; and timeline replacement, which is
-an explicit timeline document edit with its own head CAS.
+**RunPod** rents a GPU and costs money: hand over to the
+[RunPod machine skill](../../runpod/docs/SKILL.md#runpod-generation-machines)
+(installed name: `runpod`), and never ask for a key in chat.
 
-### LoRA and extra params
+The user can say no to both and set up generation later.
 
-All keyword arguments beyond the explicit parameter list pass through to the
-executor unchanged:
+**Warm models.** A model that has loaded stays in memory between jobs, so the
+next job that needs it starts without reloading. ComfyUI frees a loaded model
+when a different model needs the room, so warmth is a convenience, never a
+guarantee. Where it ends depends on where the job runs: on RunPod, when the
+claim's idle time ends and the pod is released; on local-managed, after the idle
+time, when the engine frees its memory. Astrid never restarts an attached ComfyUI
+or unloads its models, so what stays warm there is up to that server.
 
-```python
-img = astrid.generate.image(
-    model="flux-dev",
-    prompt="a weathered fisherman, golden hour",
-    loras="z-realgen-v2@1.1",      # registry id @ scale
-    steps=28,
-    guidance_scale=3.5,
-)
+## Run a ComfyUI workflow file
+
+A workflow file runs without any pack or entry:
+
+```sh
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate workflow FILE --placement local --inputs-json INPUTS.json
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate workflow FILE --placement http://127.0.0.1:8188 --inputs-json INPUTS.json
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate describe FILE --placement http://127.0.0.1:8188
 ```
 
-### Output routing
+For a rented GPU, claim a machine first in the [RunPod machine skill](../../runpod/docs/SKILL.md#runpod-generation-machines), then run the workflow with `--placement runpod`.
 
-Managed generation has one output route: an admitted runtime project. The
-generic host writes to an attempt-local staging directory, publishes each
-declared file to the runtime content-addressed store, and records the digest
-and project relation in the runtime database. Staging paths are temporary.
+`INPUTS.json` is a JSON object of the workflow's declared inputs. List them with
+`"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate describe FILE --json`; a prompt is usually a node input such as
+`node:20.text`. A reference image is passed with `--edit FILE`; it is shipped with the
+run, so the workflow does not need a path on the target. Add `--dry-run` first on any placement.
 
-```python
-import astrid.sdk as sdk
+To turn a workflow into a named entry the user can run again, use
+`--as-entry NAME` (it validates the inputs as it saves). `--no-run` with it saves
+without queueing a run, which is how setup saves. `--replace` overwrites an
+entry with the same name.
 
-result = sdk.invoke(
-    "generation.generate_image",
-    kind="executor",
-    project="my-project",
-    inputs={
-        "model": "flux-schnell",
-        "mode": "t2i",
-        "execution": "cloud",
-        "prompt": "test",
-    },
-    wait=True,
-)
-result.outputs["artifacts"]  # digest, media type, size, and name
+Adding your own entry or shortcut is a pack contribution through the
+`vibecomfy.workflows` point, not a file the user edits by hand. Declare the entry
+there with its kind, modes and default slots; `astrid generate describe` then shows
+it. Keep one contribution minimal: one workflow file, one entry, and a dry run that
+passes.
+
+## Defaults
+
+Each `(kind, mode)` slot has one entry. Packs offer defaults as data
+(`default_for`); the user's pin wins. Resolution: request, then user pin, then the
+highest-priority pack default, then refused.
+
+```sh
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate defaults --json            # every slot, its entry, and where it came from
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate defaults set image t2i flux-schnell
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate defaults unset image t2i
 ```
 
-Do not pass `out` with `project`, and do not invoke a generation `run.py`
-directly. A custom filesystem destination is an explicit export operation
-after runtime publication; it is not an executor default and must not create a
-second unregistered output cache.
+A pin naming an entry that does not exist, or lacks that kind and mode, is refused
+and names the key.
 
-### Self-describing outputs
+## Settings document
 
-Every generated file carries its own provenance, so an image stays identifiable
-after it is materialized from its runtime artifact reference:
+Placement and defaults live in one document in the Runtime's user settings,
+`generation`. It is editable as a file:
 
-- **PNG outputs** get the generation metadata embedded as `astrid_*` tEXt chunks
-  (`astrid_prompt`, `astrid_model`, `astrid_model_actual` = the actual endpoint,
-  `astrid_seed`, `astrid_request_id`, `astrid_created`, plus `astrid_loras` when
-  used). Local (vibecomfy/ComfyUI) outputs additionally keep ComfyUI's own
-  `prompt`/`workflow` chunks — both are preserved.
-- The universal manifest is a receipt produced inside host staging; durable
-  results are runtime artifact references and task/run evidence. Do not depend
-  on a local run-directory sidecar after settlement.
-
-Read embedded fields after materializing the runtime artifact with
-`PIL.Image.open(path).text` or any PNG tEXt reader.
-
-## Scratchpad convention
-
-For experiments, use a selected runtime project and the SDK. This keeps
-generation and registration together even when the script is launched from
-another working directory:
-
-```python
-# my_experiment.py
-import astrid.sdk as sdk
-
-result = sdk.invoke(
-    "generation.generate_image",
-    kind="executor",
-    project="my-project",
-    inputs={
-        "model": "flux-schnell",
-        "mode": "t2i",
-        "execution": "cloud",
-        "prompt": "a glass teapot on basalt",
-    },
-    wait=True,
-)
-print(result.outputs["artifacts"])
+```sh
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate settings checkout --file "$WORK/generation.json"
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate settings checkin "$WORK/generation.json"
 ```
 
-```bash
-python my_experiment.py
-```
+The default shape is `{"placement": {...}, "defaults": {"<kind>.<mode>": {"pack": "...", "entry": "..."}}, "machines": {"runpod": {...}}, "models": {"trust_unchanged": true}}`.
+Opt in to full per-job re-verification by checking out the document, setting `"models": {"trust_unchanged": false}`, and checking it back in with the commands above.
+The default skips re-checking model files that haven't changed since they were verified: faster warm jobs; trusts file metadata, not a fresh checksum.
+With it on, a file counts as unchanged when its size, timestamps and inode match the verified record; another process running as you could make a record match, and a network volume remounted on another pod may match by metadata alone. Set it to false to re-check every file on the next preparation.
+A stale checkin is refused with both versions shown; check out again and merge.
+Secrets are never stored there: the RunPod credential is a name, and the key lives
+in the environment.
 
-The runtime selection may be used instead of `project="my-project"`; the
-working directory never determines ownership or output location.
+## RunPod
 
-## Plugin verbs
+For RunPod setup, GPU and datacenter choices, claims, keeping a machine, release
+and cost, use the [RunPod machine skill](../../runpod/docs/SKILL.md#runpod-generation-machines)
+(installed name: `runpod`). Generation uses only a machine already claimed there.
 
-The `astrid.generate` namespace is extensible.  Packs can register additional
-verbs under `extensions.generation.verbs` in their manifest.  Registered verbs
-appear as `astrid.generate.<name>` and are resolved lazily — `import astrid`
-does NOT eagerly load plugin modules.
+## Provider APIs
 
-```python
-# After a third-party pack registers "animate":
-import astrid
-astrid.generate.animate(model="...", prompt="...")
-```
+Hosted provider APIs (fal, OpenAI, Wavespeed) are a separate route. They are not part of
+this placement model until the providers follow-up lands, so do not present them as a
+placement.
 
-The built-in `image` and `video` methods always take priority over plugin
-verbs.
+## Limits
 
-## Executors (direct access)
-
-The pack's three executors remain available for direct use through the SDK
-(`astrid.sdk.invoke(...)`) and for subprocess/cron automation.
-
-| Executor | What it does |
-|---|---|
-| `generation.generate_audio` | Generate audio from text prompts via local or cloud backends; the current mode is `music`. |
-| `generation.generate_speech` | Synthesize exact text as WAV with configurable Edge TTS voice settings. |
-| `generation.generate_image` | Generate images from text prompts via local (vibecomfy), cloud (fal), or Codex backends. v2: model→mode→backend taxonomy with a required `mode` input. Supports t2i, i2i, and edit modes. |
-| `generation.generate_video` | Generate videos from text prompts via local or cloud backends. v2: model→mode→backend with t2v, i2v, and flf (first-last-frame) modes. |
-| `generation.generate_image_openai` | Generate image files with OpenAI GPT Image models from a prompt file. Requires `OPENAI_API_KEY`. |
-
-> **⚠️  `generate_image_openai` is executor-only for this sprint.**
-> The `astrid.generate.image()` facade explicitly rejects
-> `execution="openai"` with a diagnostic pointing to
-> `generation.generate_image_openai`.  Direct executor access via the SDK is
-> the supported path for OpenAI image generation.
-
-For detailed image generation guidance — mode selection (t2i/i2i/edit),
-model decision tree, drop-with-warning behavior, and escape hatches — see
-the executor-level skill at
-`astrid/packs/generation/docs/generate-image.md`.
-
-### Quick-start (SDK)
-
-Pass every declared input as a snake_case entry in `inputs` (each is forwarded
-to the executor's `run.py` as a `--kebab-case` flag). Bind a runtime project;
-the host supplies its private staging `out` value.
-
-```python
-import astrid.sdk as sdk
-
-# Image from text (cloud, fast)
-result = sdk.invoke("generation.generate_image", inputs={
-    "model": "flux-schnell", "mode": "t2i", "execution": "cloud",
-    "prompt": "a serene mountain lake at dawn",
-}, project="demo", wait=True)
-
-# Image from text (local, open model)
-result = sdk.invoke("generation.generate_image", inputs={
-    "model": "z-image", "mode": "t2i", "execution": "local",
-    "prompt": "a serene mountain lake at dawn",
-}, project="demo", wait=True)
-
-# Video from text (cloud)
-result = sdk.invoke("generation.generate_video", inputs={
-    "model": "wan-2.2", "mode": "t2v", "execution": "cloud",
-    "prompt": "a wave crashing on rocks",
-}, project="demo", wait=True)
-
-# OpenAI image generation from a prompt file
-result = sdk.invoke("generation.generate_image_openai", inputs={
-    "prompts_file": "./prompts.jsonl",
-}, project="demo", wait=True)
-```
-
-## When to use
-
-- Use `astrid.generate.image(...)` for standard image generation from text
-  prompts (the recommended primary entry point).
-- Use `astrid.generate.video(...)` for video generation from text or image
-  prompts.
-- Use `generation.generate_image_openai` via direct executor access (the
-  SDK) when you specifically need OpenAI GPT Image models and have a prompt
-  file ready.
-
-For LoRAs, IP-adapter, controlnet, custom samplers, or graph composition,
-use the `vibecomfy` skill instead (escape hatch).
-
-## Credentials
-
-| Env var | Used by |
-|---|---|
-| `FAL_KEY` | generate_image (cloud), generate_video (cloud) |
-| `OPENAI_API_KEY` | generate_image_openai |
-
-Set these in the process environment, or in a `.env` / `.env.local` file at the
-repo root (both are searched; `.env.local` is gitignored and wins over `.env`).
-The resolver also walks `~/.env` and a few workspace locations — see
-`astrid.core.util.secrets.candidate_env_files`.
+- A workflow runs only where its models and nodes are present. Missing ones fail
+  before queueing, with the list. Install them with the steps in the VibeComfy skill
+  ([Missing nodes and models](../../vibecomfy/docs/SKILL.md#missing-nodes-and-models)).
+- Never put a key, token or password in an input or a settings file.

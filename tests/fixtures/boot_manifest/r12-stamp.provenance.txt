@@ -1,0 +1,40 @@
+Captured from the real R12 stamp_boot_manifest writer, without modifying its output.
+Agent commit: 0e1543e0da2215db9cb3320cfd1083174c3c62a9
+Detached worktree: /home/user/wt/bm-r12
+R9 identity source: scripts/journey_version_jumps.py RELEASE9_IDENTITY (published Release 9).
+R12 identity source: assigned R12 main 0e1543e0.
+Registry and fixtures: astrid.core.gateway.boot_conformance.VIBE_PROFILE_REGISTRY and vibe_profile_specs().
+The release's frozen fixture definitions supply accepted_receipt_sha256,
+accepted_input and fixture_digests; no fixture or digest was invented.
+Python: Python 3.13 in the offline bootmanifest.env, cached Runtime wheel installed.
+Only the release's manifest, hash and conformance code is used to compute the JSON.
+
+Command (from detached worktree):
+PYTHONPATH=/home/user/wt/bm-r12 /home/user/wt/bootmanifest.env/venv/bin/python /home/user/cells/evidence/bootmanifest-diff/capture-stamp.py /home/user/wt/bootmanifest/tests/fixtures/boot_manifest/r12-stamp.json r12
+
+capture-stamp.py contents (reproducible with the command above):
+from pathlib import Path
+import sys
+import tempfile
+
+from astrid.core._shared.boot_manifest import stamp_boot_manifest
+if sys.argv[2] == 'r9':
+    from astrid.packs.shots.conformance import VIBE_PROFILE_REGISTRY, vibe_profile_specs
+else:
+    from astrid.core.gateway.boot_conformance import VIBE_PROFILE_REGISTRY, vibe_profile_specs
+
+with tempfile.TemporaryDirectory() as directory:
+    support = Path(directory)
+    path = support / 'astrid-host' / 'boot-manifest.json'
+    stamp_boot_manifest(path, support_root=support,
+                        registry=VIBE_PROFILE_REGISTRY, fixtures=vibe_profile_specs())
+    Path(sys.argv[1]).write_bytes(path.read_bytes())
+
+Observation: R9 and R12 stamps are byte-identical, both with profile_order
+["pip_embedded", "checkout_server"]. Both need restamping for R13's empty registry.
+
+R10 and R11 were subsequently captured with their real writers too; all four
+release stamps are byte-identical. Only the canonical r9-stamp.json is retained
+per the widened brief. The original R12 capture command above produces that
+same file content. See r10/r11-stamp.provenance.txt for their commands.
+File SHA-256: b805612c0d150c5d9e31062e2463c4e5b5c8911401d0069d9aa6fbb35ccf6e73

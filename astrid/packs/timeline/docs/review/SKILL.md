@@ -4,6 +4,8 @@ description: Preview exact timeline changes, get approval, and recover saved edi
 ---
 # Review a timeline edit
 
+Astrid commands here run through the launcher; its path on each OS is in the [astrid-setup skill's Launcher paths](../../../setup/docs/SKILL.md#launcher-paths), and the commands show the Linux path.
+
 ```python
 from astrid.sdk.timeline.api import Timeline
 
@@ -27,7 +29,7 @@ If a function edit clashes, call `tl.retry(err, recut)`. A result with status
 inspect the pending record, rerun the function on a fresh `Timeline.open`,
 preview again, then commit the new commands with the original key and
 `pending=<saved-id>`. List pending records with
-`python3 -m astrid timelines pending list <timeline> --project <project>`.
+`"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" timelines pending list <timeline> --project <project>`.
 
 After an unknown outcome, repeat the same request with the same idempotency key
 and read its result; never resend the reviewed list as a new request. Use

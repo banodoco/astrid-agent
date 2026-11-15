@@ -64,7 +64,7 @@ def resolve_runpod_pod_handle_ssh_route(handle_value: object) -> str:
     status = get_pod_status(pod_id, credential.value)
     if not isinstance(status, dict):
         raise ProviderRouteResolutionError(f"RunPod pod {pod_id} was not found")
-    if status.get("desired_status") not in {"RUNNING", "PROVISIONING"}:
+    if status.get("desired_status") not in {"RUNNING", "PROVISIONING", "STARTING"}:
         raise ProviderRouteResolutionError(
             f"RunPod pod {pod_id} is not attachable: {status.get('desired_status')!r}"
         )

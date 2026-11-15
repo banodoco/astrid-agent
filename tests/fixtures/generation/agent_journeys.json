@@ -616,7 +616,7 @@
       "assertions": [
         {
           "id": "producer-contract",
-          "check": "Installed `generate image --target runpod` with a validated frozen entry/input, paid consent, offer, USD cap and UTC deadline creates one product-owned journal/pod, prepares and admits the ordinary `vibecomfy.run` task. Assert exact account, offer/GPU, digest-pinned image, volume/mount, pod and task/attempt/fence/activation binding; no broker claim or foreign pod adoption. Invalid entry or unsupported engine blocks before claim.",
+          "check": "Installed `generate image --placement runpod` with a validated frozen entry/input, paid consent, offer, USD cap and UTC deadline creates one product-owned journal/pod, prepares and admits the ordinary `vibecomfy.run` task. Assert exact account, offer/GPU, digest-pinned image, volume/mount, pod and task/attempt/fence/activation binding; no broker claim or foreign pod adoption. Invalid entry or unsupported engine blocks before claim.",
           "evidence": [
             "exact task/attempt/binding",
             "durable readback",

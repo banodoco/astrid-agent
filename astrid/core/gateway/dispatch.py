@@ -6,6 +6,8 @@ from typing import Any
 
 from astrid.core.contracts.errors import AstridError
 
+from .hivemind import installed_pack_ids as _installed_pack_ids
+
 
 def _dispatch(raw: list[str]) -> int:
     from . import _print_entrypoint_help
@@ -78,8 +80,14 @@ def _dispatch_skills(args: list[str]) -> int:
 
 
 def _dispatch_generate(args: list[str]) -> int:
-    if args and args[0] in {"image", "video", "audio", "align", "-h", "--help"}:
-        from astrid.core.generation.cli import main
+    # The generation CLI owns every subcommand it defines except `list`, which
+    # the registry listing serves (the CLI itself hands `list` to listing). The
+    # set comes from the CLI's own parser, so it cannot drift. Empty or unknown
+    # first words go to listing, whose parser reports them.
+    from astrid.core.generation.cli import main as cli_main
+    from astrid.core.generation.cli import subcommand_names
+    if "--job" in args or (args and (args[0] in {"-h", "--help"} or (args[0] != "list" and args[0] in subcommand_names()))):
+        main = cli_main
     else:
         from astrid.core.generation.listing import main
 
@@ -125,7 +133,7 @@ def _dispatch_status(args: list[str]) -> int:
             "next_action": "run the Astrid install line again",
         }
         if parsed.diagnostic:
-            from astrid.core.gateway.diagnostics import build_diagnostic, _failure_from
+            from astrid.core.gateway.diagnostics import _failure_from, build_diagnostic
             code, boundary = _failure_from(exc)
             payload = build_diagnostic(
                 mode="shared" if parsed.shared else "local",
@@ -182,8 +190,8 @@ def _dispatch_status(args: list[str]) -> int:
                     if isinstance(project, dict):
                         project_ref = project.get("slug") or project.get("project_id") or project.get("id")
                         print(f"project: {project_ref} (selected)")
-                        from astrid.sdk.timeline.revisions import RuntimeRevisions
                         from astrid.sdk.pagination import paged_rows
+                        from astrid.sdk.timeline.revisions import RuntimeRevisions
                         project_rows = paged_rows(client.projects.list)
                         if project_rows is None:
                             print("recent: unavailable (project pagination incomplete)")
@@ -319,7 +327,7 @@ def _dispatch_doctor(args: list[str]) -> int:
             print(f"Astrid doctor bundle: {destination}")
             return 1
         if parsed.diagnostic:
-            from astrid.core.gateway.diagnostics import build_diagnostic, _failure_from
+            from astrid.core.gateway.diagnostics import _failure_from, build_diagnostic
             code, boundary = _failure_from(exc)
             payload = build_diagnostic(
                 mode="shared" if parsed.shared else "local",
@@ -669,7 +677,7 @@ _CORE_ROUTE_NAMES = frozenset(_TOP_LEVEL_HANDLERS)
 # External packs opt into the CLI through the same declarative registry. This
 # keeps pack installation and command exposure separate: a pack is available
 # to the runtime without automatically claiming a top-level command.
-from .hivemind import PACK_COMMANDS as _PACK_COMMANDS, installed_pack_ids as _installed_pack_ids
+from .hivemind import PACK_COMMANDS as _PACK_COMMANDS
 
 # Pack ids are discoverable, but never allowed to shadow a core family or an
 # outer launcher command. This is a blocklist/precedence rule, not a second
@@ -707,11 +715,13 @@ def compose_profile_handoff(
     support_root: str | "Path",
     registry: "Mapping[str, Any] | None" = None,
     fixtures: "Iterable[Any] | None" = None,
+    write: bool = True,
 ) -> dict[str, Any]:
     """Verify-or-stamp the B-6 handoff at the application composition root.
 
     This is intentionally separate from transport dispatch.  The generic host
     consumes the resulting stamp, but never discovers profiles or emits it.
+    Use ``write=False`` while a resident host may still be reused or refused.
     """
 
     from astrid.core._shared.boot_manifest import (
@@ -734,6 +744,7 @@ def compose_profile_handoff(
         support_root=support_root,
         registry=active_registry,
         fixtures=active_fixtures,
+        write=write,
     )
     return {
         "path": str(validated_manifest_path),

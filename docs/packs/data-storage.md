@@ -12,6 +12,7 @@ second project store.
 | --- | --- |
 | Pack code, manifests, schemas, assets, and static defaults | Ordinary files in the pack source tree. Declare files used by the pack in `pack.yaml` resources. |
 | Mutable settings or small state for a pack in a project | A project-scoped Runtime document, addressed by project ID, pack-owned kind, and stable document ID. |
+| Typed settings that belong to a user across projects | The Runtime user app-state API, using the owning feature's key. For example, RunPod policy lives in `generation` → `machines.runpod`. |
 | User or project instructions in prose | Runtime preferences, as Markdown. Preferences are guidance, not a typed settings database or authorization grant. |
 | Timelines, project media, tasks, runs, and invocation outputs | Runtime-owned project surfaces and published output references. Do not save these as a pack's config document. |
 | Compiled modules, admitted source snapshots, and build receipts | Rebuildable derived artifacts, keyed by exact source and build identity. They may accelerate loading but never replace the selected Runtime document. |
@@ -29,6 +30,34 @@ automatically inject project documents into every invocation. Keep secret
 values out of project documents and source resources. Declare required
 environment variable names in the relevant capability manifest and use the
 existing host-configured credential/secret mechanism for their values.
+
+## RunPod machine storage
+
+RunPod machine preferences are user settings across projects. The authoritative
+copy is `machines.runpod` in `/v1/app-state/user/generation`, read and updated
+through the versioned Runtime app-state API. It stores GPU order, optional
+network volume/datacenter, pinned image, idle timeout, budget ceiling and
+credential references. It never stores key bytes or permission to spend.
+Use `astrid machines setup` to change it and `astrid machines setup --show` to
+inspect sanitized settings plus the selected Runtime data root and realm.
+Do not hand-edit Runtime's backing store.
+
+| Data | Location and lifetime |
+| --- | --- |
+| User machine preferences | Runtime user app-state `generation` → `machines.runpod`; persist across jobs and pod release until explicitly changed. |
+| Exact pod custody, paid limits and live lease | Local `<data-root>/runpod/<sha256(account-ref)>/claim.json`; survives host restarts for reconciliation. Keep it until the owner has confirmed cleanup; never delete it to force a new claim. Ended lease history is the sibling `claim.json.ended.json`. |
+| Bootstrap source cache | Local `<data-root>/runpod/sources`; clean checkouts pinned by the installed release manifest. Rebuildable source cache, not preferences or custody. |
+| Saved network-volume models | `<mount>/astrid/engines/comfyui/models` on the exact selected volume (`/workspace` is the default mount). Persist after pod release; deleting the volume is an explicit owner decision. |
+| Pod engine and models without a volume | `/root/astrid/engines/comfyui` and its `models` directory on the pod's container disk. Warm reuse keeps them; pod termination removes them. |
+| Pod Runtime and job scratch | `/root/astrid/runtime-data` and `/root/astrid/runs/<run-id>` on container disk. Reset removes prior job folders/attempt scratch and replaces the temporary realm before reuse; pod termination removes the disk. These are not durable outputs. |
+| Published outputs and local copies | Runtime owns published output references and durable readback. Generation copies default to caller-local `./outputs/<task-id>/` or `--out`; pod release does not delete those copies. Preserve an unsettled local spool and the original receipt until publication can be recovered. |
+
+Machine listing reads local custody, not the provider account. The owning
+host's timers enforce idle and paid expiry only while it runs. A stopped host
+or sleeping computer can leave a pod billing past the scheduled release;
+the journal records custody but is not a provider-side spending cap. See the
+[RunPod machine skill](../../astrid/packs/runpod/docs/SKILL.md#runpod-generation-machines)
+for consent, keep and release commands.
 
 ## Identity, content schema, and concurrency
 

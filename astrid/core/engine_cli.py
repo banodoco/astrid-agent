@@ -16,11 +16,12 @@ from dataclasses import fields, is_dataclass
 from collections.abc import Mapping
 
 from astrid.core.generation.engine_contracts import (
-    EngineError, EngineReinstallRequired, RecipeValidationError, UnsafePathError, UnsupportedPlacement, UnsupportedPlatform,
+    EngineError, RecipeValidationError, UnsafePathError, UnsupportedPlacement, UnsupportedPlatform,
+    custody_diagnostics, custody_message, engine_reason,
 )
-from astrid.core.generation.engine_recipe import load_model_lock, load_recipe
+from astrid.core.generation.engine_recipe import load_recipe
 from astrid.core.generation.engine_runner import (
-    _check_install_identity, _disk_anchor, engine_status, install_engine, plan_install, validate_model_cache_root,
+    _disk_anchor, engine_status, install_engine, plan_install,
 )
 
 
@@ -35,7 +36,7 @@ def _parser():
     commands = parser.add_subparsers(dest='command', required=True, parser_class=_Parser)
     for name in ('install', 'status'):
         command = commands.add_parser(name)
-        command.add_argument('engine', help='Engine ID, for example vibecomfy-h3')
+        command.add_argument('engine', help='Engine ID, for example comfyui')
         command.add_argument('--platform', default='linux-x86_64-cu130',
                              help='Target platform (default: linux-x86_64-cu130)')
         command.add_argument('--placement', choices=('local', 'runpod'), default='local',
@@ -45,15 +46,13 @@ def _parser():
                              help='Operation time limit in seconds (default: 3600)')
         if name == 'install':
             command.add_argument('--dry-run', action='store_true', help='Print the verified plan without executing it')
-            command.add_argument('--model-cache-root', help='Absolute mounted cache for verified locked model bytes')
-            command.add_argument('--model-cache-device', type=int, help='Authenticated cache filesystem device')
-            command.add_argument('--model-cache-mount-id', type=int, help='Authenticated cache Linux mount ID')
+            command.add_argument('--models-root', help='Absolute target-native model directory outside the engine root (a saved volume cache); default: <root>/models')
     return parser
 
 
 def _default_backend(*, engine, platform, placement, root, deadline):
     if placement == 'runpod':
-        raise UnsupportedPlacement('RunPod execution awaits W1 (runpod wrapper)')
+        raise UnsupportedPlacement('This machine manages only its own engine; a remote machine prepares its engine when its job starts.')
     from .generation.engine_execution import create_local_backend
     return create_local_backend(engine=engine, platform=platform, placement=placement,
                                 root=root, deadline=deadline)
@@ -98,33 +97,25 @@ def _plain(value):
     return value
 
 
+# Policy minimum free space before an install starts (a proxy, not a measured byte count).
+ENGINE_INSTALL_MIN_FREE_BYTES = 10 * 1024 ** 3
+
+
 def main(argv=None, *, backend_factory=None):
     try:
         args = _parser().parse_args(argv)
         if not math.isfinite(args.deadline) or args.deadline <= 0 or args.deadline > 604800:
             raise RecipeValidationError('deadline must be greater than zero and at most 604800 seconds')
         recipe = load_recipe(args.engine, args.platform)
-        plan = plan_install(recipe, root=_root(args), placement=args.placement)
-        cache = {}
+        plan = plan_install(recipe, root=_root(args), placement=args.placement,
+                            models_root=getattr(args, 'models_root', None))
         if args.command == 'install':
-            cache_root = validate_model_cache_root(
-                args.model_cache_root, engine_root=plan.root, platform=plan.platform, placement=plan.placement)
-            if cache_root is not None:
-                cache['model_cache_root'] = cache_root
-            for option in ('model_cache_device', 'model_cache_mount_id'):
-                value = getattr(args, option)
-                if value is not None:
-                    if cache_root is None or value < (1 if option.endswith('mount_id') else 0):
-                        raise UnsafePathError('model cache binding requires a cache root and valid identity')
-                    cache[option] = value
-            if ('model_cache_device' in cache) != ('model_cache_mount_id' in cache):
-                raise UnsafePathError('model cache requires both authenticated device and mount ID')
-        if args.command == 'install':
-            # The locked model total is the only quantified requirement in the
-            # plan. Source, environment and temporary space are additional.
-            required = sum(model.bytes for model in load_model_lock(recipe.models_lock).models)
+            # Plan 32 T5h: an install is model-free, so no model bytes are required. Sources and
+            # environments have no recorded sizes yet, so the install is gated on a policy floor:
+            # a proxy minimum, not a measured byte count.
+            required = ENGINE_INSTALL_MIN_FREE_BYTES
             disk = {'required_bytes': required, 'free_bytes': None, 'status': 'unknown',
-                    'basis': 'locked_model_bytes'}
+                    'basis': 'minimum_free_space_floor'}
             if plan.placement == 'local' and plan.platform.startswith('linux-'):
                 _, _, _, free = _disk_anchor(plan.root)
                 disk.update(free_bytes=free, status='ok' if free >= required else 'blocked')
@@ -134,16 +125,10 @@ def main(argv=None, *, backend_factory=None):
                 return 0
             if disk['status'] == 'blocked':
                 if os.path.lexists(os.path.join(plan.root, '.astrid-engine')):
-                    # A stale installation cannot be repaired by freeing disk.
-                    # Reuse the runner's locked identity check before reporting
-                    # space; this never starts a helper or writes a receipt.
+                    # Check custody before reporting the disk constraint.
                     _custody_preflight(plan.root)
-                    deadline = time.monotonic() + args.deadline
-                    factory = backend_factory if backend_factory is not None else _default_backend
-                    context, adapter = factory(engine=args.engine, platform=args.platform,
-                        placement=args.placement, root=plan.root, deadline=deadline)
-                    _check_install_identity(plan, context=context, adapter=adapter, deadline=deadline)
                 print(json.dumps({'error': {'code': 'ENGINE_INSTALL_INSUFFICIENT_DISK', 'step': None,
+                    'reason': engine_reason('insufficient disk space for engine installation'),
                     'retryable': True, 'recovery_handle': None,
                     'message': 'Free disk space or choose a different --root, then retry.',
                     'required_bytes': required, 'free_bytes': disk['free_bytes']}}, sort_keys=True),
@@ -158,7 +143,7 @@ def main(argv=None, *, backend_factory=None):
         context, adapter = factory(engine=args.engine, platform=args.platform,
                                    placement=args.placement, root=plan.root, deadline=deadline)
         if args.command == 'install':
-            result = install_engine(plan, context=context, adapter=adapter, deadline=deadline, **cache)
+            result = install_engine(plan, context=context, adapter=adapter, deadline=deadline)
             if args.placement == 'local' and args.root is not None and result.status == 'installed':
                 # Run-path resolution (action run, the pack host) finds this install without an env var.
                 from .generation.engine_local_endpoint import record_engine_root
@@ -166,17 +151,16 @@ def main(argv=None, *, backend_factory=None):
         else:
             result = engine_status(args.engine, platform=args.platform, placement=args.placement,
                                    root=plan.root, context=context, deadline=deadline)
-            if result is not None and result.error_code == EngineReinstallRequired.code:
-                environment = next((e.name for e in recipe.environments
-                                    if result.failed_step_id == 'environment:' + e.name),
-                                   recipe.primary_environment)
-                raise EngineReinstallRequired('stale installation', environment=environment,
-                                              step_id=result.failed_step_id)
         print(json.dumps(_plain(result) if result is not None else None, sort_keys=True, ensure_ascii=False))
         return 0
     except EngineError as exc:
+        if isinstance(exc, CustodyNotOwnerOnly):
+            exc.custody_details = dict(reason='custody_not_private', owner_state='unknown',
+                                      lock_state='unknown', evidence='none', root=plan.root, engine=plan.engine,
+                                      marker_path=plan.root + '/.astrid-engine/session/session.json',
+                                      helper_sha256='unknown')
         # Messages from execution transports can contain command output or secrets.
-        # Emit only the stable public code and validated step identifier.
+        # Emit only declared fixed reasons and validated public fields.
         import re
         step = exc.step_id if isinstance(exc.step_id, str) and re.fullmatch(r'[a-z0-9:_-]{1,128}', exc.step_id) else None
         handle = exc.recovery_handle
@@ -184,34 +168,41 @@ def main(argv=None, *, backend_factory=None):
             handle = None
         messages = {
             'unsupported_platform': 'Target platform or local execution is unavailable; A2/A7 integration is pending.',
-            'unsupported_placement': 'RunPod execution awaits W1 (runpod wrapper).',
+            'unsupported_placement': 'This machine manages only its own engine; a remote machine prepares its engine when its job starts.',
+            'engine_busy': 'Managed engine is busy; wait for the current operation to finish, then retry.',
             'custody_not_owner_only': 'Engine custody directory must be owner-only. /workspace is FUSE-unsafe; '
                                       'install under a local --root.',
+            'endpoint_ownership': 'Engine endpoint ownership could not be verified; inspect the engine owner and retry.',
+            'custody_unresolved': 'Engine custody could not be verified; inspect the engine state before retrying.',
+            'unsafe_path': 'Engine custody path or state is unsafe; inspect the engine root before retrying.',
         }
         public = {'code': exc.code, 'step': step, 'retryable': exc.retryable,
                   'recovery_handle': handle, 'message': messages.get(exc.code, 'Engine operation failed.')}
-        # Bounded failure detail from the engine runner: fixed reason text and dirty porcelain paths/status.
-        diagnostics = getattr(exc, 'diagnostics', None) or {}
-        if isinstance(diagnostics.get('reason'), str):
-            public['reason'] = diagnostics['reason'][:200]
-        if isinstance(diagnostics.get('porcelain'), str):
-            public['porcelain'] = diagnostics['porcelain'][:4000]
-        if isinstance(exc, EngineReinstallRequired):
-            environment = next((e.name for e in recipe.environments
-                                if e.name == exc.environment), recipe.primary_environment)
-            clean_root = plan.root + '-clean'
-            suffix = 2
-            # A recommendation is read-only; install still owns all acquisition.
-            while os.path.lexists(clean_root):
-                clean_root = plan.root + '-clean-' + str(suffix)
-                suffix += 1
-            recovery = EngineReinstallRequired.for_install(engine=recipe.engine, platform=recipe.platform,
-                root=plan.root, environment=environment, clean_root=clean_root)
-            public.update(environment=environment, clean_root=clean_root,
-                          install_command=recovery.install_command, message=recovery.message)
+        reason = engine_reason(exc.reason)
+        if reason is not None:
+            public['reason'] = reason
+        details = custody_diagnostics(getattr(exc, 'custody_details', None))
+        if details is not None:
+            public['custody'] = details
+            public['message'] = custody_message(details)
+        if exc.code == 'endpoint_ownership' and reason is not None:
+            if reason == 'engine port is occupied by an unowned service':
+                port = getattr(exc, 'port', None)
+                check = f'Port {port}' if type(port) is int and 1 <= port <= 65535 else 'Engine port'
+                public['message'] = (check + ' is held by a service this installation does not own: '
+                                     'stop it, or let the previous job release the engine.')
+                if type(port) is int and 1 <= port <= 65535:
+                    public['port'] = port
+            else:
+                public['message'] = reason + '; inspect the engine owner and launch, then retry.'
+        if exc.code == 'engine_busy':
+            running, pending = getattr(exc, 'running_count', None), getattr(exc, 'pending_count', None)
+            if type(running) is int and running >= 0 and type(pending) is int and pending >= 0:
+                public['message'] += f' running={running}, pending={pending}.'
         print(json.dumps({'error': public},
                          sort_keys=True), file=sys.stderr)
         return 1
     except Exception:  # Avoid leaking transport diagnostics or command arguments.
-        print(json.dumps({'error': {'code': 'engine_error', 'step': None}}, sort_keys=True), file=sys.stderr)
+        print(json.dumps({'error': {'code': 'engine_error', 'step': None,
+              'reason': engine_reason('unexpected engine operation failure')}}, sort_keys=True), file=sys.stderr)
         return 1

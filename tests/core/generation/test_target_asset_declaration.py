@@ -1,6 +1,7 @@
 """CPU composition proof: selected target provisioning owns auxiliary custody."""
 from __future__ import annotations
 
+import contextlib
 import copy
 import hashlib
 import json
@@ -12,7 +13,9 @@ import pytest
 
 from astrid.core.generation import engine_local_endpoint, entries, preflight
 from astrid.core.generation.backends.comfy_target import ComfyTarget, ComfyTargetClient
-from astrid.core.generation.engine_contracts import DownloadResult, HealthEvidence
+from astrid.core.generation.engine_contracts import (
+    DownloadResult, HealthEvidence, effective_models_root,
+)
 from astrid.packs.vibecomfy import local_server_engine
 from vibecomfy.porting.object_info import get_class
 from vibecomfy.registry.ready import workflow_from_ready
@@ -50,15 +53,29 @@ def _selected_managed_target(tmp_path, monkeypatch):
     (root / '.astrid-engine').mkdir(parents=True)
     (root / '.astrid-engine/install.json').write_text('{}')
     content = b'CPU auxiliary fixture; no production weights'
-    path = root / 'models/hunyuan_foley/synchformer_state_dict.pth'
+    models_root = Path(effective_models_root(str(root), None))
+    path = models_root / 'hunyuan_foley/synchformer_state_dict.pth'
     path.parent.mkdir(parents=True)
     path.write_bytes(content)
     asset = {'name': path.name, 'subdir': 'hunyuan_foley', 'size_bytes': len(content),
              'sha256': hashlib.sha256(content).hexdigest(),
              'url': 'https://fixture.invalid/synchformer_state_dict.pth'}
+    workflow = workflow_from_ready('image/z_image_turbo')
+    models = []
+    for loader in workflow.metadata['model_assets']:
+        loader_path = models_root / loader['subdir'] / loader['name']
+        loader_path.parent.mkdir(parents=True, exist_ok=True)
+        data = ('CPU loader fixture: ' + loader['name']).encode()
+        loader_path.write_bytes(data)
+        loader.update(sha256=hashlib.sha256(data).hexdigest(), size_bytes=len(data))
+        models.append(DownloadResult(loader_path.name, str(loader_path), 'skipped',
+                                     len(data), loader['sha256'], True, 0))
+    models.append(DownloadResult(path.name, str(path), 'skipped', len(content), asset['sha256'], True, 0))
+    workflow.metadata['model_assets'].append(asset)
+    workflow.requirements.models = copy.deepcopy(workflow.metadata['model_assets'])
     receipt = SimpleNamespace(status='installed',
         health=HealthEvidence('healthy', '2026-11-02T17:06:00Z', 'a' * 64, True),
-        models=(DownloadResult(path.name, str(path), 'skipped', len(content), asset['sha256'], True, 0),))
+        models=tuple(models))
     actual_endpoint = engine_local_endpoint.local_engine_endpoint
     monkeypatch.setattr(engine_local_endpoint, 'recorded_engine_root', lambda engine: str(root))
     monkeypatch.setattr(engine_local_endpoint, 'local_engine_endpoint',
@@ -66,12 +83,12 @@ def _selected_managed_target(tmp_path, monkeypatch):
                                                  status=lambda *a, **k: receipt))
     client = preflight.select_generation_target('managed')
     assert isinstance(client, ComfyTargetClient)
-    assert client.target.facts['model_root']['inventory'] == [{
-        'name': path.name, 'subdir': 'hunyuan_foley', 'size': len(content),
-        'sha256': 'sha256:' + asset['sha256'],
-    }]
-    workflow = workflow_from_ready('image/z_image_turbo')
-    workflow.metadata['model_assets'].append(asset)
+    expected = [{'name': model.model,
+                 'subdir': Path(model.path).parent.relative_to(models_root).as_posix(),
+                 'size': model.bytes, 'sha256': 'sha256:' + model.sha256}
+                for model in models]
+    assert client.target.facts['model_root']['inventory'] == sorted(
+        expected, key=lambda row: (row['subdir'], row['name']))
     data = _target_capture(workflow)
     monkeypatch.setattr(client, 'object_info', lambda: copy.deepcopy(data))
     return client, workflow, path
@@ -135,11 +152,11 @@ def test_engine_model_locks_leave_foley_assets_in_the_workflow_declaration():
     # Foley is part of the H3/RunPod engine closure; keep it out of unrelated locks.
     for path in (engine_recipe._ROOT / 'packs').glob('*/models.lock.json'):
         assert ('hunyuan_foley' in path.read_text()) == (path.parent.name == 'runpod'), path
-    for engine in ('comfyui', 'vibecomfy-h3'):
+    for engine in ('comfyui',):
         models = engine_recipe.load_recipe_model_lock(engine, 'linux-x86_64-cu130').models
         foley_models = [model for model in models
                         if model.destination.startswith('hunyuan_foley/')]
-        if engine == 'vibecomfy-h3':
+        if engine == 'comfyui':
             assert len(foley_models) == len(assets) == 10
             assert {
                 (model.destination, model.repository, model.revision,
@@ -161,8 +178,8 @@ def test_target_source_and_manifest_pins_use_the_current_custody_provider():
     vc = Path(vibecomfy.__file__).resolve().parents[1]
     revision = subprocess.check_output(['git', '-C', str(vc), 'rev-parse', 'HEAD'], text=True).strip()
     for engine, platform in [('comfyui', 'linux-x86_64-cu130'),
-                             ('vibecomfy-h3', 'linux-x86_64-cu130'),
-                             ('vibecomfy', 'windows-x86_64-cu130')]:
+                             ('comfyui', 'linux-x86_64-cu130'),
+                             ('comfyui', 'windows-x86_64-cu130')]:
         recipe = engine_recipe.load_recipe(engine, platform)
         assert next(source.pin.revision for source in recipe.sources if source.name == 'vibecomfy') == revision
         for environment in recipe.environments:
@@ -206,15 +223,24 @@ def _provisionable_managed_entry(tmp_path, monkeypatch):
              'bundle': str(bundle.python_path), 'ambiguity': None,
              'model_assets': bundle.workflow.metadata['model_assets']}
     original_find = entries._ready_entries_for
-    monkeypatch.setattr(entries, '_ready_entries_for',
-        lambda identifier=None: [entry] if identifier == entry['id'] else original_find(identifier))
+    ready_entry = copy.deepcopy(original_find('image/z_image_turbo')[0])
+    ready_entry['model_assets'] = copy.deepcopy(assets[:3])
+
+    def selected_entries(identifier=None):
+        if identifier == entry['id']:
+            return [entry]
+        if identifier == ready_entry['id']:
+            return [ready_entry]
+        return original_find(identifier)
+
+    monkeypatch.setattr(entries, '_ready_entries_for', selected_entries)
     monkeypatch.setattr(entries, 'ready_entries', lambda: [entry])
 
     root = tmp_path / 'installed-target'
     recipe = engine_recipe.load_recipe('comfyui', 'linux-x86_64-cu130')
     plan = engine_runner.plan_install(recipe, root=str(root), placement='local')
-    helper_sha = engine_runner._sha(engine_runner.helper_manifest(recipe))
-    engine_models = tuple(DownloadResult(model.name, str(root / 'models' / model.destination),
+    models_root = Path(effective_models_root(str(root), None))
+    engine_models = tuple(DownloadResult(model.name, str(models_root / model.destination),
         'skipped', model.bytes, model.sha256, True, 0)
         for model in engine_recipe.load_model_lock(recipe.models_lock).models)
     receipt = InstallReceipt('astrid.engine-install.v1', 'cpu-existing-install', plan.engine, plan.platform,
@@ -238,7 +264,7 @@ def _provisionable_managed_entry(tmp_path, monkeypatch):
         digest = hashlib.sha256(lock.read_bytes()).hexdigest()
         environment_digests[environment.name] = digest
         (folder / 'receipt.json').write_text(json.dumps({'recipe_sha256': plan.recipe_sha256,
-            'helper_sha256': helper_sha, 'environment': environment.name, 'requirements_lock_sha256': digest}))
+            'environment': environment.name, 'requirements_lock_sha256': digest, 'validated': True}))
         if environment.node_lock:
             import vibecomfy
             ref = environment.node_lock
@@ -260,7 +286,7 @@ def _provisionable_managed_entry(tmp_path, monkeypatch):
                 output = (source.pin.repository if argv[3:] == ('remote', 'get-url', 'origin') else
                           source.pin.revision if argv[3:] == ('rev-parse', 'HEAD') else '')
             elif len(argv) >= 2 and argv[-1].startswith('{') and argv[-2] in {
-                    'identity', 'node-lock', 'environment-spec', 'models-config-check'}:
+                    'identity', 'node-lock', 'environment-spec'}:
                 operation, payload = argv[-2], json.loads(argv[-1])
                 facts = ({'helper_sha256': payload['helper_sha256']} if operation == 'identity' else
                          {'expected': {}, 'requirements_lock_sha256': environment_digests[payload['environment']]}
@@ -276,7 +302,7 @@ def _provisionable_managed_entry(tmp_path, monkeypatch):
             pytest.fail(f'fixture unexpectedly requested engine service {operation}')
 
     monkeypatch.setattr('astrid.core.generation.engine_custody.LinuxEngineServiceClient', ProcessProvider)
-    base_path = root / 'models/base/engine.bin'
+    base_path = models_root / 'base/engine.bin'
     base_path.parent.mkdir(parents=True)
     base_path.write_bytes(b'existing engine model fixture')
     status_receipt = SimpleNamespace(status='installed', health=receipt.health, models=(
@@ -294,15 +320,25 @@ def _provisionable_managed_entry(tmp_path, monkeypatch):
         return copy.deepcopy(observed)
     monkeypatch.setattr(ComfyTargetClient, 'request_json', http)
     downloads = []
-    def opener(request, timeout):
-        data = contents[request.full_url]
-        start, end = map(int, request.get_header('Range').removeprefix('bytes=').split('-'))
-        downloads.append(request.full_url)
-        response = io.BytesIO(data[start:end + 1])
-        response.status = 206
-        response.headers = {'Content-Range': f'bytes {start}-{end}/{len(data)}'}
-        return response
-    return SimpleNamespace(root=root, entry=entry, workflow=workflow, opener=opener,
+    class Response:
+        def __init__(self, data, start):
+            self.status_code, self.url, self._body = (206 if start else 200), None, data[start:]
+            self.headers = {'Content-Range': f'bytes {start}-{len(data) - 1}/{len(data)}'} if start else {}
+
+        def iter_bytes(self):
+            yield self._body
+
+    class Client:
+        """The httpx-style client seam of VibeComfy fetch."""
+
+        @contextlib.contextmanager
+        def stream(self, method, url, headers=None, **kwargs):
+            data = contents[url]
+            start = int((headers or {}).get('Range', 'bytes=0-').removeprefix('bytes=').split('-')[0])
+            downloads.append(url)
+            yield Response(data, start)
+    client = Client()
+    return SimpleNamespace(root=root, models_root=models_root, entry=entry, workflow=workflow, client=client,
         downloads=downloads, events=events, receipt=receipt_path, alignment=alignment)
 
 
@@ -313,17 +349,17 @@ def test_declared_entry_alignment_reaches_real_managed_custody_and_approval(tmp_
     entry_id = fixture.entry['id']
     original_receipt = fixture.receipt.read_bytes()
     with pytest.raises(fixture.alignment.AlignmentError, match='explicit consent'):
-        align(entry_id=entry_id, apply=True, opener=fixture.opener)
+        align(entry_id=entry_id, apply=True, client=fixture.client)
     assert fixture.downloads == []
-    result = align(entry_id=entry_id, apply=True, consent=['user_env'], opener=fixture.opener)
+    result = align(entry_id=entry_id, apply=True, consent=['user_env'], client=fixture.client)
     assert result['status'] == 'ready'
     assert len(fixture.downloads) == len(fixture.workflow.metadata['model_assets'])
     client = preflight.select_generation_target('managed', entry_id=entry_id)
     binding = client.target.facts['model_root']
-    assert binding['path'] == str(fixture.root / 'models')
+    assert binding['path'] == str(fixture.models_root)
     assert len(binding['inventory']) == len(fixture.workflow.metadata['model_assets']) + 1
-    auxiliary = fixture.root / 'models/hunyuan_foley/auxiliary/cpu-auxiliary.bin'
-    before_sidecars = set((fixture.root / 'models').rglob('*.json'))
+    auxiliary = fixture.models_root / 'hunyuan_foley/auxiliary/cpu-auxiliary.bin'
+    before_sidecars = set(fixture.models_root.rglob('*.json'))
     if change == 'hash':
         auxiliary.write_bytes(b'x' * auxiliary.stat().st_size)
     elif change == 'size':
@@ -338,14 +374,14 @@ def test_declared_entry_alignment_reaches_real_managed_custody_and_approval(tmp_
         if change in {'hash', 'size'}:
             with pytest.raises(fixture.alignment.IntegrityError, match='differs from its lock'):
                 align(entry_id=entry_id, apply=True, consent=['user_env'],
-                      opener=lambda *a, **k: pytest.fail('download after corruption'))
+                      client=SimpleNamespace(stream=lambda *a, **k: pytest.fail('download after corruption')))
         if change == 'missing':
             with pytest.raises(preflight.GenerationReadinessError) as caught:
                 preflight.select_generation_target('managed', entry_id=entry_id)
             assert entry_id in caught.value.recovery_command
             assert 'cpu-auxiliary.bin' in str(caught.value)
         assert fixture.receipt.read_bytes() == original_receipt
-        assert set((fixture.root / 'models').rglob('*.json')) == before_sidecars
+        assert set(fixture.models_root.rglob('*.json')) == before_sidecars
         assert not (tmp_path / 'outputs').exists()
         return
     provider = entries.target_schema(fixture.entry, fixture.workflow, client)
@@ -356,6 +392,8 @@ def test_declared_entry_alignment_reaches_real_managed_custody_and_approval(tmp_
     # B1 regression: the pre-existing ready entry still approves with Foley
     # fixture files present. Its inventory comes from the same composition.
     other = workflow_from_ready('image/z_image_turbo')
+    other.metadata['model_assets'] = copy.deepcopy(fixture.workflow.metadata['model_assets'][:3])
+    other.requirements.models = copy.deepcopy(other.metadata['model_assets'])
     other_client = preflight.select_generation_target('managed', entry_id='image/z_image_turbo')
     schema = entries.target_schema({'id': 'image/z_image_turbo'}, other, other_client)
     other_bundle = emit_bundle(other, tmp_path / 'other/workflow.py', {'operation': 'authored'})
@@ -367,26 +405,40 @@ def _receipt_attested_managed_workflow(tmp_path, monkeypatch):
     """Use the real ready declarations with receipt-owned CPU fixture bytes.
 
     Mirror _selected_managed_target's status boundary and _target_capture;
-    retain the original incomplete Z-image declarations without enrichment.
+    retain the template asset identities with declarations for the fixture bytes.
     """
     monkeypatch.setenv('VIBECOMFY_ENTRIES_DIR', str(tmp_path / 'user-entries'))
     workflow = workflow_from_ready('image/z_image_turbo')
     original_assets = copy.deepcopy(workflow.metadata['model_assets'])
     assert len(original_assets) == 3
-    assert all('sha256' not in asset and 'size_bytes' not in asset for asset in original_assets)
-    ready = entries._ready_entries_for('image/z_image_turbo')
+    for asset in original_assets:
+        data = ('receipt fixture for ' + asset['name']).encode()
+        asset['sha256'] = hashlib.sha256(data).hexdigest()
+        asset['size_bytes'] = len(data)
+    workflow.metadata['model_assets'] = copy.deepcopy(original_assets)
+    workflow.requirements.models = copy.deepcopy(original_assets)
+    original_find = entries._ready_entries_for
+    ready = original_find('image/z_image_turbo')
+    for entry in ready:
+        entry['model_assets'] = copy.deepcopy(original_assets)
     monkeypatch.setattr(entries, 'ready_entries', lambda: ready)
+    monkeypatch.setattr(entries, '_ready_entries_for',
+        lambda identifier=None: ready if identifier in (None, 'image/z_image_turbo') else original_find(identifier))
     root = tmp_path / 'installed-target'
     receipt_path = root / '.astrid-engine/install.json'
     receipt_path.parent.mkdir(parents=True)
     receipt_path.write_text('{}')
+    models_root = Path(effective_models_root(str(root), None))
     models = []
     for asset in [*original_assets,
                   {'name': 'cpu-auxiliary.bin', 'subdir': 'hunyuan_foley/auxiliary'}]:
-        path = root / 'models' / asset['subdir'] / asset['name']
+        path = models_root / asset['subdir'] / asset['name']
         data = ('receipt fixture for ' + asset['name']).encode()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
+        if 'sha256' in asset:
+            assert hashlib.sha256(path.read_bytes()).hexdigest() == asset['sha256']
+            assert path.stat().st_size == asset['size_bytes']
         models.append(DownloadResult(path.name, str(path), 'skipped', len(data),
                                      hashlib.sha256(data).hexdigest(), True, 0))
     auxiliary = models[-1]
@@ -409,31 +461,43 @@ def _receipt_attested_managed_workflow(tmp_path, monkeypatch):
         return copy.deepcopy(observed)
     monkeypatch.setattr(ComfyTargetClient, 'request_json', http)
     return SimpleNamespace(workflow=workflow, original_assets=original_assets, root=root,
-        receipt=receipt, receipt_path=receipt_path, requests=requests)
+        models_root=models_root, receipt=receipt, receipt_path=receipt_path, requests=requests)
 
 
 def _assert_auxiliary_verification_sidecar(fixture, before_sidecars):
     auxiliary = fixture.receipt.models[-1]
-    sidecar = (fixture.root / 'models/.vibecomfy/model-verification' /
+    sidecar = (fixture.models_root / '.vibecomfy/model-verification' /
                (hashlib.sha256(auxiliary.path.encode()).hexdigest() + '.json'))
-    assert set((fixture.root / 'models').rglob('*.json')) == before_sidecars | {sidecar}
+    assert set(fixture.models_root.rglob('*.json')) == before_sidecars | {sidecar}
     verified = json.loads(sidecar.read_text())
     assert verified['path'] == auxiliary.path
     assert verified['expected_sha256'] == verified['actual_sha256'] == auxiliary.sha256
     assert verified['expected_size_bytes'] == auxiliary.bytes
 
 
-@pytest.mark.parametrize('change', ['match', 'hash', 'size', 'missing', 'unattested'])
+@pytest.mark.parametrize('change', ['match', 'hash', 'size', 'missing', 'unattested', 'declaration_backed'])
 def test_explicit_ready_template_selection_uses_receipt_custody(tmp_path, monkeypatch, change):
     fixture = _receipt_attested_managed_workflow(tmp_path, monkeypatch)
-    if change == 'unattested':
-        # Present bytes plus the original incomplete declaration grant nothing.
+    if change in {'unattested', 'declaration_backed'}:
         fixture.receipt.models = fixture.receipt.models[1:]
+    if change == 'unattested':
+        # Neither receipt custody nor a trusted declaration attests these present bytes.
+        ready = entries.ready_entries()[0]
+        ready['model_assets'] = ready['model_assets'][1:]
     client = preflight.select_generation_target('managed', entry_id='image/z_image_turbo')
     inventory = client.target.facts['model_root']['inventory']
-    assert len(inventory) == len(fixture.receipt.models)
+    if change == 'declaration_backed':
+        # A complete pinned declaration can supply the omitted receipt row.
+        assert len(inventory) == len(fixture.workflow.metadata['model_assets'])
+    else:
+        assert len(inventory) == len(fixture.receipt.models)
+    attested_assets = fixture.workflow.metadata['model_assets']
+    if change == 'unattested':
+        attested_assets = attested_assets[1:]
+    assert {(row['subdir'], row['name']) for row in inventory} == {
+        (asset['subdir'], asset['name']) for asset in attested_assets}
     assert fixture.workflow.metadata['model_assets'][:3] == fixture.original_assets
-    path = fixture.root / 'models' / fixture.original_assets[0]['subdir'] / fixture.original_assets[0]['name']
+    path = fixture.models_root / fixture.original_assets[0]['subdir'] / fixture.original_assets[0]['name']
     if change == 'hash':
         path.write_bytes(b'x' * path.stat().st_size)
     elif change == 'size':
@@ -441,8 +505,8 @@ def test_explicit_ready_template_selection_uses_receipt_custody(tmp_path, monkey
     elif change == 'missing':
         path.unlink()
     before_receipt = fixture.receipt_path.read_bytes()
-    before_sidecars = set((fixture.root / 'models').rglob('*.json'))
-    if change != 'match':
+    before_sidecars = set(fixture.models_root.rglob('*.json'))
+    if change not in {'match', 'declaration_backed'}:
         with pytest.raises(ValueError, match='model-root'):
             entries.target_schema({'id': 'image/z_image_turbo'}, fixture.workflow, client)
         assert not (tmp_path / 'approved').exists()
@@ -455,9 +519,39 @@ def test_explicit_ready_template_selection_uses_receipt_custody(tmp_path, monkey
         _assert_auxiliary_verification_sidecar(fixture, before_sidecars)
         assert entries.target_schema({'id': 'image/z_image_turbo'}, fixture.workflow, client).auxiliary_model_custody == 'target'
     assert fixture.receipt_path.read_bytes() == before_receipt
-    if change != 'match':
-        assert set((fixture.root / 'models').rglob('*.json')) == before_sidecars
+    if change not in {'match', 'declaration_backed'}:
+        assert set(fixture.models_root.rglob('*.json')) == before_sidecars
     assert set(fixture.requests) == {'/object_info'}
+
+
+def test_incomplete_declaration_cannot_replace_receipt_custody(tmp_path, monkeypatch):
+    fixture = _receipt_attested_managed_workflow(tmp_path, monkeypatch)
+    first = fixture.original_assets[0]
+    fixture.receipt.models = fixture.receipt.models[1:]
+    entries.ready_entries()[0]['model_assets'][0].pop('sha256')
+    before_receipt = fixture.receipt_path.read_bytes()
+    before_sidecars = {path: path.read_bytes() for path in fixture.models_root.rglob('*.json')}
+    client = preflight.select_generation_target('managed', entry_id='image/z_image_turbo')
+    assert not any((row['subdir'], row['name']) == (first['subdir'], first['name'])
+                   for row in client.target.facts['model_root']['inventory'])
+    with pytest.raises(ValueError, match='model-root'):
+        entries.target_schema({'id': 'image/z_image_turbo'}, fixture.workflow, client)
+    assert fixture.receipt_path.read_bytes() == before_receipt
+    assert {path: path.read_bytes() for path in fixture.models_root.rglob('*.json')} == before_sidecars
+
+
+@pytest.mark.parametrize('field', ['sha256', 'size_bytes'])
+@pytest.mark.parametrize('index', [0, -1], ids=['loader', 'auxiliary'])
+def test_declared_identity_mismatch_refuses_managed_approval(tmp_path, monkeypatch, field, index):
+    fixture = _receipt_attested_managed_workflow(tmp_path, monkeypatch)
+    client = preflight.select_generation_target('managed', entry_id='image/z_image_turbo')
+    asset = fixture.workflow.metadata['model_assets'][index]
+    asset[field] = '0' * 64 if field == 'sha256' else asset[field] + 1
+    fixture.workflow.requirements.models = copy.deepcopy(fixture.workflow.metadata['model_assets'])
+    with pytest.raises((ValueError, WorkflowBundleError), match='mismatch'):
+        provider = entries.target_schema({'id': 'image/z_image_turbo'}, fixture.workflow, client)
+        bundle = emit_bundle(fixture.workflow, tmp_path / 'approved/workflow.py', {'operation': 'authored'})
+        bundle.compile(schema_provider=provider)
 
 
 @pytest.mark.parametrize('saved', [True, False], ids=['saved', 'unsaved'])
@@ -472,7 +566,7 @@ def test_user_authored_managed_selection_uses_receipt_custody(tmp_path, monkeypa
         ModelRegistry.load_default().get(entry_id)
     assert entries.find_entry(entry_id) is None
     if change == 'undeclared':
-        path = fixture.root / 'models/user-only/auxiliary.bin'
+        path = fixture.models_root / 'user-only/auxiliary.bin'
         path.parent.mkdir()
         path.write_bytes(b'arbitrary user declaration and matching bytes')
         fixture.workflow.metadata['model_assets'].append({
@@ -503,7 +597,7 @@ def test_user_authored_managed_selection_uses_receipt_custody(tmp_path, monkeypa
     elif change == 'missing':
         auxiliary.unlink()
     before_receipt = fixture.receipt_path.read_bytes()
-    before_sidecars = set((fixture.root / 'models').rglob('*.json'))
+    before_sidecars = set(fixture.models_root.rglob('*.json'))
     if change != 'match':
         with pytest.raises(ValueError, match='model-root'):
             entries.target_schema(entry, workflow, client)
@@ -518,11 +612,11 @@ def test_user_authored_managed_selection_uses_receipt_custody(tmp_path, monkeypa
         assert entries.target_schema(entry, workflow, client).auxiliary_model_custody == 'target'
     assert fixture.receipt_path.read_bytes() == before_receipt
     if change != 'match':
-        assert set((fixture.root / 'models').rglob('*.json')) == before_sidecars
+        assert set(fixture.models_root.rglob('*.json')) == before_sidecars
     assert set(fixture.requests) == {'/object_info'}
 
 
-# --- interim inventory wire: receipt rows -> host document -> child -----------------------------
+# --- target custody rows (declared rows for --align trust) ---------------------------------------
 
 def _rows_for(workflow):
     from astrid.core.generation.target_inventory import declared_rows
@@ -542,7 +636,7 @@ def _runpod_like_target(tmp_path, monkeypatch):
     return pod, workflow, bundle
 
 
-def test_runpod_bound_model_absent_locally_passes_as_available_on_target(tmp_path, monkeypatch):
+def test_runpod_bound_model_absent_locally_passes_as_declared_unverified(tmp_path, monkeypatch):
     pod, workflow, bundle = _runpod_like_target(tmp_path, monkeypatch)
     provider = local_server_engine._live_preflight(
         bundle, {}, pod.http_origin, tmp_path, client=pod, target_custody=_rows_for(workflow))
@@ -550,7 +644,10 @@ def test_runpod_bound_model_absent_locally_passes_as_available_on_target(tmp_pat
     record = local_server_engine._approve_live(bundle, {}, provider)
     assert record.api_digest
     declaration = next(row for row in provider._approval_diagnostics if row['code'] == 'target_model_asset')
-    assert declaration['status'] == 'available_on_target'
+    # These rows are explicitly trusted declarations, not observed target bytes.
+    # Approval remains valid without turning that trust into provisioning proof.
+    assert declaration['status'] == 'declared_unverified'
+    assert declaration['model_bytes_status'] == 'declared_unverified'
 
 
 def test_runpod_bound_model_missing_from_inventory_fails_approval(tmp_path, monkeypatch):
@@ -571,29 +668,21 @@ def test_local_comfy_url_without_inventory_keeps_the_local_disk_check(tmp_path, 
         local_server_engine._approve_live(bundle, {}, provider)
 
 
-def test_host_inventory_channel_is_absent_for_local_and_strict_when_present(tmp_path, monkeypatch):
+def test_trust_flag_is_the_only_host_channel_and_is_consumed_once(monkeypatch):
+    """Plan 32 T5: no machine inventory reaches a child; --align trust uses the declared rows."""
     from astrid.core.generation import target_inventory
-    url = 'http://127.0.0.1:12345'
-    monkeypatch.delenv(target_inventory.ENV, raising=False)
-    assert local_server_engine._inventory_from_environment(SimpleNamespace(), url) is None
-    row = {'name': 'a.bin', 'subdir': 'x', 'size': 3, 'sha256': 'a' * 64}
-    for bad in ('not json', '[]', json.dumps({'mode': 'inventory', 'comfy_url': url}),
-                json.dumps({'mode': 'other', 'comfy_url': url, 'models': []}),
-                json.dumps({'mode': 'inventory', 'comfy_url': url, 'models': [{**row, 'extra': 1}]}),
-                json.dumps({'mode': 'inventory', 'comfy_url': url, 'models': [{**row, 'size': '3'}]}),
-                json.dumps({'mode': 'trust', 'comfy_url': url, 'models': [row]})):
-        monkeypatch.setenv(target_inventory.ENV, bad)
-        with pytest.raises(local_server_engine.ProductionEngineError):
-            local_server_engine._inventory_from_environment(SimpleNamespace(), url)
-        assert target_inventory.ENV not in os.environ  # consumed, never inherited by a subprocess
-    monkeypatch.setenv(target_inventory.ENV, target_inventory.build_document('inventory', url, [row]))
-    assert local_server_engine._inventory_from_environment(SimpleNamespace(), url) == (row,)
+    workflow = SimpleNamespace(metadata={'model_assets': [
+        {'name': 'a.bin', 'subdir': 'x', 'sha256': 'sha256:' + 'a' * 64, 'size_bytes': 3}]})
+    bundle = SimpleNamespace(workflow=workflow)
+    monkeypatch.delenv(target_inventory.TRUST_ENV, raising=False)
+    assert local_server_engine._trust_from_environment(bundle) is None
+    for other in ('align', 'check', 'inventory', ''):
+        monkeypatch.setenv(target_inventory.TRUST_ENV, other)
+        assert local_server_engine._trust_from_environment(bundle) is None
+        assert target_inventory.TRUST_ENV not in os.environ  # consumed, never inherited by a subprocess
+    monkeypatch.setenv(target_inventory.TRUST_ENV, 'trust')
+    assert local_server_engine._trust_from_environment(bundle) == (
+        {'name': 'a.bin', 'subdir': 'x', 'size': 3, 'sha256': 'a' * 64},)
+    assert not hasattr(target_inventory, 'ENV') and not hasattr(target_inventory, 'build_document')
 
 
-def test_child_refuses_inventory_for_another_comfy_url(monkeypatch):
-    from astrid.core.generation import target_inventory
-    row = {'name': 'a.bin', 'subdir': '', 'size': 3, 'sha256': 'a' * 64}
-    monkeypatch.setenv(target_inventory.ENV, target_inventory.build_document(
-        'inventory', 'http://127.0.0.1:1111', [row]))
-    with pytest.raises(local_server_engine.ProductionEngineError, match='another ComfyUI URL'):
-        local_server_engine._inventory_from_environment(SimpleNamespace(), 'http://127.0.0.1:2222')

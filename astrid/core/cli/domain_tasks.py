@@ -26,6 +26,8 @@ Verbs (six one-call resource operations plus one durable observer):
   fence through its internal seam, while partial fences remain invalid;
 - ``retry <task_id>`` — one ``client.tasks.retry`` call with the same
   idempotency-key contract;
+- ``logs <task_id>`` — list task outputs declared with role ``log``, or read
+  one managed log object;
 - ``events <task_id>`` — one ``client.tasks.events`` call returning the
   task's ordered ``core.task`` stream events (read, no key).
 - ``follow <task_id>`` — repeatedly reads ``client.tasks.show`` until the
@@ -141,9 +143,8 @@ def _add_idempotency_key(subparser: argparse.ArgumentParser) -> None:
 def _add_project_arg(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument(
         "--project",
-        required=True,
         default=None,
-        help="Owning project id or immutable slug.",
+        help="Owning project id or immutable slug (default: selected project).",
     )
 
 
@@ -262,6 +263,52 @@ def _cmd_events(parsed: argparse.Namespace) -> int:
     return print_result(result, as_json=parsed.json)
 
 
+def _cmd_logs(parsed: argparse.Namespace) -> int:
+    from astrid.core._shared.log_redaction import redact_log
+
+    task_id, code = _task_id(parsed)
+    if task_id is None:
+        return code
+    # The task's terminal result owns its log rows: the host records them there on
+    # success and on failure alike, while managed outputs exist only for a success.
+    result = parsed.client.tasks.show(task_id)
+    if not result.ok:
+        return print_result(result, as_json=parsed.json)
+    task = result.data if isinstance(result.data, Mapping) else {}
+    terminal = task.get("result") if isinstance(task.get("result"), Mapping) else {}
+    rows = terminal.get("outputs") if isinstance(terminal.get("outputs"), list) else []
+    logs = [row for row in rows if isinstance(row, Mapping) and row.get("role") == "log"]
+    if not logs:
+        print(redact_log(f"no logs recorded for task {task_id}"), file=sys.stderr)
+        return 1
+    if parsed.name is not None:
+        selected = next(
+            (row for row in logs if (row.get("variant_key") or row.get("filename")) == parsed.name),
+            None,
+        )
+        if selected is None:
+            print(redact_log(f"no log named {parsed.name} for task {task_id}"), file=sys.stderr)
+            return 1
+        digest = selected.get("digest") or selected.get("object_id")
+        reader = getattr(getattr(parsed.client, "media", None), "read_bytes", None)
+        if callable(reader) and digest:
+            data = reader(str(digest))
+            sys.stdout.buffer.write(redact_log(data.decode("utf-8", errors="replace")).encode("utf-8"))
+            return 0
+        print(redact_log(f"{selected.get('variant_key') or selected.get('filename')}  {digest or 'object reference unavailable'}"))
+        print("This client cannot read managed output bytes; showing the object reference instead.", file=sys.stderr)
+        return 0
+    if parsed.json:
+        return print_result(DomainResult.success(json.loads(redact_log(json.dumps(logs)))), as_json=True)
+    for row in logs:
+        name = row.get("variant_key") or row.get("filename") or "-"
+        media_type = row.get("media_type") or "-"
+        size = row.get("size_bytes", row.get("size", "-"))
+        digest = row.get("digest") or row.get("object_id") or "-"
+        print(redact_log(f"{name}  {media_type}  {size}  {digest}"))
+    return 0
+
+
 def _follow_kwargs(parsed: argparse.Namespace) -> dict[str, Any]:
     return {"project": parsed.project, "poll_seconds": parsed.poll_seconds, "timeout_seconds": parsed.timeout_seconds}
 
@@ -269,9 +316,14 @@ def _follow_kwargs(parsed: argparse.Namespace) -> dict[str, Any]:
 def _completed_line(data: Mapping[str, Any]) -> str:
     outputs = data.get("outputs") or []
     label = "-"
-    if outputs and isinstance(outputs[0], Mapping):
-        resource = outputs[0].get("resource")
-        label = outputs[0].get("location") or (resource.get("filename") if isinstance(resource, Mapping) else None) or "-"
+    for output in outputs:
+        if not isinstance(output, Mapping):
+            continue
+        resource = output.get("resource")
+        if isinstance(resource, Mapping) and resource.get("role") == "log":
+            continue
+        label = output.get("location") or (resource.get("filename") if isinstance(resource, Mapping) else None) or "-"
+        break
     return f"completed task={data.get('task_id') or '-'} run={data.get('run_id') or '-'} output={label}"
 
 
@@ -422,6 +474,14 @@ def _configure_events(subparser: argparse.ArgumentParser) -> None:
     subparser.set_defaults(handler=_cmd_events)
 
 
+def _configure_logs(subparser: argparse.ArgumentParser) -> None:
+    _add_project_arg(subparser)
+    subparser.add_argument("task_id", help="Task id, or a unique hex prefix of at least 8 characters.")
+    subparser.add_argument("--name", default=None, help="Print one named log's bytes.")
+    _add_json_flag(subparser, help_text="Print only role=log managed-output rows as a JSON envelope.")
+    subparser.set_defaults(handler=_cmd_logs)
+
+
 def _configure_follow(subparser: argparse.ArgumentParser) -> None:
     _add_project_arg(subparser)
     subparser.add_argument("task_id", help="Task id, or a unique hex prefix of at least 8 characters.")
@@ -483,19 +543,36 @@ COMMANDS: tuple[CommandSpec, ...] = (
         help="Follow durable task state to completion with quiet progress updates.",
         configure=_configure_follow,
     ),
+    CommandSpec(
+        "logs",
+        help="List or read one task's managed log outputs.",
+        configure=_configure_logs,
+    ),
 )
+
+
+class _TasksParser(argparse.ArgumentParser):
+    def parse_args(self, args: Any = None, namespace: Any = None) -> argparse.Namespace:
+        parsed = super().parse_args(args, namespace)
+        if not parsed.project:
+            from astrid.core.cli.current_project import resolve_current_project
+
+            parsed.project = resolve_current_project(parsed)
+            if not parsed.project:
+                self.error("no project selected; run astrid projects select <id> or pass --project")
+        return parsed
 
 
 def build_parser(client: Any) -> argparse.ArgumentParser:
     """Build the ``tasks`` product-family parser stamped with *client*.
 
-    Exactly the seven product verbs above are registered; executor lifecycle
+    Exactly the eight product verbs above are registered; executor lifecycle
     and plan/step verbs are absent by construction.
     """
-    parser = argparse.ArgumentParser(
+    parser = _TasksParser(
         prog="astrid tasks",
         description=(
-            "Task create/list/show/cancel/retry/events/follow (product family); "
+            "Task create/list/show/cancel/retry/events/follow/logs (product family); "
             "executor lifecycle verbs are not exposed."
         ),
     )

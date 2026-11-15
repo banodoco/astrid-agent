@@ -65,6 +65,7 @@ def test_invocation_result_outputs_are_ordinal_handles_and_skip_thumbnails() -> 
         outputs={
             "managed_outputs": [
                 {"output_port": "thumbnail", "role": "thumbnail", "ordinal": 0},
+                {"output_port": "images", "role": "log", "ordinal": 0, "digest": "log-digest"},
                 {"output_port": "images", "role": "result", "ordinal": 1, "digest": IMAGE},
                 {"output_port": "images", "role": "result", "ordinal": 0, "digest": OTHER},
             ]
@@ -73,6 +74,7 @@ def test_invocation_result_outputs_are_ordinal_handles_and_skip_thumbnails() -> 
 
     assert [row["digest"] for row in result.output_rows()] == [OTHER, IMAGE]
     assert result.output("images", 1)["digest"] == IMAGE
+    assert "log-digest" not in str(result)
     with pytest.raises(LookupError, match=r"images\[result\]"):
         result.output("images", 2)
 

@@ -8,8 +8,8 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from astrid.packs.h3_av.actions.compile.compile import compile_preparation
-from astrid.packs.h3_av.actions.prepare.prepare import prepare_request
+from astrid.packs.h3_av.shared.compile import compile_preparation
+from astrid.packs.h3_av.shared.prepare import prepare_request
 from astrid.packs.h3_av.shared.compose import compose_candidate
 from astrid.packs.h3_av.shared.generation import build_generation_workflow, generation_timing
 from astrid.packs.h3_av.shared.request import normalize_request

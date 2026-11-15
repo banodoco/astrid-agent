@@ -35,7 +35,17 @@ from .core import (
     write_json,
 )
 from .installation import Installation, State
-from .outcome import RECORD, Request, clear_record, journal_before_stop, receipt_warnings, settle, write_record
+from .outcome import (
+    RECORD,
+    Request,
+    clear_record,
+    journal_before_stop,
+    receipt_warnings,
+    settle,
+    write_record,
+)
+from .progress import HINT as PROGRESS_HINT
+from .progress import Progress
 from .service import (
     LABEL,
     default_program_root,
@@ -45,7 +55,7 @@ from .service import (
     pinokio_owned,
 )
 from .support import FAILURE_MESSAGE, default_doctor_bundle
-from .tools import download, validate_manifest
+from .tools import download, require_git, validate_manifest
 
 PINOKIO_UPDATE_UNINSTALL_REFUSAL = (
     "Astrid on this computer was installed with Pinokio. Choose Pinokio's Update or Uninstall button."
@@ -334,6 +344,14 @@ def _prepare_log(path: Path, *protected: Path) -> Path | None:
     return path
 
 
+def _download_manifest(root: Path, destination: Path) -> None:
+    # Even the small manifest download waits for the prerequisite check. Stage
+    # repeats it for local manifests and programmatic update entry points.
+    prior = current(root)
+    require_git(recorded=prior.env.get("ASTRID_GIT_EXECUTABLE") if prior else None)
+    download("https://astrid.haus/install-manifest.json", destination)
+
+
 def _retained_r0_roots(service) -> list[Path]:
     from .boundary_handoff import retained_roots as handoff_roots
     from .boundary_registration import retained_roots
@@ -474,6 +492,14 @@ class _Run:
         return outcome.exit_code
 
 
+def _speaking(backend, say):
+    """Route the backend's printed lines through ``say``, so none lands inside an animated phase line."""
+    for speaker in (backend, getattr(backend, "service", None)):
+        if getattr(speaker, "say", None) is print:
+            speaker.say = say
+    return backend
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(prog="astrid install", description="Install or update Astrid.")
     mode = result.add_mutually_exclusive_group()
@@ -552,6 +578,9 @@ def main(argv: list[str] | None = None) -> int:
         parser().error("--update-job is invalid.")
     from runtime_protocol import platform
     log = None  # Unresolved selection and unsafe/unavailable logs use the console.
+    # Installer lines; the current phase line stays alive on an interactive terminal.
+    say = Progress()
+    os.environ.pop(PROGRESS_HINT, None)  # the bootstrap's hint is for this process alone
     if settled:
         # A run that fails before it can write its own receipt must not leave
         # the previous run's receipt standing as if it were this run's.
@@ -564,7 +593,7 @@ def main(argv: list[str] | None = None) -> int:
         log_path = platform.log_dir() / "install.log"
         uv = args.uv or default_uv()
         process_control = ("sandbox" if args.sandbox else "strict") if mode in {"install", "update"} else None
-        backend = Backend(root, log_path, uv, process_control=process_control)
+        backend = _speaking(Backend(root, log_path, uv, process_control=process_control), say)
         backend.console_diagnostics = True
         if mode != "doctor":
             # Before any selection read, including the Pinokio update path.
@@ -637,7 +666,7 @@ def main(argv: list[str] | None = None) -> int:
                     raise ValueError("Run the install line to provide the pinned user-local uv.")
                 manifest_path = args.manifest or root / "install-manifest.json"
                 if not args.manifest:
-                    download("https://astrid.haus/install-manifest.json", manifest_path)
+                    _download_manifest(root, manifest_path)
                 manifest = run.manifest(validate_manifest(read_json(manifest_path)))
                 outcomes = (update_app(root, backend, manifest) if args.update_app
                             else update_pinokio(root, backend, manifest, force=args.update))
@@ -689,7 +718,7 @@ def main(argv: list[str] | None = None) -> int:
                     release_stale_selection = mode != "doctor"
                 if mode == "doctor" and not args.root and recorded.get("managed_by") == "pinokio":
                     root = absolute(recorded["program_root"])
-                    backend = Backend(root, log_path, uv, process_control=process_control)
+                    backend = _speaking(Backend(root, log_path, uv, process_control=process_control), say)
                     backend.console_diagnostics = True
                 prior = read_json(root / "install.json")
                 managed_by = args.managed_by or (prior.get("managed_by") if args.root or mode == "doctor" else None)
@@ -725,12 +754,14 @@ def main(argv: list[str] | None = None) -> int:
                         raise ValueError(f"The login service already belongs to {recorded_root}.")
                     root = recorded_root
                     run.root = root
-                    backend = Backend(root, log_path, uv, process_control=process_control)
+                    backend = _speaking(Backend(root, log_path, uv, process_control=process_control), say)
                     backend.console_diagnostics = True
                     prior = read_json(root / "install.json")
                 if not recorded and prior.get("owner") == LABEL and prior.get("data_root"):
                     recorded = {"data_root": prior["data_root"]}
                 backend.managed_by = managed_by
+                if managed_by == "pinokio":
+                    say.tracks = None  # Pinokio keeps its own record of this terminal: plain lines
                 if mode in {"install", "update"} and managed_by != "pinokio" and normalise_completed(backend):
                     # The first run after a finished storage move makes R1 the selected
                     # data root once; from here this is an ordinary direct install.
@@ -823,7 +854,7 @@ def main(argv: list[str] | None = None) -> int:
                             raise ValueError("Run the install line to provide the pinned user-local uv.")
                         path = args.manifest or root / "install-manifest.json"
                         if not args.manifest:
-                            download("https://astrid.haus/install-manifest.json", path)
+                            _download_manifest(root, path)
                         return run.manifest(validate_manifest(read_json(path)))
 
                     # R0's data stays read-only. This must precede legacy
@@ -923,7 +954,7 @@ def main(argv: list[str] | None = None) -> int:
                 if mode not in {"uninstall", "doctor"}:
                     if not args.manifest:
                         args.manifest = root / "install-manifest.json"
-                        download("https://astrid.haus/install-manifest.json", args.manifest)
+                        _download_manifest(root, args.manifest)
                     manifest = validate_manifest(read_json(args.manifest))
                     if settled:
                         run.manifest(manifest)
@@ -931,7 +962,7 @@ def main(argv: list[str] | None = None) -> int:
                 if mode == "doctor":
                     bundle = default_doctor_bundle() if args.doctor == "__default__" else Path(args.doctor)
                 options = {"managed_by": managed_by} if managed_by else {}
-                installer = Installer(root, data, backend, **options)
+                installer = Installer(root, data, backend, say=say, **options)
                 run.installer = installer
                 if args.update_job:
                     if update_job_record is None:
@@ -975,8 +1006,11 @@ def main(argv: list[str] | None = None) -> int:
                     print(details)
         elif isinstance(failure, VerificationError) and failure.safe_message:
             print(failure.safe_message)
+        else:
+            print(f"{type(failure).__name__}: {failure}")
         if log is not None and not settled:
             print(f"Details: {log}")  # settled runs name it in the receipt's closing lines
         if settled:
+            run.log = log  # Include the actual traceback log, including update-job logs.
             return run.finish(failure=failure)
         return 1

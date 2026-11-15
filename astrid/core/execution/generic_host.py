@@ -45,13 +45,14 @@ import tempfile
 import threading
 import time
 import zipfile
+
 from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field, is_dataclass, replace
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType, SimpleNamespace
-from typing import IO, TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence
+from typing import IO, TYPE_CHECKING, Any, Callable, Literal, Mapping, Protocol, Sequence, cast
 from urllib.parse import quote, urlsplit
 
 from runtime_protocol import platform
@@ -72,16 +73,22 @@ from astrid.core.source_identity import (
     source_checkout_closure_digest,
 )
 
-# Startup observations use only the existing private stderr sink. Regular-file
-# latency is not bounded; this diagnostic never changes descriptor flags.
-_STARTUP_OBSERVATION_ENABLED = __name__ == "__main__" and "--ready-file" in sys.argv
+# Preserve the private-fd diagnostic and also time startup through the service
+# stderr sink. Writes are best effort; descriptor flags are never changed.
+_STARTUP_OBSERVATION_ENABLED = __name__ == "__main__" and any(
+    flag in sys.argv for flag in ("--ready-file", "--service")
+)
 _STARTUP_OBSERVATION_STARTED = time.monotonic()
+_STARTUP_TIMING_LAST = _STARTUP_OBSERVATION_STARTED
+_STARTUP_TIMING_SEEN: set[str] = set()
 _STARTUP_OBSERVATION_PHASES = frozenset({
     "module_import_begin", "module_import_done", "cli_args_parsed",
     "startup_identity_begin", "startup_identity_done",
     "host_constructor_begin", "host_constructor_done", "discovery_begin",
     "discovery_done", "preflight_begin", "preflight_done",
     "registration_begin", "registration_done", "ready_written",
+    "bootstrap_begin", "bootstrap_inventory_done", "bootstrap_identity_done",
+    "bootstrap_health_done", "bootstrap_manifest_done", "bootstrap_launch_done",
 })
 
 
@@ -90,13 +97,27 @@ def _is_posix() -> bool:
 
 
 def _emit_startup_phase(phase: str) -> None:
-    """One best-effort fixed row to an existing owner-only regular fd2.
+    """Fixed private-fd diagnostics plus service timing for each startup phase.
 
     A file write can stall before startup/cleanup. No nonblocking guarantee,
     new sink, retry, descriptor flag change or diagnostic thread is implied.
     """
     if not _STARTUP_OBSERVATION_ENABLED or type(phase) is not str or phase not in _STARTUP_OBSERVATION_PHASES:
         return
+    global _STARTUP_TIMING_LAST
+    # Runtime service stderr is often a pipe, so the private-fd diagnostic
+    # below alone misses service starts. One path-free timing row per startup
+    # checkpoint also goes through the ordinary service log sink.
+    if phase not in _STARTUP_TIMING_SEEN:
+        now = time.monotonic()
+        elapsed = max(0, round((now - _STARTUP_TIMING_LAST) * 1000))
+        _STARTUP_TIMING_LAST = now
+        _STARTUP_TIMING_SEEN.add(phase)
+        try:
+            print(json.dumps({"event": "astrid.host_startup_timing", "phase": phase,
+                              "elapsed_ms": elapsed}), file=sys.stderr, flush=True)
+        except (OSError, ValueError):
+            pass
     try:
         info = os.fstat(2)
         if (not stat.S_ISREG(info.st_mode) or not owned_by_current_user(2, info, mode=0o600)):
@@ -133,7 +154,6 @@ from astrid.core.env_vars import (
     ASTRID_PACKS_PATH,
     ASTRID_VIBECOMFY_CHECKOUT,
 )
-from astrid.core.foundation.hash import sha256_file
 from astrid.core.execution import task_scope as _task_scope
 from astrid.core.execution.capability_ledger import load_capability_ledger
 from astrid.core.execution.guards import (
@@ -143,9 +163,8 @@ from astrid.core.execution.guards import (
     ExecutionGuardPolicy,
     write_evidence_status,
 )
-from astrid.core.execution.host_log import start_stdio_rotator
+from astrid.core.execution.host_log import log_lease_diagnostic, start_stdio_rotator
 from astrid.core.execution.managed_inputs import managed_file_digest
-from astrid.core.rendering.assets import managed_asset_digest
 from astrid.core.execution.managed_tool_session import (
     AdmissionToken,
     CapabilityDescriptor,
@@ -183,6 +202,7 @@ from astrid.core.execution.thumbnails import (
     is_visual_media_type,
 )
 from astrid.core.execution.warm_hold import DEFAULT_IDLE_SECONDS, WarmHolds, WarmLease, idle_seconds
+from astrid.core.foundation.hash import sha256_file
 from astrid.core.generation.engine_local_endpoint import LOCAL_ENGINE_HOST_ENV
 from astrid.core.generation.model_root import (
     MODEL_ROOT_BINDING_ENV,
@@ -198,6 +218,7 @@ from astrid.core.generation.vibecomfy_dependency import (
     configured_vibecomfy_checkout,
     dependency_pythonpath,
 )
+from astrid.core.rendering.assets import managed_asset_digest
 from astrid.core.subprocess_env import build_child_subprocess_env
 from astrid.core.util.secrets import load_local_api_key_with_source
 from astrid.sdk.execution_request import normalize_execution_request
@@ -249,15 +270,78 @@ class HostError(RuntimeError):
         self.safe_message = safe_message
 
 
+class HostLeaseLost(HostError):
+    """A typed Runtime observation proved that the claimed authority changed."""
+
+    code: str | None
+
+
+class _RuntimeOperationFailure(Protocol):
+    """Writable metadata on coded exceptions from any Runtime client."""
+
+    runtime_operation: str
+
+
+def _runtime_authority_refusal(error: BaseException, *, operation: str) -> str | None:
+    """Only a typed refusal of this authority is a lifecycle verdict."""
+    if isinstance(error, HostLeaseLost):
+        return str(error)
+    operation = getattr(error, "runtime_operation", operation)
+    code = getattr(error, "code", None)
+    if code in {"lease_fenced", "unauthorized", "forbidden"} or (
+            code == "not_found" and operation in {"task", "heartbeat", "settle", "fail"}):
+        return f"Runtime refused {operation}: {code}"
+    return None
+
+
 class TerminalPublicationRejected(HostError):
     """A Runtime validation/conflict response with verified nonterminal custody."""
+
+
+class _RuntimeRecoveryIdentityError(HostError):
+    """The host cannot identify its Runtime for any recovered attempt."""
+
+
+class _TerminalEvidenceNotRecorded(HostError):
+    """A successful task read did not contain the submitted durable evidence."""
+
+
+def _terminal_publication_rejection(
+    error: BaseException, task_id: str, owner: tuple[str, int] | None,
+    observe: Callable[[str], Any],
+) -> TerminalPublicationRejected | None:
+    """Classify a mutation error, never a failed observation, as rejection.
+
+    A status alone cannot establish custody. Only validation/conflict plus an
+    exact running-owner readback permits replacing the original publication.
+    Transport uncertainty and unreadable custody always require exact replay.
+    """
+    if isinstance(error, TerminalPublicationRejected):
+        return error
+    if owner is None or getattr(error, "code", None) not in {"validation_error", "conflict"}:
+        return None
+    try:
+        task = observe(task_id)
+        task = task.get("task", task) if isinstance(task, Mapping) else task
+        def field(name, default=None):
+            return task.get(name, default) if isinstance(task, Mapping) else getattr(task, name, default)
+        if (str(field("id", field("task_id"))) == task_id
+                and field("state", field("status")) == "running"
+                and field("attempt_id") == owner[0]
+                and field("fence", field("lease_fence")) == owner[1]):
+            return TerminalPublicationRejected(str(error))
+    except Exception:  # noqa: BLE001 - failed observations cannot prove rejection
+        pass
+    return None
 
 
 def _persist_terminal_request(path: Path, request: Mapping[str, Any]) -> None:
     """Keep the exact fenced wire request before sending any terminal mutation."""
     temporary = path.with_suffix(".tmp")
+    from runtime_protocol.platform import owner_only
+
     with temporary.open("w", encoding="utf-8") as stream:
-        os.fchmod(stream.fileno(), 0o600)
+        owner_only(stream.fileno())  # 0600 on POSIX; owner-only DACL on Windows
         json.dump(request, stream, separators=(",", ":"), allow_nan=False)
         stream.flush()
         os.fsync(stream.fileno())
@@ -466,9 +550,10 @@ class CommandCleanupUnresolved(HostError):
         self.execution_error = execution_error
 
 
-_LEASE_POLL_SECONDS = 5.0
-_TERMINAL_RECONCILE_SECONDS = 30.0
+_DEFAULT_EXECUTION_POLICY = ExecutionGuardPolicy()
+_LEASE_POLL_SECONDS = _DEFAULT_EXECUTION_POLICY.authority_window_seconds / 60
 _TERMINAL_RECONCILE_POLL_SECONDS = 0.25
+_TERMINAL_RECOVERY_MAX_ATTEMPTS = 5
 
 
 class HostCancelled(HostError):
@@ -702,6 +787,11 @@ class StorageEnvelopeError(HostError):
 
 def _cleanup_ephemeral_attempt(root: Path) -> None:
     """Remove an owned attempt root and verify that no residue remains."""
+    from astrid.core.generation.vibecomfy_runtime_root import remove_windows_runtime_root
+    try:
+        remove_windows_runtime_root(root / "outputs")
+    except OSError as exc:
+        raise HostError(f"owned attempt cleanup failed: {root}") from exc
     try:
         shutil.rmtree(root)
     except FileNotFoundError:
@@ -776,7 +866,13 @@ class _ManagedLocalServerTaskAdapter(_ManagedTaskAdapter):
     def _cleanup(self) -> None:
         from astrid.core.generation.backends.vibecomfy_local_server import cleanup_prompts
 
-        cleanup_prompts(self.url, self.destination)
+        try:
+            cleanup_prompts(self.url, self.destination)
+        except Exception as exc:
+            refusal = _attached_cleanup_refusal(exc)
+            if refusal is None:
+                raise
+            raise refusal from exc
 
     def cancel(self, *, reason: str) -> dict[str, Any]:
         self._cancel_signal.set()
@@ -795,184 +891,25 @@ class _ManagedLocalServerTaskAdapter(_ManagedTaskAdapter):
         return super().release(reason=reason)
 
 
-class _ManagedVibeSessionAdapter:
-    """Bridge the manager lifecycle to the reviewed checkout adapter."""
+def _attached_cleanup_refusal(exc: BaseException) -> RuntimeError | None:
+    """Name the attached ComfyUI endpoint and status when it refuses Astrid's scoped cleanup."""
+    from urllib.error import HTTPError
+    from urllib.parse import urlsplit
 
-    def __init__(self, backend: Any, native_graph: Any = None) -> None:
-        self.backend = backend
-        self._captured_backend = backend
-        self.native_graph = native_graph
-        self._captured_native_graph = native_graph
-        self.cpu_handoff_identity: tuple[Any, ...] | None = None
-        self.cpu_handoff_token: AdmissionToken | None = None
-        self.cpu_handoff_failed = False
-        # SDK-launched hosts do not own the schema creator's native graph.
-        # This is a residency-control binding, never a process capability.
-        self.sdk_session_identity: str | None = None
-        self._sdk_session_bound = False
-        self._invocation_token: AdmissionToken | None = None
-
-    @classmethod
-    def from_host_session(cls, *, binding: SessionBinding, native_graph: Any = None, **options: Any) -> Any:
-        from astrid.core.generation.backends.vibecomfy import CheckoutServerAdapter
-
-        # This hook is supplied by the shared Comfy owner. A URL or a legacy
-        # checkout adapter alone is not evidence of owner authority.
-        backend = CheckoutServerAdapter.open_host_session(binding=binding, **options)
-        adapter = cls(backend, native_graph)
-        adapter._hook_binding = binding
-        if native_graph is None:
-            adapter.sdk_session_identity = _canonical_digest(binding.to_dict())
-            adapter._sdk_session_bound = True
-        return adapter
-
-    def _sdk_session_identity(self) -> str | None:
-        if hasattr(self, "_hook_binding"):
-            return _canonical_digest(self._hook_binding.to_dict())
-        from astrid.core.generation.backends.vibecomfy import CheckoutServerAdapter
-
-        backend = self.backend
-        if not isinstance(backend, CheckoutServerAdapter):
-            return None
-        session = backend._host_session
-        profile = backend._host_profile
-        if (
-            not isinstance(session, Mapping) or not session
-            or not isinstance(profile, Mapping)
-            or profile.get("schema_version") != "hc03-worker-readiness.v1"
-            or profile.get("status") != "ready"
-            or not backend._bound_fingerprint
-            or not backend._bound_model_id or not backend._bound_template_id
-            or not backend._invocation_identity
-        ):
-            return None
-        return _canonical_digest({
-            "session": session,
-            "profile": profile,
-            "model_id": backend._bound_model_id,
-            "template_id": backend._bound_template_id,
-            "fingerprint": backend._bound_fingerprint,
-            "invocation_identity": backend._invocation_identity,
-            "runtime_instance_id": backend._runtime_instance_id,
-        })
-
-    def _legacy_checkout(self) -> bool:
-        # Only adapters constructed directly through the old checkout path
-        # use its containment API. Hook-created owners must implement hooks.
-        from astrid.core.generation.backends.vibecomfy import CheckoutServerAdapter
-
-        return not hasattr(self, "_hook_binding") and isinstance(self.backend, CheckoutServerAdapter)
-
-    def residency_identity(self) -> Any:
-        if self.backend is not self._captured_backend:
-            return None
-        if self._captured_native_graph is not None:
-            return (self._captured_native_graph
-                    if self.native_graph is self._captured_native_graph else None)
-        if (self.sdk_session_identity is not None
-                and self._sdk_session_identity() == self.sdk_session_identity):
-            return ("verified_sdk_session", self.sdk_session_identity)
-        return None
-
-    @property
-    def residency_bound(self) -> bool:
-        return self._captured_native_graph is not None or self._sdk_session_bound
-
-    @staticmethod
-    def _native_evidence(
-        evidence: Any,
-        *,
-        kind: str,
-        native_key: str,
-        reason: str,
-    ) -> dict[str, Any]:
-        if (
-            not isinstance(evidence, Mapping)
-            or evidence.get("ok") is not True
-            or evidence.get(native_key) is not True
-        ):
-            return {
-                "ok": False,
-                kind: False,
-                "reason": reason,
-                "native": dict(evidence) if isinstance(evidence, Mapping) else evidence,
-            }
-        return {"ok": True, kind: True, "reason": reason, "native": dict(evidence)}
-
-    def observe(self, *, binding: SessionBinding) -> dict[str, Any]:
-        if self._legacy_checkout():
-            self.backend._revalidate_host_session()
-            return {"ok": True, "observed": True}
-        evidence = self.backend.observe(binding=binding)
-        if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
-            raise HostError("Comfy session observation was not verified")
-        return dict(evidence)
-
-    def invoke(self, token: AdmissionToken, *, model_id: str, template_id: str) -> Mapping[str, Any]:
-        self._invocation_token = token
-        evidence = self.backend.invoke(token=token, model_id=model_id, template_id=template_id)
-        if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
-            raise HostError("Comfy invocation binding was not verified")
-        context = evidence.get("child_context")
-        if (not isinstance(context, Mapping) or context.get("token_id") != token.token_id
-                or context.get("invocation_id") != token.invocation_id
-                or context.get("generation") != token.generation
-                or tuple(context.get("binding_identity", ())) != token.binding_identity):
-            raise HostError("Comfy child context does not match its admission")
-        return dict(context)
-
-    def fence(self, *, reason: str) -> dict[str, Any]:
-        try:
-            if reason == "cpu_residency_eviction" and self.residency_identity() is None:
-                raise HostError("native CPU handoff session identity changed")
-            legacy = self._legacy_checkout()
-            evidence = self.backend.cancel() if legacy else self.backend.fence(reason=reason)
-            result = self._native_evidence(
-                evidence, kind="fenced", native_key="cancelled" if legacy else "fenced", reason=reason
+    seen: BaseException | None = exc
+    for _ in range(12):
+        if seen is None:
+            break
+        if isinstance(seen, HTTPError):
+            endpoint = urlsplit(seen.url or "").path or "/queue"
+            return RuntimeError(
+                f"attached ComfyUI refused Astrid's scoped cleanup at {endpoint} "
+                f"with HTTP {seen.code}; other queued jobs were not touched"
             )
-            if reason == "cpu_residency_eviction" and result["ok"] is not True:
-                raise HostError("native CPU handoff fencing was not verified")
-            return result
-        except BaseException:
-            if reason == "cpu_residency_eviction":
-                self.cpu_handoff_failed = True
-            raise
+        seen = seen.__cause__ or seen.__context__
+    return None
 
-    def cancel(self, *, reason: str) -> dict[str, Any]:
-        evidence = self.backend.cancel() if self._legacy_checkout() else self.backend.cancel(reason=reason)
-        return self._native_evidence(
-            evidence, kind="cancelled", native_key="cancelled", reason=reason
-        )
 
-    def cancel_admission(self, *, token: AdmissionToken, reason: str) -> dict[str, Any]:
-        # Cancellation before dispatch must not touch the previous warm run.
-        if not self._legacy_checkout() and token != self._invocation_token:
-            return {"ok": True, "cancelled": True, "reason": reason, "dispatched": False}
-        return self.cancel(reason=reason)
-
-    def release(self, *, reason: str) -> dict[str, Any]:
-        if reason == "capacity_replacement" and self.residency_bound:
-            raise HostError("native engine replacement requires a fresh Runtime-selected preparation; custody retained")
-        if reason == "cpu_residency_eviction" and (
-            self.residency_identity() is None or self.cpu_handoff_failed
-        ):
-            raise HostError("native CPU handoff release remains unresolved")
-        try:
-            evidence = self.backend.release(reason=reason)
-            result = self._native_evidence(
-                evidence, kind="released", native_key="released", reason=reason
-            )
-            if reason == "cpu_residency_eviction" and result["ok"] is not True:
-                self.cpu_handoff_failed = True
-            if result["ok"] is True:
-                transport = getattr(self.backend, "_endpoint_transport", None)
-                if transport is not None:
-                    transport.close()
-            return result
-        except BaseException:
-            if reason == "cpu_residency_eviction":
-                self.cpu_handoff_failed = True
-            raise
 
 
 class _ManagedWanChildAdapter:
@@ -1290,11 +1227,8 @@ class _ManagedWanChildAdapter:
 
 # The sessions the slot keeps warm after a settled task, and exactly what idle
 # release does to each; every other session is released when its task ends.
-# VibeComfy's /api/free acknowledgement is all the host sees, so whether GPU or
-# unified memory actually came back is not measured.
 _WARM_SESSION_ADAPTERS = {
     _ManagedWanChildAdapter: "child process ended",
-    _ManagedVibeSessionAdapter: "models unloaded; engine process kept; memory release not measured",
 }
 
 
@@ -1401,14 +1335,24 @@ def _normalize_verified_facts(value: Any) -> dict[str, dict[str, Any]]:
     return {"exact": normalized_exact, "minimum": normalized_minimum}
 
 
+def _installed_vibecomfy_source(profile: Any) -> dict[str, Any] | None:
+    """The attested VibeComfy source identity recorded in installed provenance."""
+    if not isinstance(profile, Mapping):
+        return None
+    installed = profile.get("installed_provenance")
+    source = installed.get("source") if isinstance(installed, Mapping) else None
+    vibe = source.get("vibecomfy") if isinstance(source, Mapping) else None
+    return dict(vibe) if isinstance(vibe, Mapping) and vibe.get("verified") is True else None
+
+
 def _read_readiness_profile_document() -> Mapping[str, Any] | None:
     """Read the Worker-issued readiness document with its hash fence."""
     profile_path = os.environ.get("ASTRID_HOST_READINESS_PROFILE_PATH")
     if not profile_path:
         return None
-    from astrid.packs.vibecomfy.endpoint_checkout import read_workflow_profile
+    from astrid.core.generation.engine_endpoint import read_readiness_profile
     try:
-        return read_workflow_profile(profile_path, os.environ.get("ASTRID_HOST_READINESS_PROFILE_HASH", ""))
+        return read_readiness_profile(profile_path, os.environ.get("ASTRID_HOST_READINESS_PROFILE_HASH", ""))
     except Exception:
         raise HostError("readiness profile is unreadable or its hash does not match") from None
 
@@ -1578,11 +1522,9 @@ def _bind_host_owned_command_values(
         else:
             values["readiness_profile_json"] = "{}"
     if "readiness_profile_path" in declared:
-        values["readiness_profile_path"] = ("-" if (admission or {}).get("host_target_bound") else
-            os.environ.get("ASTRID_HOST_READINESS_PROFILE_PATH") or "-")
+        values["readiness_profile_path"] = os.environ.get("ASTRID_HOST_READINESS_PROFILE_PATH") or "-"
     if "readiness_profile_hash" in declared:
-        values["readiness_profile_hash"] = ("-" if (admission or {}).get("host_target_bound") else
-            os.environ.get("ASTRID_HOST_READINESS_PROFILE_HASH") or "-")
+        values["readiness_profile_hash"] = os.environ.get("ASTRID_HOST_READINESS_PROFILE_HASH") or "-"
     return values
 
 
@@ -1590,8 +1532,10 @@ def _prepare_vibecomfy_execution_identity(
     inputs: Mapping[str, Any],
     scratch: Path,
     readiness_profile: Mapping[str, Any] | None,
+    *, prepare_engine: Any = None,
 ) -> tuple[str, str, str, Mapping[str, Any]]:
     """Select and identify the exact VibeComfy input form before launch."""
+    from astrid.core.generation.engine_contracts import CustodyUnresolved
     from astrid.packs.vibecomfy.production_engine import (
         load_workflow_path,
         loaded_workflow_execution_identity,
@@ -1608,6 +1552,7 @@ def _prepare_vibecomfy_execution_identity(
             companion=inputs.get("companion"),
             source=inputs.get("source"),
             scratch=scratch,
+            preserve_on_error=(CustodyUnresolved,) if prepare_engine is not None else (),
         ) as (workflow_path, _authority):
             comfy_url = str(inputs.get("comfy_url") or "")
             if comfy_url:
@@ -1621,14 +1566,24 @@ def _prepare_vibecomfy_execution_identity(
                 scratch / "canonical-loader",
                 comfy_url=comfy_url,
             )
+            identity = loaded_workflow_execution_identity(loaded, readiness_profile)
+            if prepare_engine is not None:
+                prepare_engine(workflow_path, identity, loaded)
             return (
-                loaded_workflow_execution_identity(loaded, readiness_profile),
+                identity,
                 loaded.model_id,
                 loaded.template_id,
                 loaded_workflow_session_requirements(loaded),
             )
     except Exception as exc:
-        raise HostError(f"vibecomfy.run canonical input preflight failed: {exc}") from exc
+        from concurrent.futures import CancelledError
+        if isinstance(exc, (CancelledError, HostCancelled)):
+            raise
+        error = HostError(f"vibecomfy.run canonical input preflight failed: {exc}")
+        for name in ("code", "field", "fix", "readiness"):
+            if hasattr(exc, name):
+                setattr(error, name, getattr(exc, name))
+        raise error from exc
     finally:
         if previous_headless is None:
             os.environ.pop("VIBECOMFY_HEADLESS", None)
@@ -1676,11 +1631,12 @@ def _install_host_vibecomfy_import_root() -> Path | None:
         raise HostError("installed host VibeComfy checkout must be canonical without aliases")
     profile = _read_readiness_profile_document()
     candidate = profile.get("vibecomfy_candidate") if isinstance(profile, Mapping) else None
-    session = profile.get("vibecomfy_session") if isinstance(profile, Mapping) else None
-    if not isinstance(candidate, Mapping) or not isinstance(session, Mapping):
+    source = _installed_vibecomfy_source(profile)
+    if (not isinstance(candidate, Mapping) or source is None
+            or not isinstance(profile.get("engine_identity"), Mapping)):
         raise HostError("installed host VibeComfy checkout requires attested readiness")
-    revision = session.get("source_revision")
-    content = session.get("source_content_digest")
+    revision = source.get("revision")
+    content = source.get("content_digest")
     if (candidate.get("checkout") != str(lexical)
             or candidate.get("revision") != revision
             or candidate.get("source_content_digest") != content
@@ -1794,7 +1750,7 @@ class AdapterRegistry:
             family = explicit
         elif definition.id.startswith("rendering.") or "render" in definition.id:
             family = "render"
-        elif definition.id.startswith(("vibecomfy.", "comfy_wrap.")) or metadata.get("vibecomfy_command"):
+        elif definition.id.startswith("vibecomfy.") or metadata.get("vibecomfy_command"):
             family = "local_generation"
         elif metadata.get("api_provider") or metadata.get("env") or metadata.get("secrets_required") or definition.isolation.network:
             family = "provider"
@@ -1863,6 +1819,19 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
     return str(value)
+
+
+def _executor_registration_identity(registration: Any, expected: Mapping[str, Any] | None = None) -> dict[str, str]:
+    """Extract the Runtime-accepted source identity, refusing incomplete receipts."""
+    identity = {}
+    for name in ("source_epoch", "source_digest", "dependency_digest"):
+        value = registration.get(name) if isinstance(registration, Mapping) else getattr(registration, name, None)
+        if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+            raise HostError(f"Runtime executor registration lacks a valid {name}")
+        if expected is not None and value != expected.get(name):
+            raise HostError(f"Runtime executor registration changed {name}")
+        identity[name] = value
+    return identity
 
 
 def _terminate_process_group(process: subprocess.Popen, *, grace_seconds: float = 2.0) -> None:
@@ -2164,8 +2133,15 @@ def _launch_worker_probe_environments(pack_roots: tuple[Path, ...], environment:
     rendering pack itself); the host baseline variant is always present.
     A render in any other context is refused by ``_validated_runtime``.
     """
+    from astrid.core.execution.executor.folder import (
+        discover_folder_executor_roots,
+        load_folder_executor,
+    )
+    from astrid.core.execution.executor.schema import ExecutorValidationError
     from astrid.core.rendering.remotion_runtime import (
-        _NODE_ENV_KEYS, _UNSUPPORTED_PYTHON_STARTUP, _REGISTRY_SELECTORS,
+        _NODE_ENV_KEYS,
+        _REGISTRY_SELECTORS,
+        _UNSUPPORTED_PYTHON_STARTUP,
         _validate_remotion_worker_environment,
     )
     from astrid.core.subprocess_env import (
@@ -2174,9 +2150,9 @@ def _launch_worker_probe_environments(pack_roots: tuple[Path, ...], environment:
         _is_secret_name,
         _normalize_secret_names,
     )
-    from astrid.core.execution.executor.folder import discover_folder_executor_roots, load_folder_executor
-    from astrid.core.execution.executor.schema import ExecutorValidationError
-    matrix = GenericPackHost._load_matrix(capability_matrix)
+    ledger = (load_capability_ledger(capability_matrix, pack_roots=pack_roots)
+              if capability_matrix else None)
+    matrix = GenericPackHost._load_matrix(capability_matrix, ledger=ledger)
     safe_base_env = set(_SAFE_BASE_ENV)
     if sys.platform == "win32":
         safe_base_env.update(_WINDOWS_BASE_ENV)
@@ -2596,9 +2572,11 @@ _TASK_OUTPUT_DIAGNOSTIC_NAMES = frozenset(
 )
 
 
-def _attempt_tree_bytes(root: Path) -> int:
+def _attempt_tree_bytes(root: Path, *, excluded_roots: tuple[Path, ...] = ()) -> int:
     """Count owned attempt bytes without following symlink escapes."""
     total = 0
+    resolved_root = root.resolve()
+    excluded = tuple(path.resolve() for path in excluded_roots)
     try:
         for path in root.rglob("*"):
             # Renderers may remove completed frame files or workspaces while
@@ -2607,6 +2585,8 @@ def _attempt_tree_bytes(root: Path) -> int:
             # race, not a renderer failure.
             try:
                 if path.is_symlink() or not path.is_file():
+                    continue
+                if any((resolved_root / path.relative_to(root)).is_relative_to(item) for item in excluded):
                     continue
                 if path.parent == root and path.name in _TASK_OUTPUT_DIAGNOSTIC_NAMES:
                     continue
@@ -2620,11 +2600,13 @@ def _attempt_tree_bytes(root: Path) -> int:
     return total
 
 
-def _storage_tree_bytes(root: Path) -> int:
+def _storage_tree_bytes(root: Path, *, excluded_roots: tuple[Path, ...] = ()) -> int:
     """Count regular files in a bounded subtree without following symlinks."""
     if not root.is_dir():
         return 0
     total = 0
+    resolved_root = root.resolve()
+    excluded = tuple(path.resolve() for path in excluded_roots)
     try:
         for path in root.rglob("*"):
             # Atomic writers use sibling ``*.tmp`` files.  Those bytes are
@@ -2635,6 +2617,8 @@ def _storage_tree_bytes(root: Path) -> int:
             # absent from this point-in-time accounting sample.
             try:
                 if path.is_symlink() or not path.is_file() or path.name.endswith(".tmp"):
+                    continue
+                if any((resolved_root / path.relative_to(root)).is_relative_to(item) for item in excluded):
                     continue
                 total += int(path.stat().st_size)
             except FileNotFoundError:
@@ -2684,6 +2668,9 @@ def _storage_envelope_measurement(
     root = Path(root)
     output_root = Path(output_root)
     output_resolved = output_root.resolve(strict=False)
+    # The same log roots the live guard leaves out: run logs have their own bound and
+    # are not the task's scratch or output.
+    log_roots = _collected_log_roots(output_root, root)
     total_bytes = 0
     output_bytes = 0
     scratch_bytes = 0
@@ -2698,6 +2685,8 @@ def _storage_envelope_measurement(
                 if path.is_symlink() or not path.is_file():
                     continue
                 if path.parent == root and path.name in _TASK_OUTPUT_DIAGNOSTIC_NAMES:
+                    continue
+                if any(path.resolve(strict=False).is_relative_to(log) for log in log_roots):
                     continue
                 size = int(path.stat().st_size)
                 relative = path.relative_to(root).as_posix()
@@ -3132,6 +3121,7 @@ def _interactive_admission_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
 def _interactive_review_authority(
     host: Any, task: Mapping[str, Any], record: CapabilityRecord, *,
     attempt_id: str, lease_id: str, fence: int, runtime_epoch: int,
+    observe_fault: Callable[..., bool] | None = None,
 ) -> Callable[[], None] | None:
     """Fail closed unless public Runtime reads prove the entire conjunction.
 
@@ -3147,6 +3137,8 @@ def _interactive_review_authority(
     if record.id not in {parent_id, child_id}:
         return None
 
+    admitted = False
+
     def effective(value: Mapping[str, Any], capability: CapabilityRecord) -> dict[str, Any]:
         inputs = _admitted_task_spec(value).get("inputs", {})
         if not isinstance(inputs, Mapping):
@@ -3155,9 +3147,20 @@ def _interactive_review_authority(
         result.update(inputs)
         return result
 
-    def live(value: Mapping[str, Any], expected: Mapping[str, Any], capability: CapabilityRecord) -> Mapping[str, Any]:
+    def live(value: Mapping[str, Any], expected: Mapping[str, Any], capability: CapabilityRecord,
+             pinned_binding: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
         binding = value.get("execution_binding")
         spec = value.get("spec")
+        if (not isinstance(binding, Mapping) or not isinstance(spec, Mapping)
+                or type(value.get("state", value.get("status"))) is not str
+                or type(binding.get("status")) is not str
+                or type(value.get("task_id", value.get("id"))) is not str
+                or type(value.get("capability_id", value.get("capability"))) is not str
+                or any(type(value.get(key)) is not str or not value[key]
+                       for key in ("attempt_id", "capability_digest"))
+                or type(value.get("runtime_epoch")) is not int
+                or type(value.get("lease_fence")) is not int):
+            raise HostError("malformed interactive authority observation")
         if (not isinstance(binding, Mapping) or binding.get("status") != "claimed"
                 or not isinstance(spec, Mapping)
                 or value.get("state", value.get("status")) != "running"
@@ -3169,17 +3172,27 @@ def _interactive_review_authority(
                 or value.get("capability_digest") != capability.capability_digest
                 or spec.get("capability_digest") != capability.capability_digest
                 or spec.get("delegation_closed_attempt_id") == expected["attempt_id"]):
-            raise HostError("interactive attempt authority changed")
+            raise HostLeaseLost("interactive attempt authority changed")
         for name, pinned in expected.items():
+            if type(binding.get(name)) is not type(pinned):
+                raise HostError("malformed interactive binding observation")
             if binding.get(name) != pinned or (name in {"fence", "runtime_epoch"}
                                                and type(binding.get(name)) is not int):
-                raise HostError("interactive attempt fence changed")
+                raise HostLeaseLost("interactive attempt fence changed")
         expiry = value.get("lease_expires_at")
         if type(expiry) is not str:
             raise HostError("missing interactive lease deadline")
         parsed = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
-        if parsed.tzinfo is None or parsed <= datetime.now(timezone.utc):
-            raise HostError("interactive lease ended")
+        if parsed.tzinfo is None or (not admitted and parsed <= datetime.now(timezone.utc)):
+            raise HostError("interactive lease metadata cannot qualify initial admission")
+        # Compare typed placement observations before contract validation can
+        # reject a mismatch as an unreadable observation.
+        if pinned_binding is not None:
+            for name in ("actual_target", "resolved_target", "effective_target"):
+                observed = binding.get(name)
+                normalize_execution_request({"schema_version": 1, "target": observed})
+                if observed != pinned_binding.get(name):
+                    raise HostLeaseLost("interactive placement changed")
         contract = _execution_contract(value)
         target = contract.get("target") if contract else None
         if (not isinstance(target, Mapping) or target.get("kind") != "machine"
@@ -3299,22 +3312,38 @@ def _interactive_review_authority(
         def validate() -> None:
             health = host.client.health()
             epoch = health.get("runtime_epoch") if isinstance(health, Mapping) else getattr(health, "runtime_epoch", None)
-            if type(epoch) is not int or epoch != runtime_epoch:
-                raise HostError("interactive Runtime epoch changed")
+            if type(epoch) is not int:
+                raise HostError("malformed interactive Runtime epoch")
+            if epoch != runtime_epoch:
+                raise HostLeaseLost("interactive Runtime epoch changed")
             for tid, expected, capability, admitted_spec, admitted_binding, admitted_request, project in pinned:
                 current = task_resource(host.client.task(tid))
-                binding = live(current, expected, capability)
+                binding = live(current, expected, capability, admitted_binding)
                 if (_canonical_digest(_interactive_admission_spec(current["spec"])) != _canonical_digest(admitted_spec)
                         or _canonical_digest(binding) != _canonical_digest(admitted_binding)
                         or _canonical_digest(current.get("execution_request")) != _canonical_digest(admitted_request)
                         or current.get("project_id") != project):
-                    raise HostError("interactive admission or placement changed")
+                    raise HostLeaseLost("interactive admission or placement changed")
 
         validate()
-        return validate
+        admitted = True
+
+        def observe() -> None:
+            try:
+                validate()
+            except Exception as exc:
+                unknown = (observe_fault("interactive_authority_exception", exc) if observe_fault
+                           else _runtime_authority_refusal(exc, operation="task") is None)
+                if not unknown:
+                    raise HostLeaseLost(_runtime_authority_refusal(exc, operation="task")) from exc
+            else:
+                if observe_fault:
+                    observe_fault("interactive_authority_recovered", None)
+
+        return observe
     except Exception:
         # Missing/malformed admission or failed initial readback gets the
-        # ordinary bound. Once admitted, any later loss cancels the attempt.
+        # ordinary admission bound.
         return None
 
 
@@ -4474,11 +4503,7 @@ def _task_storage_limits(task_data: Mapping[str, Any]) -> dict[str, int] | None:
 
 
 def _render_media_roots(root: Path) -> tuple[Path, ...]:
-    """Keep render media out of the diagnostic evidence budget.
-
-    These files are protected by actual volume space. Logs and other evidence
-    retain the existing per-attempt and concurrent retained-root caps.
-    """
+    """Keep render media out of the diagnostic evidence budget."""
     return tuple(
         path for path in root.iterdir()
         if path.name in {"inputs", "managed-objects", "outputs", "render-inputs"}
@@ -4486,12 +4511,42 @@ def _render_media_roots(root: Path) -> tuple[Path, ...]:
     )
 
 
+def _host_log_root(attempt: Path) -> Path:
+    """Keep host stream files and declarations outside action publication."""
+    return attempt / ".host-logs"
+
+
+def _collected_log_roots(output_root: Path, attempt: Path) -> tuple[Path, ...]:
+    """Logs have their own collection bound and do not consume task evidence/output budgets."""
+    excluded = {
+        (output_root / "logs").resolve(),
+        (output_root / "logs.json").resolve(),
+        _host_log_root(attempt).resolve(),
+    }
+    try:
+        from astrid.core._shared import run_logs
+
+        boundary = output_root.resolve()
+        for _declaration, source in run_logs.read_declared(output_root):
+            resolved = source.resolve()
+            if (resolved.is_relative_to(boundary) and source.is_file()
+                    and not source.is_symlink()):
+                excluded.add(resolved)
+    except Exception:  # noqa: BLE001 - malformed optional logs remain best effort
+        pass
+    return tuple(sorted(excluded, key=str))
+
+
 def _assert_live_storage_envelope(
     estimate: Mapping[str, int] | None,
     root: Path,
     output_root: Path,
+    *,
+    storage_floor_exempt: bool = False,
 ) -> None:
-    """Guard real volume space, plus hard envelopes for bounded non-render packs."""
+    """Guard volume space without preventing machine observation or cleanup."""
+    if storage_floor_exempt:
+        return
     floor = free_disk_floor_bytes()
     for volume_path in dict.fromkeys((root, output_root)):
         if not volume_path.exists():
@@ -4511,8 +4566,9 @@ def _assert_live_storage_envelope(
             )
     if estimate is None:
         return
-    total_bytes = _attempt_tree_bytes(root)
-    output_bytes = _storage_tree_bytes(output_root)
+    log_roots = _collected_log_roots(output_root, root)
+    output_bytes = _storage_tree_bytes(output_root, excluded_roots=log_roots)
+    total_bytes = _attempt_tree_bytes(root, excluded_roots=log_roots)
     scratch_bytes = max(0, total_bytes - output_bytes)
     if output_bytes > int(estimate["output_bytes"]):
         diagnostic = {
@@ -4549,8 +4605,12 @@ def _task_storage_envelope(
     task_data: Mapping[str, Any],
     root: Path,
     staged_outputs: list[Mapping[str, Any]],
+    *,
+    storage_floor_exempt: bool = False,
 ) -> dict[str, int] | None:
     """Measure usage before CAS upload and enforce bounded non-render packs."""
+    if storage_floor_exempt:
+        return None
     _assert_live_storage_envelope(None, root, root / "outputs")
     estimate = _task_storage_estimate(task_data)
     if estimate is None:
@@ -4576,14 +4636,19 @@ def _task_storage_envelope(
     # published result manifest and any undeclared stable file, while treating
     # atomic writer temporaries as scratch.  The latter prevents the estimate
     # from changing meaning between polling and final settlement.
+    excluded_logs = tuple(path.resolve() for path in _collected_log_roots(output_root, root))
     stable_output_paths = {
         path.resolve()
         for path in output_root.rglob("*")
         if not path.is_symlink() and path.is_file() and not path.name.endswith(".tmp")
+        and not any(path.resolve().is_relative_to(log_root) for log_root in excluded_logs)
     }
-    output_paths = stable_output_paths | published_paths
+    output_paths = stable_output_paths | {
+        path for path in published_paths
+        if not any(path.is_relative_to(log_root) for log_root in excluded_logs)
+    }
     output_bytes = sum(int(path.stat().st_size) for path in output_paths)
-    total_bytes = _attempt_tree_bytes(root)
+    total_bytes = _attempt_tree_bytes(root, excluded_roots=_collected_log_roots(output_root, root))
     scratch_bytes = max(0, total_bytes - output_bytes)
     limits = _task_storage_limits(task_data)
     if limits is not None and output_bytes > output_limit:
@@ -5198,6 +5263,11 @@ class CapabilityRecord:
         return self.definition.id
 
     @property
+    def storage_floor_exempt(self) -> bool:
+        """Pack-owned cleanup/observation policy, independent of claim lane."""
+        return self.definition.metadata.get("storage_floor_exempt") is True
+
+    @property
     def resource_keys(self) -> tuple[str, ...]:
         adapter, error = self._adapter_result()
         if error:
@@ -5395,6 +5465,7 @@ class RuntimeProtocolClient:
         client = RuntimeProtocolClient(self.endpoint, self.credential, timeout=self.timeout,
                                       credential_file=self.credential_file)
         client.executor_id = self.executor_id
+        client.execution_policy = self.execution_policy
         client._local_runtime_discovery_file = self._local_runtime_discovery_file
         client._local_runtime_realm = self._local_runtime_realm
         client._local_runtime_instance = self._local_runtime_instance
@@ -5439,10 +5510,17 @@ class RuntimeProtocolClient:
 
     def health(self, *, deadline: float | None = None):
         """Read protocol/schema/runtime epoch through the generated client."""
-        value = self._lifecycle_client(deadline=deadline).health()
+        try:
+            value = self._lifecycle_client(deadline=deadline).health()
+        except Exception as exc:
+            if getattr(exc, "code", None) is not None:
+                cast(_RuntimeOperationFailure, exc).runtime_operation = "health"
+            raise
         epoch = value.get("runtime_epoch") if isinstance(value, Mapping) else getattr(value, "runtime_epoch", None)
         if epoch is not None:
-            self._runtime_epoch = int(epoch)
+            if type(epoch) is not int or epoch < 1:
+                raise HostError("malformed Runtime health epoch")
+            self._runtime_epoch = epoch
         return value
 
     def _authenticate_worker(self, executor_id: str) -> str:
@@ -5468,9 +5546,9 @@ class RuntimeProtocolClient:
         """Read the live bootstrap epoch before every mutating operation."""
         value = self.health(deadline=deadline) if deadline is not None else self.health()
         epoch = value.get("runtime_epoch") if isinstance(value, Mapping) else getattr(value, "runtime_epoch", None)
-        if epoch is None:
-            raise HostError("runtime health returned no runtime_epoch")
-        return int(epoch)
+        if type(epoch) is not int or epoch < 1:
+            raise HostError("runtime health returned no valid runtime_epoch")
+        return epoch
 
     @staticmethod
     def _claim_attempt_id(claim: Any) -> str | None:
@@ -5483,7 +5561,7 @@ class RuntimeProtocolClient:
             raise HostError("attempt runtime epoch was not captured at claim")
         current = self._current_runtime_epoch(deadline=deadline) if deadline is not None else self._current_runtime_epoch()
         if current != expected:
-            raise HostError(
+            raise HostLeaseLost(
                 "runtime epoch changed after claim; stale attempt is fenced and requires reconciliation"
             )
         return expected
@@ -5514,6 +5592,7 @@ class RuntimeProtocolClient:
                 f"{self._registration_session}"
             ),
         )
+        _executor_registration_identity(registration, payload)
         self.executor_id = executor_id
         return registration
 
@@ -5561,11 +5640,14 @@ class RuntimeProtocolClient:
             idempotency_key=f"capability-withdraw-{capability_id}-{digest}",
         )
 
+    execution_policy = _DEFAULT_EXECUTION_POLICY
+
     def _lifecycle_client(self, *, deadline: float | None = None):
         """Bound lifecycle reads/writes without mutating concurrent RPC options."""
-        remaining = 2.0 if deadline is None else min(2.0, deadline - time.monotonic())
+        timeout = self.execution_policy.authority_window_seconds / 150
+        remaining = timeout if deadline is None else min(timeout, deadline - time.monotonic())
         if remaining <= 0:
-            raise TimeoutError("attempt validity expired before Runtime operation")
+            raise TimeoutError("attempt deadline expired before Runtime operation")
         if not hasattr(self.generated, "timeout"):
             return self.generated
         client = copy.copy(self.generated)
@@ -5582,9 +5664,10 @@ class RuntimeProtocolClient:
         # returns the original receipt and lets the lease expire.
         # Delegated admission holds this same lock across its fenced RPCs.
         # Waiting for it must not strand the attempt's deadline observer.
-        remaining = 2.0 if deadline is None else min(2.0, max(0.0, deadline - time.monotonic()))
+        timeout = self.execution_policy.authority_window_seconds / 150
+        remaining = timeout if deadline is None else min(timeout, max(0.0, deadline - time.monotonic()))
         if not self._heartbeat_lock.acquire(timeout=remaining):
-            raise HostError("runtime heartbeat authority is busy")
+            raise TimeoutError("runtime heartbeat authority is busy")
         try:
             self._heartbeat_sequence += 1
             heartbeat_sequence = self._heartbeat_sequence
@@ -5690,8 +5773,9 @@ class RuntimeProtocolClient:
         Stages and managed input refs are explicit trusted-host arguments. The
         Runtime resolves them and injects any publication settlement effect.
         """
-        from ._child_bridge import ChildBridgeError, _staged_child_task, resource
         from astrid.sdk._child_bridge import _strict_json
+
+        from ._child_bridge import ChildBridgeError, _staged_child_task, resource
 
         request = normalize_execution_request(execution_request)
         staged = stage is not None or input_refs is not None
@@ -5811,7 +5895,9 @@ class RuntimeProtocolClient:
     def settle(self, task_id: str, lease_token: str, *, result: Mapping[str, Any], outputs: list[dict[str, Any]], effect: Mapping[str, Any] | None, attempt_id: str | None = None, fence: int | None = None, request_path: Path | None = None):
         if not attempt_id or fence is None:
             raise HostError("generated settlement requires attempt_id and fence")
-        epoch = self._claimed_runtime_epoch(attempt_id)
+        epoch = self._attempt_runtime_epochs.get(str(attempt_id))
+        if epoch is None:
+            raise HostError("attempt runtime epoch was not captured at claim")
         settlement = {
             "attempt_id": attempt_id,
             "lease_id": lease_token,
@@ -5877,6 +5963,8 @@ class RuntimeProtocolClient:
         if result is not None:
             evidence["result"] = dict(result)
         idempotency_key = f"fail-{attempt_id}-{fence}"
+        if structured_error and structured_error.get("code") == "reconciliation_required":
+            idempotency_key += "-cede"
         request = dict(
             lease_id=lease_token, fence=int(fence), error=payload,
             runtime_epoch=epoch, idempotency_key=idempotency_key, **evidence,
@@ -5884,12 +5972,14 @@ class RuntimeProtocolClient:
         if request_path is not None:
             _persist_terminal_request(request_path, {
                 "operation": "fail_attempt", "identifier": attempt_id,
+                "task_id": task_id, "executor_id": getattr(self, "executor_id", None),
                 "idempotency_key": idempotency_key,
                 "body": {key: value for key, value in request.items() if key != "idempotency_key"},
             })
         return self._terminal_evidence_mutation(
             task_id, result,
             lambda: self._terminal_evidence_request(completion_client, "fail_attempt", attempt_id, request),
+            operation="fail", rejected_owner=(attempt_id, int(fence)),
         )
 
     @staticmethod
@@ -5922,7 +6012,7 @@ class RuntimeProtocolClient:
     def _terminal_evidence_mutation(
         self, task_id: str, expected_result: Mapping[str, Any] | None,
         mutation: Callable[[], Any],
-        *, rejected_owner: tuple[str, int] | None = None,
+        *, rejected_owner: tuple[str, int] | None = None, operation: str = "settle",
     ) -> Any:
         """Retry the same fenced write after checking whether its ACK was lost."""
         last_error: BaseException | None = None
@@ -5936,24 +6026,17 @@ class RuntimeProtocolClient:
                         return self._verify_terminal_evidence_readback(task_id, expected_result, None)
                     except Exception:
                         pass
+                reason = _runtime_authority_refusal(exc, operation=operation)
+                if reason is not None:
+                    refusal = HostLeaseLost(reason)
+                    refusal.code = getattr(exc, "code", None)
+                    raise refusal from exc
                 # A transport failure (including a lost ACK) says nothing
                 # about commit. Only a validation/conflict response AND a
                 # read of this same nonterminal owner permit a fenced failure.
-                if rejected_owner is not None and getattr(exc, "status", None) in {400, 409, 422}:
-                    try:
-                        task = self.task(task_id)
-                        task = task.get("task", task) if isinstance(task, Mapping) else task
-                        def field(name, default=None):
-                            return task.get(name, default) if isinstance(task, Mapping) else getattr(task, name, default)
-                        if (str(field("id", field("task_id"))) == task_id
-                                and field("state", field("status")) == "running"
-                                and field("attempt_id") == rejected_owner[0]
-                                and field("fence", field("lease_fence")) == rejected_owner[1]):
-                            raise TerminalPublicationRejected(str(exc)) from exc
-                    except TerminalPublicationRejected:
-                        raise
-                    except Exception:  # noqa: BLE001 - unreadable custody remains ambiguous
-                        pass
+                rejection = _terminal_publication_rejection(exc, task_id, rejected_owner, self.task)
+                if rejection is not None:
+                    raise rejection from exc
                 if attempt == 0:
                     continue
                 raise
@@ -5999,7 +6082,7 @@ class RuntimeProtocolClient:
             result = task.get("result") if isinstance(task, Mapping) else getattr(task, "result", None)
             if ((task_id_value is not None and str(task_id_value) != task_id)
                     or not contains(result, expected_result)):
-                raise HostError("Runtime terminal evidence is not present in durable task readback")
+                raise _TerminalEvidenceNotRecorded("Runtime terminal evidence is not present in durable task readback")
         return {"task": task} if task is not None else {"result": result}
 
     def cancel(
@@ -6071,12 +6154,14 @@ class RuntimeProtocolClient:
         if request_path is not None:
             _persist_terminal_request(request_path, {
                 "operation": "cancel_task", "identifier": task_id,
+                "task_id": task_id, "executor_id": getattr(self, "executor_id", None),
                 "idempotency_key": idempotency_key,
                 "body": {key: value for key, value in request.items() if key != "idempotency_key"},
             })
         return self._terminal_evidence_mutation(
             task_id, result,
             lambda: self._terminal_evidence_request(self._lifecycle_client(), "cancel_task", task_id, request),
+            operation="task",
         )
 
     def get_object(self, digest: str) -> bytes:
@@ -6390,7 +6475,8 @@ def _publish_busy(path: Path | None, delta: int) -> None:
 class _TaskOutputCapture:
     """Drain child pipes continuously and retain only scrubbed bounded tails."""
 
-    def __init__(self, attempt: Path, secrets: Mapping[str, str], scrub):
+    def __init__(self, attempt: Path, secrets: Mapping[str, str], scrub, full_log_root: Path | None = None):
+        self._full_paths = {name: full_log_root / f"job.{name}" for name in ("stdout", "stderr")} if full_log_root else {}
         self._paths = {name: attempt / filename for name, filename in _TASK_OUTPUT_TAIL_NAMES.items()}
         self._metadata_path = attempt / _TASK_OUTPUT_METADATA_NAME
         self._secrets = tuple(value for value in secrets.values() if isinstance(value, str) and value)
@@ -6441,6 +6527,9 @@ class _TaskOutputCapture:
         self.persist(force=True)
 
     def _receive(self, name: str, chunk: bytes) -> None:
+        if name in self._full_paths:
+            with self._full_paths[name].open("ab") as stream:
+                stream.write(chunk)
         decoded = self._pending[name] + self._decoders[name].decode(chunk)
         safe, pending = self._redact_prefix(decoded, final=False)
         self._append(name, safe)
@@ -6562,23 +6651,38 @@ class _TaskOutputCapture:
         self.persist(force=True)
 
 
-def _align_trust(task: Mapping[str, Any]) -> bool:
+def _local_machine(inputs: Mapping[str, Any]) -> dict[str, Any]:
+    """Which machine runs a built-in placement: this host (local) or the user's ComfyUI (attached)."""
+    import socket
+
+    url = inputs.get("comfy_url")
+    if url:
+        return {"placement": "attached", "machine": "attached", "id": str(url), "lease": None, "device": None}
+    device = os.environ.get("CUDA_VISIBLE_DEVICES")
+    return {"placement": "local", "machine": "local", "id": socket.gethostname(), "lease": None,
+            "device": device if device not in (None, "") else "auto"}
+
+
+def _machine_align_mode(task: Mapping[str, Any]) -> str:
+    """The align mode a rented machine runs: the admitted one, else align (an empty machine has nothing to check)."""
     intent = _task_generation_intent(task)
     metadata = intent.get("metadata") if isinstance(intent, Mapping) else None
-    return isinstance(metadata, Mapping) and metadata.get("align") == "trust"
+    mode = metadata.get("align") if isinstance(metadata, Mapping) else None
+    return mode if mode in ("align", "check", "trust") else "align"
 
 
-def _target_inventory_document(invocation: Any, evidence: Mapping[str, Any], *, trust: bool = False) -> str:
-    """The one host-owned inventory document, built only after the bound install is checked."""
-    from astrid.core.generation.target_inventory import build_document
-
-    installed = invocation.get("installed") if isinstance(invocation, Mapping) else None
-    if (not isinstance(installed, Mapping) or not installed.get("receipt_sha256")
-            or installed["receipt_sha256"] != evidence.get("installed_receipt_sha256")):
-        raise HostError("bound endpoint receipt differs from the prepared installation")
-    if trust:
-        return build_document("trust", evidence["loopback_url"])
-    return build_document("inventory", evidence["loopback_url"], invocation.get("models", ()))
+def _align_admission(task: Mapping[str, Any]) -> dict[str, str]:
+    """The requested align mode (when not the default check) and the entry id, for the local run child."""
+    intent = _task_generation_intent(task)
+    metadata = intent.get("metadata") if isinstance(intent, Mapping) else None
+    if not isinstance(metadata, Mapping):
+        return {}
+    admitted = {}
+    if metadata.get("align") in ("align", "trust"):
+        admitted["align"] = metadata["align"]
+    if isinstance(metadata.get("model"), str) and metadata["model"]:
+        admitted["entry"] = metadata["model"]
+    return admitted
 
 
 class GenericPackHost:
@@ -6633,6 +6737,7 @@ class GenericPackHost:
         self._pack_refresh_reason = ""
         self.client = client
         self.executor_id = executor_id
+        self.recovery_blocked: list[dict[str, str]] = []
         self.max_concurrency = max(1, int(max_concurrency))
         if attempt_root is not None and attempt_base is not None:
             raise ValueError("attempt_root and attempt_base are mutually exclusive")
@@ -6688,6 +6793,8 @@ class GenericPackHost:
         else:
             self.boot_manifest_hash = None
         self.execution_policy = execution_policy or ExecutionGuardPolicy()
+        if isinstance(self.client, RuntimeProtocolClient):
+            self.client.execution_policy = self.execution_policy
         # Provider route grants are intentionally scoped to this host process;
         # their signing key never crosses into a child or runtime payload.
         self._provider_grants = ProviderRouteGrantAuthority()
@@ -6725,16 +6832,19 @@ class GenericPackHost:
         self._evidence_observation_binding: dict[str, Any] = {}
         self._child_import_host_context: dict[str, Any] = {}
         self._evidence_observation_lock = threading.RLock()
-        # Idle release for everything this host keeps warm between tasks: the
-        # session slot (Wan2GP, VibeComfy) and the Remotion frame owner.
+        # Idle release for the session slot (Wan2GP) and Remotion frame owner.
         self.warm_holds = WarmHolds(on_change=self._publish_evidence_status)
+        from astrid.core.execution.local_engine_idle import LocalEngineIdle
+        self._local_engine_idle = LocalEngineIdle(on_change=self._publish_evidence_status,
+            release_blocked=lambda: bool(getattr(self, "recovery_blocked", None)))
         self._target_bindings = None
         self._target_bindings_kind = None
+        self._machines_observed_at: float = float("-inf")
         self._target_bindings_lock = threading.RLock()
         # A request's lifecycle.idle_timeout_seconds, for the task in flight.
         self._requested_idle_seconds: float | None = None
         # Queued tasks already reported as unclaimable, as (task_id, reason).
-        self._reported_blocked_claims: set[tuple[str, str]] = set()
+        self._reported_blocked_claims: dict[str, str] = {}
         self._last_cleanup_receipt: dict[str, Any] | None = None
         # Handoff observes the real claim/registration/attempt/settlement path.
         # The condition is held only while checking the gate and publishing
@@ -6751,18 +6861,138 @@ class GenericPackHost:
         self._handoff_attempt_threads: set[int] = set()
         self._handoff_observation_known = True
         self._reconciliation_owners: dict[str, threading.Thread] = {}
-        # A command child is short-lived while the manager-owned VibeComfy
-        # server persists across tasks.  Keep only the last successful,
-        # verified session/model hint in the host; it is revalidated by the
-        # child adapter against the readiness-profile registry before reuse.
-        self._vibecomfy_warmth_hint: str | None = None
-        self._vibecomfy_current_warmth_hint: str | None = None
-        self._vibecomfy_requested_warmth_hint: str | None = None
         self._claim_slots: tuple[GenericPackHost, ...] = ()
         self._claim_loop_lock = threading.Lock()
 
+    @staticmethod
+    def _check_attempt_directory(path: Path, metadata: os.stat_result, *, private: bool,
+                                 require_private_mode: bool = True) -> None:
+        reason = None
+        if not stat.S_ISDIR(metadata.st_mode):
+            reason = "not a non-symlink directory"
+        elif sys.platform == "win32":
+            if private and not platform.is_owner_only(path, directory=True):
+                reason = "not owner-only"
+        elif private:
+            if metadata.st_uid != os.getuid():
+                reason = f"owner uid {metadata.st_uid}, expected {os.getuid()}"
+            elif require_private_mode and stat.S_IMODE(metadata.st_mode) != 0o700:
+                reason = f"mode {stat.S_IMODE(metadata.st_mode):04o}, expected 0700"
+        elif metadata.st_uid not in {0, os.getuid()}:
+            reason = f"ancestor owner uid {metadata.st_uid}, expected root or {os.getuid()}"
+        elif metadata.st_mode & 0o022 and not metadata.st_mode & stat.S_ISVTX:
+            reason = "group/world-writable ancestor without sticky bit"
+        if reason:
+            raise HostError(f"private default attempt base refused at {path}: {reason}; "
+                            "repair ownership/permissions or remove the unsafe path before restarting")
+
+    @staticmethod
+    @contextmanager
+    def _open_attempt_directory(base: Path, *, private_root: Path | None = None, create: bool = False):
+        """Validate the descriptors actually traversed; keep the final one open."""
+        current = Path(base.anchor)
+        descriptor = None
+        traversed = []
+        try:
+            if not base.is_absolute() or ".." in base.parts:
+                raise HostError(f"private default attempt base refused at {base}: expected an absolute path "
+                                "without '..'; repair the configured path before restarting")
+            if sys.platform != "win32":
+                flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                descriptor = os.open(current, flags)
+                GenericPackHost._check_attempt_directory(current, os.fstat(descriptor), private=False)
+            for part in base.parts[1:]:
+                current /= part
+                private = private_root is not None and (current == private_root or private_root in current.parents)
+                created = False
+                if create:
+                    try:
+                        if sys.platform == "win32":
+                            if not current.exists() and not current.is_symlink():
+                                platform.private_directory(current)
+                                created = True
+                        else:
+                            os.mkdir(part, mode=0o700, dir_fd=descriptor)
+                            created = True
+                    except FileExistsError:
+                        pass
+                metadata = current.lstat()
+                # Existing spool components may need repair after a restore.
+                # Ownership and type still gate opening; permissions can only
+                # be tightened on the descriptor after its identity is checked.
+                tighten = private and create and not created
+                GenericPackHost._check_attempt_directory(
+                    current, metadata, private=private or created, require_private_mode=not tighten)
+                if descriptor is not None:
+                    child = os.open(part, flags, dir_fd=descriptor)
+                    os.close(descriptor)
+                    descriptor = child
+                    opened = os.fstat(descriptor)
+                    GenericPackHost._check_attempt_directory(
+                        current, opened, private=private or created, require_private_mode=not tighten)
+                    if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
+                        raise HostError(f"private default attempt base refused at {current}: swapped identity; "
+                                        "remove the replacement path and restart")
+                    if tighten and stat.S_IMODE(opened.st_mode) != 0o700:
+                        os.fchmod(descriptor, 0o700)
+                        repaired = os.fstat(descriptor)
+                        GenericPackHost._check_attempt_directory(current, repaired, private=True)
+                        after = current.lstat()
+                        if ((repaired.st_dev, repaired.st_ino) != (opened.st_dev, opened.st_ino)
+                                or (after.st_dev, after.st_ino) != (opened.st_dev, opened.st_ino)):
+                            raise HostError(f"private default attempt base refused at {current}: swapped identity; "
+                                            "remove the replacement path and restart")
+                        opened = repaired
+                    metadata = opened
+                    traversed.append((current, (opened.st_dev, opened.st_ino)))
+            # A replaced ancestor can point back into the same moved tree,
+            # preserving the leaf inode. Recheck every traversed component.
+            for path, identity in traversed:
+                after = path.lstat()
+                if (after.st_dev, after.st_ino) != identity:
+                    raise HostError(f"private default attempt base refused at {path}: swapped identity; "
+                                    "remove the replacement path and restart")
+            yield descriptor, metadata
+        except OSError as exc:
+            raise HostError(f"private default attempt base refused at {current}: {exc}; "
+                            "repair or remove this path before restarting") from exc
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+    @staticmethod
+    def _ensure_private_attempt_directory(base: Path, *, private_root: Path | None = None) -> tuple[int, int]:
+        with GenericPackHost._open_attempt_directory(base, private_root=private_root or base, create=True) as (_, metadata):
+            return metadata.st_dev, metadata.st_ino
+
+    def _default_attempt_base(self) -> Path:
+        """Reuse private state; an unsafe spool is a host-wide startup refusal."""
+        from astrid.sdk.storage_root import resolve_runtime_data_root, resolve_xdg_runtime_root
+
+        digest = hashlib.sha256(self.executor_id.encode("utf-8")).hexdigest()[:16]
+        try:
+            private = resolve_runtime_data_root(fallback=False)
+            if private is None:
+                private = resolve_xdg_runtime_root() or Path.home() / ".cache" / "astrid"
+            base = private / "attempts" / digest
+            # The selected data/runtime/cache root can serve other consumers.
+            # Only the spool directories below it belong exclusively to us.
+            identity = self._ensure_private_attempt_directory(base, private_root=private / "attempts")
+        except (OSError, ValueError) as exc:
+            raise HostError(f"private default attempt base refused: {exc}; "
+                            "repair the configured private state path before restarting") from exc
+        # No filesystem or config I/O under the process lock: only identity custody.
+        with self._process_lock:
+            previous = getattr(self, "_private_attempt_base_identity", None)
+            if previous is not None and previous[0] == base and previous[1] != identity:
+                raise HostError(f"private default attempt base refused at {base}: swapped identity; "
+                                "remove the replacement path and restart")
+            self._private_attempt_base_identity = (base, identity)
+        return base
+
     def _allocate_attempt_root(self, task_id: str, attempt_id: str) -> Path:
         """Allocate the filesystem namespace for one claimed attempt."""
+        from astrid.sdk.storage_ownership import ATTEMPT_ROOT_PREFIX
         if self.attempt_base is not None:
             self.attempt_base.mkdir(parents=True, exist_ok=True)
             if self.attempt_base.is_symlink() or not self.attempt_base.is_dir():
@@ -6776,20 +7006,28 @@ class GenericPackHost:
                 root.mkdir()
                 root.chmod(0o700)
             return root.resolve()
-        # The lease and progress marker carry the task/attempt/fence identity;
-        # do not put those values in an ephemeral filesystem basename.  Keep
-        # the established reclaim prefix so storage_ownership still finds
-        # crash-abandoned roots.
-        if self.attempt_root is None and sys.platform == "win32":
-            root = Path(tempfile.gettempdir()) / f"astrid-attempt-{secrets_module.token_hex(16)}"
-            platform.private_directory(root)
-            return root.resolve()
-        root = self.attempt_root or Path(tempfile.mkdtemp(prefix="astrid-attempt-")).resolve()
+        if self.attempt_root is None:
+            base = self._default_attempt_base()
+            expected = self._private_attempt_base_identity[1]
+            with self._open_attempt_directory(base, private_root=base.parent) as (descriptor, metadata):
+                if (metadata.st_dev, metadata.st_ino) != expected:
+                    raise HostError(f"private default attempt base refused at {base}: swapped identity; "
+                                    "remove the replacement path and restart")
+                name = f"{ATTEMPT_ROOT_PREFIX}{secrets_module.token_hex(16)}"
+                root = base / name
+                if descriptor is None:
+                    platform.private_directory(root)
+                else:
+                    os.mkdir(name, mode=0o700, dir_fd=descriptor)
+                after = base.lstat()
+                if (after.st_dev, after.st_ino) != expected:
+                    raise HostError(f"private default attempt base refused at {base}: swapped identity; "
+                                    "remove the replacement path and restart")
+                return root
+        root = self.attempt_root
         root.mkdir(parents=True, exist_ok=True)
         if sys.platform == "win32":
             platform.owner_only(root)
-        elif self.attempt_root is None:
-            root.chmod(0o700)
         return root
 
     @property
@@ -7053,9 +7291,6 @@ class GenericPackHost:
                     if manager.occupied and not manager.active:
                         self._latch_cleanup_uncertainty(f"managed session release remains pending: {exc}")
                     return {"ok": False, "released": False, "release_pending": True}
-                self._vibecomfy_warmth_hint = None
-                self._vibecomfy_current_warmth_hint = None
-                self._vibecomfy_requested_warmth_hint = None
                 # Retire the old idle callback before another binding can
                 # occupy the slot, even if opened directly by owner control.
                 hold = self._hold_session_slot()
@@ -7084,14 +7319,12 @@ class GenericPackHost:
     def _release_idle_session(self) -> None:
         """Idle expiry of the session slot; the warm hold runs it under the slot's lock.
 
-        Wan2GP's release ends its child.  VibeComfy's unloads models and frees
-        memory but keeps the engine process: the host cannot restart an engine
-        the Runtime selected for it, so ending it would strand the capability.
+        Wan2GP's release ends its child. Local-managed ComfyUI is retained by
+        engine custody and has a separate host-wide idle hold.
         """
         warm = self._warm_session()
         if warm is None:
             return
-        self._vibecomfy_warmth_hint = None
         try:
             self.managed_tool_session.release(reason="idle")
         except Exception as exc:
@@ -7203,6 +7436,8 @@ class GenericPackHost:
         for slot in self._claim_slots:
             with slot.managed_tool_session._lock:
                 slot._shutdown.set()
+        if self._handoff_accounting_owner is self:
+            self._local_engine_idle.close()
         for slot in self._claim_slots:
             try:
                 slot.shutdown()
@@ -7292,6 +7527,96 @@ class GenericPackHost:
         if errors:
             self._latch_cleanup_uncertainty("; ".join(str(error) for error in errors))
             raise CleanupUncertainError("host graph cleanup remains unresolved") from errors[0]
+
+    def _run_machine_job(self, record, task_data, policy, target_context, inputs, *, root, output_root,
+                         cancelled, cancel_signal, task_id, attempt_id, fence, terminal):
+        from astrid.core.pack.discovery import pack_discovery_scope
+
+        with pack_discovery_scope():
+            return self._run_machine_job_in_scope(
+                record, task_data, policy, target_context, inputs, root=root, output_root=output_root,
+                cancelled=cancelled, cancel_signal=cancel_signal, task_id=task_id,
+                attempt_id=attempt_id, fence=fence, terminal=terminal)
+
+    def _run_machine_job_in_scope(self, record, task_data, policy, target_context, inputs, *, root, output_root,
+                                  cancelled, cancel_signal, task_id, attempt_id, fence, terminal):
+        """Run the admitted generation on a ``generation.machine`` and land its outputs here.
+
+        claim -> start -> poll (the remote progress file is copied into this
+        attempt's, which the heartbeat already sends) -> fetch into
+        ``outputs`` -> release, warm only on success. Harvest is unchanged.
+        """
+        from types import SimpleNamespace
+
+        from astrid.core.execution import phase_timing
+        from astrid.core.execution.machine_run import (
+            WORKFLOW_FILE_ENTRY,
+            MachineJob,
+            resolve_machine,
+            run_on_machine,
+        )
+
+        if record.id != "vibecomfy.run":
+            raise HostError("only generation runs on a rented machine")
+        metadata = (_task_generation_intent(task_data) or {}).get("metadata") or {}
+        entry = metadata.get("model") if isinstance(metadata.get("model"), str) and metadata.get("model") else None
+        if entry == WORKFLOW_FILE_ENTRY:
+            # A workflow-file job (describe_workflow's id): no named entry, its bundle ships in the job.
+            entry = None
+        # Timing, the local failure receipt and claimed-job attachment are RunPod's; other
+        # machine kinds behave as before.
+        is_runpod = policy.get("kind") == "runpod"
+        provider = target_context.get(kind=policy.get("kind"), engine=policy.get("engine"),
+                                      preferences=policy.get("preferences"), **(
+                                          {"job": True} if is_runpod else {}))
+        machine = resolve_machine(policy["kind"]).for_host(
+            provider, begin=lambda lease: target_context.begin(lease, cancel_signal),
+            done=target_context.done)
+        timing = phase_timing.PhaseTiming() if is_runpod else None
+        job = MachineJob(
+            entry=entry, mode=metadata.get("mode"), policy=policy,
+            inputs={name: value for name, value in inputs.items() if value is not None},
+            invocation_id=f"{task_id}:{attempt_id}:{fence}", task_id=str(task_id), attempt_id=str(attempt_id),
+            scratch=root, progress_path=root / ".astrid-progress.json",
+            align=_machine_align_mode(task_data), timing=timing,
+        )
+        def claimed(lease):
+            # Which machine runs this attempt, recorded as soon as it is claimed (failures keep it too).
+            terminal["machine"] = dict(machine.describe(lease))
+
+        # The registered machine owns its optional failure receipt.
+        recorder = getattr(machine, "failure_recorder", None)
+        failed = recorder(job, lambda: terminal.get("machine"), timing) if callable(recorder) else None
+
+        try:
+            fetched = run_on_machine(machine, job, destination=output_root, cancelled=cancelled,
+                                     poll_seconds=float(os.environ.get("ASTRID_MACHINE_POLL_SECONDS") or 5.0),
+                                     on_claim=claimed, on_failure=failed)
+        finally:
+            # Success and failure both carry the one timing block (release is done by now).
+            phase_timing.attach(terminal.get("machine"), timing)
+        terminal["machine"] = {**terminal.get("machine", {}), "manifest_sha256": fetched.get("manifest_sha256"),
+                               "files": sorted(fetched.get("files", {})), "process_id": fetched.get("process_id")}
+        if fetched.get("logs_unavailable"):
+            terminal["machine"]["logs_unavailable"] = fetched["logs_unavailable"]
+        return SimpleNamespace(payload={}, output_root=output_root, process_id=fetched.get("process_id"),
+                               returncode=fetched.get("returncode"))
+
+    def _observe_machines(self, now: float) -> None:
+        """On host polls, ask the machine provider whether each live lease still runs (throttled)."""
+        owner = self._handoff_accounting_owner
+        bindings = getattr(owner, "_target_bindings", None)
+        observe = getattr(bindings, "observe", None)
+        if not callable(observe):
+            return
+        every = float(os.environ.get("ASTRID_MACHINE_LIVENESS_SECONDS") or 60.0)
+        if now < getattr(owner, "_machines_observed_at", float("-inf")) + every:
+            return
+        owner._machines_observed_at = now
+        try:
+            observe()
+        except Exception as exc:  # observation never stops the claim loop; the next poll retries
+            _LOGGER.warning("machine liveness observation failed: %s", type(exc).__name__)
 
     def _host_target_bindings(self, kind):
         """Lazily share selected target custody across this host's claim slots."""
@@ -7595,8 +7920,8 @@ class GenericPackHost:
         Packs without actions remain eligible dependencies.
         """
         from astrid.core.pack.identity import pack_digest
-        from astrid.core.pack.loader import _load_manifest_payload
         from astrid.core.pack.imports import validate_selected_pack_map
+        from astrid.core.pack.loader import _load_manifest_payload
 
         if not record.definition.metadata.get("action_invocation"):
             return {}
@@ -7790,7 +8115,9 @@ class GenericPackHost:
 
     def preflight(self, capability_id: str | None = None) -> tuple[CapabilityRecord, ...]:
         """Full readiness validation for initial/explicit registration or work."""
-        return self._preflight(capability_id, full_remotion=True)
+        return self._preflight(capability_id, full_remotion=not (
+            capability_id is None and getattr(self, "_defer_startup_remotion", False)
+        ))
 
     def _preflight(self, capability_id: str | None = None, *, full_remotion: bool) -> tuple[CapabilityRecord, ...]:
         from astrid.core.generation.gpu_environment import windows_gpu_status
@@ -7861,9 +8188,14 @@ class GenericPackHost:
                     try:
                         from astrid.core.rendering.remotion_runtime import (
                             RemotionProbeCleanupError,
+                            ensure_remotion_validation,
                             remotion_runtime_status,
                         )
                         if remotion_status is None:
+                            ensure_remotion_validation()
+                            # First use publishes the launch reference. Cache
+                            # readiness against that completed context.
+                            remotion_context = self._remotion_idle_context()
                             remotion_status = remotion_runtime_status(require_explicit_project=True)
                         status = remotion_status
                     except RemotionProbeCleanupError as exc:
@@ -7900,12 +8232,23 @@ class GenericPackHost:
                     else:
                         self._forget_failed_remotion_observation(record.id, remotion_context)
                 else:
+                    from astrid.core.rendering.remotion_runtime import remotion_validation_deferred
+
                     owner = self._handoff_accounting_owner
                     with owner._handoff_condition:
                         prior = owner._remotion_full_preflight.get(record.id)
                     checks["remotion"] = (
                         dict(prior[1]) if remotion_context is not None and prior is not None
                         and prior[0] == remotion_context else {
+                            # Claim admission always runs full preflight before
+                            # dispatch. Pending means able to accept a task,
+                            # never permission to render on unvalidated tools.
+                            "ok": True, "pending": True,
+                            "reason": "Remotion validation deferred until first use",
+                        } if remotion_validation_deferred() and (
+                            "remotion" not in record.preflight
+                            or record.preflight["remotion"].get("pending")
+                        ) else {
                             "ok": False,
                             "reason": "full Remotion validation required for current host context",
                         }
@@ -7980,6 +8323,7 @@ class GenericPackHost:
             "unready_capabilities": sorted(record.id for record in self.capabilities.values() if not record.ready),
             "missing_required_capabilities": list(self.missing_required_capabilities),
             "gated_checks": _gated_remotion_faults(self.capabilities.values()),
+            "recovery_blocked": list(self.recovery_blocked),
             "registration": registration,
             "source_epoch": self.source_epoch,
             "source_inventory_identity": self.source_inventory_identity,
@@ -8449,6 +8793,7 @@ class GenericPackHost:
         cas_param_ports: tuple[str, ...] | list[str] | None = None,
         optional_cas_param_ports: tuple[str, ...] | list[str] | None = None,
         storage_estimate: Mapping[str, int] | None = None,
+        storage_floor_exempt: bool = False,
         input_size_limits: Mapping[str, int] | None = None,
         storage_policy_version: str | None = None,
         continuation_id: str | None = None,
@@ -8835,6 +9180,7 @@ class GenericPackHost:
                 storage_estimate,
                 attempt,
                 attempt / "outputs",
+                storage_floor_exempt=storage_floor_exempt,
             )
 
         cas_names = set(ordered_cas_ports)
@@ -9124,7 +9470,7 @@ class GenericPackHost:
         self._pending_provider_grants[task_id] = token
         return token
 
-    def _prepare_producer_evidence(self, output_root: Path, task: Mapping[str, Any]) -> None:
+    def _prepare_producer_evidence(self, output_root: Path, task: Mapping[str, Any], *, preparation=None) -> None:
         """Add host-observed identity to the existing producer result object."""
         receipt_path = output_root / "manifest.json"
         if not receipt_path.is_file() or receipt_path.is_symlink():
@@ -9148,6 +9494,11 @@ class GenericPackHost:
         # repository lookups. Producer evidence remains in its own namespace.
         producer = payload["evidence"]["producer"]
         transport = payload["evidence"]["transport"]
+        if preparation is not None:
+            from astrid.core.generation.producer_result import public_alignment_evidence
+
+            producer["alignment"] = public_alignment_evidence(preparation["alignment"])
+            transport["placement"] = "managed"
         # The bundle loader uses a fixed sibling basename. Restore the
         # admitted source identity only after checking it against the bytes
         # retained by the producer.
@@ -9237,7 +9588,9 @@ class GenericPackHost:
         result_manifest object is authoritative. Validate its correlation and
         every local output/ref, including on the successful harvest path.
         """
-        from astrid.core.contracts.managed_generation_result import validate_managed_generation_result
+        from astrid.core.contracts.managed_generation_result import (
+            validate_managed_generation_result,
+        )
 
         for descriptor in descriptors:
             if descriptor.get("name") != "result_manifest":
@@ -9617,7 +9970,9 @@ class GenericPackHost:
             # creative publication into an output-budget failure just because
             # its enhancement would exceed the already-admitted envelope.
             if storage_estimate is not None:
-                output_bytes = _storage_tree_bytes(output_root)
+                output_bytes = _storage_tree_bytes(
+                    output_root, excluded_roots=_collected_log_roots(output_root, attempt_root)
+                )
                 if output_bytes > int(storage_estimate["output_bytes"]):
                     destination.unlink(missing_ok=True)
                     continue
@@ -9675,9 +10030,9 @@ class GenericPackHost:
         network_policy: Mapping[str, Any] | None = None,
         readiness_worker_kind: str = "native",
         allow_runtime_connection: bool = True,
-        workflow_execution_request: Mapping[str, Any] | None = None,
-        comfy_invocation: Mapping[str, Any] | None = None,
-        target_model_assets: str | None = None,
+        align: str | None = None,
+        generation_entry: str | None = None,
+        managed_preparation: Mapping[str, Any] | None = None,
     ) -> tuple[dict[str, str], dict[str, str]]:
         """Build a redacted, manifest-scoped child environment.
 
@@ -9685,6 +10040,10 @@ class GenericPackHost:
         callers clear it in their ``finally`` block.  No credential is placed
         in request JSON, evidence, or diagnostics.
         """
+        if _record_may_render(record):
+            from astrid.core.rendering.remotion_runtime import ensure_remotion_validation
+
+            ensure_remotion_validation()
         declared = _required_secret_names(record)
         secrets = {
             name: value
@@ -9714,12 +10073,11 @@ class GenericPackHost:
             # host-side preflight headless too; the actual Comfy daemon keeps
             # its normal route-registration environment in its own process.
             explicit["VIBECOMFY_HEADLESS"] = "1"
-            profile = None if (admission or {}).get("host_target_bound") else _read_readiness_profile_document()
-            session = profile.get("vibecomfy_session") if isinstance(profile, Mapping) else None
-            if isinstance(session, Mapping):
-                explicit["ASTRID_VIBECOMFY_SESSION_OWNERSHIP_ATTESTED"] = "1"
-                revision = session.get("source_revision")
-                content_digest = session.get("source_content_digest")
+            profile = _read_readiness_profile_document()
+            source = _installed_vibecomfy_source(profile)
+            if source is not None and isinstance(profile.get("engine_identity"), Mapping):
+                revision = source.get("revision")
+                content_digest = source.get("content_digest")
                 if isinstance(revision, str) and isinstance(content_digest, str):
                     explicit[VIBECOMFY_ATTESTED_REVISION_ENV] = revision
                     explicit[VIBECOMFY_ATTESTED_CONTENT_DIGEST_ENV] = content_digest
@@ -9737,7 +10095,7 @@ class GenericPackHost:
                 receipt_dir = os.environ.get(MODEL_ROOT_QUALIFICATION_RECEIPT_DIR_ENV)
                 if receipt_dir:
                     explicit[MODEL_ROOT_QUALIFICATION_RECEIPT_DIR_ENV] = receipt_dir
-            elif os.environ.get(LOCAL_ENGINE_HOST_ENV) and not (admission or {}).get("host_target_bound"):
+            elif os.environ.get(LOCAL_ENGINE_HOST_ENV):
                 # Local placement without a readiness profile: the binding is attested by
                 # the installed engine's own receipt, never by a profile or the ambient env.
                 explicit.update(self._local_engine_model_root_env(os.environ[LOCAL_ENGINE_HOST_ENV]))
@@ -9749,14 +10107,6 @@ class GenericPackHost:
                     explicit["ASTRID_VIBECOMFY_CANDIDATE_KIND"] = "local_snapshot"
                     explicit["ASTRID_VIBECOMFY_CANDIDATE_REVISION"] = revision
                     explicit["ASTRID_VIBECOMFY_CANDIDATE_CONTENT_DIGEST"] = content_digest
-            if self._vibecomfy_requested_warmth_hint:
-                from astrid.core.generation.backends.vibecomfy import (
-                    VIBECOMFY_WARMTH_HINT_ENV,
-                )
-
-                explicit[VIBECOMFY_WARMTH_HINT_ENV] = (
-                    self._vibecomfy_requested_warmth_hint
-                )
         explicit = _fixed_worker_environment(record, explicit, self.credential_source)
         # Runtime-backed pack executors (notably timeline visualization) read
         # workspace facts from their isolated child process.  The host already
@@ -9792,19 +10142,20 @@ class GenericPackHost:
             secret_values=secrets,
             declared_secrets=declared_secrets,
         )
-        from astrid.packs.vibecomfy.endpoint_checkout import EXECUTION_REQUEST_ENV
-        env.pop(EXECUTION_REQUEST_ENV, None)
         env.pop("ASTRID_COMFY_INVOCATION", None)
-        env.pop("ASTRID_TARGET_MODEL_ASSETS", None)  # only the host's own document reaches a child
-        if record.id == "vibecomfy.run" and target_model_assets is not None:
-            env["ASTRID_TARGET_MODEL_ASSETS"] = target_model_assets
-        if record.id == "vibecomfy.run" and comfy_invocation is not None:
-            env["ASTRID_COMFY_INVOCATION"] = json.dumps(comfy_invocation, sort_keys=True, separators=(",", ":"))
-        if record.id == "vibecomfy.run" and workflow_execution_request is not None:
-            env[EXECUTION_REQUEST_ENV] = json.dumps(
-                workflow_execution_request, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-            )
-            env["NO_PROXY"] = env["no_proxy"] = "127.0.0.1,localhost"
+        from astrid.core.generation.target_inventory import TRUST_ENV
+
+        env.pop(TRUST_ENV, None)  # only the host's own admission reaches a child
+        if record.id == "vibecomfy.run" and align in ("align", "trust"):
+            env[TRUST_ENV] = align  # the child's align mode; local_server_engine reads only "trust"
+        from astrid.core.generation.engine_contracts import MANAGED_ENGINE_PREPARATION_ENV
+
+        env.pop(MANAGED_ENGINE_PREPARATION_ENV, None)
+        if record.id == "vibecomfy.run" and managed_preparation is not None:
+            env[MANAGED_ENGINE_PREPARATION_ENV] = json.dumps(managed_preparation, sort_keys=True, separators=(",", ":"))
+        env.pop("ASTRID_GENERATION_ENTRY", None)
+        if record.id == "vibecomfy.run" and generation_entry:
+            env["ASTRID_GENERATION_ENTRY"] = str(generation_entry)
         if _record_may_render(record):
             from astrid.core.rendering.remotion_runtime import (
                 RemotionValidationError,
@@ -9877,12 +10228,16 @@ class GenericPackHost:
             broker = policy.get("broker")
             if allow_runtime_connection and isinstance(broker, Mapping) and broker.get("evidence_path"):
                 env["ASTRID_NETWORK_BROKER_EVIDENCE"] = str(broker["evidence_path"])
-        from astrid.core.env_vars import ASTRID_REMOTION_VALIDATION_ROLE, ASTRID_REMOTION_PROJECT_DIR
+        from astrid.core.env_vars import (
+            ASTRID_REMOTION_PROJECT_DIR,
+            ASTRID_REMOTION_VALIDATION_ROLE,
+        )
         if ASTRID_REMOTION_VALIDATION_ROLE in env and not _record_may_render(record):
             # Launch validated only render-capable workers; any other worker
             # carries no Remotion readiness, so it must not claim (or check) one.
             from astrid.core.env_vars import (
-                ASTRID_REMOTION_VALIDATION_LAUNCH, ASTRID_REMOTION_VALIDATION_PATH,
+                ASTRID_REMOTION_VALIDATION_LAUNCH,
+                ASTRID_REMOTION_VALIDATION_PATH,
                 ASTRID_REMOTION_VALIDATION_SHA256,
             )
             for name in (ASTRID_REMOTION_VALIDATION_PATH, ASTRID_REMOTION_VALIDATION_SHA256,
@@ -10005,6 +10360,43 @@ class GenericPackHost:
             value["signature"] = hmac.new(broker_context.evidence_key.encode(), unsigned, hashlib.sha256).hexdigest()
             (attempt / "network-evidence.json").write_text(json.dumps(value, sort_keys=True), encoding="utf-8")
             return value
+
+    def _log_outputs(self, output_root: Path, *, attempt: Path, warnings: list[str] | None = None) -> list[dict[str, Any]]:
+        """Build staged output descriptors from the collected log index."""
+        try:
+            from astrid.core._shared import run_logs
+
+            # Machine fetches can bring their own logs.json and collected
+            # index. Host child declarations live separately so fetched files
+            # cannot replace them; merge both sources in one collection pass.
+            run_logs.collect(output_root, extra_root=_host_log_root(attempt))
+            outputs = []
+            for row in run_logs.read_index(output_root):
+                if row.get("reason") == "duplicate_name":
+                    if warnings is not None:
+                        warnings.append(
+                            "log declaration conflict for "
+                            f"{row.get('name', 'unknown')}: {row.get('first_source', 'unknown')} and "
+                            f"{row.get('source', 'unknown')}"
+                        )
+                    continue
+                if row.get("missing"):
+                    continue
+                name, filename = row["name"], row["file"]
+                if not isinstance(name, str) or not isinstance(filename, str) or Path(filename).name != filename:
+                    raise ValueError("invalid collected log identity")
+                path = output_root / "logs" / filename
+                outputs.append({
+                    "kind": "object", "path": str(path), "role": "log", "output_port": "logs",
+                    "variant_key": name, "name": name,
+                    "media_type": "application/json" if path.suffix == ".json" else "text/plain",
+                    "durability": "durable",
+                })
+            return outputs
+        except Exception as exc:  # noqa: BLE001 - optional log evidence must not block settlement
+            if warnings is not None:
+                warnings.append(f"logs unavailable: {type(exc).__name__}")
+            return []
 
     def _upload_outputs(
         self,
@@ -10173,25 +10565,10 @@ class GenericPackHost:
         an attempt directory alone.
         """
         command_admission = dict(admission or {})
-        workflow_request = command_admission.pop("workflow_execution_request", None)
-        comfy_invocation = command_admission.pop("comfy_invocation", None)
-        target_model_assets = command_admission.pop("target_model_assets", None)
+        align = command_admission.pop("align", None)
+        generation_entry = command_admission.pop("entry", None)
+        managed_preparation = command_admission.pop("managed_engine_preparation", None)
         admission = command_admission if admission is not None else None
-        workflow_policy = None
-        if record.id == "vibecomfy.run":
-            from astrid.packs.vibecomfy.endpoint_checkout import load_workflow_endpoint, workflow_endpoint_network_policy
-            profile = None if command_admission.get("host_target_bound") else _read_readiness_profile_document()
-            runpod = isinstance(workflow_request, Mapping) and workflow_request.get("target", {}).get("kind") == "runpod"
-            if runpod:
-                if inputs.get("comfy_url") or inputs.get("comfy_output_dir"):
-                    raise HostError("RunPod workflow cannot use local_server overrides")
-                endpoint = load_workflow_endpoint(
-                    profile, profile_path=Path(os.environ.get("ASTRID_HOST_READINESS_PROFILE_PATH", "")),
-                    execution_request=workflow_request,
-                )
-                workflow_policy = workflow_endpoint_network_policy(endpoint)
-            elif isinstance(profile, Mapping) and ("workflow_endpoint" in profile or "endpoint_evidence" in profile):
-                raise HostError("workflow endpoint requires its current admitted execution request")
         command = record.definition.command
         if command is None:
             raise HostError(f"capability {record.id!r} has no dispatchable command")
@@ -10316,10 +10693,10 @@ class GenericPackHost:
             authority_context=authority_context,
             admission=admission,
             network_broker=network_broker,
-            workflow_execution_request=workflow_request if record.id == "vibecomfy.run" else None,
-            comfy_invocation=comfy_invocation,
-            target_model_assets=target_model_assets,
-            network_policy=workflow_policy or (
+            align=align,
+            generation_entry=generation_entry,
+            managed_preparation=managed_preparation,
+            network_policy=(
                 _network_policy(record, inputs)
                 if record.id == "vibecomfy.run" and inputs.get("comfy_url") else None
             ),
@@ -10443,7 +10820,7 @@ class GenericPackHost:
                 raise HostError("renderer command requires the admitted Python interpreter")
             remotion_lease = self._renderer_task_lease(env, attempt)
         import_receipt = None
-        if record.id in {"h3_av.transform", "vibecomfy.validate"}:
+        if record.id == "vibecomfy.validate":
             from ._child_import_receipt import ChildImportReceipt
 
             import_receipt = ChildImportReceipt(self, record.id, import_binding)
@@ -10462,9 +10839,7 @@ class GenericPackHost:
                         raise HostError("private network commands require the admitted Python interpreter")
                     argv = [sys.executable, "-X", "utf8", "-m", "astrid.core.execution.generic_host_worker",
                             "--python-command", json.dumps(argv[1:])]
-                admitted_module = (record.definition.metadata.get("runtime_module")
-                                   if command_admission.get("host_target_bound")
-                                   and record.definition.metadata.get("action_invocation") else None)
+                admitted_module = None
                 argv = _network_startup_argv(argv, attempt, env, broker_required=network_broker is not None,
                                              admitted_module=admitted_module)
             if source_channel is not None or selected_command:
@@ -10476,6 +10851,16 @@ class GenericPackHost:
             if render_scope:
                 env["ASTRID_RENDER_INHERIT_PROCESS_GROUP"] = "1"
             launch = popen_owned_group if render_scope else spawn_task_scope
+            from astrid.core._shared import run_logs
+
+            host_log_root = _host_log_root(attempt)
+            host_log_root.mkdir(parents=True, exist_ok=True)
+            for stream_name in ("stdout", "stderr"):
+                path = host_log_root / f"job.{stream_name}"
+                path.touch(exist_ok=True)
+                run_logs.declare(host_log_root, run_logs.LogDecl(
+                    name=path.name, role=stream_name, path=str(path.resolve()),
+                ))
             process = launch(
                 _network_sandbox_argv(argv, attempt, broker_endpoint), cwd=str(cwd), env=env,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, pass_fds=inherited_fds,
@@ -10505,7 +10890,7 @@ class GenericPackHost:
             key: value for key, value in env.items()
             if key.upper().endswith(("_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIAL"))
         })
-        output_capture = _TaskOutputCapture(attempt, stream_secrets, self._scrub_secret_text)
+        output_capture = _TaskOutputCapture(attempt, stream_secrets, self._scrub_secret_text, host_log_root)
         output_capture.start(process)
         review_snapshot = None
         execution_error = None
@@ -10570,7 +10955,7 @@ class GenericPackHost:
                     output_capture.persist()
                     if output_capture.error:
                         raise HostError(f"capability {record.id!r} output capture failed: {output_capture.error}")
-                    _assert_live_storage_envelope(storage_estimate, attempt, output_root)
+                    _assert_live_storage_envelope(storage_estimate, attempt, output_root, storage_floor_exempt=getattr(record, "storage_floor_exempt", False))
                     if cancelled is not None and cancelled():
                         # The finally block signals the still-live group.
                         raise HostCancelled(f"capability {record.id!r} cancelled")
@@ -10688,6 +11073,8 @@ class GenericPackHost:
         """
         if capability_kind not in {"executor", "orchestrator"}:
             raise HostError(f"unsupported capability kind {capability_kind!r}")
+        storage_record = captured_record or self.capabilities.get(capability_id)
+        storage_floor_exempt = storage_record is not None and getattr(storage_record, "storage_floor_exempt", False)
         attempt_path = Path(attempt).expanduser().resolve()
         attempt_path.mkdir(parents=True, exist_ok=True)
         if definition is not None:
@@ -10864,7 +11251,7 @@ class GenericPackHost:
                     output_capture.persist()
                     if output_capture.error:
                         raise HostError(f"capability {capability_id!r} output capture failed: {output_capture.error}")
-                    _assert_live_storage_envelope(storage_estimate, attempt_path, attempt_path / "outputs")
+                    _assert_live_storage_envelope(storage_estimate, attempt_path, attempt_path / "outputs", storage_floor_exempt=storage_floor_exempt)
                     if cancelled is not None and cancelled():
                         # The finally block signals the still-live group.
                         raise HostCancelled(f"capability {capability_id!r} cancelled")
@@ -11024,107 +11411,12 @@ class GenericPackHost:
             output_root=output_root,
         )
 
-    def _native_cpu_handoff_identity(self, adapter: Any, token: AdmissionToken | None) -> Any:
-        """One eligibility predicate for recording and consuming residency."""
-        if not isinstance(adapter, _ManagedVibeSessionAdapter) or token is None:
-            return None
-        manager = self.managed_tool_session
-        owner = self._handoff_accounting_owner
-        active = manager._active
-        residency_identity = adapter.residency_identity()
-        if (
-            active is None or active.adapter is not adapter
-            or active.generation != token.generation or manager._generation != active.generation
-            or active.binding.identity_key != token.binding_identity
-            or active.last_admission_token_id != token.token_id
-            or active.fenced or active.in_flight or active.dispatched
-            or residency_identity is None
-            or adapter.native_graph is not getattr(self, "_native_engine_graph", None)
-            or adapter.cpu_handoff_failed or self._shutdown.is_set()
-            or not owner._handoff_observation_known or owner._handoff_claim_gate_closed
-        ):
-            return None
-        return (active.binding.identity_key, active.generation, residency_identity)
-
-    def _record_native_cpu_handoff(
-        self, adapter: Any, token: AdmissionToken | None, *,
-        managed_settled: bool, runtime_settled: bool,
-    ) -> None:
-        """Bind a handoff only after this exact attempt's successful finally."""
-        if not isinstance(adapter, _ManagedVibeSessionAdapter) or token is None:
-            return
-        manager = self.managed_tool_session
-        owner = self._handoff_accounting_owner
-        # All nested accesses use admission gate -> MTS, never the reverse.
-        with owner._handoff_condition, manager._lock:
-            active = manager._active
-            if (
-                active is None or active.adapter is not adapter
-                or active.generation != token.generation
-                or active.binding.identity_key != token.binding_identity
-                or active.last_admission_token_id != token.token_id
-            ):
-                return
-            adapter.cpu_handoff_identity = None
-            adapter.cpu_handoff_token = None
-            identity = self._native_cpu_handoff_identity(adapter, token)
-            if managed_settled and runtime_settled and identity is not None:
-                adapter.cpu_handoff_identity = identity
-                adapter.cpu_handoff_token = token
-
     def _open_managed_task_session(
         self, *, capability: CapabilityDescriptor, binding: SessionBinding, adapter: Any,
     ) -> None:
         manager = self.managed_tool_session
         owner = self._handoff_accounting_owner
         with owner._handoff_condition, manager._lock:
-            active = manager._active
-            previous = active.adapter if active is not None else None
-            cpu_target = (
-                isinstance(adapter, _ManagedTaskAdapter)
-                and set(capability.resources_claimed) == {"cpu"}
-            )
-            if (cpu_target and isinstance(previous, _ManagedVibeSessionAdapter)
-                    and previous.residency_bound):
-                identity = self._native_cpu_handoff_identity(previous, previous.cpu_handoff_token)
-                if (
-                    identity is None or previous.cpu_handoff_identity != identity
-                ):
-                    raise HostError("native CPU handoff lacks exact settled ownership")
-                expected_token = previous.cpu_handoff_token
-                previous.cpu_handoff_identity = None
-                previous.cpu_handoff_token = None
-                self._vibecomfy_warmth_hint = None
-                self._vibecomfy_current_warmth_hint = None
-                self._vibecomfy_requested_warmth_hint = None
-                # Existing backend residency containment, not legacy owner
-                # restart or graph release. Failed fence/release poisons MTS.
-                try:
-                    manager._replace_quiescent(
-                        expected_adapter=previous, expected_token=expected_token,
-                        capability=capability, binding=binding, adapter=adapter,
-                        reason="cpu_residency_eviction",
-                    )
-                except Exception as error:
-                    # Preserve the first exception chain in the existing log
-                    # before task/owner cleanup can raise a secondary error.
-                    # Exception messages, paths and caller data stay private.
-                    kinds = {HostError: "host", SessionCapacityError: "capacity",
-                             RuntimeError: "runtime", ValueError: "value",
-                             OSError: "io", TimeoutError: "timeout"}
-                    chain, seen = [], set()
-                    current: BaseException | None = error
-                    while current is not None and id(current) not in seen and len(chain) < 4:
-                        seen.add(id(current))
-                        chain.append(kinds.get(type(current), "other"))
-                        current = current.__cause__ or (
-                            None if current.__suppress_context__ else current.__context__)
-                    try:
-                        _LOGGER.error("CPU residency handoff first failure: %s", ">".join(chain))
-                    except Exception:
-                        pass
-                    raise
-                return
             manager.open(capability=capability, binding=binding, adapter=adapter)
 
     def _write_task_result(self, terminal: dict[str, Any], *, _minimal: bool = False) -> None:
@@ -11269,8 +11561,13 @@ class GenericPackHost:
         )
         if terminal.get("lease_diagnostic", {}).get("category") not in {None, "observing"}:
             receipt["lease_diagnostic"] = dict(terminal["lease_diagnostic"])
-        if terminal.get("target_binding") is not None:
-            receipt["target_binding"] = dict(terminal["target_binding"])
+        if terminal.get("machine") is not None:
+            receipt["machine"] = dict(terminal["machine"])
+        if terminal.get("managed_engine_preparation") is not None:
+            receipt["managed_engine_preparation"] = terminal["managed_engine_preparation"]
+        readiness = getattr(terminal.get("error"), "readiness", None)
+        if isinstance(readiness, Mapping):
+            receipt["readiness"] = dict(readiness)
         import_reference = getattr(terminal.get("error"), "child_import_receipt", None)
         if import_reference is not None:
             receipt["child_import_receipt"] = import_reference
@@ -11284,6 +11581,45 @@ class GenericPackHost:
             write_json_atomic(root / "result.json", receipt)
             if terminal.get("forced"):
                 terminal["receipt_final"] = True
+
+    def _admit_local_engine(self, task_data: Mapping[str, Any]) -> bool:
+        """Count local-managed work before preparation or waiting for a slot.
+
+        These are the same routing facts the execution path uses, before it
+        fills comfy_url with the prepared managed endpoint. Never classify an
+        endpoint by its URL: explicit endpoints belong to attached engines.
+        """
+        if task_data.get("capability") != "vibecomfy.run":
+            return False
+        try:
+            spec = _admitted_spec_envelope(task_data.get("spec", {}))
+        except HostError:
+            return False
+        inputs = spec.get("inputs", {})
+        if not isinstance(inputs, Mapping):
+            return False
+        if inputs.get("comfy_url") or inputs.get("readiness_profile"):
+            return False
+        policy = inputs.get("placement_policy")
+        if policy and not isinstance(policy, str):
+            return False
+        try:
+            policy = json.loads(policy) if policy else {}
+        except (ValueError, TypeError):
+            return False
+        if not isinstance(policy, Mapping):
+            return False
+        if policy.get("kind", "local") != "local":
+            return False
+        try:
+            if "idle_timeout_s" in policy:
+                idle_seconds(DEFAULT_IDLE_SECONDS, requested=policy["idle_timeout_s"])
+            contract = _execution_contract(task_data, runtime_session_id=self.runtime_state.get("runtime_session_id"))
+            requested = ((contract or {}).get("lifecycle") or {}).get("idle_timeout_seconds")
+            return self._local_engine_idle.begin(requested=(
+                requested if requested is not None else policy.get("idle_timeout_s")))
+        except (HostError, ValueError, TypeError, OverflowError):
+            return False
 
     def run_task(
         self,
@@ -11303,6 +11639,7 @@ class GenericPackHost:
         data = task.get("task", task)
         exact_attempt = attempt_id or data.get("attempt_id")
         exact_fence = fence if fence is not None else data.get("fence")
+        exact_epoch = data.get("runtime_epoch")
         lifetime = _AttemptLifetime(self.execution_policy, time.monotonic(), None)
         stop, abort = threading.Event(), threading.Event()
         completion_lock = threading.RLock()
@@ -11321,10 +11658,8 @@ class GenericPackHost:
             terminal["root"] = self.attempt_root
 
         def completion_call(operation, *args, **kwargs):
-            if operation == self.client.settle:
-                valid_until = terminal.get("lease_valid_until")
-                if lifetime.expired() or (valid_until is not None and time.monotonic() >= valid_until):
-                    force_abort("timeout" if lifetime.expired() else "lease_lost")
+            if operation == self.client.settle and lifetime.expired():
+                force_abort("timeout")
             with completion_lock:
                 if terminal.get("forced") and operation == self.client.settle:
                     raise HostCancelled("attempt already terminated by its lifecycle guard")
@@ -11336,8 +11671,33 @@ class GenericPackHost:
                 if isinstance(self.client, RuntimeProtocolClient):
                     kwargs["request_path"] = terminal["root"] / (
                         "settle-request.json" if operation == self.client.settle else "fail-request.json")
-                terminal["publication_call"] = (operation, copy.deepcopy(args), copy.deepcopy(kwargs))
-            result = self._handoff_settlement_call(operation, *args, **kwargs)
+                previous = terminal.get("publication_call")
+                if previous and previous[0] == operation:
+                    operation, args, kwargs = previous
+                else:
+                    terminal["publication_call"] = (operation, copy.deepcopy(args), copy.deepcopy(kwargs))
+            try:
+                result = self._handoff_settlement_call(operation, *args, **kwargs)
+            except Exception as exc:
+                if _runtime_authority_refusal(exc, operation=("settle" if operation == self.client.settle else "fail")):
+                    record_publication_refusal(exc)
+                    raise terminal["error"] from exc
+                # The protocol adapter classifies mutation errors itself. Its
+                # raw errors may come from readback, which cannot prove rejection.
+                rejected_owner = (None if isinstance(self.client, RuntimeProtocolClient)
+                                  else (exact_attempt, exact_fence))
+                rejection = (_terminal_publication_rejection(
+                    exc, str(data["id"]), rejected_owner, self.client.task)
+                    if operation in (self.client.settle, self.client.fail) else None)
+                if operation == self.client.fail:
+                    # Keep the frozen failure request with the existing replay
+                    # owner, rather than retrying via the outer failure guard.
+                    terminal.update(evidence_pending=True, publication_pending=True, pending_status="failed")
+                    if rejection is not None:
+                        terminal["publication_rejection"] = str(rejection)
+                if rejection is not None and rejection is not exc:
+                    raise rejection from exc
+                raise
             with completion_lock:
                 if terminal.get("forced") and operation == self.client.settle:
                     raise HostCancelled("settlement returned after the attempt was terminated")
@@ -11345,15 +11705,10 @@ class GenericPackHost:
             return result
 
         def lease_call(operation, *args, **kwargs):
-            # The adapter bounds each transport and lock wait by the remaining
-            # acknowledged validity as well as the independent execution cap.
+            # Observation loss cannot shorten the admitted work lifetime.
             if isinstance(getattr(operation, "__self__", None), RuntimeProtocolClient):
-                bounds = [value for value in (
-                    None if terminal.get("publication_pending") else lifetime.deadline(),
-                    terminal.get("lease_valid_until"))
-                          if value is not None]
-                if bounds:
-                    kwargs["deadline"] = min(bounds)
+                if not terminal.get("publication_pending") and lifetime.deadline() is not None:
+                    kwargs["deadline"] = lifetime.deadline()
             return operation(*args, **kwargs)
 
         def task_snapshot():
@@ -11364,9 +11719,21 @@ class GenericPackHost:
                 return current.get(name, default) if isinstance(current, Mapping) else getattr(current, name, default)
             lease_deadline_present = ("lease_expires_at" in current if isinstance(current, Mapping)
                                       else hasattr(current, "lease_expires_at"))
-            return {"status": value("state", value("status")),
+            state = value("state", value("status"))
+            if state is not None and type(state) is not str:
+                raise HostError("malformed task observation state")
+            for key, observed in (("attempt_id", value("attempt_id", exact_attempt)),
+                                  ("fence", value("fence", value("lease_fence", exact_fence))),
+                                  ("runtime_epoch", value("runtime_epoch", exact_epoch))):
+                expected_type = str if key == "attempt_id" else int
+                cleared_owner = key == "attempt_id" and observed is None and state not in {None, "running"}
+                if (type(observed) is not expected_type and not cleared_owner
+                        and not (key == "runtime_epoch" and exact_epoch is None)):
+                    raise HostError(f"malformed task observation {key}")
+            return {"resource": current, "status": state,
                     "attempt_id": value("attempt_id", exact_attempt),
                     "fence": value("fence", value("lease_fence", exact_fence)),
+                    "runtime_epoch": value("runtime_epoch", exact_epoch),
                     "lease_deadline_present": lease_deadline_present,
                     "lease_expires_at": value("lease_expires_at")}
 
@@ -11401,7 +11768,8 @@ class GenericPackHost:
         def lease_snapshot_detail(current):
             observed = {}
             for key, source in (("state", "status"), ("attempt_id", "attempt_id"),
-                                ("fence", "fence"), ("lease_expires_at", "lease_expires_at")):
+                                ("fence", "fence"), ("runtime_epoch", "runtime_epoch"),
+                                ("lease_expires_at", "lease_expires_at")):
                 value = current.get(source)
                 if key == "state" and value is None:
                     continue
@@ -11412,17 +11780,44 @@ class GenericPackHost:
                     observed[key] = safe
             return observed
 
-        def record_lease_diagnostic(category, *, current=None, error=None):
+        observation_conditions = {}
+
+        def record_lease_diagnostic(category, *, current=None, error=None, verdict=None, condition="task"):
             with completion_lock:
                 diagnostic = dict(terminal["lease_diagnostic"])
+                previous = observation_conditions.get(condition, ("observing", None, None))
+                # A verdict may complete the immediately preceding refusal.
+                # Otherwise old transport details do not describe this event.
+                if not (verdict and category == diagnostic.get("category") and error is None):
+                    for key in ("runtime_code", "request_id", "exception_type"):
+                        diagnostic.pop(key, None)
                 diagnostic["category"] = category
                 diagnostic["observed_at_utc"] = datetime.now(timezone.utc).isoformat()
                 if current is not None:
                     diagnostic["observed"] = lease_snapshot_detail(current)
                 if error is not None:
                     diagnostic.update(lease_runtime_error(error))
-                # The object is intentionally a fixed-shape, bounded record.
                 terminal["lease_diagnostic"] = diagnostic
+                signature = (category, diagnostic.get("runtime_code"), diagnostic.get("exception_type"))
+                observation_conditions[condition] = signature
+                changed = previous != signature
+                verdict_changed = verdict and terminal.get("logged_verdict") != (category, verdict)
+                if verdict_changed:
+                    terminal["logged_verdict"] = (category, verdict)
+                if changed or verdict_changed:
+                    log_lease_diagnostic(
+                        task_id=str(data["id"]), attempt_id=exact_attempt, category=category,
+                        last_acknowledged_heartbeat=diagnostic["last_successful_heartbeat_at_utc"],
+                        elapsed_seconds=time.monotonic() - lifetime.started_at,
+                        runtime_code=diagnostic.get("runtime_code"), verdict=verdict)
+
+        def record_publication_refusal(error):
+            reason = _runtime_authority_refusal(error, operation="settle")
+            record_lease_diagnostic("publication_refused", error=error, verdict="lease_lost")
+            terminal.update(recorded=True, status="failed", settled=False, retain_spool=True,
+                            error=HostLeaseLost(reason), disposition="authority_refused")
+            terminal.pop("publication_pending", None)
+            terminal.pop("evidence_pending", None)
 
         def ensure_failure(error):
             if (terminal.get("recorded") or terminal.get("evidence_pending")
@@ -11480,23 +11875,17 @@ class GenericPackHost:
             return terminal.get("progress")
 
         def lease_transport_fault(category, error, current=None):
-            record_lease_diagnostic(category, current=current, error=error)
-            try:
-                code = getattr(error, "code", None)
-                transient = ((getattr(error, "status", None) == 0
-                              and code in {"transport_timeout", "transport_error"})
-                             or (isinstance(error, OSError) and code is None))
-            except BaseException:
-                transient = False
-            with completion_lock:
-                valid_until = terminal.get("lease_valid_until")
-                return (transient and valid_until is not None and time.monotonic() < valid_until
-                        and (terminal.get("publication_pending")
-                             or (lifetime.deadline() is not None and not lifetime.expired()))
-                        and not terminal.get("forced") and not terminal.get("recorded")
-                        and not stop.is_set())
+            condition = ("heartbeat" if category.startswith("heartbeat") else
+                         "interactive" if category.startswith("interactive") else "task")
+            record_lease_diagnostic(category if error is not None else "observing",
+                                    current=current, error=error, condition=condition)
+            operation = "heartbeat" if category.startswith("heartbeat") else "task"
+            refused = _runtime_authority_refusal(error, operation=operation) is not None
+            if refused and not terminal.get("publication_pending"):
+                force_abort("timeout" if lifetime.expired() else "lease_lost")
+            return not refused
 
-        def renew_progress(*, liveness=False):
+        def renew_progress(*, liveness=False, cycle_category="observing", current=None):
             # Progress and ownership are independent. Only a changed semantic
             # checkpoint is sent as progress; a bounded liveness tick omits it.
             progress = read_progress()
@@ -11505,50 +11894,52 @@ class GenericPackHost:
                 if (stop.is_set() or terminal.get("recorded") or terminal.get("forced")
                         or (lifetime.expired() and not terminal.get("publication_pending"))):
                     return
-                valid_until = terminal.get("lease_valid_until")
-                if valid_until is not None and time.monotonic() >= valid_until:
-                    raise HostError("execution lease expired before renewal")
                 changed = token != terminal.get("renewed_progress")
-                if terminal.get("renewal_inflight") or not (changed or (
-                        liveness and valid_until is not None
-                        and (lifetime.deadline() is not None or terminal.get("publication_pending")))):
+                if terminal.get("renewal_inflight") or not (changed or liveness):
                     return
                 terminal["renewal_inflight"] = True
             kwargs = {"attempt_id": exact_attempt, "fence": exact_fence}
-            if progress is not None and token[1] != terminal.get("sent_progress"):
+            if (progress is not None and token[1] != terminal.get("sent_progress")
+                    and token[1] != terminal.get("rejected_progress")):
                 kwargs["progress"] = progress
-            started = time.monotonic()
-            started_utc = datetime.now(timezone.utc)
             try:
-                result = lease_call(self.client.heartbeat, str(data["id"]), lease_token, **kwargs)
+                progress_error = None
+                try:
+                    result = lease_call(self.client.heartbeat, str(data["id"]), lease_token, **kwargs)
+                except Exception as exc:
+                    if "progress" not in kwargs or getattr(exc, "code", None) != "validation_error":
+                        raise
+                    progress_error = exc
+                    terminal["rejected_progress"] = token[1]
+                    kwargs.pop("progress")
+                    result = lease_call(self.client.heartbeat, str(data["id"]), lease_token, **kwargs)
                 def field(name):
                     return result.get(name) if isinstance(result, Mapping) else getattr(result, name, None)
+                fields = {name: field(name) for name in (
+                    "attempt_id", "task_id", "lease_id", "fence", "runtime_epoch", "lease_expires_at")}
+                if (any(type(fields[name]) is not str or not fields[name] for name in (
+                        "attempt_id", "task_id", "lease_id", "lease_expires_at"))
+                        or any(type(fields[name]) is not int or fields[name] < 1
+                               for name in ("fence", "runtime_epoch"))):
+                    raise HostError("malformed heartbeat acknowledgement")
+                try:
+                    expiry_time = datetime.fromisoformat(fields["lease_expires_at"].replace("Z", "+00:00"))
+                    if expiry_time.tzinfo is None:
+                        raise ValueError("missing timezone")
+                except ValueError as exc:
+                    raise HostError("malformed heartbeat acknowledgement expiry") from exc
                 for name, expected in (("attempt_id", exact_attempt), ("fence", exact_fence),
                                        ("task_id", str(data["id"])), ("lease_id", lease_token),
-                                       ("runtime_epoch", data.get("runtime_epoch"))):
+                                       ("runtime_epoch", exact_epoch)):
                     if field(name) is not None and expected is not None and field(name) != expected:
-                        raise HostError("heartbeat acknowledgement changed attempt ownership")
+                        record_lease_diagnostic(f"heartbeat_{name}_changed")
+                        force_abort("lease_lost")
+                        return
                 expiry = field("lease_expires_at")
-                acknowledged_until = None
-                if expiry is not None or valid_until is not None:
-                    try:
-                        parsed = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
-                        if parsed.tzinfo is None:
-                            raise ValueError("lease expiry requires timezone")
-                        acknowledged_until = started + (parsed - started_utc).total_seconds()
-                    except (AttributeError, TypeError, ValueError) as exc:
-                        raise HostError("invalid heartbeat lease expiry") from exc
                 with completion_lock:
                     if (terminal.get("forced") or terminal.get("recorded") or stop.is_set()
                             or (lifetime.expired() and not terminal.get("publication_pending"))):
                         return
-                    now = time.monotonic()
-                    prior_until = terminal.get("lease_valid_until")
-                    if ((prior_until is not None and now >= prior_until)
-                            or (acknowledged_until is not None and now >= acknowledged_until)):
-                        raise HostError("heartbeat acknowledgement arrived after lease expiry")
-                    if acknowledged_until is not None:
-                        terminal["lease_valid_until"] = acknowledged_until
                     terminal["renewed_progress"] = token
                     if "progress" in kwargs:
                         terminal["sent_progress"] = token[1]
@@ -11556,6 +11947,8 @@ class GenericPackHost:
                     diagnostic["last_successful_heartbeat_at_utc"] = datetime.now(timezone.utc).isoformat()
                     diagnostic["last_successful_heartbeat_expiry"] = safe_lease_value(expiry, limit=96)
                     terminal["lease_diagnostic"] = diagnostic
+                record_lease_diagnostic("heartbeat_progress_invalid" if progress_error else cycle_category,
+                                        current=current, error=progress_error, condition="heartbeat")
             finally:
                 with completion_lock:
                     terminal["renewal_inflight"] = False
@@ -11566,11 +11959,15 @@ class GenericPackHost:
             with completion_lock:
                 if terminal.get("recorded") or terminal.get("forced"):
                     return
+                reason = terminal["lease_diagnostic"].get("runtime_code") or terminal["lease_diagnostic"].get("category")
                 error = AstridError("execution deadline exceeded" if code == "timeout" else
-                                    "execution lease lost" if code == "lease_lost" else "execution cancelled", code=code)
+                                    f"execution lease lost: {reason}" if code == "lease_lost" else "execution cancelled", code=code)
                 terminal.update(forced=code, error=error, status="timeout" if code == "timeout" else
                                 "cancelled" if code == "cancelled" else "failed", minimal=True)
                 abort.set()
+                diagnostic = terminal["lease_diagnostic"]
+                record_lease_diagnostic(diagnostic["category"] if code == "lease_lost" else code,
+                                        verdict=code)
             try:
                 if code == "cancelled" and callable(getattr(self.client, "cancel", None)):
                     # Admission shutdown happens before the producer starts.
@@ -11578,7 +11975,7 @@ class GenericPackHost:
                     # stopped until the local execution path returns.
                     completion_call(self.client.cancel, str(data["id"]), attempt_id=exact_attempt,
                                     fence=exact_fence, lease_id=lease_token,
-                                    runtime_epoch=data.get("runtime_epoch"), outputs=[],
+                                    runtime_epoch=exact_epoch, outputs=[],
                                     result={"status": "cancelled",
                                             "error": {"code": "cancelled",
                                                       "message": "execution cancelled"}},
@@ -11597,7 +11994,9 @@ class GenericPackHost:
                     self._write_task_result(terminal)
 
         def pump_lease():
-            next_poll = time.monotonic() + _LEASE_POLL_SECONDS
+            poll_seconds = (_LEASE_POLL_SECONDS * self.execution_policy.authority_window_seconds
+                            / _DEFAULT_EXECUTION_POLICY.authority_window_seconds)
+            next_poll = time.monotonic() + poll_seconds
             while not stop.wait(0.05):
                 if lifetime.expired():
                     if terminal.get("publication_pending"):
@@ -11607,13 +12006,6 @@ class GenericPackHost:
                         return
                 if terminal.get("recorded"):
                     return
-                valid_until = terminal.get("lease_valid_until")
-                if valid_until is not None and time.monotonic() >= valid_until:
-                    # Keep the last typed transport observation, if any.
-                    if terminal["lease_diagnostic"].get("category") == "observing":
-                        record_lease_diagnostic("lease_expired")
-                    force_abort("lease_lost")
-                    return
                 if self._shutdown.is_set():
                     if terminal.get("publication_pending"):
                         terminal["reconcile_cancel"] = True
@@ -11622,7 +12014,7 @@ class GenericPackHost:
                         return
                 if time.monotonic() < next_poll or self.client is None:
                     continue
-                next_poll = time.monotonic() + _LEASE_POLL_SECONDS
+                next_poll = time.monotonic() + poll_seconds
                 try:
                     current = task_snapshot()
                 except BaseException as exc:
@@ -11630,38 +12022,32 @@ class GenericPackHost:
                         continue
                     force_abort("timeout" if lifetime.expired() else "lease_lost")
                     return
-                record_lease_diagnostic("observing", current=current)
                 if terminal.get("publication_pending") and (
                         current["status"] in {"completed", "succeeded", "failed", "cancelled"}
-                        or current["attempt_id"] != exact_attempt or current["fence"] != exact_fence):
+                        or current["attempt_id"] != exact_attempt or current["fence"] != exact_fence
+                        or current["runtime_epoch"] != exact_epoch):
                     # The publication owner consumes this authoritative read.
                     # Do not race it with an unrelated lifecycle failure.
                     return
                 if current["status"] in {"cancel_requested", "cancelled"}:
+                    record_lease_diagnostic("cancel_requested", current=current,
+                                            verdict="cancelled" if terminal.get("publication_pending") else None)
                     if terminal.get("publication_pending"):
                         terminal["reconcile_cancel"] = True
                         continue
                     force_abort("cancelled")
                     return
                 state = current["status"]
+                cycle_category = "observing"
                 if current["lease_deadline_present"]:
                     try:
                         expiry = datetime.fromisoformat(current["lease_expires_at"].replace("Z", "+00:00"))
                         if expiry.tzinfo is None:
-                            record_lease_diagnostic("lease_metadata_invalid", current=current)
-                            force_abort("lease_lost")
-                            return
-                        if expiry <= datetime.now(timezone.utc):
-                            record_lease_diagnostic("lease_expired", current=current)
-                            force_abort("lease_lost")
-                            return
-                        if terminal.get("lease_valid_until") is not None:
-                            terminal["lease_valid_until"] = min(terminal["lease_valid_until"],
-                                time.monotonic() + (expiry - datetime.now(timezone.utc)).total_seconds())
-                    except (AttributeError, TypeError, ValueError) as exc:
-                        record_lease_diagnostic("lease_metadata_invalid", current=current, error=exc)
-                        force_abort("lease_lost")
-                        return
+                            cycle_category = "lease_metadata_invalid"
+                        elif expiry <= datetime.now(timezone.utc):
+                            cycle_category = "lease_expired"
+                    except (AttributeError, TypeError, ValueError):
+                        cycle_category = "lease_metadata_invalid"
                 if state not in {None, "running"}:
                     record_lease_diagnostic("task_state_changed", current=current)
                     force_abort("lease_lost")
@@ -11674,11 +12060,19 @@ class GenericPackHost:
                     record_lease_diagnostic("fence_changed", current=current)
                     force_abort("lease_lost")
                     return
+                if current["runtime_epoch"] != exact_epoch:
+                    if type(current["runtime_epoch"]) is int:
+                        record_lease_diagnostic("runtime_epoch_changed", current=current)
+                        force_abort("lease_lost")
+                        return
+                    cycle_category = "task_metadata_invalid"
+                if observation_conditions.get("task", ("observing",))[0] == "task_read_exception":
+                    record_lease_diagnostic("observing", current=current)
                 # Main execution/child guards validate full interactive
                 # authority. The observer must keep its deadline clock
                 # available if those authority reads themselves stall.
                 try:
-                    renew_progress(liveness=True)
+                    renew_progress(liveness=True, cycle_category=cycle_category, current=current)
                 except BaseException as exc:
                     if lease_transport_fault("heartbeat_exception", exc, current):
                         continue
@@ -11686,93 +12080,110 @@ class GenericPackHost:
                         # Settlement may have committed between the task read
                         # and heartbeat. Its owner must resolve the stale ACK;
                         # a lifecycle abort would race successful readback.
-                        terminal["reconcile_cancel"] = True
                         return
                     force_abort("timeout" if lifetime.expired() else "lease_lost")
                     return
 
         terminal.update(completion_call=completion_call, ensure_failure=ensure_failure,
                         read_progress=read_progress, renew_progress=renew_progress, force_abort=force_abort,
+                        record_lease_diagnostic=record_lease_diagnostic,
                         lease_transport_fault=lease_transport_fault, task_snapshot=task_snapshot)
 
         def reconcile_publication():
-            """Own bounded exact replays, then request explicit fenced cancellation.
-
-            If Runtime cannot acknowledge cancellation, this owner stays live
-            and keeps trying. A local spool alone is never a custody transfer.
-            """
-            reconcile_deadline = time.monotonic() + _TERMINAL_RECONCILE_SECONDS
+            """Retain exact publication replay until a Runtime verdict or explicit cancellation."""
+            delay = _TERMINAL_RECONCILE_POLL_SECONDS
+            announced_rejection = False
             while not terminal.get("recorded"):
                 try:
-                    current = self.client.task(str(data["id"]))
-                    current = current.get("task", current) if isinstance(current, Mapping) else current
-                    def field(name, default=None):
-                        return current.get(name, default) if isinstance(current, Mapping) else getattr(current, name, default)
-                    state = field("state", field("status"))
-                    if (state in {"completed", "succeeded", "failed", "cancelled"}
-                            or field("attempt_id", exact_attempt) != exact_attempt
-                            or field("fence", field("lease_fence", exact_fence)) != exact_fence):
+                    snapshot = task_snapshot()
+                    current, state = snapshot["resource"], snapshot["status"]
+                    owner_changed = ((snapshot["attempt_id"] is not None and snapshot["attempt_id"] != exact_attempt)
+                                     or snapshot["fence"] != exact_fence or snapshot["runtime_epoch"] != exact_epoch
+                                     or (snapshot["attempt_id"] is None and state not in {"failed", "cancelled"}))
+                    if state in {"completed", "succeeded", "failed", "cancelled"} or owner_changed:
+                        succeeded = state in {"completed", "succeeded"} and not owner_changed
+                        record_lease_diagnostic("publication_owner_changed" if owner_changed else "publication_terminal",
+                                                current=snapshot, verdict="lease_lost" if owner_changed else state)
                         terminal.update(recorded=True, completion={"task": current},
-                                        status=("succeeded" if state in {"completed", "succeeded"}
-                                                else state if state in {"failed", "cancelled"} else "failed"),
-                                        settled=state in {"completed", "succeeded"}, settlement={"task": current})
+                                        status="succeeded" if succeeded else state if state in {"failed", "cancelled"} else "failed",
+                                        settled=succeeded, settlement={"task": current}, retain_spool=not succeeded)
+                        if owner_changed:
+                            terminal["error"] = HostLeaseLost("Runtime publication attempt, fence or epoch changed")
                         break
-                    if (terminal.get("reconcile_cancel") or self._shutdown.is_set()
-                            or time.monotonic() >= reconcile_deadline):
-                        # The producer has returned and its task scope has
-                        # finished cleanup before this owner is installed.
-                        # Cancellation is the explicit Runtime custody handoff.
+                    if state == "cancel_requested":
+                        terminal["reconcile_cancel"] = True
+                    operation, args, kwargs = terminal["publication_call"]
+                    rejection = terminal.get("publication_rejection")
+                    if rejection and not announced_rejection:
+                        print(f"generic host: terminal publication rejected for {data['id']}: {rejection}",
+                              file=sys.stderr, flush=True)
+                        announced_rejection = True
+                    if operation == self.client.fail and rejection:
+                        reason = str(rejection)
+                        original = terminal.get("error")
+                        normalized = coerce_astrid_error(original) if original is not None else None
+                        code = normalized.code if normalized is not None else "executor_failed"
+                        message = normalized.message if normalized is not None else str(args[2] if len(args) > 2 else "failure")
+                        detail = f"Reconciliation: Runtime refused terminal evidence: {reason}; original failure {code}: {message}"
+                        if not terminal.get("reconciliation_warning"):
+                            terminal.setdefault("evidence_warnings", []).append(detail)
+                            terminal["reconciliation_warning"] = detail
+                        terminal["retain_spool"] = True
+                        # Do not replace the original persisted evidence request.
+                        response = self._handoff_settlement_call(
+                            self.client.fail, str(data["id"]), lease_token, detail,
+                            retryable=False, attempt_id=exact_attempt, fence=exact_fence,
+                            structured_error={"code": "reconciliation_required"})
+                        terminal.update(recorded=True, completion=response, status="failed")
+                        print(f"generic host: ceded terminal publication for {data['id']}", file=sys.stderr, flush=True)
+                        break
+                    if (operation != self.client.fail and (terminal.get("reconcile_cancel")
+                            or self._shutdown.is_set())):
                         cancel = getattr(self.client, "cancel", None)
-                        operation, args, kwargs = terminal["publication_call"]
-                        if operation == self.client.fail:
-                            # Preserve an already chosen failure verbatim,
-                            # including its key, even if its ACK was lost.
-                            response = self._handoff_settlement_call(operation, *args, **kwargs)
-                            terminal.update(recorded=True, completion=response, status="failed")
-                            break
-                        valid_until = terminal.get("lease_valid_until")
-                        expiry = field("lease_expires_at")
-                        observed_expired = (isinstance(expiry, str)
-                                            and datetime.fromisoformat(expiry.replace("Z", "+00:00"))
-                                            <= datetime.now(timezone.utc))
-                        if observed_expired or (valid_until is not None and time.monotonic() >= valid_until):
-                            # The pinned Runtime allows the exact owner to
-                            # cede expired custody only without outputs/result.
-                            completion_call(
-                                self.client.fail, str(data["id"]), lease_token,
-                                "terminal publication unresolved after lease expiry; owner cedes custody",
-                                retryable=False, attempt_id=exact_attempt, fence=exact_fence,
-                                structured_error={"code": "reconciliation_required"})
-                            terminal["status"] = "failed"
-                            break
                         if callable(cancel):
+                            record_lease_diagnostic("cancel_requested", current=snapshot, verdict="cancelled")
                             response = self._handoff_settlement_call(
                                 cancel, str(data["id"]), attempt_id=exact_attempt,
                                 fence=exact_fence, lease_id=lease_token,
-                                runtime_epoch=data.get("runtime_epoch"), outputs=[],
+                                runtime_epoch=exact_epoch, outputs=[],
                                 result={"status": "cancelled", "error": {
                                     "code": "reconciliation_required",
                                     "message": "terminal publication acknowledgement remained unresolved"}},
                                 stop_observed=True,
                                 **({"request_path": terminal["root"] / "cancel-request.json"}
                                    if isinstance(self.client, RuntimeProtocolClient) else {}))
-                            terminal.update(recorded=True, completion=response, status="cancelled")
+                            terminal.update(recorded=True, completion=response, status="cancelled",
+                                            settled=False, retain_spool=True)
                             break
                     else:
-                        operation, args, kwargs = terminal["publication_call"]
                         try:
                             response = self._handoff_settlement_call(operation, *args, **kwargs)
-                        except TerminalPublicationRejected as exc:
-                            reject_publication(exc)
+                        except Exception as exc:
+                            rejected_owner = (None if isinstance(self.client, RuntimeProtocolClient)
+                                              else (exact_attempt, exact_fence))
+                            rejection = _terminal_publication_rejection(
+                                exc, str(data["id"]), rejected_owner, self.client.task)
+                            if rejection is not None:
+                                if operation == self.client.fail:
+                                    terminal["publication_rejection"] = str(rejection)
+                                else:
+                                    reject_publication(rejection)
+                            else:
+                                raise
                         else:
                             terminal.update(recorded=True, completion=response,
                                             status=terminal.get("pending_status", "succeeded"),
                                             settled=terminal.get("pending_status") == "succeeded",
                                             settlement=response)
-                except Exception as exc:  # noqa: BLE001 - this owner must survive Runtime outages
+                except Exception as exc:  # noqa: BLE001 - retain custody through Runtime outages
+                    if _runtime_authority_refusal(exc, operation="task"):
+                        record_publication_refusal(exc)
+                        break
                     terminal["reporting_error"] = exc
                 if not terminal.get("recorded"):
-                    time.sleep(_TERMINAL_RECONCILE_POLL_SECONDS)
+                    time.sleep(delay)
+                    delay = min(delay * 2, 5.0)
+            print(f"generic host: terminal publication recorded for {data['id']}", file=sys.stderr, flush=True)
             terminal.pop("evidence_pending", None)
             terminal.pop("publication_pending", None)
             if terminal.get("status") == "succeeded":
@@ -11780,8 +12191,19 @@ class GenericPackHost:
                     terminal.pop(key, None)
             terminal["write_attempted"] = False
             self._write_task_result(terminal)
+            if terminal.get("reconciliation_warning") and terminal.get("receipt_final"):
+                # The forced receipt is final; add only the reconciliation outcome,
+                # atomically, without reopening artifact harvesting or other writers.
+                with completion_lock:
+                    receipt_path = terminal["root"] / "result.json"
+                    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                    warnings = receipt.setdefault("warnings", [])
+                    if terminal["reconciliation_warning"] not in warnings:
+                        warnings.append(terminal["reconciliation_warning"])
+                    write_json_atomic(receipt_path, receipt)
 
         def reject_publication(error):
+            record_lease_diagnostic("publication_rejected", error=error, verdict="publication_rejected")
             # Keep the original success spool, but never attach its conflicting
             # descriptors or success manifest to the failure mutation.
             for key in ("evidence_pending", "publication_pending", "pending_outputs", "pending_result", "pending_status"):
@@ -11804,7 +12226,9 @@ class GenericPackHost:
 
         terminal["reject_publication"] = reject_publication
         pump_thread = None
+        local_engine_admitted = False
         try:
+            local_engine_admitted = self._admit_local_engine(data)
             owns_attempt = self._handoff_begin_direct_attempt()
             if exact_attempt and exact_fence is not None:
                 terminal["root"] = self._allocate_attempt_root(str(data["id"]), str(exact_attempt))
@@ -11819,19 +12243,6 @@ class GenericPackHost:
                 except (AttributeError, TypeError, ValueError) as exc:
                     raise HostError("invalid claimed task deadline_at") from exc
             terminal["record"] = self.capabilities.get(str(data.get("capability", "")))
-            # A claimed/read lease is already acknowledged authority. Use its
-            # remaining validity for silent setup, never an invented TTL. The
-            # ordinary admission path still precedes the first mutation when
-            # no such acknowledgement was supplied.
-            if data.get("lease_expires_at") is not None:
-                try:
-                    expiry = datetime.fromisoformat(data["lease_expires_at"].replace("Z", "+00:00"))
-                    if expiry.tzinfo is None:
-                        raise ValueError("lease expiry requires timezone")
-                    terminal["lease_valid_until"] = time.monotonic() + (
-                        expiry - datetime.now(timezone.utc)).total_seconds()
-                except (AttributeError, TypeError, ValueError) as exc:
-                    raise HostError("invalid claimed lease expiry") from exc
             pump_thread = threading.Thread(target=pump_lease, name=f"astrid-heartbeat-{data.get('id')}", daemon=True)
             terminal["pump_thread"] = pump_thread
             # Root ownership is established before the observer may publish.
@@ -11839,7 +12250,7 @@ class GenericPackHost:
             pump_thread.start()
             if _setup_error is not None:
                 raise _setup_error
-            if terminal.get("lease_valid_until") is not None:
+            if data.get("lease_expires_at") is not None:
                 try:
                     renew_progress()
                 except Exception as exc:
@@ -11889,6 +12300,8 @@ class GenericPackHost:
             raise
         finally:
             try:
+                if local_engine_admitted:
+                    self._local_engine_idle.finish()
                 if terminal.get("root") is not None and not terminal.get("write_attempted"):
                     self._write_task_result(terminal)
                     if (self.attempt_root is None and not keep_attempt
@@ -12140,20 +12553,6 @@ class GenericPackHost:
         try:
             _assert_fixed_request_scope(record, task_data)
             execution_contract = _terminal["execution_contract"]
-            workflow_endpoint = None
-            workflow_policy = None
-            if capability_id == "vibecomfy.run":
-                from astrid.packs.vibecomfy.endpoint_checkout import load_workflow_endpoint, workflow_endpoint_network_policy
-                selected_profile = _read_readiness_profile_document()
-                runpod = (execution_contract or {}).get("target", {}).get("kind") == "runpod"
-                if runpod:
-                    workflow_endpoint = load_workflow_endpoint(
-                        selected_profile, profile_path=Path(os.environ.get("ASTRID_HOST_READINESS_PROFILE_PATH", "")),
-                        execution_request=execution_contract,
-                    )
-                    workflow_policy = workflow_endpoint_network_policy(workflow_endpoint)
-                elif isinstance(selected_profile, Mapping) and ("workflow_endpoint" in selected_profile or "endpoint_evidence" in selected_profile):
-                    raise HostError("workflow endpoint requires its current admitted execution request")
             contract_limits = execution_contract.get("limits", {}) if execution_contract else {}
             queue_limit = contract_limits.get("max_queue_seconds")
             if queue_limit is not None and _contract_queue_age(task_data) > queue_limit:
@@ -12266,9 +12665,6 @@ class GenericPackHost:
             "network_nonce": secrets_module.token_urlsafe(24),
             "allowed_routes": list((_network_policy(record) or {}).get("allowed_routes", (_network_policy(record) or {}).get("allowed_destinations", ()))),
         }
-        if workflow_policy is not None:
-            network_admission["allowed_routes"] = list(workflow_policy["allowed_destinations"])
-        endpoint_transport = None
         cancel_signal = _terminal["cancel_signal"]
         managed_adapter = _ManagedTaskAdapter(
             cancel_signal,
@@ -12309,19 +12705,9 @@ class GenericPackHost:
             warm_reuse_expected=self.execution_policy.warm_reuse_expected,
         )
         readiness_profile = _read_readiness_profile_document()
-        vibe_session = (
-            readiness_profile.get("vibecomfy_session")
-            if isinstance(readiness_profile, Mapping)
-            else None
-        )
-        if capability_id == "vibecomfy.run" and isinstance(vibe_session, Mapping):
-            managed_capability = CapabilityDescriptor(
-                capability_id=capability_id,
-                residency_support="observable_releasable",
-                resources_claimed=tuple(record.resource_keys),
-                warm_reuse_expected=self.execution_policy.warm_reuse_expected,
-            )
-            managed_adapter = None
+        if isinstance(readiness_profile, Mapping) and "vibecomfy_session" in readiness_profile:
+            # The checkout-owned session record was removed with the checkout route.
+            raise HostError("created by a removed route; restart it")
         managed_token = None
         managed_settled = False
         managed_opened = False
@@ -12329,8 +12715,6 @@ class GenericPackHost:
         execution_identity = ""
         model_id = "vibecomfy.run"
         template_id = "vibecomfy.run"
-        self._vibecomfy_current_warmth_hint = None
-        self._vibecomfy_requested_warmth_hint = None
 
         def current_task_state():
             return _terminal["task_snapshot"]()["status"]
@@ -12340,7 +12724,9 @@ class GenericPackHost:
             nonlocal evidence_failure_receipt, evidence_failure_message
             try:
                 lifetime.assert_authority()
-            except Exception:
+            except Exception as exc:
+                if _terminal["lease_transport_fault"]("interactive_authority_exception", exc):
+                    return False
                 cancel_signal.set()
                 return True
             if lifetime.expired():
@@ -12355,7 +12741,7 @@ class GenericPackHost:
                         evidence_root,
                         immutable_inputs=immutable_input_baseline,
                         cap_bytes=attempt_evidence_cap,
-                        excluded_roots=output_capture_paths + (
+                        excluded_roots=output_capture_paths + _collected_log_roots(root / "outputs", root) + (
                             _render_media_roots(root) if capability_id == "rendering.render" else ()
                         ),
                     )
@@ -12376,7 +12762,10 @@ class GenericPackHost:
                 return True
             # A request contains this owned invocation; it is not a Runtime
             # terminal acknowledgement or proof of provider/session cleanup.
-            return state in {"cancel_requested", "cancelled"}
+            if state in {"cancel_requested", "cancelled"}:
+                _terminal["record_lease_diagnostic"]("cancel_requested", verdict="cancelled")
+                return True
+            return False
 
         def terminalize_deadline() -> None:
             """Fence a deadline expiry at Runtime before returning to the worker."""
@@ -12405,6 +12794,26 @@ class GenericPackHost:
                     raise HostError("deadline terminalization was not accepted by Runtime") from exc
                 deadline_failed = state == "failed"
 
+        job_evidence = None
+
+        def upload_log_outputs(output_root: Path) -> list[dict[str, Any]]:
+            warnings = _terminal.setdefault("evidence_warnings", [])
+            from contextlib import suppress
+            with suppress(Exception):
+                if job_evidence is not None:
+                    job_evidence.finish()
+            try:
+                logs = self._log_outputs(output_root, attempt=root, warnings=warnings)
+                task_epoch = task_data.get("runtime_epoch")
+                return self._upload_outputs(
+                    logs, project_id=task_data.get("project_id"), run_id=task_data.get("run_id"),
+                    task_id=task_id, attempt_id=attempt_id, lease_id=lease_token, fence=fence,
+                    runtime_epoch=task_epoch if isinstance(task_epoch, int) else None,
+                ) if logs else []
+            except Exception as exc:  # noqa: BLE001 - log uploads are best effort
+                warnings.append(f"logs unavailable: {type(exc).__name__}")
+                return []
+
         def collect_terminal_evidence(status: str, error: BaseException) -> tuple[list[dict[str, Any]], dict[str, Any]]:
             """Harvest and upload verified partial outputs before terminal mutation."""
             upload_started = False
@@ -12424,9 +12833,11 @@ class GenericPackHost:
                 return _terminal["pending_outputs"], _terminal["pending_result"]
             output_root = _terminal.get("output_root")
             if output_root is None:
-                result_value = {"status": status, "error": error_value}
-                _terminal.update(pending_outputs=[], pending_result=result_value, pending_status=status)
-                return [], result_value
+                error_key = "host_failure" if status == "failed" else "error"
+                result_value = {"status": status, error_key: error_value}
+                uploaded = upload_log_outputs(root / "outputs") if job_evidence is not None else []
+                _terminal.update(pending_outputs=uploaded, pending_result=result_value, pending_status=status)
+                return uploaded, result_value
             try:
                 values = dict(_terminal.get("inputs") or {})
                 values.update({"out": str(output_root), "run_root": str(root), "python_exec": sys.executable})
@@ -12454,7 +12865,9 @@ class GenericPackHost:
                 if manifest_path.is_file() and not manifest_path.is_symlink():
                     manifest_value = json.loads(manifest_path.read_text(encoding="utf-8"))
                     if manifest_value.get("kind") == "managed-generation-result.v1":
-                        from astrid.core.contracts.managed_generation_result import validate_managed_generation_result
+                        from astrid.core.contracts.managed_generation_result import (
+                            validate_managed_generation_result,
+                        )
 
                         validate_managed_generation_result(
                             manifest_value, staging_root=output_root,
@@ -12472,11 +12885,12 @@ class GenericPackHost:
                     task_id=task_id, attempt_id=attempt_id, lease_id=lease_token,
                     fence=fence, runtime_epoch=task_epoch if isinstance(task_epoch, int) else None,
                 ) if typed else []
+                uploaded.extend(upload_log_outputs(Path(output_root)))
                 result_value: dict[str, Any] = {
                     "status": status,
-                    "error": error_value,
                     "outcomes": {"execution": {"status": status}},
                 }
+                result_value["host_failure" if status == "failed" else "error"] = error_value
                 manifest = next((row for row in uploaded
                                  if row.get("output_port", row.get("name")) == "result_manifest"), None)
                 if manifest is not None:
@@ -12494,13 +12908,14 @@ class GenericPackHost:
                     warnings.append(f"terminal evidence unavailable: {type(evidence_error).__name__}")
                     result_value = {
                         "status": status,
-                        "error": error_value,
                         "outcomes": {"execution": {"status": status}},
                     }
+                    result_value["host_failure" if status == "failed" else "error"] = error_value
+                    logs = upload_log_outputs(Path(output_root)) if job_evidence is not None else []
                     _terminal.update(
-                        pending_outputs=[], pending_result=result_value, pending_status=status
+                        pending_outputs=logs, pending_result=result_value, pending_status=status
                     )
-                    return [], result_value
+                    return logs, result_value
                 # Keep the attempt spool and expose why evidence could not be attached.
                 _terminal["evidence_pending"] = True
                 raise HostError("terminal evidence publication is pending Runtime recovery") from evidence_error
@@ -12555,16 +12970,19 @@ class GenericPackHost:
                 raise
         child_bridge = None
         session_hold = None
-        target_context = target_provider = target_invocation = None
-        target_model_assets = None
+        engine_preparation = None
+        prepared_identity = None
+        assert_managed_input_identity = None
+        target_context = machine_policy = None
         target_operation_result = None
+        claim_failure_recorder: Callable[[BaseException], None] | None = None
         try:
             session_hold = self._hold_session_slot()
             # Admission readback is bounded transport work under the lease pump.
             # Decide exactly once, retaining the original start and setup bound.
             lifetime.authority = _interactive_review_authority(
                 self, task_data, record, attempt_id=attempt_id, lease_id=lease_token,
-                fence=fence, runtime_epoch=claim_epoch)
+                fence=fence, runtime_epoch=claim_epoch, observe_fault=_terminal["lease_transport_fault"])
             if isinstance(spec, Mapping) and ("child_delegation" in spec or "delegated_recoverable_outputs" in spec):
                 from ._child_bridge import HostChildBridge
 
@@ -12605,6 +13023,7 @@ class GenericPackHost:
                 cas_param_ports=cas_param_ports,
                 optional_cas_param_ports=optional_cas_param_ports,
                 storage_estimate=storage_estimate,
+                storage_floor_exempt=getattr(record, "storage_floor_exempt", False),
                 input_size_limits=input_size_limits,
                 storage_policy_version=(
                     str(record.definition.metadata.get("storage_policy_version"))
@@ -12621,46 +13040,149 @@ class GenericPackHost:
                     if port.type == "file"
                 ),
             )
-            target_policy = inputs.get("target_policy")
-            if record.definition.metadata.get("host_target_operation") and not target_policy:
+            local_device = None
+            placement_policy = inputs.get("placement_policy")
+            if record.definition.metadata.get("host_target_operation") and not placement_policy:
                 raise HostError("host target operation requires a target policy")
-            if target_policy:
+            if placement_policy:
                 target_operation = record.definition.metadata.get("host_target_operation")
-                if not target_operation and not record.definition.metadata.get("host_target_policy"):
+                if not target_operation and not record.definition.metadata.get("host_placement_policy"):
                     raise HostError("capability does not admit a host target policy")
-                if not isinstance(target_policy, str) or len(target_policy.encode("utf-8")) > 16384:
+                if not isinstance(placement_policy, str) or len(placement_policy.encode("utf-8")) > 16384:
                     raise HostError("host target policy must be bounded JSON")
                 try:
-                    policy = json.loads(target_policy)
+                    policy = json.loads(placement_policy)
                 except ValueError as exc:
                     raise HostError("host target policy is not valid JSON") from exc
                 if not isinstance(policy, dict):
                     raise HostError("host target policy must be an object")
                 if cancelled():
                     raise HostCancelled("task cancelled before target acquisition")
-                target_context = self._host_target_bindings(policy.get("kind"))
+                if policy.get("kind") == "local" and not target_operation:
+                    if (set(policy) - {"idle_timeout_s"} != {"kind", "device"} or
+                            policy["device"] is not None and (type(policy["device"]) is not int or policy["device"] < 0)):
+                        raise HostError("invalid local placement device")
+                    if "idle_timeout_s" in policy:
+                        idle_seconds(DEFAULT_IDLE_SECONDS, requested=policy["idle_timeout_s"])
+                    local_device = policy["device"]
+                    target_context = None
+                else:
+                    target_context = self._host_target_bindings(policy.get("kind"))
                 if target_operation:
                     include_quote = inputs.get("include_quote", False)
                     if type(include_quote) is not bool:
                         raise HostError("target quote selection must be boolean")
-                    target_operation_result = target_context.operate(policy, target_operation, include_quote=include_quote)
+                    recorder_factory = getattr(target_context, "claim_failure_recorder", None)
+                    if target_operation == "claim" and callable(recorder_factory):
+                        claim_failure_recorder = recorder_factory(
+                            task_id=str(task_id), attempt_id=str(attempt_id),
+                            invocation_id=f"{task_id}:{attempt_id}:{fence}")
+                    target_operation_result = target_context.operate(policy, target_operation, include_quote=include_quote, **(
+                        {"cancelled": cancelled} if policy.get("kind") == "runpod" and target_operation == "claim" else {}))
+                    claim_failure_recorder = None
                     inputs.pop("include_quote", None)
-                else:
-                    target_provider, target_invocation, evidence = target_context.bind(
-                        policy, inputs, invocation_id=f"{task_id}:{attempt_id}:{fence}",
-                        scratch=root, cancel=cancel_signal)
-                    _terminal["target_binding"] = evidence
-                    inputs["comfy_url"] = evidence["loopback_url"]
-                    target_model_assets = _target_inventory_document(
-                        target_invocation, evidence, trust=_align_trust(task_data))
+                elif target_context is not None:
+                    # A rented placement is a generation.machine: the whole local
+                    # run happens there and only its outputs come back.
+                    machine_policy = policy
                     readiness_profile = None
-                    vibe_session = None
-                inputs.pop("target_policy", None)
-            if capability_id == "h3_av.transform":
-                if "host_output_root" in inputs or child_bridge is None:
-                    raise HostError("H3 parent requires host-owned output custody and delegated admission")
-                inputs["host_output_root"] = str(root / "outputs")
+                inputs.pop("placement_policy", None)
             _terminal["inputs"] = inputs
+            # Freeze admitted bytes before any canonical import or trusted
+            # alignment command can read them. Cancellation guards recheck this
+            # baseline during preparation as well as execution.
+            immutable_input_baseline = {}
+            for input_root in (root / "inputs", root / "managed-objects"):
+                immutable_input_baseline.update(self.execution_policy.immutable_input_baseline(input_root))
+            evidence_root = root
+            if (capability_id == "vibecomfy.run" and machine_policy is None
+                    and not inputs.get("comfy_url") and readiness_profile is None):
+                from concurrent.futures import CancelledError
+
+                from astrid.core.generation.managed_preparation import ManagedEnginePreparation
+                admitted_mode = _align_admission(task_data).get("align", "check")
+                engine_preparation = ManagedEnginePreparation(task=str(task_id), attempt=str(attempt_id),
+                    mode=admitted_mode, deadline=lifetime.deadline(), cancelled=cancelled,
+                    scratch=root / "engine-preparation", device=local_device, logs_root=_host_log_root(root))
+                from contextlib import suppress
+
+                from astrid.core.generation.engine_custody import declare_engine_log
+                from astrid.core.generation.job_evidence import JobEvidence
+                with suppress(Exception):
+                    job_evidence = JobEvidence(_host_log_root(root), engine_preparation)
+                    engine_preparation.evidence_start = job_evidence.begin
+                    engine_preparation.evidence_waiting = job_evidence.waiting
+                if job_evidence is None:
+                    declare_engine_log(_host_log_root(root), engine_preparation.root, engine_preparation.recipe.engine)
+                _terminal["machine"] = {**_local_machine({}), "placement": "managed",
+                                         "id": engine_preparation.root,
+                                         "device": engine_preparation.visibility if engine_preparation.visibility is not None else "auto"}
+                original_input_digests = {name: hashlib.sha256(Path(value).read_bytes()).hexdigest()
+                    for name, value in inputs.items() if name in {"workflow", "python", "companion", "source"} and value}
+                original_baseline = dict(immutable_input_baseline)
+                def input_nodes(paths):
+                    nodes = {}
+                    for path in paths:
+                        info = os.lstat(path)
+                        if not stat.S_ISREG(info.st_mode):
+                            raise HostError("managed generation input was replaced")
+                        nodes[path] = (info.st_dev, info.st_ino, info.st_mode, info.st_nlink)
+                    return nodes
+                original_nodes = input_nodes(original_baseline)
+                def assert_managed_input_identity():
+                    current = {}
+                    for input_root in (root / "inputs", root / "managed-objects"):
+                        current.update(self.execution_policy.immutable_input_baseline(input_root))
+                    if current != original_baseline or input_nodes(current) != original_nodes:
+                        raise HostError("managed generation admitted input bytes changed during preparation")
+                def prepare_engine(workflow_path, identity, loaded):
+                    assert_managed_input_identity()
+                    from astrid.packs.vibecomfy.production_engine import _canonical_bundle_value
+                    canonical = _canonical_bundle_value(loaded.resolved)
+                    report = engine_preparation.prepare(workflow_path, execution_identity=identity, inputs=inputs,
+                                                        canonical_workflow=canonical.workflow, input_digests=original_input_digests)
+                    self._local_engine_idle.retain(engine_preparation.context.service_client)
+                    assert_managed_input_identity()
+                    _terminal["managed_engine_preparation"] = report
+                    from astrid.packs.vibecomfy.local_server_engine import (
+                        _approve_live,
+                        _live_preflight,
+                    )
+                    bundle = _canonical_bundle_value(loaded.resolved)
+                    bindings = json.loads(inputs.get("workflow_inputs") or "{}")
+                    if inputs.get("managed_assets"):
+                        from astrid.packs.vibecomfy.actions.run.run import (
+                            _stage_managed_asset_manifest,
+                            resolve_inputs,
+                        )
+                        resolved = _stage_managed_asset_manifest(inputs["managed_assets"],
+                            readiness_profile=None, output_root=root / "host-preflight")
+                        bindings = resolve_inputs(resolved.manifest, bindings)
+                    custody = None
+                    if admitted_mode == "trust":
+                        from astrid.core.generation.target_inventory import declared_rows
+                        custody = declared_rows(bundle.workflow)
+                    from astrid.core.generation.target_inventory import declared_rows
+                    try:
+                        provider = _live_preflight(bundle, bindings, report["endpoint"], root / "host-preflight",
+                                                   target_custody=custody, prepared_models=declared_rows(bundle.workflow))
+                        _approve_live(bundle, bindings, provider)
+                    except Exception as error:
+                        if isinstance(getattr(error, "readiness", None), dict):
+                            error.readiness = {**error.readiness, "placement": "managed",
+                                               "target": {"kind": "managed", "endpoint": report["endpoint"]}}
+                        raise
+                    assert_managed_input_identity()
+                    if cancelled():
+                        raise HostCancelled("task cancelled after managed schema preflight")
+                    _terminal["managed_engine_preparation"] = report
+                    network_admission["managed_engine_preparation"] = report
+                    inputs["comfy_url"] = report["endpoint"]
+                try:
+                    prepared_identity = _prepare_vibecomfy_execution_identity(
+                        inputs, root / "workflow-identity", readiness_profile, prepare_engine=prepare_engine)
+                except (CancelledError, HostCancelled):
+                    raise HostCancelled("task cancelled during managed engine preparation") from None
             if capability_id == "vibecomfy.run" and inputs.get("comfy_url"):
                 from astrid.core.generation.backends.vibecomfy_local_server import (
                     validate_comfy_url,
@@ -12670,9 +13192,6 @@ class GenericPackHost:
                 if readiness_profile is not None or inputs.get("source_video"):
                     raise HostError("local_server cannot use a readiness profile or source_video")
                 inputs["comfy_url"] = validate_comfy_url(inputs["comfy_url"])
-                if target_model_assets is None and _align_trust(task_data):
-                    from astrid.core.generation.target_inventory import build_document
-                    target_model_assets = build_document("trust", inputs["comfy_url"])
                 if inputs.get("comfy_output_dir"):
                     inputs["comfy_output_dir"] = validate_output_directory(inputs["comfy_output_dir"], root)
                 local_network_policy = _network_policy(record, inputs)
@@ -12743,17 +13262,13 @@ class GenericPackHost:
                         )
                 except ImageStoragePolicyError as exc:
                     raise HostError(str(exc)) from exc
-            _assert_live_storage_envelope(storage_estimate, root, root / "outputs")
-            immutable_input_baseline = {}
-            for input_root in (root / "inputs", root / "managed-objects"):
-                immutable_input_baseline.update(
-                    self.execution_policy.immutable_input_baseline(input_root)
-                )
-            evidence_root = root
+            _assert_live_storage_envelope(storage_estimate, root, root / "outputs", storage_floor_exempt=getattr(record, "storage_floor_exempt", False))
+            if cancelled():
+                raise HostCancelled("task cancelled after managed preparation")
             lifetime.assert_deadline()
             if capability_id == "vibecomfy.run":
                 execution_identity, model_id, template_id, workflow_session_requirements = (
-                    _prepare_vibecomfy_execution_identity(
+                    prepared_identity or _prepare_vibecomfy_execution_identity(
                         inputs,
                         root / "workflow-identity",
                         readiness_profile,
@@ -12773,36 +13288,16 @@ class GenericPackHost:
                     if isinstance(exact_facts, Mapping)
                     else None
                 )
-                facts_digest = (
-                    readiness_profile.get("verified_facts_digest")
-                    if isinstance(readiness_profile, Mapping)
-                    else None
-                )
-                if not isinstance(vibe_session, Mapping):
-                    # pip_embedded is a valid local, non-persistent route. It
-                    # has no VibeComfy session binding, so bind reuse to the
-                    # admitted workflow's resident requirements plus the
-                    # pinned dependency/source identity instead.
-                    session_identity_fields = {
-                        "profile": "pip_embedded",
-                        "source_digest": record.source_digest,
-                        "dependency_digest": record.dependency_digest,
-                        "workflow_resident_requirements": workflow_session_requirements,
-                    }
-                else:
-                    session_identity_fields = {
-                        "verified_facts_digest": facts_digest,
-                        "runtime_instance_id": (
-                            readiness_profile.get("runtime", {}).get("runtime_instance_id")
-                            if isinstance(readiness_profile.get("runtime"), Mapping)
-                            else None
-                        ),
-                        "source_revision": vibe_session.get("source_revision"),
-                        "source_content_digest": vibe_session.get("source_content_digest"),
-                        "config_digest": vibe_session.get("config_digest"),
-                        "server_url": vibe_session.get("server_url"),
-                        "workflow_resident_requirements": workflow_session_requirements,
-                    }
+                # The engine local run is a valid local, non-persistent route. It
+                # has no VibeComfy session binding, so bind reuse to the
+                # admitted workflow's resident requirements plus the
+                # pinned dependency/source identity instead.
+                session_identity_fields = {
+                    "profile": "local_server",
+                    "source_digest": record.source_digest,
+                    "dependency_digest": record.dependency_digest,
+                    "workflow_resident_requirements": workflow_session_requirements,
+                }
                 stable_session_identity = session_identity_digest(
                     model_id,
                     model_digest=model_digest,
@@ -12815,142 +13310,6 @@ class GenericPackHost:
                     # only this stable model/session identity so a compatible
                     # workflow switch stays in the same owned session.
                     execution_identity=stable_session_identity,
-                )
-                # A changed resident identity must release the current owned
-                # server before we construct a replacement adapter.  The
-                # owner restart mutates the in-memory VibeComfy session binding
-                # after verifying the fresh registry; re-read that binding
-                # before any new adapter/session object is admitted.
-                current_binding = self.managed_tool_session.current_binding
-                if (
-                    current_binding is not None
-                    and current_binding.execution_identity != stable_session_identity
-                ):
-                    if workflow_endpoint is not None:
-                        raise HostError("installed endpoint replacement requires original owner reconciliation")
-                    self.managed_tool_session.release(reason="capacity_replacement")
-                    readiness_profile = _read_readiness_profile_document()
-                    refreshed_session = (
-                        readiness_profile.get("vibecomfy_session")
-                        if isinstance(readiness_profile, Mapping)
-                        else None
-                    )
-                    if not isinstance(refreshed_session, Mapping):
-                        raise HostError("vibecomfy owner restart did not provide a fresh VibeComfy session")
-                    vibe_session = refreshed_session
-                    fresh_facts = (
-                        readiness_profile.get("verified_facts", {}).get("exact", {})
-                        if isinstance(readiness_profile, Mapping)
-                        and isinstance(readiness_profile.get("verified_facts"), Mapping)
-                        else {}
-                    )
-                    fresh_model_digest = (
-                        fresh_facts.get("model_digest")
-                        if isinstance(fresh_facts, Mapping)
-                        else None
-                    )
-                    fresh_facts_digest = (
-                        readiness_profile.get("verified_facts_digest")
-                        if isinstance(readiness_profile, Mapping)
-                        else None
-                    )
-                    fresh_identity_fields = {
-                        "verified_facts_digest": fresh_facts_digest,
-                        "runtime_instance_id": (
-                            readiness_profile.get("runtime", {}).get("runtime_instance_id")
-                            if isinstance(readiness_profile.get("runtime"), Mapping)
-                            else None
-                        ),
-                        "source_revision": vibe_session.get("source_revision"),
-                        "source_content_digest": vibe_session.get("source_content_digest"),
-                        "config_digest": vibe_session.get("config_digest"),
-                        "server_url": vibe_session.get("server_url"),
-                        "workflow_resident_requirements": workflow_session_requirements,
-                    }
-                    stable_session_identity = session_identity_digest(
-                        model_id,
-                        model_digest=fresh_model_digest,
-                        required_identity=fresh_identity_fields,
-                    )
-                    managed_binding = replace(
-                        managed_binding, execution_identity=stable_session_identity
-                    )
-            if capability_id == "vibecomfy.run" and isinstance(vibe_session, Mapping):
-                endpoint_kwargs = {}
-                if workflow_endpoint is not None:
-                    if inputs.get("comfy_url") or inputs.get("comfy_output_dir"):
-                        raise HostError("RunPod workflow cannot use local_server overrides")
-                    from astrid.core.generation.engine_transport import EngineEndpointTransport
-                    from runpod_lifecycle.https import PORT
-                    endpoint_transport = EngineEndpointTransport(
-                        workflow_endpoint, pod_id=workflow_endpoint.attestation.pod_id, agent_port=PORT,
-                    )
-                    endpoint_kwargs["endpoint_transport"] = endpoint_transport
-                session_id = str(vibe_session.get("session_dir") or "")
-                session_birth = str(vibe_session.get("process_birth_id") or "")
-                session_endpoint = str(vibe_session.get("server_url") or "")
-                session_source = str(vibe_session.get("source_revision") or "")
-                session_config = str(vibe_session.get("config_digest") or "")
-                runtime_profile = readiness_profile.get("runtime")
-                if (not isinstance(runtime_profile, Mapping)
-                        or not runtime_profile.get("runtime_instance_id")
-                        or type(claim_epoch) is not int or claim_epoch < 1
-                        or not vibe_session.get("launch_generation")
-                        or not vibe_session.get("comfy_process_birth_id")
-                        or not vibe_session.get("source_content_digest")):
-                    raise HostError("Comfy owner binding requires complete Runtime and engine birth evidence")
-                managed_binding = SessionBinding(
-                    session_id=session_id,
-                    runtime_instance_id=str(
-                        (readiness_profile.get("runtime") or {}).get("runtime_instance_id")
-                        if isinstance(readiness_profile.get("runtime"), Mapping)
-                        else runtime_instance_id
-                    ),
-                    process_birth_id=session_birth,
-                    endpoint=session_endpoint,
-                    source_digest=session_source,
-                    config_digest=session_config,
-                    execution_identity=stable_session_identity,
-                    runtime_epoch=claim_epoch if isinstance(claim_epoch, int) and not isinstance(claim_epoch, bool) else None,
-                    launch_generation=str(vibe_session["launch_generation"]),
-                    engine_birth_id=str(vibe_session["comfy_process_birth_id"]),
-                )
-                current = self.managed_tool_session.current_adapter
-                if (self.managed_tool_session.active
-                        and self.managed_tool_session.current_binding == managed_binding
-                        and isinstance(current, _ManagedVibeSessionAdapter)):
-                    managed_adapter = current
-                    if endpoint_transport is not None:
-                        endpoint_transport.close()
-                        endpoint_transport = None
-                else:
-                    managed_adapter = _ManagedVibeSessionAdapter.from_host_session(
-                        binding=managed_binding,
-                        **endpoint_kwargs,
-                        native_graph=getattr(self, "_native_engine_graph", None),
-                        hc03_profile=readiness_profile,
-                    )
-                from astrid.core.generation.backends.vibecomfy import vibecomfy_warmth_hint
-
-                current_warmth_hint = vibecomfy_warmth_hint(
-                    session_id=session_id,
-                    process_birth_id=session_birth,
-                    comfy_process_birth_id=str(vibe_session.get("comfy_process_birth_id") or ""),
-                    runtime_instance_id=managed_binding.runtime_instance_id,
-                    model_id=model_id,
-                    model_bytes_digest=str(exact_facts.get("model_digest") or ""),
-                    facts_digest=str(facts_digest or ""),
-                    source_revision=str(vibe_session.get("source_revision") or ""),
-                    source_content_digest=str(
-                        vibe_session.get("source_content_digest") or ""
-                    ),
-                    config_digest=str(vibe_session.get("config_digest") or ""),
-                )
-                self._vibecomfy_current_warmth_hint = current_warmth_hint
-                self._vibecomfy_requested_warmth_hint = (
-                    current_warmth_hint
-                    if self._vibecomfy_warmth_hint == current_warmth_hint
-                    else None
                 )
             if capability_id == "wan2gp.generate_video":
                 managed_binding = self.prepare_wan_session(**self._wan_session_context(task_data))
@@ -13010,14 +13369,22 @@ class GenericPackHost:
                     handle_guard_abort()
                     cancelled_attempt = True
                     return {"task_id": task_id, "status": "cancelled", "cancelled": True}
+                if assert_managed_input_identity is not None:
+                    assert_managed_input_identity()
                 lifetime.begin_execution()
+                from contextlib import suppress
+                with suppress(Exception):
+                    if job_evidence is not None:
+                        job_evidence.start_execution()
                 _terminal["stage"] = "execution"
                 render_child_pending = True
-                comfy_invocation = None
                 if capability_id != "wan2gp.generate_video":
                     managed_adapter = self.managed_tool_session.adapter_for(managed_token, begin=True)
-                    if isinstance(managed_adapter, _ManagedVibeSessionAdapter):
-                        comfy_invocation = managed_adapter.invoke(managed_token, model_id=model_id, template_id=template_id)
+                if machine_policy is None and capability_id == "vibecomfy.run":
+                    _terminal["machine"] = _local_machine(inputs)
+                    if engine_preparation is not None:
+                        _terminal["machine"].update(placement="managed", machine="local",
+                            id=engine_preparation.root, device=engine_preparation.visibility if engine_preparation.visibility is not None else "auto")
                 if capability_id == "wan2gp.generate_video":
                     result = self._run_wan_session(
                         inputs=inputs,
@@ -13030,6 +13397,11 @@ class GenericPackHost:
                     effective_output_root = getattr(result, "output_root", None)
                     if isinstance(effective_output_root, (str, Path)):
                         output_root = Path(effective_output_root).expanduser().resolve()
+                elif machine_policy is not None:
+                    result = self._run_machine_job(
+                        record, task_data, machine_policy, target_context, inputs, root=root,
+                        output_root=output_root, cancelled=cancelled, cancel_signal=cancel_signal,
+                        task_id=task_id, attempt_id=attempt_id, fence=fence, terminal=_terminal)
                 elif record.definition.command is not None:
                     result = self._run_command_definition(
                         record,
@@ -13049,12 +13421,7 @@ class GenericPackHost:
                             if isinstance(spec, Mapping)
                             else None
                         ),
-                        admission={**network_admission, **(
-                            {"workflow_execution_request": execution_contract}
-                            if capability_id == "vibecomfy.run" and execution_contract is not None else {}
-                        ), **({"comfy_invocation": comfy_invocation} if comfy_invocation is not None else {}),
-                            **({"target_model_assets": target_model_assets} if target_model_assets is not None else {}),
-                            **({"host_target_bound": True} if target_invocation is not None else {})},
+                        admission={**network_admission, **_align_admission(task_data)},
                         network_broker=network_broker,
                         storage_estimate=storage_estimate,
                         child_bridge=child_bridge,
@@ -13087,12 +13454,7 @@ class GenericPackHost:
                                             if key not in {"task_id", "attempt_id", "fence", "network_nonce", "allowed_routes"}}
                     worker_env, worker_secrets = self._child_environment(
                         record, root, admission=network_admission, network_broker=network_broker,
-                        comfy_invocation=comfy_invocation,
                         allow_runtime_connection=not private_runtime_context)
-                    if capability_id == "h3_av.transform":
-                        # Presence is an entrypoint guard only. Parent authority
-                        # comes exclusively from the authenticated child bridge.
-                        worker_env["ASTRID_TASK_RUN_ID"] = task_id
                     try:
                         result = self.invoke_capability(
                             capability_kind="executor",
@@ -13124,7 +13486,10 @@ class GenericPackHost:
             finally:
                 # The outer run_task finally owns lease-pump shutdown and
                 # cleanup; this boundary only preserves child env cleanup.
-                pass
+                from contextlib import suppress
+                with suppress(Exception):
+                    if job_evidence is not None:
+                        job_evidence.start_collect()
             render_child_pending = False
             _terminal["output_root"] = output_root
             _terminal["payload"] = getattr(result, "payload", {}) or {}
@@ -13162,7 +13527,7 @@ class GenericPackHost:
                     root,
                     immutable_inputs=immutable_input_baseline,
                     cap_bytes=attempt_evidence_cap,
-                    excluded_roots=output_capture_paths + (
+                    excluded_roots=output_capture_paths + _collected_log_roots(root / "outputs", root) + (
                         _render_media_roots(root) if capability_id == "rendering.render" else ()
                     ),
                 )
@@ -13174,7 +13539,8 @@ class GenericPackHost:
                     evidence_failure_message = str(exc)
                 raise HostError(str(exc)) from exc
             try:
-                self._prepare_producer_evidence(output_root, task_data)
+                self._prepare_producer_evidence(output_root, task_data,
+                    preparation=_terminal.get("managed_engine_preparation"))
                 harvested = harvest_staged_outputs(
                     output_root,
                     definition=record.definition,
@@ -13226,7 +13592,8 @@ class GenericPackHost:
                 raise HostError(
                     f"capability {record.id!r} produced no typed settled outputs"
                 )
-            storage_receipt = _task_storage_envelope(task_data, root, typed_outputs)
+            storage_receipt = _task_storage_envelope(task_data, root, typed_outputs,
+                                                     storage_floor_exempt=getattr(record, "storage_floor_exempt", False))
             project_id = task_data.get("project_id")
             if project_id is not None and (not isinstance(project_id, str) or not project_id.strip()):
                 raise HostError("runtime task project_id must be a non-empty string or None")
@@ -13256,6 +13623,7 @@ class GenericPackHost:
                     else None
                 ),
             ) if typed_outputs else []
+            outputs.extend(upload_log_outputs(output_root))
             if capability_id == "wan2gp.generate_video":
                 verify_host_result(result.payload["wan_mapping"], attempt_root=output_root)
             # Cancellation can arrive while staged outputs are being read or
@@ -13286,13 +13654,6 @@ class GenericPackHost:
                 payload["manifest_ref"] = {
                     "object_id": producer_manifest["digest"], "size": producer_manifest["size"],
                 }
-            if capability_id == "h3_av.transform" and child_bridge is not None:
-                action_result = payload.get("action_result")
-                if not isinstance(action_result, Mapping):
-                    raise HostError("H3 parent did not return its publication outcome")
-                for field in ("status", "overall_status", "states"):
-                    if field in action_result:
-                        payload[field] = action_result[field]
             _terminal["payload"] = payload
             if renderer_selection is not None:
                 payload["renderer_selection"] = dict(renderer_selection)
@@ -13318,8 +13679,10 @@ class GenericPackHost:
             provenance = self.boot_manifest_provenance()
             if provenance is not None:
                 payload["provenance"] = provenance
-            if _terminal.get("target_binding") is not None:
-                payload["target_binding"] = dict(_terminal["target_binding"])
+            if _terminal.get("machine") is not None:
+                payload["machine"] = dict(_terminal["machine"])
+            if _terminal.get("managed_engine_preparation") is not None:
+                payload["managed_engine_preparation"] = _terminal["managed_engine_preparation"]
             if self.attempt_root is not None:
                 scratch_disposition = "caller_owned_pending"
                 retained_owner = "caller"
@@ -13398,10 +13761,6 @@ class GenericPackHost:
             _terminal.pop("evidence_pending", None)
             _terminal.pop("publication_pending", None)
             _terminal.update(settled=True, settlement=settlement, effect=effect)
-            if capability_id == "vibecomfy.run" and self._vibecomfy_current_warmth_hint:
-                # The hint becomes reusable only after the Runtime settlement
-                # and managed-session observation both succeeded.
-                self._vibecomfy_warmth_hint = self._vibecomfy_current_warmth_hint
             return settlement
         except HostCancelled:
             handle_guard_abort()
@@ -13410,7 +13769,11 @@ class GenericPackHost:
             cancelled_attempt = True
             return {"task_id": task_id, "status": "cancelled", "cancelled": True}
         except BaseException as exc:
+            if claim_failure_recorder is not None:
+                claim_failure_recorder(exc)
             _terminal.setdefault("error", exc)
+            if _terminal.get("disposition") == "authority_refused":
+                raise
             if isinstance(exc, TerminalPublicationRejected):
                 _terminal["reject_publication"](exc)
                 raise
@@ -13460,12 +13823,13 @@ class GenericPackHost:
                 retryable=False,
                 attempt_id=attempt_id,
                 fence=fence,
-                failure_diagnostic=(
-                    {**(storage_failure_receipt or evidence_failure_receipt or {}),
-                     "child_import_receipt": original_error.child_import_receipt}
-                    if getattr(original_error, "child_import_receipt", None) is not None
-                    else storage_failure_receipt or evidence_failure_receipt
-                ),
+                failure_diagnostic={
+                    **(storage_failure_receipt or evidence_failure_receipt or {}),
+                    **({"child_import_receipt": original_error.child_import_receipt}
+                       if getattr(original_error, "child_import_receipt", None) is not None else {}),
+                    **({"readiness": original_error.readiness}
+                       if isinstance(getattr(original_error, "readiness", None), Mapping) else {}),
+                } or None,
                 outputs=evidence_outputs,
                 result=evidence_result,
                 **_structured_failure_kwargs(original_error),
@@ -13558,10 +13922,6 @@ class GenericPackHost:
                     and settled
                 )
                 if not retain_persistent_session:
-                    if capability_id == "vibecomfy.run":
-                        self._vibecomfy_warmth_hint = None
-                        self._vibecomfy_current_warmth_hint = None
-                        self._vibecomfy_requested_warmth_hint = None
                     try:
                         self.managed_tool_session.release(
                             reason=(
@@ -13574,23 +13934,22 @@ class GenericPackHost:
                         )
                     except Exception as exc:
                         cleanup_errors.append(f"managed release: {exc}")
-            if endpoint_transport is not None and (
-                not managed_opened or self.managed_tool_session.current_adapter is not managed_adapter
-            ):
-                endpoint_transport.close()
-            if target_invocation is not None:
-                if cleanup_errors or retain_for_unresolved_scope or self._active_processes:
-                    cleanup_errors.append("target invocation drain remains unresolved")
-                else:
-                    try:
-                        target_context.finish(target_provider, target_invocation,
-                                              success=bool(settled and managed_settled))
-                    except Exception as exc:
-                        cleanup_errors.append(f"target release or retention: {exc}")
-            if capability_id == "vibecomfy.run" and not settled:
-                self._vibecomfy_warmth_hint = None
-                self._vibecomfy_current_warmth_hint = None
-                self._vibecomfy_requested_warmth_hint = None
+            try:
+                if engine_preparation is not None:
+                    engine_preparation.close(execution_root=root / "outputs",
+                        worker_drained=command_cleanup_error is None and not bool(self._active_processes))
+            except Exception as exc:
+                retain_attempt = True
+                # Keep the live lock object reachable. Releasing it while an
+                # owned preparation may still write would allow another job to
+                # mutate or execute the same installation. Restart/recovery
+                # remains subject to the supervisor's retained custody fence.
+                retained = getattr(self, "_uncertain_engine_preparations", None)
+                if retained is None:
+                    retained = self._uncertain_engine_preparations = []
+                retained.append(engine_preparation)
+                self._latch_cleanup_uncertainty("managed preparation cleanup is unconfirmed")
+                cleanup_errors.append(f"managed preparation release: {exc}")
             try:
                 if session_hold is not None:
                     self._settle_session_hold(session_hold)
@@ -13665,11 +14024,6 @@ class GenericPackHost:
                 # Pending evidence retains the spool and latches cleanup above.
                 # Preserve the publication exception already being propagated.
                 raise HostError("owned cleanup incomplete: " + "; ".join(cleanup_errors))
-            self._record_native_cpu_handoff(
-                self.managed_tool_session.current_adapter, managed_token,
-                managed_settled=managed_settled,
-                runtime_settled=settled and (pump_thread is None or not pump_thread.is_alive()),
-            )
 
     def _publish_evidence_status(self) -> None:
         """Expose the live evidence charge and warm holds for ``astrid doctor``; never fails a task."""
@@ -13691,6 +14045,7 @@ class GenericPackHost:
                         "cap_bytes": self.execution_policy.evidence_cap_bytes,
                         "warm_holds": [entry for host in (owner, *owner._claim_slots)
                                        for entry in host.warm_holds.status()],
+                        "local_engine_idle": owner._local_engine_idle.status(),
                         "updated_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
                     },
                 )
@@ -13740,12 +14095,11 @@ class GenericPackHost:
         task = _claim_field(claim, "task")
         task_id = str(_claim_field(task, "task_id") or "") if task is not None else ""
         reason = str(_claim_field(claim, "waiting_reason") or "")
-        key = (task_id, reason)
-        if key in self._reported_blocked_claims:
+        if self._reported_blocked_claims.get(task_id) == reason:
             return
         if len(self._reported_blocked_claims) >= 1024:
             self._reported_blocked_claims.clear()
-        self._reported_blocked_claims.add(key)
+        self._reported_blocked_claims[task_id] = reason
         admitted = _claim_field(task, "capability_digest") if task is not None else None
         registered = (
             self.capabilities[capability].capability_digest
@@ -13825,6 +14179,11 @@ class GenericPackHost:
                 if claim is None:
                     return None
                 blocked = _claim_blocked_capability(claim)
+                if blocked is None and _claim_field(claim, "waiting_reason"):
+                    offered = _claim_field(claim, "task")
+                    capability = _claim_field(offered, "capability_id") if offered is not None else None
+                    if capability:
+                        self._report_blocked_claim(claim, str(capability))
                 if blocked is None or blocked in excluded:
                     break
                 self._report_blocked_claim(claim, blocked)
@@ -14017,8 +14376,311 @@ class GenericPackHost:
             provider_route_grant=provider_route_grant,
         )
 
+    def _record_recovery_blocked(self, path: Path, reason: str) -> None:
+        entry = {"path": str(path), "reason": reason,
+                 "recovery_step": f"Inspect {path} and its attempt files; after checking Runtime task state, "
+                                  "repair the marker or remove the attempt directory by hand."}
+        self.recovery_blocked.append(entry)
+        print(reason, file=sys.stderr, flush=True)
+        print(json.dumps({"event": "recovery_blocked", "executor_id": self.executor_id,
+                          "recovery_blocked": [entry]}, sort_keys=True), file=sys.stderr, flush=True)
+        self._publish_ready_registration(self._ready_marker_context.get("registration"))
+
+    def _recover_terminal_requests(self) -> None:
+        """Resolve this host's saved requests, with bounded startup custody."""
+        from astrid.sdk.storage_ownership import ATTEMPT_ROOT_PREFIX
+        if self.client is None:
+            return
+        self.recovery_blocked.clear()
+        roots = []
+
+        def children(path: Path, *, legacy: bool = False) -> list[Path]:
+            try:
+                # iterdir surfaces enumeration errors (glob may suppress them).
+                return [child for child in path.iterdir()
+                        if not legacy or child.name.startswith(ATTEMPT_ROOT_PREFIX)]
+            except OSError as exc:
+                self._record_recovery_blocked(path, f"generic host recovery could not enumerate {path}: {exc}")
+                return []
+
+        if self.attempt_root is not None:
+            roots.append(self.attempt_root)
+        base = self.attempt_base
+        if self.attempt_root is None and base is None:
+            # Private-base validation and Runtime health without an epoch are
+            # host-wide refusals; attempt-local recovery errors stay nonfatal.
+            base = self._default_attempt_base()
+            # Older hosts used both flat temp roots and nested temp spools.
+            temporary = Path(tempfile.gettempdir())
+            try:
+                with self._open_attempt_directory(temporary):
+                    pass
+            except HostError as exc:
+                print(f"generic host recovery skipped unsafe legacy root {temporary}: {exc}",
+                      file=sys.stderr, flush=True)
+                legacy_roots = []
+            else:
+                legacy_roots = children(temporary, legacy=True)
+            for legacy in legacy_roots:
+                if legacy == base:
+                    continue
+                try:
+                    metadata = legacy.lstat()
+                    if (not stat.S_ISDIR(metadata.st_mode)
+                            or (sys.platform != "win32" and (metadata.st_uid != os.getuid()
+                                or metadata.st_mode & 0o022))):
+                        raise ValueError("unsafe ownership, mode or type")
+                except (OSError, ValueError) as exc:
+                    print(f"generic host recovery skipped unsafe legacy root {legacy}: {exc}",
+                          file=sys.stderr, flush=True)
+                    continue
+                # Appending children retains the same admission check before
+                # either enumeration or opening any terminal marker.
+                if legacy.parent == temporary:
+                    legacy_roots.extend(children(legacy, legacy=True))
+                for name in ("fail-request.json", "cancel-request.json"):
+                    marker = legacy / name
+                    try:
+                        if marker.is_symlink():
+                            continue
+                        saved = json.loads(marker.read_text(encoding="utf-8"))
+                        if isinstance(saved, dict) and saved.get("executor_id") == self.executor_id:
+                            roots.append(legacy)
+                            break
+                    except (OSError, ValueError, TypeError):
+                        continue
+        if base is not None and base.is_dir() and not base.is_symlink():
+            roots.extend(path for path in children(base)
+                         if path.is_dir() and not path.is_symlink())
+        # Startup replay has nothing to release: a new host holds no prior
+        # in-memory session/preparation, and the OS released the dead process's
+        # preparation flock. Supervisor/pod custody still fences engine reuse.
+        for root in roots:
+            for name in ("fail-request.json", "cancel-request.json"):
+                path = root / name
+                if not path.is_file() or path.is_symlink():
+                    continue
+                receipt_path = root / "result.json"
+                receipt, receipt_error = {}, None
+                try:
+                    if receipt_path.is_file():
+                        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                        if not isinstance(receipt, dict):
+                            raise ValueError("result receipt must be an object")
+                except (OSError, ValueError, TypeError) as exc:
+                    receipt, receipt_error = {}, exc
+                try:
+                    request = json.loads(path.read_text(encoding="utf-8"))
+                    body = request["body"]
+                    task_id = request.get("task_id") or receipt.get("task_id") or receipt["kernel_task_id"]
+                    attempt_id = (receipt.get("attempt_id") or receipt.get("kernel_attempt_id")
+                                  or (request["identifier"] if request["operation"] == "fail_attempt"
+                                      else body.get("attempt_id")))
+                    operation = request["operation"]
+                    if (not isinstance(body, dict) or operation not in {"fail_attempt", "cancel_task"}
+                            or (operation == "fail_attempt" and request["identifier"] != attempt_id)
+                            or (operation == "cancel_task" and request["identifier"] != task_id)
+                            or not isinstance(task_id, str) or not task_id
+                            or not isinstance(attempt_id, str) or not attempt_id
+                            or not isinstance(request.get("executor_id"), str) or not request["executor_id"]
+                            or not isinstance(body.get("lease_id"), str) or not body["lease_id"]
+                            or type(body.get("fence")) is not int or body["fence"] < 1
+                            or type(body.get("runtime_epoch")) is not int or body["runtime_epoch"] < 1):
+                        raise ValueError("invalid terminal request identity")
+                except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+                    # Uncertain identity never authorizes a Runtime mutation.
+                    self._record_recovery_blocked(path, f"generic host recovery could not read {path}: {exc}")
+                    continue
+                payload_error = receipt_error
+                if (not isinstance(request.get("idempotency_key"), str) or not request["idempotency_key"]
+                        or (operation == "fail_attempt" and not isinstance(body.get("error"), Mapping))
+                        or (body.get("result") is not None and not isinstance(body["result"], Mapping))
+                        or (body.get("outputs") is not None and not isinstance(body["outputs"], list))):
+                    payload_error = ValueError("invalid terminal request body")
+                delay = _TERMINAL_RECONCILE_POLL_SECONDS
+                rejected = HostError(f"unreadable terminal evidence: {payload_error}") if payload_error else None
+                last_error = None
+                uncertain = False
+                ceding = False
+                expected_result = {} if payload_error else (body.get("result") or {})
+                if operation == "fail_attempt" and not payload_error:
+                    expected_result = {**expected_result, "error": body["error"]}
+                wire = {**body, "idempotency_key": request.get("idempotency_key")}
+                wire_operation, identifier = operation, request["identifier"]
+                reconciliation_path = root / f"{name}.reconciliation.json"
+                reconciliation_loaded = False
+                # The second budget is solely for the fenced, evidence-free
+                # terminal failure. If Runtime stays unavailable, retain every
+                # byte and report this attempt without blocking new claims.
+                for check in range(2 * _TERMINAL_RECOVERY_MAX_ATTEMPTS):
+                    if self._shutdown.is_set():
+                        return
+                    try:
+                        health = self.client.health()
+                        epoch = (health.get("runtime_epoch") if isinstance(health, Mapping)
+                                 else getattr(health, "runtime_epoch", None))
+                        if type(epoch) is not int or epoch < 1:
+                            raise _RuntimeRecoveryIdentityError("Runtime recovery health has no epoch")
+                        if (request["executor_id"] != self.executor_id
+                                or body["runtime_epoch"] != epoch):
+                            print(f"generic host recovery skipped {path}: foreign executor or Runtime epoch",
+                                  file=sys.stderr, flush=True)
+                            break
+                        if not reconciliation_loaded:
+                            if reconciliation_path.exists() or reconciliation_path.is_symlink():
+                                try:
+                                    if reconciliation_path.is_symlink():
+                                        raise ValueError("reconciliation request must not be a symlink")
+                                    saved = json.loads(reconciliation_path.read_text(encoding="utf-8"))
+                                    if (saved["task_id"] != task_id or saved["identifier"] != attempt_id
+                                            or saved["executor_id"] != request["executor_id"]
+                                            or saved["operation"] != "fail_attempt"
+                                            or not isinstance(saved["idempotency_key"], str) or not saved["idempotency_key"]
+                                            or not isinstance(saved["body"]["error"], dict)
+                                            or saved["body"]["error"].get("code") != "reconciliation_required"
+                                            or "result" in saved["body"] or "outputs" in saved["body"]
+                                            or any(type(saved["body"][key]) is not type(body[key])
+                                                   or saved["body"][key] != body[key]
+                                                   for key in ("lease_id", "fence", "runtime_epoch"))):
+                                        raise ValueError("reconciliation request identity or body differs")
+                                    wire = {**saved["body"], "idempotency_key": saved["idempotency_key"]}
+                                    wire_operation, identifier = "fail_attempt", str(attempt_id)
+                                    expected_result = {"error": saved["body"]["error"]}
+                                    ceding = True
+                                    # The preceding incarnation may have lost its ACK.
+                                    uncertain = True
+                                except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+                                    self._record_recovery_blocked(
+                                        reconciliation_path,
+                                        f"generic host recovery could not read {reconciliation_path}: {exc}")
+                                    break
+                            reconciliation_loaded = True
+                        try:
+                            current = self.client.task(str(task_id))
+                        except Exception as exc:
+                            if getattr(exc, "status", None) == 404 and getattr(exc, "code", None) == "not_found":
+                                # Recovery has no authority to delete unknown evidence;
+                                # leave the file for storage reclaim to age out.
+                                print(f"generic host recovery skipped {path}: task unknown to this Runtime",
+                                      file=sys.stderr, flush=True)
+                                break
+                            raise
+                        current = current.get("task", current) if isinstance(current, Mapping) else current
+
+                        def field(key, default=None):
+                            return current.get(key, default) if isinstance(current, Mapping) else getattr(current, key, default)
+
+                        if uncertain and isinstance(self.client, RuntimeProtocolClient):
+                            # A read outage cannot authorize another mutation.
+                            # The adapter checks durable evidence; if it is
+                            # absent, obtain the live owner again before replay.
+                            try:
+                                verified = self.client._verify_terminal_evidence_readback(
+                                    str(task_id), expected_result or {}, {"task": current})
+                            except _TerminalEvidenceNotRecorded:
+                                current = self.client.task(str(task_id))
+                                current = current.get("task", current) if isinstance(current, Mapping) else current
+                            else:
+                                current = verified["task"]
+                            uncertain = False
+                        state = field("state", field("status"))
+                        current_id = field("task_id", field("id"))
+                        if current_id is None or field("runtime_epoch") is None:
+                            raise HostError("Runtime recovery task has no positive identity")
+                        if str(current_id) != str(task_id):
+                            print(f"generic host recovery skipped {path}: foreign task identity",
+                                  file=sys.stderr, flush=True)
+                            break
+                        if state in {"failed", "cancelled", "completed", "succeeded"}:
+                            if isinstance(self.client, RuntimeProtocolClient) and isinstance(expected_result, Mapping):
+                                try:
+                                    self.client._verify_terminal_evidence_readback(
+                                        str(task_id), expected_result, {"task": current})
+                                except _TerminalEvidenceNotRecorded:
+                                    # Runtime may already have failed/cancelled
+                                    # the attempt, including a prior cede whose
+                                    # ACK was lost. Never overwrite that state.
+                                    print(f"generic host recovery terminal evidence differs for {task_id}: {state}",
+                                          file=sys.stderr, flush=True)
+                                    break
+                            print(f"generic host terminal publication recorded for {task_id}", file=sys.stderr, flush=True)
+                            break
+                        if (state != "running" or field("attempt_id") != attempt_id
+                                or field("fence", field("lease_fence")) != body["fence"]
+                                or field("runtime_epoch") != body["runtime_epoch"]
+                                or field("executor_id", self.executor_id) not in (None, self.executor_id)):
+                            print(f"generic host recovery skipped {path}: task no longer owned by this attempt",
+                                  file=sys.stderr, flush=True)
+                            break
+                        if not isinstance(self.client, RuntimeProtocolClient):
+                            raise HostError("terminal request replay requires a Runtime protocol client")
+                        expiry = field("lease_expires_at")
+                        expired = bool(expiry and datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+                                       <= datetime.now(timezone.utc))
+                        if not ceding and (rejected or expired or check >= _TERMINAL_RECOVERY_MAX_ATTEMPTS):
+                            reason = str(rejected or ("lease expired" if expired else
+                                         f"recovery exhausted after {_TERMINAL_RECOVERY_MAX_ATTEMPTS} tries: {last_error}"))
+                            original = body.get("error") if isinstance(body.get("error"), Mapping) else {}
+                            message = (f"terminal evidence refused ({reason}); original failure "
+                                       f"{original.get('code', 'executor_failed')}: {original.get('message', '')}")
+                            if check >= _TERMINAL_RECOVERY_MAX_ATTEMPTS:
+                                print(f"generic host recovery exhausted for {task_id}: {reason}", file=sys.stderr, flush=True)
+                            # Use one wire mutation per check; the general fail
+                            # adapter retries internally without a result readback.
+                            expected_result = {"error": {"code": "reconciliation_required",
+                                                         "message": message, "retryable": False}}
+                            wire = {key: body[key] for key in ("lease_id", "fence", "runtime_epoch")}
+                            wire.update(error=expected_result["error"],
+                                        idempotency_key=f"fail-{attempt_id}-{body['fence']}-cede")
+                            wire_operation, identifier = "fail_attempt", str(attempt_id)
+                            _persist_terminal_request(reconciliation_path, {
+                                "operation": wire_operation, "identifier": identifier,
+                                "task_id": task_id, "executor_id": request["executor_id"],
+                                "idempotency_key": wire["idempotency_key"],
+                                "body": {key: value for key, value in wire.items() if key != "idempotency_key"},
+                            })
+                            ceding = True
+                            # The sidecar owns reconciliation; preserve the
+                            # original request and receipt, including corrupt bytes.
+                            if not receipt_path.exists() and not receipt_path.is_symlink():
+                                write_json_atomic(receipt_path, {"warnings": [message]})
+                            print(f"generic host terminal publication ceded for {task_id}: {reason}", file=sys.stderr, flush=True)
+                        uncertain = True
+                        try:
+                            response = self._handoff_settlement_call(
+                                self.client._terminal_evidence_request, self.client._lifecycle_client(),
+                                wire_operation, identifier, wire)
+                        except Exception as exc:
+                            rejection = _terminal_publication_rejection(
+                                exc, str(task_id), (str(attempt_id), body["fence"]), self.client.task)
+                            if rejection is not None and not ceding:
+                                rejected = rejection
+                                print(f"generic host terminal publication rejected for {task_id}: {rejection}",
+                                      file=sys.stderr, flush=True)
+                            raise
+                        verified = self.client._verify_terminal_evidence_readback(
+                            str(task_id), expected_result or {}, response)
+                        terminal = verified["task"]
+                        if (_claim_field(terminal, "state") or _claim_field(terminal, "status")) not in {
+                                "failed", "cancelled", "completed", "succeeded"}:
+                            raise HostError("Runtime recovery mutation has no terminal readback")
+                        print(f"generic host terminal publication recorded for {task_id}", file=sys.stderr, flush=True)
+                        break
+                    except _RuntimeRecoveryIdentityError:
+                        raise
+                    except Exception as exc:  # noqa: BLE001 - bounded, visible startup recovery
+                        last_error = exc
+                        if check + 1 < 2 * _TERMINAL_RECOVERY_MAX_ATTEMPTS:
+                            self._shutdown.wait(delay)
+                            delay = min(5.0, max(_TERMINAL_RECONCILE_POLL_SECONDS, delay * 2))
+                else:
+                    message = f"generic host recovery could not reconcile {path}: {last_error}"
+                    self._record_recovery_blocked(path, message)
+        self._publish_ready_registration(self._ready_marker_context.get("registration"))
+
     def run(self, *, once: bool = False, poll_seconds: float = 1.0, max_tasks: int | None = None) -> list[Mapping[str, Any]]:
         """Run the bounded worker claim loop; ``once`` is the test-friendly form."""
+        self._recover_terminal_requests()
         if not once and self.max_concurrency > 1:
             return self._run_claim_slots(poll_seconds=poll_seconds, max_tasks=max_tasks)
         results: list[Mapping[str, Any]] = []
@@ -14146,6 +14808,7 @@ class GenericPackHost:
         # aggregate evidence budget is deliberately shared and already locked.
         slot.capabilities = dict(self.capabilities)
         slot.source_epoch = self.source_epoch
+        slot._pack_source_roots = dict(getattr(self, "_pack_source_roots", {}))
         slot.runtime_state = dict(self.runtime_state)
         with self._handoff_condition:
             slot._remotion_full_preflight = copy.deepcopy(self._remotion_full_preflight)
@@ -14162,6 +14825,7 @@ class GenericPackHost:
         # Delegated children may create another slot from an existing slot.
         # All levels must share the coordinating host's retained resources.
         slot._handoff_accounting_owner = self._handoff_accounting_owner
+        slot._local_engine_idle = self._local_engine_idle
         # Parallel slots own private attempts, but claim/handoff accounting
         # must remain visible on the coordinating host without a false zero.
         for name in ("_handoff_enter_claim_rpc", "_handoff_leave_claim_rpc",
@@ -14218,6 +14882,7 @@ class GenericPackHost:
             self._claim_slots = slots
             while not self._shutdown.is_set():
                 now = time.monotonic()
+                self._observe_machines(now)
                 while not completed.empty():
                     index, result, exc = completed.get()
                     active.pop(index).join()
@@ -15019,25 +15684,23 @@ class LocalExecutionPreparation:
             raise HostError("producer requires the retained verified host protocol")
         readiness = json.loads(self._producer_profile_json)
         root = model_root_binding_from_profile(readiness, verify_files=True)
-        session = readiness.get("vibecomfy_session")
+        identity = readiness.get("engine_identity")
+        source = _installed_vibecomfy_source(readiness)
         launch = profile["engine_launch"]
         config = launch["config"]
-        if (not isinstance(session, dict) or not session.get("launch_token")
-                or session.get("session_dir") != launch["session_root"]
-                or session.get("server_url") != profile["engine_endpoint"]
-                or session.get("config_digest") != profile["session_config_digest"]
-                or session.get("source_revision") != launch["source_revision"]
-                or session.get("source_content_digest") != launch["source_content_digest"]
-                or session != (self.graph.readiness_profile or {}).get("vibecomfy_session")):
-            raise HostError("producer session differs from retained owner selection")
+        if (not isinstance(identity, dict)
+                or identity != (self.graph.readiness_profile or {}).get("engine_identity")
+                or source is None
+                or source.get("revision") != launch["source_revision"]
+                or source.get("content_digest") != launch["source_content_digest"]):
+            raise HostError("producer engine identity differs from retained owner selection")
         observed = self.graph.report()  # Existing owned-process/socket/config observation.
         expected_processes = self.result.get("processes")
         if (not isinstance(expected_processes, Mapping)
                 or observed.get("processes") != expected_processes
                 or observed.get("session_config_digest") != profile["session_config_digest"]
                 or expected_processes.get("host") != {"pid": os.getpid(), "birth_id": process_birth_identity()}
-                or expected_processes.get("engine") != {"pid": session.get("pid"), "birth_id": session.get("process_birth_id")}
-                or expected_processes.get("engine_listener") != {"pid": session.get("comfy_pid"), "birth_id": session.get("comfy_process_birth_id")}):
+):
             raise HostError("producer session incarnation changed")
         # First supported configuration: one default model directory, with
         # custom nodes disabled and no additional model-path configuration.
@@ -15083,7 +15746,7 @@ class LocalExecutionPreparation:
                 "session_config_digest": profile["session_config_digest"],
                 "session_config_base64": base64.b64encode(config_bytes).decode("ascii"),
                 "server_argv_base64": base64.b64encode(argv_bytes).decode("ascii"),
-                "processes": expected_processes, "session": session, "model_root": root.as_dict()}
+                "processes": expected_processes, "engine_url": profile["engine_endpoint"], "model_root": root.as_dict()}
 
     def _prepare_image_recipe(self, request: Mapping[str, Any]) -> dict[str, Any]:
         """Fixed private socket operation; contains no client/admission route.
@@ -15146,7 +15809,7 @@ class LocalExecutionPreparation:
             model_root = validate_model_root_binding(binding["model_root"], verify_files=False)
             recipe = _prepare_verified_image_recipe(
                 inputs={"prompt": prompt, **controls},
-                target_client=ComfyTargetClient(ComfyTarget(binding["session"]["server_url"], "attached")),
+                target_client=ComfyTargetClient(ComfyTarget(binding["engine_url"], "attached")),
                 model_root=model_root,
             )
             if type(recipe) is not bytes or _handoff_canonical(json.loads(recipe)) != recipe:
@@ -16667,8 +17330,8 @@ def _task_generation_intent(task: Mapping[str, Any]) -> Mapping[str, Any] | None
     groups = payload.get("groups")
     if not isinstance(groups, list):
         raise HostError("named publication effect has no selector groups")
-    from astrid.sdk.invocation import _validate_generation_intent
     from astrid.sdk.exceptions import CapabilityValidationError
+    from astrid.sdk.invocation import _validate_generation_intent
     try:
         projected = [{"group_key": group["group_key"], "selectors": [
             {key: value for key, value in selector.items() if key != "output_port"}
@@ -16834,7 +17497,13 @@ class _NativeEngineGraph:
                 raise HostError("engine graph has an unregistered required descendant")
             measured = self._measure_registry(root, nonce, listener_pid)
             if measured is not None:
-                self.readiness_profile = {"vibecomfy_session": measured}
+                from astrid.core.generation.engine_readiness import engine_identity
+
+                try:
+                    identity = engine_identity("comfyui", str(root))
+                except OSError as exc:
+                    raise HostError("engine install receipt is unreadable") from exc
+                self.readiness_profile = {"engine_identity": identity}
                 return {"processes": {"host": {"pid": os.getpid(), "birth_id": process_birth_identity()},
                                       "engine": {"pid": self.process.pid, "birth_id": self.process._astrid_process_birth},
                                       "engine_listener": {"pid": listener_pid, "birth_id": registration["identity"]["birth_id"]}},
@@ -17477,6 +18146,9 @@ def _log_cli_exit_failure(error: BaseException) -> None:
 
 
 def _cli() -> int:
+    global _STARTUP_OBSERVATION_ENABLED
+    if "--ready-file" in sys.argv:
+        _STARTUP_OBSERVATION_ENABLED = True
     managed_shutdowns: list[Any] = []
     try:
         return _cli_impl(managed_shutdowns)
@@ -17518,6 +18190,7 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
     parser.add_argument("--source-inventory-identity", help="verified managed source inventory identity bound to this host")
     parser.add_argument("--boot-manifest-path", help="existing explicit boot-manifest path")
     parser.add_argument("--remotion-validation-launch-id", help=argparse.SUPPRESS)
+    parser.add_argument("--defer-remotion-validation", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--boot-manifest-hash", help="expected SHA-256 hash of the boot manifest")
     parser.add_argument("--readiness-profile-path", help="Worker-published readiness profile")
     parser.add_argument("--readiness-profile-hash", help="expected SHA-256 hash of the readiness profile")
@@ -17537,13 +18210,20 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
     )
     args = parser.parse_args()
     _emit_startup_phase("cli_args_parsed")
-    from astrid.core.env_vars import ASTRID_REMOTION_VALIDATION_LAUNCH, ASTRID_REMOTION_VALIDATION_ROLE
+    from astrid.core.env_vars import (
+        ASTRID_REMOTION_VALIDATION_LAUNCH,
+        ASTRID_REMOTION_VALIDATION_ROLE,
+    )
 
     declared_validation = os.environ.get(ASTRID_REMOTION_VALIDATION_LAUNCH)
     if declared_validation != args.remotion_validation_launch_id:
         parser.error("Remotion readiness reference belongs to a foreign launch")
     if declared_validation and os.environ.get(ASTRID_REMOTION_VALIDATION_ROLE) != "host":
         parser.error("Remotion readiness context is not the host launch context")
+    if args.defer_remotion_validation and (
+        declared_validation or not args.source_checkout or not args.support_root
+    ):
+        parser.error("deferred Remotion validation requires fresh explicit host launch roots")
     if args.attempt_root and args.attempt_base:
         parser.error("--attempt-root and --attempt-base are mutually exclusive")
     if (args.readiness_profile_path is None) != (args.readiness_profile_hash is None):
@@ -17635,9 +18315,9 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
             or not readiness_path.is_file()
         ):
             parser.error("--readiness-profile-path must be an absolute non-symlink regular file")
-        from astrid.packs.vibecomfy.endpoint_checkout import read_workflow_profile
+        from astrid.core.generation.engine_endpoint import read_readiness_profile
         try:
-            profile = read_workflow_profile(readiness_path, args.readiness_profile_hash)
+            profile = read_readiness_profile(readiness_path, args.readiness_profile_hash)
         except Exception:
             parser.error("--readiness-profile-hash does not match a safe readiness profile")
         actual_readiness_hash = args.readiness_profile_hash
@@ -17648,14 +18328,14 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
         # Without this, the host would reject the candidate while constructing
         # PYTHONPATH before it ever reached the child boundary.
         try:
-            profile = read_workflow_profile(readiness_path, actual_readiness_hash)
+            profile = read_readiness_profile(readiness_path, actual_readiness_hash)
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             parser.error(f"readiness profile is unreadable: {exc}")
         candidate = profile.get("vibecomfy_candidate") if isinstance(profile, Mapping) else None
-        session = profile.get("vibecomfy_session") if isinstance(profile, Mapping) else None
-        if isinstance(session, Mapping):
-            revision = session.get("source_revision")
-            content_digest = session.get("source_content_digest")
+        source = _installed_vibecomfy_source(profile)
+        if source is not None and isinstance(profile.get("engine_identity"), Mapping):
+            revision = source.get("revision")
+            content_digest = source.get("content_digest")
             if isinstance(revision, str) and isinstance(content_digest, str):
                 os.environ[VIBECOMFY_ATTESTED_REVISION_ENV] = revision
                 os.environ[VIBECOMFY_ATTESTED_CONTENT_DIGEST_ENV] = content_digest
@@ -17834,6 +18514,34 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
         boot_manifest_hash=boot_manifest_hash,
     )
     _emit_startup_phase("host_constructor_done")
+    if args.defer_remotion_validation:
+        from astrid.core.rendering import remotion_runtime
+        from astrid.sdk.host_bootstrap import _prepare_render_validation
+
+        validation_environment = dict(os.environ)
+
+        def prepare_render_validation() -> None:
+            try:
+                _prepare_render_validation(
+                    source_checkout, validation_environment, support_root, sys.executable,
+                    tuple(Path(root) for root in args.pack_root),
+                    identity_attestation["source"].get("closure_digest"),
+                )
+            except BaseException:
+                # Ordinary optional failures return no reference, as before.
+                # Escaping errors (notably unresolved probe custody) remain
+                # fatal to this launch, even though readiness was published.
+                host._invalidate_ready_registration()
+                host._shutdown.set()
+                raise
+            os.environ.update({key: validation_environment[key]
+                               for key in remotion_runtime._REF_ENV_KEYS
+                               if key in validation_environment})
+
+        remotion_runtime._deferred_validation = remotion_runtime.DeferredRemotionValidation(
+            prepare_render_validation
+        )
+        host._defer_startup_remotion = True  # type: ignore[attr-defined]
     # Only verified host startup arguments populate this private context. A
     # child's payload/environment is never accepted as launch/source identity.
     host._child_import_host_context = {
@@ -17951,6 +18659,7 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
             "event": "registered", "executor_id": host.executor_id, "pid": os.getpid(),
             "capabilities": len(host.capabilities), "ready": len(host.capabilities) - len(unready),
             "unready": unready, "withdrawn": registration.get("withdrawn_capabilities") or [],
+            "recovery_blocked": list(host.recovery_blocked),
             "gated": _gated_remotion_faults(host.capabilities.values()),
             "full_registration": str(ready_path) if ready_path is not None else None,
         }, sort_keys=True, default=_json_safe), flush=True)
@@ -18015,6 +18724,7 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
             ready_path.unlink(missing_ok=True)
             stdin_shutdown.wait_for_shutdown_cleanup()
             return 1
+    host._defer_startup_remotion = False  # type: ignore[attr-defined]
     if args.run_task:
         if client is None or not args.lease_token:
             parser.error("--run-task requires --runtime-endpoint, --credential-file, and --lease-token")
@@ -18041,6 +18751,22 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
         )
         supervisor.serve(sys.stdin, sys.stdout)
     return 0
+
+
+if sys.platform == "win32":
+    # OpenBLAS (loaded with numpy by workflow tooling) starts worker threads inside
+    # DllMain. Doing that under the Windows loader lock while the heartbeat thread
+    # is running deadlocked the task host on a tester's machine (astrid-dev#651).
+    # One thread means none are created at load. Children inherit the setting.
+    # `os` in this module is the Runtime filesystem adapter, so use the stdlib module.
+    __import__("os").environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+    # The setting alone was not enough: a clean install still hung at the first
+    # workflow load on the Windows CI machine. Load numpy here, on the main thread and
+    # before any other thread exists, so its DLLs are never first loaded mid-task.
+    try:
+        __import__("numpy")
+    except ImportError:  # numpy arrives with the workflow tooling; absent, nothing to preload
+        pass
 
 
 if __name__ == "__main__":

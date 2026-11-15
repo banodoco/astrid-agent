@@ -4,11 +4,23 @@ from __future__ import annotations
 
 import inspect
 import json
-import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
+
+from astrid.core._shared.log_redaction import (
+    _PRIVATE_STRING as _PRIVATE_STRING,
+)
+from astrid.core._shared.log_redaction import (
+    _SENSITIVE_KEYS as _SENSITIVE_KEYS,
+)
+from astrid.core._shared.log_redaction import (
+    _redact_shared as _redact_shared,
+)
+from astrid.core._shared.log_redaction import (
+    redact_for_shared as redact_for_shared,
+)
 
 C2_SCHEMA_VERSION = 2
 C2_CONTRACT_REVISION = "C2"
@@ -16,17 +28,6 @@ C2_CONTRACT_DIGEST = "sha256:ca251dfbcadc6fbc68a5404495f2f0fd42128c821ce47a3560d
 C2_DEADLINE_MS = 5000
 C2_LIMITS = {"maxEvents": 200, "maxLogBytes": 65536, "maxBundleBytes": 1048576}
 _CAPTURE_KEYS = {"events": "maxEvents", "logBytes": "maxLogBytes", "bundleBytes": "maxBundleBytes"}
-_SENSITIVE_KEYS = re.compile(
-    r"(?:credential|token|secret|password|prompt|environment(?:Value)?|env|media|signed.?url|authorization|api[_-]?key|bearer|path|root)$",
-    re.IGNORECASE,
-)
-_PRIVATE_STRING = re.compile(
-    r"(?:/(?:private|Users|home|opt|mnt|tmp|var)/|(?:^|[\s(])~[/\\]|(?:file|https?)://|"
-    r"(?:api[_-]?key|access[_-]?token|authorization|client[_-]?secret|prompt|token|secret|password)\s*[:=]|"
-    r"[?&](?:sig|signature|x-amz-signature)=|Bearer\s)",
-    re.IGNORECASE,
-)
-
 FACT_NAMES = (
     "workspace", "runtime", "computeWorker", "selectedCapability", "authorization",
     "taskState", "contact", "progress", "terminalResult", "providerExecution",
@@ -162,26 +163,6 @@ def validate_diagnostic(report: Mapping[str, Any]) -> list[str]:
             if any("<redacted" in str(arg).lower() or "[redacted" in str(arg).lower() for arg in action.get("arguments", [])) and action.get("executable"):
                 errors.append("redacted next action cannot be executable")
     return errors
-
-
-def _redact_shared(value: Any, *, key: str = "") -> Any:
-    """Replace private transport material with inert, non-executable markers."""
-    if _SENSITIVE_KEYS.search(key):
-        return "<redacted>"
-    if isinstance(value, Mapping):
-        return {str(name): _redact_shared(item, key=str(name)) for name, item in value.items()}
-    if isinstance(value, list):
-        return [_redact_shared(item, key=key) for item in value]
-    if isinstance(value, tuple):
-        return [_redact_shared(item, key=key) for item in value]
-    if isinstance(value, str) and _PRIVATE_STRING.search(value):
-        return "<redacted>"
-    return value
-
-
-def redact_for_shared(value: Any) -> Any:
-    """Return a JSON-safe shared projection without private local material."""
-    return _redact_shared(value)
 
 
 def build_diagnostic(*, mode: str, facts: Mapping[str, Mapping[str, Any]], problem_code: str | None = None, failure_boundary: str | None = None, elapsed_ms: int = 0, timed_out: bool = False, next_actions: list[dict[str, Any]] | None = None, collected_at: str | None = None) -> dict[str, Any]:

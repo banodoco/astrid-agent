@@ -233,8 +233,54 @@ def read_archive(path: str | Path) -> ResolvedAssetManifest:
     return read_archive_bytes(source.read_bytes())
 
 
+def file_map_bindings(name: str, files: Mapping[str, Any]) -> dict[str, Path]:
+    """Binding names for a file-map input: ``<input>/<id>``, one managed asset per id."""
+
+    if not isinstance(name, str) or not name or "/" in name:
+        raise AssetManifestError("file map input names must be non-empty and contain no '/'")
+    bindings: dict[str, Path] = {}
+    for key, path in files.items():
+        if not isinstance(key, str) or not key or "/" in key:
+            raise AssetManifestError(f"file map {name!r} ids must be non-empty and contain no '/'")
+        bindings[f"{name}/{key}"] = Path(path)
+    return bindings
+
+
+def file_map_members(name: str, resolved: ResolvedAssetManifest) -> dict[str, bytes]:
+    """The ``{id: bytes}`` of one file-map input, read back from a validated archive by binding name."""
+
+    prefix = f"{name}/"
+    return {
+        str(record["binding"])[len(prefix):]: resolved.members[str(record["member"])]
+        for record in resolved.manifest["assets"]
+        if str(record["binding"]).startswith(prefix)
+    }
+
+
+def write_archive(bindings: Mapping[str, Path], target: str | Path, **manifest_kwargs: Any) -> dict[str, Any]:
+    """Write the managed-assets archive for ``bindings`` (exclusive create) and return its manifest."""
+
+    manifest = build_asset_manifest(bindings, **manifest_kwargs)
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "manifest.json",
+            json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        )
+        for record in manifest["assets"]:
+            archive.write(Path(bindings[record["binding"]]), record["member"])
+    destination = Path(target)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with destination.open("xb") as stream:
+        stream.write(payload.getvalue())
+    return manifest
+
+
 __all__ = [
     "AssetManifestError",
+    "file_map_bindings",
+    "file_map_members",
+    "write_archive",
     "ResolvedAssetManifest",
     "build_asset_manifest",
     "read_archive",

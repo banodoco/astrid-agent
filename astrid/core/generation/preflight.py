@@ -27,17 +27,11 @@ if TYPE_CHECKING:
 class PreparedRunPodGeneration:
     """R03/F07 handoff; endpoint custody stays with the retained host owner.
 
-    The published owner must use ensure_prepared_endpoint and
-    EngineEndpointTransport for endpoint_checkout. A URL is never a handoff.
+    A URL is never a handoff.
     """
     selection: PreparedWorkerSelection
     selection_path: str
-    endpoint_checkout: Callable[..., Any]
     owner_tick: Callable[[Mapping[str, Any]], None]
-    # Opt-in H3 endpoint route: a retained, already attested local bridge.
-    # The selection still belongs to the same paid owner; no worker is moved.
-    h3_target: Any = None
-    h3_warm_lease_seconds: int | None = None
 
 
 class RunPodGenerationOwner(Protocol):
@@ -50,96 +44,13 @@ class RunPodGenerationOwner(Protocol):
     the active task before release_prepared_worker(resume=True). Admission is
     never release proof: P1 quiescence + GET404 + list absence are required.
 
-    An owner advertising h3_endpoint_route=True supplies its retained ready pod
-    ComfyTargetClient from validation_target and returns that same endpoint in
-    PreparedRunPodGeneration.h3_target. prepare_h3 receives the exact CPU graph
-    receipt in inputs['_h3_endpoint']; it retains endpoint custody, without
-    activating a pod worker. All H3 executors remain local. Its existing
-    monitor/retain/release own the single paid/warm lease and bridge lifetime.
-    Endpoint preparation acknowledges h3_warm_lease_seconds=1800 on that same
-    owner; H3 itself creates no additional warm holder or release timer.
     """
     def validation_target(self) -> Any: ...
     def prepare(self, *, workflow: Any, inputs: Mapping[str, Any],
                 consent: tuple[str, ...], max_usd: float, deadline: str) -> PreparedRunPodGeneration: ...
-    def prepare_h3(self, *, inputs: Mapping[str, Any], consent: tuple[str, ...],
-                   max_usd: float, deadline: str) -> PreparedRunPodGeneration: ...
-    def validate_h3(self, inputs: Mapping[str, Any]) -> Mapping[str, Any]: ...
     def describe(self) -> Mapping[str, Any]: ...
     def release(self, *, wait: bool) -> Any: ...
     def retain(self, task: Mapping[str, Any], monitor: Callable[..., None]) -> None: ...
-
-
-def freeze_h3_endpoint(client: Any) -> dict[str, Any]:
-    """Public identity of the owner's exact RunPod bridge, never credentials.
-
-    H3 endpoint owners opt in with ``h3_endpoint_route = True`` and retain this
-    transport through parent recovery and the existing warm lease. Cold or
-    unattested endpoints are refused before paid preparation.
-    """
-    import hashlib
-    import json
-    from .backends.comfy_target import ComfyTargetClient, validate_attached_url
-    from .engine_contracts import RunPodAttestation
-    from .engine_endpoint import endpoint_to_dict, parse_endpoint
-    from .engine_transport import EngineEndpointTransport
-
-    if not isinstance(client, ComfyTargetClient) or not isinstance(client.endpoint_transport, EngineEndpointTransport):
-        raise ValueError('H3 requires the retained owner\'s attested RunPod endpoint bridge')
-    endpoint = parse_endpoint(endpoint_to_dict(client.endpoint_transport.endpoint))
-    if (client.target.kind != 'pod' or client.target.url != endpoint.url
-            or endpoint.engine != 'vibecomfy-h3' or endpoint.platform != 'linux-x86_64-cu130'
-            or endpoint.state != 'ready' or not isinstance(endpoint.attestation, RunPodAttestation)):
-        raise ValueError('H3 requires the exact ready RunPod endpoint')
-    origin = validate_attached_url(client.endpoint_transport.retained_server_url)
-    encoded = json.dumps(endpoint_to_dict(endpoint), sort_keys=True, separators=(',', ':')).encode()
-    return {'schema': 'astrid.h3-endpoint.v1', 'comfy_url': origin,
-            'endpoint_sha256': 'sha256:' + hashlib.sha256(encoded).hexdigest(),
-            'pod_id': endpoint.attestation.pod_id,
-            'provider_account_ref': endpoint.attestation.provider_account_ref,
-            'owner_id': endpoint.lifecycle_owner.owner_id}
-
-
-def require_h3_graph_readiness(compilation: Mapping[str, Any], client: Any, destination: Any) -> dict[str, Any]:
-    """Validate the compiler's exact members/bindings using live target choices.
-
-    This observes advertised classes and filenames, not remote model bytes or
-    custom-node commits. It never asks for a local model root or installs one.
-    """
-    import hashlib
-    import json
-    from pathlib import Path
-    from vibecomfy.security.provenance import Provenance
-    from vibecomfy.workflow_bundle import load_bundle
-    from astrid.packs.vibecomfy.local_server_engine import _live_preflight, _approve_live
-    from astrid.packs.vibecomfy.invocation_preflight import (
-        _assert_no_unresolved_placeholders, _assert_no_reachable_blank_media, _assert_reachable_prompt,
-    )
-    from .engine_recipe import load_recipe_model_lock, serialize_model_lock
-
-    members = compilation['workflow']
-    for name in ('workflow.py', 'workflow.vibe.json', 'source.json'):
-        if hashlib.sha256(Path(members[name]['path']).read_bytes()).hexdigest() != members[name]['sha256']:
-            raise ValueError('H3 compiled workflow bytes changed before target readiness')
-    bundle = load_bundle(Path(members['workflow.py']['path']), trust=Provenance.USER_CONFIRMED)
-    bindings = dict(compilation['workflow_inputs'])
-    origin = (client.endpoint_transport.retained_server_url if client.endpoint_transport is not None
-              else client.http_origin)
-    provider = _live_preflight(bundle, bindings, origin, Path(destination), client=client)
-    approval = _approve_live(bundle, bindings, provider)
-    api = approval.to_dict()['api_projection']
-    if not isinstance(api, Mapping) or not api:
-        raise ValueError('H3 concrete compiled graph is empty')
-    _assert_no_unresolved_placeholders(api)
-    _assert_no_reachable_blank_media(bundle.workflow, api)
-    _assert_reachable_prompt(bundle.workflow, api, expected_prompt=bindings.get('prompt'))
-    digest = lambda value: 'sha256:' + hashlib.sha256(
-        json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
-    lock = serialize_model_lock(load_recipe_model_lock('vibecomfy-h3', 'linux-x86_64-cu130'))
-    return {'api_sha256': digest(api), 'object_info_sha256': digest(provider.object_info()),
-            'workflow_inputs_sha256': digest(bindings),
-            'model_lock_sha256': 'sha256:' + hashlib.sha256(lock.encode()).hexdigest(),
-            'members': {name: members[name]['sha256'] for name in members}}
 
 
 def runpod_generation_owner(client: Any) -> RunPodGenerationOwner:
@@ -180,7 +91,9 @@ def readiness_envelope(*, entry=None, target=None, issues=(), fixes=()) -> Readi
     """Project observations once; unknown version facts do not become issues."""
     from copy import deepcopy
     issues = [{**issue, 'details': deepcopy(issue.get('details', {}))} for issue in issues]
-    fixes = [{**fix, 'argv': list(fix['argv']), 'details': deepcopy(fix.get('details', {}))}
+    # An attached target's fix names what the person does on their own ComfyUI; it has no argv to run.
+    fixes = [{**fix, **({'argv': list(fix['argv'])} if 'argv' in fix else {}),
+              'details': deepcopy(fix.get('details', {}))}
              for fix in fixes]
     status = ('blocked' if any(issue['severity'] == 'error' for issue in issues) else
               'ready_with_warnings' if issues else 'ready')
@@ -201,7 +114,8 @@ class GenerationReadinessError(AstridError, ValueError):
         issue = self.readiness['issues'][0]
         fix = self.readiness['fixes'][0] if self.readiness['fixes'] else None
         import shlex
-        recovery = shlex.join(fix['argv']) if fix else None
+        # An attached fix is a person's action on their own ComfyUI, not a command to run.
+        recovery = shlex.join(fix['argv']) if fix and 'argv' in fix else None
         if issue['code'] == 'generation_route_unqualified':
             recovery = issue['details'].get('fix') or recovery
         super().__init__(issue['message'], code=issue['code'],
@@ -228,10 +142,15 @@ def generation_error(error: Any, *, entry=None, target=None, code=None,
     get = error.get if isinstance(error, Mapping) else lambda key, default=None: getattr(error, key, default)
     category = get('category') or get('sdk_category')
     native = code or get('code') or {
+        'validation': 'input_rejected', 'missing_input': 'input_rejected',
         'precondition': 'missing_dependency', 'runtime': 'generation_failed',
-    }.get(category, 'input_rejected')
+    }.get(category, 'generation_failed')
     normalized = _CORE_CODES.get(native, native)
     detail = {**(get('details') or {}), **(details or {})}
+    diagnostic = get('engine_diagnostic')
+    if isinstance(diagnostic, Mapping):
+        detail['engine_diagnostic'] = {key: diagnostic[key] for key in
+            ('code', 'node_id', 'node_class', 'exception_type', 'oom') if key in diagnostic}
     if normalized == 'generation_route_unqualified':
         detail['fix'] = get('fix') or get('recovery_command')
     for key in ('sdk_category', 'sdk_error'):
@@ -309,7 +228,7 @@ class LocalGenerationReadiness:
 
 
 def _gpu_guidance(mode: str | None = None) -> str:
-    guidance = 'Generation needs a local GPU or --target runpod.'
+    guidance = 'Generation needs a local GPU or --placement runpod.'
     if mode == 'tts':
         guidance += (' For voice, explicitly choose Edge TTS through '
                      'generation.generate_speech with provider=edge-tts.')
@@ -537,13 +456,13 @@ def check_local_generation_readiness(
             ),
         )
 
-    managed_ready = (
+    managed_ready = not require_managed_runtime or (
         _registered_managed_engine() is not None if not legacy_local
         else _comfyui_runtime_available()
     )
     if require_managed_runtime and not managed_ready:
         install = _managed_install_fix()
-        attach = ['astrid', 'generate', 'image', '--target', 'http://127.0.0.1:8188']
+        attach = ['astrid', 'generate', 'image', '--placement', 'http://127.0.0.1:8188']
         import shlex
         guidance = f"start your existing ComfyUI and attach with {shlex.join(attach)}"
         if install:
@@ -650,7 +569,7 @@ def _installed_managed_target(entry_id=None):
     return client
 
 
-def _select_generation_target(target: str, *, repo=None, entry_id=None):
+def _select_generation_target(target: str, *, repo=None, entry_id=None, defer_managed=False):
     """Select and probe one Comfy target without changing machine config.
 
     ``None`` selects managed lifecycle; a returned client owns only HTTP I/O.
@@ -661,16 +580,20 @@ def _select_generation_target(target: str, *, repo=None, entry_id=None):
     from astrid.core.generation.backends.comfy_target import ComfyTarget, ComfyTargetClient
     from astrid.core.generation.targets import TargetConfigError, resolve_target
 
-    if target == "runpod":
+    from astrid.core.generation.placement import is_runpod_placement
+
+    if is_runpod_placement(target):
         raise AstridError(
             "RunPod generation requires an explicitly prepared target; automatic provisioning is unavailable",
             code="COMFY_TARGET_UNSUPPORTED", field="target",
-            fix="Use --target managed inside an existing prepared pod, or --target auto locally",
+            fix="Use --placement managed inside an existing prepared pod, or --placement auto locally",
         )
     try:
         selection = resolve_target(target, repo=repo)
         record = selection.record
         if record is None or record.owner == "astrid":
+            if defer_managed:
+                return None
             return _installed_managed_target(**({'entry_id': entry_id} if entry_id is not None else {}))
         if record.endpoint is None:
             raise AstridError(
@@ -690,7 +613,7 @@ def _select_generation_target(target: str, *, repo=None, entry_id=None):
     except (TypeError, ValueError) as exc:
         raise AstridError(
             str(exc), code="COMFY_TARGET_INVALID", field="target",
-            fix="Use --target auto, --target managed, or http://127.0.0.1:<port>",
+            fix="Use --placement auto, --placement managed, or http://127.0.0.1:<port>",
         ) from exc
     try:
         facts = client.request_json("/system_stats", timeout=1.0)
@@ -702,7 +625,7 @@ def _select_generation_target(target: str, *, repo=None, entry_id=None):
         raise AstridError(
             f"ComfyUI target {url} is unavailable: {exc}",
             code="COMFY_TARGET_UNAVAILABLE", field="target",
-            fix=f"Start ComfyUI at {url}, or use --target managed with an installed ComfyUI runtime",
+            fix=f"Start ComfyUI at {url}, or use --placement managed with an installed ComfyUI runtime",
             state_snapshot={'target': record.as_dict()},
         ) from exc
     client = ComfyTargetClient(ComfyTarget(client.target.url, "attached", {**record.facts, **facts}))
@@ -714,12 +637,14 @@ def _select_generation_target(target: str, *, repo=None, entry_id=None):
 
 
 def select_generation_target(target: str, *, repo=None, runpod_owner: RunPodGenerationOwner | None = None,
-                             entry_id: str | None = None, mode: str | None = None):
-    """Read/probe the bound target and expose the shared error envelope."""
+                             entry_id: str | None = None, mode: str | None = None,
+                             defer_managed: bool = False):
+    """Probe the bound target, optionally leaving managed binding to the host."""
     try:
-        if target == 'runpod' and runpod_owner is not None:
+        from astrid.core.generation.placement import is_runpod_placement
+        if is_runpod_placement(target) and runpod_owner is not None:
             return call_runpod_owner(runpod_owner.validation_target)
-        return _select_generation_target(target, repo=repo,
+        return _select_generation_target(target, repo=repo, defer_managed=defer_managed,
             **({'entry_id': entry_id} if entry_id is not None else {}))
     except AstridError as exc:
         if isinstance(exc, GenerationReadinessError) and exc.code == 'engine_not_found':
@@ -731,6 +656,10 @@ def select_generation_target(target: str, *, repo=None, runpod_owner: RunPodGene
                     _gpu_guidance(), _gpu_guidance(mode))}
                                       for issue in envelope['issues']]
             raise GenerationReadinessError(envelope) from exc
+        if isinstance(exc, GenerationReadinessError) and any(
+                fix.get('scope') == 'attached_target' for fix in exc.readiness.get('fixes', [])):
+            # Attached advice names the person's own ComfyUI; re-wrapping it would add align, which writes to the managed engine.
+            raise
         if isinstance(exc, GenerationReadinessError) and entry_id and all(
                 issue['code'] in {'missing_model', 'missing_node_pack'} for issue in exc.readiness['issues']):
             from .asset_gaps import asset_readiness
@@ -740,7 +669,7 @@ def select_generation_target(target: str, *, repo=None, runpod_owner: RunPodGene
                 target=exc.readiness['target'])) from exc
         snapshot = exc.state_snapshot.get('target')
         selector = (snapshot or {}).get('endpoint') or target
-        argv = ['astrid', 'generate', 'targets', '--target', selector]
+        argv = ['astrid', 'generate', 'targets', '--placement', selector]
         raise generation_error(exc, target=snapshot,
             fixes=[{'argv': argv, 'scope': 'read_only', 'details': {'guidance': exc.fix}}]) from exc
 
@@ -755,10 +684,10 @@ def require_generation_target_readiness(entry: Any, mode: str, client: Any) -> N
     if not readiness.ready:
         error = AstridError(
             readiness.reason, code="COMFY_TARGET_NOT_READY", field="target",
-            fix=(readiness.recovery_command + "; use --target http://127.0.0.1:8188 "
+            fix=(readiness.recovery_command + "; use --placement http://127.0.0.1:8188 "
                  "when your existing ComfyUI is running there"),
         )
         raise generation_error(error, entry={'id': entry.id, 'engine': 'comfyui', 'mode': mode},
             fixes=readiness.fixes or [
-                {'argv': ['astrid', 'generate', 'targets', '--target', 'http://127.0.0.1:8188'],
+                {'argv': ['astrid', 'generate', 'targets', '--placement', 'http://127.0.0.1:8188'],
                  'scope': 'read_only', 'details': {'guidance': readiness.recovery_command}}])

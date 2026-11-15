@@ -99,6 +99,8 @@ def test_real_runtime_retains_source_settings_and_partial_media_after_cleanup_re
                                        fence=attempt["fence"], runtime_epoch=attempt["runtime_epoch"])
         manifest = next(row for row in outputs if row["name"] == "result_manifest")
         result = {"manifest_ref": {"object_id": manifest["digest"], "size": manifest["size"]}}
+        if status == "failed":
+            result["host_failure"] = {"code": "host_failure", "message": "Host evidence differs"}
         fence = {"attempt_id": attempt_id, "fence": attempt["fence"]}
         if status == "succeeded":
             protocol.settle(task_id, attempt["lease_id"], result=result, outputs=outputs, effect=None, **fence)
@@ -108,6 +110,14 @@ def test_real_runtime_retains_source_settings_and_partial_media_after_cleanup_re
             protocol.cancel(task_id, lease_id=attempt["lease_id"], result=result, outputs=outputs,
                             stop_observed=True, **fence)
         mutation, identity, body, key = protocol.generated.calls[0]
+        if status == "failed":
+            assert mutation == "fail"
+            assert len(protocol.generated.calls) == 1
+            assert body["error"]["message"] == "producer failed"
+            assert body["result"]["host_failure"]["message"] == "Host evidence differs"
+            assert protocol._verify_terminal_evidence_readback(
+                task_id, result, {"task": service.task(task_id)["task"]}
+            )["task"]["result"]["host_failure"] == result["host_failure"]
         shutil.rmtree(spool)
         shutil.rmtree(tmp_path / "producer")
         service.close()

@@ -4,9 +4,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from astrid.core.generation.engine_contracts import UnsupportedPlacement
 from astrid.packs.runpod.prepared_task import PreparedRunPodTaskClient
-from astrid.sdk.generation import GenerationFacade
+from astrid.sdk.generation import GenerationFacade, GenerationInputError
 from astrid.sdk.results import InvocationResult
 
 
@@ -51,7 +50,7 @@ def test_exact_domain_and_controls_use_supplied_client_once(tmp_path, ok, wait, 
         dry_run=dry_run, check_binaries=True, python_exec="python", verbose=True,
         argv=("literal",),
     )
-    returned = GenerationFacade().workflow(client=client, placement="runpod", **domain, **controls)
+    returned = GenerationFacade().workflow(client=client, **domain, **controls)
     assert returned is expected
     client.invoke_result.assert_called_once_with(
         "vibecomfy.run", kind="executor", client=client, inputs=domain, **controls,
@@ -100,7 +99,7 @@ def test_real_prepared_wrapper_keeps_two_phase_single_task_semantics(tmp_path):
     domain = {"python": {"object_id": "py", "filename": "workflow.py"},
               "workflow_inputs": '{"seed":0}'}
     actual = GenerationFacade().workflow(
-        client=prepared, project="project", placement="runpod", execution_request=RUNPOD,
+        client=prepared, project="project", execution_request=RUNPOD,
         recovery_path=tmp_path / "ordinary-receipt", **domain,
     )
     assert actual is final
@@ -114,21 +113,85 @@ def test_real_prepared_wrapper_keeps_two_phase_single_task_semantics(tmp_path):
     runtime.retire_after_task.assert_called_once()
 
 
-@pytest.mark.parametrize("placement,execution_request_value", [
-    ("runpod", None), ("runpod", {"target": {"kind": "default"}}),
-    ("local", RUNPOD), ("unknown", RUNPOD), (False, None),
-    (None, {"target": {"kind": "profile", "id": "ambiguous"}}),
-])
-def test_wrong_placement_rejects_before_destination_or_invocation(monkeypatch, placement, execution_request_value):
-    import astrid.sdk.generation as generation
-    client = SimpleNamespace(invoke_result=Mock(side_effect=AssertionError("effect")))
-    monkeypatch.setattr(generation, "_resolve_invoke_destination", Mock(side_effect=AssertionError("destination")))
-    with pytest.raises(UnsupportedPlacement):
-        GenerationFacade().workflow(client=client, placement=placement, execution_request=execution_request_value)
-    client.invoke_result.assert_not_called()
-
-
 @pytest.mark.parametrize("unknown", ["prompt", "model", "rerun", "readiness_profile_path", "endpoint_checkout"])
 def test_unknown_or_host_owned_inputs_are_not_accepted(unknown):
     with pytest.raises(TypeError):
         GenerationFacade().workflow(**{unknown: "value"})
+
+
+def test_target_workflow_does_not_read_preferences_or_forward_job_controls(monkeypatch, tmp_path):
+    from contextlib import contextmanager
+    import astrid.core.generation.entries as entries
+    import astrid.core.generation.availability as availability
+    import astrid.sdk.generation as generation
+
+    path = tmp_path / 'workflow.json'
+    path.write_text('{}')
+    @contextmanager
+    def snapshot(path):
+        yield path
+    monkeypatch.setattr(generation, '_snapshot_generation_workflow', snapshot)
+    monkeypatch.setattr(availability, 'require_bundled_workflow_available', lambda *a, **k: None)
+    monkeypatch.setattr(entries, 'resolve_workflow_inputs', lambda *a, **k: (
+        {'id': 'workflow', 'kind': 'image', 'mode': 't2i'}, {}))
+    monkeypatch.setattr(generation, '_load_model_registry', lambda **kwargs: {})
+    calls = []
+    monkeypatch.setattr(GenerationFacade, '_generate_on_target', lambda self, **kwargs: calls.append(kwargs))
+    monkeypatch.setattr(generation, '_runpod_preferences',
+                        lambda *a, **k: pytest.fail('generate read saved machine preferences'))
+    placement = {'kind': 'runpod'}
+    GenerationFacade().workflow(workflow=path, placement=placement, dry_run=True)
+    assert calls[0]['placement'] == placement
+    assert 'datacenter' not in calls[0] and 'offer_digest' not in calls[0]
+
+
+@pytest.mark.parametrize('field', [
+    'max_usd', 'deadline', 'max_hourly_usd', 'offer_digest', 'preparation_seconds',
+    'execution_seconds', 'idle_seconds', 'capacity_timeout_seconds', 'wait_for_capacity',
+    'gpu', 'gpu_types', 'datacenter',
+])
+def test_workflow_rejects_removed_job_selection_controls(field):
+    with pytest.raises(TypeError):
+        GenerationFacade().workflow(**{field: 'removed'})
+
+
+@pytest.fixture
+def no_generation_preparation(monkeypatch):
+    import astrid.sdk as sdk
+    monkeypatch.setattr(sdk, '_load_model_registry',
+                        lambda **kwargs: pytest.fail('rejected controls reached model discovery'))
+    monkeypatch.setattr(GenerationFacade, '_invoke',
+                        lambda *a, **k: pytest.fail('rejected controls reached admission'))
+
+
+@pytest.mark.parametrize('method', ['image', 'video', 'audio'])
+@pytest.mark.parametrize('field', [
+    'consent', 'max_usd', 'deadline', 'max_hourly_usd', 'offer_digest',
+    'preparation_seconds', 'execution_seconds', 'idle_seconds',
+    'capacity_timeout_seconds', 'wait_for_capacity', 'gpu', 'gpu_types', 'datacenter',
+])
+def test_media_generate_rejects_removed_paid_and_job_selection_controls(method, field, no_generation_preparation):
+    with pytest.raises(GenerationInputError, match='astrid machines claim'):
+        getattr(GenerationFacade(), method)(**{field: 'removed'})
+
+
+@pytest.mark.parametrize('method', ['workflow', 'image', 'video', 'audio'])
+@pytest.mark.parametrize('field', ['datacenter', 'gpu_types', 'max_usd', 'offer_digest'])
+def test_generate_rejects_removed_controls_nested_in_inputs(method, field, no_generation_preparation):
+    with pytest.raises(GenerationInputError, match='astrid machines claim'):
+        getattr(GenerationFacade(), method)(inputs={field: 'removed'})
+
+
+@pytest.mark.parametrize('method', ['workflow', 'image', 'video', 'audio'])
+def test_generate_rejects_paid_consent(method, no_generation_preparation):
+    with pytest.raises(GenerationInputError, match='astrid machines claim'):
+        getattr(GenerationFacade(), method)(consent=('paid',))
+
+
+def test_claimed_machine_policy_has_no_paid_controls_or_preferences(monkeypatch):
+    import astrid.sdk.generation as generation
+    monkeypatch.setattr(generation, '_runpod_preferences',
+                        lambda *a, **k: pytest.fail('job read claim preferences'))
+    assert generation._runpod_placement_policy(engine='comfyui', machine='pod-a') == {
+        'kind': 'runpod', 'engine': 'comfyui', 'machine': 'pod-a',
+    }

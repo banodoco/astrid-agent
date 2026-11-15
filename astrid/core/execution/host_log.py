@@ -15,6 +15,7 @@ from ``ASTRID_HOST_LOG_MB`` (default 50, ``0`` disables rotation).
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import threading
@@ -29,6 +30,19 @@ DEFAULT_HOST_LOG_BACKUPS = 3
 _WATCH_INTERVAL_SECONDS = 30.0
 _WINDOWS_REPLACE_ATTEMPTS = 5
 _WINDOWS_SHARING_ERRORS = {5, 32, 33}
+
+
+def log_lease_diagnostic(*, task_id: str, attempt_id: str | None,
+                         category: str, last_acknowledged_heartbeat: str | None,
+                         elapsed_seconds: float, verdict: str | None = None,
+                         runtime_code: str | None = None) -> None:
+    """Write one structured lifecycle observation to the host's redirected stderr."""
+    print("generic host: lease " + json.dumps({
+        "task_id": task_id, "attempt_id": attempt_id, "category": category,
+        "last_acknowledged_heartbeat": last_acknowledged_heartbeat,
+        "elapsed_seconds": round(max(0.0, elapsed_seconds), 3), "verdict": verdict,
+        "runtime_code": runtime_code,
+    }, sort_keys=True), file=sys.stderr, flush=True)
 
 
 def _replace(source: Path, destination: Path) -> None:

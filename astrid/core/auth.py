@@ -47,7 +47,7 @@ def _auth_cli_candidates() -> list[list[str]]:
     try:
         from astrid.core.pack.source_setup import active_sources
 
-        for source in active_sources(verify=True):
+        for source in active_sources(verify=True, include_superseded=True):
             if source.pack_id != "hivemind":
                 continue
             cli = source.pack_root / "cli.py"

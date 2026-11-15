@@ -319,9 +319,8 @@ def test_bootstrap_passes_inventory_identity_and_restarts_on_change(monkeypatch,
     monkeypatch.setattr(host_bootstrap, "_registered_host_status", lambda state: "ours")
     monkeypatch.setattr(host_bootstrap, "_IDLE_CHECK_INTERVAL_SECONDS", 0.0)
     monkeypatch.setattr(host_bootstrap, "_retire_host_locked", lambda current, support: terminated.append(dict(current)))
-    # The explicit bootstrap read is joined by one Remotion registry-context
-    # read when the supported renderer is provisioned in the environment.
-    inventory_reads_per_launch = 2 if os.environ.get("ASTRID_REMOTION_PROJECT_DIR") else 1
+    # Remotion worker projections are now read on first use, after readiness.
+    inventory_reads_per_launch = 1
 
     if windows_acl is False:
         with pytest.raises(host_bootstrap.PackHostBootstrapError, match="handoff is unavailable"):
@@ -706,21 +705,13 @@ def test_python_source_loader_can_read_cache_before_bytecode_write_policy():
 
 
 def test_installed_profile_launch_preserves_identity_and_uses_isolated_interpreter(monkeypatch, tmp_path):
-    # This is the host-bootstrap handoff boundary.  The fake source root is
-    # intentionally not an installed distribution, so keep the independent
-    # Remotion launch-validation transaction at its existing collaborator
-    # boundary; its strict installed-registry source controls are exercised by
-    # the dedicated rendering-security tests.
+    # The bootstrap handoff must not validate Remotion, even when provisioned.
+    # The host owns that transaction on first use after readiness.
     monkeypatch.setenv("ASTRID_HOST_EXECUTION_PROFILE", "installed")
     monkeypatch.setattr(host_bootstrap, "_installed_execution_origins", lambda root, python: {"host": str(root / "astrid/core/execution/generic_host.py")})
     monkeypatch.setattr(host_bootstrap, "_provision_render_runtime_env", lambda *_: None)
     def isolated_render_validation(*_args, **_kwargs):
-        # Preserve the real validation collaborator's second inventory read;
-        # the strict installed-registry controls remain covered separately.
-        if os.environ.get("ASTRID_REMOTION_PROJECT_DIR"):
-            from astrid.core.pack.source_setup import active_source_inventory
-            active_source_inventory()
-        return None
+        pytest.fail("bootstrap must defer Remotion validation to the host")
 
     monkeypatch.setattr(host_bootstrap, "_prepare_render_validation", isolated_render_validation)
     original = _mock_host_launch
@@ -731,6 +722,9 @@ def test_installed_profile_launch_preserves_identity_and_uses_isolated_interpret
             assert argv[1:5] == ["-X", "utf8", "-I", "-m"]
             assert "PYTHONPATH" not in kwargs["env"]
             assert kwargs["cwd"] != str(tmp_path / "source")
+            if kwargs["env"].get("ASTRID_REMOTION_PROJECT_DIR"):
+                assert "--defer-remotion-validation" in argv
+                assert "--remotion-validation-launch-id" not in argv
             return fake_popen(argv, **kwargs)
         return original(monkeypatch, guarded)
     monkeypatch.setitem(globals(), "_mock_host_launch", isolate)

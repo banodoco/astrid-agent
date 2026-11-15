@@ -59,6 +59,67 @@ def _descriptors():
     return discovery.list_skills()
 
 
+def test_fresh_sync_selects_and_links_declared_defaults():
+    fx = _Tmp()
+    try:
+        defaults = skills.default_descriptors()
+        assert {"setup", "rendering", "vibecomfy", "timeline"} <= {d.pack_id for d in defaults}
+        assert skills_cli.main(["sync", "--skills", "on", "--harness", "claude", "--json"]) == 0
+        adapter = ClaudeAdapter()
+        assert all(adapter.target_for(descriptor).is_symlink() for descriptor in defaults)
+        selected = state.load()["skills"]["claude"]["skills"]
+        assert all(selected[descriptor.skill_id]["selected"] for descriptor in defaults)
+    finally:
+        fx.close()
+
+
+def test_fresh_sync_preserves_an_explicit_empty_selection():
+    fx = _Tmp()
+    try:
+        state.save(state.load())
+        defaults = skills.default_descriptors()
+        assert skills_cli.main(["sync", "--skills", "on", "--harness", "claude", "--json"]) == 0
+        adapter = ClaudeAdapter()
+        assert not any(adapter.target_for(descriptor).exists() or adapter.target_for(descriptor).is_symlink()
+                       for descriptor in defaults if descriptor.pack_id != "_core")
+        assert not any(item.get("selected") for item in
+                       state.load()["skills"]["claude"]["skills"].values())
+    finally:
+        fx.close()
+
+
+def test_installer_sync_preserves_default_opt_out():
+    fx = _Tmp()
+    try:
+        args = ["sync", "--skills", "on", "--skill-copies", "off", "--harness", "claude", "--json"]
+        assert skills_cli.main(args) == 0
+        for pack in ("vibecomfy", "timeline"):
+            assert skills_cli.main(["uninstall", pack, "--harness", "claude", "--json"]) == 0
+        assert skills_cli.main(args) == 0
+        data = state.load()
+        assert {"vibecomfy", "timeline"} <= set(data["disabled_defaults"]["claude"])
+        descriptors = {d.pack_id: d for d in _descriptors()}
+        adapter = ClaudeAdapter()
+        assert all(not adapter.target_for(descriptors[pack]).exists() for pack in ("vibecomfy", "timeline"))
+        assert adapter.target_for(descriptors["rendering"]).exists()
+    finally:
+        fx.close()
+
+
+def test_installer_sync_preserves_existing_selection():
+    fx = _Tmp()
+    try:
+        assert skills_cli.main(["install", "generation", "--harness", "claude", "--json"]) == 0
+        assert skills_cli.main(["sync", "--skills", "on", "--skill-copies", "off", "--harness", "claude", "--json"]) == 0
+        selected = state.load()["skills"]["claude"]["skills"]
+        assert selected["generation"]["selected"]
+        assert not any(selected.get(pack, {}).get("selected") for pack in ("setup", "rendering", "vibecomfy", "timeline"))
+        descriptors = {d.pack_id: d for d in _descriptors()}
+        assert ClaudeAdapter().target_for(descriptors["generation"]).exists()
+    finally:
+        fx.close()
+
+
 def _subparser(parser: argparse.ArgumentParser, name: str) -> argparse.ArgumentParser:
     for action in parser._actions:
         if isinstance(action, argparse._SubParsersAction):
@@ -597,8 +658,8 @@ class GenerationSkillDiscoveryTest(unittest.TestCase):
         self.assertEqual(self._desc.pack_id, "generation")
 
     def test_description_references_facade(self) -> None:
-        """The generation skill summary describes the ``astrid.generate`` facade."""
-        self.assertIn("astrid.generate", self._desc.description)
+        """The generation skill summary names the one front door, ``generate(entry, inputs, placement)``."""
+        self.assertIn("generate(entry, inputs, placement)", self._desc.description)
 
     def test_short_description_includes_facade_or_generation(self) -> None:
         """The short description (what ``astrid skills list`` prints) is non-empty
@@ -611,18 +672,21 @@ class GenerationSkillDiscoveryTest(unittest.TestCase):
         )
 
     def test_skill_text_contains_facade_image_example(self) -> None:
-        """The SKILL.md body contains ``astrid.generate.image(`` examples."""
-        self.assertIn("astrid.generate.image(", self._raw_text)
+        """The SKILL.md body shows the Python front door with an image entry:
+        ``generate.generate("image/...", {...}, placement=...)``."""
+        self.assertIn('generate.generate("image/', self._raw_text)
+        self.assertIn("placement=", self._raw_text)
 
     def test_skill_text_contains_facade_video_example(self) -> None:
-        """The SKILL.md body contains ``astrid.generate.video(`` examples."""
-        self.assertIn("astrid.generate.video(", self._raw_text)
+        """The SKILL.md body shows a video entry through the CLI, which takes the same entry, inputs and placement."""
+        self.assertIn("generate video --entry h3", self._raw_text)
 
     def test_skill_text_contains_openai_exclusion_note(self) -> None:
-        """The SKILL.md body states that ``execution=\"openai\"`` is rejected by the
-        facade and that ``generate_image_openai`` remains CLI/executor-only."""
-        self.assertIn("generate_image_openai", self._raw_text)
-        self.assertIn("execution=\"openai\"", self._raw_text)
+        """The SKILL.md body states that hosted provider APIs, OpenAI among them, are a separate
+        route and not a placement, so the skill never offers one as a placement."""
+        text = " ".join(self._raw_text.split())  # the skill wraps its prose; match across line breaks
+        self.assertIn("OpenAI", text)
+        self.assertIn("are not part of this placement model", text)
 
 
 if __name__ == "__main__":
@@ -883,6 +947,13 @@ def test_timeline_main_skill_code_blocks_run_with_scratch_runtime(real_runtime, 
     shim.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
     shim.chmod(0o755)
     env["PATH"] = f"{skill_bin}{os.pathsep}{env['PATH']}"
+    # The skill's shell blocks call the installed launcher at its Linux path; stand one in
+    # for this checkout's Astrid, only for those blocks.
+    launcher_data = tmp_path / "skill-launcher-data"
+    launcher = launcher_data / "astrid" / "run-astrid"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text(f'#!/bin/sh\nexec "{sys.executable}" -m astrid "$@"\n')
+    launcher.chmod(0o755)
     project = daemon.service.create_project({"slug": "skill-demo", "name": "Skill demo"})["id"]
     monkeypatch.setenv("ASTRID_TIMELINE_EVAL_ENDPOINT", daemon.endpoint)
     monkeypatch.setenv("ASTRID_TIMELINE_EVAL_CREDENTIAL", str(daemon.credential_path))
@@ -919,7 +990,8 @@ def test_timeline_main_skill_code_blocks_run_with_scratch_runtime(real_runtime, 
         if block.startswith("from astrid.sdk"):
             exec(compile(block, str(skill), "exec"), {"__name__": "__main__"})
         else:
-            result = subprocess.run(["bash", "-c", block], cwd=tmp_path, env=env, text=True,
+            result = subprocess.run(["bash", "-c", block], cwd=tmp_path,
+                                    env={**env, "XDG_DATA_HOME": str(launcher_data)}, text=True,
                                     capture_output=True, timeout=120)
             assert result.returncode == 0, result.stdout + result.stderr
 

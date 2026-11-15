@@ -155,6 +155,7 @@ class Documentation:
     kind: str
     path: str | None = None
     reason: str | None = None
+    sync_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,7 +221,6 @@ class CanonicalPackDefinition:
     pack_api: str | None = None
     actions: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
     cli: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
-    engines: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
     ui: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
     rendering: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
     documents: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
@@ -264,6 +264,7 @@ class CanonicalPackDefinition:
                 "kind": self.documentation.kind,
                 **({"path": self.documentation.path} if self.documentation.path else {}),
                 **({"reason": self.documentation.reason} if self.documentation.reason else {}),
+                **({"sync_name": self.documentation.sync_name} if self.documentation.sync_name else {}),
             }
         if self.astrid_version:
             result["astrid_version"] = self.astrid_version
@@ -273,7 +274,7 @@ class CanonicalPackDefinition:
             result.pop("content")
             result.update({
                 name: _thaw(getattr(self, name))
-                for name in ("actions", "cli", "engines", "ui", "rendering", "documents")
+                for name in ("actions", "cli", "ui", "rendering", "documents")
             })
         return result
 
@@ -579,7 +580,7 @@ def _normalize_definition(data: dict[str, Any]) -> CanonicalPackDefinition:
     if data.get("documentation") is not None:
         x = _mapping(data["documentation"], "documentation")
         kind = _text(x.get("kind"), "documentation.kind")
-        documentation = Documentation(kind, x.get("path"), x.get("reason"))
+        documentation = Documentation(kind, x.get("path"), x.get("reason"), x.get("sync_name"))
     agent = _mapping(data.get("agent", {}), "agent")
     agent_norm = dict(agent)
     if "required_context" in agent_norm:
@@ -667,7 +668,6 @@ def _normalize_definition(data: dict[str, Any]) -> CanonicalPackDefinition:
         data.get("pack_api"),
         **declarations,
         cli=_normalize_manifest_paths(data.get("cli", {}), "cli", ("arguments",)),
-        engines=_normalize_manifest_paths(data.get("engines", {}), "engines", ("recipe",)),
     )
 
 
@@ -688,7 +688,6 @@ def _declared_paths(definition: CanonicalPackDefinition) -> tuple[tuple[str, str
     paths += [(item["entry"], f"ui.{key}.entry") for key, item in definition.ui.items()]
     paths += [(item["path"], f"rendering.{key}.path") for key, item in definition.rendering.items()]
     paths += [(item["arguments"], f"cli.{key}.arguments") for key, item in definition.cli.items()]
-    paths += [(item["recipe"], f"engines.{key}.recipe") for key, item in definition.engines.items()]
     paths += [
         (item["schema"], f"documents.{key}.schema")
         for key, item in definition.documents.items() if isinstance(item["schema"], str)

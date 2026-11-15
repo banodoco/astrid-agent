@@ -22,8 +22,8 @@ PACKS = ROOT / "astrid/packs"
 # Pinned shipped pack ids (the validator derives its inventory from manifests,
 # so deriving here would make the exact-set assertions circular).
 PACK_IDS = tuple(sorted({
-    "comfy_wrap", "developer", "generation", "h3_av", "local", "rendering",
-    "runpod", "timeline", "training", "vibecomfy", "wan2gp",
+    "developer", "generation", "h3_av", "local", "rendering",
+    "runpod", "setup", "timeline", "training", "vibecomfy", "wan2gp",
 }))
 RETIRED = {"builtin", "references", "astrid", "runaway", "shots"}
 
@@ -43,6 +43,7 @@ def test_current_catalog_is_exact_strict_v3_capability_set() -> None:
         assert data["documentation"] == {
             "kind": "skill",
             "path": "docs/SKILL.md",
+            **({"sync_name": "astrid-setup"} if data["id"] == "setup" else {}),
         }
         assert (manifest.parent / "docs/SKILL.md").is_file()
         assert validate_canonical_pack(manifest.parent).id == data["id"]
@@ -56,7 +57,7 @@ def test_catalog_preserves_stage1_capability_census() -> None:
     assert tuple(pack.id for pack in packs) == PACK_IDS
     assert (len(packs), len(executors.list()), len(orchestrators.list()), len(elements.list())) == (
         11,
-        54,
+        49,
         0,
         24,
     )

@@ -29,6 +29,52 @@ from astrid.core.subprocess_env import (
 )
 from tests.lanes import pytest_collection_modifyitems, pytest_configure, pytest_ignore_collect  # noqa: F401  (lanes, skip registry and guard, fd guard)
 from tests.process_groups import ProcessGroups
+from tests import runpod_guard
+
+# Repo-wide safety net: tests never reach RunPod (see tests/runpod_guard.py).
+runpod_guard.scrub_credentials()
+runpod_guard.install()
+
+
+@pytest.fixture(autouse=True)
+def _installer_private_home(request):
+    """Keep installer state and service registrations inside each test's root."""
+    path = request.path
+    if path.parent != Path(__file__).parent or not path.name.startswith("test_installer_"):
+        return
+
+    request.getfixturevalue("_sandboxed_home_and_projects")
+    monkeypatch = request.getfixturevalue("monkeypatch")
+    home = Path(os.environ["HOME"])
+    for name, relative in (
+        ("XDG_CONFIG_HOME", ".config"),
+        ("XDG_RUNTIME_DIR", "runtime"),
+    ):
+        directory = home / relative
+        directory.mkdir(parents=True)
+        monkeypatch.setenv(name, str(directory))
+    if os.name == "nt":
+        monkeypatch.setenv("USERPROFILE", str(home))
+        monkeypatch.setenv("APPDATA", str(home / "AppData" / "Roaming"))
+        monkeypatch.setenv("LOCALAPPDATA", str(home / "AppData" / "Local"))
+
+    # These tests model an interactive terminal; explicit opt-out cases pass
+    # their own environment to style(). Hosted CI otherwise disables animation.
+    if (path.name == "test_installer_progress.py" or
+            (path.name == "test_installer_lifecycle.py" and
+             request.node.name == "test_update_on_a_terminal_leaves_one_checked_line_per_phase")):
+        monkeypatch.delenv("CI", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_runpod_network_or_credentials(request):
+    """Name the running test in guard errors and keep RunPod credentials out of the env."""
+    runpod_guard.scrub_credentials()
+    runpod_guard.set_current_test(request.node.nodeid)
+    try:
+        yield
+    finally:
+        runpod_guard.set_current_test("<outside a test>")
 
 
 @pytest.fixture(autouse=True)
@@ -299,3 +345,48 @@ def _sandboxed_home_and_projects(
     monkeypatch.setenv(paths.PROJECTS_ROOT_ENV, str(projects_root))
     yield
     _clear_task_env()
+
+
+class InMemoryAppState:
+    """A stand-in for the Runtime's per-user app-state store (versioned, idempotent writes)."""
+
+    def __init__(self):
+        self.documents = {}
+        self.receipts = {}
+
+    def get_user_app_state(self, key):
+        content, version = self.documents.get(key, (None, 0))
+        return {"content": None if content is None else __import__("copy").deepcopy(content), "version": version}
+
+    def update_user_app_state(self, key, content, *, expected_version, idempotency_key):
+        import copy
+        from astrid.sdk.workspace_client import WorkspaceClientError
+
+        if (key, idempotency_key) in self.receipts:
+            return self.receipts[(key, idempotency_key)]
+        _, version = self.documents.get(key, (None, 0))
+        if version != expected_version:
+            raise WorkspaceClientError(409, "version_conflict", "app-state version changed")
+        self.documents[key] = (copy.deepcopy(dict(content)), version + 1)
+        result = {"content": copy.deepcopy(dict(content)), "version": version + 1}
+        self.receipts[(key, idempotency_key)] = result
+        return result
+
+
+@pytest.fixture(autouse=True)
+def generation_settings_store():
+    """Generation settings live in the Runtime; every test gets an empty in-memory one."""
+    from astrid.core.generation import settings
+
+    store = InMemoryAppState()
+    settings.set_store_factory(lambda: store)
+    yield store
+    settings.set_store_factory(None)
+
+
+@pytest.fixture(autouse=True)
+def _h3_engine_facts():
+    """h3_av imports nothing from Astrid; its host installs the engine facts (production: each run.py)."""
+    from astrid.core.generation.engine_facts import comfyui_facts
+    from astrid.packs.h3_av.shared import engine_facts
+    engine_facts.install(comfyui_facts())

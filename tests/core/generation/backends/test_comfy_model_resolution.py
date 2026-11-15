@@ -14,10 +14,10 @@ from astrid.core.generation.backends.comfy_target import (
     ComfyModelMissing, ComfyTarget, ComfyTargetClient, _main, resolve_comfy_models,
 )
 from astrid.core.generation.backends.vibecomfy import (
-    CheckoutServerAdapter, VibeComfyBackend, _bind_target_model_roles,
+    VibeComfyBackend, _bind_target_model_roles,
 )
 from astrid.core.model_catalog.registry import ModelRegistry
-from astrid.core.model_catalog.schema import BackendSpec, ModelEntry, ModelRole, ModeSpec, validate_registry
+from astrid.core.model_catalog.schema import validate_registry
 from tests.core.generation.backends.test_comfy_target import (  # noqa: F401
     engine_configuration, observation_configuration, network,
 )
@@ -74,45 +74,6 @@ def with_roles(entry, model_id, roles, **spec_changes):
     return replace(entry, id=model_id, modes={"t2i": replace(mode, backends={"local": spec})})
 
 
-@pytest.mark.parametrize("mode", ["t2i", "i2i"])
-def test_turbo_uses_canonical_approval_and_exact_target_vae(network, monkeypatch, tmp_path, mode):
-    client, requests = install_target(network, target_info(mode, unets=("z_image_bf16.safetensors", "z_image_turbo_bf16.safetensors")))
-    entry = ModelRegistry.load_default().get("z-image")
-    adapter = CheckoutServerAdapter(client.target.url)
-    monkeypatch.setattr(adapter, "warm_session", Mock())
-    adapter._engine._prepared_runtime_instance_id = RUNTIME
-    captured = {}
-
-    def run(workflow, **kwargs):
-        from vibecomfy.workflow_bundle import ApprovedProjectionRecord, WorkflowBundle
-        approved, bundle = workflow
-        assert isinstance(approved, ApprovedProjectionRecord)
-        assert isinstance(bundle, WorkflowBundle)
-        bundle.require_canonical_authority("acceptance test")
-        captured.update(approved.to_dict()["api_projection"])
-        return SimpleNamespace(outputs=[])
-
-    monkeypatch.setattr(adapter._engine, "run", run)
-    monkeypatch.setattr(adapter, "_collect_outputs", lambda result, out: [])
-    params = {"prompt": "a blue lighthouse", "seed": 42, "size": "512x384"}
-    if mode == "i2i":
-        params["image_ref"] = "astrid/task-1/input.png"
-        params["strength"] = 0.4
-    adapter.generate(entry, mode, params, tmp_path, model_bytes_digest="sha256:" + "a" * 64, runtime_instance_id=RUNTIME)
-    by_class = {node["class_type"]: node["inputs"] for node in captured.values()}
-    assert by_class["UNETLoader"]["unet_name"] == "z_image_turbo_bf16.safetensors"
-    assert by_class["CLIPLoader"]["clip_name"] == "qwen_3_4b.safetensors"
-    assert by_class["VAELoader"]["vae_name"].encode() == EXACT_VAE.encode()
-    sampler = by_class["KSampler"]
-    assert captured[sampler["positive"][0]]["inputs"]["text"] == params["prompt"]
-    assert (sampler["seed"], sampler["steps"], sampler["cfg"]) == (42, 8, 1.0)
-    assert (sampler["sampler_name"], sampler["scheduler"]) == ("res_multistep", "simple")
-    assert by_class["ModelSamplingAuraFlow"]["shift"] == 3
-    if mode == "i2i":
-        assert by_class["LoadImage"]["image"] == params["image_ref"]
-        assert sampler["denoise"] == 0.4
-    assert requests.count(("GET", "/object_info")) == 1
-    assert all(method == "GET" for method, _ in requests)
 
 
 def test_resolution_roundtrip_is_exact_and_does_not_claim_model_bytes(network):
@@ -163,6 +124,18 @@ def test_alternatives_are_declared_role_matches_that_compile_canonically(network
     undeclared = with_roles(entry, "undeclared", {})
     incomplete = with_roles(entry, "incomplete", {**spec.model_roles, "vae": replace(spec.model_roles["vae"], names=("missing.safetensors",))})
     client, requests = install_target(network, target_info(vaes=("ae.safetensors", EXACT_VAE) if failure == "ambiguous" else (EXACT_VAE,)))
+    # The attached server's own folder listing answers the failure-path lookup; it is recorded apart from /object_info.
+    folder_requests = []
+    served = network["handler"]
+    folders = {"diffusion_models": ["/srv/ComfyUI/models/diffusion_models"], "vae": ["/srv/ComfyUI/models/vae"]}
+
+    async def serve_folders(request):
+        if request.method == "GET" and request.path == "/internal/folder_paths":
+            folder_requests.append((request.method, request.path))
+            return web.json_response(folders)
+        return await served(request)
+
+    network["handler"] = serve_folders
     if failure == "ambiguous":
         # The requested entry accepts both names; the executable alternative
         # declares only the exact name it will bind.
@@ -173,26 +146,18 @@ def test_alternatives_are_declared_role_matches_that_compile_canonically(network
     assert raised.value.alternatives == ["works"]
     assert raised.value.as_dict()["code"] == "missing_model"
     assert raised.value.as_dict()["engine_code"] == "COMFY_MODEL_MISSING"
-    assert raised.value.readiness['fixes'][0]['argv'] == [
-        'astrid', 'generate', 'align', '--apply', '--consent', 'user_env', '--entry', 'wanted']
+    # P4.6: an attached target is never told to install into the managed engine
+    expected = {
+        "missing": [{"scope": "attached_target", "details": {"action":
+            "Put wanted.safetensors in /srv/ComfyUI/models/diffusion_models on your ComfyUI, then retry."}}],
+        "ambiguous": [{"scope": "attached_target", "details": {"action":
+            "Keep exactly one of ae.safetensors or FLUX1\\ae.safetensors in /srv/ComfyUI/models/vae on your ComfyUI and remove the others, then retry."}}],
+    }[failure]
+    assert raised.value.readiness['fixes'] == expected
+    assert folder_requests == [("GET", "/internal/folder_paths")]
     assert requests == [("GET", "/object_info")]
 
 
-@pytest.mark.parametrize("mode", ["t2i", "i2i"])
-def test_checkout_dry_run_compiles_without_submission_or_lifecycle(network, monkeypatch, tmp_path, mode):
-    client, requests = install_target(network, target_info(mode))
-    adapter = CheckoutServerAdapter(client.target.url)
-    monkeypatch.setattr(adapter, "warm_session", Mock(side_effect=AssertionError("dry-run warmed")))
-    monkeypatch.setattr(adapter._engine, "run", Mock(side_effect=AssertionError("dry-run submitted")))
-    params = {"prompt": "A dry-run lighthouse."}
-    if mode == "i2i":
-        params["image_ref"] = "astrid/task-1/input.png"
-    destination = tmp_path / "dry-run-output"
-    plan = adapter.generate(ModelRegistry.load_default().get("z-image"), mode, params, destination, dry_run=True)
-    assert plan["approval"]["status"] == "approved"
-    assert plan["roles"]["vae"] == EXACT_VAE
-    assert requests == [("GET", "/object_info")]
-    assert not destination.exists()
 
 
 def test_cli_dry_run_prints_plan_with_zero_submissions(network, capsys):

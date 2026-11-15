@@ -1095,6 +1095,22 @@ def _stop_registered_host(state: Mapping[str, Any]) -> None:
         raise PackHostBootstrapError("prior host registration lock is unavailable; retirement blocked") from exc
 
 
+def host_occupancy(pid: int, support_root: Path) -> int | None:
+    """Read the registered process's published active count without changing it."""
+    path = support_root / "generic-host.busy.json"
+    if path.is_symlink():
+        return None
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if isinstance(record, dict) and type(record.get("pid")) is int and record["pid"] == pid:
+        active = record.get("active")
+        if type(active) is int and active >= 0:
+            return active
+    return None
+
+
 def _host_idle(pid: int, support_root: Path | None = None) -> bool:
     """A host is idle when it executes no task.
 
@@ -1104,12 +1120,9 @@ def _host_idle(pid: int, support_root: Path | None = None) -> bool:
     git preflight) share the host's group and are not work.
     """
     if support_root is not None:
-        try:
-            record = json.loads((support_root / "generic-host.busy.json").read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            record = None
-        if isinstance(record, dict) and record.get("pid") == pid:
-            return int(record.get("active") or 0) == 0
+        active = host_occupancy(pid, support_root)
+        if active is not None:
+            return active == 0
     for check in range(_IDLE_CHECKS):
         if check:
             time.sleep(_IDLE_CHECK_INTERVAL_SECONDS)
@@ -1276,6 +1289,26 @@ def _verify_remotion_probe_custody(environment: Mapping[str, str]) -> None:
         ) from exc
 
 
+def _defer_render_validation(env: dict[str, str]) -> bool:
+    """Clear foreign launch proof; the host will validate on first use."""
+    from astrid.core.rendering import remotion_runtime
+
+    if remotion_runtime._UNRESOLVED_VALIDATION_PROBES:
+        raise remotion_runtime.RemotionValidationError(
+            "prior runtime validation child custody is unresolved"
+        ) from remotion_runtime._UNRESOLVED_VALIDATION_PROBES[0]
+    for name in remotion_runtime._REF_ENV_KEYS:
+        env.pop(name, None)
+    provisioned = bool(env.get("ASTRID_REMOTION_PROJECT_DIR"))
+    if provisioned:
+        for name in [key for key in env if key.startswith(("LD_", "DYLD_"))]:
+            del env[name]
+    # This check cannot hash a prior launch artifact after its reference was
+    # cleared. Retained probe custody still blocks a replacement host.
+    _verify_remotion_probe_custody(env)
+    return provisioned
+
+
 def _prepare_render_validation(source_path: Path, env: dict[str, str],
                                support_root: Path, python_executable: str,
                                pack_roots: tuple[Path, ...] = (),
@@ -1425,12 +1458,7 @@ class _ParkedPackHostPreparer:
             ))
         env["PYTHONUNBUFFERED"] = "1"
         _provision_render_runtime_env(reference.source_checkout, env)
-        _verify_remotion_probe_custody(env)
-        validation_launch = _prepare_render_validation(
-            reference.source_checkout, env, Path(reference.support_root), str(launch.argv[0]),
-            tuple(Path(root) for root in reference.pack_roots),
-            reference.source_closure_digest.removeprefix("sha256:"),
-        )
+        deferred_validation = _defer_render_validation(env)
         parent, child = socket.socketpair()
         operation_id, channel_id = secrets.token_hex(16), secrets.token_hex(16)
         launch_argv = list(launch.argv)
@@ -1444,8 +1472,8 @@ class _ParkedPackHostPreparer:
                 "--activation-operation-id", operation_id,
                 "--activation-channel-id", channel_id,
                 "--activation-timeout-seconds", str(self.timeout_seconds)]
-        if validation_launch is not None:
-            argv.extend(("--remotion-validation-launch-id", validation_launch))
+        if deferred_validation:
+            argv.append("--defer-remotion-validation")
         log_path = Path(reference.support_root) / f"generic-host-{operation_id}.log"
         launch_digest = _launch_argv_digest(argv)
         try:
@@ -1967,8 +1995,11 @@ def _attach_resident_host(
 
 
 # A Runtime-supervised foreground host writes its ready record only after its own
-# startup, which can take minutes (Windows launch validation alone took 69 s).
-_STARTUP_WAIT_SECONDS = 180.0
+# startup, which can take minutes (Windows launch validation alone took 69 s, and a
+# virus scanner took 205 s). Keep this no shorter than the supervisor's own readiness
+# budget for the pack host, `"timeout_seconds": 300` in astrid/services.py; that
+# value is a literal there and cannot be imported here without a cycle.
+_STARTUP_WAIT_SECONDS = 300.0
 _STARTUP_POLL_SECONDS = 0.5
 _STARTUP_HEALTH_SECONDS = 5.0
 _PACK_HOST_SERVICE = "pack-host"
@@ -2074,6 +2105,12 @@ def ensure_pack_host(
     host exit (with its log tail) or terminal registration failure, and fails
     as hung only after ``startup_idle_seconds`` with no progress.
     """
+    from astrid.core.execution import generic_host
+
+    if _foreground:
+        generic_host._STARTUP_OBSERVATION_ENABLED = True
+    _emit_startup_phase = generic_host._emit_startup_phase
+    _emit_startup_phase("bootstrap_begin")
     # Reject invalid budgets before credential reads, discovery or any launch.
     if (isinstance(startup_idle_seconds, bool)
             or not isinstance(startup_idle_seconds, Real)
@@ -2111,6 +2148,7 @@ def ensure_pack_host(
             f"managed source inventory could not be verified; {reconfigure_action}"
         ) from exc
     inventory_identity = managed_inventory.identity if managed_inventory.sources else ""
+    _emit_startup_phase("bootstrap_inventory_done")
     pack_root = source_path / "astrid" / "packs"
     if not pack_root.is_dir() or pack_root.is_symlink():
         raise PackHostBootstrapError(f"Astrid source checkout has no pack root; {reconfigure_action}")
@@ -2134,6 +2172,7 @@ def ensure_pack_host(
         raise PackHostBootstrapError(
             f"generic Astrid pack source tree is not a safe checkout; {reconfigure_action}"
         ) from exc
+    _emit_startup_phase("bootstrap_identity_done")
     try:
         worker_token = worker_path.read_text(encoding="utf-8").strip()
         if not worker_token:
@@ -2154,6 +2193,7 @@ def ensure_pack_host(
         "coordinator_epoch": getattr(health, "coordinator_epoch", None),
     }
     runtime_supervised = _PACK_HOST_SERVICE in _supervised_service_rows(health)
+    _emit_startup_phase("bootstrap_health_done")
     if str(health_value.get("status", "")) != "ok":
         raise PackHostBootstrapError(
             f"generic Astrid pack host runtime is not healthy; {reconfigure_action}",
@@ -2232,7 +2272,7 @@ def ensure_pack_host(
         from astrid.core.gateway.dispatch import compose_profile_handoff
         try:
             boot_handoff = compose_profile_handoff(
-                boot_manifest_path, support_root=runtime_support
+                boot_manifest_path, support_root=runtime_support, write=False
             )
         except Exception as exc:
             raise PackHostBootstrapError(
@@ -2308,6 +2348,19 @@ def ensure_pack_host(
                     _retire_host_locked(current, runtime_support)
                 else:
                     _retire_host_locked(current, runtime_support, attach_reason=attach_reason)
+        # Only a new host may publish new provenance. Busy, supervised or
+        # unretirable residents must keep the bytes they started against.
+        try:
+            boot_handoff = compose_profile_handoff(
+                boot_manifest_path, support_root=runtime_support
+            )
+        except Exception as exc:
+            raise PackHostBootstrapError(
+                f"generic Astrid pack boot manifest could not be composed; {reconfigure_action}"
+            ) from exc
+        boot_manifest_hash = str(boot_handoff["sha256"])
+        expected["boot_manifest_hash"] = boot_manifest_hash
+        _emit_startup_phase("bootstrap_manifest_done")
         ready_path.unlink(missing_ok=True)
         log_path = runtime_support / "generic-host.log"
         try:
@@ -2342,13 +2395,10 @@ def ensure_pack_host(
         if matrix.is_file():
             argv.extend(("--capability-matrix", str(matrix)))
         child_env = _host_render_environment(source_path)
-        _verify_remotion_probe_custody(child_env)
-        validation_launch = _prepare_render_validation(
-            source_path, child_env, runtime_support, host_python,
-            (pack_root, *managed_inventory.roots), source_closure_digest,
-        )
-        if validation_launch is not None:
-            argv.extend(("--remotion-validation-launch-id", validation_launch))
+        deferred_validation = _defer_render_validation(child_env)
+        if deferred_validation:
+            argv.append("--defer-remotion-validation")
+        _emit_startup_phase("bootstrap_launch_done")
         if _foreground:
             process_state = {
                 "execution_profile": _execution_profile(), "execution_origins": execution_origins,

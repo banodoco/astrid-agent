@@ -251,7 +251,7 @@ class WorkspaceClient:
                 "recover_project_reference", "associate_reference", "set_primary_reference",
                 "link_references", "create_document", "list_documents", "get_document",
                 "update_document", "ingest_object", "ingest_project_object", "ingest_project_object_stream",
-                "get_preferences", "update_preferences",
+                "get_preferences", "update_preferences", "get_user_app_state", "update_user_app_state",
                 "import_project_media", "get_project_media_import",
                 "list_project_objects", "get_project_object_location", "create_media_relation", "list_media_relations",
                 "get_object", "head_object", "admit_task", "get_task", "list_project_tasks",
@@ -750,6 +750,14 @@ class WorkspaceClient:
             idempotency_key=idempotency_key,
             project_id=project_id,
         )
+
+    def get_user_app_state(self, key: str) -> Any:
+        return self._call_generated("get_user_app_state", key)
+
+    def update_user_app_state(self, key: str, content: Mapping[str, Any], *, expected_version: int,
+                              idempotency_key: str) -> Any:
+        return self._call_generated("update_user_app_state", key, content,
+                                    expected_version=expected_version, idempotency_key=idempotency_key)
 
     def create_document(self, project_id: str, document_id: str, kind: str, content: Any, *, idempotency_key: str) -> Any:
         return self._call_generated("create_document", project_id, document_id, kind, content, idempotency_key=idempotency_key)

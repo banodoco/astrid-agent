@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import re
+from copy import deepcopy
 from fractions import Fraction
 from typing import Any, Mapping
 
@@ -44,7 +45,7 @@ def _fraction(value: Any, path: str, *, minimum: Fraction = Fraction(0)) -> Frac
     if isinstance(value, bool):
         raise H3RequestError(f"{path} must be a rational number")
     try:
-        if isinstance(value, int):
+        if isinstance(value, (int, Fraction)):
             result = Fraction(value)
         elif isinstance(value, float) and math.isfinite(value):
             result = Fraction(str(value))
@@ -55,16 +56,55 @@ def _fraction(value: Any, path: str, *, minimum: Fraction = Fraction(0)) -> Frac
     except (ValueError, ZeroDivisionError):
         raise H3RequestError(f"{path} must be a rational number") from None
     if result < minimum:
-        raise H3RequestError(f"{path} must be >= {float(minimum):g}")
+        raise H3RequestError(f"{path} must be >= {minimum}")
     return result
 
 
-def _json_number(value: Fraction) -> int | float:
-    return value.numerator if value.denominator == 1 else float(value)
+def _time_value(value: Fraction) -> int | Fraction:
+    return value.numerator if value.denominator == 1 else value
 
 
 def _text(value: Fraction) -> str:
     return str(value.numerator) if value.denominator == 1 else f"{value.numerator}/{value.denominator}"
+
+
+def json_times(value: Any) -> Any:
+    """Project exact times to JSON without a floating-point round trip.
+
+    Integral times retain their existing JSON spelling. Rational text is the
+    wire representation for non-integral Fractions; calculations use Fraction.
+    """
+    if isinstance(value, Fraction):
+        return value.numerator if value.denominator == 1 else _text(value)
+    if isinstance(value, Mapping):
+        return {key: json_times(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(json_times(item) for item in value)
+    return value
+
+
+def _read_times(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """Restore rational wire times while retaining sealed legacy numeric bytes."""
+    value = deepcopy(dict(raw))
+
+    def time(item: Any, path: str) -> Any:
+        return _time_value(_fraction(item, path)) if isinstance(item, str) else item
+
+    if "duration" in value:
+        value["duration"] = time(value["duration"], "duration")
+    media = value.get("media")
+    for item in media if isinstance(media, list) else []:
+        if not isinstance(item, dict):
+            continue
+        if isinstance(item.get("range"), (list, tuple)):
+            item["range"] = [time(t, "media.range") for t in item["range"]]
+        if isinstance(item.get("at"), dict) and "seconds" in item["at"]:
+            item["at"]["seconds"] = time(item["at"]["seconds"], "media.at.seconds")
+        edits = item.get("edit")
+        for edit in edits if isinstance(edits, list) else []:
+            if isinstance(edit, dict) and isinstance(edit.get("during"), (list, tuple)):
+                edit["during"] = [time(t, "media.edit.during") for t in edit["during"]]
+    return value
 
 
 def _ticks(value: Fraction, clock: Fraction, path: str) -> int:
@@ -74,14 +114,14 @@ def _ticks(value: Fraction, clock: Fraction, path: str) -> int:
     return resolved.numerator
 
 
-def _interval(value: Any, path: str, clock: Fraction) -> tuple[list[int | float], list[int]]:
+def _interval(value: Any, path: str, clock: Fraction) -> tuple[list[int | Fraction], list[int]]:
     if not isinstance(value, (list, tuple)) or len(value) != 2:
         raise H3RequestError(f"{path} must be [start, end]")
     start = _fraction(value[0], f"{path}[0]")
     end = _fraction(value[1], f"{path}[1]")
     if end <= start:
         raise H3RequestError(f"{path} must have end > start")
-    return [_json_number(start), _json_number(end)], [_ticks(start, clock, f"{path}[0]"), _ticks(end, clock, f"{path}[1]")]
+    return [_time_value(start), _time_value(end)], [_ticks(start, clock, f"{path}[0]"), _ticks(end, clock, f"{path}[1]")]
 
 
 def _asset(value: Any, path: str, modalities: Mapping[str, str] | None) -> tuple[str, str | None]:
@@ -107,7 +147,7 @@ def _asset(value: Any, path: str, modalities: Mapping[str, str] | None) -> tuple
     return asset_id, modality
 
 
-def _at(value: Any, path: str) -> tuple[dict[str, int | float], int]:
+def _at(value: Any, path: str) -> tuple[dict[str, int | Fraction], int]:
     item = _object(value, path) or {}
     _unknown(item, {"frame", "seconds"}, path)
     if len(item) != 1:
@@ -118,7 +158,7 @@ def _at(value: Any, path: str) -> tuple[dict[str, int | float], int]:
             raise H3RequestError(f"{path}.frame must be an integer")
         return {"frame": frame.numerator}, frame.numerator
     seconds = _fraction(item["seconds"], f"{path}.seconds")
-    return {"seconds": _json_number(seconds)}, _ticks(seconds, FPS, f"{path}.seconds")
+    return {"seconds": _time_value(seconds)}, _ticks(seconds, FPS, f"{path}.seconds")
 
 
 def _edge(value: Any, path: str) -> dict[str, int]:
@@ -302,7 +342,7 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
         None if raw.get("duration") is None else _fraction(raw["duration"], "duration")
     )
     if duration_fraction == 0: raise H3RequestError("duration must be > 0 when supplied")
-    duration = None if duration_fraction is None else _json_number(duration_fraction)
+    duration = None if duration_fraction is None else _time_value(duration_fraction)
     occurrences: list[dict[str, Any]] = []
     ids: set[str] = set()
     reference_counts = {"image": 0, "video": 0, "audio": 0}
@@ -406,20 +446,20 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
             ends.append(start + span)
         if not ends: raise H3RequestError("duration is required for a wholly generative request")
         duration_fraction = max(ends)
-        duration = _json_number(duration_fraction)
+        duration = _time_value(duration_fraction)
     _ticks(duration_fraction, FPS, "duration")
     settings = _settings(raw.get("settings", {}))
     _validate_character_swap_media(settings, occurrences, continuation)
     value = {"version": 2, "prompt": prompt, "duration": duration, "media": occurrences, "settings": settings, "continuation": continuation, "profile": PROFILE, "output_count": 1, "model_tags": {item["occurrence_id"]: item["model_tag"] for item in occurrences if "model_tag" in item}}
-    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    encoded = json.dumps(json_times(value), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
     return H3Request(value=value, digest=hashlib.sha256(encoded).hexdigest())
 
 
 def read_prepared_request(raw: Mapping[str, Any], expected_digest: Any, *, require_normalized_v2: bool = False) -> H3Request:
     if not isinstance(expected_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_digest): raise H3RequestError("prepared request digest is missing or malformed")
     if raw.get("version") == 2 and raw.get("profile") == PROFILE and raw.get("output_count") == 1:
-        encoded = json.dumps(dict(raw), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
-        request = H3Request(value=dict(raw), digest=hashlib.sha256(encoded).hexdigest())
+        encoded = json.dumps(json_times(raw), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        request = H3Request(value=_read_times(raw), digest=hashlib.sha256(encoded).hexdigest())
     else:
         request = normalize_v2(raw) if raw.get("version") == 2 else H3Request(value=dict(raw), digest=expected_digest)
     if request.digest != expected_digest: raise H3RequestError("prepared request digest does not match its normalized request")

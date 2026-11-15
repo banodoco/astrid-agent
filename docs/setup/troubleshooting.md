@@ -3,14 +3,23 @@
 Astrid is used at [astrid.haus](https://astrid.haus). If setup does not finish,
 read the log at the installer's `Details:` path. Open Terminal on macOS or
 Linux, or PowerShell on Windows, when you run an installer command below.
+On Windows, the program folder is `%LOCALAPPDATA%\Astrid`, and the install log is
+`%LOCALAPPDATA%\Astrid Runtime\logs\install.log`.
 
 The supported setup commands are listed in [Getting Started](../getting-started.md).
 For the default hosted route, cloning `astrid-app` is not a repair step.
 For a source editor, follow the [fully local route](../getting-started.md#run-everything-on-your-computer).
 
+## Astrid's files need a shorter Windows path
+
+If the installer says Astrid's files need a shorter Windows path, rerun the same
+command with `--root` pointing at a short folder you can write to, such as
+`C:\Astrid` (this needs permission to create a folder at the drive root), or a
+short folder under your user profile.
+
 ## Asking for help
 
-For help, open [Astrid issues](https://github.com/banodoco/astrid-agent/issues)
+For help, open [Astrid issues](https://github.com/banodoco/astrid-dev/issues/new/choose)
 and attach the doctor bundle. By default, it is saved to your Desktop (or
 Downloads if Desktop is unavailable) and its folder opens in Finder or File
 Explorer. It contains installer logs and service states, with home paths, user
@@ -69,7 +78,8 @@ Windows, in PowerShell:
 
 The command prints the bundle path and opens its folder. If Astrid has not
 finished installing or has already been removed, attach the install log
-instead.
+instead. The [setup skill](SKILL.md) uses this command as its fallback
+when an install does not finish with a success line.
 
 ## Uninstall Astrid
 

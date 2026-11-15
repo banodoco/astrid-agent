@@ -11,7 +11,7 @@ def test_character_animation_gate_and_qualified_fake_dispatch(tmp_path, monkeypa
     runner = Mock()
     monkeypatch.setattr(run.runtime, '_run', runner)
     argv = ['--capability', run.CAPABILITY_ID, '--out', str(tmp_path), '--task-identity', 'fake',
-            '--profile', 'pip_embedded', '--reference-image-ref', 'image', '--driving-video-ref', 'video',
+            '--profile', 'local_server', '--reference-image-ref', 'image', '--driving-video-ref', 'video',
             '--mode', 'animate', '--resolution', '720p']
     with pytest.raises(AstridError) as exc:
         run.main(argv)

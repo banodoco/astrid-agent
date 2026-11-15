@@ -118,6 +118,13 @@ class RegenerateRuntimePinsTests(unittest.TestCase):
         self.assertEqual(manifest["release"], 7)
         self.assertEqual(manifest["tools"], {"python": {"version": "3.11"}})
 
+    def test_apply_writes_the_packaged_agent_lock_identical_to_the_root_lock(self) -> None:
+        result = self.command("--apply")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        packaged = self.agent / "astrid/resources/runtime.lock.json"
+        self.assertEqual(packaged.read_bytes(), (self.agent / "runtime.lock.json").read_bytes())
+        self.assertEqual(json.loads(packaged.read_text())["source_commit"], self.runtime_sha)
+
     def test_invalid_sha_fails_before_any_write(self) -> None:
         before = (self.agent / "runtime.lock.json").read_bytes()
         result = self.command("--runtime-sha", "not-a-sha")
