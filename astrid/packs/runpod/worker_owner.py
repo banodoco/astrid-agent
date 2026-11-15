@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Protocol, cast
 
 from runtime_protocol import platform
+from runtime_protocol.dirfd import filesystem
 from runtime_protocol.dirfd import filesystem as os
 
 from astrid.core.execution.platform_helpers import owned_by_current_user
@@ -1542,9 +1543,7 @@ def _read_credential(path_value: str) -> bytes:
     if not path.is_absolute() or path.is_symlink():
         raise RunPodWorkerOwnerError("Runtime credential source path is unsafe")
     try:
-        # Windows has no O_NOFOLLOW; the symlink pre-check and the identity
-        # re-check after reading still refuse a swapped or linked source.
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        fd = filesystem.open(path, filesystem.O_RDONLY | filesystem.O_NOFOLLOW)
     except OSError as exc:
         raise RunPodWorkerOwnerError("Runtime credential source is unavailable") from exc
     try:
