@@ -1124,6 +1124,9 @@ def warm_case(tmp_path, monkeypatch):
                  ('config', 'user.name', 'CPU'), ('add', '.'), ('commit', '--allow-empty', '-m', 'fixture')]:
         subprocess.run(['git', '-C', str(checkout), *args], check=True, capture_output=True)
     (checkout / 'tracked.py').write_text('verified = True\n')
+    (checkout / '.gitignore').write_text('/custom_nodes/\n')
+    (checkout / 'custom_nodes').mkdir()
+    (checkout / 'custom_nodes/example.py').write_text('# engine-provided example\n')
     node_lock = checkout / 'custom_nodes.lock'
     node_lock.write_text('verified node pins\n')
     subprocess.run(['git', '-C', str(checkout), 'add', '.'], check=True)
@@ -1201,6 +1204,8 @@ def warm_case(tmp_path, monkeypatch):
         prep.root, prep.recipe, prep.claim_id = str(root), state.recipe, state.claim
         prep.task, prep.attempt, prep.mode = 'task', 'attempt', 'align'
         prep.deadline, prep.cancelled = time.monotonic() + 30, lambda: False
+        prep.report, prep.uncertain = None, False
+        prep._stop_preparing_engine = lambda: None
         prep.device = prep.visibility = None
         prep.scratch = tmp_path / 'scratch'
         prep.context = SimpleNamespace(read_json=lambda *a, **kw: raw)
@@ -1221,6 +1226,17 @@ def warm_case(tmp_path, monkeypatch):
             calls.append('nodes')
             if state.drift_on_nodes:
                 state.drifted_commits = {name: 'f' * 40 for name in receipt.source_commits}
+            # Stand in for restore's local checkout; never clone or contact a provider.
+            from urllib.parse import urlsplit
+            for row in rows:
+                pack = checkout / 'custom_nodes' / Path(urlsplit(row['repo']).path).name.removesuffix('.git')
+                if pack.exists():
+                    continue
+                pack.mkdir(parents=True)
+                (pack / 'node.py').write_text('verified = True\n')
+                for args in [('init',), ('config', 'user.email', 'cpu@example.invalid'),
+                             ('config', 'user.name', 'CPU'), ('add', '.'), ('commit', '-m', 'node')]:
+                    subprocess.run(['git', '-C', str(pack), *args], check=True, capture_output=True)
         commands = SimpleNamespace(nodes_restore=nodes_restore,
             prepare_deps_sync=lambda: calls.append('prepare'), doctor=doctor)
         engine = mod.ComfyUIEngine(commands)
@@ -1231,7 +1247,7 @@ def warm_case(tmp_path, monkeypatch):
         engine.align = align
         monkeypatch.setattr(entries, 'engine_table', lambda: {'comfyui': engine})
         try:
-            return prep._prepare(source, execution_identity='execution', inputs={},
+            return prep.prepare(source, execution_identity='execution', inputs={},
                                  canonical_workflow=workflow, input_digests={})
         finally:
             if getattr(prep, 'lock', None):
@@ -1251,6 +1267,97 @@ def test_warm_attestation_second_job_skips_expensive_steps(warm_case):
     log = json.loads([body for step, body in c.logs if step == 'warm_attestation'][-1])
     assert log['warm_attestation']['used'] is True
     assert 'doctor' in log['warm_attestation']['skipped']
+
+
+@pytest.fixture
+def extra_pack_case(warm_case):
+    c = warm_case
+    c.state.nodes = [{'repo': 'https://example.invalid/edit.git', 'commit': 'e' * 40}]
+    c.run()
+    assert c.attestation.exists()
+    c.pack = c.checkout / 'custom_nodes/edit'
+    c.calls.clear()
+    return c
+
+
+@pytest.mark.parametrize('change', ['changed', 'added', 'removed', 'head', 'missing', 'ignored'])
+def test_warm_attestation_extra_pack_drift_realigns(extra_pack_case, change):
+    import shutil
+    import subprocess
+    c = extra_pack_case
+    if change == 'changed':
+        (c.pack / 'node.py').write_text('verified = False\n')
+    elif change == 'added':
+        (c.pack / 'injected.py').write_text('injected = True\n')
+    elif change == 'removed':
+        (c.pack / 'node.py').unlink()
+    elif change == 'head':
+        subprocess.run(['git', '-C', str(c.pack), 'commit', '--allow-empty', '-m', 'new head'],
+                       check=True, capture_output=True)
+    elif change == 'missing':
+        shutil.rmtree(c.pack)
+    else:
+        (c.pack / '.gitignore').write_text('ignored.py\n')
+        c.run()
+        c.calls.clear()
+        (c.pack / 'ignored.py').write_text('ignored code is still code\n')
+    c.run()
+    assert {'source', 'environment', 'runtime', 'nodes', 'prepare', 'doctor', 'alignment'} <= set(c.calls)
+    log = json.loads([body for step, body in c.logs if step == 'warm_attestation'][-1])
+    assert log['warm_attestation'] == {'used': False, 'skipped': []}
+
+
+def test_warm_attestation_extra_pack_hit_process_budget(extra_pack_case):
+    c = extra_pack_case
+    c.run()
+    # Two local Git observations per extra pack; no audit/native preparation processes.
+    assert c.calls.count('git-inventory') == 2
+    assert not set(c.calls) & {'source', 'environment', 'runtime', 'nodes', 'prepare', 'doctor', 'alignment'}
+
+
+@pytest.mark.parametrize('damage', ['permission', 'corrupt'])
+def test_warm_attestation_unreadable_record_reaudits(warm_case, monkeypatch, damage):
+    from astrid.core.generation.warm_attestation import _TargetFiles
+    c = warm_case
+    c.run()
+    assert c.attestation.exists()
+    if damage == 'permission':
+        original = _TargetFiles.read_json
+        def read_json(files, path, **kwargs):
+            if path == str(c.attestation):
+                raise PermissionError('warm record denied')
+            return original(files, path, **kwargs)
+        # chmod alone is ineffective when the CPU tests run as root.
+        monkeypatch.setattr(_TargetFiles, 'read_json', read_json)
+    else:
+        c.attestation.write_text('{')
+    c.calls.clear()
+    c.run()
+    assert {'source', 'environment', 'runtime', 'nodes', 'prepare', 'doctor', 'alignment'} <= set(c.calls)
+
+
+@pytest.mark.parametrize('failure', ['cancelled', 'deadline'])
+def test_warm_attestation_late_failure_writes_nothing(warm_case, monkeypatch, failure):
+    from concurrent.futures import CancelledError
+
+    from astrid.core.generation.engine_contracts import DeadlineExceeded
+    c = warm_case
+    original = ManagedEnginePreparation.check
+    def check(prep):
+        if prep.report is not None:
+            if failure == 'cancelled':
+                prep.cancelled = lambda: True
+            else:
+                prep.deadline = 0
+        original(prep)
+    with monkeypatch.context() as patch:
+        patch.setattr(ManagedEnginePreparation, 'check', check)
+        with pytest.raises(CancelledError if failure == 'cancelled' else DeadlineExceeded):
+            c.run()
+    assert not c.attestation.exists()
+    c.calls.clear()
+    c.run()
+    assert {'source', 'environment', 'runtime', 'nodes', 'doctor'} <= set(c.calls)
 
 
 def test_local_managed_warm_second_job_skips_audits(warm_case):

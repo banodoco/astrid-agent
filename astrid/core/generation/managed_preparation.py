@@ -417,9 +417,12 @@ class ManagedEnginePreparation:
 
     def prepare(self, workflow: Path, *, execution_identity: str, inputs: Any, canonical_workflow: Any, input_digests: Any) -> dict[str, Any]:
         from .engine_contracts import CustodyUnresolved
+        self._write_warm_attestation = None
         try:
             report = self._prepare(workflow, execution_identity=execution_identity, inputs=inputs, canonical_workflow=canonical_workflow, input_digests=input_digests)
             self.check()
+            if self._write_warm_attestation is not None:
+                self._write_warm_attestation()
         except BaseException as error:
             if isinstance(error, CustodyUnresolved):
                 self.uncertain = True
@@ -592,9 +595,6 @@ class ManagedEnginePreparation:
         self.check()
         health = {"healthy": True, "object_info_sha256": runner.health.object_info_sha256,
                   "required_nodes_present": runner.health.required_nodes_present}
-        if not warm_used:
-            warm.write(requirement, manifest, object_info_sha256=runner.health.object_info_sha256,
-                       protected_packages=getattr(self, "_protected_packages", ()))
         report: dict[str, Any] = {"schema": SCHEMA, "task_id": self.task, "attempt_id": self.attempt,
             "execution_identity": execution_identity, "inputs": dict(input_digests),
             "manifest": manifest, "manifest_sha256": digest(manifest),
@@ -609,6 +609,11 @@ class ManagedEnginePreparation:
             report["native_preparation"] = native_preparation
             if getattr(self, "pip_bootstrap", None) is not None:
                 native_preparation["pip_bootstrap"] = self.pip_bootstrap
+        if not warm_used:
+            # Publish only after the public prepare path's final cancellation/deadline check.
+            self._write_warm_attestation = lambda: warm.write(
+                requirement, manifest, object_info_sha256=runner.health.object_info_sha256,
+                protected_packages=getattr(self, "_protected_packages", ()))
         return report
 
     def _start_engine(self, runner):
