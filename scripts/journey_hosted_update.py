@@ -686,11 +686,51 @@ class LiveResult:
         shutil.rmtree(self.directory, ignore_errors=True)
 
 
+def trim_button_evidence(result: dict, limit: int = 3_000_000) -> dict:
+    """Bound the artifact without modifying the receipt used by the journey."""
+    import copy
+    saved = copy.deepcopy(result)
+    dropped = {}
+    saved["evidence_dropped"] = dropped
+
+    def size():
+        return len((json.dumps(saved, indent=2, sort_keys=True, ensure_ascii=True) + "\n").encode())
+
+    # Remove from the longest diagnostic list first, preserving the earliest entries.
+    names = ("door_responses", "door_failures", "console", "dom_snapshots", "session_storage", "samples")
+    while size() >= limit:
+        lists = [(len(json.dumps(saved.get(name, []), ensure_ascii=True)), name)
+                 for name in names if isinstance(saved.get(name), list) and saved[name]]
+        if not lists:
+            break
+        _, name = max(lists)
+        entries = saved[name]
+        count = max(1, len(entries) // 2)
+        del entries[-count:]
+        dropped[name] = dropped.get(name, 0) + count
+
+    # The original receipt may itself contain a large server answer. Keep its status and
+    # ordinary fields, but replace oversized payloads in the artifact if necessary.
+    if size() >= limit and isinstance(saved.get("response"), dict) and "body" in saved["response"]:
+        saved["response"]["body"] = {"capture_truncated": True}
+        dropped["response.body"] = 1
+    if size() >= limit:
+        # A defensive fallback for unexpectedly large pre-existing fields.
+        for key in sorted((k for k in saved if k != "evidence_dropped"),
+                          key=lambda k: len(json.dumps(saved[k], ensure_ascii=True)), reverse=True):
+            if size() < limit:
+                break
+            saved.pop(key)
+            dropped[key] = dropped.get(key, 0) + 1
+    return saved
+
+
 def _keep_button_evidence(evidence: Path, result: dict) -> None:
     try:
-        (evidence / "update-button.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n",
+        saved = trim_button_evidence(result)
+        (evidence / "update-button.json").write_text(json.dumps(saved, indent=2, sort_keys=True) + "\n",
                                                      encoding="utf-8")
-    except OSError:
+    except (OSError, TypeError, ValueError, RecursionError):
         pass
 
 

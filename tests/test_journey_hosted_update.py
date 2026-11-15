@@ -586,6 +586,8 @@ def test_the_browser_script_pins_the_leaf_and_reads_the_request_it_saw():
              "seen: m.describeRequest({ method: 'POST', url: 'http://127.0.0.1:17340/api/runtime/v1/update?x=1',"
              "  headers: { Origin: 'https://astrid.haus', 'Content-Length': '0', Accept: 'application/json' }, status: 202 }),"
              "bare: m.describeRequest({ method: 'POST', url: 'http://127.0.0.1:17340/u', headers: { cookie: 'a' }, status: 403 }),"
+             "slim: m.slimDoorBody(JSON.stringify({ release: 2, instance: 'a', unrelated: 1, error: 'x'.repeat(301) })),"
+             "nonjson: m.slimDoorBody('bad'.repeat(100)),"
              "label: m.UPDATE_NOW })))")
     out = json.loads(subprocess.run(["node", "--input-type=module", "-e", probe], capture_output=True, text=True,
                                     check=True).stdout)
@@ -597,6 +599,8 @@ def test_the_browser_script_pins_the_leaf_and_reads_the_request_it_saw():
                            "content_length": 0, "headers": ["accept", "content-length", "origin"],
                            "authorization": False, "cookie": False, "status": 202}
     assert out["bare"]["content_length"] is None and out["bare"]["cookie"] is True and out["bare"]["origin"] is None
+    assert out["slim"] == {"release": 2, "instance": "a"}
+    assert out["nonjson"] == ("bad" * 100)[:200]
     assert out["label"] == "Update now"
 
 
@@ -684,3 +688,32 @@ def test_click_keeps_the_browser_open_for_the_live_result(tmp_path):
     assert result["posts"] == 1 and isinstance(result["live"], hosted.LiveResult)
     assert result["live"].wait()["live"]["text"] == "Astrid updated: Release 1 → Release 2"
     assert json.loads((evidence / "update-button.json").read_text())["stage"] == "live"
+
+
+def test_capture_evidence_is_preserved_and_trimmed_without_mutating_receipt(tmp_path):
+    fixture = {"stage": "live", "door_responses": [{"t": 1, "time": "1970-01-01T00:00:00.001Z",
+               "method": "GET", "path": "/health", "status": 200,
+               "body": {"release": 2, "instance": "a"}}],
+               "door_responses_dropped": 0,
+               "door_failures": [{"t": 2, "method": "GET", "path": "/health", "errorText": "reset"}],
+               "session_storage": [{"t": 3, "moment": "after_load", "session": {"release": "1"},
+                                    "local_keys": ["tour"]}],
+               "console": [{"t": 4, "type": "log", "text": "hello"}], "console_dropped": 0,
+               "dom_snapshots": [{"t": 3, "moment": "after_load", "quiet_update_notice": [],
+                                  "update_elements": [], "settings_updates": [], "body_text_has_updated_line": False}],
+               "samples": [{"t": 5, "url": "https://astrid.haus/", "release": 2,
+                            "quiet_update_notice_exists": False, "body_text_has_updated_line": False}],
+               "samples_dropped": 0}
+    hosted._keep_button_evidence(tmp_path, fixture)
+    saved = json.loads((tmp_path / "update-button.json").read_text())
+    assert saved["door_responses"][0]["body"] == {"release": 2, "instance": "a"}
+    assert fixture["door_responses"][0]["body"] == {"release": 2, "instance": "a"}
+    for key in ("door_failures", "session_storage", "console", "dom_snapshots", "samples"):
+        assert saved[key] == fixture[key]
+    assert saved["evidence_dropped"] == {}
+    oversized = {"door_responses": [{"body": "x" * 200} for _ in range(30)],
+                 "console": [{"text": "y" * 500} for _ in range(30)]}
+    trimmed = hosted.trim_button_evidence(oversized, limit=3000)
+    assert len(json.dumps(trimmed, indent=2, sort_keys=True).encode()) + 1 < 3000
+    assert trimmed["evidence_dropped"]
+    assert len(oversized["console"]) == 30 and len(oversized["door_responses"]) == 30

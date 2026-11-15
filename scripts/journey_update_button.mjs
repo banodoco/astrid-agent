@@ -56,6 +56,63 @@ export function describeRequest({ method, url, headers, status }) {
   };
 }
 
+export function slimDoorBody(text) {
+  let body;
+  try { body = JSON.parse(text); } catch { return text.slice(0, 200); }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return {};
+  return Object.fromEntries(Object.entries(body).filter(([key, value]) =>
+    /release|instance|state|outcome|operation|version|phase|status|error|code|restart/i.test(key) &&
+    (value === null || ['string', 'number', 'boolean'].includes(typeof value)) &&
+    (typeof value !== 'string' || value.length <= 300)));
+}
+
+function capture(result, fn) {
+  try { Promise.resolve(fn()).catch(() => {}); } catch { /* diagnostics only */ }
+}
+
+function capturePage(page, result, moment) {
+  const t = Date.now();
+  capture(result, async () => {
+    const data = await page.evaluate(({ source }) => {
+      const readStorage = () => {
+        const session = {};
+        for (let i = 0; i < sessionStorage.length; i++) {
+          const key = sessionStorage.key(i);
+          session[key] = (sessionStorage.getItem(key) ?? '').slice(0, 1000);
+        }
+        return { session, local_keys: Object.keys(localStorage) };
+      };
+      const describe = (el) => {
+        const style = getComputedStyle(el), rect = el.getBoundingClientRect();
+        return { isVisible: !!(rect.width || rect.height || el.getClientRects().length) && style.visibility !== 'hidden',
+          innerText: (el.innerText ?? '').slice(0, 3000), outerHTML: el.outerHTML.slice(0, 6000) };
+      };
+      const dialogs = [...document.querySelectorAll('[role="dialog"], dialog')];
+      const settings = dialogs.filter((el) => /update/i.test(el.innerText ?? ''));
+      return { storage: readStorage(), dom: {
+        quiet_update_notice: [...document.querySelectorAll('[data-testid="quiet-update-notice"]')].slice(0, 50).map(describe),
+        update_elements: [...document.querySelectorAll('[data-testid*="update"]')].slice(0, 50).map(describe),
+        settings_updates: settings.slice(0, 10).map(describe),
+        body_text_has_updated_line: new RegExp(source).test(document.body?.innerText ?? ''),
+      } };
+    }, { source: UPDATED_LINE.source });
+    result.session_storage.push({ t, moment, ...data.storage });
+    result.dom_snapshots.push({ t, moment, ...data.dom });
+  });
+}
+
+function captureSample(page, result, lastDoor) {
+  const t = Date.now();
+  capture(result, async () => {
+    const data = await page.evaluate(({ source }) => ({ url: location.href,
+      quiet_update_notice_exists: !!document.querySelector('[data-testid="quiet-update-notice"]'),
+      body_text_has_updated_line: new RegExp(source).test(document.body?.innerText ?? '') }),
+    { source: UPDATED_LINE.source });
+    result.samples.push({ t, ...data, ...lastDoor() });
+    if (result.samples.length > 200) { result.samples.shift(); result.samples_dropped++; }
+  });
+}
+
 function loadPlaywright(app) {
   // An explicit module wins (a workstation whose browsers belong to another Playwright install).
   if (process.env.ASTRID_JOURNEY_PLAYWRIGHT) return createRequire(import.meta.url)(process.env.ASTRID_JOURNEY_PLAYWRIGHT);
@@ -67,7 +124,9 @@ function loadPlaywright(app) {
 }
 
 export async function run(config) {
-  const result = { stage: 'launch', door_requests: {} };
+  const result = { stage: 'launch', door_requests: {}, door_responses: [], door_responses_dropped: 0,
+    door_failures: [], session_storage: [], console: [], console_dropped: 0, dom_snapshots: [],
+    samples: [], samples_dropped: 0 };
   let browser;
   try {
     const { chromium } = loadPlaywright(config.app);
@@ -92,12 +151,48 @@ export async function run(config) {
       const line = `${request.method()} ${new URL(request.url()).pathname}`;
       result.door_requests[line] = (result.door_requests[line] ?? 0) + 1;
     });
+    let lastDoor = {}, lastDoorTime = 0;
+    page.on('response', (response) => capture(result, async () => {
+      const request = response.request();
+      if (!response.url().startsWith(config.door)) return;
+      const t = Date.now();
+      const entry = { time: new Date(t).toISOString(), t, method: request.method(),
+        path: new URL(response.url()).pathname, status: response.status() };
+      result.door_responses.push(entry);
+      if (result.door_responses.length > 4000) { result.door_responses.splice(1000, 1); result.door_responses_dropped++; }
+      try {
+        const body = slimDoorBody(await response.text());
+        entry.body = body;
+        if (t >= lastDoorTime) {
+          lastDoorTime = t;
+          lastDoor = body && typeof body === 'object' && !Array.isArray(body)
+            ? Object.fromEntries(Object.entries(body).filter(([key, value]) => /release|instance/i.test(key) &&
+                (value === null || ['string', 'number', 'boolean'].includes(typeof value)) &&
+                (typeof value !== 'string' || value.length <= 300))) : {};
+        }
+      } catch { /* a failed or unavailable response body */ }
+    }));
+    page.on('requestfailed', (request) => capture(result, () => {
+      if (!request.url().startsWith(config.door)) return;
+      const t = Date.now();
+      result.door_failures.push({ time: new Date(t).toISOString(), t, method: request.method(),
+        path: new URL(request.url()).pathname, errorText: request.failure()?.errorText ?? null });
+    }));
+    page.on('console', (message) => capture(result, () => {
+      result.console.push({ t: Date.now(), type: message.type(), text: message.text().slice(0, 500) });
+      if (result.console.length > 300) { result.console.shift(); result.console_dropped++; }
+    }));
+    page.on('pageerror', (error) => capture(result, () => {
+      result.console.push({ t: Date.now(), type: 'pageerror', text: String(error?.message ?? error).slice(0, 500) });
+      if (result.console.length > 300) { result.console.shift(); result.console_dropped++; }
+    }));
     result.stage = 'open';
     await page.goto(`${config.origin}${config.entry}`);
     const dialog = page.getByRole('dialog');
     const button = dialog.getByRole('button', { name: UPDATE_NOW, exact: true });
     result.stage = 'offer';
     await button.waitFor({ state: 'visible', timeout: config.timeoutMs });
+    capturePage(page, result, 'after_load');
     const deadline = Date.now() + config.timeoutMs;
     while (!(await button.isEnabled())) {
       if (Date.now() > deadline) throw new Error('Update now stayed disabled');
@@ -108,9 +203,11 @@ export async function run(config) {
     const posted = page.waitForRequest(isUpdatePost, { timeout: 60_000 });
     const answered = page.waitForResponse((response) => isUpdatePost(response.request()), { timeout: 60_000 });
     result.stage = 'click';
+    capturePage(page, result, 'before_click');
     await button.click();
     const request = await posted;
     const response = await answered;
+    capturePage(page, result, 'after_post');
     let body = null;
     try { body = await response.json(); } catch { body = null; }
     result.request = describeRequest({
@@ -130,9 +227,12 @@ export async function run(config) {
       let navigations = 0;
       page.on('framenavigated', (frame) => { if (frame === page.mainFrame()) navigations += 1; });
       result.stage = 'live';
+      const sampleTimer = setInterval(() => captureSample(page, result, () => lastDoor), 10_000);
       try {
         const line = page.getByText(UPDATED_LINE).first();
-        await line.waitFor({ state: 'visible', timeout: config.liveTimeoutMs });
+        try {
+          await line.waitFor({ state: 'visible', timeout: config.liveTimeoutMs });
+        } finally { clearInterval(sampleTimer); }
         result.live = { text: (await line.innerText()).trim(), seen_at: Date.now(), navigations };
       } catch (error) {
         result.live_error = `${error?.name ?? 'Error'}: ${String(error?.message ?? error).slice(0, 500)}`;
@@ -140,11 +240,13 @@ export async function run(config) {
       }
       result.posts = result.door_requests[`POST ${config.updatePath}`] ?? 0;
     }
+    capturePage(page, result, 'end');
     if (config.screenshot) await page.screenshot({ path: config.screenshot, fullPage: true }).catch(() => {});
   } catch (error) {
     result.error = `${error?.name ?? 'Error'}: ${String(error?.message ?? error).slice(0, 1000)}`;
     try {
       const page = browser.contexts().flatMap((context) => context.pages()).pop();
+      if (page) capturePage(page, result, 'end');
       if (page && config.screenshot) await page.screenshot({ path: config.screenshot, fullPage: true });
       if (page) result.page_text = (await page.locator('body').innerText()).slice(0, 4000);
     } catch { /* diagnostics only */ }
