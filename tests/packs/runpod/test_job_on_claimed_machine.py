@@ -626,3 +626,73 @@ def test_hostwedge_restart_live_job_fences_claim_until_exact_recovery(machine_ca
     assert c.pod.cancelled == [old.job_id]
     assert c.deletes == ["pod-1"] and c.creates == 1
     assert c.read()["state"] == "cleanup_complete"
+
+
+@pytest.mark.usefixtures("machine_case")
+def test_warm_second_job_operation_budget(request, monkeypatch):
+    """Dispatch is one real chunked upload, one verifier and one launch."""
+    from collections import Counter
+    from pathlib import Path
+
+    import httpx
+
+    from tests.packs.runpod.test_machine import HttpsPodTransport
+
+    c = request.getfixturevalue("machine_case")
+    claim(c)
+    run(c, job(c))
+    counts = Counter({name: 0 for name in ("exec", "put", "get", "job_start", "job_poll",
+                                            "job_cancel", "put.create", "put.chunk")})
+    uploads = {}
+    calls = []
+
+    def upload(request):
+        if request.method == "POST":
+            assert request.url.path == "/uploads"
+            counts["put.create"] += 1
+            metadata = json.loads(request.content)
+            identity = f"{len(uploads) + 1:032x}"
+            uploads[identity] = metadata
+            c.pod.files[metadata["path"]] = b""
+            return httpx.Response(200, json={"id": identity, "offset": 0, "complete": False})
+        assert request.method == "PUT"
+        counts["put.chunk"] += 1
+        metadata = uploads[request.url.path.rsplit("/", 1)[-1]]
+        path = metadata["path"]
+        assert int(request.url.params["offset"]) == len(c.pod.files[path])
+        c.pod.files[path] += request.content
+        size = len(c.pod.files[path])
+        return httpx.Response(200, json={"offset": size, "complete": size == metadata["size"]})
+
+    def put(local, remote):
+        c.pod.put_log.append(remote)
+        transport = HttpsPodTransport("pod1", "x" * 32, base_url="http://localhost")
+        transport.http.close()
+        transport.http = httpx.Client(base_url="http://localhost", transport=httpx.MockTransport(upload))
+        try:
+            return transport.put(local, remote)
+        finally:
+            transport.disconnect()
+
+    monkeypatch.setattr(c.pod, "put", put)
+    for name in ("exec", "put", "get", "job_start", "job_poll", "job_cancel"):
+        original = getattr(c.pod, name)
+
+        def counted(*args, _name=name, _original=original, **kwargs):
+            counts[_name] += 1
+            calls.append((_name, args[0]))
+            return _original(*args, **kwargs)
+
+        monkeypatch.setattr(c.pod, name, counted)
+    request = job(c, 2)
+    result = run(c, request)
+    print("WBD_OPERATION_COUNTS=" + json.dumps(dict(counts), sort_keys=True))
+    assert counts == {"exec": 14, "put": 1, "get": 5, "job_start": 2, "job_poll": 3,
+                      "job_cancel": 0, "put.create": 1, "put.chunk": 1}, dict(counts)
+    assert sum(name == "exec" and "DISPATCH_VERIFIED" in command for name, command in calls) == 1
+    assert not any(name == "exec" and command.startswith(("sha256sum ", "mkdir "))
+                   for name, command in calls)
+    assert [Path(path).name for name, path in calls if name == "get" and "/out/" in path] == [
+        "wrapper-manifest.json", "cpu.png", "manifest.json"]
+    assert Path(result["files"]["artifacts/cpu.png"]).read_bytes() == b"png-bytes"
+    assert c.creates == 1 and c.deletes == []

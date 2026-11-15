@@ -20,6 +20,7 @@ import re
 import shlex
 import socket
 import subprocess
+import sys
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -200,6 +201,23 @@ class MachineProviderHTTP:
 
     def command(self, command):
         self.commands.append(command)
+        if "DISPATCH_VERIFIED" in command:
+            import tempfile
+
+            argv = shlex.split(command)
+            remote, root = argv[3:5]
+            with tempfile.TemporaryDirectory() as work:
+                bundle = Path(work) / "dispatch.tar"
+                bundle.write_bytes(self.files[remote])
+                destination = Path(work) / "run"
+                result = subprocess.run([sys.executable, *argv[1:3], str(bundle), str(destination), *argv[5:]],
+                                        capture_output=True, text=True, timeout=30)
+                if result.returncode == 0:
+                    for path in destination.rglob("*"):
+                        if path.is_file():
+                            self.files[root + "/" + path.relative_to(destination).as_posix()] = path.read_bytes()
+                    del self.files[remote]
+                return result.returncode, result.stdout
         if command.startswith("python3 -c ") and "__pod_watchdog__" in command:
             # Claim publishes the watchdog before preparation. Its bounded
             # transport runs in a spawned process and reaches this same peer.
@@ -439,22 +457,23 @@ class MachineProviderHTTP:
     listed = ()
 
     def _shipped(self, root):
-        """Entry ids the job's selection.tar.gz makes resolvable on the pod, from its real bytes."""
-        import tarfile
+        """Entry ids from the selection authenticated and landed by dispatch."""
         import yaml
-        data = self.files[root + "/selection.tar.gz"]
+
+        prefix = root + "/selection/"
+        manifest = json.loads(self.files[prefix + "selection.json"])
+        self.selections.append(manifest)
         ids = []
-        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
-            names = archive.getnames()
-            manifest = json.loads(archive.extractfile("selection.json").read())
-            self.selections.append(manifest)
-            for name in names:
-                parts = name.split("/")
-                if len(parts) == 3 and parts[0] == "entries" and parts[2] == "entry.json":
-                    ids.append(json.loads(archive.extractfile(name).read())["id"])
-                if (len(parts) == 5 and parts[0] == "packs" and parts[2] == "extensions"
-                        and parts[3] == "vibecomfy.workflows" and name.endswith((".yaml", ".yml"))):
-                    ids += [row["id"] for row in (yaml.safe_load(archive.extractfile(name).read()) or {}).get("entries", [])]
+        for path, data in self.files.items():
+            if not path.startswith(prefix):
+                continue
+            name = path[len(prefix):]
+            parts = name.split("/")
+            if len(parts) == 3 and parts[0] == "entries" and parts[2] == "entry.json":
+                ids.append(json.loads(data)["id"])
+            if (len(parts) == 5 and parts[0] == "packs" and parts[2] == "extensions"
+                    and parts[3] == "vibecomfy.workflows" and name.endswith((".yaml", ".yml"))):
+                ids += [row["id"] for row in (yaml.safe_load(data) or {}).get("entries", [])]
         return ids
 
     def kill_pod(self):
@@ -787,7 +806,8 @@ def test_cold_run_then_warm_second_run_reuses_the_machine(journey):
     assert len(provider.kinds("engines install comfyui")) == 1
     # The entry is listed from the shipped selection inside the job's one command.
     assert len(provider.kinds("generate list --json")) == 1
-    assert len([c for c in provider.kinds("generate list --json") if "tar -xzf" in c]) == 1
+    assert len([c for c in provider.kinds("generate list --json") if "/selection/selection.json" in c]) == 1
+    assert len(provider.kinds("DISPATCH_VERIFIED")) == 1
     # T5f: the fresh pod's claim takes the template; the job's reset runs after the
     # digest-verified fetch and before settle (the lease is still the job's, not idle).
     claim_reset, job_reset = provider.resets
