@@ -282,7 +282,8 @@ def test_installer_clash_records_fallback_logs_reason_and_preserves_foreign_cmd(
     backend.say = lines.append
     backend.open()
     assert read_json(root / "install.json")["command_shim"] is None
-    assert len(lines) == 1 and lines[0] in backend.log.read_text()
+    assert len(lines) == 2 and lines[0] in backend.log.read_text()
+    assert lines[1] == "Connect this computer at https://astrid.haus/?connect=1"
     monkeypatch.setattr(backend, "preflight_remove", lambda *_args, **_kwargs: None)
     assert backend.remove(root, tmp_path / "data", delete_data=False) == [foreign]
     assert foreign.read_text() == "user command"
@@ -563,3 +564,31 @@ def test_scratch_install_runs_real_astrid_help_and_forwards_arguments(tmp_path, 
     (root / "run-astrid").write_text(f'#!{sys.executable}\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n')
     result = subprocess.check_output([str(shim), "a b", "'quoted'", "", "$HOME"], text=True)
     assert json.loads(result) == ["a b", "'quoted'", "", "$HOME"]
+
+
+@pytest.mark.parametrize("command", [True, False])
+@pytest.mark.parametrize(("env", "tty", "opened"), [
+    (None, True, True),
+    (None, False, True),
+    ("1", True, False),
+])
+def test_connect_page_link_is_always_printed_and_opened_unless_switched_off(
+        tmp_path, monkeypatch, registry, command, env, tty, opened):
+    root, data = tmp_path / "program", tmp_path / "data"
+    root.mkdir()
+    write_json(root / "install.json", {"owner": LABEL, "data_root": str(data)})
+    backend = LifecycleBackend(root, data)
+    lines, calls = [], []
+    backend.service = Service(root, tmp_path / "install.log", Mock(return_value=""), home=tmp_path / "home", system="linux")
+    backend.service.choices = {"command": command}
+    backend.log, backend.say = tmp_path / "install.log", lines.append
+    backend.open = lambda: Backend.open(backend)
+    monkeypatch.setattr("webbrowser.open", lambda url, *_: calls.append(url))
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: tty))
+    monkeypatch.delenv("ASTRID_NO_BROWSER", raising=False)
+    if env is not None:
+        monkeypatch.setenv("ASTRID_NO_BROWSER", env)
+    monkeypatch.setenv("PATH", "")
+    Installer(root, data, backend, say=lines.append).run("install", {})
+    assert calls == (["https://astrid.haus/?connect=1"] if opened else [])
+    assert "Connect this computer at https://astrid.haus/?connect=1" in lines

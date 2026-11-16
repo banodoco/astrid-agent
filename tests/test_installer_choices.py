@@ -237,3 +237,22 @@ def test_exact_no_flag_update_argv_applies_the_saved_policy():
     assert args.choices == {} and args.yes is False
     saved = {"autostart": False, "command": True, "skills": False, "skill_copies": True}
     assert resolve_choices(explicit=args.choices, saved=saved, existing_install=True) == saved
+
+
+def test_all_four_explicit_choices_are_consent_for_an_unattended_fresh_install():
+    from astrid.installer.choices import CHOICE_NAMES
+
+    fresh = {"existing_install": False, "accept_recommended": False, "interactive": False}
+    assert not unattended_consent_required(**fresh, explicit={name: True for name in CHOICE_NAMES})
+    assert unattended_consent_required(**fresh, explicit={"autostart": True, "command": True, "skills": True})
+    assert unattended_consent_required(**fresh, explicit={})
+
+
+def test_cli_parses_all_four_choice_flags_and_no_browser():
+    from astrid.installer import cli
+
+    args = cli.parser().parse_args(["--autostart", "on", "--command", "off", "--skills", "on",
+                                    "--skill-copies", "off", "--no-browser"])
+    assert args.choices == {"autostart": True, "command": False, "skills": True, "skill_copies": False}
+    assert args.no_browser is True
+    assert cli.parser().parse_args(["--yes"]).no_browser is False
