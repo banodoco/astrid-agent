@@ -14,7 +14,8 @@ import time
 import subprocess
 import sys
 from collections import Counter
-from tests._local_speed_process import ProcessObserver, read_reports, sources
+from tests._local_speed_process import ProcessObserver, read_reports, sources, PREFIX, MAX_REPORT_BYTES
+from tests._local_speed_capture import ProcessReportCapture
 
 import pytest
 from PIL import Image
@@ -127,6 +128,7 @@ def test_attached_caller_observation(caller, tmp_path, monkeypatch, real_runtime
     warmup = []
     instrumented = os.environ.get("ASTRID_LS2_OBSERVE") == "1"
     if instrumented:
+        captured_reports = ProcessReportCapture(PREFIX, max_report_bytes=MAX_REPORT_BYTES).install(monkeypatch)
         from tests.integrations.runpod_slot_pod import _media
         payload = _media("images")[0]
         h, process = sources()
@@ -201,12 +203,14 @@ def test_attached_caller_observation(caller, tmp_path, monkeypatch, real_runtime
         report["caller_boundary"] = ("facade entry through result and caller-local delivery" if caller == "resident_sdk"
                                      else "process launch through exit, including CLI delivery")
         if instrumented:
-            # Only test-owned diagnostic logs are read; do not scan private
-            # realm/configuration files or infer an absent report means zero.
-            texts = [path.read_text(errors="replace") for path in tmp_path.rglob("job.stderr")]
+            # Successful attempts may delete their diagnostic files before
+            # delivery returns. Capture at the existing drain, without keeping
+            # attempts alive or broadening child permissions.
+            texts, capture_gaps = captured_reports.snapshot()
             if caller == "fresh_python_cli":
                 texts.append(result.stderr)
             children, gaps = read_reports(texts)
+            gaps.extend(capture_gaps)
             children = [row for row in children if row.get("start_ns", -1) >= meter.start_ns
                         and row.get("start_ns", 2**64) <= meter.reply_ns]
             rows = [meter.parent_report, *children]

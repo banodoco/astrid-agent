@@ -91,11 +91,28 @@ jobs:
           tests/core/generation/test_local_speed_process_observer.py
           tests/core/generation/test_local_speed_hash_observer.py
           tests/core/generation/test_local_speed_meter_collector.py
+          tests/core/generation/test_local_speed_report_capture.py
           --junitxml=native-reader.xml
       - name: Calibrate actual filesystem and SQLite writes
         run: python -m tests.local_speed_native_run --output plan55-native-proof
       - name: Measure actual attached SDK and CLI separately from instrumentation
+        if: ${{ runner.os == 'Linux' }}
         run: python -m tests.local_speed_meter_run --output plan55-meter-proof --timeout 1800
+      - name: Preserve the Windows permission refusal without retrying it
+        if: ${{ runner.os == 'Windows' }}
+        shell: python
+        run: |
+          import json, pathlib
+          out = pathlib.Path("plan55-meter-proof")
+          out.mkdir(exist_ok=True)
+          hold = {"schema": "astrid.local-speed-meter-proof.v1", "status": "NO-RESULT",
+                  "budget_certified": False, "platform": "Windows",
+                  "blocked_by": "Owner approval required after protected-DACL refusal",
+                  "original_run": 43913596410, "original_job": 133461734871,
+                  "refused_command": "python -m tests.local_speed_meter_run --output plan55-meter-proof --timeout 1800",
+                  "command_retried": False, "permission_changed": False}
+          (out / "summary.json").write_text(json.dumps(hold, indent=2) + "\n")
+          raise SystemExit("Windows generation remains blocked by the recorded permission refusal; no retry or green result")
       - name: Preserve exact source identity and proof manifests
         if: ${{ always() }}
         shell: python
