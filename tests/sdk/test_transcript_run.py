@@ -33,11 +33,20 @@ class Client:
         self.archive = archive.getvalue()
         self.archive_id = digest(self.archive)
         self.objects = {self.media_id: source, self.archive_id: self.archive, self.output_id: self.output}
+        self.members = {'python': b'python bundle', 'companion': b'companion', 'source': b'source'}
+        self.member_ids = {name: digest(value) for name, value in self.members.items()}
+        self.objects.update({self.member_ids[name]: value for name, value in self.members.items()})
+        h = hashlib.sha256()
+        for value in self.members.values():
+            h.update(len(value).to_bytes(8, 'big'))
+            h.update(value)
+        self.workflow_digest = 'sha256:' + h.hexdigest()
         self.project = {'project_id': 'project-1'}
         self.task = {'run_id': 'run-1', 'project_id': 'project-1', 'capability_id': 'vibecomfy.run',
-                     'state': 'succeeded', 'input_object_ids': [self.archive_id],
-                     'spec': {'spec': {'input_digests': [{'name': 'managed_assets', 'digest': self.archive_id}],
-                                      'invocation_preflight': {'workflow_content_digest': 'expected'}}}}
+                     'state': 'succeeded', 'input_object_ids': [self.archive_id, *self.member_ids.values()],
+                     'spec': {'spec': {'input_digests': [{'name': 'managed_assets', 'digest': self.archive_id},
+                                                          *[{'name': name, 'digest': value} for name, value in self.member_ids.items()]],
+                                      'invocation_preflight': {'workflow_content_digest': self.workflow_digest}}}}
         self.outputs = [{'output_port': 'vibecomfy_run', 'role': 'result', 'object_id': self.output_id}]
         self.document = None
         self.projects = SimpleNamespace(show=lambda _: DomainResult.success(self.project))
@@ -65,26 +74,36 @@ class Client:
 def test_run_import_uses_admitted_source_and_cas(monkeypatch):
     import astrid.sdk.transcript_run as module
     import astrid.core.media as media
-    monkeypatch.setattr(module, '_expected_workflow_digest', lambda _: 'expected')
     monkeypatch.setattr(media, 'ffprobe_duration_seconds', lambda _: 2)
     client = Client()
+    monkeypatch.setattr(module, '_expected_workflow_digest', lambda _: client.workflow_digest)
     assert import_transcription_run(client, 'project', client.media_id, 'run-1') == 'created'
     assert client.document['content']['segments'][0]['words'][0]['text'] == 'hello'
     assert import_transcription_run(client, 'project', client.media_id, 'run-1') == 'unchanged'
     assert import_transcription_run(client, 'project', client.media_id, 'run-1', replace=True, expected_version=1) == 'updated'
 
 
-@pytest.mark.parametrize('change', ['source', 'workflow', 'output', 'duplicate', 'project'])
+@pytest.mark.parametrize('change', ['source', 'workflow', 'member', 'different_graph', 'output', 'duplicate', 'project'])
 def test_run_import_refuses_unproven_identity(monkeypatch, change):
     import astrid.sdk.transcript_run as module
     import astrid.core.media as media
-    monkeypatch.setattr(module, '_expected_workflow_digest', lambda _: 'expected')
     monkeypatch.setattr(media, 'ffprobe_duration_seconds', lambda _: 2)
     client = Client()
+    monkeypatch.setattr(module, '_expected_workflow_digest', lambda _: client.workflow_digest)
     if change == 'source':
         client.media_id = digest(b'different')
     elif change == 'workflow':
         client.task['spec']['spec']['invocation_preflight']['workflow_content_digest'] = 'wrong'
+    elif change == 'member':
+        client.objects[client.member_ids['python']] = b'tampered'
+    elif change == 'different_graph':
+        forged = b'other valid managed workflow'
+        forged_id = digest(forged)
+        client.objects[forged_id] = forged
+        client.task['input_object_ids'].append(forged_id)
+        row = next(row for row in client.task['spec']['spec']['input_digests'] if row['name'] == 'python')
+        row['digest'] = forged_id
+        # Even a forged receipt claiming the expected graph cannot authorize it.
     elif change == 'output':
         client.objects[client.output_id] = b'tampered'
     elif change == 'duplicate':
@@ -111,9 +130,9 @@ def test_run_command_stores_stubbed_generation(monkeypatch):
     import astrid.sdk.generation as generation
     from astrid.core.cli.domain_timelines import build_parser
     import astrid.packs.timeline.cli  # install the product's execution handlers
-    monkeypatch.setattr(module, '_expected_workflow_digest', lambda _: 'expected')
     monkeypatch.setattr(media, 'ffprobe_duration_seconds', lambda _: 2)
     client = Client()
+    monkeypatch.setattr(module, '_expected_workflow_digest', lambda _: client.workflow_digest)
     seen = {}
     def audio(**kwargs):
         seen.update(kwargs)
@@ -143,4 +162,7 @@ def test_real_entry_reconstructs_admitted_workflow(monkeypatch, tmp_path):
     assert not plan['unbound']
     bundle = tmp_path / 'workflow.py'
     emit_bundle(workflow, bundle, {'operation': 'authored'})
+    original = entries.bundle_path(entry)
+    source = original.with_name('source.json')
+    (tmp_path / 'source.json').write_bytes((source if source.is_file() else original).read_bytes())
     assert _expected_workflow_digest(media) == _workflow_content_digest(bundle)

@@ -55,7 +55,32 @@ def _expected_workflow_digest(source: Path) -> str:
     with tempfile.TemporaryDirectory(prefix='astrid-transcript-verify-') as tmp:
         path = Path(tmp) / 'workflow.py'
         emit_bundle(workflow, path, {'operation': 'authored'})
+        # Generation retains the original source evidence as the third member.
+        original = entries.bundle_path(entry)
+        original_source = original.with_name('source.json')
+        (path.parent / 'source.json').write_bytes(
+            (original_source if original_source.is_file() else original).read_bytes())
         return _workflow_content_digest(path)
+
+
+def _admitted_workflow_digest(client: Any, task: Mapping[str, Any], spec: Mapping[str, Any]) -> str:
+    from astrid.packs.vibecomfy.production_engine import _workflow_content_digest
+    inputs = spec.get('input_digests')
+    if not isinstance(inputs, list):
+        raise ValueError('run task has no admitted workflow inputs')
+    names = {'python': 'workflow.py', 'companion': 'workflow.vibe.json', 'source': 'source.json'}
+    with tempfile.TemporaryDirectory(prefix='astrid-transcript-workflow-') as tmp:
+        for name, filename in names.items():
+            rows = [row.get('digest') for row in inputs
+                    if isinstance(row, Mapping) and row.get('name') == name]
+            if len(rows) > 1 or (name != 'source' and len(rows) != 1):
+                raise ValueError('run task has ambiguous workflow members')
+            if not rows:
+                continue
+            if rows[0] not in (task.get('input_object_ids') or []):
+                raise ValueError('workflow member is not an admitted input')
+            (Path(tmp) / filename).write_bytes(_bytes(client, rows[0]))
+        return _workflow_content_digest(Path(tmp) / 'workflow.py')
 
 
 def import_transcription_run(client: Any, project: str, media_id: str, run_id: str, *,
@@ -100,7 +125,10 @@ def import_transcription_run(client: Any, project: str, media_id: str, run_id: s
         path = Path(tmp) / Path(asset['member']).name
         path.write_bytes(payload)
         receipt = spec.get('invocation_preflight')
-        if not isinstance(receipt, Mapping) or receipt.get('workflow_content_digest') != _expected_workflow_digest(path):
+        expected = _expected_workflow_digest(path)
+        admitted = _admitted_workflow_digest(client, task, spec)
+        if (not isinstance(receipt, Mapping) or receipt.get('workflow_content_digest') != expected
+                or admitted != expected):
             raise ValueError('run workflow does not match the installed transcription workflow')
         duration = ffprobe_duration_seconds(path)
     output_result = _data(client.tasks.list_managed_outputs(task_id), 'task outputs')
