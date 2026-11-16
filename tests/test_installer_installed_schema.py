@@ -410,16 +410,19 @@ def test_stage_umask_0002_subprocess(tmp_path):
 
 
 def test_stage_rejects_foreign_guarded_directory_before_declaration(staged_installer):
-    if os.name == "nt":
-        pytest.skip("POSIX ownership")
     state = staged_installer
     state.damage_at = "foreign"
     with pytest.raises(ValueError, match="foreign owner or type"):
         state.backend.stage(state.manifest, state.root, state.data)
-    candidate, = (state.root / "versions").iterdir()
+    versions = state.root / "versions"
+    candidate = versions / state.product_root.relative_to(versions).parts[0]
     assert not (candidate / "services.json").exists()
     assert not (candidate / "profile.json").exists()
     assert not any("service_declaration" in arg for command in state.commands for arg in command)
+    assert not candidate.exists()
+    for cache, content, mode in state.cached.values():
+        assert cache.read_bytes() == content
+        assert cache.stat().st_mode == mode
 
 
 def test_stage_rejects_foreign_object_before_declaration(staged_installer):

@@ -289,11 +289,10 @@ def test_windows_unverified_task_refused_before_mutation(tmp_path):
     assert manager.calls == []
 
 
+@pytest.mark.posix_native
 def test_killed_after_disable_next_invocation_recovers(tmp_path):
     import signal
 
-    if not hasattr(os, "fork"):
-        pytest.skip("POSIX process test")
     manager, realm = setup_case(tmp_path, "linux")
     before = snapshot(realm)
     state = tmp_path / "manager-state"
@@ -373,13 +372,12 @@ def test_registered_r1_refuses_before_r0_stop(tmp_path, system):
     assert not r0_stop._marker_path(manager).exists()
 
 
+@pytest.mark.posix_native
 @pytest.mark.parametrize("cut", ["disable", "bootout"])
 def test_launchd_sigkill_at_each_stop_step_then_recover(tmp_path, cut):
     import select
     import signal
 
-    if not hasattr(os, "fork"):
-        pytest.skip("POSIX SIGKILL test")
     manager, realm = setup_case(tmp_path, "darwin")
     before = snapshot(realm)
     state = tmp_path / "launchd-state.json"

@@ -149,7 +149,7 @@ def test_launchd_changed_r0_does_not_prevent_r1_stop(mac_case):
     assert not manager.r1_loaded and not manager.enabled and tx.journal.exists()
 
 
-@pytest.mark.skipif(not hasattr(os, "fork"), reason="POSIX SIGKILL publication cut")
+@pytest.mark.posix_native
 @pytest.mark.parametrize("publication", ["journal", "launcher", "definition"])
 def test_launchd_sigkill_after_publication_link_replays(mac_case, publication):
     manager, tx, version, realm, destination = mac_case

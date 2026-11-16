@@ -426,7 +426,7 @@ def test_running_incapable_runtime_refuses_exact_i1_without_writes(
 
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="Linux Pinokio filters XDG_DATA_HOME.")
+@pytest.mark.linux_native
 def test_running_foreground_lock_refuses_with_xdg_override_before_writes(installed, monkeypatch, capsys):
     from astrid.installer.service import pinokio_lock_paths
 

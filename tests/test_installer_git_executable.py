@@ -111,7 +111,7 @@ def test_installer_diagnostic_appends_one_line_to_the_install_log(tmp_path: Path
         "Git for pack installs was not recorded: /x/git did not identify itself as Git.\n")
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink fixture")
+@pytest.mark.posix_native
 def test_path_alias_to_cwd_is_never_executed_or_recorded(tmp_path, monkeypatch):
     project = tmp_path / "project"
     _executable(project / "git")
@@ -128,7 +128,7 @@ def test_path_alias_to_cwd_is_never_executed_or_recorded(tmp_path, monkeypatch):
     assert calls == []
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX executable and symlink fixture")
+@pytest.mark.posix_native
 def test_recorded_symlink_is_canonical_and_survives_retarget(tmp_path, monkeypatch):
     first = _executable(tmp_path / "first" / "git")
     second = _executable(tmp_path / "second" / "git")
@@ -166,7 +166,7 @@ def test_invalid_previous_git_falls_back_to_path(tmp_path, monkeypatch):
     assert calls == [str(previous), str(fallback)]
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX executable and symlink fixture")
+@pytest.mark.posix_native
 def test_path_git_symlink_is_recorded_as_its_canonical_target(tmp_path, monkeypatch):
     real = _executable(tmp_path / "real" / "git")
     alias_dir = tmp_path / "bin"

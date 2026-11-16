@@ -19,8 +19,8 @@ in step). Every non-manual lane names the CI jobs that run it, and tests/test_la
 in .github/workflows/ci.yml: they set ``ASTRID_CI_JOB``, provision the dependency and select the lane.
 
 The guard (``_SkipGuard``) records every skip by test id, and fails a run in which no test passed. A skip that did not come from a registry lane, a
-``pytest.importorskip`` anywhere, a module-level skip at collection and every xfail turn into failures; the
-terminal summary lists the declared skips by name.
+``pytest.importorskip`` anywhere, a module-level skip at collection and every xfail that does not match one exact strict registry entry turn into failures; the
+terminal summary lists declared skips and xfails.
 
 Modules that wholly belong to a ``default_off`` lane (``pytestmark = pytest.mark.<lane>``) are not collected
 in a run that deselects the lane, so their import-time needs (a second checkout) never run there.
@@ -43,9 +43,11 @@ import threading
 import traceback
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import date, timedelta
 from pathlib import Path
 from types import ModuleType
 from typing import NoReturn
+from urllib.parse import urlparse
 
 import pytest
 
@@ -170,6 +172,75 @@ LANES: dict[str, Lane] = {
 }
 DEFAULT_OFF = tuple(name for name, lane in LANES.items() if lane.default_off)
 DECLARED = re.compile(r"\[declared:([a-z_]+)\]")
+
+# Quarantined tests are opt-in, named by their exact pytest node id, and never
+# hidden by a broad reason. The registry is intentionally empty at this head.
+DECLARED_XFAILS: dict[str, dict[str, object]] = {}
+MAX_DECLARED_XFAILS = 10
+MAX_XFAIL_DAYS = 14
+
+
+def declared_xfail(name: str) -> pytest.MarkDecorator:
+    """Build the strict xfail mark for one registry entry."""
+    declaration = DECLARED_XFAILS[name]
+    reason, strict = declaration.get("reason"), declaration.get("strict")
+    if not isinstance(reason, str) or not isinstance(strict, bool):
+        raise ValueError(f"invalid declared xfail entry: {name}")
+    return pytest.mark.xfail(reason=reason, strict=strict)
+
+
+def declared_xfail_errors(
+    declarations: dict[str, dict[str, object]] | None = None, *, today: date | None = None
+) -> list[str]:
+    """Describe invalid xfail registry entries without changing the registry."""
+    entries = DECLARED_XFAILS if declarations is None else declarations
+    today = date.today() if today is None else today
+    errors: list[str] = []
+    if len(entries) > MAX_DECLARED_XFAILS:
+        errors.append(f"has {len(entries)} entries; maximum is {MAX_DECLARED_XFAILS}")
+    seen_nodeids: set[str] = set()
+    for name, entry in entries.items():
+        prefix = f"{name}: "
+        if not isinstance(entry, dict):
+            errors.append(f"{prefix}entry must be a mapping")
+            continue
+        nodeid = entry.get("nodeid")
+        reason = entry.get("reason")
+        issue = entry.get("issue")
+        owner = entry.get("owner")
+        expires = entry.get("expires")
+        if not isinstance(nodeid, str) or "::" not in nodeid or not nodeid.strip():
+            errors.append(f"{prefix}missing or invalid exact nodeid")
+        elif nodeid in seen_nodeids:
+            errors.append(f"{prefix}duplicate nodeid {nodeid!r}")
+        else:
+            seen_nodeids.add(nodeid)
+        if not isinstance(reason, str) or not reason.strip():
+            errors.append(f"{prefix}missing reason")
+        parsed_issue = urlparse(issue) if isinstance(issue, str) else None
+        if not parsed_issue or parsed_issue.scheme != "https" or not parsed_issue.netloc or not re.search(r"/issues/\d+/?$", parsed_issue.path):
+            errors.append(f"{prefix}missing or invalid issue URL")
+        if not isinstance(owner, str) or not owner.strip():
+            errors.append(f"{prefix}missing owner")
+        try:
+            expiry = date.fromisoformat(expires) if isinstance(expires, str) else None
+        except ValueError:
+            expiry = None
+        if expiry is None or expiry <= today or expiry > today + timedelta(days=MAX_XFAIL_DAYS):
+            errors.append(f"{prefix}expiry must be a future ISO date within {MAX_XFAIL_DAYS} days")
+        if entry.get("strict") is not True:
+            errors.append(f"{prefix}strict must be true")
+    return errors
+
+
+def is_declared_xfail(nodeid: str, reason: object, *, strict: bool) -> bool:
+    """Match a runtime xfail only to its exact registered test and marker contract."""
+    return any(
+        declaration.get("nodeid") == nodeid
+        and declaration.get("reason") == reason
+        and declaration.get("strict") is strict
+        for declaration in DECLARED_XFAILS.values()
+    )
 
 
 def _open_fds() -> int | None:
@@ -300,6 +371,7 @@ class _SkipGuard:
 
     def __init__(self) -> None:
         self.declared: list[tuple[str, str, str]] = []
+        self.xfailed: list[str] = []
         self.deselected: list[tuple[tuple[str, ...], str]] = []  # (lanes that made -m false, test id)
         self.unmarked = 0  # tests with no lane mark that -m is false for
         self.elsewhere = 0  # tests -m would select, removed by pytest-split, -k or --deselect
@@ -318,9 +390,17 @@ class _SkipGuard:
 
     def _judge(self, report, where: str, item=None) -> None:
         if hasattr(report, "wasxfail"):
+            markers = list(item.iter_markers("xfail")) if item is not None else []
+            marker = markers[0] if len(markers) == 1 else None
+            reason = marker.kwargs.get("reason") if marker is not None else None
+            strict = marker.kwargs.get("strict") is True if marker is not None else False
+            executed = report.when == "call" and marker is not None and marker.kwargs.get("run", True) is True
+            if executed and item is not None and is_declared_xfail(item.nodeid, reason, strict=strict):
+                self.xfailed.append(item.nodeid)
+                return
             del report.wasxfail  # pytest does not count a failed report that still carries it
             report.outcome = "failed"
-            report.longrepr = f"{where}: an xfail hides the result. Fix the test or delete it."
+            report.longrepr = f"{where}: an xfail hides the result. Fix the test or declare its exact strict xfail."
             return
         if not report.skipped:
             return
@@ -376,6 +456,10 @@ class _SkipGuard:
             session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
     def pytest_terminal_summary(self, terminalreporter):
+        if self.xfailed:
+            terminalreporter.write_sep("-", f"declared xfails ({len(self.xfailed)})")
+            for nodeid in sorted(self.xfailed):
+                terminalreporter.write_line(f"XFAILED {_bounded_id(nodeid)}")
         if self.declared:
             terminalreporter.write_sep("-", f"declared skips ({len(self.declared)})")
             for nodeid, name, reason in sorted(self.declared):
@@ -534,6 +618,9 @@ def pytest_ignore_collect(collection_path, config):
 
 
 def pytest_configure(config):
+    xfail_errors = declared_xfail_errors()
+    if xfail_errors:
+        raise pytest.UsageError("Invalid DECLARED_XFAILS:\n" + "\n".join(xfail_errors))
     for name, lane in LANES.items():
         config.addinivalue_line("markers", f"{name}: {lane.kind} lane: {lane.reason}")
     config.pluginmanager.register(_FdGuard(), "fd-leak-guard")

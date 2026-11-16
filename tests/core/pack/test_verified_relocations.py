@@ -159,7 +159,10 @@ def test_personal_relocation_always_rechecks_digest(personal_snapshot, verify_di
         validate_selected_pack_map(selected, verify_digests=verify_digests, verified_relocations=relocations)
 
 
-@pytest.mark.parametrize("forgery", ["original", "selection", "digest", "reused", "outside", "public"])
+@pytest.mark.parametrize("forgery", [
+    "original", "selection", "digest", "reused", "outside",
+    pytest.param("public", marks=pytest.mark.posix_native),
+])
 def test_forged_personal_relocation_is_rejected(personal_snapshot, tmp_path, forgery):
     from runtime_protocol import platform
     import astrid.packs
@@ -185,8 +188,6 @@ def test_forged_personal_relocation_is_rejected(personal_snapshot, tmp_path, for
         shutil.copytree(snapshot, other)
         selected["personal"]["root"] = relocations["personal"]["root"] = str(other)
     else:
-        if sys.platform == "win32":
-            pytest.skip("POSIX permission forgery; native Windows DACL is checked by platform")
         snapshot.parent.chmod(0o755)
     with pytest.raises(ValueError, match="relocation|personal|snapshot"):
         validate_selected_pack_map(selected, verified_relocations=relocations)

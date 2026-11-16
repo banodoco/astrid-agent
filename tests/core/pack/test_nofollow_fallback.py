@@ -81,7 +81,7 @@ def test_install_lock_opens_regular_lock_file_without_nofollow(tmp_path, monkeyp
         assert (root / ".install.lock").is_file()
 
 
-@pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="platform has the real flag only on POSIX")
+@pytest.mark.posix_native
 def test_group_lock_refuses_linked_lock_file_with_real_nofollow(tmp_path):
     root = tmp_path / "collection"
     lock = tmp_path / ("." + root.name + ".transaction.lock")

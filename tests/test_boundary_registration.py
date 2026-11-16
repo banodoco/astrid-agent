@@ -23,7 +23,7 @@ from astrid.installer.service import installer_lock_path
 from tests.test_installer_r0_entry import invoke, public_case, state
 from tests.test_installer_r0_stop import snapshot
 
-pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="persistent systemctl simulation")
+pytestmark = pytest.mark.linux_native
 
 
 @pytest.fixture

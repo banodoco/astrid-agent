@@ -53,7 +53,7 @@ VIBECOMFY_REVISION = VIBECOMFY_ENGINE_REVISION
 COMFY_VERSION = "0.36.0"
 SYNTHETIC_DRIVER = "580.95.05"
 SYNTHETIC_VRAM_MIB = 32607
-pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux target-local producer")
+pytestmark = pytest.mark.linux_native
 
 # SYNTHETIC CPU stand-in for ComfyUI: same contract as the custody fixture.
 _SERVER = r'''

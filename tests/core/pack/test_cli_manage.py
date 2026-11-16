@@ -41,7 +41,7 @@ def test_selected_managed_descriptor_requires_exact_installed_context(tmp_path, 
     assert cli_manage._managed_toolchain() is None
 
 
-@pytest.mark.skipif(os.name == 'nt', reason='POSIX mode and symlink checks')
+@pytest.mark.posix_native
 def test_implicit_descriptor_refuses_writable_and_aliases(tmp_path, monkeypatch):
     root, version, descriptor = managed(tmp_path, monkeypatch)
     descriptor.chmod(0o666)

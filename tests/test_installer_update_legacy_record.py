@@ -21,7 +21,7 @@ from astrid.installer import update_job_platform as platform
 from astrid.installer.core import write_json
 from astrid.installer.service import LABEL
 
-pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="The fake manager answers systemctl queries")
+pytestmark = pytest.mark.linux_native
 
 OPERATION = "0123456789abcdef0123456789abcdef"
 UNIT = f"astrid-update-{OPERATION}.service"

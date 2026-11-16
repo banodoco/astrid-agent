@@ -26,7 +26,7 @@ from astrid.installer.service import LABEL, install_selection
 from astrid.installer.tools import DEFAULT_OMP_SOURCE
 from tests.helpers.runtime import initialize_runtime_realm
 
-pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="user systemd update jobs are Linux-only")
+pytestmark = pytest.mark.linux_native
 
 INSTANCE = "instance-before"
 IDENTITY = {"release": 7, "managed_by": None}

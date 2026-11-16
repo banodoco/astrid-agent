@@ -22,7 +22,7 @@ def _deny_readonly_unlink(monkeypatch, seen):
     monkeypatch.setattr(os, "unlink", unlink)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+@pytest.mark.posix_native
 def test_posix_failed_removal_never_chmods_a_symlink_target_outside_the_tree(tmp_path, monkeypatch):
     outside = tmp_path / "outside.txt"
     outside.write_text("keep")

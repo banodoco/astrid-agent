@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import hashlib
 import re
-import sys
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
@@ -25,7 +24,7 @@ def test_posix_keeps_the_runtime_folder_inside_the_outputs(tmp_path, platform_na
     assert str(vibecomfy_runtime_root(tmp_path, platform_name=platform_name)) == str(tmp_path) + "/.vibecomfy-runtime"
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="the unparameterised call is the host platform")
+@pytest.mark.posix_native
 def test_default_platform_is_the_host_platform(tmp_path):
     assert vibecomfy_runtime_root(tmp_path) == tmp_path / ".vibecomfy-runtime"
 

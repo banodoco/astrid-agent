@@ -134,7 +134,7 @@ def move_selected_tree(root, data, service, destination, *, program=False):
     return root, data, realm
 
 
-pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Linux executable manager simulation")
+pytestmark = pytest.mark.linux_native
 
 
 @pytest.mark.parametrize("program", [False, True], ids=["data", "program"])

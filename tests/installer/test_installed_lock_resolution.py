@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import sys
 from pathlib import Path
 
 import pytest
@@ -13,7 +12,7 @@ import pytest
 from astrid.core.rendering import _local_schema as reader
 from astrid.installer.backend import _secure_installed_schema_inputs
 
-pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX modes")
+pytestmark = pytest.mark.posix_native
 
 
 def _populate_installed(root: Path) -> Path:
