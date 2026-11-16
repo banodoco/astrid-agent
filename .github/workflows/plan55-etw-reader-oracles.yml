@@ -25,6 +25,6 @@ jobs:
       - name: Install pytest for standalone parser unit file
         run: python -m pip install pytest
       - name: Run original native-reader assertions, no generation
-        run: python -m pytest -q -rA --confcutdir=tests/core/generation tests/core/generation/test_local_speed_native_reader.py
+        run: python -m pytest -q -rA -o addopts= --confcutdir=tests/core/generation tests/core/generation/test_local_speed_native_reader.py
       - name: Check new stream-retention and decoder unit cases
         run: python -m tests.local_speed_decode_check
