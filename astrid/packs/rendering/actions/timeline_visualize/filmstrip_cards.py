@@ -876,19 +876,13 @@ def plan_filmstrip(
     if requested_frame is not None:
         if type(requested_frame) is not int:
             raise ValueError('Requested frame must be an integer.')
-        if not clock.start <= requested_frame < total and (snapshot.get('metadata') or {}).get('timeline_range') is None:
-            raise ValueError(f'Requested frame {requested_frame!r} is outside the rendered extent 0..{total - 1}.')
-        clock.file_frame(requested_frame)
+        clock.validate_frame(requested_frame)
         lo, hi = Fraction(requested_frame, 1) / fps, Fraction(requested_frame + 1, 1) / fps
     if options.get('range') is not None and motion_window is None:
         if requested_frame is not None:
             raise ValueError('Choose frame, range, or at, not more than one.')
         lo, hi = map(_q, options['range'])
-        if (snapshot.get('metadata') or {}).get('timeline_range') is not None:
-            if lo < Fraction(clock.start, 1) / fps:
-                clock.refuse(lo)
-            if hi > duration:
-                clock.refuse(hi)
+        clock.validate_range(lo, hi)
     if motion_window is not None:
         from .motion.sheet import PAD_SECONDS
         requested_frame = None
@@ -899,10 +893,7 @@ def plan_filmstrip(
         if options.get('range') is not None or requested_frame is not None:
             raise ValueError('Choose frame, range, or at/context, not more than one.')
         at = _q(options['at'])
-        if at < Fraction(clock.start, 1) / fps or at >= duration:
-            if (snapshot.get('metadata') or {}).get('timeline_range') is None:
-                raise ValueError(f'Requested timestamp {float(at):.6f}s is outside the rendered extent 0..{float(duration):.6f}s.')
-            clock.refuse(at)
+        clock.validate_timestamp(at)
         # A timestamp is an exact visual request, not a context window.  Use
         # the authored frame clock's floor rule so every in-range timestamp
         # resolves to one and only one frame without clamping an out-of-range
