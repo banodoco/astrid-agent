@@ -4,6 +4,7 @@ on:
     branches: ["release/14/plan-55"]
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
+      - "tests/conftest.py"
       - "tests/_local_speed_*.py"
       - "tests/local_speed_*.py"
       - "tests/local_speed_native.wprp"
@@ -75,6 +76,16 @@ jobs:
           expected = subprocess.check_output(["git", "show", "HEAD:" + relative], cwd=root)
           if root.joinpath(relative).read_bytes() != expected:
               raise SystemExit("VibeComfy worktree differs from exact Git bytes (including line endings)")
+      - name: Retain this exact task source for continuation
+        if: ${{ runner.os == 'Linux' }}
+        run: git archive --format=zip --output=plan55-task-source.zip HEAD
+      - name: Upload exact public task source
+        if: ${{ runner.os == 'Linux' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: plan55-task-source-${{ github.run_id }}-${{ github.run_attempt }}
+          path: plan55-task-source.zip
+          retention-days: 7
       - name: Install unchanged CPU test dependencies
         shell: bash
         run: |
@@ -92,27 +103,19 @@ jobs:
           tests/core/generation/test_local_speed_hash_observer.py
           tests/core/generation/test_local_speed_meter_collector.py
           tests/core/generation/test_local_speed_report_capture.py
+          tests/core/generation/test_local_speed_runtime_support.py
           --junitxml=native-reader.xml
+      - name: Prove private Runtime directory creation and unsafe-directory refusal
+        run: >-
+          python -m pytest -q -rA -m integration
+          tests/core/generation/test_local_speed_runtime_support.py
+          --junitxml=runtime-support.xml
       - name: Calibrate actual filesystem and SQLite writes
         run: python -m tests.local_speed_native_run --output plan55-native-proof
+      # Owner D12 (dev #765) approves this exact retry after the fixture correction.
+      # No Runtime pin, ACL validation, privileges or production permissions change.
       - name: Measure actual attached SDK and CLI separately from instrumentation
-        if: ${{ runner.os == 'Linux' }}
         run: python -m tests.local_speed_meter_run --output plan55-meter-proof --timeout 1800
-      - name: Preserve the Windows permission refusal without retrying it
-        if: ${{ runner.os == 'Windows' }}
-        shell: python
-        run: |
-          import json, pathlib
-          out = pathlib.Path("plan55-meter-proof")
-          out.mkdir(exist_ok=True)
-          hold = {"schema": "astrid.local-speed-meter-proof.v1", "status": "NO-RESULT",
-                  "budget_certified": False, "platform": "Windows",
-                  "blocked_by": "Owner approval required after protected-DACL refusal",
-                  "original_run": 43913596410, "original_job": 133461734871,
-                  "refused_command": "python -m tests.local_speed_meter_run --output plan55-meter-proof --timeout 1800",
-                  "command_retried": False, "permission_changed": False}
-          (out / "summary.json").write_text(json.dumps(hold, indent=2) + "\n")
-          raise SystemExit("Windows generation remains blocked by the recorded permission refusal; no retry or green result")
       - name: Preserve exact source identity and proof manifests
         if: ${{ always() }}
         shell: python
@@ -136,5 +139,6 @@ jobs:
             plan55-native-proof
             plan55-meter-proof
             native-reader.xml
+            runtime-support.xml
           include-hidden-files: true
           retention-days: 14

@@ -178,10 +178,13 @@ def real_runtime(tmp_path, owned_process_groups):
         if realm is None:
             realm, support_root = tmp_path / "realm", support_root or tmp_path / "support"
         if support_root is not None:
-            # The installed launcher keeps the support root owner-only (0o700); the host refuses to read
-            # discovery evidence from a wider directory.
-            Path(support_root).mkdir(parents=True, exist_ok=True)
-            Path(support_root).chmod(0o700)
+            # POSIX callers need an owner-only support root. On Windows, let
+            # the pinned Runtime create a NEW directory with its protected DACL.
+            # mkdir/chmod cannot supply that descriptor; existing unsafe paths
+            # must still be rejected by Runtime, never repaired by this fixture.
+            if sys.platform != "win32":
+                Path(support_root).mkdir(parents=True, exist_ok=True)
+                Path(support_root).chmod(0o700)
             daemon_options["support_root"] = support_root
         daemon = new_runtime_daemon(realm, commit=commit, **daemon_options).start()
         owned_process_groups.add_cleanup(daemon.stop)
