@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 
 
@@ -42,6 +44,20 @@ _OPAQUE_SOURCE_STRUCTURAL_TESTS = {
     ("test_native_v2_contract.py", "test_native_v2_schema_profile_and_supported_branch_bindings"),
     ("test_character_swap.py", "test_silent_timeline_source_does_not_claim_an_audio_baseline"),
 }
+
+
+@pytest.fixture
+def valid_h3_av_source(tmp_path):
+    """Real four-second input for tests that exercise the source AV probe."""
+    path = tmp_path / "source.mp4"
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+         "-f", "lavfi", "-i", "color=c=blue:s=1024x576:r=24:d=4",
+         "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=4",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(path)],
+        check=True, capture_output=True, text=True, timeout=60,
+    )
+    return path
 
 
 @pytest.fixture(autouse=True)

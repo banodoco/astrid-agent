@@ -10,10 +10,8 @@ from astrid.packs.h3_av.shared.request import normalize_request
 
 
 @pytest.mark.parametrize('with_reference', [False, True])
-def test_v1_continuation_binds_explicit_strength_and_sampler(tmp_path: Path, with_reference: bool):
-    source = tmp_path / 'source.mp4'
-    source.write_bytes(b'fixture-video')
-    assets = {'source.mp4': str(source)}
+def test_v1_continuation_binds_explicit_strength_and_sampler(tmp_path: Path, with_reference: bool, valid_h3_av_source: Path):
+    assets = {'source.mp4': str(valid_h3_av_source)}
     references = []
     if with_reference:
         from PIL import Image
