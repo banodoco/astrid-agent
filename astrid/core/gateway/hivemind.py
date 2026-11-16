@@ -47,6 +47,15 @@ def _error_result(exc: Exception) -> DomainResult[None]:
     return DomainResult.failure(ErrorObject(code, message, details))
 
 
+def _decimal_id(flag: str):
+    def validate(value: str) -> str:
+        if not value or any(character < "0" or character > "9" for character in value):
+            raise argparse.ArgumentTypeError(f"{flag} must be a non-empty ASCII decimal string")
+        return value
+
+    return validate
+
+
 def _parser(pack: str = "hivemind") -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=f"astrid {pack}",
@@ -70,8 +79,9 @@ def _parser(pack: str = "hivemind") -> argparse.ArgumentParser:
     search.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     item = sub.add_parser("item", help="Fetch a full item and its citation context.")
     item.add_argument("--kind", required=True, choices=("message", "resource", "revision"))
-    item.add_argument("--id", required=True, help="Decimal item id.")
-    item.add_argument("--revision-id", dest="revision_id", help="Exact resource revision id.")
+    item.add_argument("--id", required=True, type=_decimal_id("--id"), help="Decimal item id.")
+    item.add_argument("--revision-id", dest="revision_id", type=_decimal_id("--revision-id"),
+                      help="Exact resource revision id.")
     item.add_argument("--detach", action="store_true", help="Return admission without waiting.")
     item.add_argument("--timeout", type=float, default=120.0, dest="timeout_seconds")
     item.add_argument("--json", action="store_true", default=argparse.SUPPRESS)

@@ -41,6 +41,36 @@ def test_hivemind_parser_preserves_json_before_or_after_subcommand() -> None:
     assert parser.parse_args(["item", "--kind", "resource", "--id", "42", "--json"]).json is True
 
 
+@pytest.mark.parametrize("flag", ["--id", "--revision-id"])
+@pytest.mark.parametrize("value", ["", "１２", "1x", "-1"])
+def test_hivemind_item_rejects_non_ascii_decimal_ids_by_flag(flag, value, capsys) -> None:
+    from astrid.core.gateway.hivemind import _parser
+
+    argv = ["item", "--kind", "resource", "--id", "42"]
+    if flag == "--id":
+        argv[argv.index("42")] = value
+    else:
+        argv.extend([flag, value])
+    with pytest.raises(SystemExit):
+        _parser().parse_args(argv)
+    assert flag in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("flag", ["--id", "--revision-id"])
+@pytest.mark.parametrize("value", ["", "１２", "1x", "-1"])
+def test_get_item_executor_rejects_non_ascii_decimal_ids_by_flag(flag, value, capsys) -> None:
+    from astrid.core.hivemind.executors.get_item.run import build_parser
+
+    argv = ["--kind", "resource", "--id", "42"]
+    if flag == "--id":
+        argv[argv.index("42")] = value
+    else:
+        argv.extend([flag, value])
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(argv)
+    assert flag in capsys.readouterr().err
+
+
 def test_hivemind_item_invokes_get_item_and_renders_artifact_json(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
 ) -> None:
