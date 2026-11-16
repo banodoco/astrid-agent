@@ -446,6 +446,15 @@ def _visualization_summary(outputs: Mapping[str, Any], *, parsed: argparse.Names
             lines.append(f"  exported PNG: {page}")
         if exported.get("markdown"):
             lines.append(f"  exported Markdown: {exported['markdown']}")
+        frames = [str(frame) for frame in exported.get("frames") or [] if frame]
+        if len(frames) == 1:
+            clean_composed = (
+                getattr(parsed, "mode", None) == "composed"
+                and not inputs.get("layers")
+                and not inputs.get("highlight")
+            )
+            label = "clean composed frame (no visualization overlays)" if clean_composed else "raw frame image"
+            lines.append(f"  {label}: {frames[0]}")
     if outputs.get("preview"):
         lines.append(f"  preview for humans (animated, sampled frames at real timing): {outputs['preview']}")
     frames = timing.get("frames")
@@ -1031,7 +1040,7 @@ def cmd_visualize(parsed: argparse.Namespace) -> int:
     if human_outputs.get("exported"):
         exported = human_outputs["exported"]
         print(f"export directory: {exported['dir']}")
-        if exported["frames"]:
+        if len(exported["frames"]) > 1:
             frame_dir = Path(exported["frames"][0]).parent
             print(f"  raw frames: {len(exported['frames'])} file(s) in {frame_dir}")
     return 0

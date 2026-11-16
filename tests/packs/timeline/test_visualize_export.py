@@ -113,3 +113,33 @@ def test_declared_inputs_summary_explains_no_picture_and_suggests_composed(monke
     assert "exported Markdown: /tmp/artifacts/timeline-inputs.md" in summary
     assert "/venv/bin/python -m astrid timelines visualize rough-cut --project minkhole --mode composed --format png --at 6.5" in summary
     assert "--mode inputs --format md --out artifacts" in summary
+
+
+def test_single_composed_export_names_the_clean_raw_frame_path() -> None:
+    summary = _visualization_summary(
+        {
+            "primary_page": "/tmp/export/view-frame.png",
+            "pages": ["/tmp/export/view-frame.png"],
+            "exported": {
+                "dir": "/tmp/export",
+                "pages": ["/tmp/export/view-frame.png"],
+                "frames": ["/tmp/export/frames/frame-000000156.png"],
+            },
+        },
+        parsed=SimpleNamespace(project="minkhole", beats=None, mode="composed"),
+        inputs={"view": "filmstrip", "timeline_slug": "rough-cut", "at": "6.5"},
+    )
+
+    assert "clean composed frame (no visualization overlays): /tmp/export/frames/frame-000000156.png" in summary
+
+
+def test_single_export_frame_is_described_neutrally_when_composition_is_uncertain() -> None:
+    for mode, overlays in (("auto", {}), ("composed", {"layers": ["bounds"]}),
+                           ("composed", {"highlight": "c41.tool-16"})):
+        summary = _visualization_summary(
+            {"exported": {"frames": ["/tmp/export/frames/frame-000000156.png"]}},
+            parsed=SimpleNamespace(project="minkhole", beats=None, mode=mode),
+            inputs={"view": "filmstrip", "at": "6.5", **overlays},
+        )
+        assert "raw frame image: /tmp/export/frames/frame-000000156.png" in summary
+        assert "clean composed frame" not in summary
