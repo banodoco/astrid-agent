@@ -1165,7 +1165,8 @@ def prepare_filmstrip(
             },
         }
     if not exact:
-        pins = [{'timeline_id': authority['timeline_id'], 'config_version': authority.get('config_version')}]
+        pins = [{'timeline_id': authority['timeline_id'], 'config_version': authority.get('config_version'),
+                 'revision_id': _identifier(authority, 'parent_revision_id', 'head_revision_id', 'revision_id')}]
         pins += authority.get('expansion', {}).get('children', [])
         current_rows = paged_rows(client.list_timelines, project_id, limit=50) or []
         for pin in pins:
@@ -1189,7 +1190,7 @@ def prepare_filmstrip(
                     output={"available": True, "run_id": _identifier(run, "id", "run_id"), "timeline": selector},
                     fresh=False, project=project,
                 ))
-            current_head = current.get("head_revision_id") if isinstance(current, Mapping) else None
+            current_head = _identifier(current, 'head_revision_id', 'parent_revision_id', 'revision_id') if isinstance(current, Mapping) else None
             pinned_head = pin.get("revision_id") or pin.get("head_revision_id")
             if pinned_head and current_head and str(current_head) != str(pinned_head):
                 _status_failure(render_status(
