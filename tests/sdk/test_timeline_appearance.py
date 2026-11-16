@@ -133,3 +133,52 @@ def test_nested_shot_refusal_names_clip_and_property():
     from astrid.core.timeline.shot_composition_projection import _clip_type, ShotCompositionProjectionError
     with pytest.raises(ShotCompositionProjectionError, match="clip 'nested'.*property clipType"):
         _clip_type({'id': 'nested', 'clipType': 'shot'})
+
+
+def test_canvas_inverse_requires_authenticated_materialization_binding(monkeypatch):
+    from types import SimpleNamespace
+    from astrid.sdk.timeline.validation import _authenticated_initialization_fps_removals
+    from tests.sdk.test_timeline_sync import initial_bundle
+    from astrid.sdk.timeline import _step_undo
+
+    baseline = initial_bundle()
+    baseline['parent']['config']['output'] = {'resolution': '1280x720', 'fps': 24, 'file': 'output.mp4'}
+    baseline['parent']['config']['theme_overrides'] = {'visual': {'canvas': {'width': 1280, 'height': 720, 'fps': 24}}}
+    candidate = copy.deepcopy(baseline)
+    candidate['parent']['config'].pop('output')
+    output = baseline['parent']['config']['output']
+    source = {'command': {'op': 'clip.set'}, 'writes': [{'ref': 'parent', 'path': ['config', 'output'],
+        'before': {'state': 'absent'}, 'after': {'state': 'present', 'value': output}}],
+        'dependencies': [{'key': 'placement.canvas.materialization', 'pin': {'ref': 'parent',
+            'path': ['config', 'output'], 'after': output, 'authored_canvas': {'width': 1280, 'height': 720, 'fps': 24}}}]}
+    inverse = {'command': {'op': 'timeline.inverse'}, 'writes': [{'ref': 'parent', 'path': ['config', 'output'],
+        'before': {'state': 'present', 'value': output}, 'after': {'state': 'absent'}}]}
+    entry = {'records': {'commands': [source]}}
+    history = SimpleNamespace(entries=[entry])
+    selected = [source]
+    monkeypatch.setattr(_step_undo, 'entry_records', lambda *_: selected)
+    assert _authenticated_initialization_fps_removals(candidate, baseline, [inverse], history) == {'parent.config.output.fps'}
+    forged = copy.deepcopy(source); forged['dependencies'][0]['pin']['after'] = {**output, 'fps': 30}
+    selected = [forged]; entry['records']['commands'] = [forged]
+    assert not _authenticated_initialization_fps_removals(candidate, baseline, [inverse], history)
+    missing = copy.deepcopy(source); missing['dependencies'] = []
+    selected = [missing]; entry['records']['commands'] = [missing]
+    assert not _authenticated_initialization_fps_removals(candidate, baseline, [inverse], history)
+    selected = []; entry['records']['commands'] = [source]
+    assert not _authenticated_initialization_fps_removals(candidate, baseline, [inverse], history)
+    selected = [source]
+    changed = copy.deepcopy(baseline); changed['parent']['config']['output']['fps'] = 25
+    assert not _authenticated_initialization_fps_removals(candidate, changed, [inverse], history)
+    changed = copy.deepcopy(baseline); changed['parent']['config']['theme_overrides']['visual']['canvas']['width'] = 640
+    assert not _authenticated_initialization_fps_removals(candidate, changed, [inverse], history)
+
+
+def test_clip_fit_type_mirrors_runtime_schema():
+    from typing import get_args, get_type_hints
+    from astrid.core.timeline.banodoco_schema import SharedTimelineClip, load_vendored_timeline_schema
+    import scripts.gen_remotion_types as generator
+
+    schema = load_vendored_timeline_schema()
+    assert set(get_args(get_type_hints(SharedTimelineClip)['fit'])) == {'contain', 'cover'}
+    assert set(schema['definitions']['TimelineClip']['properties']['fit']['enum']) == {'contain', 'cover'}
+    assert "fit?: 'contain' | 'cover';" in generator.generate()

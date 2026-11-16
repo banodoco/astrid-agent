@@ -276,7 +276,7 @@ def _build(config: Mapping[str, Any], fps: float, canvas: Mapping[str, Any], ele
                 layer.dips.append((end - width, end))
 
         layer.bounds, layer.bounds_source = layout_bounds(clip, canvas_w, canvas_h)
-        if clip.get('clipType', 'media') == 'media':
+        if clip.get('clipType', 'media') in ('media', 'image', 'video'):
             # Coverage depends on intrinsic size, fit and track placement. This
             # lightweight model has no package placement answer to establish it.
             layer.bounds, layer.bounds_source = None, 'unknown'

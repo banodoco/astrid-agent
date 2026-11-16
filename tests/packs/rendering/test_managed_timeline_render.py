@@ -280,6 +280,7 @@ def test_exact_parent_head_projects_pinned_children_with_unique_local_ids(
             "revision_id": internal_revision_id,
             "content_digest": f"sha256:{digest}",
             "payload": {
+                "output": {"resolution": "1920x1080", "fps": 30, "file": "fixture.mp4"},
                 "tracks": [{"id": "picture", "kind": "visual", "label": "Picture"}],
                 "clips": [{
                     "id": "charcoal-process-preview",
@@ -303,6 +304,7 @@ def test_exact_parent_head_projects_pinned_children_with_unique_local_ids(
         "content_digest": f"sha256:{'d' * 64}",
         "payload": {
             "config": {
+                "output": {"resolution": "1920x1080", "fps": 30, "file": "fixture.mp4"},
                 "tracks": [{"id": "picture", "kind": "visual", "label": "Picture"}],
                 "clips": [],
             },
@@ -622,6 +624,7 @@ def test_managed_preflight_rejects_unmatched_speech_linkage() -> None:
 def test_snapshot_validation_rejects_missing_registry_asset() -> None:
     runtime = _Runtime()
     runtime.timeline["config"] = {
+        "output": {"resolution": "1920x1080", "fps": 30, "file": "fixture.mp4"},
         "tracks": [{"id": "visual", "kind": "visual", "label": "Visual"}],
         "clips": [{"id": "source", "at": 0, "track": "visual", "clipType": "video", "asset": "missing"}],
     }
@@ -820,7 +823,7 @@ def test_render_profile_shape_type_and_canvas_mismatch_are_actionable(tmp_path: 
     with pytest.raises(CapabilityValidationError, match="width must be an integer"):
         _prepare_managed_render_inputs({"timeline_ref": "main", "profile": bad_type}, project="demo", _client=runtime)
     bad_canvas = _profile(); bad_canvas.update(width=320, height=180, fps_rational=[24, 1])
-    with pytest.raises(CapabilityValidationError, match="authoritative theme canvas"):
+    with pytest.raises(CapabilityValidationError, match="authored timeline canvas"):
         _prepare_managed_render_inputs({"timeline_ref": "main", "profile": bad_canvas}, project="demo", _client=runtime)
 
 

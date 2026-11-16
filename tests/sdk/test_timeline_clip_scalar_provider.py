@@ -194,3 +194,25 @@ def test_appearance_stale_owner_dependency_refuses_without_publication():
     with pytest.raises(CommitRejected):
         realm.call([captured], base=base)
     assert realm.head == prior
+
+
+def test_child_appearance_materializes_authored_parent_canvas_atomically():
+    from astrid.sdk.timeline.commit import _digest
+    document = app_document()
+    parent = document['parent_revision']['payload']
+    parent['config']['theme_overrides'] = {'visual': {'canvas': {'width': 1280, 'height': 720, 'fps': 24}}}
+    parent['config'].pop('output', None)
+    document['parent_revision']['content_digest'] = _digest(parent)
+    child = document['internal_timeline_revisions'][0]
+    child['payload']['output'] = {'resolution': '1920x1080', 'fps': 24, 'file': 'child.mp4'}
+    child['content_digest'] = _digest(child['payload'])
+    document['dependency_manifest'] = _manifest(document['shot_revisions'], document['internal_timeline_revisions'], [
+        {'media_id': value, 'content_digest': value} for value in (OLD, AUDIO)], [])
+    realm = DetachedRealm(document)
+    command = capture_clip_set(current(realm), CHILD, values={'fit': 'cover'})
+    accepted = realm.call([command])
+    assert current(realm)['parent']['config']['output'] == {'resolution': '1280x720', 'fps': 24, 'file': 'output.mp4'}
+    restored = realm.call([inverse([accepted['receipt']['receipt_id']])])
+    assert 'output' not in bundle_from_document(restored['data']['canonical_document'])['parent']['config']
+    redone = realm.call([inverse([restored['receipt']['receipt_id']])])
+    assert bundle_from_document(redone['data']['canonical_document'])['parent']['config']['output']['resolution'] == '1280x720'

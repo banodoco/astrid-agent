@@ -913,7 +913,7 @@ def _validate_managed_profile_theme_compatibility(
         )
     except (TypeError, ValueError, OSError, FileNotFoundError) as exc:
         raise CapabilityValidationError(
-            f"cannot resolve authoritative theme canvas for canonical timeline "
+            f"cannot resolve authored timeline canvas for canonical timeline "
             f"{timeline_slug!r}: {exc}. Fix the timeline theme and retry"
         ) from exc
 
@@ -926,13 +926,13 @@ def _validate_managed_profile_theme_compatibility(
         requested = profile.get(field)
         if requested != expected:
             mismatches.append(
-                f"{field}={requested!r} (authoritative theme canvas produces {expected!r})"
+                f"{field}={requested!r} (authored timeline canvas produces {expected!r})"
             )
     if mismatches:
         raise CapabilityValidationError(
             f"invalid render profile for canonical timeline {timeline_slug!r}: "
             + "; ".join(mismatches)
-            + ". Explicit profiles must match the authoritative theme canvas; "
+            + ". Explicit profiles must match the authored timeline canvas; "
             "use the default profile from timelines render --help or set "
             "theme_overrides.visual.canvas to the requested width, height, and fps, then retry"
         )

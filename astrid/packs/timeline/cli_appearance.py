@@ -43,10 +43,17 @@ def command(parsed):
         state = State(session._bundle(session._state()))
         owner = ref.rsplit('/', 1)[0]
         config = state.config(owner)
-        source_size = canvas(config, ref)
-        size = canvas(state.config('parent'), ref) if owner != 'parent' else source_size
         normalized = package_query({'operation': 'normalize', 'config': {**config,
             'clips': state.collection(owner, 'clip'), 'tracks': state.collection(owner, 'track')}})
+        source_size = canvas(normalized['config'], ref)
+        if owner != 'parent':
+            parent_config = state.config('parent')
+            parent_normalized = package_query({'operation': 'normalize', 'config': {**parent_config,
+                'clips': state.collection('parent', 'clip'), 'tracks': state.collection('parent', 'track')}})
+            size = canvas(parent_normalized['config'], ref)
+        else:
+            parent_normalized = None
+            size = source_size
         if kind == 'track':
             row = next(row for row in normalized['config']['tracks'] if row.get('id') == ref.rsplit('/', 1)[1].split(':', 1)[1])
             answer = {'track': row, 'migration': normalized['findings']}
@@ -61,7 +68,7 @@ def command(parsed):
             intrinsic = {'width': int(match[1]), 'height': int(match[2])}
             answer = {'placement': package_query({'operation': 'resolve', 'input': {
                 'clip': clip, 'track': track, 'canvas': size, 'intrinsic': intrinsic}}),
-                'source_canvas': source_size, 'canvas': size, 'migration': normalized['findings']}
+                'source_canvas': source_size, 'source_canvas_owner': owner, 'canvas': size, 'canvas_owner': 'parent', 'migration': (parent_normalized['findings'] if parent_normalized else []) + normalized['findings']}
         return print_result(DomainResult.success(answer), as_json=parsed.json,
                             human_renderer=lambda value: json.dumps(value, indent=2, ensure_ascii=False))
     except Exception as exc:

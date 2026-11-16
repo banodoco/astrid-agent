@@ -46,10 +46,19 @@ def canvas(config, ref):
 def normalize_owner(ctx, ref):
     """Capture all normalizer dependencies and record its bounded changes."""
     owner = ref.rsplit('/', 1)[0]
+    findings = []
+    if owner != 'parent':
+        findings.extend(_normalize_one(ctx, 'parent', ref))
+    findings.extend(_normalize_one(ctx, owner, ref))
+    return findings
+
+
+def _normalize_one(ctx, owner, ref):
     config = copy.deepcopy(ctx.state.config(owner))
-    canvas(config, ref)
-    ctx.read('parent' if owner == 'parent' else owner + '/source',
-             ['config', 'output'] if owner == 'parent' else ['output'])
+    source = 'parent' if owner == 'parent' else owner + '/source'
+    prefix = ['config'] if owner == 'parent' else []
+    ctx.read(source, prefix + ['output'])
+    ctx.read(source, prefix + ['theme_overrides', 'visual', 'canvas'])
     clips = ctx.select('collection.clips', owner)
     tracks = ctx.select('collection.tracks', owner)
     config['clips'] = []
@@ -59,6 +68,23 @@ def normalize_owner(ctx, ref):
         (config['tracks'] if '/track:' in entity else config['clips']).append(row)
     result = package_query({'operation': 'normalize', 'config': config})
     normalized = result['config']
+    canvas(normalized, ref)
+    old_output, new_output = config.get('output'), normalized.get('output')
+    if old_output != new_output:
+        if 'output' in config and old_output is None:
+            raise CommandError(f'{ref} property output is null and cannot be materialized safely')
+        old_fields = old_output or {}
+        if (not isinstance(old_fields, dict) or not isinstance(new_output, dict)
+                or any(new_output.get(key) != value for key, value in old_fields.items())
+                or set(new_output) - set(old_fields) - {'resolution', 'fps', 'file'}):
+            raise CommandError('placement normalizer changed unsupported output property')
+        if owner == 'parent' and old_output is None and any(
+                item.get('kind') == 'canvas' and item.get('source') == 'theme_overrides.visual.canvas'
+                for item in result.get('findings', [])):
+            ctx.dependency('placement.canvas.materialization', 'entity', {
+                'ref': source, 'path': prefix + ['output'], 'after': copy.deepcopy(new_output),
+                'authored_canvas': copy.deepcopy(config.get('theme_overrides', {}).get('visual', {}).get('canvas'))})
+        ctx.write(source, prefix + ['output'], new_output)
     for kind, refs in (('track', tracks), ('clip', clips)):
         before = config[kind + 's']
         after = normalized[kind + 's']
@@ -93,12 +119,12 @@ def normalize_revision_closure(parent, internals):
     if separate and embedded and separate != embedded:
         raise CommandError('parent clip collections disagree before placement normalization')
     config['clips'] = copy.deepcopy(separate or embedded)
-    media = lambda row: any(isinstance(c, dict) and c.get('clipType', 'media') == 'media' for c in row.get('clips', []))
+    media = lambda row: any(isinstance(c, dict) and c.get('clipType', 'media') in ('media', 'image', 'video') for c in row.get('clips', []))
     needs_canvas = media(config) or any(media(row['payload']) for row in internals)
     if not needs_canvas:
         return parent, internals, []
-    parent_canvas = canvas(config, 'parent timeline')
     result = package_query({'operation': 'normalize', 'config': config})
+    canvas(result['config'], 'parent timeline')
     payload['config'] = result['config']
     if separate:
         payload['clips'] = copy.deepcopy(result['config']['clips'])
@@ -107,8 +133,8 @@ def normalize_revision_closure(parent, internals):
         child = row['payload']
         if not media(child):
             continue
-        child_canvas = canvas(child, f"internal timeline {row.get('revision_id')}")
         normalized = package_query({'operation': 'normalize', 'config': child})
+        canvas(normalized['config'], f"internal timeline {row.get('revision_id')}")
         row['payload'] = normalized['config']
         findings.extend({'owner': row.get('revision_id'), **item} for item in normalized['findings'])
     return parent, internals, findings

@@ -62,11 +62,11 @@ def expand_shot_clips(
     # The legacy expander cannot carry child track groups. Normalize the
     # source copy first, then refuse children whose context would be lost.
     config = deepcopy(dict(config))
-    canvas(config, 'parent timeline')
     normalized = package_query({'operation': 'normalize', 'config': config})
     if normalized['findings']:
         _LOGGER.warning('Parent placement migrations: %s', normalized['findings'])
     config = normalized['config']
+    canvas(config, 'parent timeline')
     raw_clips = config.get("clips", [])
     if not isinstance(raw_clips, list):
         raise ShotExpansionError("timeline clips must be a list")
@@ -167,14 +167,14 @@ def expand_shot_clips(
             ) from exc
 
         sub_config = deepcopy(dict(sub_config))
-        canvas(sub_config, f"shot {clip.get('id', '?')}")
         normalized = package_query({'operation': 'normalize', 'config': sub_config})
         if normalized['findings']:
             _LOGGER.warning('Shot %s placement migrations: %s', clip.get('id', '?'), normalized['findings'])
         sub_config = normalized['config']
+        canvas(sub_config, f"shot {clip.get('id', '?')}")
         raw_sub_clips = sub_config.get("clips", [])
         for source_clip in raw_sub_clips if isinstance(raw_sub_clips, list) else []:
-            if isinstance(source_clip, Mapping) and source_clip.get('clipType') == 'media':
+            if isinstance(source_clip, Mapping) and source_clip.get('clipType', 'media') in ('media', 'image', 'video'):
                 raise ShotExpansionError(
                     f"Shot clip {clip.get('id', '?')} child clip {source_clip.get('id', '?')} "
                     "property track cannot be preserved by legacy expansion"

@@ -225,3 +225,15 @@ test('an override conflicting with either legacy clock is refused', async () => 
     'override conflicting with explicit render clock',
   );
 });
+
+test('authored output wins over theme canvas and invalid output is refused', async () => {
+  const timeline = timelineWithDuration(20, {
+    output: {resolution: '1280x720', fps: 24, file: 'out.mp4'},
+    theme_overrides: {visual: {canvas: {width: 1920, height: 1080, fps: 30}}},
+  });
+  assertSameMetadata(await metadataFor(propsFor(timeline)), {
+    width: 1280, height: 720, fps: 24, durationInFrames: 20,
+  });
+  timeline.output.resolution = 'invalid';
+  await assert.rejects(metadataFor(propsFor(timeline)), /output\.resolution/);
+});

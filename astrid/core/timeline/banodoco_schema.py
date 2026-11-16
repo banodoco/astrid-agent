@@ -39,7 +39,7 @@ try:
         ThemeOverrides as SharedThemeOverrides,
     )
     from banodoco_timeline_schema import (
-        TimelineClip as SharedTimelineClip,
+        TimelineClip as UpstreamSharedTimelineClip,
     )
     from banodoco_timeline_schema import (
         TimelineConfig as SharedTimelineConfig,
@@ -58,7 +58,7 @@ except ImportError:  # pragma: no cover
     # validation fails loudly with install instructions. Install with:
     #   python -m pip install -e /path/to/banodoco-workspace/packages/timeline-schema/python
     SharedTimelineOutput = dict  # type: ignore[assignment,misc]
-    SharedTimelineClip = dict  # type: ignore[assignment,misc]
+    UpstreamSharedTimelineClip = dict  # type: ignore[assignment,misc]
     SharedThemeOverrides = dict  # type: ignore[assignment,misc]
     SharedTheme = dict  # type: ignore[assignment,misc]
     SharedTimelineConfig = dict  # type: ignore[assignment,misc]
@@ -70,6 +70,13 @@ except ImportError:  # pragma: no cover
         height = int(canvas.get("height", 1080)) if isinstance(canvas, dict) else 1080
         fps = float(canvas.get("fps", 30)) if isinstance(canvas, dict) else 30.0
         return {"resolution": f"{width}x{height}", "fps": fps, "file": "output.mp4"}
+
+if UpstreamSharedTimelineClip is dict:  # optional schema dependency unavailable
+    SharedTimelineClip = dict
+else:
+    class SharedTimelineClip(UpstreamSharedTimelineClip, total=False):
+        """Runtime-owned clip fit added over the pinned upstream schema type."""
+        fit: Literal['contain', 'cover']
 
 TimelineClip = SharedTimelineClip
 TimelineConfig = SharedTimelineConfig

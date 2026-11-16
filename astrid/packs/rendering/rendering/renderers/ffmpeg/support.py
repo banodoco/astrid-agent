@@ -871,6 +871,13 @@ def _rational_equal(a: Any, b: Any) -> bool:
 
 
 def _canvas(timeline_data: Mapping[str, Any]) -> tuple[int, int, int]:
+    from astrid.core.rendering.profile import explicit_timeline_canvas
+    explicit = explicit_timeline_canvas(timeline_data)
+    if explicit is not None:
+        values = [explicit[key] for key in ('width', 'height', 'fps')]
+        if any(isinstance(v, bool) or not isinstance(v, int) or v <= 0 for v in values):
+            raise ValueError('Canvas dimensions and fps must be positive integers')
+        return tuple(values)
     overrides = timeline_data.get("theme_overrides")
     visual = overrides.get("visual") if isinstance(overrides, Mapping) else None
     canvas = visual.get("canvas") if isinstance(visual, Mapping) else None
@@ -902,7 +909,8 @@ def _theme_canvas_reasons(
     another canvas would be rendered on the wrong one.
     """
 
-    if _has_canvas_override(timeline_data):
+    from astrid.core.rendering.profile import explicit_timeline_canvas
+    if explicit_timeline_canvas(timeline_data) is not None or _has_canvas_override(timeline_data):
         return []
     remotion_config = request.backend_config.get("rendering.remotion", {})
     theme_path = remotion_config.get("theme_path") if isinstance(remotion_config, Mapping) else None
