@@ -11,36 +11,42 @@ concurrency:
   cancel-in-progress: false
 jobs:
   inspect:
-    name: Inspect existing Windows meter evidence without rerunning generation
+    name: Inspect existing Windows evidence only, not product qualification
     runs-on: ubuntu-latest
     timeout-minutes: 12
-    outputs:
-      diagnosis: ${{ steps.extract.outputs.diagnosis }}
     steps:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Read only small result members of the original archive
-        id: extract
+      - name: Verify the current archive and print bounded diagnostic members
         shell: python
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          import hashlib, json, os, pathlib, re, urllib.error, urllib.parse, urllib.request, zipfile
+          import hashlib, json, os, pathlib, urllib.error, urllib.parse, urllib.request, zipfile
           import xml.etree.ElementTree as ET
           artifact = 14260928127
-          expected = "e96b3c8ef56f5c5b065f1d90b0d639db22887ec0c4591002d9d3cd7243f99044"
+          expected = "79ff6ce339b569cd769c993705edb9cf4f133439d0b9ccac6d46df7e7da25578"
+          previous_reported = "e96b3c8ef56f5c5b065f1d90b0d639db22887ec0c4591002d9d3cd7243f99044"
           out = pathlib.Path("diagnostic")
           out.mkdir()
+          headers = {"Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                     "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+          endpoint = f"https://api.github.com/repos/banodoco/astrid-agent/actions/artifacts/{artifact}"
+          with urllib.request.urlopen(urllib.request.Request(endpoint, headers=headers), timeout=60) as response:
+              metadata = json.load(response)
+          identity = {"previous_connector_reported_sha256": previous_reported,
+                      "expected_current_sha256": expected, "live_metadata": metadata}
+          (out / "identity.json").write_text(json.dumps(identity, indent=2), encoding="utf-8")
+          if metadata.get("digest") != "sha256:" + expected:
+              raise RuntimeError("fresh GitHub artifact digest differs from current inventory")
+          if metadata["workflow_run"]["id"] != 43934937473 or metadata["workflow_run"]["head_sha"] != "13a6501b730ce1038ed17be893fdb05ac3935d24":
+              raise RuntimeError("artifact is not the selected Plan 55 candidate/run")
           class NoRedirect(urllib.request.HTTPRedirectHandler):
               def redirect_request(self, req, fp, code, msg, headers, newurl):
                   return None
-          request = urllib.request.Request(
-              f"https://api.github.com/repos/banodoco/astrid-agent/actions/artifacts/{artifact}/zip",
-              headers={"Authorization": "Bearer " + os.environ["GH_TOKEN"],
-                       "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"})
           try:
-              urllib.request.build_opener(NoRedirect).open(request, timeout=60)
+              urllib.request.build_opener(NoRedirect).open(urllib.request.Request(endpoint + "/zip", headers=headers), timeout=60)
               raise RuntimeError("expected temporary archive redirect")
           except urllib.error.HTTPError as exc:
               if exc.code != 302:
@@ -48,75 +54,58 @@ jobs:
               location = exc.headers["Location"]
           if urllib.parse.urlsplit(location).scheme != "https":
               raise RuntimeError("archive redirect is not HTTPS")
-          digest = hashlib.sha256()
-          total = 0
+          digest, total = hashlib.sha256(), 0
           archive = pathlib.Path("original.zip")
-          # No Authorization header is forwarded to storage. No signed URL is logged.
+          # Storage receives no repository Authorization header. No signed URL is logged.
           with urllib.request.urlopen(location, timeout=120) as source, archive.open("wb") as target:
               while chunk := source.read(1024 * 1024):
                   total += len(chunk)
                   if total > 800 * 1024 * 1024:
-                      raise RuntimeError("archive exceeds declared diagnostic bound")
+                      raise RuntimeError("archive exceeds diagnostic bound")
                   digest.update(chunk)
                   target.write(chunk)
+          identity.update(actual_download_sha256=digest.hexdigest(), downloaded_bytes=total)
+          (out / "identity.json").write_text(json.dumps(identity, indent=2), encoding="utf-8")
+          print("IDENTITY", json.dumps({key: value for key, value in identity.items() if key != "live_metadata"}))
           if digest.hexdigest() != expected:
-              raise RuntimeError("original artifact hash mismatch")
+              raise RuntimeError("current downloaded archive does not match live GitHub metadata")
           cases, excerpts = [], []
           with zipfile.ZipFile(archive) as zipped:
               inventory = [{"name": item.filename, "bytes": item.file_size} for item in zipped.infolist()]
               (out / "inventory.json").write_text(json.dumps(inventory, indent=2), encoding="utf-8")
               for item in zipped.infolist():
                   name = item.filename
-                  # Never parse the large native ETW XML or extract any archive path.
                   if name.endswith("summary.json") and item.file_size <= 4 * 1024 * 1024:
                       raw = zipped.read(item)
                       data = json.loads(raw)
                       excerpts.append({"member": name, "sha256": hashlib.sha256(raw).hexdigest(), "data": data})
+                      print("SUMMARY", name, json.dumps(data)[:8000])
                   elif name.endswith(".xml") and item.file_size <= 8 * 1024 * 1024 and ("junit" in name.lower() or "latency" in name.lower() or "counter" in name.lower()):
                       root = ET.fromstring(zipped.read(item))
                       for case in root.iter("testcase"):
                           for child in case:
                               if child.tag in {"failure", "error"}:
                                   text = child.get("message", "") + "\n" + (child.text or "")
-                                  cases.append({"member": name, "test": case.get("name"), "kind": child.tag,
-                                                "message": text[:6000]})
+                                  row = {"member": name, "test": case.get("name"), "kind": child.tag, "message": text[:6000]}
+                                  cases.append(row)
+                                  print("TEST_FAILURE", json.dumps(row)[:4500])
                   elif name.endswith(".log") and "meter" in name and item.file_size <= 32 * 1024 * 1024:
                       tail = bytearray()
                       with zipped.open(item) as stream:
                           while chunk := stream.read(65536):
                               tail.extend(chunk)
-                              if len(tail) > 24000:
-                                  del tail[:-24000]
-                      excerpts.append({"member": name, "tail": tail.decode("utf-8", errors="replace")})
+                              if len(tail) > 12000:
+                                  del tail[:-12000]
+                      text = tail.decode("utf-8", errors="replace")
+                      excerpts.append({"member": name, "tail": text})
+                      print("LOG_TAIL", name, text[-5000:])
           result = {"source_run": 43934937473, "artifact": artifact, "archive_sha256": expected,
                     "cases": cases, "excerpts": excerpts,
-                    "scope": "existing evidence extraction only; no product or generation execution"}
+                    "scope": "current evidence extraction; not a replay of the earlier differently reported ZIP, not product execution"}
           (out / "result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
-          parts = []
-          for case in cases:
-              text = " ".join(case["message"].split())
-              parts.append(str(case["test"]) + ": " + text[:280])
-          if not parts:
-              for value in excerpts:
-                  if "data" in value:
-                      parts.append(value["member"] + ": " + json.dumps(value["data"], separators=(",", ":"))[:500])
-          message = " | ".join(parts)[:1600] or "No JUnit failures found; inspect retained bounded summary"
-          message = re.sub(r"Bearer\s+\S+", "Bearer [redacted]", message)
-          # Job metadata exposes a bounded diagnosis when the log-reading tool is unavailable.
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as target:
-              target.write("diagnosis=" + message.replace("\n", " ") + "\n")
-          print(message)
       - uses: actions/upload-artifact@v4
         if: ${{ always() }}
         with:
           name: plan55-bounded-current-diagnostic-${{ github.run_id }}
           path: diagnostic
           retention-days: 14
-  diagnosis:
-    name: "Diagnostic only — ${{ needs.inspect.outputs.diagnosis }}"
-    needs: inspect
-    runs-on: ubuntu-latest
-    timeout-minutes: 2
-    steps:
-      - name: Record extraction completion, not product success
-        run: echo 'Existing artifact inspected; this job does not qualify the product.'
