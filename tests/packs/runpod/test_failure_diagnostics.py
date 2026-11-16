@@ -316,8 +316,8 @@ def test_bounded_observer_has_no_token_in_process_metadata():
 
 
 @pytest.mark.parametrize('mode', [
-    pytest.param('partial', marks=pytest.mark.skipif(sys.platform == 'win32', reason='raw pipe FD is POSIX-only')),
-    pytest.param('oversized', marks=pytest.mark.skipif(sys.platform == 'win32', reason='raw pipe FD is POSIX-only')),
+    pytest.param('partial', marks=pytest.mark.posix_native),
+    pytest.param('oversized', marks=pytest.mark.posix_native),
     'late', 'eof',
 ])
 def test_bounded_observer_rejects_malformed_or_late_child_frame(tmp_path, monkeypatch, mode):
@@ -338,7 +338,7 @@ def test_bounded_observer_rejects_malformed_or_late_child_frame(tmp_path, monkey
     assert {child.pid for child in multiprocessing.active_children()} == before
 
 
-@pytest.mark.skipif(sys.platform == 'win32', reason='raw partial-frame pipe writing is POSIX-only')
+@pytest.mark.posix_native
 @pytest.mark.parametrize('early_abort', [False, True])
 def test_partial_ipc_from_unkillable_caller_returns_with_pending_fence(monkeypatch, early_abort):
     import multiprocessing

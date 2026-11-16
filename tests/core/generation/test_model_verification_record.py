@@ -581,9 +581,8 @@ def test_prior_schema_record_is_a_miss(model, schema):
     assert json.loads(saved.read_text())['schema'] == 'astrid.model-verification.v3'
 
 
+@pytest.mark.posix_native
 def test_non_utf8_filename_hashes_then_reuses(tmp_path, monkeypatch):
-    if os.name != 'posix':
-        pytest.skip('requires POSIX surrogateescape filenames')
     name = os.fsdecode(b'weight-\xff.bin')
     try:
         m = make_model(tmp_path, monkeypatch, name)
