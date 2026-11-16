@@ -1,0 +1,82 @@
+name: Plan 55 real CPU floor
+
+on:
+  pull_request:
+    branches: ["int/55-local-speed"]
+    paths:
+      - "tests/local_speed/cpu_floor_runner.py"
+      - "tests/local_speed/test_cpu_floor_runner.py"
+      - ".github/workflows/plan55-cpu-floor.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: plan55-cpu-floor-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  cpu-floor:
+    name: Real ComfyUI CPU floor (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out the existing Plan 55 probes
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-dev
+          ref: ab73cc12c8d90762e8e6e7e664ff5a32a360cc0d
+          path: floor-dev
+      - name: Check out unchanged Release 13 Runtime
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-runtime
+          ref: 6855dfa8df65cf8ae4c002b57134d6505493c17c
+          path: floor-runtime
+      - name: Check out the existing ComfyUI pin
+        uses: actions/checkout@v4
+        with:
+          repository: Comfy-Org/ComfyUI
+          ref: 6bfaacc67c2103481e5f0c84d75257cd0581d86a
+          path: floor-comfy
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Check the result validator
+        run: python tests/local_speed/test_cpu_floor_runner.py
+      - name: Retain exact source snapshots for scoped continuation
+        shell: python
+        run: |
+          from pathlib import Path
+          import subprocess
+          out = Path("floor-sources").resolve()
+          out.mkdir()
+          for name, root in (("agent", "."), ("dev", "floor-dev"), ("runtime", "floor-runtime"), ("comfy", "floor-comfy")):
+              subprocess.run(["git", "archive", "--format=zip", "--output", str(out / (name + ".zip")), "HEAD"], cwd=root, check=True)
+      - name: Preserve source snapshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: plan55-cpu-sources-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: floor-sources
+          retention-days: 7
+      - name: Install CPU-only PyTorch
+        run: python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+      - name: Install real ComfyUI and unchanged Runtime dependencies
+        run: python -m pip install -r floor-comfy/requirements.txt -e ./floor-runtime -e ./floor-runtime/packages/python
+      - name: Measure the real CPU floor, without weights
+        run: python tests/local_speed/cpu_floor_runner.py --comfy floor-comfy --runtime floor-runtime --dev floor-dev --output floor-results --samples 20
+      - name: Preserve results and original failures
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: plan55-real-cpu-floor-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: floor-results
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
