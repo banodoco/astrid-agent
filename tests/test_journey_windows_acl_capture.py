@@ -66,7 +66,7 @@ def test_retention_and_capture_sink_failure(tmp_path, monkeypatch):
     capture.capture(tmp_path, tmp_path, evidence)
 
 
-@pytest.mark.skipif(sys.platform != 'win32', reason='requires Windows security APIs')
+@pytest.mark.windows_native
 def test_windows_explicit_users_ace_and_hardlink(tmp_path):
     # Create fixture objects with descriptors at creation; no existing ACL is changed.
     import ctypes
