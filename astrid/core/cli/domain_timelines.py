@@ -1274,8 +1274,8 @@ def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument(
         "--out", default=None, metavar="DIR",
         help=(
-            "Also copy the view's page(s) and its raw frames (frames/, frame-index.json) to DIR once it "
-            "settles; the managed copy stays where the summary says."
+            "Also copy the view's page(s), Markdown, and raw frames (frames/, frame-index.json) to DIR "
+            "once it settles; the managed copy stays where the summary says."
         ),
     )
 

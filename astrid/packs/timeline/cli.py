@@ -1779,9 +1779,14 @@ def _cmd_visualize(parsed: argparse.Namespace) -> int:
     return cmd_visualize(parsed)
 
 
-def _export_visualization(outputs: Mapping[str, Any], out_dir: str) -> dict[str, Any]:
-    """``--out DIR``: copy the view's page(s) and its raw frames (with frame-index.json) to DIR."""
+def _export_visualization(
+    outputs: Mapping[str, Any], out_dir: str, *, client: Any = None, project: str | None = None,
+) -> dict[str, Any]:
+    """``--out DIR``: copy settled visualization pages, Markdown, and raw frames to DIR."""
+    import hashlib
+    import os
     import shutil
+    import tempfile
 
     dest = Path(out_dir).expanduser().resolve()
     dest.mkdir(parents=True, exist_ok=True)
@@ -1790,9 +1795,54 @@ def _export_visualization(outputs: Mapping[str, Any], out_dir: str) -> dict[str,
     if primary and str(primary) not in pages:
         pages.insert(0, str(primary))
     copied_pages, copied_frames = [], []
+    copied_markdown = None
+    markdown = outputs.get("markdown")
+    if isinstance(markdown, (str, os.PathLike)):
+        markdown_source = Path(markdown)
+        if markdown_source.is_file():
+            shutil.copy2(markdown_source, dest / markdown_source.name)
+            copied_markdown = str(dest / markdown_source.name)
+    artifacts = outputs.get("artifacts")
+    if isinstance(artifacts, Mapping):
+        for kind, artifact in artifacts.items():
+            if kind not in {"png", "md"} or not isinstance(artifact, Mapping):
+                continue
+            if artifact.get("status") not in (None, "available"):
+                continue
+            object_id = artifact.get("object_id") or artifact.get("digest")
+            if not isinstance(object_id, str) or not object_id:
+                continue
+            if client is None or not project:
+                raise RuntimeError(f"cannot export managed visualization artifact {kind} without Runtime client/project")
+            with tempfile.TemporaryDirectory(prefix=".astrid-artifact-", dir=dest) as scratch:
+                opened = client.media.open(
+                    project, object_id, materialize=True, cache_root=Path(scratch), max_bytes=64 * 1024 * 1024,
+                )
+                if not getattr(opened, "ok", False):
+                    error = getattr(opened, "error", None) or {}
+                    message = error.get("message") if isinstance(error, Mapping) else None
+                    raise RuntimeError(f"could not materialize visualization artifact {kind} {object_id}: {message or opened}")
+                opened_data = getattr(opened, "data", None)
+                local_path = opened_data.get("local_path") if isinstance(opened_data, Mapping) else None
+                if not isinstance(local_path, str) or not Path(local_path).is_file():
+                    raise RuntimeError(f"Runtime returned no materialized file for visualization artifact {kind} {object_id}")
+                source = Path(local_path)
+                target = dest / source.name
+                if target.exists():
+                    expected = object_id.removeprefix("sha256:")
+                    actual = hashlib.sha256(target.read_bytes()).hexdigest()
+                    if actual != expected:
+                        raise FileExistsError(f"refusing to overwrite different file while exporting: {target}")
+                else:
+                    shutil.copy2(source, target)
+            if kind == "md":
+                copied_markdown = str(target)
+            elif str(target) not in copied_pages:
+                copied_pages.append(str(target))
     for page in pages:
         source = Path(page)
-        if source.is_file():
+        target = dest / source.name
+        if source.is_file() and str(target) not in copied_pages:
             shutil.copy2(source, dest / source.name)
             copied_pages.append(str(dest / source.name))
     view_dir = Path(pages[0]).parent if pages else None
@@ -1804,7 +1854,25 @@ def _export_visualization(outputs: Mapping[str, Any], out_dir: str) -> dict[str,
                 copied_frames.append(str(dest / "frames" / frame.name))
         if (view_dir / "frame-index.json").is_file():
             shutil.copy2(view_dir / "frame-index.json", dest / "frame-index.json")
-    return {"dir": str(dest), "pages": copied_pages, "frames": copied_frames}
+    return {
+        "dir": str(dest), "pages": copied_pages, "markdown": copied_markdown,
+        "frames": copied_frames,
+    }
+
+
+def _astrid_cli_command() -> list[str]:
+    """Return the command prefix used to invoke this Astrid CLI process."""
+    original = getattr(sys, "orig_argv", ())
+    for index in range(len(original) - 1):
+        if original[index] == "-m" and original[index + 1] == "astrid":
+            # Preserve the selected interpreter for ``python -m astrid`` calls.
+            return [*original[:index], "-m", "astrid"]
+
+    argv0 = sys.argv[0] if sys.argv else "astrid"
+    if Path(argv0).name == "__main__.py" and Path(argv0).parent.name == "astrid":
+        # Direct execution of the package entry point is equivalent to module mode.
+        return [sys.executable, "-m", "astrid"]
+    return [argv0]
 
 
 def _visualization_navigation_help(
@@ -1814,8 +1882,9 @@ def _visualization_navigation_help(
     resolved_project, resolved_timeline = _navigation_scope(
         project=project, timeline=inputs.get("timeline_slug"), outputs=outputs,
     )
+    astrid_command = _astrid_cli_command()
     identity = [
-        "python3", "-m", "astrid", "timelines", "visualize",
+        *astrid_command, "timelines", "visualize",
         "--project", resolved_project,
     ]
     timeline = resolved_timeline
@@ -1899,7 +1968,7 @@ def _visualization_navigation_help(
     pages = outputs.get("pages")
     primary_page = pages[0] if isinstance(pages, list) and pages else outputs.get("png")
     manifest_ref = outputs.get("manifest_path") or "MANIFEST"
-    inspect_base = ["python3", "-m", "astrid", "timelines", "inspect", "--manifest", str(manifest_ref)]
+    inspect_base = [*astrid_command, "timelines", "inspect", "--manifest", str(manifest_ref)]
     output_components = outputs.get("components")
     if not isinstance(output_components, (list, tuple)):
         surface = outputs.get("static_surface")
@@ -1937,7 +2006,7 @@ def _visualization_navigation_help(
     )
     show_command = shlex.join(
         [
-            "python3", "-m", "astrid", "timelines", "show",
+            *astrid_command, "timelines", "show",
             "--project", resolved_project,
             *([str(timeline)] if timeline not in (None, "") else []),
             *show_source,
@@ -1964,7 +2033,7 @@ def _visualization_navigation_help(
             "rerun": shlex.join(base()),
             "visualize": shlex.join(base()),
             "show": show_command,
-            "controls": "python3 -m astrid timelines visualize --help",
+            "controls": shlex.join([*astrid_command, "timelines", "visualize", "--help"]),
             "zoom": shlex.join(clean + ["--range", "START..END", "--every", "0.25", *zoom_detail]),
             "interval_seconds": shlex.join(clean + ["--every", "1"]),
             "interval_frames": shlex.join(clean + ["--every-frames", "12"]),
