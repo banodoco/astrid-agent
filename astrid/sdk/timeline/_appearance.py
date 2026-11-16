@@ -62,6 +62,26 @@ def canonicalize_rect_aliases(config):
     return result, findings
 
 
+def in_memory_canvas_warnings(findings):
+    """Report absent-output materializations with their exact package provenance."""
+    warnings = []
+    for finding in findings:
+        if (not isinstance(finding, dict) or finding.get('kind') != 'canvas'
+                or not isinstance(finding.get('source'), str)
+                or finding.get('before') is not None):
+            continue
+        output = finding.get('after') or {}
+        source = finding['source']
+        if source == 'legacy-render-resolved':
+            message = (f"Legacy render-resolved canvas {output.get('resolution')} at {output.get('fps')} fps "
+                       "was used in memory; the timeline was not changed.")
+        else:
+            message = (f"Canvas {output.get('resolution')} at {output.get('fps')} fps from {source} "
+                       "was used in memory and not written to the timeline.")
+        warnings.append({**finding, 'message': message})
+    return warnings
+
+
 def normalize_for_read(config, *, parent_canvas=False):
     """Normalize a copy, supplying only the existing export resolver's legacy fact.
 
@@ -72,7 +92,7 @@ def normalize_for_read(config, *, parent_canvas=False):
         output = canonical['output']
         if not isinstance(output, dict):
             raise CommandError('timeline property output is invalid; expected a complete authored output')
-        if 'resolution' in output and not {'resolution', 'fps', 'file'} <= set(output):
+        if not {'resolution', 'fps', 'file'} <= set(output):
             raise CommandError('timeline property output is incomplete; resolution, fps and file are required')
     request = {'operation': 'normalize', 'config': canonical}
     if parent_canvas and 'output' not in canonical:

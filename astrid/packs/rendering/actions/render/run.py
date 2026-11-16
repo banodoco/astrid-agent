@@ -292,11 +292,8 @@ def _write_render_manifest(output: Path, *, timeline_path: Path, selector: str, 
         )
     expansion = timeline_authority.get('expansion', {}) if isinstance(timeline_authority, Mapping) else {}
     findings = expansion.get('placement_migrations', []) if isinstance(expansion, Mapping) else []
-    warnings = []
-    for finding in findings:
-        if isinstance(finding, Mapping) and finding.get('source') == 'legacy-render-resolved':
-            output_config = finding.get('after', {})
-            warnings.append(f"Legacy render-resolved canvas {output_config.get('resolution')} at {output_config.get('fps')} fps was used in memory; the timeline was not changed.")
+    from astrid.sdk.timeline._appearance import in_memory_canvas_warnings
+    warnings = [item['message'] for item in in_memory_canvas_warnings(findings)]
     manifest = build_manifest(
         kind="rendering.render",
         warnings=warnings,

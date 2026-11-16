@@ -198,3 +198,20 @@ def test_appearance_inspects_canvasless_parent_with_named_legacy_warning(command
     assert data['warnings'][0]['source'] == 'legacy-render-resolved'
     assert data['warnings'][0]['after']['resolution'] == '1920x1080'
     assert parent == original and generated.calls == []
+
+
+def test_appearance_warns_for_authored_canvas_override_without_output(command, capsys):
+    run, generated = command
+    parent = generated.bundles['r0']['parent']
+    parent['config'].pop('output', None)
+    parent['config']['theme_overrides'] = {'visual': {'canvas': {'width': 1280, 'height': 720, 'fps': 30}}}
+    parent['registry'] = {'assets': {'matrix': {'resolution': '1920x800'}}}
+    parent['clips'][0].update(clipType='media', asset='matrix', fit='cover')
+    original = copy.deepcopy(parent)
+    assert run('appearance', 't', '--project', 'p', '--clip', 'parent/clip:a', '--json') == 0
+    data = json.loads(capsys.readouterr().out)['data']
+    warning = data['warnings'][0]
+    assert warning['source'] == 'theme_overrides.visual.canvas'
+    assert warning['after']['resolution'] == '1280x720'
+    assert 'not written' in warning['message']
+    assert parent == original and generated.calls == []

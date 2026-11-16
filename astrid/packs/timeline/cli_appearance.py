@@ -7,7 +7,7 @@ import re
 
 def command(parsed):
     from astrid.sdk.contracts import DomainResult, ErrorObject
-    from astrid.sdk.timeline._appearance import canvas, normalize_for_read, package_query
+    from astrid.sdk.timeline._appearance import canvas, in_memory_canvas_warnings, normalize_for_read, package_query
     from astrid.sdk.timeline._command_state import State
     from astrid.sdk.timeline.sync import TimelineSession
     from astrid.packs.timeline.cli_native import _commit_envelope, _render_commit_result
@@ -56,8 +56,9 @@ def command(parsed):
         else:
             parent_normalized = None
             size = source_size
-        legacy_canvas = [f for f in (parent_normalized['findings'] if parent_normalized else normalized['findings'])
-                         if f.get('source') == 'legacy-render-resolved']
+        canvas_warnings = in_memory_canvas_warnings(
+            parent_normalized['findings'] if parent_normalized else normalized['findings'])
+        legacy_canvas = [f for f in canvas_warnings if f.get('source') == 'legacy-render-resolved']
         source_description = ('not declared; placed in the parent timeline canvas' if source_size is None else
                               'legacy render-resolved; not authored' if owner == 'parent' and legacy_canvas else
                               'declared by the source timeline')
@@ -66,7 +67,7 @@ def command(parsed):
             answer = {'track': row, 'source_canvas': source_size, 'source_canvas_owner': owner,
                 'source_canvas_description': source_description,
                 'canvas': size, 'canvas_owner': 'parent', 'canvas_timeline_id': session.timeline_id,
-                'warnings': legacy_canvas,
+                'warnings': canvas_warnings,
                 'migration': (parent_normalized['findings'] if parent_normalized else []) + normalized['findings']}
         else:
             clip = next(row for row in normalized['config']['clips'] if row.get('id') == ref.rsplit('/', 1)[1].split(':', 1)[1])
@@ -77,7 +78,7 @@ def command(parsed):
                 'source_canvas': source_size, 'source_canvas_owner': owner,
                 'source_canvas_description': source_description,
                 'canvas': size, 'canvas_owner': 'parent', 'canvas_timeline_id': session.timeline_id,
-                'warnings': legacy_canvas, 'migration': (parent_normalized['findings'] if parent_normalized else []) + normalized['findings']}
+                'warnings': canvas_warnings, 'migration': (parent_normalized['findings'] if parent_normalized else []) + normalized['findings']}
         return print_result(DomainResult.success(answer), as_json=parsed.json,
                             human_renderer=lambda value: json.dumps(value, indent=2, ensure_ascii=False))
     except Exception as exc:

@@ -270,6 +270,8 @@ def test_runtime_theme_refused_when_legacy_canvas_was_resolved_without_it():
     with pytest.raises(CapabilityValidationError, match='theme_path.*verified legacy canvas'):
         _reject_uncaptured_legacy_theme(snapshot, {'theme': 'sha256:example'})
     _reject_uncaptured_legacy_theme(snapshot, {})
+    snapshot.expansion['placement_migrations'][0]['source'] = 'theme_overrides.visual.canvas'
+    _reject_uncaptured_legacy_theme(snapshot, {'theme': 'sha256:example'})
 
 
 def test_render_manifest_carries_legacy_canvas_warning(tmp_path):
@@ -305,3 +307,30 @@ def test_guarded_edit_does_not_persist_legacy_render_canvas():
         normalize_owner(ctx, 'parent/clip:a')
     assert ctx.state.bundle == before
     assert not ctx.record['writes']
+
+
+@pytest.mark.parametrize('output', [{}, {'fps': 24}])
+def test_partial_output_with_complete_override_is_refused_before_normalization(output):
+    from astrid.sdk.timeline._appearance import normalize_for_read
+    config = {'output': output, 'theme_overrides': {'visual': {'canvas': {'width': 1280, 'height': 720, 'fps': 30}}},
+              'tracks': [{'id': 'v', 'kind': 'visual'}],
+              'clips': [{'id': 'a', 'track': 'v', 'clipType': 'image', 'asset': 'a'}]}
+    before = copy.deepcopy(config)
+    with pytest.raises(ValueError, match='output.*incomplete'):
+        normalize_for_read(config, parent_canvas=True)
+    assert config == before
+
+
+def test_render_manifest_warns_for_authored_canvas_override_without_output(tmp_path):
+    import json
+    from astrid.packs.rendering.actions.render.run import _write_render_manifest
+    output = tmp_path / 'out.mp4'
+    output.write_bytes(b'video')
+    authority = {'expansion': {'placement_migrations': [{'kind': 'canvas',
+        'source': 'theme_overrides.visual.canvas', 'after': {'resolution': '1280x720', 'fps': 30}}]}}
+    _write_render_manifest(output, timeline_path=tmp_path / 'timeline.json', selector='rendering.remotion',
+                           timeline_authority=authority)
+    warnings = json.loads((tmp_path / 'manifest.json').read_text())['warnings']
+    assert len(warnings) == 1
+    assert 'theme_overrides.visual.canvas' in warnings[0] and '1280x720' in warnings[0]
+    assert 'not written' in warnings[0]
