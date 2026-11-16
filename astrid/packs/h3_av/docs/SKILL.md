@@ -355,3 +355,22 @@ must list its exact kind/id, expected postcondition, observed postcondition,
 and verification result. A network volume that must be preserved is recorded
 as a non-owned resource with its preservation postcondition; it is never
 silently treated as part of pod deletion.
+
+## Source range and framing
+
+A source may be a project media handle (`sha256:…`, `ref:…`, or an earlier
+`run:…` output). Give its half-open source `range` and, optionally, `fit`:
+`fill` (default) center-crops to 16:9; `fit` keeps the whole frame with bars.
+Neither stretches the picture. H3 prepares the selected interval as 24 fps,
+1024×576, and the dry-run reports the original and prepared identities,
+range, fit and decoded timing. A source range must have a whole number of
+24 fps frames and be covered by all present source streams. Input stream starts
+must be known and zero-aligned; sources with unsupported timestamps or pixel
+aspect ratio are refused instead of shifting or stretching them silently.
+An absent audio stream stays absent; a short audio stream is not padded. Plain
+`video_ref` selects the whole video up to its last complete 24-fps frame; the
+selected range is included in the dry-run.
+
+Masks and pixel-coordinate regions refer to the prepared 1024×576 canvas and
+clip-relative clock, after the specified fit. Supply masks already aligned to
+that canvas and time range; H3 does not transform source-coordinate masks.

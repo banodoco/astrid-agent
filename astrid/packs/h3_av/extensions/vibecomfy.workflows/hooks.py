@@ -88,7 +88,21 @@ def _plain_request(inputs: Mapping[str, Any], files: Mapping[str, Any], facts: A
                  "references": [{"asset": "image_ref", "purpose": "appearance"}]}, {"image_ref": str(image)})
     if (inputs or {}).get("frames") is not None:
         raise ValueError("h3 frames is only supported with image_ref; video_ref uses its full source length")
-    duration = int(facts.measure_source_av(video)["video_frames"]) / 24
+    # Preserve the exact compliant-input path; for real footage that needs
+    # conforming, select complete target frames inside its measured duration.
+    try:
+        duration_frames = int(facts.measure_source_av(video)["video_frames"])
+    except ValueError:
+        from fractions import Fraction
+        probe = _shared("conform")._probe(Path(str(video)))
+        stream = next((s for s in probe.get("streams", []) if s.get("codec_type") == "video"), None)
+        try:
+            duration_frames = int(Fraction(str(stream["duration"])) * 24)
+        except (TypeError, KeyError, ValueError, ZeroDivisionError) as exc:
+            raise ValueError("h3 video_ref needs a measurable video duration") from exc
+    if duration_frames <= 0:
+        raise ValueError("h3 video_ref is shorter than one 24 fps frame")
+    duration = duration_frames / 24
     return ({**base, "operation": "edit", "source": {"asset": "video_ref", "range": [0.0, duration]},
              "output": {"duration": duration},
              "changes": {"video": [{"during": [0.0, duration], "area": {"full_frame": True}, "action": "generate"}],
@@ -132,6 +146,8 @@ def build(inputs, files, out, *, engine=None, check_runtime=False):
     bindings = compilation["workflow_inputs"]
     facts.assert_no_unresolved_placeholders(bindings)
     plan = {**stages._sealed_plan(compilation), "request_digest": request.digest}
+    if preparation.get("source_conform"):
+        plan["source_conform"] = preparation["source_conform"]
     source_id = stages._authoritative_source_asset_id(request)
     source = paths[source_id] if source_id else None
     if source is not None and "source_video" in bindings:

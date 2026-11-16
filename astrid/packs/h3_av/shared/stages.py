@@ -114,8 +114,9 @@ def compile_stages(request: H3Request, files: Mapping[str, Any], destination: Pa
     from .prepare import prepare_request
 
     paths, identities = materialize_file_map(request, files, destination / "assets")
-    preparation = prepare_request(request, asset_map=paths)
-    preparation["assets"] = identities
+    preparation = prepare_request(request, asset_map=paths, out_dir=destination)
+    paths = {str(item["asset"]): str(item["path"]) for item in preparation["assets"]}
+    preparation["input_assets"] = identities
     compilation = compile_preparation(preparation, out_dir=destination / "compile")
     return paths, preparation, compilation
 

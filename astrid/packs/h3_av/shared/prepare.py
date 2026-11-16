@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import math
@@ -156,8 +157,7 @@ def _mask_dimensions(path: Path, mask_id: str) -> tuple[int, int]:
 
 
 SOURCE_AV_RATE_CODE = "H3_SOURCE_AV_RATE"
-SOURCE_AV_CONFORM_COMMAND = 'ffmpeg -i IN -vf "fps=24,scale=1024:576,setsar=1" -c:v libx264 -crf 12 -c:a aac OUT'
-SOURCE_AV_CONFORM_HINT = f"conform with: {SOURCE_AV_CONFORM_COMMAND}"
+SOURCE_AV_CONFORM_HINT = "H3 could not prepare the requested audiovisual source"
 _SOURCE_AV_RATE = Fraction(24, 1)
 # One output frame at 24 fps, the same bound compose.py applies to continuation audio coverage.
 _SOURCE_AV_TOLERANCE_SECONDS = 1.0 / 24.0
@@ -220,7 +220,7 @@ def _check_source_av_rate(asset_id: str, path: Path) -> None:
     if video is None:
         raise _SourceAVError(
             f"{SOURCE_AV_RATE_CODE}: source {asset_id!r} has no video stream; {SOURCE_AV_CONFORM_HINT}",
-            code=SOURCE_AV_RATE_CODE, field="source.asset", fix=SOURCE_AV_CONFORM_COMMAND,
+            code=SOURCE_AV_RATE_CODE, field="source.asset", fix="Check the source range, audio and video and retry",
         )
     container = payload.get("format")
     container_duration = _seconds(container.get("duration")) if isinstance(container, Mapping) else None
@@ -260,7 +260,7 @@ def _check_source_av_rate(asset_id: str, path: Path) -> None:
     hint = SOURCE_AV_CONFORM_HINT
     codec = audio.get("codec_name") if audio is not None else None
     if audio is not None and codec != "aac":
-        hint += f" (audio codec is {codec}: the audio must be re-encoded to aac, as the command does)"
+        hint += f" (audio codec is {codec})"
     code = SOURCE_AV_RATE_CODE if r_rate != _SOURCE_AV_RATE or avg_rate != _SOURCE_AV_RATE else (
         "H3_SOURCE_AV_SIZE" if (video.get("width"), video.get("height")) != (1024, 576)
         else SOURCE_AV_RATE_CODE
@@ -268,7 +268,7 @@ def _check_source_av_rate(asset_id: str, path: Path) -> None:
     raise _SourceAVError(
         f"{SOURCE_AV_RATE_CODE}: source {asset_id!r} rejected before any pod is held: "
         f"{'; '.join(problems)}. Measured {measured}. {hint}",
-        code=code, field="source.asset", fix=SOURCE_AV_CONFORM_COMMAND,
+        code=code, field="source.asset", fix="Check the source range, audio and video and retry",
     )
 
 
@@ -432,11 +432,48 @@ def prepare_request(
     width: int = 1024,
     height: int = 576,
     sample_rate: int = 48000,
+    out_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """Create a deterministic preparation manifest without touching a runtime."""
 
     if fps <= 0 or width <= 0 or height <= 0 or sample_rate <= 0:
         raise PreparationError("fps, width, height, and sample_rate must be positive")
+    original_request = request
+    source_conform = None
+    if out_dir is not None:
+        is_v2 = request.value.get("version") == 2
+        if is_v2:
+            candidates = [(i, item) for i, item in enumerate(request.value["media"])
+                          if item.get("role") == "timeline" and item.get("modality") == "video"]
+            source_index, source = candidates[0] if len(candidates) == 1 else (None, None)
+        else:
+            source_index, source = None, request.value.get("source")
+        if isinstance(source, Mapping) and source.get("range") and asset_map and source["asset"] in asset_map:
+            from .conform import conform_source
+            from .engine_facts import facts
+            original_path = Path(asset_map[source["asset"]])
+            start, end = source["range"]
+            source_conform = conform_source(
+                original_path, Path(out_dir) / "conformed-source", start=str(start), end=str(end),
+                fit=source.get("fit", "fill"),
+                validate=facts().measure_source_av,
+            )
+            asset_map = dict(asset_map)
+            asset_map[source["asset"]] = str(Path(out_dir) / "conformed-source" / "source.mp4")
+            adjusted = copy.deepcopy(request.value)
+            if is_v2:
+                from .request_v2 import json_times
+                adjusted_source = adjusted["media"][source_index]
+                span = Fraction(str(end)) - Fraction(str(start))
+                adjusted_source["range"] = [Fraction(0), span]
+                adjusted_source["resolved_range"] = [0, int(span * 24)]
+                encoded = json.dumps(json_times(adjusted), ensure_ascii=False, sort_keys=True,
+                                     separators=(",", ":"), allow_nan=False).encode("utf-8")
+                request = H3Request(value=adjusted, digest=hashlib.sha256(encoded).hexdigest())
+            else:
+                adjusted["source"]["range"] = [0, source_conform["output"]["range_seconds"][1]]
+                from .request import normalize_request
+                request = normalize_request(adjusted)
     if request.value.get("version") == 2:
         assets = _resolve_assets(request, asset_map)
         unresolved = [record["asset"] for record in assets if record["status"] != "resolved"]
@@ -465,6 +502,9 @@ def prepare_request(
         except MaskScheduleError as exc:
             raise PreparationError(str(exc)) from exc
         return {
+            "source_conform": source_conform,
+            "original_request_digest": original_request.digest,
+            "original_request": original_request.value,
             "schema_version": 2,
             "kind": "h3_av_preparation",
             "request_digest": request.digest,
@@ -486,6 +526,9 @@ def prepare_request(
     # Managed identifiers are intentionally retained for the runtime, but a
     # local asset map must never silently contain a missing path.
     return {
+        "source_conform": source_conform,
+        "original_request_digest": original_request.digest,
+        "original_request": original_request.value,
         "schema_version": 1,
         "kind": "h3_av_preparation",
         "request_digest": request.digest,

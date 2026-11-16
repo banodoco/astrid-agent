@@ -28,7 +28,8 @@
       "required": ["asset"],
       "properties": {
         "asset": {"type": "string", "minLength": 1},
-        "range": {"$ref": "#/$defs/range"}
+        "range": {"$ref": "#/$defs/range"},
+        "fit": {"enum": ["fill", "fit"]}
       }
     },
     "output": {

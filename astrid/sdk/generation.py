@@ -1435,11 +1435,56 @@ class GenerationFacade:
             python_exec=python_exec, verbose=verbose, argv=argv,
         )
 
+    @staticmethod
+    def _h3_handle_assets(inputs: Mapping[str, Any]) -> list[str]:
+        from astrid.sdk.media_handles import is_media_handle
+        from astrid.packs.h3_av.shared.request import _asset_ids, load_request_document, normalize_request
+        request = inputs.get("request")
+        if not request:
+            return []
+        return [asset for asset in _asset_ids(normalize_request(load_request_document(request)))
+                if is_media_handle(asset)]
+
     def _generate_on_target(self, **kwargs: Any) -> Any:
         """Run ``_generate_on_target_impl``, then remove any hook job directories it made."""
         import shutil
         job_dirs: list[Path] = []
         try:
+            if kwargs.get("model") == "h3":
+                inputs = dict(kwargs.get("inputs") or {})
+                handles = self._h3_handle_assets(inputs)
+                if handles:
+                    from astrid.sdk.media_handles import resolve_media_handle
+                    from tempfile import mkdtemp
+                    client = kwargs.get("client")
+                    _, project = _resolve_invoke_destination(client=client, out=kwargs.get("out"),
+                        project=kwargs.get("project"), project_root=kwargs.get("project_root"), dry_run=True)
+                    if client is None or not project:
+                        raise CapabilityValidationError("H3 media handles require a project and Runtime connection")
+                    kwargs["project"] = project
+                    root = Path(mkdtemp(prefix="astrid-h3-handles-"))
+                    job_dirs.append(root)
+                    supplied = inputs.get("asset_map") or {}
+                    if isinstance(supplied, (str, Path)):
+                        supplied = json.loads(Path(supplied).read_text(encoding="utf-8"))
+                    mapping = dict(supplied)
+                    lineage = []
+                    for index, handle in enumerate(handles):
+                        descriptor, record = resolve_media_handle(client, project, handle)
+                        lineage.append({"port": "request.asset", **record})
+                        opened = client.media.open(project, descriptor["digest"], materialize=True,
+                            cache_root=root / str(index), preview_bytes=0,
+                            max_bytes=max(descriptor["size_bytes"], 1))
+                        if not opened.ok:
+                            raise CapabilityValidationError(f"cannot open media handle {handle!r}: {opened.error.message}")
+                        mapping[handle] = opened.data["local_path"]
+                    inputs["asset_map"] = mapping
+                    kwargs["inputs"] = inputs
+                    context = dict(kwargs.get("idempotency_context") or {})
+                    if "media_handles" in context:
+                        raise CapabilityValidationError("media_handles is reserved for resolved H3 media lineage")
+                    context["media_handles"] = lineage
+                    kwargs["idempotency_context"] = context
             return self._generate_on_target_impl(_job_dirs=job_dirs, **kwargs)
         finally:
             for directory in job_dirs:

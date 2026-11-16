@@ -513,7 +513,7 @@ def _compile_native_masked_edit(
         if region.mask_asset not in assets:
             raise CompilationError(f"native masked edit mask {region.mask_asset!r} is missing from preparation")
         try:
-            mask_info = probe_mask(assets[region.mask_asset], mask_id=region.mask_asset)
+            mask_info = probe_mask(assets[region.mask_asset], mask_id=region.mask_asset, source=assets[source_id])
         except CompositionError as exc:
             raise CompilationError(str(exc)) from exc
         mask_kind = str(mask_info["kind"])
