@@ -43,6 +43,7 @@ from .core import (
 from .launcher import install_shim, owned_shim, remove_owned_command
 from .service import LABEL, Service, bootstrap_root, platform_target, venv_python
 from .support import reveal_bundle
+from .tls_fallback import open_with_tls_fallback
 from .tools import (
     asset_downloads,
     binary,
@@ -151,7 +152,7 @@ def _stage_pack_toolchain(folder: Path, agent: Path, env: dict[str, str], manife
 
     shared = spec["shared_modules"]
     request = urllib.request.Request(shared["url"], headers={"User-Agent": "astrid-installer"})
-    with urllib.request.build_opener(_HttpsRedirect()).open(request, timeout=120) as response:
+    with open_with_tls_fallback(request, timeout=120, handlers=(_HttpsRedirect(),)) as response:
         payload = response.read(1024 * 1024 + 1)
     if len(payload) > 1024 * 1024 or hashlib.sha256(payload).hexdigest() != shared["sha256"]:
         raise ValueError("Shared-module lock checksum mismatch.")
