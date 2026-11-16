@@ -205,3 +205,48 @@ def test_canvasless_child_proof_preserves_no_output_and_uses_parent():
     assert 'output' not in children[0]['payload']
     assert any(item.get('kind') == 'canvas-not-required' and item['owner'] == 'opening' for item in findings)
     assert child == original
+
+
+@pytest.mark.parametrize('marker', ['true', 2])
+def test_raw_invalid_scale_marker_refused_before_render_normalization(marker):
+    from astrid.sdk.timeline._appearance import normalize_revision_closure
+    parent = {'payload': {'config': {'output': {'resolution': '1280x720', 'fps': 24}, 'tracks': [], 'clips': []}, 'clips': []}}
+    child = {'revision_id': 'bad-marker', 'payload': {'output': {'resolution': '1280x720', 'fps': 24},
+             'tracks': [{'id': 'v', 'kind': 'visual', 'scale': 2,
+                         'app': {'scaleAppliesToPositionedClips': marker}}],
+             'clips': [{'id': 'a', 'track': 'v', 'clipType': 'image', 'x': 0}]}}
+    original = copy.deepcopy(child)
+    with pytest.raises(ValueError, match='bad-marker.*a.*scaleAppliesToPositionedClips'):
+        normalize_revision_closure(parent, [child])
+    assert child == original
+
+
+def test_rect_alias_is_exposed_before_normalization_for_parent_and_child():
+    from astrid.sdk.timeline._appearance import normalize_revision_closure
+    config = {'output': {'resolution': '1280x720', 'fps': 24},
+              'tracks': [{'id': 'v', 'kind': 'visual', 'scale': 2}],
+              'clips': [{'id': 'a', 'track': 'v', 'clipType': 'image',
+                         'rect': {'x': 10, 'y': 10, 'width': 100, 'height': 100}}]}
+    parent = {'payload': {'config': copy.deepcopy(config), 'clips': copy.deepcopy(config['clips'])}}
+    child = {'revision_id': 'r', 'payload': copy.deepcopy(config)}
+    normalized_parent, children, findings = normalize_revision_closure(parent, [child])
+    for result in (normalized_parent['payload']['config'], children[0]['payload']):
+        clip = result['clips'][0]
+        assert 'rect' not in clip and clip['fit'] == 'cover'
+        assert (clip['x'], clip['y'], clip['width'], clip['height']) == (325, 185, 50, 50)
+        assert result['tracks'][0]['app']['clipPlacementVersion'] == 1
+    assert {item['owner'] for item in findings if item['kind'] == 'rect-alias'} == {'parent', 'r'}
+
+
+def test_rect_alias_guarded_edit_writes_conversion_and_normalization():
+    bundle = initial_bundle()
+    bundle['parent']['config']['output']['resolution'] = '1280x720'
+    bundle['parent']['config']['tracks'][0]['scale'] = 2
+    bundle['parent']['clips'][0].update(clipType='media', rect={'x': 10, 'y': 10, 'width': 100, 'height': 100})
+    ctx = Recording(bundle, {}, 0)
+    normalize_owner(ctx, 'parent/clip:a')
+    clip = ctx.state.entity('parent/clip:a')
+    assert 'rect' not in clip and clip['fit'] == 'cover'
+    assert (clip['x'], clip['y'], clip['width'], clip['height']) == (325, 185, 50, 50)
+    assert any(w['ref'] == 'parent/clip:a' and w['path'] == ['rect'] and w['after'] == {'state': 'absent'}
+               for w in ctx.record['writes'])

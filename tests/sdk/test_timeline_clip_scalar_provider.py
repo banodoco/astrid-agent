@@ -216,3 +216,23 @@ def test_child_appearance_materializes_authored_parent_canvas_atomically():
     assert 'output' not in bundle_from_document(restored['data']['canonical_document'])['parent']['config']
     redone = realm.call([inverse([restored['receipt']['receipt_id']])])
     assert bundle_from_document(redone['data']['canonical_document'])['parent']['config']['output']['resolution'] == '1280x720'
+
+
+def test_rect_alias_normalizes_in_guarded_appearance_commit_and_undo():
+    from astrid.sdk.timeline.commit import _digest
+    document = app_document()
+    payload = document['parent_revision']['payload']
+    payload['config']['output']['resolution'] = '1280x720'
+    payload['config']['tracks'][0]['scale'] = 2
+    rect = {'x': 10, 'y': 10, 'width': 100, 'height': 100}
+    payload['clips'][0]['rect'] = rect
+    payload['config']['clips'][0]['rect'] = copy.deepcopy(rect)
+    document['parent_revision']['content_digest'] = _digest(payload)
+    realm = DetachedRealm(document)
+    accepted = realm.call([capture_clip_set(current(realm), PARENT, values={'fit': 'contain'})])
+    migrated = clip(current(realm), 'parent/clip:f2-app-clip')
+    assert 'rect' not in migrated and migrated['fit'] == 'cover'
+    assert (migrated['x'], migrated['y'], migrated['width'], migrated['height']) == (325, 185, 50, 50)
+    undone = realm.call([inverse([accepted['receipt']['receipt_id']])])
+    restored = bundle_from_document(undone['data']['canonical_document'])
+    assert clip(restored, 'parent/clip:f2-app-clip')['rect'] == rect

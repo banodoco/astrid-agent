@@ -142,7 +142,7 @@ def _authenticated_initialization_fps_removals(
     candidate: Mapping[str, Any], baseline: Mapping[str, Any] | None,
     restoration_records: Sequence[Mapping[str, Any]], inverse_records: Sequence[Mapping[str, Any]],
 ) -> set[str]:
-    """Return FPS removed by the complete guarded inverse of ``timeline.init``."""
+    """Allow exact authenticated inverse of initialization or package canvas materialization."""
     allowed: set[str] = set()
     if baseline is None or not inverse_records or not restoration_records:
         return allowed

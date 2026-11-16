@@ -144,3 +144,27 @@ def test_appearance_inspects_package_placement_without_render(command, capsys):
     assert data['placement']['local']['media']['x'] == -224
     assert data['placement']['provenance']['fit'] == 'clip'
     assert generated.calls == []
+
+
+def test_appearance_track_inspection_reports_canvas_context(command, capsys):
+    run, generated = command
+    generated.bundles['r0']['parent']['config']['output']['resolution'] = '1280x720'
+    assert run('appearance', 't', '--project', 'p', '--track', 'parent/track:picture', '--json') == 0
+    data = json.loads(capsys.readouterr().out)['data']
+    assert data['canvas'] == data['source_canvas'] == {'width': 1280, 'height': 720}
+    assert data['canvas_owner'] == data['source_canvas_owner'] == 'parent'
+    assert data['canvas_timeline_id'] == 't'
+    assert generated.calls == []
+
+
+def test_appearance_inspection_matches_normalized_rect_projection(command, capsys):
+    run, generated = command
+    parent = generated.bundles['r0']['parent']
+    parent['config']['output']['resolution'] = '1280x720'
+    parent['config']['tracks'][0]['scale'] = 2
+    parent['registry'] = {'assets': {'matrix': {'resolution': '1920x800'}}}
+    parent['clips'][0].update(clipType='media', asset='matrix', rect={'x': 10, 'y': 10, 'width': 100, 'height': 100})
+    assert run('appearance', 't', '--project', 'p', '--clip', 'parent/clip:a', '--json') == 0
+    data = json.loads(capsys.readouterr().out)['data']
+    assert data['placement']['fit'] == 'cover'
+    assert data['placement']['local']['full'] == {'x': 325, 'y': 185, 'width': 50, 'height': 50}

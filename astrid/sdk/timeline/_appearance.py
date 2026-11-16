@@ -43,6 +43,25 @@ def canvas(config, ref):
     return {'width': int(match[1]), 'height': int(match[2])}
 
 
+def canonicalize_rect_aliases(config):
+    """Translate the supported rect spelling on a copy before package normalization."""
+    result = copy.deepcopy(config)
+    findings = []
+    for clip in result.get('clips', []):
+        if not isinstance(clip, dict) or 'rect' not in clip:
+            continue
+        rect = clip.pop('rect')
+        if rect is not None:
+            if not isinstance(rect, dict) or set(rect) - {'x', 'y', 'width', 'height'}:
+                raise CommandError(f"clip {clip.get('id', '?')!r} property rect is invalid")
+            for key, value in rect.items():
+                if key in clip and clip[key] != value:
+                    raise CommandError(f"clip {clip.get('id', '?')!r} property rect.{key} conflicts with {key}")
+                clip[key] = copy.deepcopy(value)
+        findings.append({'kind': 'rect-alias', 'clipId': clip.get('id'), 'before': rect})
+    return result, findings
+
+
 def normalize_owner(ctx, ref):
     """Capture all normalizer dependencies and record its bounded changes."""
     owner = ref.rsplit('/', 1)[0]
@@ -66,7 +85,8 @@ def _normalize_one(ctx, owner, ref):
     for entity in tracks + clips:
         row = ctx.read(entity, [])
         (config['tracks'] if '/track:' in entity else config['clips']).append(row)
-    result = package_query({'operation': 'normalize', 'config': config})
+    canonical, alias_findings = canonicalize_rect_aliases(config)
+    result = package_query({'operation': 'normalize', 'config': canonical})
     normalized = result['config']
     if owner == 'parent' or not any(finding.get('kind') == 'canvas-not-required' for finding in result['findings']):
         canvas(normalized, ref)
@@ -98,6 +118,9 @@ def _normalize_one(ctx, owner, ref):
             for key in set(old) | set(new):
                 if equal(old.get(key), new.get(key)) and (key in old) == (key in new):
                     continue
+                if kind == 'clip' and key == 'rect' and key not in new:
+                    ctx.clear(entity, [key])
+                    continue
                 if key not in allowed or key not in new:
                     raise CommandError(f'placement normalizer changed unsupported {kind} property {key}')
                 if key == 'app':
@@ -107,7 +130,7 @@ def _normalize_one(ctx, owner, ref):
                         if k not in ('clipPlacementVersion', 'scaleAppliesToPositionedClips')):
                         raise CommandError('placement normalizer changed unsupported track app metadata')
                 ctx.write(entity, [key], new[key])
-    return result.get('findings', [])
+    return alias_findings + result.get('findings', [])
 
 
 def normalize_revision_closure(parent, internals):
@@ -124,18 +147,20 @@ def normalize_revision_closure(parent, internals):
     needs_canvas = media(config) or any(media(row['payload']) for row in internals)
     if not needs_canvas:
         return parent, internals, []
-    result = package_query({'operation': 'normalize', 'config': config})
+    canonical, alias_findings = canonicalize_rect_aliases(config)
+    result = package_query({'operation': 'normalize', 'config': canonical})
     canvas(result['config'], 'parent timeline')
     payload['config'] = result['config']
     if separate:
         payload['clips'] = copy.deepcopy(result['config']['clips'])
-    findings = [{'owner': 'parent', **item} for item in result['findings']]
+    findings = [{'owner': 'parent', **item} for item in alias_findings + result['findings']]
     for row in internals:
         child = row['payload']
         if not media(child):
             continue
         try:
-            normalized = package_query({'operation': 'normalize', 'config': child})
+            canonical, alias_findings = canonicalize_rect_aliases(child)
+            normalized = package_query({'operation': 'normalize', 'config': canonical})
             if not any(finding.get('kind') == 'canvas-not-required' for finding in normalized['findings']):
                 canvas(normalized['config'], f"internal timeline {row.get('revision_id')}")
         except (ValueError, CommandError) as exc:
@@ -145,5 +170,5 @@ def normalize_revision_closure(parent, internals):
             raise CommandError(f"internal timeline {row.get('revision_id', '?')!r} "
                                f"clip {first.get('id', '?')!r}: {exc}") from exc
         row['payload'] = normalized['config']
-        findings.extend({'owner': row.get('revision_id'), **item} for item in normalized['findings'])
+        findings.extend({'owner': row.get('revision_id'), **item} for item in alias_findings + normalized['findings'])
     return parent, internals, findings

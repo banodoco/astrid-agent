@@ -57,11 +57,12 @@ def expand_shot_clips(
     - A ``shot`` clip nested inside a sub-document fails closed (no recursion).
     - Unknown/missing timeline_document_id fails closed via the loader error.
     """
-    from astrid.sdk.timeline._appearance import canvas, package_query
+    from astrid.sdk.timeline._appearance import canvas, canonicalize_rect_aliases, package_query
 
     # The legacy expander cannot carry child track groups. Normalize the
     # source copy first, then refuse children whose context would be lost.
     config = deepcopy(dict(config))
+    config, _ = canonicalize_rect_aliases(config)
     normalized = package_query({'operation': 'normalize', 'config': config})
     if normalized['findings']:
         _LOGGER.warning('Parent placement migrations: %s', normalized['findings'])
@@ -167,6 +168,7 @@ def expand_shot_clips(
             ) from exc
 
         sub_config = deepcopy(dict(sub_config))
+        sub_config, _ = canonicalize_rect_aliases(sub_config)
         normalized = package_query({'operation': 'normalize', 'config': sub_config})
         if normalized['findings']:
             _LOGGER.warning('Shot %s placement migrations: %s', clip.get('id', '?'), normalized['findings'])

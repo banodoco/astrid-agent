@@ -7,7 +7,7 @@ import re
 
 def command(parsed):
     from astrid.sdk.contracts import DomainResult, ErrorObject
-    from astrid.sdk.timeline._appearance import canvas, package_query
+    from astrid.sdk.timeline._appearance import canvas, canonicalize_rect_aliases, package_query
     from astrid.sdk.timeline._command_state import State
     from astrid.sdk.timeline.sync import TimelineSession
     from astrid.packs.timeline.cli_native import _commit_envelope, _render_commit_result
@@ -43,22 +43,29 @@ def command(parsed):
         state = State(session._bundle(session._state()))
         owner = ref.rsplit('/', 1)[0]
         config = state.config(owner)
-        normalized = package_query({'operation': 'normalize', 'config': {**config,
-            'clips': state.collection(owner, 'clip'), 'tracks': state.collection(owner, 'track')}})
+        canonical, alias_findings = canonicalize_rect_aliases({**config,
+            'clips': state.collection(owner, 'clip'), 'tracks': state.collection(owner, 'track')})
+        normalized = package_query({'operation': 'normalize', 'config': canonical})
+        normalized['findings'] = alias_findings + normalized['findings']
         no_source_canvas = any(finding.get('kind') == 'canvas-not-required'
                                for finding in normalized['findings'])
         source_size = None if owner != 'parent' and no_source_canvas else canvas(normalized['config'], ref)
         if owner != 'parent':
             parent_config = state.config('parent')
-            parent_normalized = package_query({'operation': 'normalize', 'config': {**parent_config,
-                'clips': state.collection('parent', 'clip'), 'tracks': state.collection('parent', 'track')}})
+            parent_canonical, parent_alias_findings = canonicalize_rect_aliases({**parent_config,
+                'clips': state.collection('parent', 'clip'), 'tracks': state.collection('parent', 'track')})
+            parent_normalized = package_query({'operation': 'normalize', 'config': parent_canonical})
+            parent_normalized['findings'] = parent_alias_findings + parent_normalized['findings']
             size = canvas(parent_normalized['config'], ref)
         else:
             parent_normalized = None
             size = source_size
         if kind == 'track':
             row = next(row for row in normalized['config']['tracks'] if row.get('id') == ref.rsplit('/', 1)[1].split(':', 1)[1])
-            answer = {'track': row, 'migration': normalized['findings']}
+            answer = {'track': row, 'source_canvas': source_size, 'source_canvas_owner': owner,
+                'source_canvas_description': ('not declared; placed in the parent timeline canvas' if source_size is None else 'declared by the source timeline'),
+                'canvas': size, 'canvas_owner': 'parent', 'canvas_timeline_id': session.timeline_id,
+                'migration': (parent_normalized['findings'] if parent_normalized else []) + normalized['findings']}
         else:
             clip = next(row for row in normalized['config']['clips'] if row.get('id') == ref.rsplit('/', 1)[1].split(':', 1)[1])
             track = next(row for row in normalized['config']['tracks'] if row.get('id') == clip.get('track'))
