@@ -74,7 +74,7 @@ def in_memory_canvas_warnings(findings):
         source = finding['source']
         if source == 'legacy-render-resolved':
             message = (f"Legacy render-resolved canvas {output.get('resolution')} at {output.get('fps')} fps "
-                       "was used in memory; the timeline was not changed.")
+                       "was used in memory; the timeline was not changed. It was not written to the timeline.")
         else:
             message = (f"Canvas {output.get('resolution')} at {output.get('fps')} fps from {source} "
                        "was used in memory and not written to the timeline.")

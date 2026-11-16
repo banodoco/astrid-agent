@@ -284,7 +284,7 @@ def test_render_manifest_carries_legacy_canvas_warning(tmp_path):
     _write_render_manifest(output, timeline_path=tmp_path / 'timeline.json', selector='rendering.remotion',
                            timeline_authority=authority)
     manifest = json.loads((tmp_path / 'manifest.json').read_text())
-    assert manifest['warnings'] == ['Legacy render-resolved canvas 1920x1080 at 30 fps was used in memory; the timeline was not changed.']
+    assert manifest['warnings'] == ['Legacy render-resolved canvas 1920x1080 at 30 fps was used in memory; the timeline was not changed. It was not written to the timeline.']
 
 
 def test_composed_capture_refuses_unverified_explicit_legacy_theme():

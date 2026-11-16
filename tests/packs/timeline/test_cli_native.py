@@ -196,6 +196,7 @@ def test_appearance_inspects_canvasless_parent_with_named_legacy_warning(command
     assert data['canvas'] == {'width': 1920, 'height': 1080}
     assert data['source_canvas_description'] == 'legacy render-resolved; not authored'
     assert data['warnings'][0]['source'] == 'legacy-render-resolved'
+    assert 'not written' in data['warnings'][0]['message']
     assert data['warnings'][0]['after']['resolution'] == '1920x1080'
     assert parent == original and generated.calls == []
 
