@@ -222,7 +222,7 @@ def test_direct_pack_module_is_observed_without_changing_its_entrypoint_semantic
     assert child.args[1:3] == ["-X", "utf8"]
 
 
-def test_unrelated_code_identity_is_cached_once_not_reformatted_on_every_call():
+def test_unrelated_code_does_not_enter_the_boundary_cache_or_emit_events():
     namespace = {}
     exec(compile("def unrelated(): return 1", "/fixture/irrelevant.py", "exec"), namespace)
     meter = observer()
@@ -230,9 +230,48 @@ def test_unrelated_code_identity_is_cached_once_not_reformatted_on_every_call():
     try:
         for _ in range(1000):
             assert namespace["unrelated"]() == 1
-        code = namespace["unrelated"].__code__
-        assert meter.code_kinds[id(code)][0] is code
-        assert meter.code_kinds[id(code)][1] is None
+        assert id(namespace["unrelated"].__code__) not in meter.code_kinds
         assert "bundle_emission" not in meter.snapshot()["counts"]
     finally:
         meter.stop()
+
+
+def test_unrelated_call_does_not_inspect_its_filename():
+    from types import SimpleNamespace
+    class Code:
+        co_name = "deepcopy"
+        @property
+        def co_filename(self):
+            pytest.fail("unrelated calls must not format filenames")
+    meter = observer()
+    meter.profile(SimpleNamespace(f_code=Code()), "call", None)
+    assert meter.events == [] and meter.code_kinds == {}
+
+
+def test_fast_rejection_still_chains_a_preexisting_profiler():
+    from types import SimpleNamespace
+    import threading
+    calls = []
+    meter = observer()
+    meter.previous_profile = lambda frame, event, arg: calls.append(event)
+    meter.start_thread = threading.get_ident()
+    meter.chain_profiles = True
+    frame = SimpleNamespace(f_code=SimpleNamespace(co_name="deepcopy"))
+    for event, arg in (("call", None), ("return", None), ("c_return", {}.get)):
+        meter.profile(frame, event, arg)
+    assert calls == ["call", "return", "c_return"]
+
+
+def test_failed_sync_is_not_lost_by_c_function_identity_filter():
+    meter = observer()
+    meter.start()
+    try:
+        begin = time.monotonic_ns()
+        with pytest.raises(OSError):
+            os.fsync(-1)
+        report = meter.snapshot(begin)
+    finally:
+        meter.stop()
+    assert report["counts"]["fsync_attempt"] == 1
+    assert report["counts"]["fsync_error"] == 1
+    assert report["counts"].get("fsync_success", 0) == 0

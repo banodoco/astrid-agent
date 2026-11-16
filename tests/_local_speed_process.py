@@ -131,10 +131,12 @@ class ProcessObserver:
         self.lock = threading.RLock()
         self.started = None
         self.previous_profile = self.previous_thread_profile = None
+        self.chain_profiles = False
         self.hashes = None
         self.code_kinds = {}
-        self.c_kinds = {time.sleep: "sleep"}
-        self.c_kinds.update({getattr(os, name): name for name in ("fsync", "fdatasync") if hasattr(os, name)})
+        self.sleep_function = time.sleep
+        self.fsync_function = getattr(os, "fsync", None)
+        self.fdatasync_function = getattr(os, "fdatasync", None)
 
     def event(self, kind: str, **fields) -> None:
         with self.lock:
@@ -144,34 +146,36 @@ class ProcessObserver:
             self.events.append({"at_ns": time.monotonic_ns(), "kind": kind, **fields})
 
     def profile(self, frame, event, arg) -> None:
-        # Resolve Python code identity only once. The previous implementation
-        # formatted filenames and queried thread identity on every Python/C
-        # event, multiplying the cost of the existing repeated source scans.
+        # Reject unrelated Python calls before caching/formatting code metadata.
+        # Deep-copy/source-discovery loops produce many calls but none of the
+        # compile/emission boundaries. This changes observer work, not coverage.
+        if event == "return" and not self.chain_profiles:
+            return
         if event == "call":
             code = frame.f_code
-            # Code-object equality ignores filenames; use identity and retain
-            # the object so an ID cannot be recycled into a different module.
-            cached = self.code_kinds.get(id(code))
-            kind = cached[1] if cached is not None else _UNSEEN
-            if kind is _UNSEEN:
-                filename = code.co_filename.replace("\\", "/")
-                name = code.co_name
-                kind = None
-                if filename.endswith("/vibecomfy/workflow.py") and name == "compile":
-                    kind = "workflow_compile"
-                elif filename.endswith("/vibecomfy/workflow_bundle.py"):
-                    if name == "compile":
-                        kind = "bundle_compile"
-                    elif name in {"emit_bundle", "emit_bundle_with_candidate"}:
-                        kind = "bundle_emission"
-                self.code_kinds[id(code)] = (code, kind)
-            if kind is not None:
-                self.event(kind)
-        elif event in {"c_call", "c_return", "c_exception"}:
-            kind = self.c_kinds.get(arg)
+            name = code.co_name
+            if name in ("compile", "emit_bundle", "emit_bundle_with_candidate"):
+                # Retain code identity: equality ignores filenames.
+                cached = self.code_kinds.get(id(code))
+                kind = cached[1] if cached is not None else _UNSEEN
+                if kind is _UNSEEN:
+                    filename = code.co_filename.replace("\\", "/")
+                    kind = None
+                    if filename.endswith("/vibecomfy/workflow.py") and name == "compile":
+                        kind = "workflow_compile"
+                    elif filename.endswith("/vibecomfy/workflow_bundle.py"):
+                        kind = "bundle_compile" if name == "compile" else "bundle_emission"
+                    self.code_kinds[id(code)] = (code, kind)
+                if kind is not None:
+                    self.event(kind)
+        elif event in ("c_call", "c_return", "c_exception"):
+            # Identity comparisons avoid hashing every unrelated bound C method.
+            kind = ("sleep" if arg is self.sleep_function else
+                    "fsync" if arg is self.fsync_function else
+                    "fdatasync" if arg is self.fdatasync_function else None)
             if kind is not None:
                 self.event(kind + {"c_call": "_attempt", "c_return": "_success", "c_exception": "_error"}[event])
-        if self.previous_profile is not None or self.previous_thread_profile is not None:
+        if self.chain_profiles:
             previous = self.previous_profile if threading.get_ident() == self.start_thread else self.previous_thread_profile
             if previous is not None:
                 previous(frame, event, arg)
@@ -183,6 +187,7 @@ class ProcessObserver:
         self.start_thread = threading.get_ident()
         self.previous_profile = sys.getprofile()
         self.previous_thread_profile = threading.getprofile()
+        self.chain_profiles = self.previous_profile is not None or self.previous_thread_profile is not None
         # Embedded workers have the hash class in this module; the parent uses
         # its canonical test helper. Neither path imports or modifies a pack.
         cls = globals().get("OutputHashObserver")
