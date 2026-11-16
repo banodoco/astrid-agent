@@ -1,0 +1,59 @@
+# Temporary task-branch setup. This is not a test or a performance gate.
+name: Plan 55 source bootstrap
+on:
+  push:
+    branches: [p55/cpu-followthrough-20261116]
+permissions:
+  contents: read
+concurrency:
+  group: p55-source-bootstrap-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  source-inputs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-dev
+          ref: c6d9f6d325f1bf870b42bc80230bf391db2a041c
+          path: source-dev-main
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-dev
+          ref: ab73cc12c8d90762e8e6e7e664ff5a32a360cc0d
+          path: source-dev-integration
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/VibeComfy
+          ref: 7fde33e2523281f840121b93a8a865a7f5d847de
+          path: source-vibe-integration
+          persist-credentials: false
+      - name: Export only committed public source, not credentials or working state
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p p55-source-inputs
+          git archive --format=tar --output=p55-source-inputs/agent.tar HEAD
+          git -C source-dev-main archive --format=tar --output="$GITHUB_WORKSPACE/p55-source-inputs/dev-main.tar" HEAD
+          git -C source-dev-integration archive --format=tar --output="$GITHUB_WORKSPACE/p55-source-inputs/dev-integration.tar" HEAD
+          git -C source-vibe-integration archive --format=tar --output="$GITHUB_WORKSPACE/p55-source-inputs/vibe-integration.tar" HEAD
+          {
+            printf 'agent '; git rev-parse HEAD
+            printf 'dev-main '; git -C source-dev-main rev-parse HEAD
+            printf 'dev-integration '; git -C source-dev-integration rev-parse HEAD
+            printf 'vibe-integration '; git -C source-vibe-integration rev-parse HEAD
+          } > p55-source-inputs/refs.txt
+          sha256sum p55-source-inputs/*.tar > p55-source-inputs/SHA256SUMS
+          echo 'Source transport only. No test, latency measurement, review or qualification was run.' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: p55-cpu-source-inputs-${{ github.run_id }}
+          path: p55-source-inputs/
+          if-no-files-found: error
+          retention-days: 7
