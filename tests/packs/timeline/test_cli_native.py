@@ -168,3 +168,17 @@ def test_appearance_inspection_matches_normalized_rect_projection(command, capsy
     data = json.loads(capsys.readouterr().out)['data']
     assert data['placement']['fit'] == 'cover'
     assert data['placement']['local']['full'] == {'x': 325, 'y': 185, 'width': 50, 'height': 50}
+
+
+@pytest.mark.parametrize('fit', ['contain', 'cover'])
+@pytest.mark.parametrize('resolution', ['1920x800x999', '1920.5x800', ' 1920x800'])
+def test_appearance_inspect_refuses_malformed_intrinsic_resolution(command, capsys, fit, resolution):
+    run, generated = command
+    parent = generated.bundles['r0']['parent']
+    parent['config']['output']['resolution'] = '1280x720'
+    parent['registry'] = {'assets': {'matrix': {'resolution': resolution}}}
+    parent['clips'][0].update(clipType='media', asset='matrix', fit=fit)
+    assert run('appearance', 't', '--project', 'p', '--clip', 'parent/clip:a', '--json') != 0
+    error = json.loads(capsys.readouterr().out)['error']['message']
+    assert 'a' in error and 'matrix' in error and 'resolution' in error
+    assert generated.calls == []

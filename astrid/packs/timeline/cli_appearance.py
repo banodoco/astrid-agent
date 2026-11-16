@@ -70,13 +70,8 @@ def command(parsed):
             clip = next(row for row in normalized['config']['clips'] if row.get('id') == ref.rsplit('/', 1)[1].split(':', 1)[1])
             track = next(row for row in normalized['config']['tracks'] if row.get('id') == clip.get('track'))
             asset = state.registry(owner).get('assets', {}).get(clip.get('asset'), {})
-            resolution = asset.get('resolution', '')
-            match = re.fullmatch(r'([1-9][0-9]*)[xX]([1-9][0-9]*)', str(resolution))
-            if not match:
-                raise ValueError(f"clip {clip.get('id')} property asset.resolution is missing or invalid; record the media resolution")
-            intrinsic = {'width': int(match[1]), 'height': int(match[2])}
             answer = {'placement': package_query({'operation': 'resolve', 'input': {
-                'clip': clip, 'track': track, 'canvas': size, 'intrinsic': intrinsic}}),
+                'clip': clip, 'track': track, 'canvas': size}, 'asset': asset}),
                 'source_canvas': source_size, 'source_canvas_owner': owner,
                 'source_canvas_description': ('not declared; placed in the parent timeline canvas' if source_size is None else 'declared by the source timeline'),
                 'canvas': size, 'canvas_owner': 'parent', 'canvas_timeline_id': session.timeline_id, 'migration': (parent_normalized['findings'] if parent_normalized else []) + normalized['findings']}

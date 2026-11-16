@@ -81,3 +81,25 @@ def test_valid_marker_is_idempotent_and_scale_marker_false_is_stamped_current():
     assert stamp_new_track_appearance(row) is row
     _assert_stamped(row)
     assert row["app"]["owner"] == "keep"
+
+
+def test_native_track_create_preserves_old_literal_rows_and_captures_new_markers():
+    from astrid.sdk.timeline.commands import execute
+    from astrid.sdk.timeline._appearance import package_query
+
+    bundle = initial_bundle()
+    old_row = {'id': 'old-client', 'kind': 'visual', 'fit': 'contain'}
+    raw = {'schema_version': 1, 'op': 'track.create', 'version': '1', 'select': 'parent',
+           'args': {'row': old_row}, 'intent': {}}
+    old = execute(bundle, [raw])
+    old_track = next(t for t in old.bundle['parent']['config']['tracks'] if t['id'] == 'old-client')
+    assert old_track == old_row
+    fresh = capture_track_create(bundle, 'parent', {'id': 'new', 'kind': 'visual', 'fit': 'contain', 'scale': 2})
+    new = execute(bundle, [fresh])
+    track = next(t for t in new.bundle['parent']['config']['tracks'] if t['id'] == 'new')
+    _assert_stamped(track)
+    clip = {'id': 'clip', 'track': 'new', 'clipType': 'image', 'x': 0}
+    result = package_query({'operation': 'normalize', 'config': {'output': {'resolution': '1280x720', 'fps': 30},
+                           'tracks': [track], 'clips': [clip]}})['config']
+    assert result['clips'][0] == clip
+    assert 'fit' not in result['clips'][0]

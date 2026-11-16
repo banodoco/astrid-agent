@@ -234,9 +234,6 @@ def move(ctx, command):
 
 def track_create(ctx, command):
     owner, row = command['select'], copy.deepcopy(command['args']['row'])
-    from astrid.core.timeline.track_appearance import stamp_new_track_appearance
-
-    stamp_new_track_appearance(row)
     ctx.create(owner, 'track', row)
 
 
