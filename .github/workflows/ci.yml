@@ -549,3 +549,25 @@ jobs:
 
       - name: All vendored Runtime artifacts match the pinned producer
         run: python scripts/vendor_lock.py check runtime.lock.json --producer runtime-producer
+
+  # A pull request into a release branch names what it belongs to: the plan (a plan branch does so by
+  # its name) or the astrid-dev issue. See the Release skill, "How a release runs".
+  landing-reference:
+    name: landing reference
+    if: ${{ github.event_name == 'pull_request' && startsWith(github.base_ref, 'release/') && endsWith(github.base_ref, '/main') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: The pull request names its plan or issue
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          TITLE: ${{ github.event.pull_request.title }}
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          if printf '%s' "$HEAD_REF" | grep -Eq '^release/[0-9]+/plan-[0-9]+$'; then
+            echo "Plan branch: $HEAD_REF"; exit 0
+          fi
+          if printf '%s\n%s\n' "$TITLE" "$BODY" | grep -Eiq '(plan[ -]?[0-9]+|astrid-dev#[0-9]+|astrid-dev/issues/[0-9]+)'; then
+            echo "Reference found."; exit 0
+          fi
+          echo "::error::A pull request into a release branch must name the plan or the astrid-dev issue it belongs to, for example 'Plan 55' or 'banodoco/astrid-dev#721'."
+          exit 1
