@@ -289,13 +289,14 @@ def test_plan_rejects_a_preserve_only_spec(tmp_path: Path) -> None:
 
 
 
-def test_v1_named_choice_and_edit_settings_reach_plan_and_graph(tmp_path: Path) -> None:
+def test_v1_named_choice_and_edit_settings_reach_plan_and_graph(tmp_path: Path, valid_h3_av_source: Path) -> None:
     from vibecomfy.security.provenance import Provenance
     from vibecomfy.workflow_bundle import load_bundle
 
     raw = dict(_source_edit().value)
     raw["overrides"] = {"turbo_lora": "pika_flex_8step", "video_shift": 9}
-    plan = plan_request(normalize_request(raw), asset_map=_assets(tmp_path, source=True), out_dir=tmp_path / "default")
+    assets = {"source.mp4": str(valid_h3_av_source)}
+    plan = plan_request(normalize_request(raw), asset_map=assets, out_dir=tmp_path / "default")
     assert plan["compilation"]["effective_settings"]["steps"] == 8
     assert plan["compilation"]["effective_settings"]["turbo"]["lora"] == "pika_flex_8step"
     assert not any(row["field"] in {"overrides.turbo_lora", "overrides.video_shift"} for row in plan["ignored_fields"])
@@ -307,9 +308,9 @@ def test_v1_named_choice_and_edit_settings_reach_plan_and_graph(tmp_path: Path) 
     assert next(row for row in api.values() if row["class_type"] == "BasicScheduler")["inputs"]["steps"] == 8
 
     raw["overrides"]["steps"] = 12
-    explicit = plan_request(normalize_request(raw), asset_map=_assets(tmp_path, source=True), out_dir=tmp_path / "explicit")
+    explicit = plan_request(normalize_request(raw), asset_map=assets, out_dir=tmp_path / "explicit")
     assert explicit["compilation"]["effective_settings"]["steps"] == 12
     assert explicit["compilation"]["workflow_inputs"]["steps"] == 12
     raw["overrides"]["turbo_lora"] = "lightx2v_8step"
     with pytest.raises(H3RequestError, match="lightx2v_8step.*no matching variant"):
-        plan_request(normalize_request(raw), asset_map=_assets(tmp_path, source=True), out_dir=tmp_path / "unmatched")
+        plan_request(normalize_request(raw), asset_map=assets, out_dir=tmp_path / "unmatched")
