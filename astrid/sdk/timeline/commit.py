@@ -1131,6 +1131,12 @@ class RuntimeCommitService:
             index = {row["revision_id"]: row for row in internals}
             internals = list({row["internal_timeline_revision_id"]:
                               index[row["internal_timeline_revision_id"]] for row in shots}.values())
+        # Capture admission and SDK capture must project the same normalized
+        # copies of the verified immutable closure.
+        from ._appearance import normalize_revision_closure
+        parent, internals, placement_findings = normalize_revision_closure(parent, internals)
+        if marker is not None:
+            marker['placement_migrations'] = placement_findings
         projected = project_runtime_parent_composition(
             parent, shot_revisions=shots, internal_timeline_revisions=internals)
         shot_rows = []
@@ -1150,7 +1156,8 @@ class RuntimeCommitService:
             "shots": shot_rows, "occurrences": list(projected.occurrences),
         }
         if marker is None:
-            expansion.update(outputs=list(projected.outputs), graph=projected.graph)
+            expansion.update(placement_migrations=placement_findings,
+                             outputs=list(projected.outputs), graph=projected.graph)
         else:
             expansion["working_copy"] = marker
         result = {"config": projected.config, "registry": projected.registry, "expansion": expansion}
