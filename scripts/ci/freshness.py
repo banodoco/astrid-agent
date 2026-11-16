@@ -141,10 +141,10 @@ def evaluate(tup, schema, repos, installed_manifest, installed_vibe, installed_c
     return result
 
 
-CURRENT_COMPOSITION = '17487222eeb9bd1e2dba5a2edf7c30d79a06727d70bacb06df752525e21669ee'
-CURRENT_SOURCE = '561710fa0f9be252b13e0ae695bf1d00257afdcf'
+CURRENT_COMPOSITION = '14b18d86bfc07331d60faaa2bcf3ab7ae4b4d47eea06a961859808666373d477'
+CURRENT_SOURCE = 'b1c3a03683ef216dcb387a65287c07a34cde5665'
 CURRENT_VERSION = '0.0.19'
-CURRENT_INTEGRITY = 'sha512-DfKv4sRYkPiJwx7rDi3UwLpgqgLjgr0Vv6rpzDCWu3mOICdbLpqCwdvg0Ijuzp6KKvIJzM0NQBPmWaDHz6EDWA=='
+CURRENT_INTEGRITY = 'sha512-aZnuPwFzPEV2C6QFPgyRX7sMZOPrd1sz1a/+DCdDvkIt5fceSS1DTi7v0/H3hhn6so0FA5SeitsE6DlZFFfYiQ=='
 
 
 def evaluate_current_composition(agent, app, installed_composition):

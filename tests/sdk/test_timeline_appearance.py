@@ -182,3 +182,26 @@ def test_clip_fit_type_mirrors_runtime_schema():
     assert set(get_args(get_type_hints(SharedTimelineClip)['fit'])) == {'contain', 'cover'}
     assert set(schema['definitions']['TimelineClip']['properties']['fit']['enum']) == {'contain', 'cover'}
     assert "fit?: 'contain' | 'cover';" in generator.generate()
+
+
+def test_missing_child_canvas_refusal_names_revision_and_clip():
+    from astrid.sdk.timeline._appearance import normalize_revision_closure
+    parent = {'payload': {'config': {'output': {'resolution': '1280x720', 'fps': 24},
+                                    'tracks': [], 'clips': []}, 'clips': []}}
+    child = {'revision_id': 'opening-rev', 'payload': {'tracks': [{'id': 'v', 'kind': 'visual', 'scale': 2}],
+             'clips': [{'id': 'opening-image', 'track': 'v', 'clipType': 'image', 'x': 0}]}}
+    with pytest.raises(ValueError, match='opening-rev.*opening-image.*output.resolution'):
+        normalize_revision_closure(parent, [child])
+
+
+def test_canvasless_child_proof_preserves_no_output_and_uses_parent():
+    from astrid.sdk.timeline._appearance import normalize_revision_closure
+    parent = {'payload': {'config': {'output': {'resolution': '1280x720', 'fps': 24}, 'tracks': [], 'clips': []}, 'clips': []}}
+    child = {'revision_id': 'opening', 'payload': {'tracks': [{'id': 'v', 'kind': 'visual',
+             'app': {'scaleAppliesToPositionedClips': True}}],
+             'clips': [{'id': 'image', 'track': 'v', 'clipType': 'image'}]}}
+    original = copy.deepcopy(child)
+    _, children, findings = normalize_revision_closure(parent, [child])
+    assert 'output' not in children[0]['payload']
+    assert any(item.get('kind') == 'canvas-not-required' and item['owner'] == 'opening' for item in findings)
+    assert child == original

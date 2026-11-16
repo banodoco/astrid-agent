@@ -39,7 +39,7 @@ def canvas(config, ref):
     output = config.get('output') or {}
     match = re.fullmatch(r'([1-9][0-9]*)[xX]([1-9][0-9]*)', str(output.get('resolution', '')))
     if not match:
-        raise CommandError(f'{ref} property output.resolution is missing or invalid')
+        raise CommandError(f'{ref} property output.resolution is missing or invalid; set the authored timeline output in the editor (a guarded CLI output command is not yet available)')
     return {'width': int(match[1]), 'height': int(match[2])}
 
 
@@ -68,7 +68,8 @@ def _normalize_one(ctx, owner, ref):
         (config['tracks'] if '/track:' in entity else config['clips']).append(row)
     result = package_query({'operation': 'normalize', 'config': config})
     normalized = result['config']
-    canvas(normalized, ref)
+    if owner == 'parent' or not any(finding.get('kind') == 'canvas-not-required' for finding in result['findings']):
+        canvas(normalized, ref)
     old_output, new_output = config.get('output'), normalized.get('output')
     if old_output != new_output:
         if 'output' in config and old_output is None:
@@ -133,8 +134,16 @@ def normalize_revision_closure(parent, internals):
         child = row['payload']
         if not media(child):
             continue
-        normalized = package_query({'operation': 'normalize', 'config': child})
-        canvas(normalized['config'], f"internal timeline {row.get('revision_id')}")
+        try:
+            normalized = package_query({'operation': 'normalize', 'config': child})
+            if not any(finding.get('kind') == 'canvas-not-required' for finding in normalized['findings']):
+                canvas(normalized['config'], f"internal timeline {row.get('revision_id')}")
+        except (ValueError, CommandError) as exc:
+            clips = child.get('clips', [])
+            first = next((clip for clip in clips if isinstance(clip, dict)
+                          and clip.get('clipType', 'media') in ('media', 'image', 'video')), {})
+            raise CommandError(f"internal timeline {row.get('revision_id', '?')!r} "
+                               f"clip {first.get('id', '?')!r}: {exc}") from exc
         row['payload'] = normalized['config']
         findings.extend({'owner': row.get('revision_id'), **item} for item in normalized['findings'])
     return parent, internals, findings
