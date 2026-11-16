@@ -63,12 +63,13 @@ def test_bun_build_environment_scrubs_ambient_policy_but_keeps_explicit_cache_an
 
 
 def _runtime_argv(script):
-    # The service command is an inline `-c` launch script; its Runtime argv is the literal list it passes to main().
+    # The service command binds the Runtime argv before selecting the compatible main() signature.
     import ast
-    for node in ast.walk(ast.parse(script)):
-        if isinstance(node, ast.Call) and getattr(node.func, 'id', None) == 'main' and node.args:
-            return ast.literal_eval(node.args[0])
-    raise AssertionError('the launch script does not call main() with a Runtime argv')
+    tree = ast.parse(script)
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == '_args' for t in node.targets):
+            return ast.literal_eval(node.value)
+    raise AssertionError('the launch script does not bind Runtime argv')
 
 
 def _service_envelope(rendered, system):
@@ -578,10 +579,15 @@ def test_linux_backup_temporarily_starts_only_neutral_daemon_and_snapshots_stopp
         return {}
     backend.runtime = runtime
     backend.stop = lambda version, root: calls.append(('stop',))
+    def run(argv, **kwargs):
+        assert argv[:4] == [tmp_path / 'python', '-X', 'utf8', '-I']
+        assert 'bootstrap(' in argv[5] and 'door=' not in argv[5]
+        assert argv[6:] == [data, tmp_path / 'profile']
+        calls.append(('bootstrap',))
+    backend.run = run
     version = Version(program / 'versions/old', tmp_path / 'python', tmp_path / 'profile', {})
     result = backend.backup(version, data, {'realm_root': str(realm)})
-    assert [call[0] for call in calls] == ['up', 'backup', 'stop']
-    assert calls[0] == ('up', '--hosted-origin', 'off')
+    assert [call[0] for call in calls] == ['bootstrap', 'backup', 'stop']
     snapshot = Path(result['root']) / 'support'
     assert read_json(snapshot / 'runtime/catalog.json') == {'selected': 'one'}
     assert not (snapshot / 'runtime/realms').exists()
