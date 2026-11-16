@@ -1,5 +1,6 @@
 from pathlib import Path
 import json
+import os
 import subprocess
 import sys
 
@@ -58,3 +59,22 @@ def test_core_pack_does_not_add_core_modules_as_external_pack_collection() -> No
     environment = selected_pack_environment(selected)
 
     assert environment["ASTRID_PACKS_PATH"] == ""
+
+
+def test_external_pack_collection_cannot_reuse_core_pack_id(tmp_path: Path) -> None:
+    from astrid.core.pack.imports import selected_pack_environment
+    from astrid.packs import _check_collisions
+
+    core_root = Path(__file__).resolve().parents[3] / "astrid" / "core" / "hivemind"
+    external_root = tmp_path / "another"
+    external_root.mkdir(parents=True)
+    (tmp_path / "hivemind").mkdir()
+    selected = {
+        "hivemind": {"root": str(core_root), "source_digest": "a" * 64},
+        "another": {"root": str(external_root), "source_digest": "b" * 64},
+    }
+
+    environment = selected_pack_environment(selected)
+    roots = tuple(Path(item) for item in environment["ASTRID_PACKS_PATH"].split(os.pathsep) if item)
+    with pytest.raises(ImportError, match="collides"):
+        _check_collisions(roots, selected=selected)
