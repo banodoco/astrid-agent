@@ -149,8 +149,11 @@ def test_plan_reports_ignored_v1_constant_overrides_and_keeps_supported_controls
     plan = plan_request(request, asset_map=_assets(tmp_path, source=True), out_dir=tmp_path / "plan")
 
     ignored = {row["field"]: row["value"] for row in plan["ignored_fields"]}
-    assert ignored == ({"overrides.sampler": "res_multistep", "overrides.guidance": 0.95}
-                       if operation == "continue" else {})
+    assert ignored == {}
+    if operation == "continue":
+        effective = plan["compilation"]["effective_settings"]
+        assert effective["sampler"] == "res_multistep"
+        assert effective["turbo"]["strength"] == 0.95
     assert plan["compilation"]["workflow_inputs"]["steps"] == expected_steps
     assert plan["compilation"]["workflow_inputs"]["seed"] == expected_seed
 
@@ -236,10 +239,12 @@ def test_v2_ignored_constant_settings_and_disabled_turbo_strength(tmp_path: Path
     })
     plan = plan_request(continuation, asset_map=_assets(tmp_path, source=True), out_dir=tmp_path / "continue")
     ignored = {row["field"]: row["value"] for row in plan["ignored_fields"]}
-    assert ignored == {
-        "settings.sampler": "res_multistep", "settings.scheduler": "simple",
-        "settings.turbo.enabled": True, "settings.turbo.strength": 0.95,
-    }
+    assert ignored == {}
+    effective = plan["compilation"]["effective_settings"]
+    assert effective["sampler"] == "res_multistep"
+    assert effective["scheduler"] == "simple"
+    assert effective["turbo"]["enabled"] is True
+    assert effective["turbo"]["strength"] == 0.95
     assert plan["compilation"]["workflow_inputs"]["steps"] == 9
     assert plan["compilation"]["workflow_inputs"]["seed"] == 123
 

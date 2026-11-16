@@ -719,7 +719,11 @@ def _main(argv: list[str]) -> int:
     try:
         generate = getattr(_generate_facade(), parsed.modality)
         from astrid.sdk.generation import _prompt_only_video
-        if parsed.dry_run or (_KIND_SPEC[parsed.modality].get('prompt_only_guard') and _prompt_only_video(
+        needs_h3_client = False
+        if parsed.dry_run and (parsed.entry or parsed.model) == "h3" and values.get("request"):
+            from astrid.sdk.generation import GenerationFacade
+            needs_h3_client = bool(GenerationFacade._h3_handle_assets(values))
+        if (parsed.dry_run and not needs_h3_client) or (_KIND_SPEC[parsed.modality].get('prompt_only_guard') and _prompt_only_video(
                 model=parsed.model, entry=parsed.entry, inputs=values)):
             # Let the facade refuse before opening a Runtime connection.
             result = generate(**kwargs)

@@ -101,10 +101,14 @@ the Ref2VA base `minimax_h3_ref2va_pruned_int8_convrot.safetensors`. An explicit
 different base is rejected; it is never changed automatically.
 
 The graph applies attention, the selected Character Swap LoRA, optional Turbo,
-then the existing sigma shift and sampler. Turbo defaults to enabled at strength
-`0.95`. `settings.guidance` and `settings.guidance_scale` are legacy Turbo
-strength aliases; do not combine an alias with `settings.turbo.strength`. When
-Turbo is disabled, its loader and model requirement are omitted. Effective
+then sigma shift and sampler. Turbo defaults to `pika_flex_8step` on Ref2VA at
+strength 1.0; its Flex style is baked in. `lightx2v_8step` is the existing FL2VA
+choice and is refused on current Ref2VA routes. Defaults: 8 steps,
+res_multistep/simple, CFG 1, video shift 12 and audio shift 3. Non-1 CFG is
+refused. `settings.guidance` and `settings.guidance_scale` are legacy LoRA
+strength aliases, not CFG; do not combine an alias with `settings.turbo.strength`.
+Turbo can be disabled on supported generation and edit routes, removing its loader
+and requirement; continuation refuses disabled Turbo. Effective
 configuration is recorded in the compilation, which lists only connected model
 assets. The Character Swap LoRA is pinned by immutable revision and checksum;
 the Ref2VA base, text encoder, VAEs, and optional Turbo LoRA use immutable
@@ -203,8 +207,10 @@ overrides: {steps: 8, seed: 42}
 
 The general adapter accepts 1..9 still images (including four), frame-aligned
 durations of 5..362 frames at 24 fps, and the existing model/steps/seed/sampler/
-guidance overrides. Here `guidance` controls the existing turbo LoRA strength;
-it is not classifier-free guidance. Default resolution is 1024×576. A 15-second
+guidance overrides. V1 also accepts `overrides.turbo_lora`, `scheduler`, `cfg`,
+`video_shift` and `audio_shift`; native continuation binds these supported
+overrides into its request-specific graph. `guidance` controls LoRA strength,
+not classifier-free guidance; CFG other than 1 is refused. Default resolution is 1024×576. A 15-second
 request samples 362 native frames and deterministically trims two frames and
 the matching audio tail to deliver 360 frames. Media filenames are managed run
 bindings, never graph defaults or caller/worker filesystem dependencies.
@@ -355,3 +361,31 @@ must list its exact kind/id, expected postcondition, observed postcondition,
 and verification result. A network volume that must be preserved is recorded
 as a non-owned resource with its preservation postcondition; it is never
 silently treated as part of pod deletion.
+
+## Source range and framing
+
+A source may be a project media handle (`sha256:…`, `ref:…`, or an earlier
+`run:…` output). Give its half-open source `range` and, optionally, `fit`:
+`fill` (default) center-crops to 16:9; `fit` keeps the whole frame with bars.
+Neither stretches the picture. H3 prepares the selected interval as 24 fps,
+1024×576, and the dry-run reports the original and prepared identities,
+range, fit and decoded timing. V1 range durations round to the nearest 24 fps
+frame; V2 ranges must use its exact frame grid. Video must cover the requested
+range. Stream timestamps must be measurable; H3 rebases them to the selected
+video start and records the timing. An audio start offset or coverage shortfall
+of at most one frame can be aligned or padded, with the repair recorded; larger
+offsets, shortfalls and discontinuous decoded audio are refused. Framing uses the source display aspect ratio;
+if pixel aspect metadata is missing, H3 records an assumption of square pixels.
+Continuations require at least 39 prepared frames (1.625 seconds). Preparation
+never invents a missing audio stream, and the current source-backed graph refuses
+one without audio. Plain
+`video_ref` selects the whole video up to its last complete 24-fps frame; the
+selected range is included in the dry-run.
+
+Preparation measures the conformed clip when it is created. Its managed object
+carries that measurement and its source lineage. Later stages verify the object
+descriptor and digest and reuse the recorded measurement.
+
+Masks and pixel-coordinate regions refer to the prepared 1024×576 canvas and
+clip-relative clock, after the specified fit. Supply masks already aligned to
+that canvas and time range; H3 does not transform source-coordinate masks.

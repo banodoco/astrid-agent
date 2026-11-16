@@ -154,6 +154,7 @@ class RunPodLeaseOwner:
         self.deadline_timer = self.expiry_retry_timer = self.warm_lease = self.key = None
         self.closed, self.started = False, False
         self._release_inflight = False
+        self._capacity_retry_operation: str | None = None
         self._acquisition_cancel = threading.Event()
         self._observer_lock = threading.Lock()
         self._failure_observers: dict[tuple[str, str, int, str], threading.Event] = {}
@@ -365,8 +366,10 @@ class RunPodLeaseOwner:
                     and lease.get("state") == "idle"
                     and now < lease["idle_expires_at"] and now < lease["paid_expires_at"]):
                 try:
+                    from .target_selection import PaidSelectionError, _require_allocation_bound
+                    _require_allocation_bound(record)
                     self.selection._owned(record, self.selection._recorded_offer(record))
-                except AcquisitionUnresolvedError:
+                except (AcquisitionUnresolvedError, PaidSelectionError):
                     # Incompatible custody cannot be adopted, but still needs
                     # the same exact recovery as an interrupted invocation.
                     pass
@@ -672,6 +675,10 @@ class RunPodLeaseOwner:
                     self.started = False
                     self._cancel()
                     operation = current["operation_id"]
+                    self._capacity_retry_operation = (operation if
+                        current.get("state") in {"capacity_retry_ready", "capacity_exhausted"}
+                        and current.get("safe_to_retry") is True and current.get("pod_id") is None
+                        and current.get("capacity_rejection") == "ProviderCapacityUnavailable" else None)
                     self.deadline_timer = self.timer(self._provider_retry_delay(current), lambda: self._retry_recovery(operation))
                 raise
             self._arm(claimed)
@@ -694,13 +701,27 @@ class RunPodLeaseOwner:
               cancelled: Callable[[], bool] | None = None) -> Mapping[str, Any]:
         """Claim through ordinary acquisition, then retain without a generation job."""
         with self.lock:
-            if self.closed or not self.started:
+            if self.closed:
                 raise RunPodWorkerOwnerError("claim requires a running host with a live RunPod owner")
             from .target_selection import PaidRunConsent, PaidSelectionError
             if (not isinstance(consent, PaidRunConsent) or consent.preparation_seconds != 0
                     or consent.execution_seconds != 0 or consent.idle_seconds != requested_idle_seconds
                     or requested_idle_seconds <= 0):
                 raise PaidSelectionError("claim requires fresh paid consent for finite initial idle retention")
+            if not self.started and self._capacity_retry_operation is not None:
+                if self._release_inflight or self._acquisition_cancel.is_set():
+                    raise AcquisitionUnresolvedError("lease release is already in progress")
+                raw = self.selection._read()
+                if raw is not None and raw.get("operation_id") == self._capacity_retry_operation:
+                    self._discard_stale_capacity_intent(raw)
+                # The recovery timer may already have cleared the verified intent.
+                # Never reopen for any remaining or different custody.
+                if self.selection._read() is None:
+                    self._cancel()
+                    self._capacity_retry_operation = None
+                    self.started = True
+            if not self.started:
+                raise RunPodWorkerOwnerError("claim requires a running host with a live RunPod owner")
             invocation = self.acquire(consent, requested_idle_seconds=requested_idle_seconds,
                                       cancelled=cancelled)
             self.settle(invocation)
@@ -744,6 +765,14 @@ class RunPodLeaseOwner:
             if (consent.invocation_id == limits.get("invocation_id")
                     or consent.invocation_id in self._paid_consent_ids):
                 raise PaidSelectionError("paid consent was already used; keep requires fresh consent")
+            try:
+                provider_bound = datetime.fromisoformat(record["allocation_terminate_after"].replace("Z", "+00:00"))
+                if provider_bound.utcoffset() is None:
+                    raise ValueError("missing timezone")
+            except (KeyError, TypeError, ValueError, AttributeError) as exc:
+                raise PaidSelectionError("provider termination deadline cannot be confirmed; release and claim again") from exc
+            if expiry > provider_bound:
+                raise PaidSelectionError("keep exceeds the provider termination deadline; release and claim again")
             cost = (_number(lease.get("estimated_cost_usd", 0), "estimated USD cost", zero=True)
                     + max(0, now - lease.get("accounted_at", lease["started_at"])) * rate / 3600)
             lease.update(paid_expires_at=expiry.timestamp(),
@@ -974,6 +1003,7 @@ class RunPodLeaseOwner:
                 return None
             if record["state"] == "cleanup_complete":
                 _validate_completed_release(record)
+                self.started = True
                 return record
             self.started = False
             self._cancel()

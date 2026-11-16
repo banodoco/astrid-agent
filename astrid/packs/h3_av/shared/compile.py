@@ -20,6 +20,7 @@ from .request_v2 import (
     branch_for,
     effective_settings,
     read_prepared_request,
+    _settings,
 )
 from .timing import ContinuationTimingError, plan_continuation
 
@@ -266,9 +267,6 @@ def _require_native(request: H3Request) -> tuple[float, float]:
     for reference in value["references"]:
         if reference["purpose"] == "audio":
             raise CompilationError("native reference slots are image references; audio references are unsupported")
-    for name in ("sampler", "guidance"):
-        if name in value["overrides"] and value["overrides"][name] != _DEFAULTS[name]:
-            raise CompilationError(f"overrides.{name} is not a public input of the native graph")
     return source_end, float(duration)
 
 
@@ -329,6 +327,14 @@ def _compile_manifest(
     return manifest
 
 
+def _v1_native_settings(overrides: Mapping[str, Any]) -> dict[str, Any]:
+    raw = dict(overrides)
+    choice = raw.pop("turbo_lora", None)
+    if choice is not None:
+        raw["turbo"] = {"lora": choice}
+    return _settings(raw)
+
+
 def _compile_native(request: H3Request, assets: Mapping[str, Path], destination: Path) -> dict[str, Any]:
     source_end, output_duration = _require_native(request)
     try:
@@ -343,6 +349,7 @@ def _compile_native(request: H3Request, assets: Mapping[str, Path], destination:
     if reference_count > 2:
         raise CompilationError("the selected Seitanism graph has two image-reference slots; more references cannot be bound")
     resource_root = _NATIVE_WORKFLOW if reference_count == 0 else _REFERENCE_WORKFLOW
+    settings = _v1_native_settings(request.value["overrides"])
     managed = dict(bindings)
     if "source_video" not in managed:
         raise CompilationError("source video is missing from the managed asset bundle")
@@ -370,11 +377,12 @@ def _compile_native(request: H3Request, assets: Mapping[str, Path], destination:
     return _compile_manifest(
         request=request,
         destination=destination,
-        resource_root=_pack_root() / resource_root,
+        resource_root=_continuation_bundle(_pack_root() / resource_root, destination / "continuation-bundle", settings),
         workflow_inputs=workflow_inputs,
         asset_bindings=managed,
-        capabilities={"operation": "continue", "prompt": "bound", "references": reference_count, "reference_capacity": 2, "video_mask": "full-frame generated suffix only", "audio_mask": "generated suffix only", "source_range": "bound to 24fps loader frame cap", "output_duration": "exact after deterministic tail trim", "output_contract": "muxed_av_full_timeline", "public_generation": {"modality": "video", "selectors": [{"selector": "main-0", "ordinal": 0, "variant_key": "original", "required": True}], "internal_outputs": []}, "overrides": ["model", "seed", "steps"]},
-        limitations=["continuation is full-frame only; spatial continuation masks are not present in the Seitanism graph", "reference slots are image guidance only and support at most two references", "sampler and guidance remain graph constants", "H3 raw lengths are quantized to 5 + 17k frames; excess generated tail frames are removed during composition"],
+        capabilities={"operation": "continue", "prompt": "bound", "references": reference_count, "reference_capacity": 2, "video_mask": "full-frame generated suffix only", "audio_mask": "generated suffix only", "source_range": "bound to 24fps loader frame cap", "output_duration": "exact after deterministic tail trim", "output_contract": "muxed_av_full_timeline", "public_generation": {"modality": "video", "selectors": [{"selector": "main-0", "ordinal": 0, "variant_key": "original", "required": True}], "internal_outputs": []}, "overrides": ["model", "seed", "steps", "sampler", "guidance", "turbo_lora", "scheduler", "cfg", "video_shift", "audio_shift"]},
+        extra_manifest={"effective_settings": settings},
+        limitations=["continuation is full-frame only; spatial continuation masks are not present in the Seitanism graph", "reference slots are image guidance only and support at most two references", "H3 raw lengths are quantized to 5 + 17k frames; excess generated tail frames are removed during composition"],
         continuation_timing=timing.to_dict(),
     )
 
@@ -513,7 +521,7 @@ def _compile_native_masked_edit(
         if region.mask_asset not in assets:
             raise CompilationError(f"native masked edit mask {region.mask_asset!r} is missing from preparation")
         try:
-            mask_info = probe_mask(assets[region.mask_asset], mask_id=region.mask_asset)
+            mask_info = probe_mask(assets[region.mask_asset], mask_id=region.mask_asset, source=assets[source_id])
         except CompositionError as exc:
             raise CompilationError(str(exc)) from exc
         mask_kind = str(mask_info["kind"])
@@ -554,11 +562,13 @@ def _compile_native_masked_edit(
     prompt = spec.prompt
     seed = operation.seed if operation.seed is not None else settings["seed"]
     turbo = settings["turbo"]
+    from .generation import PIKA_REF2VA_FILENAME
     graph = build_generation_workflow(
         references=[f"reference_{index}" for index in range(len(references))],
         prompt=prompt, frames=timing["raw_frames"], model=settings["model"],
         steps=settings["steps"], seed=seed, sampler=settings["sampler"],
         scheduler=settings["scheduler"], guidance=turbo["strength"], turbo_enabled=turbo["enabled"],
+        turbo_filename=PIKA_REF2VA_FILENAME, video_shift=settings["video_shift"], audio_shift=settings["audio_shift"],
         masked_edit={
             "source_binding": "source_video", "mask_binding": mask_binding, "mask_channel": _MASK_CHANNEL,
             "mask_kind": mask_kind, "strength": operation.strength,
@@ -622,7 +632,7 @@ def _compile_native_masked_edit(
             "zero-reference requests assume MiniMaxH3ReferenceToVideo accepts no ref images (unverified)",
         ],
         profile_id="h3_av.native.v2" if request.value.get("version") == 2 else _PROFILE_ID,
-        extra_manifest={"branch": branch},
+        extra_manifest={"branch": branch, "effective_settings": settings},
     )
 
 
@@ -725,6 +735,7 @@ def _compile_character_swap_v2(
     prompt = _native_v2_prompt(request)
     turbo = settings["turbo"]
     adapter = settings["adapter"]
+    from .generation import PIKA_REF2VA_FILENAME
     graph = build_generation_workflow(
         references=[f"reference_{index}" for index in range(len(images))],
         video_references=video_reference_rows,
@@ -738,6 +749,7 @@ def _compile_character_swap_v2(
         guidance=turbo["strength"],
         adapter_strength=adapter["strength"],
         turbo_enabled=turbo["enabled"],
+        turbo_filename=PIKA_REF2VA_FILENAME, video_shift=settings["video_shift"], audio_shift=settings["audio_shift"],
         character_swap_sha256=adapter_sha256,
     )
 
@@ -763,7 +775,7 @@ def _compile_character_swap_v2(
     adapter_asset = assets_by_name.get(CHARACTER_SWAP_FILENAME)
     if adapter_asset is None or adapter_asset.get("sha256") != adapter_sha256 or adapter_asset.get("hf_revision") != CHARACTER_SWAP_REVISION:
         raise CompilationError("connected Character Swap loader does not resolve to the immutable pinned asset")
-    if bool(TURBO_FILENAME in assets_by_name) != bool(turbo["enabled"]):
+    if bool(PIKA_REF2VA_FILENAME in assets_by_name) != bool(turbo["enabled"]):
         raise CompilationError("Turbo loader and managed model requirement disagree")
 
     bindings_manifest = facts().build_asset_manifest(bindings)
@@ -807,13 +819,14 @@ def _compile_character_swap_v2(
         },
         "turbo": {
             "enabled": turbo["enabled"],
+            "lora": turbo["lora"],
             "strength": turbo["strength"] if turbo["enabled"] else None,
-            "asset": assets_by_name.get(TURBO_FILENAME) if turbo["enabled"] else None,
+            "asset": assets_by_name.get(PIKA_REF2VA_FILENAME) if turbo["enabled"] else None,
         },
-        "sampling": {key: settings[key] for key in ("steps", "seed", "sampler", "scheduler")},
+        "sampling": {key: settings[key] for key in ("steps", "seed", "sampler", "scheduler", "cfg")},
         "model_processing": {
             "attention": "comfy kitchen attention",
-            "sigma_shift": {"video": 12, "audio": 3},
+            "sigma_shift": {"video": settings["video_shift"], "audio": settings["audio_shift"]},
             "denoise": 1,
         },
         "connected_model_assets": [dict(row) for row in active_assets],
@@ -863,6 +876,42 @@ def _compile_character_swap_v2(
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
     manifest["manifest_path"] = str(manifest_path)
     return manifest
+
+
+def _continuation_bundle(source: Path, destination: Path, settings: Mapping[str, Any]) -> Path:
+    """Emit a request-specific copy of the captured continuation graph."""
+    import shutil
+    from vibecomfy.security.provenance import Provenance
+    from vibecomfy.workflow_bundle import emit_bundle, load_bundle
+    from .generation import PIKA_REF2VA_FILENAME, _h3_locked_urls, _required_locked_url
+
+    if not settings["turbo"]["enabled"]:
+        raise CompilationError("native-v2 continuation cannot disable its Turbo loader")
+    bundle = load_bundle(source / "workflow.py", trust=Provenance.USER_CONFIRMED)
+    workflow = bundle.workflow.copy()
+    rows = [node for node in workflow.nodes.values() if node.class_type == "LoraLoaderModelOnly"]
+    if len(rows) != 1:
+        raise CompilationError("continuation must contain exactly one Turbo loader")
+    old_name = rows[0].inputs["lora_name"]
+    rows[0].inputs.update(lora_name=PIKA_REF2VA_FILENAME, strength_model=settings["turbo"]["strength"])
+    for node in workflow.nodes.values():
+        if node.class_type == "KSamplerSelect": node.inputs["sampler_name"] = settings["sampler"]
+        if node.class_type == "BasicScheduler": node.inputs["scheduler"] = settings["scheduler"]
+        if node.class_type == "MiniMaxH3SigmaShift":
+            node.inputs.update(shift_video=settings["video_shift"], shift_audio=settings["audio_shift"])
+    key = "loras/" + PIKA_REF2VA_FILENAME
+    locked = _h3_locked_urls()
+    asset = locked[key]
+    row = {"name": PIKA_REF2VA_FILENAME, "url": _required_locked_url(locked, key),
+           "subdir": "loras", "sha256": asset.sha256.removeprefix("sha256:"),
+           "size_bytes": asset.bytes, "hf_revision": asset.revision}
+    for inventory in (workflow.requirements.models, workflow.metadata["model_assets"], workflow.metadata["requirements"]["models"]):
+        inventory[:] = [row if item.get("name") == old_name else item for item in inventory]
+    destination.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source / "workflow.vibe.json", destination / "workflow.vibe.json")
+    shutil.copyfile(source / "source.json", destination / "source.json")
+    emit_bundle(workflow, destination / "workflow.py", provenance=Provenance.AGENT_AUTHORED)
+    return destination
 
 
 def _compile_native_v2(
@@ -919,12 +968,6 @@ def _compile_native_v2(
         return _compile_native_masked_edit(request, assets, destination, branch=branch)
 
     destination.mkdir(parents=True, exist_ok=True)
-    if settings["sampler"] != _DEFAULTS["sampler"]:
-        raise CompilationError("native-v2 continuation graph has no sampler input")
-    if settings["scheduler"] != "simple":
-        raise CompilationError("native-v2 continuation graph has no scheduler input")
-    if settings["turbo"]["strength"] != _DEFAULTS["guidance"] or not settings["turbo"]["enabled"]:
-        raise CompilationError("native-v2 continuation graph has no guidance input")
 
     timelines = [item for item in request.value["media"] if item["role"] == "timeline"]
     references = [item for item in request.value["media"] if item["role"] == "reference"]
@@ -1001,6 +1044,7 @@ def _compile_native_v2(
     if reference_ids:
         workflow_inputs.update({"reference_0": members["reference_0"], "reference_1": members["reference_1"]})
     resource_root = _REFERENCE_WORKFLOW if reference_ids else Path("workflows/native_h3_continuation")
+    resource_root = _continuation_bundle(_pack_root() / resource_root, destination / "continuation-bundle", settings)
     return _compile_manifest(
         request=request,
         destination=destination,
@@ -1029,7 +1073,7 @@ def _compile_native_v2(
         ],
         continuation_timing=continuation_timing,
         profile_id="h3_av.native.v2",
-        extra_manifest={"branch": branch},
+        extra_manifest={"branch": branch, "effective_settings": settings},
     )
 
 
@@ -1085,8 +1129,10 @@ def _compile_generation(
     manifest = _write_asset_bundle(destination / "managed-assets.zip", bindings)
     members = _member_by_binding(manifest)
     if native_settings is None:
-        settings = {**_DEFAULTS, **request.value["overrides"]}
-        scheduler = "simple"
+        native_settings = _v1_native_settings(request.value["overrides"])
+        settings = {key: native_settings[key] for key in ("model", "steps", "seed", "sampler")}
+        settings["guidance"] = native_settings["turbo"]["strength"]
+        scheduler = native_settings["scheduler"]
         turbo_enabled = True
         adapter_strength = None
     else:
@@ -1102,7 +1148,11 @@ def _compile_generation(
         adapter_strength = native_settings.get("adapter", {}).get("strength")
     timing = generation_timing(request.value["output"]["duration"])
     prompt = request.value["content"]["prompt"]
+    from .generation import PIKA_REF2VA_FILENAME
     graph = build_generation_workflow(
+        turbo_filename=PIKA_REF2VA_FILENAME,
+        video_shift=native_settings["video_shift"],
+        audio_shift=native_settings["audio_shift"],
         references=list(members.values()), prompt=prompt,
         frames=timing["raw_frames"], model=settings["model"],
         steps=settings["steps"], seed=settings["seed"],
@@ -1131,10 +1181,10 @@ def _compile_generation(
             "internal_outputs": []},
         "validation": "CPU structural; live GPU acceptance pending",
     }
-    extra_manifest = None
+    extra_manifest = {"effective_settings": native_settings}
     if native_v2_branch is not None:
         capabilities.update({"operation": "transform", "native_v2_branch": native_v2_branch})
-        extra_manifest = {"branch": native_v2_branch}
+        extra_manifest["branch"] = native_v2_branch
     workflow_inputs = {**settings, "prompt": prompt, **members}
     workflow_inputs["scheduler"] = scheduler
     if native_settings is not None:

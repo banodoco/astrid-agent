@@ -59,7 +59,7 @@ _OPERATIONS = {"edit", "continue", "generate"}
 _ACTIONS = {"generate", "preserve"}
 _PURPOSES = {"appearance", "motion", "pose", "keyframe", "audio", "style"}
 _STEMS = {"mix", "voice", "effects", "music"}
-_OVERRIDES = {"model", "steps", "seed", "sampler", "guidance"}
+_OVERRIDES = {"model", "steps", "seed", "sampler", "guidance", "turbo_lora", "scheduler", "cfg", "video_shift", "audio_shift"}
 
 
 def _asset_ids(request: H3Request) -> list[str]:
@@ -215,10 +215,14 @@ def _normalize_v1(raw: Mapping[str, Any]) -> H3Request:
     source_raw = _object(raw.get("source"), "source", nullable=True)
     source: dict[str, Any] | None = None
     if source_raw is not None:
-        _unknown(source_raw, {"asset", "range"}, "source")
+        _unknown(source_raw, {"asset", "range", "fit"}, "source")
         source = {"asset": _nonblank(source_raw.get("asset"), "source.asset")}
         if "range" in source_raw:
             source["range"] = _interval(source_raw["range"], "source.range")
+        if "fit" in source_raw:
+            if not isinstance(source_raw["fit"], str) or source_raw["fit"] not in {"fill", "fit"}:
+                raise H3RequestError("source.fit must be fill or fit")
+            source["fit"] = source_raw["fit"]
     if operation in {"edit", "continue"} and source is None:
         raise H3RequestError(f"source is required for {operation}")
     if operation == "generate" and source is not None:
@@ -295,6 +299,11 @@ def _normalize_v1(raw: Mapping[str, Any]) -> H3Request:
         overrides["sampler"] = _nonblank(overrides_raw["sampler"], "overrides.sampler")
     if "guidance" in overrides_raw:
         overrides["guidance"] = _number(overrides_raw["guidance"], "overrides.guidance", minimum=0)
+
+    for name in ("turbo_lora", "scheduler"):
+        if name in overrides_raw: overrides[name] = _nonblank(overrides_raw[name], f"overrides.{name}")
+    for name in ("cfg", "video_shift", "audio_shift"):
+        if name in overrides_raw: overrides[name] = _number(overrides_raw[name], f"overrides.{name}", minimum=0)
 
     value = {
         "version": 1,

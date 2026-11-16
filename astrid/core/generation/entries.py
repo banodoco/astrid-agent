@@ -643,15 +643,26 @@ def _dimension_values(description, inputs):
     return values
 
 
-def file_map_is_valid(value: Any) -> bool:
-    """A nonempty map of id to file path: string ids without '/', string (or Path) paths that are not blank."""
+def file_map_is_valid(value: Any, *, allow_output_handles: bool = False) -> bool:
+    """Validate file-map IDs; H3 can opt in to canonical output handles as IDs."""
+    def valid_id(key: Any) -> bool:
+        if not isinstance(key, str) or not key:
+            return False
+        if '/' not in key:
+            return True
+        if not allow_output_handles:
+            return False
+        from astrid.sdk.media_handles import _OUTPUT_HANDLE
+        match = _OUTPUT_HANDLE.fullmatch(key)
+        return bool(match and match.group(3))
+
     return (isinstance(value, Mapping) and bool(value)
-            and all(isinstance(key, str) and key and '/' not in key
-                    and isinstance(path, (str, Path)) and bool(str(path).strip())
+            and all(valid_id(key) and isinstance(path, (str, Path)) and bool(str(path).strip())
                     for key, path in value.items()))
 
 
-def read_file_map_document(value: Any) -> Any:
+def read_file_map_document(value: Any, *, allow_output_handles: bool = False,
+                           allow_empty: bool = False) -> Any:
     """A ``file_map`` given as a path to its JSON document becomes the map; anything else is returned as is."""
     if not isinstance(value, (str, Path)):
         return value
@@ -662,9 +673,11 @@ def read_file_map_document(value: Any) -> Any:
         raw = json.loads(document.read_text(encoding='utf-8'))
     except (OSError, ValueError) as exc:
         raise ValueError(f'file map document {str(value)!r} is not readable JSON: {exc}') from exc
-    if not file_map_is_valid(raw):
+    if not (allow_empty and isinstance(raw, dict) and not raw) and not file_map_is_valid(
+            raw, allow_output_handles=allow_output_handles):
+        allowed_ids = ('ids without "/" or canonical output handles' if allow_output_handles else 'ids without "/"')
         raise ValueError(f'file map document {str(value)!r} must be a nonempty JSON object of id to file path '
-                         '(ids without "/", non-blank string paths)')
+                         f'({allowed_ids}, non-blank string paths)')
     return {key: (item if Path(item).is_absolute() else str((document.parent / item).resolve()))
             for key, item in raw.items()}
 
@@ -726,7 +739,7 @@ def validate_inputs(description: dict[str, Any], inputs: Mapping[str, Any], *, r
                 # A path to the map's JSON document: read when the job is built
                 # (``entry_job``), not here, so describing and dry-running do not open the media.
                 value = str(value)
-            elif not file_map_is_valid(value):
+            elif not file_map_is_valid(value, allow_output_handles=description.get('id') == 'h3' and name == 'asset_map'):
                 raise ValueError(f'entry input {name!r} requires a nonempty map of id to file path')
             else:
                 value = {key: str(path) for key, path in value.items()}
@@ -1126,7 +1139,9 @@ def entry_job(entry: Mapping[str, Any], inputs: Mapping[str, Any], job_dir: Any,
     A ``file_map`` given as the path of its JSON document is read here, when the job is built.
     """
     types = {port['name']: _input_type(port.get('type')) for port in entry.get('inputs', [])}
-    inputs = {name: (read_file_map_document(value) if types.get(name) == 'file_map' else value)
+    inputs = {name: (read_file_map_document(
+                  value, allow_output_handles=entry.get('id') == 'h3' and name == 'asset_map')
+                  if types.get(name) == 'file_map' else value)
               for name, value in inputs.items()}
     files = {name: value for name, value in inputs.items() if types.get(name) in {'file', 'file_map'}}
     return {'hooks': dict(hooks), 'inputs': inputs, 'files': files,
@@ -1146,7 +1161,7 @@ def attach_hooks(entry: Mapping[str, Any], inputs: Mapping[str, Any], job_dir: A
 
 
 def build_entry(entry: Mapping[str, Any], inputs: Mapping[str, Any], job_dir: Any, *, registry: Any = None,
-                check_runtime: bool = False) -> dict[str, Any] | None:
+                check_runtime: bool = False, publish_source: Any = None) -> dict[str, Any] | None:
     """Run the entry's ``build`` through the engine's ``prepare``: ``{workflow, bindings, plan, ...}``, or None."""
     attached = entry if entry.get('hooks') else attach_hooks(entry, inputs, job_dir, registry=registry)
     if not attached.get('hooks'):
@@ -1154,4 +1169,6 @@ def build_entry(entry: Mapping[str, Any], inputs: Mapping[str, Any], job_dir: An
     job = entry_job(entry, inputs, job_dir, hooks=attached['hooks'])
     if check_runtime:
         job['check_runtime'] = True
+    if publish_source is not None:
+        job['publish_source'] = publish_source
     return engine_table()[entry.get('engine') or 'comfyui'].prepare(job)

@@ -146,7 +146,25 @@ def test_denial_cap_deadline_and_changed_offer_block_before_claim_or_journal(cas
     assert case.creates == case.configs == 0
 
 
-def test_claim_namespaces_intent_before_provider_and_reuses_only_exact_journal(case):
+@pytest.fixture
+def acknowledged_watchdog(monkeypatch, pod_watchdog_transport):
+    from runpod_lifecycle import https
+
+    class Transport:
+        def __init__(self, pod_id, https_token, *, deadline=None):
+            assert pod_id and https_token == pod_watchdog_transport
+
+        def execute_command(self, command, timeout):
+            assert command.startswith("python3 -c ")
+            return 0, "", ""
+
+        def disconnect(self):
+            pass
+
+    monkeypatch.setattr(https, "HttpsPodTransport", Transport)
+
+
+def test_claim_namespaces_intent_before_provider_and_reuses_only_exact_journal(case, acknowledged_watchdog):
     def before_create():
         journal = json.loads(case.owner.path.read_text())
         assert journal["state"] == "allocation_pending"
@@ -934,7 +952,7 @@ def test_capacity_cancellation_during_post_keeps_exact_journal_for_reconciliatio
     assert restored["pod_id"] == "pod-1" and case.creates == 1
 
 
-def test_retained_machine_reuse_does_not_require_current_market_stock(case):
+def test_retained_machine_reuse_does_not_require_current_market_stock(case, acknowledged_watchdog):
     first = asyncio.run(case.owner._select(case.grant))
     case.owner.observe_offer = lambda: (_ for _ in ()).throw(selection.OfferObservationError("stock_unavailable"))
     second = asyncio.run(case.owner._select(replace(case.grant, invocation_id="reuse-with-no-stock")))

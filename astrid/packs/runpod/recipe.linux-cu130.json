@@ -4,7 +4,7 @@
   "platform": "linux-x86_64-cu130",
   "pins": {
     "path": "packs/runpod/pins.json",
-    "sha256": "e1b0b8ce00a01a09113cbe4de34264cdf82a66d40512dea52ca2b69ac96e5c4a"
+    "sha256": "739d9edb51f17d18a92da21db563d56052fa484addaa3b95dfa0d03320e6f490"
   },
   "source_bindings": [
     {
@@ -103,7 +103,7 @@
   "primary_environment": "comfy",
   "models_lock": {
     "path": "packs/runpod/models.lock.json",
-    "sha256": "40f37e271863e67d02fd6bcd6badb00a474eb6ec051ead7e8edf04281b2ef72a"
+    "sha256": "c2a211df9e6ecb2be350d3fdea9db4d92cae4f1345c9542800ecac2eddb73c45"
   },
   "start": {
     "argv": [

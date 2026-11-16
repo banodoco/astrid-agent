@@ -28,7 +28,8 @@
       "required": ["asset"],
       "properties": {
         "asset": {"type": "string", "minLength": 1},
-        "range": {"$ref": "#/$defs/range"}
+        "range": {"$ref": "#/$defs/range"},
+        "fit": {"enum": ["fill", "fit"]}
       }
     },
     "output": {
@@ -60,7 +61,12 @@
         "steps": {"type": "integer", "minimum": 1, "maximum": 200},
         "seed": {"type": "integer", "minimum": 0},
         "sampler": {"type": "string"},
-        "guidance": {"type": "number", "minimum": 0}
+        "guidance": {"type": "number", "minimum": 0},
+        "turbo_lora": {"enum": ["pika_flex_8step", "lightx2v_8step"]},
+        "scheduler": {"type": "string"},
+        "cfg": {"const": 1.0},
+        "video_shift": {"type": "number", "minimum": 0},
+        "audio_shift": {"type": "number", "minimum": 0}
       }
     }
   },
