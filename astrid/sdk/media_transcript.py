@@ -108,13 +108,12 @@ def write_transcript(client: Any, project: str, media_id: str, source: str,
 
 def import_transcript_words(
     client: Any, project: str, media_id: str, words: Sequence[Sequence[Any],], *,
-    segment_id: str, text: str | None = None, source_offset: float = 0.0,
+    segment_id: str, text: str | None = None,
     source: str = IMPORT_SOURCE, replace: bool = False,
     expected_version: int | None = None,
 ) -> str:
     """Import a complete words file whose timestamps are source-media seconds.
 
-    ``source_offset`` adds an explicit constant offset to every supplied time.
     Existing content is never silently replaced: a differing document requires
     ``replace=True`` and its current version, and replacement replaces the
     entire transcript document (it does not merge a range).
@@ -125,11 +124,6 @@ def import_transcript_words(
         raise ValueError("source id must be non-empty")
     if not isinstance(segment_id, str) or not segment_id.strip():
         raise ValueError("segment id must be non-empty")
-    if isinstance(source_offset, bool) or not isinstance(source_offset, (int, float)):
-        raise ValueError("source offset must be numeric seconds")
-    offset = float(source_offset)
-    if not math.isfinite(offset) or offset < 0:
-        raise ValueError("source offset must be finite nonnegative seconds")
     if not isinstance(words, Sequence) or isinstance(words, (str, bytes)):
         raise ValueError("words must be a sequence")
     shifted = []
@@ -144,7 +138,7 @@ def import_transcript_words(
         if not isinstance(row[2], str) or not row[2].strip():
             raise ValueError("word text must be a non-empty string")
         try:
-            start, end = float(row[0]) + offset, float(row[1]) + offset
+            start, end = float(row[0]), float(row[1])
         except (TypeError, ValueError, OverflowError) as exc:
             raise ValueError("word times must be finite source seconds") from exc
         spoken = row[2]
