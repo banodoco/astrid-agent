@@ -1,5 +1,5 @@
 # The heavy lanes the per-push run (ci.yml) deselects: integration (real Runtime daemons, subprocesses, the network)
-# and opt_in. Nightly, on request, and on pushes to main/release-1, so regressions are seen promptly.
+# and opt_in. Nightly, on request, and on pushes to main/release-1 and release/*/main, so regressions are seen promptly.
 # Lanes with no job (workstation, omp, gpu, app_checkout: a GPU, the owner's workstation files or another repo's checkout) are listed by name in every run (tests/lanes.py).
 name: Lanes
 
@@ -13,11 +13,11 @@ on:
         required: false
         type: string
   push:
-    branches: [main, release-1, "int/**"]
+    branches: [main, release-1, "int/**", "release/*/main"]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ !(startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main')) }}
 
 jobs:
   integration:
@@ -258,7 +258,7 @@ jobs:
         run: python -m pytest -v -rA --durations=40 -m "integration and not opt_in and not app_checkout" --splits 4 --group ${{ matrix.group }}
 
       - name: Save pip cache on main or int branches (C-08)
-        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/')) && steps.c08-agent-lanes-2.outputs.cache-hit != 'true' }}
+        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/') || (startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main'))) && steps.c08-agent-lanes-2.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
@@ -372,7 +372,7 @@ jobs:
   # installed into its own venv, with the Runtime and the Remotion project provisioned. pytest runs from that venv with
   # --import-mode=importlib so the checkout is not put on sys.path ahead of site-packages.
       - name: Save pip cache on main or int branches (C-08)
-        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/')) && steps.c08-agent-lanes-1.outputs.cache-hit != 'true' }}
+        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/') || (startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main'))) && steps.c08-agent-lanes-1.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
