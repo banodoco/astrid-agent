@@ -66,6 +66,17 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
     from tests.core.generation import test_engine_runner as canonical
 
     c = small_lease
+    # The fake selection clock and lifecycle's future-bound validation must
+    # observe the same time; keep the production validation active.
+    from datetime import datetime
+    from runpod_lifecycle import deadline as lifecycle_deadline
+
+    class FixtureDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.fromtimestamp(c.clock(), tz)
+
+    monkeypatch.setattr(lifecycle_deadline, "datetime", FixtureDateTime)
     mode = getattr(request, "param", True)
     persistent, restricted = mode if isinstance(mode, tuple) else (mode, True)
     raw = {**c.raw, "datacenter_id": "DC-accepted", "idle_timeout_seconds": 1800}
@@ -274,6 +285,82 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
     c.request = RunPodPreparationRequest({"engine": "comfyui", "kind": "workflow"}, source, workflow,
                                         {}, c.grant.consent, c.grant.max_usd, c.grant.deadline)
     return c
+
+
+def test_paid_create_posts_the_journalled_bound_even_if_reply_is_lost(retained, monkeypatch):
+    from runpod_lifecycle import api, graphql, lifecycle, preflight
+    from astrid.packs.runpod.worker_preparation import AcquisitionUnresolvedError
+
+    c = retained
+    seen, errors = [], []
+    def create(**kwargs):
+        try:
+            return api.create_pod(**kwargs)
+        except Exception as exc:
+            errors.append(type(exc).__name__ + ": " + str(exc))
+            raise
+    monkeypatch.setattr(lifecycle, "create_pod", create)
+    monkeypatch.setattr(api, "_get_runpod", lambda: SimpleNamespace())
+    monkeypatch.setattr(preflight, "preflight_transport", lambda transport: None)
+
+    def post(mutation, key):
+        record = c.read()
+        assert record["state"] == "allocation_pending" and not record.get("pod_id")
+        bound = record["allocation_terminate_after"]
+        assert f'terminateAfter: "{bound}"' in mutation
+        assert datetime.fromisoformat(bound.replace("Z", "+00:00")) == datetime.fromisoformat(record["paid_limits"]["expires_at"])
+        seen.append(bound)
+        raise TimeoutError("lost create response")
+
+    monkeypatch.setattr(graphql, "_run", post)
+    c.host.start_fresh_claim()
+    with pytest.raises(AcquisitionUnresolvedError):
+        c.host.claim(replace(c.grant, wait_for_capacity=False, preparation_seconds=0, execution_seconds=0, idle_seconds=600),
+                     requested_idle_seconds=600)
+    assert len(seen) == 1, errors
+    assert not c.read().get("pod_id")
+    assert c.read()["state"] in {"allocation_pending", "allocation_unknown"}
+
+
+def test_paid_create_refuses_old_lifecycle_before_post(retained, monkeypatch):
+    import runpod_lifecycle
+    from astrid.packs.runpod.worker_preparation import AcquisitionUnresolvedError
+
+    c = retained
+    monkeypatch.setattr(runpod_lifecycle, "RunPodConfig", lambda api_key: None)
+    c.host.start_fresh_claim()
+    with pytest.raises(AcquisitionUnresolvedError):
+        c.host.claim(replace(c.grant, wait_for_capacity=False, preparation_seconds=0, execution_seconds=0, idle_seconds=600),
+                     requested_idle_seconds=600)
+    assert c.creates == 0 and not c.owner.path.exists()
+
+
+def test_wrapped_capacity_rejection_allows_bounded_retry(retained, monkeypatch):
+    from runpod_lifecycle import lifecycle
+    from runpod_lifecycle.errors import ProviderCapacityUnavailable
+    from astrid.packs.runpod.target_selection import CapacityExhaustedError
+
+    c = retained
+    create = lifecycle.create_pod
+    seen = []
+
+    def reject_then_create(**kwargs):
+        record = c.read()
+        assert kwargs["terminate_after"] == record["allocation_terminate_after"]
+        seen.append(kwargs["terminate_after"])
+        if len(seen) == 1:
+            raise ProviderCapacityUnavailable(503, "no capacity")
+        return create(**kwargs)
+
+    monkeypatch.setattr(lifecycle, "create_pod", reject_then_create)
+    c.host.start_fresh_claim()
+    grant = replace(c.grant, wait_for_capacity=False, preparation_seconds=0, execution_seconds=0, idle_seconds=600)
+    with pytest.raises(CapacityExhaustedError):
+        c.host.claim(grant, requested_idle_seconds=600)
+    assert c.read()["capacity_rejection"] == "ProviderCapacityUnavailable"
+    record = c.host.claim(replace(grant, invocation_id="retry"), requested_idle_seconds=600)
+    assert len(seen) == 2 and c.creates == 1
+    assert record["allocation_terminate_after"] == seen[1]
 
 
 def test_preparation_refuses_paid_consent_without_claim(retained):

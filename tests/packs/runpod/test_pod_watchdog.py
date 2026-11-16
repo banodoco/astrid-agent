@@ -282,6 +282,16 @@ def test_claim_releases_pod_when_watchdog_reports_missing_identity(retained, mon
     assert c.creates == 1
 
 
+def test_unacknowledged_watchdog_update_releases_paid_claim(retained, monkeypatch):
+    module = watchdog_module()
+    c = retained
+    invocation = c.host.acquire(c.grant, requested_idle_seconds=10)
+    monkeypatch.setattr(module, "write_deadline", lambda *args: False)
+    with pytest.raises(module.PodWatchdogError, match="not acknowledged"):
+        c.host.settle(invocation)
+    assert c.deletes == ["pod-1"] and c.read()["state"] == "cleanup_complete"
+
+
 @pytest.mark.parametrize("provider_state", ["gone", "stopped"])
 def test_restart_after_self_stop_settles_released_without_replacement(retained, monkeypatch, provider_state):
     watchdog_module()
@@ -467,14 +477,13 @@ def test_startup_authorisation_controls_claim_and_exact_release(
     monkeypatch.setattr(module, "urlopen", probe_request)
     monkeypatch.setattr(module.subprocess, "Popen", spawn)
     monkeypatch.setattr(c.pod, "exec", execute)
-    # Release-manager ruling (blocker rule): a denied or unknown termination
-    # authorisation means no watchdog, under the host's custody, never a refused claim.
-    c.host.acquire(c.grant, requested_idle_seconds=10)
+    # Paid claims require the independently running pod watchdog.
+    with pytest.raises(module.PodWatchdogError, match="not acknowledged"):
+        c.host.acquire(c.grant, requested_idle_seconds=10)
     assert c.read()["self_stop"]["acknowledged"] is False
-    assert c.read()["state"] == "claimed" and not c.deletes
-    assert c.host.deadline_timer is not None
+    assert c.read()["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
     err = capsys.readouterr().err
-    assert "host custody only" in err and "can't stop itself" in err
+    assert "can't stop itself" in err
     if not denied:
         assert "watchdog=unavailable custody=host-only" in log.read_text()
     assert c.creates == 1 and not c.pod.job_log

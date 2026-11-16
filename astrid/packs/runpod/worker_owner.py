@@ -763,6 +763,14 @@ class RunPodLeaseOwner:
             if (consent.invocation_id == limits.get("invocation_id")
                     or consent.invocation_id in self._paid_consent_ids):
                 raise PaidSelectionError("paid consent was already used; keep requires fresh consent")
+            try:
+                provider_bound = datetime.fromisoformat(record["allocation_terminate_after"].replace("Z", "+00:00"))
+                if provider_bound.utcoffset() is None:
+                    raise ValueError("missing timezone")
+            except (KeyError, TypeError, ValueError, AttributeError) as exc:
+                raise PaidSelectionError("provider termination deadline cannot be confirmed; release and claim again") from exc
+            if expiry > provider_bound:
+                raise PaidSelectionError("keep exceeds the provider termination deadline; release and claim again")
             cost = (_number(lease.get("estimated_cost_usd", 0), "estimated USD cost", zero=True)
                     + max(0, now - lease.get("accounted_at", lease["started_at"])) * rate / 3600)
             lease.update(paid_expires_at=expiry.timestamp(),
@@ -993,6 +1001,7 @@ class RunPodLeaseOwner:
                 return None
             if record["state"] == "cleanup_complete":
                 _validate_completed_release(record)
+                self.started = True
                 return record
             self.started = False
             self._cancel()

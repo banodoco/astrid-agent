@@ -145,6 +145,14 @@ can disclose this policy even when no matching GPU is in stock. An optional
 `--deadline` on claim adds a hard absolute UTC limit and must cover the
 disclosed idle retention.
 
+Paid creation sends the earlier of the cap-derived expiry and the requested
+deadline to RunPod as an allocation-time termination bound. The claim also
+requires an acknowledged pod-side watchdog; if it cannot be established,
+the claim is refused and cleanup retains custody until release is verified.
+Provider termination and billing timing are controlled by RunPod.
+The allocation-time deadline cannot be extended by `machines keep`; release
+and claim a new machine when a longer paid lifetime is needed.
+
 For example, after approval of these illustrative limits:
 
 ```sh

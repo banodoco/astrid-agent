@@ -278,10 +278,7 @@ def write_deadline(ops: Any, deadline: float, generation: int) -> bool:
         raise PodWatchdogTransportError("RunPod claim refused: pod watchdog transport failed; release the pod and claim again") from exc
     if code != 0:
         if stdout.strip() in {"pod_watchdog:termination_unknown", "pod_watchdog:termination_denied"}:
-            # No watchdog: the claim proceeds under the host's custody, as before
-            # the watchdog existed. Only a watchdog that ran and then failed refuses.
-            print("RunPod pod watchdog unavailable: this pod can't stop itself; Astrid stops it at its "
-                  "deadline while this computer is running (host custody only)", file=sys.stderr)
+            print("RunPod pod watchdog unavailable: this pod can't stop itself", file=sys.stderr)
             return False
         cause = next((name for name in ("RUNPOD_POD_ID", "RUNPOD_API_KEY", "stale_generation",
                                       "termination_committed")
@@ -309,6 +306,8 @@ def sync_deadline(record: Mapping[str, Any], path: Path, deadline: float) -> dic
         raise PodWatchdogError("RunPod claim refused: pod watchdog transport unavailable; release the pod and claim again") from exc
     value["self_stop"]["acknowledged"] = write_deadline(ops, deadline, generation)
     replace_target_record(path, value, operation_id=record["operation_id"])
+    if value["self_stop"]["acknowledged"] is not True:
+        raise PodWatchdogError("RunPod paid claim refused: pod watchdog was not acknowledged")
     return value
 
 

@@ -56,7 +56,21 @@ def utc(seconds):
 
 @pytest.fixture
 def warm_case(release_case, monkeypatch, pod_watchdog_transport):
+    from runpod_lifecycle import https
     from runpod_lifecycle.https import write_token_file
+
+    class AcknowledgedTransport:
+        def __init__(self, pod_id, https_token, *, deadline=None):
+            assert pod_id and https_token == pod_watchdog_transport
+
+        def execute_command(self, command, timeout):
+            assert command.startswith("python3 -c ")
+            return 0, "", ""
+
+        def disconnect(self):
+            pass
+
+    monkeypatch.setattr(https, "HttpsPodTransport", AcknowledgedTransport)
 
     case = release_case
     clock = Clock()
@@ -659,24 +673,18 @@ def test_keep_lowered_saved_budget_refuses_before_extending_old_owner(small_leas
     assert c.creates == 1 and not c.deletes
 
 
-def test_small_lease_keep_extends_paid_limit_accrues_cost_and_rearms(small_lease):
+def test_small_lease_keep_refuses_to_exceed_provider_termination(small_lease):
     c = small_lease
     owner = c.fresh()
     invocation = owner.acquire(c.grant, requested_idle_seconds=10)
     owner.settle(invocation)
-    previous_expiry = c.read()["lease"]["paid_expires_at"]
-    old_timers = list(c.clock.timers)
     c.clock.advance(5)
-    kept = owner.keep("pod-1", keep_grant(c))
-    assert kept["lease"]["paid_expires_at"] == c.clock() + 7200 > previous_expiry
-    assert kept["lease"]["idle_expires_at"] == c.clock() + 60
-    assert kept["lease"]["estimated_cost_usd"] == pytest.approx(5 / 3600)
-    assert kept["lease"]["accounted_at"] == c.clock()
-    assert kept["lease"]["invocation_id"] == invocation.invocation_id
-    assert kept["paid_limits"]["invocation_id"] == "keep-1"
-    assert all(timer.cancelled for timer in old_timers)
-    assert any(not timer.cancelled and timer.due == c.clock() + 7200 for timer in c.clock.timers)
-    c.clock.advance(5)  # The cancelled idle timer must not release the extended lease.
+    before = c.owner.path.read_bytes()
+    timers = [(timer, timer.cancelled) for timer in c.clock.timers]
+    with pytest.raises(target_selection.PaidSelectionError, match="provider termination deadline"):
+        owner.keep("pod-1", keep_grant(c))
+    assert c.owner.path.read_bytes() == before
+    assert [(timer, timer.cancelled) for timer in c.clock.timers] == timers
     assert not c.deletes and c.creates == 1
 
 
@@ -758,7 +766,7 @@ def test_small_lease_keep_rejects_older_consent_after_two_keeps(small_lease):
     c = small_lease
     owner = c.fresh()
     owner.acquire(c.grant)
-    first = keep_grant(c)
+    first = keep_grant(c, max_usd=0.5, deadline=utc(c.clock() + 1800))
     owner.keep("pod-1", first)
     owner.keep("pod-1", replace(first, invocation_id="keep-2"))
     before = c.owner.path.read_bytes()
@@ -1166,6 +1174,22 @@ def manual_claim_grant(c, **changes):
                    **changes)
 
 
+def test_completed_release_restores_admission_after_history_write_failure(small_lease, monkeypatch):
+    c = small_lease
+    owner = c.fresh()
+    owner.start_fresh_claim()
+    owner.claim(manual_claim_grant(c), requested_idle_seconds=600)
+    with monkeypatch.context() as patch:
+        patch.setattr(owner, "_record_ended", lambda record: (_ for _ in ()).throw(OSError("history write failed")))
+        with pytest.raises(OSError, match="history write failed"):
+            owner.release()
+    assert c.read()["state"] == "cleanup_complete" and not owner.started
+    owner.release()
+    assert owner.started
+    owner.claim(manual_claim_grant(c, invocation_id="after-release"), requested_idle_seconds=600)
+    assert c.creates == 2
+
+
 def test_manual_claim_waits_then_settles_idle_and_reuses_without_extending_paid_limit(small_lease):
     c = small_lease
     owner = c.fresh()
@@ -1288,6 +1312,40 @@ def test_manual_claim_retries_after_definite_capacity_rejection(small_lease, mon
         owner.claim(manual_claim_grant(c, invocation_id="new-consent", wait_for_capacity=False), requested_idle_seconds=600)
     assert len(attempts) == 2 and attempts[0] != attempts[1]
     assert not c.pods and not c.deletes
+
+
+@pytest.mark.parametrize("deadline_seconds,expected_seconds", [(7200, 7200), (20000, 10800)])
+def test_capacity_retry_success_carries_and_journals_paid_bound(small_lease, monkeypatch, deadline_seconds, expected_seconds):
+    import runpod_lifecycle
+    from runpod_lifecycle.errors import ProviderCapacityUnavailable
+
+    c = small_lease
+    owner = c.fresh()
+    owner.start_fresh_claim()
+    launch = runpod_lifecycle.launch_when_available
+    seen = []
+
+    async def create(config, **kwargs):
+        record = c.read()
+        assert record["state"] == "allocation_pending"
+        assert record["allocation_terminate_after"] == config.terminate_after
+        seen.append((config.terminate_after, record["paid_limits"]))
+        if len(seen) == 1:
+            raise runpod_lifecycle.LaunchFailure("no capacity") from ProviderCapacityUnavailable(503, "no capacity")
+        return await launch(config, **kwargs)
+
+    monkeypatch.setattr(runpod_lifecycle, "launch_when_available", create)
+    deadline = utc(c.clock() + deadline_seconds)
+    grant = manual_claim_grant(c, offer_digest=None, policy_digest=target_selection.policy_consent_digest(c.prefs, 2),
+                               max_hourly_usd=2, max_usd=3, deadline=deadline, wait_for_capacity=False)
+    with pytest.raises(target_selection.CapacityExhaustedError):
+        owner.claim(grant, requested_idle_seconds=600)
+    result = owner.claim(replace(grant, invocation_id="retry"), requested_idle_seconds=600)
+    assert len(seen) == 2 and c.creates == 1
+    assert seen[1][1]["max_usd"] == 3 and seen[1][1]["max_hourly_usd"] == 2
+    assert seen[1][1]["deadline"] == deadline
+    assert datetime.fromisoformat(seen[1][0].replace("Z", "+00:00")) == datetime.fromtimestamp(c.clock() + expected_seconds, timezone.utc)
+    assert result["allocation_terminate_after"] == seen[1][0]
 
 
 def test_manual_claim_capacity_retry_refuses_matching_pod_and_inflight_release(small_lease, monkeypatch):
