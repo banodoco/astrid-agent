@@ -1,7 +1,6 @@
 """Controls for bounded, path-free failed-install ACL observations."""
 import json
 import os
-import sys
 from pathlib import Path
 
 import pytest
