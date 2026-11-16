@@ -2425,7 +2425,11 @@ def submit_task(version: dict, evidence: Path, project: str, *, create_project: 
                                                    status_name="project-create-capture-status.json"))
         if created.get("ok") is not True:
             raise RuntimeError("Installed project creation failed")
-    install_journey_packs(lambda argv, name: installed_cli(version, argv, evidence, name, timeout=600))
+    # The installed Astrid launcher dispatches pack management through
+    # astrid.omp_agent; ``python -m astrid`` exposes the product gateway and
+    # deliberately does not include the launcher-only packs command.
+    install_journey_packs(lambda argv, name: installed_cli(
+        version, argv, evidence, name, module="astrid.omp_agent", timeout=600))
     request = {"capability_id": "chiptune.sfx", "kind": "executor", "project": project,
                "inputs": {"kind": "blip", "variant": 1, "pitch": 0, "duration_s": duration_s}}
     invocation = _sdk_result(installed_cli_with_capture(version, [json.dumps(request)], evidence,

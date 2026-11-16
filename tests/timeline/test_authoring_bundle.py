@@ -542,6 +542,94 @@ def test_timing_is_admitted_but_competing_selected_media_fails_before_publish():
         compile_authoring_candidate(candidate)
 
 
+def test_archive_copy_preserves_existing_alternative_media_and_fences_later_edits():
+    from astrid.sdk.timeline_duplicate import copy_content
+    from astrid.sdk.timeline_import_prepare import _empty_target
+
+    parent, shots, timelines = _closure(shared=False)
+    source = open_authoring_bundle(parent, shot_revisions=shots, internal_timeline_revisions=timelines)
+    for placement in source["placements"]:
+        placement["source_offset"] = {"start": 0, "end": 0}
+        placement["speed"] = {"numerator": 1, "denominator": 1}
+        placement["transform"] = {}
+    original = source["shots"][source["placements"][0]["shot_id"]]
+    original["payload"]["items"].append({"item_id": "alternative", "media_id": NEW})
+    copied, _ = copy_content(source, _empty_target("target", "new", {}),
+                             new_slug="new", _archive_baselines=True)
+    shot_id = copied["placements"][0]["shot_id"]
+    publication = compile_authoring_candidate(copied).publication
+    items = next(row["payload"]["items"] for row in publication["shot_revisions"]
+                 if row["shot_id"] == shot_id)
+    assert {item["media_id"] for item in items} >= {OLD, NEW}
+    assert len(publication["internal_timeline_revisions"]) == len(copied["shots"])
+    with pytest.raises(AuthoringBundleError, match="competing selected media"):
+        compile_authoring_candidate(json.loads(json.dumps(copied)))
+
+    missing_asset = copy.deepcopy(copied)
+    del missing_asset["shots"][shot_id]["internal_timeline"]["registry"]["assets"]["old-picture"]
+    with pytest.raises(AuthoringBundleError):
+        compile_authoring_candidate(missing_asset)
+
+    # The baseline is not a general exemption for subsequent competing edits.
+    copied["shots"][shot_id]["payload"]["items"][0]["media_id"] = PHANTOM
+    with pytest.raises(AuthoringBundleError, match="competing selected media"):
+        compile_authoring_candidate(copied)
+
+
+def test_archive_baseline_cannot_be_transplanted_between_targets():
+    from astrid.sdk.timeline_duplicate import copy_content
+    from astrid.sdk.timeline_import_prepare import _empty_target
+
+    parent, shots, timelines = _closure(shared=False)
+    source = open_authoring_bundle(parent, shot_revisions=shots, internal_timeline_revisions=timelines)
+    copied, _ = copy_content(source, _empty_target("target", "new", {}),
+                             new_slug="new", _archive_baselines=True)
+    copied["project_id"] = "different-target"
+    with pytest.raises(AuthoringBundleError, match="imported shot source binding changed"):
+        compile_authoring_candidate(copied)
+
+
+@pytest.mark.parametrize("mutation", ["timeline", "source", "placement"])
+def test_archive_baseline_rejects_changed_identity(mutation):
+    from astrid.sdk.timeline_duplicate import copy_content
+    from astrid.sdk.timeline_import_prepare import _empty_target
+
+    parent, shots, timelines = _closure(shared=False)
+    source = open_authoring_bundle(parent, shot_revisions=shots, internal_timeline_revisions=timelines)
+    copied, _ = copy_content(source, _empty_target("target", "new", {}),
+                             new_slug="new", _archive_baselines=True)
+    shot_id = copied["placements"][0]["shot_id"]
+    if mutation == "timeline":
+        copied["timeline_id"] = "other"
+    elif mutation == "source":
+        copied["source_mapping"]["shots"][shot_id]["revision_id"] = "forged"
+    else:
+        copied["placements"][0]["occurrence_id"] = "other"
+    with pytest.raises(AuthoringBundleError, match="imported shot source binding changed"):
+        compile_authoring_candidate(copied)
+
+
+def test_prepare_archive_import_preserves_differing_historical_media_views():
+    from astrid.sdk.timeline_import_prepare import prepare_import
+    from astrid.sdk.timeline_export import inventory_elements
+
+    parent, shots, timelines = _closure(shared=False)
+    source = open_authoring_bundle(parent, shot_revisions=shots, internal_timeline_revisions=timelines)
+    for placement in source["placements"]:
+        placement["source_offset"] = {"start": 0, "end": 0}
+        placement["speed"] = {"numerator": 1, "denominator": 1}
+        placement["transform"] = {}
+    first = source["shots"][source["placements"][0]["shot_id"]]
+    first["payload"]["items"].append({"item_id": "alternative", "media_id": NEW})
+    first["payload"]["text_bindings"] = []
+    manifest = {"format": "astrid.timeline/1", "elements": inventory_elements(source, elements=[])}
+    result = prepare_import(source, manifest, {}, "target", elements=[], timeline_id="new")
+    rows = result["publication"]["shot_revisions"]
+    assert len(rows) == len(source["shots"])
+    assert any(NEW in {item.get("media_id") for item in row["payload"].get("items", [])}
+               for row in rows)
+
+
 def test_target_bound_transport_key_normalizes_digest_prefix_and_punctuation():
     from astrid.sdk.authoring_remote import _transport_idempotency_key
 
