@@ -92,3 +92,11 @@ def test_raw_tcp_declaration_still_allows_connect():
         broker.stop()
         listener.close()
         upstream.join(timeout=2)
+
+
+def test_bare_host_declaration_retains_scheme_agnostic_tcp_routes():
+    broker = _broker("localhost")
+    try:
+        assert broker._route_allowed("tcp://localhost:8443")
+    finally:
+        broker.stop()

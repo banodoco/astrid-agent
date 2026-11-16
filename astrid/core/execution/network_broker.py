@@ -260,7 +260,7 @@ class ObservableNetworkBroker:
             # CONNECT exposes only an authority, not the encrypted protocol.
             # Admit its TCP transport for an HTTPS declaration at the same
             # host and port, while recording the actual tcp route as evidence.
-            https_tunnel = parsed.scheme == "tcp" and declared.scheme == "https"
+            https_tunnel = parsed.scheme == "tcp" and has_scheme and declared.scheme == "https"
             if has_scheme and declared.scheme != parsed.scheme and not https_tunnel:
                 continue
             if https_tunnel and declared_port is None:
