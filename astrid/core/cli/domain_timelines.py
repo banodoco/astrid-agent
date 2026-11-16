@@ -1258,7 +1258,8 @@ def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
         "--render-run", default=None,
         help=(
             "Explicit successful render run, or latest (filmstrip default). "
-            "An explicit run may be historical/candidate; auto reuse checks the current timeline head."
+            "An explicit run may be historical/candidate; auto reuse checks the current timeline head. "
+            "Address ranged renders in timeline time."
         ),
     )
     subparser.add_argument("--columns", type=int, default=None,

@@ -1257,6 +1257,30 @@ def prepare_filmstrip(
             ))
     run_id = _identifier(run, 'id', 'run_id')
     snapshot = build_filmstrip_snapshot(envelope, client=client, project=canonical_project, run_id=run_id, video_digest=digest)
+    # Read only the auxiliary output of this exact task, and verify its bytes
+    # before trusting its timeline clock. Old renders may have no sidecar.
+    provenance_outputs = [o for o in task.get('result', {}).get('outputs', []) if o.get('name') == 'provenance']
+    if len(provenance_outputs) > 1:
+        _fail('Render has multiple provenance outputs; rerender the timeline.')
+    if provenance_outputs:
+        provenance_id = _digest(provenance_outputs[0].get('digest') or provenance_outputs[0].get('object_id'))
+        response = client.get_object(provenance_id)
+        raw = response.get('data') if isinstance(response, Mapping) else response.data
+        if not isinstance(raw, bytes) or 'sha256:' + hashlib.sha256(raw).hexdigest() != provenance_id:
+            _fail('Render provenance bytes do not match their digest; rerender the timeline.')
+        try:
+            provenance = json.loads(raw)
+        except (ValueError, UnicodeDecodeError):
+            _fail('Render provenance is invalid JSON; rerender the timeline.')
+        if not isinstance(provenance, Mapping):
+            _fail('Render provenance is invalid; rerender the timeline.')
+        if 'timeline_range' in provenance:
+            snapshot['metadata']['timeline_range'] = provenance['timeline_range']
+            from astrid.packs.rendering.actions.timeline_visualize.render_clock import RenderClock
+            try:
+                RenderClock(snapshot)
+            except (ValueError, TypeError, ZeroDivisionError) as exc:
+                _fail(str(exc))
     selection = 'latest_current_render'
     if exact and not inputs.get('auto_selected_render'):
         selection = _explicit_render_selection(envelope, authority, timeline_row)

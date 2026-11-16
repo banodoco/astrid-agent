@@ -749,16 +749,16 @@ def _event_coverage(events, reasons, *, first, stop):
             'clipped_event_count': clipped, 'omissions': rows}
 
 
-def _full_overview(snapshot, clips, spans, total, fps, limit, events=()):
+def _full_overview(snapshot, clips, spans, total, fps, limit, events=(), start=0):
     """Plan a bounded full-render overview while retaining boundary evidence."""
     entries = _boundary_index(snapshot, clips, spans, total, fps)
     reasons = {}
 
     def add(frame, reason):
-        if 0 <= frame < total:
+        if start <= frame < total:
             reasons.setdefault(frame, set()).add(reason)
 
-    add(0, 'overview_first_frame')
+    add(start, 'overview_first_frame')
     add(total - 1, 'overview_last_frame')
     tail = (snapshot.get('metadata') or {}).get('rendered_tail')
     if not isinstance(tail, dict):
@@ -774,24 +774,24 @@ def _full_overview(snapshot, clips, spans, total, fps, limit, events=()):
         raise ValueError(f'Overview requires {mandatory_count} mandatory frames but max_frames is {limit}.')
 
     event_frames = sorted({moment['frame'] for event in events for moment in event.get('moments', [])
-                           if 0 <= moment['frame'] < total})
+                           if start <= moment['frame'] < total})
     for frame in _spread(event_frames, min(len(event_frames), limit - len(reasons))):
         add(frame, 'event_moment')
 
-    boundary_frames = [entry['frame'] for entry in entries if entry['frame'] not in reasons]
+    boundary_frames = [entry['frame'] for entry in entries if start <= entry['frame'] < total and entry['frame'] not in reasons]
     remaining = limit - len(reasons)
     boundary_budget = min(len(set(boundary_frames)), remaining // 2)
     for frame in _spread(boundary_frames, boundary_budget):
         add(frame, 'overview_boundary')
     interior_budget = limit - len(reasons)
-    for frame in _evenly_spaced(total, interior_budget):
+    for frame in (start + f for f in _evenly_spaced(total - start, interior_budget)):
         if frame not in reasons:
             add(frame, 'overview_interior')
     # Interior points can coincide with mandatory or boundary selections. Use
     # one bounded oversampled candidate set to fill any remaining slots while
     # keeping the overview capped and deterministic.
     if len(reasons) < limit:
-        for frame in _evenly_spaced(total, max(limit * 2, 1)):
+        for frame in (start + f for f in _evenly_spaced(total - start, max(limit * 2, 1))):
             if frame not in reasons:
                 add(frame, 'overview_interior')
                 if len(reasons) >= limit:
@@ -802,9 +802,9 @@ def _full_overview(snapshot, clips, spans, total, fps, limit, events=()):
     coverage = {
         'clock': 'rendered_decoded',
         'full_duration': True,
-        'window_seconds': [0.0, float(Fraction(total, 1) / fps)],
+        'window_seconds': [float(Fraction(start, 1) / fps), float(Fraction(total, 1) / fps)],
         'selected_frame_count': len(reasons),
-        'selected_fraction': len(reasons) / total,
+        'selected_fraction': len(reasons) / (total - start),
         'mandatory_frames': sorted(reasons),
         'boundary_count': len(entries),
         'selected_boundary_count': selected_boundary_count,
@@ -855,9 +855,11 @@ def plan_filmstrip(
         if resolved_shot != options.get('shot'):
             options = dict(options)
             options['shot'] = resolved_shot
-    fps = Fraction(*snapshot['fps_rational'])
-    total = int(snapshot['duration_frames'])
-    if fps <= 0 or total <= 0:
+    from .render_clock import RenderClock
+    clock = RenderClock(snapshot)
+    fps = clock.fps
+    total = clock.end
+    if fps <= 0 or total <= clock.start:
         raise ValueError('Filmstrip requires a positive frame rate and duration.')
     duration = Fraction(total, 1) / fps
     mode = options.get('sample') or 'interval'
@@ -869,16 +871,24 @@ def plan_filmstrip(
         from .motion.window import resolve_window
         motion_window = resolve_window(snapshot, options, float(fps), total_frames_of(snapshot))
         motion_cut = motion_window['cut']
-    lo, hi = Fraction(0), duration
+    lo, hi = Fraction(clock.start, 1) / fps, duration
     requested_frame = options.get('frame')
     if requested_frame is not None:
-        if type(requested_frame) is not int or requested_frame < 0 or requested_frame >= total:
+        if type(requested_frame) is not int:
+            raise ValueError('Requested frame must be an integer.')
+        if not clock.start <= requested_frame < total and (snapshot.get('metadata') or {}).get('timeline_range') is None:
             raise ValueError(f'Requested frame {requested_frame!r} is outside the rendered extent 0..{total - 1}.')
+        clock.file_frame(requested_frame)
         lo, hi = Fraction(requested_frame, 1) / fps, Fraction(requested_frame + 1, 1) / fps
     if options.get('range') is not None and motion_window is None:
         if requested_frame is not None:
             raise ValueError('Choose frame, range, or at, not more than one.')
         lo, hi = map(_q, options['range'])
+        if (snapshot.get('metadata') or {}).get('timeline_range') is not None:
+            if lo < Fraction(clock.start, 1) / fps:
+                clock.refuse(lo)
+            if hi > duration:
+                clock.refuse(hi)
     if motion_window is not None:
         from .motion.sheet import PAD_SECONDS
         requested_frame = None
@@ -889,11 +899,10 @@ def plan_filmstrip(
         if options.get('range') is not None or requested_frame is not None:
             raise ValueError('Choose frame, range, or at/context, not more than one.')
         at = _q(options['at'])
-        if at < 0 or at >= duration:
-            raise ValueError(
-                f'Requested timestamp {float(at):.6f}s is outside the rendered extent '
-                f'0..{float(duration):.6f}s.'
-            )
+        if at < Fraction(clock.start, 1) / fps or at >= duration:
+            if (snapshot.get('metadata') or {}).get('timeline_range') is None:
+                raise ValueError(f'Requested timestamp {float(at):.6f}s is outside the rendered extent 0..{float(duration):.6f}s.')
+            clock.refuse(at)
         # A timestamp is an exact visual request, not a context window.  Use
         # the authored frame clock's floor rule so every in-range timestamp
         # resolves to one and only one frame without clamping an out-of-range
@@ -901,7 +910,7 @@ def plan_filmstrip(
         resolved_at_frame = int(at * fps)
         lo = Fraction(resolved_at_frame, 1) / fps
         hi = Fraction(resolved_at_frame + 1, 1) / fps
-    lo, hi = max(lo, Fraction(0)), min(hi, duration)
+    lo, hi = max(lo, Fraction(clock.start, 1) / fps), min(hi, duration)
     if hi <= lo:
         raise ValueError('Requested window contains no rendered frames.')
     clips = snapshot.get('clips', [])
@@ -977,7 +986,7 @@ def plan_filmstrip(
     elif is_full_overview:
         overview_limit = min(limit, OVERVIEW_MAX_CARDS)
         reasons, boundary_index, coverage = _full_overview(
-            snapshot, clips, spans, total, fps, overview_limit, event_moments)
+            snapshot, clips, spans, total, fps, overview_limit, event_moments, start=clock.start)
     elif mode == 'interval':
         # Jump directly into selected clip windows; never scan an entire movie
         # to discover a short filtered clip near its end.
@@ -1198,10 +1207,10 @@ def _lines(card):
     return [f"{card['time_label']} · frame {card['frame']}", shots or 'No shot label', clips, status] + [str(s.get('canonical_text') or s.get('text', '')) for s in text_items]
 
 
-def _extract(video_path, cards, out_root, resolution=None):
+def _extract(video_path, cards, out_root, resolution=None, *, clock=None):
     frames = out_root / 'frames'
     frames.mkdir(parents=True, exist_ok=True)
-    expression = '+'.join(f'eq(n,{c["frame"]})' for c in cards)
+    expression = '+'.join(f'eq(n,{clock.file_frame(c["frame"]) if clock else c["frame"]})' for c in cards)
     filter_path = out_root / 'frame-selection.txt'
     scale = f'{resolution[0]}:{resolution[1]}' if resolution else '480:-2'
     filter_path.write_text(f"select='{expression}',scale={scale}", encoding='utf-8')
@@ -1844,7 +1853,8 @@ def build_filmstrip_pack(*, out_root: Path, video_path: Path | None = None, snap
     if frame_provider is None:
         if video_path is None:
             raise ValueError('filmstrip requires either an admitted video or a frame provider')
-        _extract(video_path, cards, out_root, options.get('resolution'))
+        from .render_clock import RenderClock
+        _extract(video_path, cards, out_root, options.get('resolution'), clock=RenderClock(snapshot))
     else:
         capture_info = frame_provider.capture(cards, out_root, options.get('resolution'))
         index['frame_capture'] = capture_info
@@ -1855,7 +1865,8 @@ def build_filmstrip_pack(*, out_root: Path, video_path: Path | None = None, snap
         from .render_review import review_render
         density = options.get('density') or {}
         every = options.get('render_every') or (density.get('value') if density.get('mode') == 'every_seconds' else None) or 5.0
-        review = review_render(video_path, out_root, every=float(every))
+        from .render_clock import RenderClock
+        review = review_render(video_path, out_root, every=float(every), clock=RenderClock(snapshot))
         index['render_review'] = review
         index['provenance']['render_review'] = {'contact': review['contact'], 'json': 'render-review.json'}
     media_record = None
