@@ -63,23 +63,35 @@ def _expected_workflow_digest(source: Path) -> str:
         return _workflow_content_digest(path)
 
 
-def _admitted_workflow_digest(client: Any, task: Mapping[str, Any], spec: Mapping[str, Any]) -> str:
-    from astrid.packs.vibecomfy.production_engine import _workflow_content_digest
+def _admitted_input(task: Mapping[str, Any], spec: Mapping[str, Any], name: str, *, required: bool = True) -> str | None:
+    from astrid.core.execution.managed_inputs import managed_file_digest
     inputs = spec.get('input_digests')
     if not isinstance(inputs, list):
-        raise ValueError('run task has no admitted workflow inputs')
+        raise ValueError('run task has no admitted input witnesses')
+    rows = [row.get('digest') for row in inputs if isinstance(row, Mapping) and row.get('name') == name]
+    descriptors = spec.get('inputs')
+    value = descriptors.get(name) if isinstance(descriptors, Mapping) else None
+    if not rows and value is None and not required:
+        return None
+    if len(rows) != 1 or value is None:
+        raise ValueError(f'run task has ambiguous {name} input')
+    try:
+        actual = managed_file_digest(value, name)
+    except ValueError as exc:
+        raise ValueError(f'run task has invalid {name} input') from exc
+    if rows[0] != actual or actual not in (task.get('input_object_ids') or []):
+        raise ValueError(f'run task {name} input witness does not match its admitted descriptor')
+    return actual
+
+
+def _admitted_workflow_digest(client: Any, task: Mapping[str, Any], spec: Mapping[str, Any]) -> str:
+    from astrid.packs.vibecomfy.production_engine import _workflow_content_digest
     names = {'python': 'workflow.py', 'companion': 'workflow.vibe.json', 'source': 'source.json'}
     with tempfile.TemporaryDirectory(prefix='astrid-transcript-workflow-') as tmp:
         for name, filename in names.items():
-            rows = [row.get('digest') for row in inputs
-                    if isinstance(row, Mapping) and row.get('name') == name]
-            if len(rows) > 1 or (name != 'source' and len(rows) != 1):
-                raise ValueError('run task has ambiguous workflow members')
-            if not rows:
-                continue
-            if rows[0] not in (task.get('input_object_ids') or []):
-                raise ValueError('workflow member is not an admitted input')
-            (Path(tmp) / filename).write_bytes(_bytes(client, rows[0]))
+            digest = _admitted_input(task, spec, name, required=name != 'source')
+            if digest is not None:
+                (Path(tmp) / filename).write_bytes(_bytes(client, digest))
         return _workflow_content_digest(Path(tmp) / 'workflow.py')
 
 
@@ -107,12 +119,8 @@ def import_transcription_run(client: Any, project: str, media_id: str, run_id: s
     spec = envelope.get('spec') if isinstance(envelope, Mapping) else None
     if not isinstance(spec, Mapping):
         raise ValueError('run task has no admitted execution spec')
-    input_digests = spec.get('input_digests')
-    matches = [r.get('digest') for r in input_digests or []
-               if isinstance(r, Mapping) and r.get('name') == 'managed_assets']
-    if len(matches) != 1 or matches[0] not in (task.get('input_object_ids') or []):
-        raise ValueError('run task has no unambiguous admitted asset archive')
-    archive = read_archive_bytes(_bytes(client, matches[0]))
+    archive_id = _admitted_input(task, spec, 'managed_assets')
+    archive = read_archive_bytes(_bytes(client, archive_id))
     assets = archive.manifest['assets']
     if len(assets) != 1 or assets[0]['binding'] != 'audio_ref':
         raise ValueError('run task has ambiguous source media')

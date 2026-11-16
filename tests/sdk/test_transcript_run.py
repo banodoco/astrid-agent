@@ -44,7 +44,9 @@ class Client:
         self.project = {'project_id': 'project-1'}
         self.task = {'run_id': 'run-1', 'project_id': 'project-1', 'capability_id': 'vibecomfy.run',
                      'state': 'succeeded', 'input_object_ids': [self.archive_id, *self.member_ids.values()],
-                     'spec': {'spec': {'input_digests': [{'name': 'managed_assets', 'digest': self.archive_id},
+                     'spec': {'spec': {'inputs': {'managed_assets': {'digest': self.archive_id},
+                                               **{name: {'digest': value} for name, value in self.member_ids.items()}},
+                               'input_digests': [{'name': 'managed_assets', 'digest': self.archive_id},
                                                           *[{'name': name, 'digest': value} for name, value in self.member_ids.items()]],
                                       'invocation_preflight': {'workflow_content_digest': self.workflow_digest}}}}
         self.outputs = [{'output_port': 'vibecomfy_run', 'role': 'result', 'object_id': self.output_id}]
@@ -83,7 +85,7 @@ def test_run_import_uses_admitted_source_and_cas(monkeypatch):
     assert import_transcription_run(client, 'project', client.media_id, 'run-1', replace=True, expected_version=1) == 'updated'
 
 
-@pytest.mark.parametrize('change', ['source', 'workflow', 'member', 'different_graph', 'output', 'duplicate', 'project'])
+@pytest.mark.parametrize('change', ['source', 'workflow', 'member', 'different_graph', 'input_witness', 'output', 'duplicate', 'project'])
 def test_run_import_refuses_unproven_identity(monkeypatch, change):
     import astrid.sdk.transcript_run as module
     import astrid.core.media as media
@@ -103,7 +105,10 @@ def test_run_import_refuses_unproven_identity(monkeypatch, change):
         client.task['input_object_ids'].append(forged_id)
         row = next(row for row in client.task['spec']['spec']['input_digests'] if row['name'] == 'python')
         row['digest'] = forged_id
+        client.task['spec']['spec']['inputs']['python']['digest'] = forged_id
         # Even a forged receipt claiming the expected graph cannot authorize it.
+    elif change == 'input_witness':
+        client.task['spec']['spec']['inputs']['python']['digest'] = client.member_ids['source']
     elif change == 'output':
         client.objects[client.output_id] = b'tampered'
     elif change == 'duplicate':
