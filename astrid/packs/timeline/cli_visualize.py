@@ -586,11 +586,12 @@ def _visualize_plan(parsed: argparse.Namespace, inputs: Mapping[str, Any]) -> in
     from astrid.sdk.timeline_filmstrip import prepare_filmstrip
 
     values = dict(inputs)
-    values["composed_capture"] = True
+    values["composed_capture"] = not bool(values.get("render_run"))
     try:
         authority = prepare_filmstrip({**values, "view": "filmstrip"}, project=parsed.project, client=parsed.client)
         options = filmstrip_options(values)
-        index = plan_filmstrip(authority["capture_snapshot"], options)
+        snapshot = authority["capture_snapshot"] if values["composed_capture"] else authority["filmstrip_snapshot"]
+        index = plan_filmstrip(snapshot, options)
     except Exception as exc:  # noqa: BLE001 - a plan reports what would fail
         print(f"plan: would fail: {exc}")
         return 2

@@ -781,6 +781,25 @@ def _validate_timeline_visualize_inputs(
     context = prepare_filmstrip(values, project=project, client=_client)
     if values.get("mode") == "scene_only":
         context = {**context, "mode": "scene_only"}
+    if any(values.get(name) not in (None, "") for name in ("frame", "at", "range")):
+        snapshot = (
+            context.get("capture_snapshot") if values.get("composed_capture") else None
+        ) or context.get("filmstrip_snapshot") or context.get("input_snapshot")
+        if (isinstance(snapshot, Mapping)
+                and (snapshot.get("metadata") or {}).get("timeline_range") is not None):
+            from astrid.packs.rendering.actions.timeline_visualize.render_clock import RenderClock
+
+            options = filmstrip_options(values)
+            clock = RenderClock(snapshot)
+            try:
+                if options.get("frame") is not None:
+                    clock.validate_frame(options["frame"])
+                if options.get("at") is not None:
+                    clock.validate_timestamp(options["at"])
+                if options.get("range") is not None:
+                    clock.validate_range(*options["range"])
+            except (TypeError, ValueError, ZeroDivisionError) as exc:
+                raise CapabilityValidationError(str(exc)) from exc
     from copy import deepcopy
     # These snapshots are host-prepared immutable closures. Carry resource
     # identity in derived metadata; never rewrite their authored config.

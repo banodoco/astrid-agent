@@ -1031,8 +1031,8 @@ class RemoteTimelines(_RemoteFamily, _RemoteTimelineRevisionMixin):
         The default composed request includes synchronized input lanes so the
         source placements remain apparent beside the output; callers can use
         ``show``/``hide`` to choose a narrower surface.
-        An explicit run may select a saved revision only after exact-run
-        admission; its rendered video is never used as the frame source.
+        An explicit render run selects its admitted rendered video for review;
+        times refer to the timeline, including for ranged renders.
         """
         selected_mode = str(mode or "auto").strip().lower()
         if selected_mode not in {"auto", "inputs", "composed"}:
@@ -1180,9 +1180,11 @@ class RemoteTimelines(_RemoteFamily, _RemoteTimelineRevisionMixin):
                 executor_inputs.pop("revision_id", None)
             else:
                 executor_inputs["revision_id"] = pinned_revision
-            executor_inputs["composed_capture"] = True
+            # A requested run means review its actual video. Without a run,
+            # capture the pinned composition as before.
+            executor_inputs["composed_capture"] = not bool(requested_run)
             executor_inputs.setdefault("timeline_slug", timeline_ref)
-            if not explicit_run:
+            if not requested_run:
                 # The matching lookup selected this run from the current head;
                 # keep that provenance distinct from a user-pinned historical
                 # or candidate render when the executor builds its receipt.
