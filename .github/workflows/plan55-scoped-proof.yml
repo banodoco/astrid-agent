@@ -1,0 +1,107 @@
+name: Plan 55 scoped CPU proof
+
+on:
+  pull_request:
+    branches: ["release/14/plan-55"]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - "astrid/core/generation/backends/comfy_target.py"
+      - "tests/_local_speed_hashes.py"
+      - "tests/core/generation/backends/test_comfy_target.py"
+      - "tests/core/generation/backends/test_comfy_cancel_safety.py"
+      - "tests/core/generation/test_output_delivery.py"
+      - "tests/core/generation/test_local_speed_hash_observer.py"
+      - "tests/local_speed_scope_runner.py"
+      - ".github/workflows/plan55-scoped-proof.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: plan55-scoped-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  affected-files:
+    name: Plan 55 affected files (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: candidate
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: cb1a590e0008dde7e3fc2d3fbf341ef98401b32a
+          path: baseline
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-runtime
+          ref: 6855dfa8df65cf8ae4c002b57134d6505493c17c
+          path: runtime
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/VibeComfy
+          ref: dba38f8644c46f652376f2cd5112ea161e40f09b
+          path: vibecomfy
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/runpod-lifecycle
+          ref: 7f0b025e9391baac9f5c2fb7393617ea6fef0704
+          path: lifecycle
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-dev
+          ref: ff4694e71fa2c0e212c4671592f7e71740a48eff
+          path: dev
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Retain exact public source snapshots
+        shell: python
+        run: |
+          import hashlib, json, os, pathlib, subprocess
+          root = pathlib.Path(os.environ["GITHUB_WORKSPACE"])
+          out = root / "plan55-sources"
+          out.mkdir()
+          refs = {}
+          for name in ("candidate", "baseline", "runtime", "vibecomfy", "lifecycle", "dev"):
+              source = root / name
+              sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip()
+              archive = out / (name + ".zip")
+              subprocess.run(["git", "archive", "--format=zip", "--output=" + str(archive), "HEAD"], cwd=source, check=True)
+              refs[name] = {"commit": sha, "archive_sha256": hashlib.sha256(archive.read_bytes()).hexdigest()}
+          (out / "sources.json").write_text(json.dumps(refs, indent=2) + "\n")
+      - name: Preserve source snapshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: plan55-scoped-sources-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: plan55-sources
+          retention-days: 7
+      - name: Install unchanged test dependencies
+        shell: bash
+        run: |
+          python -m pip install -e './candidate[dev]'
+          python -m pip install --no-deps -e ./runtime -e ./runtime/packages/python -e ./lifecycle
+          python -m pip install -e ./vibecomfy
+      - name: Run the actual baseline and candidate affected files
+        run: python candidate/tests/local_speed_scope_runner.py --workspace "${{ github.workspace }}"
+      - name: Preserve exact failures and results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: plan55-scoped-proof-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: plan55-scoped-proof
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
