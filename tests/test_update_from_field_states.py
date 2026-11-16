@@ -21,7 +21,7 @@ from astrid.installer.core import Installer, current, read_json
 from tests.fixtures.field_states import R0_INSTANCE, handed_off_release1_r0_live, selection, stage_release
 from tests.test_boundary_handoff import case, snapshot  # noqa: F401 - pytest fixture
 
-pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="persistent Linux manager simulation")
+pytestmark = pytest.mark.linux_native
 
 
 def _cli(c, monkeypatch):

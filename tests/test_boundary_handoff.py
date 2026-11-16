@@ -31,7 +31,7 @@ from astrid.installer.core import Version, current, read_json, write_json
 from astrid.installer.service import installer_lock_path
 from tests.test_installer_r0_entry import public_case, state
 
-pytestmark = pytest.mark.skipif(sys.platform != 'linux', reason='persistent Linux manager simulation and POSIX kill cuts')
+pytestmark = pytest.mark.linux_native
 
 
 def snapshot(root):

@@ -89,7 +89,7 @@ def test_updater_close_keeps_custody_until_attached_runtime_closes(tmp_path):
     _assert_lock_free(lock_path)
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="Pinokio filters XDG_DATA_HOME on Linux.")
+@pytest.mark.linux_native
 def test_custody_retains_foreground_and_legacy_locks_when_xdg_is_filtered(tmp_path, monkeypatch):
     from astrid.installer.custody import attach
     from astrid.installer.service import pinokio_lock_paths

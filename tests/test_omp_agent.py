@@ -494,7 +494,7 @@ def test_login_keeps_auth_route(monkeypatch) -> None:
     assert calls == [["login"]]
 
 
-@pytest.mark.skipif(os.name == "nt", reason="the POSIX fake interpreter uses a shebang")
+@pytest.mark.posix_native
 def test_installed_launcher_dispatches_generate_json(tmp_path) -> None:
     from astrid.installer.launcher import install
 

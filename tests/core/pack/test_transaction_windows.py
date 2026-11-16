@@ -313,8 +313,9 @@ def test_windows_crash_between_rename_and_journal_recovers(source, tmp_path, win
     assert_resolved(root, forward=move >= 2)
 
 
+@pytest.mark.posix_native
 def test_windows_lock_covers_renames_journal_and_backup_retirement(source, tmp_path, windows, monkeypatch):
-    fcntl = pytest.importorskip("fcntl")
+    import fcntl
 
     root = tmp_path / "packs"
     seed(root)
