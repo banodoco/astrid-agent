@@ -385,8 +385,10 @@ def _classify_services(services, ready_file: Path) -> tuple[str, dict | None, di
         return "crashed", pack_host, failed
     if pack_host and pack_host.get("state") == "running" and ready_file.is_file():
         return "ready", pack_host, None
-    if pack_host and (pack_host.get("restart_count", 0) > 0 or pack_host.get("last_exit") is not None):
-        return "crashed", pack_host, None
+    # A prior exit is historical evidence, not proof of terminal failure: the
+    # supervisor may be restarting or the replacement may still be warming.
+    # Only an explicit failed state is terminal; otherwise the declared
+    # readiness deadline bounds the retry period.
     return "starting", pack_host, None
 
 
@@ -1794,10 +1796,21 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 raise service_failure(crashed=False)
             try:
                 health = get("/api/runtime/v1/health")
-                services = health.get("services", [])
+                observed = read_json(data / "runtime" / "discovery.json")
             except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
                 time.sleep(0.25)
                 continue
+            # A different Runtime or workspace cannot inherit the first
+            # owner's successful identity check or its readiness marker.
+            if (not isinstance(health, dict) or health.get("status") != "ok"
+                    or health.get("runtime_instance_id") != discovery.get("runtime_instance_id")
+                    or observed.get("runtime_instance_id") != discovery.get("runtime_instance_id")
+                    or observed.get("active_realm") != realm_id
+                    or (managed_identity is not None and
+                        (not matches_managed_identity(health.get("identity"))
+                         or not matches_managed_identity(observed.get("identity"))))):
+                raise VerificationError("Astrid Runtime changed while waiting for service readiness.")
+            services = health.get("services", [])
             time.sleep(0.25)
             state, pack_host, failed = _classify_services(services, ready_file)
             if state == "crashed":
