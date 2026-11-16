@@ -215,6 +215,11 @@ def validate_timeline(config: Any, *, strict: bool = True) -> None:
     # process-cached validator — no per-call check_schema / $ref re-walk);
     # then run the Banodoco-only semantic checks (effect-id registry,
     # transition durations).
+    for track in config.get('tracks', []) if isinstance(config.get('tracks'), list) else []:
+        if isinstance(track, dict) and isinstance(track.get('app'), dict):
+            app = track['app']
+            if 'clipPlacementVersion' in app and (type(app['clipPlacementVersion']) is not int or app['clipPlacementVersion'] != 1):
+                raise ValueError(f"track {track.get('id', '?')!r} property app.clipPlacementVersion is invalid")
     normalized_for_shared = _known_timeline_payload(config)
     # Top-level ``app`` is the editor-extension metadata namespace owned by
     # Astrid's container contract. The currently pinned shared render schema

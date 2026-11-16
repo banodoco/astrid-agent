@@ -89,3 +89,47 @@ def test_child_canvas_normalization_then_parent_canvas_placement():
     request['clip'] = {**plain, 'fit': 'cover'}
     fill = package_query({'operation': 'resolve', 'input': request})
     assert fill['local']['media'] == {'x': -224, 'y': 0, 'width': 1728, 'height': 720}
+
+
+def test_strict_timeline_validation_preserves_marker_and_rejects_future():
+    from astrid.core.timeline.validators.timeline import validate_timeline
+
+    config = {'output': {'resolution': '1280x720', 'fps': 30, 'file': 'out.mp4'},
+              'tracks': [{'id': 'v', 'kind': 'visual', 'label': 'V',
+                          'app': {'clipPlacementVersion': 1, 'scaleAppliesToPositionedClips': True}}],
+              'clips': []}
+    original = copy.deepcopy(config)
+    validate_timeline(config)
+    assert config == original
+    config['tracks'][0]['app']['clipPlacementVersion'] = 2
+    with pytest.raises(ValueError):
+        validate_timeline(config)
+
+
+def test_repeated_child_mixed_markers_survive_track_projection():
+    from astrid.core.timeline.shot_composition_projection import _build_track_group
+    from astrid.sdk.timeline._appearance import normalize_revision_closure
+
+    parent = {'payload': {'config': {'output': {'resolution': '1280x720'}, 'tracks': [], 'clips': []}, 'clips': []}}
+    child = {'revision_id': 'r', 'payload': {'output': {'resolution': '1920x1080'},
+        'tracks': [{'id': 'v', 'kind': 'visual', 'label': 'V'},
+                   {'id': 'w', 'kind': 'visual', 'label': 'W',
+                    'app': {'clipPlacementVersion': 1, 'scaleAppliesToPositionedClips': True}}],
+        'clips': [{'id': 'a', 'track': 'v', 'clipType': 'media', 'x': 0},
+                  {'id': 'b', 'track': 'w', 'clipType': 'media', 'x': 0}]}}
+    _, children, findings = normalize_revision_closure(parent, [child])
+    source = children[0]['payload']
+    assert source['clips'][0]['fit'] == 'cover' and 'fit' not in source['clips'][1]
+    assert any(item.get('clipId') == 'a' for item in findings)
+    projected = {'tracks': [{'id': 'anchor', 'kind': 'visual'}]}
+    for occurrence in ('first', 'second'):
+        _build_track_group(projected, source, {'occurrence_id': occurrence, 'track': 'anchor'}, [])
+    projected_tracks = [t for t in projected['tracks'] if t['id'] != 'anchor']
+    assert {t['id'] for t in projected_tracks} == {'first~v', 'first~w', 'second~v', 'second~w'}
+    assert all(t['app']['clipPlacementVersion'] == 1 for t in projected_tracks)
+
+
+def test_nested_shot_refusal_names_clip_and_property():
+    from astrid.core.timeline.shot_composition_projection import _clip_type, ShotCompositionProjectionError
+    with pytest.raises(ShotCompositionProjectionError, match="clip 'nested'.*property clipType"):
+        _clip_type({'id': 'nested', 'clipType': 'shot'})
