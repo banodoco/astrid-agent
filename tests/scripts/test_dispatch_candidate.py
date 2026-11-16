@@ -14,7 +14,7 @@ def git(*args, cwd=None):
     return subprocess.check_output(["git", *args], cwd=cwd, text=True, stderr=subprocess.STDOUT).strip()
 
 
-def make_repo(tmp_path, name, files=None):
+def make_repo(tmp_path, name, files=None, branch="int/r1"):
     bare = tmp_path / f"{name}.git"
     work = tmp_path / f"{name}-work"
     git("init", "--bare", "--quiet", str(bare))
@@ -28,9 +28,9 @@ def make_repo(tmp_path, name, files=None):
         path.write_text(content, encoding="utf-8")
     git("-C", str(work), "add", ".")
     git("-C", str(work), "commit", "--quiet", "-m", "fixture")
-    git("-C", str(work), "branch", "-M", "int/r1")
+    git("-C", str(work), "branch", "-M", branch)
     git("-C", str(work), "remote", "add", "origin", str(bare))
-    git("-C", str(work), "push", "--quiet", "-u", "origin", "int/r1")
+    git("-C", str(work), "push", "--quiet", "-u", "origin", branch)
     return bare, work, git("-C", str(work), "rev-parse", "HEAD")
 
 
@@ -223,3 +223,71 @@ def test_local_only_object_does_not_count_as_remote_fetchability(tmp_path):
         assert f"cannot verify remote fetchability for Agent SHA {local_sha}" in str(exc)
     else:
         raise AssertionError("unpublished local object must not count as remotely fetchable")
+
+
+def test_release_branch_resolves_all_three_repositories(tmp_path, capsys):
+    branch = "release/14/main"
+    agent_remote, _, agent_sha = make_repo(tmp_path, "agent-rel", branch=branch)
+    runtime_remote, _, runtime_sha = make_repo(tmp_path, "runtime-rel", branch=branch)
+    app_remote, app_work, app_head = make_repo(
+        tmp_path,
+        "app-rel",
+        {
+            "public/install-manifest.json": '{"agent":{"sha":"old-agent"},"runtime":{"sha":"old-runtime"}}\n',
+            "public/install": "install\n",
+            "public/install.sh": "#!/bin/sh\n",
+            "public/install.ps1": "Write-Output install\n",
+        },
+        branch=branch,
+    )
+    # int/r1 does not exist anywhere: a release run must not fall back to it.
+    output_dir = tmp_path / "release-inputs"
+    dispatch_candidate.main(
+        [
+            "direct-linux",
+            "release-candidate.json",
+            "--branch",
+            branch,
+            "--agent-remote",
+            str(agent_remote),
+            "--runtime-remote",
+            str(runtime_remote),
+            "--app-repo",
+            str(app_work),
+            "--output-dir",
+            str(output_dir),
+        ]
+    )
+
+    envelope = json.loads((output_dir / "release-candidate.json").read_text(encoding="utf-8"))
+    candidate = json.loads(envelope["candidate"])
+    assert candidate["agent"] == agent_sha and candidate["runtime"] == runtime_sha
+    pinned = json.loads(git("--git-dir", str(app_remote), "show", f"{candidate['app']}:public/install-manifest.json"))
+    assert pinned["agent"]["sha"] == agent_sha and pinned["runtime"]["sha"] == runtime_sha
+    # The pinned App commit descends from the App's release branch head.
+    assert git("--git-dir", str(app_remote), "rev-parse", f"{candidate['app']}^") == app_head
+    out = capsys.readouterr().out
+    assert f"ACTIONS: astrid-agent journey.yml {branch} @inputs/M-QUAL-release-candidate.json" in out
+    assert "int/r1" not in out
+
+
+def test_release_branch_missing_in_a_repository_fails_closed(tmp_path, capsys):
+    branch = "release/14/main"
+    agent_remote, _, _ = make_repo(tmp_path, "agent-rel", branch=branch)
+    runtime_remote, _, _ = make_repo(tmp_path, "runtime-int")  # only int/r1
+    app_remote, app_work, _ = make_repo(
+        tmp_path, "app-rel",
+        {"public/install-manifest.json": "{}\n", "public/install": "i\n", "public/install.sh": "s\n", "public/install.ps1": "p\n"},
+        branch=branch,
+    )
+    try:
+        dispatch_candidate.main(
+            ["direct-linux", "x.json", "--branch", branch, "--agent-remote", str(agent_remote),
+             "--runtime-remote", str(runtime_remote), "--app-repo", str(app_work),
+             "--output-dir", str(tmp_path / "o")]
+        )
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("a repository without the release branch must fail closed")
+    assert "cannot resolve current release/14/main head for Runtime" in capsys.readouterr().err

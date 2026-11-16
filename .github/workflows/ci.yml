@@ -6,6 +6,11 @@ name: CI
 on:
   push:
     branches: [main, release-1, "int/**", "release/*/main"]
+  # Plan and fix branches land in release/<N>/main by pull request; their own pushes start nothing. A pull request
+  # runs only the cheap subset: fast checks, unit shard 1 of 8 (and the unit aggregate), and boundary. The heavy jobs
+  # (windows, darwin, release wheels, shards 2-8) carry `if: github.event_name != 'pull_request'` and run on the push.
+  pull_request:
+    branches: ["release/*/main"]
   workflow_dispatch:
 
 concurrency:
@@ -17,6 +22,7 @@ env:
 
 jobs:
   windows-native-and-installer:
+    if: github.event_name != 'pull_request'
     runs-on: windows-latest
     timeout-minutes: 90
     env:
@@ -192,7 +198,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        group: [1, 2, 3, 4, 5, 6, 7, 8]
+        # A pull request runs shard 1 of 8 only; the job name and --splits 8 are unchanged.
+        group: ${{ fromJSON(github.event_name == 'pull_request' && '[1]' || '[1,2,3,4,5,6,7,8]') }}
 
     steps:
       - name: Check out repository
@@ -338,6 +345,7 @@ jobs:
 
   darwin-native:
     name: darwin native
+    if: github.event_name != 'pull_request'
     runs-on: macos-latest
     timeout-minutes: 120
     env:
@@ -453,6 +461,7 @@ jobs:
 
   release:
     name: release wheel / Python ${{ matrix.python-version }}
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
