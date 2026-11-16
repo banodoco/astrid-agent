@@ -3442,6 +3442,7 @@ _core_timelines.provide_handlers({
     '_working_cmd_lint': _cli_working._cmd_lint,
     '_working_cmd_rename': _cli_working._cmd_rename,
     '_working_cmd_restructure': _cli_working._cmd_restructure,
+    '_working_cmd_transcripts_import': _cli_working._cmd_transcripts_import,
     '_working_cmd_transcripts_sync': _cli_working._cmd_transcripts_sync,
     '_working_cmd_words': _cli_working._cmd_words,
 })

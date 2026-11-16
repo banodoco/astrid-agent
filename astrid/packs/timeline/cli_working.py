@@ -387,6 +387,30 @@ def _configure_transcripts_sync(subparser: argparse.ArgumentParser) -> None:
 
 
 @guard(2)
+def _cmd_transcripts_import(parsed: argparse.Namespace) -> int:
+    from astrid.sdk.media_transcript import import_transcript_words
+
+    payload = json.loads(parsed.file.expanduser().read_text(encoding="utf-8"))
+    words = payload.get("words") if isinstance(payload, Mapping) else payload
+    if not isinstance(words, list):
+        raise ValueError("words file must be a list or an object containing a words list")
+    if isinstance(payload, Mapping):
+        if payload.get("media_id", parsed.media_id) != parsed.media_id:
+            raise ValueError("words file media_id does not match the requested media id")
+        if payload.get("source_id", parsed.source) != parsed.source:
+            raise ValueError("words file source_id does not match the requested source id")
+    segment_id = payload.get("segment_id", parsed.segment) if isinstance(payload, Mapping) else parsed.segment
+    text = payload.get("text", parsed.text) if isinstance(payload, Mapping) else parsed.text
+    status = import_transcript_words(
+        parsed.client, need_project(parsed), parsed.media_id, words,
+        segment_id=str(segment_id), text=text, source_offset=parsed.source_offset,
+        source=parsed.source, replace=parsed.replace, expected_version=parsed.expected_version,
+    )
+    print(f"{status} transcript for {parsed.media_id} ({parsed.source})")
+    return 0
+
+
+@guard(2)
 def _cmd_transcripts_sync(parsed: argparse.Namespace) -> int:
     from astrid.sdk.timeline_checkout import Checkout
     from astrid.sdk.timeline_transcripts import sync_narration_transcripts

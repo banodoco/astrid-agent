@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from pathlib import Path
 
 import pytest
 
@@ -63,6 +64,79 @@ def test_write_create_unchanged_update_with_expected_version():
     assert write_transcript(client, "slug", media, NARRATION_SOURCE, revised) == "updated"
     assert ("update", 1, "canonical-project") in client.documents.calls
     assert sum(call[0] == "create" for call in client.documents.calls) == 1
+
+
+def test_import_words_uses_source_seconds_and_refuses_unpinned_replacement():
+    from astrid.sdk.media_transcript import import_transcript_words
+
+    client = fake_client()
+    media = "sha256:" + "5" * 64
+    words = [[0.1, 0.3, "hello"], {"start_s": 0.4, "end_s": 0.6, "word": "there"}]
+    assert import_transcript_words(client, "slug", media, words, segment_id="line",
+                                   source_offset=12.0) == "created"
+    stored = client.documents.row["content"]
+    assert [(word["start"], word["end"]) for word in stored["segments"][0]["words"]] == [
+        (12.1, 12.3), (12.4, 12.6)]
+    assert stored["segments"][0]["start"] == 12.1
+
+    with pytest.raises(ValueError, match="whole-document replacement"):
+        import_transcript_words(client, "slug", media, [[0.0, 0.2, "replacement"]],
+                                segment_id="line", source_offset=12.0)
+    assert client.documents.row["content"] == stored
+
+    assert import_transcript_words(client, "slug", media, words, segment_id="line",
+                                   source_offset=12.0) == "unchanged"
+    with pytest.raises(ValueError, match="expected version"):
+        import_transcript_words(client, "slug", media, [[0.0, 0.2, "replacement"]],
+                                segment_id="line", source_offset=12.0, replace=True)
+    assert import_transcript_words(client, "slug", media, [[0.0, 0.2, "replacement"]],
+                                   segment_id="line", source_offset=12.0, replace=True,
+                                   expected_version=1) == "updated"
+    assert client.documents.row["content"]["segments"][0]["words"][0]["start"] == 12.0
+
+
+def test_import_replacement_uses_the_version_it_checked_when_a_race_occurs():
+    from astrid.sdk.media_transcript import import_transcript_words
+
+    class RacingDocuments(FakeDocuments):
+        def update(self, document_id, *, content, expected_version, project):
+            self.calls.append(("update", expected_version, project))
+            self.row = {**self.row, "content": {"concurrent": True}, "version": expected_version + 1}
+            return DomainResult.failure(ErrorObject("stale_version", "stale", {}))
+
+    client = fake_client()
+    client.documents = RacingDocuments()
+    media = "sha256:" + "c" * 64
+    original = build_transcript(media, "line", "old", [[0.0, 0.2, "old"]])
+    write_transcript(client, "slug", media, NARRATION_SOURCE, original)
+    with pytest.raises(RuntimeError, match="cannot import transcript"):
+        import_transcript_words(client, "slug", media, [[0.0, 0.2, "new"]], segment_id="line",
+                                replace=True, expected_version=1)
+    assert ("update", 1, "canonical-project") in client.documents.calls
+    assert client.documents.row["content"] == {"concurrent": True}
+
+
+@pytest.mark.parametrize("words", [
+    [[float("nan"), 0.2, "bad"]], [[0.4, 0.2, "bad"]], [[0, 0.1, "  "]], [[-0.1, 0.1, "bad"]],
+])
+def test_import_rejects_invalid_word_rows(words):
+    from astrid.sdk.media_transcript import import_transcript_words
+
+    with pytest.raises(ValueError, match="word times"):
+        import_transcript_words(fake_client(), "slug", "sha256:" + "d" * 64, words,
+                                segment_id="line")
+
+
+def test_transcripts_import_parser_requires_media_identity_and_file():
+    from astrid.core.cli.domain_timelines import build_parser
+
+    media = "sha256:" + "a" * 64
+    args = build_parser(None).parse_args([
+        "transcripts", "import", media, "words.json", "--project", "demo",
+        "--source-offset", "4.5", "--replace", "--expected-version", "3",
+    ])
+    assert (args.media_id, args.file, args.project, args.source_offset,
+            args.replace, args.expected_version) == (media, Path("words.json"), "demo", 4.5, True, 3)
 
 
 def test_sync_preserves_the_exact_server_pin_from_create_result_without_rereading():
