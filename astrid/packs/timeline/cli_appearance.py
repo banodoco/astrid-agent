@@ -56,8 +56,8 @@ def command(parsed):
         else:
             parent_normalized = None
             size = source_size
-        canvas_warnings = in_memory_canvas_warnings(
-            parent_normalized['findings'] if parent_normalized else normalized['findings'])
+        findings = (parent_normalized['findings'] if parent_normalized else []) + normalized['findings']
+        canvas_warnings = in_memory_canvas_warnings(findings)
         legacy_canvas = [f for f in canvas_warnings if f.get('source') == 'legacy-render-resolved']
         source_description = ('not declared; placed in the parent timeline canvas' if source_size is None else
                               'legacy render-resolved; not authored' if owner == 'parent' and legacy_canvas else
@@ -68,7 +68,7 @@ def command(parsed):
                 'source_canvas_description': source_description,
                 'canvas': size, 'canvas_owner': 'parent', 'canvas_timeline_id': session.timeline_id,
                 'warnings': canvas_warnings,
-                'migration': (parent_normalized['findings'] if parent_normalized else []) + normalized['findings']}
+                'migration': findings}
         else:
             clip = next(row for row in normalized['config']['clips'] if row.get('id') == ref.rsplit('/', 1)[1].split(':', 1)[1])
             track = next(row for row in normalized['config']['tracks'] if row.get('id') == clip.get('track'))
@@ -78,7 +78,7 @@ def command(parsed):
                 'source_canvas': source_size, 'source_canvas_owner': owner,
                 'source_canvas_description': source_description,
                 'canvas': size, 'canvas_owner': 'parent', 'canvas_timeline_id': session.timeline_id,
-                'warnings': canvas_warnings, 'migration': (parent_normalized['findings'] if parent_normalized else []) + normalized['findings']}
+                'warnings': canvas_warnings, 'migration': findings}
         return print_result(DomainResult.success(answer), as_json=parsed.json,
                             human_renderer=lambda value: json.dumps(value, indent=2, ensure_ascii=False))
     except Exception as exc:

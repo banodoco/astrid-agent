@@ -216,3 +216,32 @@ def test_appearance_warns_for_authored_canvas_override_without_output(command, c
     assert warning['after']['resolution'] == '1280x720'
     assert 'not written' in warning['message']
     assert parent == original and generated.calls == []
+
+
+@pytest.mark.parametrize('kind', ['clip', 'track'])
+def test_appearance_occurrence_warns_for_child_authored_canvas_without_output(command, capsys, kind):
+    from tests.editing_conformance.test_recipe_clip_scalar_fields import app_bundle
+
+    run, generated = command
+    bundle = app_bundle()
+    bundle.update(project_id='p', timeline_id='t')
+    bundle['parent']['config']['output'] = {'resolution': '1920x1080', 'fps': 30, 'file': 'out.mp4'}
+    shot_id = next(row['shot_id'] for row in bundle['placements'] if row['occurrence_id'] == 'f2-occurrence')
+    child = bundle['shots'][shot_id]['internal_timeline']
+    child.pop('output', None)
+    child['theme_overrides'] = {'visual': {'canvas': {'width': 1280, 'height': 720, 'fps': 30}}}
+    child['registry']['assets']['f2-placeholder']['resolution'] = '1920x1080'
+    generated.bundles['r0'] = bundle
+    before = copy.deepcopy(bundle)
+    target = ('--clip', 'occurrence:f2-occurrence/clip:f2-agent-clip') if kind == 'clip' else (
+        '--track', 'occurrence:f2-occurrence/track:V2')
+    assert run('appearance', 't', '--project', 'p', *target, '--json') == 0
+    data = json.loads(capsys.readouterr().out)['data']
+    assert data['source_canvas'] == {'width': 1280, 'height': 720}
+    assert data['canvas'] == {'width': 1920, 'height': 1080}
+    assert len(data['warnings']) == 1
+    warning = data['warnings'][0]
+    assert warning['source'] == 'theme_overrides.visual.canvas'
+    assert warning['after']['resolution'] == '1280x720' and warning['after']['fps'] == 30
+    assert 'not written' in warning['message']
+    assert generated.bundles['r0'] == before and generated.calls == []
