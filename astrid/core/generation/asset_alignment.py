@@ -151,8 +151,8 @@ class _ResumingClient:
     and replays the prefix ahead of the new bytes. A server that ignores Range restarts at 0.
     """
 
-    def __init__(self, inner, part: Path, deadline: float):
-        self.inner, self.part, self.deadline = inner, part, deadline
+    def __init__(self, inner, part: Path, deadline: float | None, progress=None):
+        self.inner, self.part, self.deadline, self.progress = inner, part, deadline, progress
         self.resumed_from = 0
 
     @contextlib.contextmanager
@@ -187,69 +187,84 @@ class _SplicedResponse:
             with client.part.open('rb') as handle:
                 for chunk in iter(lambda: handle.read(8 << 20), b''):
                     yield chunk
+        done = self._prefix
         with client.part.open('ab' if self._prefix else 'wb') as handle:
             for chunk in self._response.iter_bytes():
-                if time.monotonic() >= client.deadline:
+                if client.deadline is not None and time.monotonic() >= client.deadline:
                     raise DeadlineExceeded('model download deadline exceeded')
                 handle.write(chunk)
                 handle.flush()
+                done += len(chunk)
+                if client.progress is not None:
+                    client.progress(done)
                 yield chunk
 
 
-def _fetch_model(model: ModelSpec, models_root: Path, *, deadline: float, client=None) -> DownloadResult:
-    """Fetch one locked model through VibeComfy fetch, then check it against the lock.
+def fetch_verified(entry: dict[str, Any], path: Path, *, root: Path, part: Path, label: str,
+                   client=None, deadline: float | None = None, progress=None) -> int:
+    """Fetch one file through VibeComfy fetch into `path`, resuming from `part`, then check it against `entry`.
 
-    fetch publishes before it verifies, so a failed check unlinks what fetch just published:
-    nothing that differs from the lock stays at the destination, and no `.part` is kept for it.
+    `part` keeps an interrupted transfer's bytes for the next call, which asks for the rest with a Range
+    request. A file that fails its size or SHA-256 check is removed together with `part`. Returns the
+    byte offset this transfer resumed from.
+
+    fetch publishes before it verifies, so a failed check unlinks what fetch just published.
     """
     from vibecomfy import fetch
 
-    relative, url = _validate_model(model)
-    _, path = _root_and_destination(str(models_root), relative)
-    _safe_path(models_root, path)
-    done = DownloadResult(model=model.name, path=str(path), action='skipped', bytes=model.bytes,
-                          sha256=model.sha256, verified=True, resumed_from_bytes=0)
-    if path.exists():
-        if _matches(path, model, deadline=deadline):
-            return done
-        raise IntegrityError(f'Existing asset {model.destination} differs from its lock; restore verified bytes')
-    part = path.with_name(path.name + '.part')
-    _safe_path(models_root, part)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if part.exists() and part.stat().st_size >= model.bytes:
+    if part.exists() and part.stat().st_size >= entry['size_bytes']:
         part.unlink()  # nothing left to resume from
     if client is None:
         import httpx
         client = httpx
-    resuming = _ResumingClient(client, part, deadline)
-    entry = {'name': path.name, 'subdir': relative.parent.as_posix(), 'url': url,
-             'sha256': model.sha256, 'size_bytes': model.bytes}
+    resuming = _ResumingClient(client, part, deadline, progress)
     error = None
     try:
-        fetch.download(entry, root=models_root, client=resuming, quiet=True)
+        fetch.download(entry, root=root, client=resuming, quiet=True)
     except Exception as exc:  # noqa: BLE001 - reported through the raised error or fallback; diagnostic at debug, never a user-facing traceback
         # Keep failures for the no-published-file error below; a published file is still
-        # force-verified against the lock before it can be accepted.
-        logging.getLogger(__name__).debug('fetch failed for locked model %s', model.destination, exc_info=True)
+        # force-verified before it can be accepted.
+        logging.getLogger(__name__).debug('fetch failed for %s', label, exc_info=True)
         error = exc
-    if path.exists():
+    # A caller may pre-claim `path` as an empty placeholder: only bytes fetch actually published count here.
+    published = path.exists() and (error is None or path.stat().st_size > 0)
+    if published:
         try:
             # fetch published first and left its source receipt over the verification sidecar
             # model_root reads; force-verifying checks size and SHA-256 and rewrites that sidecar.
-            fetch.verify(entry, path, root=models_root, force=True)
+            fetch.verify(entry, path, root=root, force=True)
         except Exception as exc:
             path.unlink()
             part.unlink(missing_ok=True)
-            raise IntegrityError(f'{model.destination}: SHA-256 mismatch against the lock ({exc}); refused to publish') from exc
-    if not path.exists():
+            raise IntegrityError(f'{label}: SHA-256 mismatch against the lock ({exc}); refused to publish') from exc
+    else:
         kept = '; prefix retained for resume' if part.exists() else ''
         if isinstance(error, DownloadError):
             raise error
-        raise DownloadError(f'{model.destination}: download failed ({error}){kept}') from error
+        raise DownloadError(f'{label}: download failed ({error}){kept}') from error
     part.unlink(missing_ok=True)
-    return DownloadResult(model=model.name, path=str(path), action='resumed' if resuming.resumed_from else 'downloaded',
-                          bytes=model.bytes, sha256=model.sha256, verified=True,
-                          resumed_from_bytes=resuming.resumed_from)
+    return resuming.resumed_from
+
+
+def _fetch_model(model: ModelSpec, models_root: Path, *, deadline: float, client=None) -> DownloadResult:
+    """Fetch one locked model through VibeComfy fetch, then check it against the lock."""
+    relative, url = _validate_model(model)
+    _, path = _root_and_destination(str(models_root), relative)
+    _safe_path(models_root, path)
+    if path.exists():
+        if _matches(path, model, deadline=deadline):
+            return DownloadResult(model=model.name, path=str(path), action='skipped', bytes=model.bytes,
+                                  sha256=model.sha256, verified=True, resumed_from_bytes=0)
+        raise IntegrityError(f'Existing asset {model.destination} differs from its lock; restore verified bytes')
+    part = path.with_name(path.name + '.part')
+    _safe_path(models_root, part)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    entry = {'name': path.name, 'subdir': relative.parent.as_posix(), 'url': url,
+             'sha256': model.sha256, 'size_bytes': model.bytes}
+    resumed = fetch_verified(entry, path, root=models_root, part=part, label=f'locked model {model.destination}',
+                             client=client, deadline=deadline)
+    return DownloadResult(model=model.name, path=str(path), action='resumed' if resumed else 'downloaded',
+                          bytes=model.bytes, sha256=model.sha256, verified=True, resumed_from_bytes=resumed)
 
 
 def selected_target() -> ManagedAssetTarget:
