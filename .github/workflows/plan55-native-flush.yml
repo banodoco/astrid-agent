@@ -1,0 +1,74 @@
+name: Plan 55 native flush calibration
+on:
+  pull_request:
+    branches: ["release/14/plan-55"]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - "tests/_local_speed_native.py"
+      - "tests/local_speed_native*.py"
+      - "tests/local_speed_native.wprp"
+      - "tests/core/generation/test_local_speed_native_reader.py"
+      - ".github/workflows/plan55-native-flush.yml"
+permissions:
+  contents: read
+concurrency:
+  group: plan55-native-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  calibrate:
+    name: Native flush calibration (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/runtime
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTEST_ADDOPTS: "-rA"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-runtime
+          ref: 6855dfa8df65cf8ae4c002b57134d6505493c17c
+          path: runtime
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install the existing CPU test environment
+        run: python -m pip install -e ".[dev]" -e ./runtime -e ./runtime/packages/python
+      - name: Install Linux syscall observer
+        if: ${{ runner.os == 'Linux' }}
+        run: sudo apt-get update && sudo apt-get install -y strace
+      - name: Check native trace reader oracles
+        run: python -m pytest -q -rA tests/core/generation/test_local_speed_native_reader.py --junitxml=native-reader.xml
+      - name: Calibrate against actual filesystem and SQLite writes
+        run: python -m tests.local_speed_native_run --output plan55-native-proof
+      - name: Preserve source identity and proof
+        if: ${{ always() }}
+        shell: python
+        run: |
+          import hashlib, json, pathlib, subprocess
+          root = pathlib.Path.cwd()
+          out = root / "plan55-native-proof"
+          out.mkdir(exist_ok=True)
+          refs = {"agent": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+                  "runtime": subprocess.check_output(["git", "-C", "runtime", "rev-parse", "HEAD"], text=True).strip()}
+          (out / "sources.json").write_text(json.dumps(refs, indent=2) + "\n")
+          paths = [p for p in out.rglob("*") if p.is_file()]
+          (out / "SHA256SUMS").write_text("".join(hashlib.sha256(p.read_bytes()).hexdigest() + "  " + p.relative_to(out).as_posix() + "\n" for p in sorted(paths)))
+      - name: Upload the actual calibration evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: plan55-native-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            plan55-native-proof
+            native-reader.xml
+          include-hidden-files: true
+          retention-days: 14

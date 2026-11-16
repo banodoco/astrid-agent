@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<WindowsPerformanceRecorder Version="1.0" Author="Astrid Plan 55">
+  <Profiles>
+    <SystemCollector Id="Plan55Collector" Name="Plan55 native flush observer">
+      <BufferSize Value="1024"/>
+      <Buffers Value="64"/>
+    </SystemCollector>
+    <SystemProvider Id="Plan55Provider">
+      <Keywords>
+        <Keyword Value="ProcessThread"/>
+        <Keyword Value="Loader"/>
+        <Keyword Value="FileIO"/>
+        <Keyword Value="FileIOInit"/>
+        <Keyword Value="Filename"/>
+      </Keywords>
+    </SystemProvider>
+    <Profile Id="Plan55.Verbose.File" Name="Plan55" Description="CPU-only process and native file flush counters" LoggingMode="File" DetailLevel="Verbose">
+      <Collectors>
+        <SystemCollectorId Value="Plan55Collector">
+          <SystemProviderId Value="Plan55Provider"/>
+        </SystemCollectorId>
+      </Collectors>
+    </Profile>
+  </Profiles>
+</WindowsPerformanceRecorder>
