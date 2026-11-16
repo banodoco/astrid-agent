@@ -21,6 +21,7 @@ from astrid.sdk.timeline.rebase import replay
 
 FIXTURE = Path(__file__).parent / 'fixtures/pristine_initialize.json'
 GOLDEN = json.loads(FIXTURE.read_text())
+CURRENT = json.loads((FIXTURE.parent / 'pristine_initialize_current.json').read_text())
 
 
 def empty_document():
@@ -51,14 +52,18 @@ def inverse(bundle, records, intervening=()):
 def test_app_golden_exact_capture_replay_inverse_and_redo():
     original = bundle_from_document(empty_document())
     before = copy.deepcopy(original)
+    # Historical wire commands remain literal and replay to their original result.
+    historical = execute(original, GOLDEN['commands'])
+    assert historical.records == GOLDEN['records']
+    assert document_from_bundle(historical.bundle)['parent_revision']['payload'] == GOLDEN['app_parent']
     calls = batch(original)
-    assert calls == GOLDEN['commands']
+    assert calls == CURRENT['commands']
     for call in calls:
         validate_command(call)
     plan = execute(original, calls)
     assert original == before
-    assert plan.records == GOLDEN['records']
-    assert document_from_bundle(plan.bundle)['parent_revision']['payload'] == GOLDEN['app_parent']
+    assert plan.records == CURRENT['records']
+    assert document_from_bundle(plan.bundle)['parent_revision']['payload'] == CURRENT['app_parent']
     assert replay(plan, original).records == plan.records
     undone = inverse(plan.bundle, plan.records)
     assert undone.bundle == original
@@ -189,4 +194,10 @@ def test_complete_s2_schema_is_retained_additively():
     assert schema['$defs']['Intent']['properties']['ownership']['enum'].pop() == 'parent'
     schema['$defs']['ClipSetArgs']['description'] = frozen['$defs']['ClipSetArgs']['description']
     canonical = json.dumps(schema, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()
-    assert hashlib.sha256(canonical).hexdigest() == GOLDEN['s2_semantic_sha256']
+    assert hashlib.sha256(canonical).hexdigest() == CURRENT['s2_semantic_sha256']
+    # Remove exactly the approved appearance extensions to retain the frozen
+    # historical S2 digest as a separate independent assertion.
+    schema['$defs']['ClipSetArgs'] = copy.deepcopy(frozen['$defs']['ClipSetArgs'])
+    schema['$defs']['TrackSetArgs'] = copy.deepcopy(frozen['$defs']['TrackSetArgs'])
+    historical = json.dumps(schema, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()
+    assert hashlib.sha256(historical).hexdigest() == GOLDEN['s2_semantic_sha256']
