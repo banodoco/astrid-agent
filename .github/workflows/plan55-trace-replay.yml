@@ -17,6 +17,8 @@ jobs:
     name: Decode retained Windows trace, no generation or permission retry
     runs-on: windows-latest
     timeout-minutes: 35
+    env:
+      PYTHONPATH: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@v4
         with:
