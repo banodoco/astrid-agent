@@ -109,7 +109,7 @@ def _report_identity() -> str:
     """Log fixed vocabulary only; never provider response bodies or identity values."""
     names = [name for name in ("RUNPOD_POD_ID", "RUNPOD_API_KEY")
              if os.environ.get(name, "").strip()]
-    authorised = "unknown"
+    access = "unreachable"
     probe_status = 0
 
     def record_status(status: int) -> None:
@@ -120,23 +120,25 @@ def _report_identity() -> str:
         try:
             # V2 actions are state transitions, not bearer-token permissions.
             # A successful pods:read probe cannot establish pods:write rights.
-            _request(*_identity(), method="GET", status_callback=record_status)
+            observed = _request(*_identity(), method="GET", status_callback=record_status)
+            if 200 <= probe_status < 300 and isinstance(observed, dict):
+                access = "reachable"
         except HTTPError as exc:
             probe_status = exc.code
             if exc.code in (401, 403):
-                authorised = "no"
+                access = "denied"
         except (OSError, URLError, ValueError):
             pass
     else:
-        authorised = "no"
+        access = "denied"
     IDENTITY_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     with IDENTITY_LOG_PATH.open("a", encoding="utf-8") as log:
         log.write(f"{IDENTITY_MARK}{','.join(names) or 'none'} "
-                  f"termination_authorised={authorised} probe=GET-own-pod-actions probe_status={probe_status}"
-                  + (" watchdog=unavailable custody=host-only" if authorised == "unknown" else "") + "\n")
+                  f"probe=GET-own-pod probe_status={probe_status} access={access} "
+                  "delete_permission=unproven_until_used\n")
         log.flush()
         os.fsync(log.fileno())
-    return authorised
+    return access
 
 
 def _atomic_write(path: Path, value: Mapping[str, Any]) -> None:
@@ -235,13 +237,17 @@ def run(path: Path, default_deadline: float) -> None:
     pod, key = _identity()
     with path.with_suffix(".process-lock").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        authorised = _report_identity()
-        if authorised != "yes":
-            cause = "termination_denied" if authorised == "no" else "termination_unknown"
+        access = _report_identity()
+        if access != "reachable":
+            cause = "termination_denied" if access == "denied" else "termination_unknown"
             _atomic_write(path.with_suffix(".ready"), {"cause": cause})
             raise PodWatchdogError(cause)
         watch = Watchdog(path, default_deadline, terminate=lambda: _request(pod, key))
         _atomic_write(path.with_suffix(".ready"), {"pid": os.getpid()})
+        with IDENTITY_LOG_PATH.open("a", encoding="utf-8") as log:
+            log.write("pod_watchdog: watchdog=armed delete_permission=unproven_until_used\n")
+            log.flush()
+            os.fsync(log.fileno())
         retry_seconds = 1.0
         while True:
             try:

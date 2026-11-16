@@ -729,6 +729,7 @@ async def _protect_allocated_target(config: Any, record: dict[str, Any],
     generation = record.get("self_stop", {}).get("generation", 0) + 1
     value = {**record, "self_stop": {"deadline": deadline, "generation": generation, "acknowledged": False}}
     replace_target_record(path, value, operation_id=record["operation_id"])
+    record["self_stop"] = value["self_stop"]
     until = time.monotonic() + timeout
     ops = _HttpsOps(record["pod_id"], config.https_token, deadline=until)
     while True:

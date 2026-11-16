@@ -688,6 +688,59 @@ def test_small_lease_keep_refuses_to_exceed_provider_termination(small_lease):
     assert not c.deletes and c.creates == 1
 
 
+def test_small_lease_keep_within_provider_ceiling_accounts_and_rearms(small_lease):
+    c = small_lease
+    owner = c.fresh()
+    invocation = owner.acquire(c.grant, requested_idle_seconds=10)
+    owner.settle(invocation)
+    ceiling = datetime.fromisoformat(c.read()["allocation_terminate_after"].replace("Z", "+00:00")).timestamp()
+    owner.keep("pod-1", keep_grant(c, max_usd=1200 / 3600, deadline=utc(c.clock() + 1200)))
+    old_timers = list(c.clock.timers)
+    c.clock.advance(5)
+    kept = owner.keep("pod-1", keep_grant(c, invocation_id="keep-2", max_usd=1800 / 3600,
+                                           deadline=utc(c.clock() + 1800)))
+    assert kept["lease"]["paid_expires_at"] == c.clock() + 1800 < ceiling
+    assert kept["lease"]["idle_expires_at"] == c.clock() + 60
+    assert kept["lease"]["estimated_cost_usd"] == pytest.approx(5 / 3600)
+    assert kept["lease"]["accounted_at"] == c.clock()
+    assert kept["lease"]["invocation_id"] == invocation.invocation_id
+    assert kept["paid_limits"]["invocation_id"] == "keep-2"
+    assert all(timer.cancelled for timer in old_timers)
+    assert any(not timer.cancelled and timer.due == c.clock() + 1800 for timer in c.clock.timers)
+    c.clock.advance(5)
+    assert not c.deletes and c.creates == 1
+
+
+def test_legacy_claim_without_provider_bound_cannot_reuse_but_can_release(small_lease):
+    c = small_lease
+    owner = c.fresh()
+    invocation = owner.acquire(c.grant)
+    owner.settle(invocation)
+    record = c.read()
+    record.pop("allocation_terminate_after")
+    worker_preparation.write_target_record(c.owner.path, record)
+    with pytest.raises(target_selection.PaidSelectionError, match="provider termination deadline"):
+        owner.acquire(replace(c.grant, invocation_id="legacy-reuse"))
+    assert c.creates == 1 and not c.deletes
+    owner.release()
+    assert c.read()["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
+
+
+def test_recovery_releases_legacy_idle_claim_instead_of_adopting(small_lease):
+    c = small_lease
+    owner = c.fresh()
+    invocation = owner.acquire(c.grant)
+    owner.settle(invocation)
+    record = c.read()
+    record.pop("allocation_terminate_after")
+    worker_preparation.write_target_record(c.owner.path, record)
+    owner.close()
+    restored = c.fresh()
+    restored.recover_job()
+    assert c.read()["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
+    assert c.creates == 1
+
+
 @pytest.mark.parametrize("state", ["active", "idle"])
 def test_small_lease_keep_until_release_disables_idle_but_releases_at_cap(small_lease, state):
     c = small_lease
