@@ -231,12 +231,15 @@ def _mask(value: Any, path: str, modalities: Mapping[str, str] | None) -> dict[s
 
 def _settings(value: Any) -> dict[str, Any]:
     item = _object(value, "settings") or {}
-    _unknown(item, {"model", "steps", "sampler", "scheduler", "seed", "turbo", "adapter", "guidance_scale", "guidance"}, "settings")
+    _unknown(item, {"model", "steps", "sampler", "scheduler", "seed", "turbo", "adapter", "guidance_scale", "guidance", "cfg", "video_shift", "audio_shift"}, "settings")
     aliases = [name for name in ("guidance", "guidance_scale") if name in item]
     if len(aliases) > 1:
         raise H3RequestError("settings.guidance and settings.guidance_scale are duplicate Turbo aliases")
     turbo = _object(item.get("turbo", {}), "settings.turbo") or {}
-    _unknown(turbo, {"enabled", "strength"}, "settings.turbo")
+    _unknown(turbo, {"enabled", "strength", "lora"}, "settings.turbo")
+    lora = _nonblank(turbo.get("lora", "pika_flex_8step"), "settings.turbo.lora")
+    if lora not in {"pika_flex_8step", "lightx2v_8step"}:
+        raise H3RequestError(f"unknown settings.turbo.lora {lora!r}")
     if aliases and "strength" in turbo:
         raise H3RequestError("legacy guidance and settings.turbo.strength are duplicate spellings")
     result: dict[str, Any] = {
@@ -245,8 +248,13 @@ def _settings(value: Any) -> dict[str, Any]:
         "sampler": "res_multistep",
         "scheduler": "simple",
         "seed": 123456789,
-        "turbo": {"enabled": True, "strength": 0.95},
+        "turbo": {"enabled": True, "strength": 1.0 if lora == "pika_flex_8step" else 0.95, "lora": lora},
+        "cfg": 1.0, "video_shift": 12.0, "audio_shift": 3.0,
     }
+    for key in ("cfg", "video_shift", "audio_shift"):
+        if key in item: result[key] = _number(item[key], f"settings.{key}", minimum=0)
+    if result["cfg"] != 1.0:
+        raise H3RequestError("settings.cfg must be 1.0; native BasicGuider does not support CFG overrides")
     if "model" in item: result["model"] = _nonblank(item["model"], "settings.model")
     if "sampler" in item: result["sampler"] = _nonblank(item["sampler"], "settings.sampler")
     if result["sampler"] not in _NATIVE_SAMPLERS:
@@ -269,6 +277,8 @@ def _settings(value: Any) -> dict[str, Any]:
         result["turbo"]["strength"] = _number(item[alias], f"settings.{alias}", minimum=0)
     elif "strength" in turbo:
         result["turbo"]["strength"] = _number(turbo["strength"], "settings.turbo.strength", minimum=0)
+    if result["turbo"]["enabled"] and (result["model"] != REF2VA_MODEL or lora == "lightx2v_8step"):
+        raise H3RequestError(f"settings.turbo.lora {lora!r} has no matching variant for model {result['model']!r} on the native route")
     if "adapter" in item:
         adapter = _object(item["adapter"], "settings.adapter") or {}
         _unknown(adapter, {"id", "strength"}, "settings.adapter")
