@@ -274,7 +274,7 @@ def _check_source_av_rate(asset_id: str, path: Path) -> None:
     )
 
 
-def _check_source_av_rates(request: H3Request, assets: list[dict[str, Any]]) -> None:
+def _check_source_av_rates(request: H3Request, assets: list[dict[str, Any]], *, checked_asset: str | None = None) -> None:
     """Probe each resolved source-backed video input; source-free and audio-only requests are not probed."""
     value = request.value
     if value.get("version") == 2:
@@ -296,6 +296,8 @@ def _check_source_av_rates(request: H3Request, assets: list[dict[str, Any]]) -> 
         if record.get("status") == "resolved" and isinstance(record.get("path"), str)
     }
     for asset_id in dict.fromkeys(targets):
+        if asset_id == checked_asset:
+            continue
         path = resolved.get(asset_id)
         # An unresolved source is blocked_until_resolution, so no pod can be held for it.
         if path is not None:
@@ -569,7 +571,7 @@ def prepare_request(
                     timeline_audio_presence[str(item["asset"])] = "audio" in streams
         _validate_mask_assets(request, assets)
         # Runs after the Character Swap stream inspection so its more specific errors win.
-        _check_source_av_rates(request, assets)
+        _check_source_av_rates(request, assets, checked_asset=str(source["asset"]) if source_conform is not None else None)
         try:
             schedule = _v2_mask_schedule(request, timeline_audio_presence=timeline_audio_presence)
         except MaskScheduleError as exc:
@@ -595,7 +597,7 @@ def prepare_request(
     except MaskScheduleError as exc:
         raise PreparationError(str(exc)) from exc
     assets = _resolve_assets(request, asset_map)
-    _check_source_av_rates(request, assets)
+    _check_source_av_rates(request, assets, checked_asset=str(source["asset"]) if source_conform is not None else None)
     unresolved = [record["asset"] for record in assets if record["status"] != "resolved"]
     # Managed identifiers are intentionally retained for the runtime, but a
     # local asset map must never silently contain a missing path.
