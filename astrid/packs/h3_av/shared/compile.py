@@ -21,6 +21,7 @@ from .request_v2 import (
     effective_settings,
     read_prepared_request,
     _settings,
+    v1_native_settings,
 )
 from .timing import ContinuationTimingError, plan_continuation
 
@@ -328,11 +329,7 @@ def _compile_manifest(
 
 
 def _v1_native_settings(overrides: Mapping[str, Any]) -> dict[str, Any]:
-    raw = dict(overrides)
-    choice = raw.pop("turbo_lora", None)
-    if choice is not None:
-        raw["turbo"] = {"lora": choice}
-    return _settings(raw)
+    return _settings(v1_native_settings(overrides))
 
 
 def _compile_native(request: H3Request, assets: Mapping[str, Path], destination: Path) -> dict[str, Any]:
@@ -608,7 +605,8 @@ def _compile_native_masked_edit(
             "reference_order": [item.asset for item in references],
             "edit_binding": {"during_frames": list(during), "frame_load_cap": frame_load_cap,
                              "strength": operation.strength, "seed": seed, "refs": list(operation.refs)},
-            "overrides": ["model", "steps", "seed", "sampler", "guidance"],
+            "overrides": ["model", "steps", "seed", "sampler", "guidance", "turbo_lora",
+                          "scheduler", "cfg", "video_shift", "audio_shift"],
             "generation_timing": timing,
             "source_frame_fit": {
                 "source_window_frames": frame_load_cap,
@@ -889,11 +887,9 @@ def _continuation_bundle(source: Path, destination: Path, settings: Mapping[str,
         raise CompilationError("native-v2 continuation cannot disable its Turbo loader")
     bundle = load_bundle(source / "workflow.py", trust=Provenance.USER_CONFIRMED)
     workflow = bundle.workflow.copy()
-    rows = [node for node in workflow.nodes.values() if node.class_type == "LoraLoaderModelOnly"]
-    if len(rows) != 1:
-        raise CompilationError("continuation must contain exactly one Turbo loader")
-    old_name = rows[0].inputs["lora_name"]
-    rows[0].inputs.update(lora_name=PIKA_REF2VA_FILENAME, strength_model=settings["turbo"]["strength"])
+    turbo_node = workflow.nodes["935"]
+    old_name = turbo_node.inputs["lora_name"]
+    turbo_node.inputs.update(lora_name=PIKA_REF2VA_FILENAME, strength_model=settings["turbo"]["strength"])
     for node in workflow.nodes.values():
         if node.class_type == "KSamplerSelect": node.inputs["sampler_name"] = settings["sampler"]
         if node.class_type == "BasicScheduler": node.inputs["scheduler"] = settings["scheduler"]

@@ -383,3 +383,7 @@ selected range is included in the dry-run.
 Masks and pixel-coordinate regions refer to the prepared 1024×576 canvas and
 clip-relative clock, after the specified fit. Supply masks already aligned to
 that canvas and time range; H3 does not transform source-coordinate masks.
+
+The packaged continuation bundles are historical source captures; use the H3
+compiler to emit the selected LoRA and settings into a request-specific bundle.
+V1 edits default to the selected LoRA’s eight steps; explicit steps still win.

@@ -229,6 +229,15 @@ def _mask(value: Any, path: str, modalities: Mapping[str, str] | None) -> dict[s
     return result
 
 
+def v1_native_settings(overrides: Mapping[str, Any]) -> dict[str, Any]:
+    """Translate the v1 spelling into the canonical settings vocabulary."""
+    raw = dict(overrides)
+    choice = raw.pop("turbo_lora", None)
+    if choice is not None:
+        raw["turbo"] = {"lora": choice}
+    return raw
+
+
 def _settings(value: Any) -> dict[str, Any]:
     item = _object(value, "settings") or {}
     _unknown(item, {"model", "steps", "sampler", "scheduler", "seed", "turbo", "adapter", "guidance_scale", "guidance", "cfg", "video_shift", "audio_shift"}, "settings")
