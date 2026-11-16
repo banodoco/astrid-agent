@@ -1183,7 +1183,18 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 # The backup CLI uses authenticated RPC. Start only the neutral
                 # daemon (no foreground service supervisor and no browser door).
                 try:
-                    self.runtime(version, data, "up", "--hosted-origin", "off", profile=True)
+                    # The installer owns this bounded, doorless backup daemon.
+                    # Invoke the neutral bootstrap directly under installer
+                    # custody; public `up` routes managed installs to their
+                    # canonical service and must not be used for this job.
+                    script = ("from pathlib import Path; import sys; "
+                              "from astrid_runtime.bootstrap import BootstrapConfig, bootstrap; "
+                              "from astrid_runtime.paths import RuntimePaths; "
+                              "from astrid_runtime.runtime_boundary import LocalRuntimeBoundary; "
+                              "bootstrap(RuntimePaths.current(data_root=Path(sys.argv[1])), "
+                              "LocalRuntimeBoundary(), BootstrapConfig(source_manifest=Path(sys.argv[2])))")
+                    self.run([version.python, "-X", "utf8", "-I", "-c", script, data, version.profile],
+                             extra_env=dict(version.env))
                     self.runtime(version, data, "backup", "--destination", str(destination / "realm"))
                 finally:
                     self.stop(version, data)
