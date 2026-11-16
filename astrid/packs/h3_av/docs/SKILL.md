@@ -363,14 +363,16 @@ A source may be a project media handle (`sha256:…`, `ref:…`, or an earlier
 `fill` (default) center-crops to 16:9; `fit` keeps the whole frame with bars.
 Neither stretches the picture. H3 prepares the selected interval as 24 fps,
 1024×576, and the dry-run reports the original and prepared identities,
-range, fit and decoded timing. A source range must have a whole number of
-24 fps frames and be covered by all present source streams. Input stream starts
-must be known and zero-aligned; sources with unsupported timestamps are refused
-instead of shifting them silently. Framing uses the source display aspect ratio;
+range, fit and decoded timing. V1 range durations round to the nearest 24 fps
+frame; V2 ranges must use its exact frame grid. Video must cover the requested
+range. Stream timestamps must be measurable; H3 rebases them to the selected
+video start and records the timing. An audio start offset or coverage shortfall
+of at most one frame can be aligned or padded, with the repair recorded; larger
+offsets, shortfalls and discontinuous decoded audio are refused. Framing uses the source display aspect ratio;
 if pixel aspect metadata is missing, H3 records an assumption of square pixels.
 Continuations require at least 39 prepared frames (1.625 seconds). Preparation
 never invents a missing audio stream, and the current source-backed graph refuses
-one without audio. A short audio stream is not padded. Plain
+one without audio. Plain
 `video_ref` selects the whole video up to its last complete 24-fps frame; the
 selected range is included in the dry-run.
 

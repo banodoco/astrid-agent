@@ -212,9 +212,11 @@ def _check_source_av_rate(asset_id: str, path: Path) -> None:
         payload = None
     streams = payload.get("streams") if isinstance(payload, Mapping) else None
     if not isinstance(streams, list):
-        # Not a readable media container, such as a non-media fixture. There is no
-        # measurable frame rate to certify; composition still requires real media.
-        return
+        raise _SourceAVError(
+            f"H3_SOURCE_AV_PROBE: cannot read media streams for source {asset_id!r}",
+            code="H3_SOURCE_AV_PROBE", field="source.asset",
+            fix="Provide a readable audiovisual source and retry",
+        )
     video = next((row for row in streams if isinstance(row, Mapping) and row.get("codec_type") == "video"), None)
     audio = next((row for row in streams if isinstance(row, Mapping) and row.get("codec_type") == "audio"), None)
     if video is None:
@@ -446,7 +448,6 @@ def _validate_frozen_source(request: H3Request, source: Mapping[str, Any], path:
         frame_value = (expected_range[1] - expected_range[0]) * 24
         expected_frames = round(frame_value)
         valid = (expected_range[0] >= 0 and expected_frames > 0
-                 and abs(frame_value - expected_frames) <= Fraction(1, 1000000)
                  and len(actual_range) == 2 and expected_range == actual_range
                  and output["fit"] == source.get("fit", "fill")
                  and output["frames"] == expected_frames
