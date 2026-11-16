@@ -121,7 +121,7 @@ def _clip_type(raw: Mapping[str, Any]) -> str:
     if not isinstance(value, str) or not value:
         raise ShotCompositionProjectionError("internal timeline clip type must be a non-empty string")
     if value == "shot":
-        raise ShotCompositionProjectionError("deeper shot nesting is unsupported")
+        raise ShotCompositionProjectionError(f"deeper shot nesting is unsupported: clip {raw.get('id', '?')!r} property clipType")
     return value
 
 
@@ -246,9 +246,15 @@ def _apply_placement_transform(occurrence: Mapping[str, Any], *, path: str) -> N
     )
     has_non_default_scale = isinstance(transform, Mapping) and transform.get("scale", 1) not in (None, 1)
     if has_visual_geometry or has_non_default_opacity or has_non_default_scale:
+        key = ('opacity' if occurrence.get('opacity') not in (None, 1) else
+               next(key for key, value in transform.items()
+                    if (key in ('x', 'y', 'width', 'height') or str(key).startswith('crop')
+                        or key in ('opacity', 'scale') and value not in (None, 1))))
+        property_path = key if key == 'opacity' and occurrence.get('opacity') not in (None, 1) else 'transform.' + key
         raise ShotCompositionProjectionError(
             "Shot opacity and transforms are not supported yet. "
-            "Remove them from the shot placement to render this timeline."
+            "Remove them from the shot placement to render this timeline. "
+            f"Occurrence {occurrence.get('occurrence_id', '?')!r} property {property_path}"
         )
 
 

@@ -134,6 +134,17 @@ const DEFAULT_PROPS: TimelineCompositionProps = {
 const DEFAULT_CANVAS: CanvasOverride = {width: 1920, height: 1080, fps: 30};
 
 const getCanvas = (props: TimelineCompositionProps): CanvasOverride => {
+  const output = props.timeline.output;
+  const resolution = typeof output?.resolution === 'string' ? /^(\d+)x(\d+)$/i.exec(output.resolution) : null;
+  if (output?.resolution !== undefined) {
+    if (!resolution || Number(resolution[1]) <= 0 || Number(resolution[2]) <= 0) {
+      throw new Error('timeline output.resolution must be a positive WIDTHxHEIGHT');
+    }
+    if (typeof output.fps !== 'number' || !Number.isFinite(output.fps) || output.fps <= 0) {
+      throw new Error('timeline output.fps must be positive');
+    }
+    return {width: Number(resolution[1]), height: Number(resolution[2]), fps: output.fps};
+  }
   const overrides = props.timeline.theme_overrides as
     | TimelineThemeOverrides
     | undefined;

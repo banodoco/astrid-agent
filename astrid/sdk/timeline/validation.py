@@ -142,7 +142,7 @@ def _authenticated_initialization_fps_removals(
     candidate: Mapping[str, Any], baseline: Mapping[str, Any] | None,
     restoration_records: Sequence[Mapping[str, Any]], inverse_records: Sequence[Mapping[str, Any]],
 ) -> set[str]:
-    """Return FPS removed by the complete guarded inverse of ``timeline.init``."""
+    """Allow exact authenticated inverse of initialization or package canvas materialization."""
     allowed: set[str] = set()
     if baseline is None or not inverse_records or not restoration_records:
         return allowed
@@ -167,15 +167,30 @@ def _authenticated_initialization_fps_removals(
         selected = entry_records(inverse_records, entry)
         if not equal(selected, entry.get("records", {}).get("commands")):
             continue
-        init_records = [record for record in selected
-                        if record.get("command", {}).get("op") == "timeline.init"]
-        introduced = any(
-            write.get("ref") == "parent" and write.get("path") == ["config", "output"]
-            and write.get("before") == {"state": "absent"}
-            and write.get("after", {}).get("state") == "present"
-            and isinstance(write.get("after", {}).get("value"), Mapping)
-            and "fps" in write["after"]["value"]
-            for record in init_records for write in record.get("writes", []))
+        def introduced_output(record):
+            op = record.get('command', {}).get('op')
+            for write in record.get('writes', []):
+                after = write.get('after', {})
+                if not (write.get('ref') == 'parent' and write.get('path') == ['config', 'output']
+                        and write.get('before') == {'state': 'absent'} and after.get('state') == 'present'
+                        and isinstance(after.get('value'), Mapping) and 'fps' in after['value']):
+                    continue
+                if op == 'timeline.init':
+                    return True
+                for dependency in record.get('dependencies', []):
+                    pin = dependency.get('pin', {})
+                    if (op in ('clip.set', 'track.set') and dependency.get('key') == 'placement.canvas.materialization'
+                            and pin.get('ref') == 'parent' and pin.get('path') == ['config', 'output']
+                            and equal(pin.get('after'), after['value'])
+                            and equal(baseline.get('parent', {}).get('config', {}).get('output'), after['value'])
+                            and equal(pin.get('authored_canvas'), baseline.get('parent', {}).get('config', {})
+                                      .get('theme_overrides', {}).get('visual', {}).get('canvas'))
+                            and any(w.get('ref') == 'parent' and w.get('path') == ['config', 'output']
+                                    and equal(w.get('before'), after) and w.get('after') == {'state': 'absent'}
+                                    for inverse in restoration_records for w in inverse.get('writes', []))):
+                        return True
+            return False
+        introduced = any(introduced_output(record) for record in selected)
         if not introduced:
             continue
         candidate_output = candidate.get("parent", {}).get("config", {}).get("output")

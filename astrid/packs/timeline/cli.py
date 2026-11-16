@@ -2398,6 +2398,8 @@ def _cmd_render(parsed: argparse.Namespace) -> int:
                 "state": str((result.raw_result or {}).get("state") or ("completed" if parsed.wait else "admitted")),
                 "handoff": handoff,
                 "outputs": result.outputs,
+                **({'warnings': result.raw_result['warnings']} if isinstance(result.raw_result, Mapping)
+                   and result.raw_result.get('warnings') else {}),
                 "working_copy": working,
                 **_render_video_handle(result, parsed.project),
             }

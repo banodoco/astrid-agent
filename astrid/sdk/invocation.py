@@ -932,7 +932,7 @@ def _validate_managed_profile_theme_compatibility(
         )
     except (TypeError, ValueError, OSError, FileNotFoundError) as exc:
         raise CapabilityValidationError(
-            f"cannot resolve authoritative theme canvas for canonical timeline "
+            f"cannot resolve authored timeline canvas for canonical timeline "
             f"{timeline_slug!r}: {exc}. Fix the timeline theme and retry"
         ) from exc
 
@@ -945,13 +945,13 @@ def _validate_managed_profile_theme_compatibility(
         requested = profile.get(field)
         if requested != expected:
             mismatches.append(
-                f"{field}={requested!r} (authoritative theme canvas produces {expected!r})"
+                f"{field}={requested!r} (authored timeline canvas produces {expected!r})"
             )
     if mismatches:
         raise CapabilityValidationError(
             f"invalid render profile for canonical timeline {timeline_slug!r}: "
             + "; ".join(mismatches)
-            + ". Explicit profiles must match the authoritative theme canvas; "
+            + ". Explicit profiles must match the authored timeline canvas; "
             "use the default profile from timelines render --help or set "
             "theme_overrides.visual.canvas to the requested width, height, and fps, then retry"
         )
@@ -1242,6 +1242,18 @@ def _render_reuse_toolchain_digest() -> str | None:
     return "sha256:" + hashlib.sha256(json.dumps(parts, sort_keys=True).encode()).hexdigest()
 
 
+def _reject_uncaptured_legacy_theme(snapshot, values):
+    """A runtime theme file is not part of the verified legacy canvas fact."""
+    if values.get('theme') in (None, ''):
+        return
+    expansion = snapshot.expansion if isinstance(snapshot.expansion, Mapping) else {}
+    if any(isinstance(row, Mapping) and row.get('source') == 'legacy-render-resolved'
+           for row in expansion.get('placement_migrations', [])):
+        raise CapabilityValidationError(
+            'timeline output canvas is unresolved for the supplied runtime theme; '
+            'its theme_path is not part of the verified legacy canvas context')
+
+
 def _prepare_managed_render_inputs(
     inputs: Mapping[str, Any] | None,
     *,
@@ -1365,6 +1377,7 @@ def _prepare_managed_render_inputs(
             snapshot = candidate_preview_snapshot(
                 authoring_preview, snapshot=snapshot, client=_client
             )
+        _reject_uncaptured_legacy_theme(snapshot, values)
         # `resolve_managed_render_snapshot` returned this graph only after
         # reading and validating the exact typed parent -> shot -> internal
         # revision closure. Preserve that producer proof across the ordinary
@@ -1512,6 +1525,7 @@ def _prepare_managed_render_inputs(
             registry=expanded_registry,
             materialized_registry_hash=_expanded_config_hash(expanded_registry),
             expansion={
+                "placement_migrations": list((snapshot.expansion or {}).get('placement_migrations', [])),
                 "children": child_records,
                 "shots": [shot_records[key] for key in sorted(shot_records)],
                 "occurrences": shot_occurrences,

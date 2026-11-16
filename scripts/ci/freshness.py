@@ -9,6 +9,7 @@ import hashlib
 import json
 import re
 import subprocess
+import tarfile
 from pathlib import Path
 
 CP1 = {'runtime': '3b12fface79a3be029f3b6623765a7f3e1e5e24f',
@@ -140,13 +141,55 @@ def evaluate(tup, schema, repos, installed_manifest, installed_vibe, installed_c
     return result
 
 
+CURRENT_COMPOSITION = '536f8a9133eb4b95324c25169e823db1472e5504a07738ae6b54c03709ace7e5'
+CURRENT_SOURCE = '3b8d27191ebfaf65f5f02e83afdb4fddbe236b58'
+CURRENT_VERSION = '0.0.19'
+CURRENT_INTEGRITY = 'sha512-pJkWvvZbVAgnFs2VR7ObnaqrTNx+50WK3pxnstFRFqgwYza8/i2V/74+sNRhV+1yjoBuQMBpnBv+JUvt1WHAog=='
+
+
+def evaluate_current_composition(agent, app, installed_composition):
+    errors = []
+    name = '@banodoco/timeline-composition'
+    filename = f'banodoco-timeline-composition-{CURRENT_VERSION}.tgz'
+    for label, root, relative in (('agent', Path(agent) / 'remotion', 'artifacts'),
+                                  ('app', Path(app), 'vendor/artifacts')):
+        try:
+            path = f'{relative}/{filename}'
+            package = json.loads((root / 'package.json').read_bytes())
+            lock = json.loads((root / 'package-lock.json').read_bytes())
+            entry = lock['packages']['node_modules/' + name]
+            if package['dependencies'][name] != 'file:' + path or entry['resolved'] != 'file:' + path:
+                errors.append(f'{label} composition path differs')
+            if entry['version'] != CURRENT_VERSION or entry['integrity'] != CURRENT_INTEGRITY:
+                errors.append(f'{label} composition version or integrity differs')
+            archive = root / path
+            if digest(archive.read_bytes()) != CURRENT_COMPOSITION:
+                errors.append(f'{label} composition digest differs')
+            with tarfile.open(archive) as tar:
+                manifest = json.load(tar.extractfile('package/package.json'))
+            if manifest.get('version') != CURRENT_VERSION or manifest.get('gitHead') != CURRENT_SOURCE:
+                errors.append(f'{label} composition source or version differs')
+        except (OSError, ValueError, KeyError, TypeError, tarfile.TarError) as exc:
+            errors.append(f'{label} composition evidence invalid: {exc}')
+    try:
+        if digest(Path(installed_composition).read_bytes()) != CURRENT_COMPOSITION:
+            errors.append('installed composition digest differs')
+    except OSError as exc:
+        errors.append(f'installed composition evidence invalid: {exc}')
+    return {'check': 'composition-current', 'result': 'fail' if errors else 'pass', 'errors': errors}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--composition-current', action='store_true')
     for name in ('tuple', 'schema', 'runtime', 'agent', 'app', 'pinokio', 'installed-manifest', 'installed-vibe', 'installed-composition'):
-        parser.add_argument('--' + name, required=True, type=Path)
+        parser.add_argument('--' + name, type=Path)
     args = parser.parse_args()
     try:
-        receipt = evaluate(json.loads(args.tuple.read_bytes()), json.loads(args.schema.read_bytes()), {r: getattr(args, r) for r in CP1}, args.installed_manifest, args.installed_vibe, args.installed_composition)
+        if args.composition_current:
+            receipt = evaluate_current_composition(args.agent, args.app, args.installed_composition)
+        else:
+            receipt = evaluate(json.loads(args.tuple.read_bytes()), json.loads(args.schema.read_bytes()), {r: getattr(args, r) for r in CP1}, args.installed_manifest, args.installed_vibe, args.installed_composition)
     except Exception as exc:
         receipt = {'check': 'C-07', 'result': 'fail', 'errors': [f'input unavailable or invalid: {exc}']}
     print(json.dumps(receipt, indent=2, sort_keys=True))

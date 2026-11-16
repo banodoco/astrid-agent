@@ -103,6 +103,9 @@ class SchemaContractTest(unittest.TestCase):
         # Exercise the optional Runtime 0.0.2 track role on this local copy so
         # the shared characterization fixture keeps its original digest input.
         config["tracks"][0]["role"] = "output"
+        # The Runtime clip fit extension keeps this manual-image fixture on cover.
+        config["clips"][0]["fit"] = "cover"
+        timeline.validate_timeline(config)
 
         self.assertIn("generation_defaults", timeline._TIMELINE_TOP_ALLOWED)
         clip_keys = {key for clip in config["clips"] for key in timeline._normalize_clip_for_validation(clip)}

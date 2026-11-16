@@ -215,6 +215,11 @@ def validate_timeline(config: Any, *, strict: bool = True) -> None:
     # process-cached validator — no per-call check_schema / $ref re-walk);
     # then run the Banodoco-only semantic checks (effect-id registry,
     # transition durations).
+    for track in config.get('tracks', []) if isinstance(config.get('tracks'), list) else []:
+        if isinstance(track, dict) and isinstance(track.get('app'), dict):
+            app = track['app']
+            if 'clipPlacementVersion' in app and (type(app['clipPlacementVersion']) is not int or app['clipPlacementVersion'] != 1):
+                raise ValueError(f"track {track.get('id', '?')!r} property app.clipPlacementVersion is invalid")
     normalized_for_shared = _known_timeline_payload(config)
     # Top-level ``app`` is the editor-extension metadata namespace owned by
     # Astrid's container contract. The currently pinned shared render schema
@@ -232,6 +237,10 @@ def validate_timeline(config: Any, *, strict: bool = True) -> None:
             )
             for c in normalized_for_shared["clips"]
         ]
+    for index, clip in enumerate(config.get("clips", []) if isinstance(config.get("clips"), list) else []):
+        if isinstance(clip, dict):
+            _raise_unknown_keys(f"clips[{index}] (clip {clip.get('id', '?')!r})",
+                                _normalize_clip_for_validation(clip), _CLIP_ALLOWED)
     _validate_shared_timeline(normalized_for_shared)
     fps = _timeline_fps(config)
     tracks = config.get("tracks")
@@ -261,7 +270,7 @@ def validate_timeline(config: Any, *, strict: bool = True) -> None:
             raise ValueError(f"clips[{index}] must be an object")
         clip = _normalize_clip_for_validation(clip_raw)
         normalized_clips.append(clip)
-        _raise_unknown_keys(f"clips[{index}]", clip, _CLIP_ALLOWED)
+        _raise_unknown_keys(f"clips[{index}] (clip {clip.get('id', '?')!r})", clip, _CLIP_ALLOWED)
         for field in ("id", "at", "track"):
             if field not in clip:
                 raise ValueError(f"clips[{index}].{field} is required")

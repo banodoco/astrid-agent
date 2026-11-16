@@ -75,6 +75,15 @@
           },
           "app": {
             "type": "object",
+            "properties": {
+              "clipPlacementVersion": {
+                "type": "integer",
+                "const": 1
+              },
+              "scaleAppliesToPositionedClips": {
+                "type": "boolean"
+              }
+            },
             "additionalProperties": {}
           },
           "meta": {
@@ -247,6 +256,13 @@
         },
         "opacity": {
           "type": "number"
+        },
+        "fit": {
+          "type": "string",
+          "enum": [
+            "contain",
+            "cover"
+          ]
         },
         "text": {
           "type": "object",

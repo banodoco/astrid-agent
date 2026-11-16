@@ -12,6 +12,7 @@ from ._common import TimelineEditError
 from ._recording import active
 from .capture import number
 from .outbox import request_bytes
+from astrid.core.timeline.track_appearance import stamp_new_track_appearance
 
 
 def existing_selectors(transport, project, digest):
@@ -121,7 +122,8 @@ def _placement_commands(bundle, pin, verified, *, on, duration, track, clip_id, 
     commands = []
     if lane is None:
         commands.append({'schema_version': 1, 'op': 'track.create', 'version': '1',
-                         'select': 'parent', 'args': {'row': {'id': track, 'kind': expected_lane, 'label': track}}})
+                         'select': 'parent', 'args': {'row': stamp_new_track_appearance(
+                             {'id': track, 'kind': expected_lane, 'label': track})}})
     commands.append({'schema_version': 1, 'op': 'clip.add-media', 'version': '1',
                      'select': 'parent', 'args': {'row': row, 'media': pin}})
     return commands

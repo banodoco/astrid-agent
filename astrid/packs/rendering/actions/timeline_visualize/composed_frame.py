@@ -753,6 +753,18 @@ def snapshot_wants_bounds(snapshot: Mapping[str, Any]) -> bool:
     return isinstance(app, Mapping) and app.get("astrid_bounds") is True
 
 
+def _reject_uncaptured_legacy_theme(snapshot: Mapping[str, Any], theme_path: Path | None) -> None:
+    if theme_path is None:
+        return
+    metadata = snapshot.get('metadata')
+    authority = metadata.get('capture_authority') if isinstance(metadata, Mapping) else None
+    expansion = authority.get('expansion') if isinstance(authority, Mapping) else None
+    findings = expansion.get('placement_migrations', []) if isinstance(expansion, Mapping) else []
+    if any(isinstance(row, Mapping) and row.get('source') == 'legacy-render-resolved' for row in findings):
+        raise ValueError('timeline output canvas is unresolved for the supplied runtime theme; '
+                         'its theme_path is not part of the verified legacy canvas context')
+
+
 class RemotionFrameProvider:
     """Provide PNG frames from an admitted, immutable capture snapshot."""
 
@@ -778,6 +790,7 @@ class RemotionFrameProvider:
         self.materialized_root = Path(materialized_root) if materialized_root else None
         self.materialized_objects = materialized_objects
         self.theme_path = Path(theme_path) if theme_path else None
+        _reject_uncaptured_legacy_theme(self.snapshot, self.theme_path)
         self.scene_capture: CaptureSceneLabels | None = None
         self.fresh_scene_frames: set[int] = set()
         self._cached_scenes: dict[int, CaptureSceneLabels] = {}

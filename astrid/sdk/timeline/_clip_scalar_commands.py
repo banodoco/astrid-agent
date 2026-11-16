@@ -89,6 +89,9 @@ def _hold_extent(ctx, ref, values, clear):
 def clip_set(ctx, command):
     ref = _target(ctx, command, 'clip')
     values, clear = _changes(command)
+    if (set(values) | set(clear)) & {'fit', 'x', 'y', 'width', 'height', 'cropTop', 'cropBottom', 'cropLeft', 'cropRight', 'opacity'}:
+        from ._appearance import normalize_owner
+        normalize_owner(ctx, ref)
     identity = _clip_basis(ctx, ref)
     if 'hold' in values and isinstance(identity['elementRef'] or identity['element_ref'], dict):
         ctx.select('element.targets', ref.rsplit('/', 1)[0])
