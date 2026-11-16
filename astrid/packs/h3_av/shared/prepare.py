@@ -542,6 +542,9 @@ def prepare_request(
                     continue
                 path = resolved_paths.get(str(item["asset"]))
                 if path is not None:
+                    if source_conform is not None and item["asset"] == source["asset"]:
+                        timeline_audio_presence[str(item["asset"])] = source_conform.get("audio") is not None
+                        continue
                     streams = _video_stream_types(path)
                     if "video" not in streams:
                         raise PreparationError("Character Swap timeline source contains no video stream")
