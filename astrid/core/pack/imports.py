@@ -160,6 +160,7 @@ def selected_pack_environment(selected: Mapping[str, Mapping[str, str]], *,
     import json
 
     builtin = Path(__file__).resolve().parents[2] / "packs"
+    core = Path(__file__).resolve().parents[2] / "core"
     relocations = verified_relocations if verified_relocations is not None else {}
     if relocations:
         validate_selected_pack_map(selected, verified_relocations=relocations)
@@ -169,7 +170,11 @@ def selected_pack_environment(selected: Mapping[str, Mapping[str, str]], *,
     roots: dict[str, None] = {}
     for pack_id, entry in selected.items():
         collection = Path(relocations.get(pack_id, {}).get("original_root", entry["root"])).parent
-        if collection != builtin:
+        # First-party core packs live beside their implementation modules, not
+        # in a folder-pack collection. Adding ``astrid/core`` here makes its
+        # Python package directories look like external packs and collide with
+        # the real ``astrid/packs`` namespace in source installs.
+        if collection not in {builtin, core}:
             roots[str(collection)] = None
     environment = {"ASTRID_PACKS_PATH": os.pathsep.join(roots),
                    "ASTRID_SELECTED_PACK_MAP": json.dumps(selected, sort_keys=True),
@@ -256,7 +261,9 @@ def pack_command_args(arguments: list[str], pack_id: str, root: Path) -> list[st
                 or any(not part.isidentifier() or keyword.iskeyword(part) for part in args[1].split("."))):
             raise ValueError("external command module is outside selected pack namespace")
     elif args[0] != "-c":
-        source = Path(args[0]).resolve()
-        if not source.is_relative_to(root) or not source.is_file() or source.suffix != ".py":
+        script = Path(args[0])
+        source = (script if script.is_absolute() else root / script).resolve()
+        selected_root = root.resolve()
+        if not source.is_relative_to(selected_root) or not source.is_file() or source.suffix != ".py":
             raise ValueError("external command script is outside selected pack")
     return args

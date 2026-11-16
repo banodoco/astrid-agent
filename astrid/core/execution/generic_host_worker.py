@@ -94,7 +94,8 @@ def _run_pack_command(encoded: str, *, selected=None, bridge_fd: str | None = No
     # This digest belongs to this run, never to an install PIN or old scan.
     if pack_digest(root) != control["source_digest"]:
         raise ValueError("admitted capability source digest changed")
-    module_path, path_names = (pack_module_path(Path(args[0]).resolve().relative_to(root))
+    script = (Path(args[0]) if Path(args[0]).is_absolute() else root / args[0]).resolve()
+    module_path, path_names = (pack_module_path(script.relative_to(root))
                                if args[0] not in {"-m", "-c"} else (None, {}))
     install_pack_imports(control["pack_id"], root, path_names, source_digest=control["source_digest"],
                          selected_map=control.get("map"), verified_relocations=control.get("verified_relocations"))
@@ -117,7 +118,7 @@ def _run_pack_command(encoded: str, *, selected=None, bridge_fd: str | None = No
         else:
             # Turn a pack-relative script into its canonical module identity too.
             module = "astrid.packs." + control["pack_id"] + "." + module_path
-            sys.argv = [args[0], *args[1:]]
+            sys.argv = [str(script), *args[1:]]
             runpy.run_module(module, run_name="__main__", alter_sys=True)
         return 0
     finally:
