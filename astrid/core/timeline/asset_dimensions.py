@@ -14,6 +14,7 @@ def canonicalize_asset_dimensions(asset_id: str, entry: Mapping[str, Any]) -> di
     """
     result = dict(entry)
     has_width, has_height = "width" in result, "height" in result
+    has_resolution = "resolution" in result
     resolution = result.get("resolution")
     if not has_width and not has_height:
         return result
@@ -28,7 +29,7 @@ def canonicalize_asset_dimensions(asset_id: str, entry: Mapping[str, Any]) -> di
             f"width={width!r}, height={height!r}"
         )
     expected = f"{width}x{height}"
-    if resolution is not None and resolution != expected:
+    if has_resolution and resolution != expected:
         raise ValueError(
             f"asset {asset_id!r} has conflicting intrinsic dimensions: "
             f"width={width!r}, height={height!r}, resolution={resolution!r}"

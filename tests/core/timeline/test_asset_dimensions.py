@@ -24,6 +24,11 @@ def test_conflicting_dimensions_fail_with_asset_and_both_values():
         })
 
 
+def test_present_null_resolution_is_not_treated_as_missing():
+    with pytest.raises(ValueError, match=r"asset-a.*resolution=None"):
+        canonicalize_asset_dimensions("asset-a", {"width": 640, "height": 480, "resolution": None})
+
+
 @pytest.mark.parametrize("width,height", [(0, 2), (-1, 2), (1.0, 2), (True, 2), (2, None)])
 def test_non_positive_or_non_integer_dimensions_fail(width, height):
     with pytest.raises(ValueError, match="asset-a.*width="):
