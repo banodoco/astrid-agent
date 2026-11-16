@@ -75,11 +75,6 @@
     "count": 2
   },
   {
-    "path": "astrid/core/element/project_packs.py",
-    "code": "import-untyped",
-    "count": 1
-  },
-  {
     "path": "astrid/core/element/registry.py",
     "code": "misc",
     "count": 1
@@ -97,7 +92,7 @@
   {
     "path": "astrid/core/execution/_child_bridge.py",
     "code": "arg-type",
-    "count": 12
+    "count": 11
   },
   {
     "path": "astrid/core/execution/_child_bridge.py",
@@ -227,12 +222,12 @@
   {
     "path": "astrid/core/execution/generic_host.py",
     "code": "assignment",
-    "count": 20
+    "count": 18
   },
   {
     "path": "astrid/core/execution/generic_host.py",
     "code": "attr-defined",
-    "count": 45
+    "count": 44
   },
   {
     "path": "astrid/core/execution/generic_host.py",
@@ -242,11 +237,6 @@
   {
     "path": "astrid/core/execution/generic_host.py",
     "code": "dict-item",
-    "count": 1
-  },
-  {
-    "path": "astrid/core/execution/generic_host.py",
-    "code": "import-untyped",
     "count": 1
   },
   {
@@ -272,7 +262,7 @@
   {
     "path": "astrid/core/execution/generic_host.py",
     "code": "union-attr",
-    "count": 55
+    "count": 51
   },
   {
     "path": "astrid/core/execution/generic_host.py",
@@ -332,12 +322,7 @@
   {
     "path": "astrid/core/execution/network_policy.py",
     "code": "index",
-    "count": 8
-  },
-  {
-    "path": "astrid/core/execution/network_policy.py",
-    "code": "misc",
-    "count": 1
+    "count": 7
   },
   {
     "path": "astrid/core/execution/network_policy.py",
@@ -363,11 +348,6 @@
     "path": "astrid/core/execution/orchestrator/runner.py",
     "code": "attr-defined",
     "count": 2
-  },
-  {
-    "path": "astrid/core/execution/orchestrator/runner.py",
-    "code": "misc",
-    "count": 1
   },
   {
     "path": "astrid/core/execution/orchestrator/runner.py",
@@ -473,11 +453,6 @@
     "path": "astrid/core/experiments/normalize.py",
     "code": "no-redef",
     "count": 2
-  },
-  {
-    "path": "astrid/core/extensions/model.py",
-    "code": "import-untyped",
-    "count": 1
   },
   {
     "path": "astrid/core/extensions/registry.py",
@@ -600,48 +575,8 @@
     "count": 1
   },
   {
-    "path": "astrid/core/generation/backends/registry.py",
-    "code": "arg-type",
-    "count": 1
-  },
-  {
-    "path": "astrid/core/generation/backends/vibecomfy.py",
-    "code": "arg-type",
-    "count": 8
-  },
-  {
-    "path": "astrid/core/generation/backends/vibecomfy.py",
-    "code": "assignment",
-    "count": 1
-  },
-  {
-    "path": "astrid/core/generation/backends/vibecomfy.py",
-    "code": "index",
-    "count": 1
-  },
-  {
-    "path": "astrid/core/generation/backends/vibecomfy.py",
-    "code": "override",
-    "count": 2
-  },
-  {
-    "path": "astrid/core/generation/backends/vibecomfy.py",
-    "code": "return-value",
-    "count": 1
-  },
-  {
-    "path": "astrid/core/generation/backends/vibecomfy.py",
-    "code": "var-annotated",
-    "count": 1
-  },
-  {
     "path": "astrid/core/generation/cli.py",
     "code": "assignment",
-    "count": 1
-  },
-  {
-    "path": "astrid/core/generation/cli.py",
-    "code": "attr-defined",
     "count": 1
   },
   {
@@ -652,11 +587,6 @@
   {
     "path": "astrid/core/generation/engine_bootstrap.py",
     "code": "attr-defined",
-    "count": 1
-  },
-  {
-    "path": "astrid/core/generation/engine_contracts.py",
-    "code": "assignment",
     "count": 1
   },
   {
@@ -707,11 +637,6 @@
   {
     "path": "astrid/core/generation/entries.py",
     "code": "arg-type",
-    "count": 1
-  },
-  {
-    "path": "astrid/core/generation/entries.py",
-    "code": "import-untyped",
     "count": 1
   },
   {
@@ -935,19 +860,9 @@
     "count": 1
   },
   {
-    "path": "astrid/core/model_catalog/registry.py",
-    "code": "import-untyped",
-    "count": 1
-  },
-  {
     "path": "astrid/core/model_setup/acquire.py",
     "code": "union-attr",
     "count": 2
-  },
-  {
-    "path": "astrid/core/pack/agent_index.py",
-    "code": "import-untyped",
-    "count": 1
   },
   {
     "path": "astrid/core/pack/agent_index.py",
@@ -966,22 +881,12 @@
   },
   {
     "path": "astrid/core/pack/canonical.py",
-    "code": "import-untyped",
-    "count": 1
-  },
-  {
-    "path": "astrid/core/pack/canonical.py",
     "code": "index",
     "count": 3
   },
   {
     "path": "astrid/core/pack/canonical.py",
     "code": "misc",
-    "count": 1
-  },
-  {
-    "path": "astrid/core/pack/cli_basic.py",
-    "code": "import-untyped",
     "count": 1
   },
   {
@@ -1003,11 +908,6 @@
     "path": "astrid/core/pack/cli_manage.py",
     "code": "attr-defined",
     "count": 2
-  },
-  {
-    "path": "astrid/core/pack/cli_manage.py",
-    "code": "import-untyped",
-    "count": 1
   },
   {
     "path": "astrid/core/pack/definition.py",
@@ -1058,16 +958,6 @@
     "path": "astrid/core/pack/loader.py",
     "code": "attr-defined",
     "count": 2
-  },
-  {
-    "path": "astrid/core/pack/loader.py",
-    "code": "import-untyped",
-    "count": 1
-  },
-  {
-    "path": "astrid/core/pack/manifest.py",
-    "code": "import-untyped",
-    "count": 1
   },
   {
     "path": "astrid/core/pack/permissions.py",
@@ -1141,22 +1031,12 @@
   },
   {
     "path": "astrid/core/pack/validate.py",
-    "code": "import-untyped",
-    "count": 1
-  },
-  {
-    "path": "astrid/core/pack/validate.py",
     "code": "index",
     "count": 3
   },
   {
     "path": "astrid/core/pack/validate_first_party.py",
     "code": "attr-defined",
-    "count": 1
-  },
-  {
-    "path": "astrid/core/pack/validate_first_party.py",
-    "code": "import-untyped",
     "count": 1
   },
   {
@@ -1350,11 +1230,6 @@
     "count": 1
   },
   {
-    "path": "astrid/core/scaffold.py",
-    "code": "import-untyped",
-    "count": 1
-  },
-  {
     "path": "astrid/core/structure.py",
     "code": "attr-defined",
     "count": 3
@@ -1415,11 +1290,6 @@
     "count": 1
   },
   {
-    "path": "astrid/core/timeline/clip_fields.py",
-    "code": "import-untyped",
-    "count": 1
-  },
-  {
     "path": "astrid/core/timeline/cuts.py",
     "code": "assignment",
     "count": 1
@@ -1463,11 +1333,6 @@
     "path": "astrid/core/timeline/projection.py",
     "code": "arg-type",
     "count": 3
-  },
-  {
-    "path": "astrid/core/timeline/scene_roles.py",
-    "code": "import-untyped",
-    "count": 1
   },
   {
     "path": "astrid/core/timeline/shot_composition.py",
@@ -1562,12 +1427,7 @@
   {
     "path": "astrid/installer/cli.py",
     "code": "assignment",
-    "count": 2
-  },
-  {
-    "path": "astrid/installer/cli.py",
-    "code": "attr-defined",
-    "count": 2
+    "count": 1
   },
   {
     "path": "astrid/installer/core.py",
@@ -1623,66 +1483,6 @@
     "path": "astrid/packs/generation/actions/generate_image/run.py",
     "code": "attr-defined",
     "count": 7
-  },
-  {
-    "path": "astrid/packs/h3_av/actions/compile/compile.py",
-    "code": "arg-type",
-    "count": 1
-  },
-  {
-    "path": "astrid/packs/h3_av/actions/prepare/prepare.py",
-    "code": "operator",
-    "count": 1
-  },
-  {
-    "path": "astrid/packs/h3_av/actions/prepare/prepare.py",
-    "code": "union-attr",
-    "count": 1
-  },
-  {
-    "path": "astrid/packs/h3_av/actions/transform/receipt.py",
-    "code": "union-attr",
-    "count": 11
-  },
-  {
-    "path": "astrid/packs/h3_av/actions/transform/run.py",
-    "code": "arg-type",
-    "count": 6
-  },
-  {
-    "path": "astrid/packs/h3_av/actions/transform/run.py",
-    "code": "assignment",
-    "count": 5
-  },
-  {
-    "path": "astrid/packs/h3_av/actions/transform/run.py",
-    "code": "attr-defined",
-    "count": 12
-  },
-  {
-    "path": "astrid/packs/h3_av/actions/transform/run.py",
-    "code": "index",
-    "count": 1
-  },
-  {
-    "path": "astrid/packs/h3_av/actions/transform/run.py",
-    "code": "misc",
-    "count": 2
-  },
-  {
-    "path": "astrid/packs/h3_av/actions/transform/run.py",
-    "code": "return-value",
-    "count": 1
-  },
-  {
-    "path": "astrid/packs/h3_av/actions/verify/verify.py",
-    "code": "arg-type",
-    "count": 2
-  },
-  {
-    "path": "astrid/packs/h3_av/actions/verify/verify.py",
-    "code": "assignment",
-    "count": 1
   },
   {
     "path": "astrid/packs/h3_av/shared/compose.py",
@@ -1771,11 +1571,6 @@
   },
   {
     "path": "astrid/packs/rendering/actions/html_canvas_effect/run.py",
-    "code": "import-untyped",
-    "count": 1
-  },
-  {
-    "path": "astrid/packs/rendering/actions/html_canvas_effect/run.py",
     "code": "var-annotated",
     "count": 1
   },
@@ -1798,11 +1593,6 @@
     "path": "astrid/packs/rendering/actions/render/task_adapter.py",
     "code": "union-attr",
     "count": 2
-  },
-  {
-    "path": "astrid/packs/rendering/actions/sprite_sheet/upscale.py",
-    "code": "name-defined",
-    "count": 4
   },
   {
     "path": "astrid/packs/rendering/actions/timeline_prepare_import/run.py",
@@ -2351,43 +2141,18 @@
   },
   {
     "path": "astrid/packs/runpod/prepared_task.py",
-    "code": "assignment",
-    "count": 2
-  },
-  {
-    "path": "astrid/packs/runpod/prepared_task.py",
-    "code": "attr-defined",
-    "count": 2
-  },
-  {
-    "path": "astrid/packs/runpod/prepared_task.py",
     "code": "index",
     "count": 1
   },
   {
     "path": "astrid/packs/runpod/prepared_task.py",
     "code": "union-attr",
-    "count": 8
-  },
-  {
-    "path": "astrid/packs/runpod/prepared_task.py",
-    "code": "var-annotated",
-    "count": 1
+    "count": 6
   },
   {
     "path": "astrid/packs/runpod/remote_placement.py",
     "code": "arg-type",
     "count": 1
-  },
-  {
-    "path": "astrid/packs/runpod/remote_placement.py",
-    "code": "call-arg",
-    "count": 1
-  },
-  {
-    "path": "astrid/packs/runpod/remote_placement.py",
-    "code": "union-attr",
-    "count": 11
   },
   {
     "path": "astrid/packs/runpod/shared/common.py",
@@ -2428,11 +2193,6 @@
     "path": "astrid/packs/runpod/worker_preparation.py",
     "code": "arg-type",
     "count": 5
-  },
-  {
-    "path": "astrid/packs/runpod/worker_preparation.py",
-    "code": "union-attr",
-    "count": 3
   },
   {
     "path": "astrid/packs/runpod/worker_process.py",
@@ -2561,11 +2321,6 @@
   },
   {
     "path": "astrid/packs/training/actions/dataset_build/config.py",
-    "code": "import-untyped",
-    "count": 1
-  },
-  {
-    "path": "astrid/packs/training/actions/dataset_build/config.py",
     "code": "union-attr",
     "count": 3
   },
@@ -2641,11 +2396,6 @@
   },
   {
     "path": "astrid/packs/training/actions/training_run/config.py",
-    "code": "import-untyped",
-    "count": 1
-  },
-  {
-    "path": "astrid/packs/training/actions/training_run/config.py",
     "code": "union-attr",
     "count": 7
   },
@@ -2658,11 +2408,6 @@
     "path": "astrid/packs/training/actions/training_run/state.py",
     "code": "union-attr",
     "count": 2
-  },
-  {
-    "path": "astrid/packs/training/actions/training_run/trainer_adapters/ai_toolkit_ltx.py",
-    "code": "import-untyped",
-    "count": 1
   },
   {
     "path": "astrid/packs/training/shared/manifest_adapters/ai_toolkit_ltx.py",
@@ -2685,34 +2430,9 @@
     "count": 1
   },
   {
-    "path": "astrid/packs/vibecomfy/actions/run/run.py",
-    "code": "arg-type",
-    "count": 2
-  },
-  {
     "path": "astrid/packs/vibecomfy/direct_image/compiler.py",
     "code": "dict-item",
     "count": 6
-  },
-  {
-    "path": "astrid/packs/vibecomfy/endpoint_checkout.py",
-    "code": "arg-type",
-    "count": 2
-  },
-  {
-    "path": "astrid/packs/vibecomfy/endpoint_checkout.py",
-    "code": "index",
-    "count": 2
-  },
-  {
-    "path": "astrid/packs/vibecomfy/endpoint_checkout.py",
-    "code": "operator",
-    "count": 1
-  },
-  {
-    "path": "astrid/packs/vibecomfy/endpoint_checkout.py",
-    "code": "union-attr",
-    "count": 4
   },
   {
     "path": "astrid/packs/vibecomfy/invocation_preflight.py",
@@ -2725,24 +2445,14 @@
     "count": 2
   },
   {
-    "path": "astrid/packs/vibecomfy/local_server_engine.py",
-    "code": "union-attr",
-    "count": 1
-  },
-  {
     "path": "astrid/packs/vibecomfy/production_engine.py",
     "code": "arg-type",
-    "count": 2
-  },
-  {
-    "path": "astrid/packs/vibecomfy/production_engine.py",
-    "code": "assignment",
     "count": 1
   },
   {
     "path": "astrid/packs/vibecomfy/production_engine.py",
     "code": "union-attr",
-    "count": 3
+    "count": 1
   },
   {
     "path": "astrid/packs/vibecomfy/src/dimensional_vace.py",
@@ -2843,21 +2553,6 @@
     "path": "astrid/sdk/execution_request.py",
     "code": "assignment",
     "count": 1
-  },
-  {
-    "path": "astrid/sdk/generation.py",
-    "code": "arg-type",
-    "count": 8
-  },
-  {
-    "path": "astrid/sdk/generation.py",
-    "code": "assignment",
-    "count": 2
-  },
-  {
-    "path": "astrid/sdk/generation.py",
-    "code": "attr-defined",
-    "count": 3
   },
   {
     "path": "astrid/sdk/generation.py",
@@ -3186,11 +2881,6 @@
   },
   {
     "path": "astrid/sdk/timeline_address.py",
-    "code": "import-untyped",
-    "count": 1
-  },
-  {
-    "path": "astrid/sdk/timeline_address.py",
     "code": "operator",
     "count": 1
   },
@@ -3342,16 +3032,6 @@
   {
     "path": "astrid/skills/__init__.py",
     "code": "var-annotated",
-    "count": 1
-  },
-  {
-    "path": "astrid/skills/discovery.py",
-    "code": "import-untyped",
-    "count": 1
-  },
-  {
-    "path": "astrid/skills/harnesses/hermes.py",
-    "code": "import-untyped",
     "count": 1
   },
   {

@@ -4,7 +4,7 @@
     "pyproject.toml [tool.ruff].include"
   ],
   "command": [
-    "/home/user/astrid-agent.env/venv/bin/python",
+    "/workspace/scratch/0f74e42cf9ba/p39-wave0/agent-gl-py311.env/bin/python",
     "-m",
     "ruff",
     "check",
@@ -12,16 +12,16 @@
     "--output-format",
     "json"
   ],
-  "finding_count": 2008,
+  "finding_count": 2006,
   "code_counts": {
-    "F401": 169,
-    "I001": 254,
+    "F401": 170,
+    "I001": 255,
     "BLE001": 260,
     "F811": 3,
     "E701": 483,
     "E702": 217,
     "E731": 14,
-    "F821": 16,
+    "F821": 12,
     "E402": 519,
     "F402": 2,
     "F841": 56,
