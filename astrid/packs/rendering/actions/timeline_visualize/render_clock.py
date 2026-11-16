@@ -1,6 +1,7 @@
 """The timeline clock and file-frame mapping of a managed render."""
 from fractions import Fraction
 from collections.abc import Mapping
+from copy import deepcopy
 
 
 def normalize_time(value):
@@ -72,6 +73,28 @@ class RenderClock:
 
     def timeline_seconds(self, file_seconds):
         return float(Fraction(self.start, 1) / self.fps) + file_seconds
+
+    def project_audio_analysis(self, analysis):
+        """Copy file-clock measurements onto the timeline clock.
+
+        Speech annotations already use timeline time. Sample indices and
+        durations remain relative measurements and are left unchanged.
+        """
+        result = deepcopy(analysis)
+        offset = Fraction(self.start, 1) / self.fps
+
+        def shifted(value):
+            time = normalize_time(value) + offset
+            return [time.numerator, time.denominator]
+
+        origin = result.get('presentation_origin')
+        if isinstance(origin, dict):
+            origin['seconds'] = shifted(origin.get('seconds', [0, 1]))
+        for gap in result.get('quiet_gaps', []):
+            for key in ('start', 'end'):
+                if gap.get(key) is not None:
+                    gap[key] = shifted(gap[key])
+        return result
 
     def refuse(self, time):
         raise ValueError(f'Requested time {float(time):.6f}s is outside the rendered range '

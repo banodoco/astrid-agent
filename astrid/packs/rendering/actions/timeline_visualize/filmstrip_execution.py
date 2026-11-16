@@ -1816,6 +1816,9 @@ def execute_filmstrip(args, *, authority=None):
                     'speech': {'status': 'no_transcript', 'phrases': []},
                     'coverage': {'state': 'analysis_error'},
                 }
+    if not capture_mode and 'fps_rational' in snapshot and 'duration_frames' in snapshot:
+        from .render_clock import RenderClock
+        analysis = RenderClock(snapshot).project_audio_analysis(analysis)
     existing_audio = snapshot.get('audio') if isinstance(snapshot.get('audio'), dict) else {}
     if isinstance(existing_audio.get('speech'), dict):
         analysis['speech'] = existing_audio['speech']
