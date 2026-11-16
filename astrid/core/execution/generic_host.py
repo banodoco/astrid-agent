@@ -61,6 +61,7 @@ from runtime_protocol.errors import ConflictError
 from runtime_protocol.storage import free_disk_floor_bytes
 
 from astrid.core.execution.pipe_io import PipeReader, PipeWriter, close_pipe_workers
+from astrid.core.execution.stall_diagnostics import process_stall_diagnostics
 from astrid.core.execution.platform_helpers import (
     PROCESS_CONTROL_SUPPORT_ENV,
     configure_process_control,
@@ -11646,6 +11647,7 @@ class GenericPackHost:
         terminal: dict[str, Any] = {
             "task": dict(data), "attempt_id": exact_attempt, "lifetime": lifetime,
             "pump_stop": stop, "cancel_signal": abort, "stage": "admission",
+            "progress": {"phase": "admission"},
             "completion_lock": completion_lock,
             "lease_diagnostic": {
                 "schema_version": 1,
@@ -11656,6 +11658,9 @@ class GenericPackHost:
         }
         if self.attempt_root is not None:
             terminal["root"] = self.attempt_root
+        stall_diagnostics = process_stall_diagnostics()
+        stall_task_key = f"{data.get('id')}\0{exact_attempt or ''}"
+        stall_diagnostics.begin(stall_task_key, (terminal["stage"], _canonical_digest(None)))
 
         def completion_call(operation, *args, **kwargs):
             if operation == self.client.settle and lifetime.expired():
@@ -11864,15 +11869,38 @@ class GenericPackHost:
 
         def read_progress():
             root = terminal.get("root")
+            progress = None
+            sidecar_token = None
             if root is not None:
                 try:
                     payload = json.loads((root / ".astrid-progress.json").read_text(encoding="utf-8"))
                     if isinstance(payload, Mapping):
-                        terminal["progress"] = {str(k): v for k, v in payload.items()
-                                                if str(k) in {"phase", "percent", "current", "total"}}
+                        progress = {str(k): v for k, v in payload.items()
+                                    if str(k) in {"phase", "percent", "current", "total"}}
+                        sidecar_token = _canonical_digest(progress)
                 except (OSError, ValueError):
                     pass
-            return terminal.get("progress")
+            terminal["progress_sidecar_token"] = sidecar_token
+            if progress is None:
+                progress = dict(terminal.get("progress") or {})
+            else:
+                terminal["progress"] = progress
+            if progress:
+                # The status phase names the host phase that would be stuck if
+                # execution stops making progress. Numeric child progress is
+                # preserved for the existing Runtime progress contract.
+                phase_override = terminal.get("phase_override")
+                if (phase_override is not None
+                        and sidecar_token != terminal.get("phase_override_sidecar_token")):
+                    terminal.pop("phase_override", None)
+                    phase_override = None
+                if phase_override is not None:
+                    progress["phase"] = phase_override
+                elif terminal["stage"] != "execution" or not progress.get("phase"):
+                    progress["phase"] = str(terminal["stage"])
+                terminal["progress"] = progress
+                return progress
+            return None
 
         def lease_transport_fault(category, error, current=None):
             condition = ("heartbeat" if category.startswith("heartbeat") else
@@ -11885,19 +11913,31 @@ class GenericPackHost:
                 force_abort("timeout" if lifetime.expired() else "lease_lost")
             return not refused
 
-        def renew_progress(*, liveness=False, cycle_category="observing", current=None):
+        def renew_progress(*, liveness=False, cycle_category="observing", current=None,
+                           wait_for_slot=False):
             # Progress and ownership are independent. Only a changed semantic
             # checkpoint is sent as progress; a bounded liveness tick omits it.
             progress = read_progress()
             token = (terminal["stage"], _canonical_digest(progress))
-            with completion_lock:
-                if (stop.is_set() or terminal.get("recorded") or terminal.get("forced")
-                        or (lifetime.expired() and not terminal.get("publication_pending"))):
-                    return
-                changed = token != terminal.get("renewed_progress")
-                if terminal.get("renewal_inflight") or not (changed or liveness):
-                    return
-                terminal["renewal_inflight"] = True
+            stall_diagnostics.update(stall_task_key, token)
+            while True:
+                with completion_lock:
+                    if (stop.is_set() or terminal.get("recorded") or terminal.get("forced")
+                            or (lifetime.expired() and not terminal.get("publication_pending"))):
+                        return
+                    changed = token != terminal.get("renewed_progress")
+                    if terminal.get("renewal_inflight"):
+                        if not wait_for_slot:
+                            return
+                    elif changed or liveness:
+                        terminal["renewal_inflight"] = True
+                        break
+                    else:
+                        return
+                # Phase changes must be visible before entering the operation
+                # they describe. Wait without holding completion_lock; normal
+                # liveness renewals remain nonblocking.
+                time.sleep(0.01)
             kwargs = {"attempt_id": exact_attempt, "fence": exact_fence}
             if (progress is not None and token[1] != terminal.get("sent_progress")
                     and token[1] != terminal.get("rejected_progress")):
@@ -11947,11 +11987,29 @@ class GenericPackHost:
                     diagnostic["last_successful_heartbeat_at_utc"] = datetime.now(timezone.utc).isoformat()
                     diagnostic["last_successful_heartbeat_expiry"] = safe_lease_value(expiry, limit=96)
                     terminal["lease_diagnostic"] = diagnostic
+                terminal["progress"] = dict(progress or {})
                 record_lease_diagnostic("heartbeat_progress_invalid" if progress_error else cycle_category,
                                         current=current, error=progress_error, condition="heartbeat")
             finally:
                 with completion_lock:
                     terminal["renewal_inflight"] = False
+
+        def publish_stage(stage: str) -> None:
+            previous = read_progress() or {}
+            terminal["stage"] = stage
+            terminal["phase_override"] = stage
+            terminal["phase_override_sidecar_token"] = terminal.get("progress_sidecar_token")
+            terminal["progress"] = {**previous, "phase": stage}
+            try:
+                renew_progress(wait_for_slot=True)
+            except Exception as exc:
+                if not lease_transport_fault("heartbeat_exception", exc):
+                    raise
+            lifetime.assert_deadline()
+            if abort.is_set() or self._shutdown.is_set():
+                raise HostCancelled("phase publication cancelled")
+
+        terminal["publish_stage"] = publish_stage
 
         def force_abort(code):
             if code == "lease_lost" and terminal["lease_diagnostic"].get("category") == "observing":
@@ -12324,6 +12382,7 @@ class GenericPackHost:
                         try:
                             reconcile_publication()
                         finally:
+                            stall_diagnostics.end(stall_task_key)
                             stop.set()
                             if pump_thread is not None:
                                 pump_thread.join(timeout=2)
@@ -12343,6 +12402,7 @@ class GenericPackHost:
                     stop.set()
                     if pump_thread is not None and pump_thread.ident is not None:
                         pump_thread.join(timeout=2)
+                    stall_diagnostics.end(stall_task_key)
                     if busy_published:
                         _publish_busy(busy_path, -1)
                     if owns_attempt:
@@ -13014,7 +13074,7 @@ class GenericPackHost:
                 if isinstance(raw_optional_cas_param_ports, (list, tuple))
                 else None
             )
-            _terminal["stage"] = "materialize_inputs"
+            _terminal["publish_stage"]("materialize_inputs")
             inputs = self._materialize_inputs(
                 spec,
                 root,
@@ -13179,6 +13239,7 @@ class GenericPackHost:
                     network_admission["managed_engine_preparation"] = report
                     inputs["comfy_url"] = report["endpoint"]
                 try:
+                    _terminal["publish_stage"]("vibecomfy_preparation")
                     prepared_identity = _prepare_vibecomfy_execution_identity(
                         inputs, root / "workflow-identity", readiness_profile, prepare_engine=prepare_engine)
                 except (CancelledError, HostCancelled):
@@ -13267,6 +13328,8 @@ class GenericPackHost:
                 raise HostCancelled("task cancelled after managed preparation")
             lifetime.assert_deadline()
             if capability_id == "vibecomfy.run":
+                if prepared_identity is None:
+                    _terminal["publish_stage"]("vibecomfy_preparation")
                 execution_identity, model_id, template_id, workflow_session_requirements = (
                     prepared_identity or _prepare_vibecomfy_execution_identity(
                         inputs,
@@ -13376,7 +13439,7 @@ class GenericPackHost:
                 with suppress(Exception):
                     if job_evidence is not None:
                         job_evidence.start_execution()
-                _terminal["stage"] = "execution"
+                _terminal["publish_stage"]("execution")
                 render_child_pending = True
                 if capability_id != "wan2gp.generate_video":
                     managed_adapter = self.managed_tool_session.adapter_for(managed_token, begin=True)
@@ -13494,7 +13557,15 @@ class GenericPackHost:
             _terminal["output_root"] = output_root
             _terminal["payload"] = getattr(result, "payload", {}) or {}
             lifetime.begin_collection(collection_limit)
-            _terminal["stage"] = "collection"
+            # Send the producer's final checkpoint before the host phase
+            # changes, then publish collection as the next status phase.
+            if (final_progress := read_progress()) is not None:
+                try:
+                    _terminal["renew_progress"]()
+                except Exception as exc:
+                    if not _terminal["lease_transport_fault"]("heartbeat_exception", exc):
+                        raise
+            _terminal["publish_stage"]("collection")
             if child_bridge is not None:
                 child_bridge.finish()
             # The periodic lease pump may not get another turn after a fast
@@ -13743,7 +13814,7 @@ class GenericPackHost:
             managed_settled = True
             payload["managed_tool_session"] = managed_envelope.to_dict()
             lifetime.assert_deadline()
-            _terminal["stage"] = "settlement"
+            _terminal["publish_stage"]("settlement")
             _terminal.update(
                 evidence_pending=True, publication_pending=True,
                 pending_outputs=outputs, pending_result=payload, pending_status="succeeded",

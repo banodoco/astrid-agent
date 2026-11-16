@@ -2005,7 +2005,7 @@ def test_register_and_run_uses_attempt_local_typed_output_and_cleanup(tmp_path):
     runtime.tasks["task-1"] = task
     settled = host.run_task(task, lease_token="lease-1")
     assert settled["task"]["status"] == "completed"
-    assert runtime.heartbeats == [("task-1", "lease-1", "attempt-1", 1)]
+    assert runtime.heartbeats == [("task-1", "lease-1", "attempt-1", 1)] * 7
     outputs = runtime.settlements[0][2]["outputs"]
     evidence = runtime.settlements[0][2]["result"]["process_evidence"]
     assert evidence["capability_id"] == "test.echo"
@@ -2064,7 +2064,13 @@ def test_terminal_sidecar_progress_is_heartbeated_before_settlement(tmp_path):
 
     assert settled["task"]["status"] == "completed"
     assert runtime.heartbeat_progress == [
-        ("task-terminal-progress", {"phase": "complete", "percent": 100})
+        ("task-terminal-progress", {"phase": "admission"}),
+        ("task-terminal-progress", {"phase": "materialize_inputs"}),
+        ("task-terminal-progress", {"phase": "execution"}),
+        ("task-terminal-progress", {"phase": "complete", "percent": 100}),
+        ("task-terminal-progress", {"phase": "collection", "percent": 100}),
+        ("task-terminal-progress", {"phase": "collection", "percent": 100}),
+        ("task-terminal-progress", {"phase": "settlement", "percent": 100}),
     ]
 
 
@@ -2104,7 +2110,17 @@ def test_child_progress_path_is_the_attempt_root_the_heartbeat_reads(tmp_path):
     # One directory, the attempt root: outputs/ and .astrid-progress.json are siblings.
     assert Path(progress_path).parent == Path(out).parent
     assert Path(progress_path).name == ".astrid-progress.json"
-    assert runtime.heartbeat_progress == [("task-progress-path", {"phase": "submit"})]
+    assert runtime.heartbeat_progress == [
+        ("task-progress-path", {"phase": "admission"}),
+        ("task-progress-path", {"phase": "materialize_inputs"}),
+        ("task-progress-path", {"phase": "execution"}),
+        ("task-progress-path", {"phase": "submit"}),
+        ("task-progress-path", {"phase": "collection"}),
+        ("task-progress-path", {"phase": "collection"}),
+        ("task-progress-path", {"phase": "settlement"}),
+    ]
+
+
 
 
 def test_run_accepts_at_free_disk_floor_without_task_estimate(tmp_path, monkeypatch):
