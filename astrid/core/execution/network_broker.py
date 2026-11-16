@@ -257,8 +257,14 @@ class ObservableNetworkBroker:
                 declared_port = declared.port if has_scheme or ":" in candidate.rsplit("/", 1)[-1] else None
             except ValueError:
                 continue
-            if has_scheme and declared.scheme != parsed.scheme:
+            # CONNECT exposes only an authority, not the encrypted protocol.
+            # Admit its TCP transport for an HTTPS declaration at the same
+            # host and port, while recording the actual tcp route as evidence.
+            https_tunnel = parsed.scheme == "tcp" and declared.scheme == "https"
+            if has_scheme and declared.scheme != parsed.scheme and not https_tunnel:
                 continue
+            if https_tunnel and declared_port is None:
+                declared_port = 443
             actual_port = parsed.port or default_port
             if declared.hostname and declared.hostname.lower() == parsed.hostname.lower() and (declared_port is None or declared_port == actual_port):
                 return True
