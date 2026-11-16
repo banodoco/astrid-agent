@@ -1141,3 +1141,14 @@ def test_support_fails_closed_for_text_semantics(
     assert report.supported is False
     assert any(reason in item for item in report.reasons)
     assert report.alternatives == ["rendering.remotion"]
+
+
+def test_clip_fit_refusal_names_clip_and_property():
+    from astrid.packs.rendering.rendering.renderers.ffmpeg.support import _validate_clip_semantics
+
+    track = {"id": "v", "fit": "contain", "app": {"clipPlacementVersion": 1}}
+    assert not any('fit' in reason for reason in _validate_clip_semantics({'id': 'a', 'fit': 'contain'}, track))
+    for clip, owner in [({'id': 'a', 'fit': 'cover'}, track),
+                        ({'id': 'b'}, {**track, 'fit': 'cover'}),
+                        ({'id': 'c', 'x': 0}, {'id': 'v'})]:
+        assert any(clip['id'] in reason and 'fit' in reason for reason in _validate_clip_semantics(clip, owner))

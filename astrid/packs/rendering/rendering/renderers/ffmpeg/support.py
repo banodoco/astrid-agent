@@ -198,6 +198,14 @@ def _validate_clip_semantics(
     reasons: list[str] = []
     clip_id = clip.get("id")
     is_text = clip.get("clipType") == "text"
+    # FFmpeg's media filter implements contain only.
+    fit = clip.get("fit", track.get("fit", "contain"))
+    app = track.get("app") if isinstance(track.get("app"), Mapping) else {}
+    if ("fit" not in clip and app.get("clipPlacementVersion") != 1
+            and any(key in clip for key in (*_POSITION_KEYS, *_CROP_KEYS))):
+        reasons.append(f"Clip {clip_id!r} property fit is unresolved on an unnormalized track")
+    if not is_text and fit not in (None, "contain"):
+        reasons.append(f"Clip {clip_id!r} property fit {fit!r} is unsupported by rendering.ffmpeg")
     if "muted" in clip:
         reasons.append(
             f"Clip {clip_id!r} uses unsupported clip-level muted; use volume: 0"
