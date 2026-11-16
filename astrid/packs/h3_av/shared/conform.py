@@ -60,26 +60,47 @@ def conform_source(source: Path, destination: Path, *, start: str, end: str, fit
         raise PreparationError('source must contain video')
     has_audio = selected[1] is not None
     present = [s for s in selected if s is not None]
-    if selected[0].get('sample_aspect_ratio') != '1:1':
-        raise PreparationError('source must have a known square pixel aspect ratio')
+    aspect = selected[0].get('sample_aspect_ratio')
+    square_default = aspect in (None, 'N/A', '0:1')
+    if not square_default:
+        try:
+            sample_aspect = Fraction(str(aspect).replace(':', '/'))
+            if sample_aspect <= 0:
+                raise ValueError('non-positive pixel aspect ratio')
+        except (ValueError, ZeroDivisionError) as exc:
+            raise PreparationError('source pixel aspect ratio is invalid') from exc
     try:
         starts = [Fraction(str(info['format']['start_time']))] + [Fraction(str(s['start_time'])) for s in present]
         durations = [Fraction(str(s['duration'])) for s in present]
     except (KeyError, ValueError, ZeroDivisionError) as exc:
         raise PreparationError('source stream start times and durations must be measurable') from exc
+    available = ', '.join(
+        f"{stream['codec_type']} [{float(offset):.6f}, {float(offset + duration):.6f})"
+        for stream, offset, duration in zip(present, starts[1:], durations)
+    )
+    requested = f"[{float(first):.6f}, {float(last):.6f})"
     if any(value != 0 for value in starts):
-        raise PreparationError('source stream and container start times must all be zero')
+        raise PreparationError(
+            f'source stream and container start times must all be zero; requested {requested}; available {available}'
+        )
     if any(value < last for value in durations):
-        raise PreparationError('source streams must cover the requested range')
+        raise PreparationError(f'source streams must cover the requested range {requested}; available {available}')
     source_hash = _digest(source)
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.h3-conform-', dir=destination.parent) as temporary:
         work = Path(temporary)
         output = work / 'source.mp4'
-        # Centered cover crops; centered contain adds black padding. Neither stretches.
-        scale = ('scale=1024:576:force_original_aspect_ratio=increase,crop=1024:576'
-                 if fit == 'fill' else
-                 'scale=1024:576:force_original_aspect_ratio=decrease,pad=1024:576:(ow-iw)/2:(oh-ih)/2')
+        # dar includes the input sample aspect ratio. Crop in source pixel
+        # coordinates or fit by display shape before declaring square pixels.
+        if fit == 'fill':
+            scale = ("crop=w='if(gt(dar,16/9),ih*16/(9*sar),iw)':"
+                     "h='if(gt(dar,16/9),ih,iw*sar*9/16)',scale=1024:576,setsar=1")
+        else:
+            scale = ("scale=w='if(gt(dar,16/9),1024,max(2,trunc(576*dar/2)*2))':"
+                     "h='if(gt(dar,16/9),max(2,trunc(1024/dar/2)*2),576)',"
+                     "setsar=1,pad=1024:576:(ow-iw)/2:(oh-ih)/2")
+        if square_default:
+            scale = 'setsar=1,' + scale
         start_time, end_time = format(float(first), '.15f'), format(float(last), '.15f')
         video = f'trim=start={start_time}:end={end_time},setpts=PTS-({start_time})/TB,fps=24:start_time=0,trim=end_frame={int(frames)},{scale},setsar=1'
         audio = f'atrim=start={start_time}:end={end_time},asetpts=PTS-({start_time})/TB,aresample=48000'
@@ -110,7 +131,9 @@ def conform_source(source: Path, destination: Path, *, start: str, end: str, fit
         if audio_out is not None and abs(Fraction(str(audio_out['duration'])) - duration) > Fraction(1, 24):
             raise PreparationError('conformed audio does not cover the selected interval')
         manifest = {'kind': 'h3_source_conform', 'version': 1,
-                    'source': {'path': str(source), 'sha256': source_hash, 'range_seconds': [start, end]},
+                    'source': {'path': str(source), 'sha256': source_hash, 'range_seconds': [start, end],
+                               'sample_aspect_ratio': '1:1' if square_default else str(aspect),
+                               'sample_aspect_assumed_square': square_default},
                     'output': {'file': 'source.mp4', 'sha256': _digest(output), 'range_seconds': [0, float(duration)],
                                'frames': int(frames), 'fps': 24, 'width': 1024, 'height': 576, 'fit': fit},
                     'audio': {'sample_rate': 48000, 'codec': 'aac'} if has_audio else None, 'decoded_av': measurement}

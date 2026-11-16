@@ -365,9 +365,12 @@ Neither stretches the picture. H3 prepares the selected interval as 24 fps,
 1024×576, and the dry-run reports the original and prepared identities,
 range, fit and decoded timing. A source range must have a whole number of
 24 fps frames and be covered by all present source streams. Input stream starts
-must be known and zero-aligned; sources with unsupported timestamps or pixel
-aspect ratio are refused instead of shifting or stretching them silently.
-An absent audio stream stays absent; a short audio stream is not padded. Plain
+must be known and zero-aligned; sources with unsupported timestamps are refused
+instead of shifting them silently. Framing uses the source display aspect ratio;
+if pixel aspect metadata is missing, H3 records an assumption of square pixels.
+Continuations require at least 39 prepared frames (1.625 seconds). Preparation
+never invents a missing audio stream, and the current source-backed graph refuses
+one without audio. A short audio stream is not padded. Plain
 `video_ref` selects the whole video up to its last complete 24-fps frame; the
 selected range is included in the dry-run.
 

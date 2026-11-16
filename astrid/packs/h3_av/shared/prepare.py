@@ -424,6 +424,72 @@ def _v2_mask_schedule(
     return schedule
 
 
+def _validate_frozen_source(request: H3Request, source: Mapping[str, Any], path: Path,
+                            envelope: Mapping[str, Any]) -> dict[str, Any]:
+    """Verify the controller's sealed derivative before using local coordinates."""
+    from .engine_facts import facts
+    from .conform import _probe
+
+    record = envelope.get("conform")
+    if (envelope.get("version") != 1 or envelope.get("request_digest") != request.digest
+            or envelope.get("asset") != source.get("asset") or not isinstance(record, Mapping)):
+        raise PreparationError("prepared source identity does not match the original request")
+    origin, output = record.get("source"), record.get("output")
+    managed = envelope.get("managed_source")
+    if not isinstance(managed, Mapping):
+        raise PreparationError("prepared source managed object descriptor is missing")
+    if not isinstance(origin, Mapping) or not isinstance(output, Mapping):
+        raise PreparationError("prepared source provenance is missing")
+    try:
+        expected_range = [Fraction(str(value)) for value in source["range"]]
+        actual_range = [Fraction(str(value)) for value in origin["range_seconds"]]
+        frame_value = (expected_range[1] - expected_range[0]) * 24
+        expected_frames = round(frame_value)
+        valid = (expected_range[0] >= 0 and expected_frames > 0
+                 and abs(frame_value - expected_frames) <= Fraction(1, 1000000)
+                 and len(actual_range) == 2 and expected_range == actual_range
+                 and output["fit"] == source.get("fit", "fill")
+                 and output["frames"] == expected_frames
+                 and output["fps"] == 24 and output["width"] == 1024 and output["height"] == 576
+                 and output["range_seconds"] == [0, expected_frames / 24])
+        digest = output["sha256"]
+        original_digest = origin["sha256"]
+    except (KeyError, TypeError, ValueError, ZeroDivisionError, IndexError) as exc:
+        raise PreparationError("prepared source provenance is malformed") from exc
+    if (not valid or not isinstance(digest, str) or len(digest) != 64
+            or not isinstance(original_digest, str) or len(original_digest) != 64
+            or any(char not in "0123456789abcdef" for char in original_digest)):
+        raise PreparationError("prepared source provenance does not match the requested range")
+    if source["asset"].startswith("sha256:") and source["asset"] != "sha256:" + original_digest:
+        raise PreparationError("prepared source original digest does not match its media handle")
+    if (managed.get("digest") != "sha256:" + digest or managed.get("sha256") != digest
+            or not path.is_file() or _file_digest(path) != digest):
+        raise PreparationError("prepared source digest mismatch")
+    _check_source_av_rate(str(source["asset"]), path)
+    streams = _video_stream_types(path)
+    if "video" not in streams:
+        raise PreparationError("prepared source has no video stream")
+    if ("audio" in streams) != (record.get("audio") is not None):
+        raise PreparationError("prepared source audio presence differs from its provenance")
+    probe = _probe(path)
+    video = next((row for row in probe.get("streams", []) if row.get("codec_type") == "video"), {})
+    try:
+        video_frames = int(video.get("nb_frames", 0))
+    except (TypeError, ValueError) as exc:
+        raise PreparationError("prepared source frame count is unavailable") from exc
+    if video_frames != expected_frames:
+        raise PreparationError("prepared source frame count does not match its range")
+    measurement: Mapping[str, Any] = {"has_audio": False, "video_frames": video_frames}
+    if "audio" in streams:
+        try:
+            measurement = facts().measure_source_av(path)
+        except ValueError as exc:
+            raise PreparationError(f"prepared source failed decoded AV validation: {exc}") from exc
+        if int(measurement["video_frames"]) != expected_frames:
+            raise PreparationError("prepared source decoded frame count does not match its range")
+    return {**record, "worker_validation": dict(measurement)}
+
+
 def prepare_request(
     request: H3Request,
     *,
@@ -433,6 +499,7 @@ def prepare_request(
     height: int = 576,
     sample_rate: int = 48000,
     out_dir: str | Path | None = None,
+    frozen_source: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create a deterministic preparation manifest without touching a runtime."""
 
@@ -453,13 +520,16 @@ def prepare_request(
             from .engine_facts import facts
             original_path = Path(asset_map[source["asset"]])
             start, end = source["range"]
-            source_conform = conform_source(
-                original_path, Path(out_dir) / "conformed-source", start=str(start), end=str(end),
-                fit=source.get("fit", "fill"),
-                validate=facts().measure_source_av,
-            )
-            asset_map = dict(asset_map)
-            asset_map[source["asset"]] = str(Path(out_dir) / "conformed-source" / "source.mp4")
+            if frozen_source is None:
+                source_conform = conform_source(
+                    original_path, Path(out_dir) / "conformed-source", start=str(start), end=str(end),
+                    fit=source.get("fit", "fill"),
+                    validate=facts().measure_source_av,
+                )
+                asset_map = dict(asset_map)
+                asset_map[source["asset"]] = str(Path(out_dir) / "conformed-source" / "source.mp4")
+            else:
+                source_conform = _validate_frozen_source(request, source, original_path, frozen_source)
             adjusted = copy.deepcopy(request.value)
             if is_v2:
                 from .request_v2 import json_times
@@ -474,6 +544,8 @@ def prepare_request(
                 adjusted["source"]["range"] = [0, source_conform["output"]["range_seconds"][1]]
                 from .request import normalize_request
                 request = normalize_request(adjusted)
+    if frozen_source is not None and source_conform is None:
+        raise PreparationError("prepared source handoff has no matching ranged source")
     if request.value.get("version") == 2:
         assets = _resolve_assets(request, asset_map)
         unresolved = [record["asset"] for record in assets if record["status"] != "resolved"]
@@ -502,6 +574,7 @@ def prepare_request(
         except MaskScheduleError as exc:
             raise PreparationError(str(exc)) from exc
         return {
+            **({"managed_source": dict(frozen_source["managed_source"])} if frozen_source is not None else {}),
             "source_conform": source_conform,
             "original_request_digest": original_request.digest,
             "original_request": original_request.value,
@@ -526,6 +599,7 @@ def prepare_request(
     # Managed identifiers are intentionally retained for the runtime, but a
     # local asset map must never silently contain a missing path.
     return {
+        **({"managed_source": dict(frozen_source["managed_source"])} if frozen_source is not None else {}),
         "source_conform": source_conform,
         "original_request_digest": original_request.digest,
         "original_request": original_request.value,

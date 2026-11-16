@@ -65,6 +65,20 @@ def _generation_intent(compilation: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def source_asset_lineage(plan: Mapping[str, Any]) -> dict[str, Any]:
+    """Retain the original identity on the graph's derived source binding."""
+    conform = plan.get("source_conform")
+    if not isinstance(conform, Mapping):
+        return {}
+    origin, output = conform.get("source"), conform.get("output")
+    if not isinstance(origin, Mapping) or not isinstance(output, Mapping):
+        raise ValueError("H3 source conform lineage is malformed")
+    return {"source_video": {"kind": "h3_source_conform", "sha256": "sha256:" + str(output["sha256"]),
+                             "source_sha256": "sha256:" + str(origin["sha256"]),
+                             "source_range_seconds": list(origin["range_seconds"]),
+                             "fit": output["fit"]}}
+
+
 def _sealed_plan(compilation: Mapping[str, Any]) -> dict[str, Any]:
     capabilities = compilation.get("capabilities", {})
     contract = capabilities.get("output_contract")
@@ -108,15 +122,34 @@ def materialize_file_map(request: H3Request, files: Mapping[str, Any], destinati
     return paths, identities
 
 
-def compile_stages(request: H3Request, files: Mapping[str, Any], destination: Path):
+def compile_stages(request: H3Request, files: Mapping[str, Any], destination: Path, *,
+                   frozen_source: Mapping[str, Any] | None = None, publish_source: Any = None):
     """Prepare and compile one request from its file map: CPU only. Returns (paths, preparation, compilation)."""
     from .compile import compile_preparation
     from .prepare import prepare_request
 
     paths, identities = materialize_file_map(request, files, destination / "assets")
-    preparation = prepare_request(request, asset_map=paths, out_dir=destination)
+    preparation = prepare_request(request, asset_map=paths, out_dir=destination, frozen_source=frozen_source)
     paths = {str(item["asset"]): str(item["path"]) for item in preparation["assets"]}
     preparation["input_assets"] = identities
+    if publish_source is not None and frozen_source is not None:
+        raise PreparationError("worker handoff cannot publish a prepared source again")
+    if publish_source is not None and preparation.get("source_conform"):
+        source_id = _authoritative_source_asset_id(request)
+        source = Path(paths[source_id])
+        expected = preparation["source_conform"]["output"]["sha256"]
+        published_path, descriptor = publish_source(source, expected)
+        published_path = Path(published_path).resolve()
+        if not published_path.is_file() or hashlib.sha256(published_path.read_bytes()).hexdigest() != expected:
+            raise PreparationError("reopened managed H3 source digest mismatch")
+        if not isinstance(descriptor, Mapping) or descriptor.get("digest") != "sha256:" + expected:
+            raise PreparationError("managed H3 source descriptor digest mismatch")
+        for record in preparation["assets"]:
+            if record["asset"] == source_id:
+                record["path"] = str(published_path)
+                record["size"] = published_path.stat().st_size
+        paths[source_id] = str(published_path)
+        preparation["managed_source"] = dict(descriptor)
     compilation = compile_preparation(preparation, out_dir=destination / "compile")
     return paths, preparation, compilation
 

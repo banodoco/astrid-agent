@@ -21,7 +21,7 @@ class _ComfyUIValidationError(ValueError):
 _WORKFLOWS: dict[Any, list[Any]] = {}
 
 
-def _call_hook(hook: Any, *args: Any, check_runtime: bool | None = None) -> Any:
+def _call_hook(hook: Any, *args: Any, check_runtime: bool | None = None, publish_source: Any = None) -> Any:
     """Call a workflow hook; one that declares an ``engine`` parameter is given the engine's facts."""
     import inspect
     parameters = inspect.signature(hook).parameters
@@ -31,6 +31,10 @@ def _call_hook(hook: Any, *args: Any, check_runtime: bool | None = None) -> Any:
         kwargs['engine'] = comfyui_facts()
     if check_runtime is not None and 'check_runtime' in parameters:
         kwargs['check_runtime'] = check_runtime
+    if publish_source is not None:
+        if 'publish_source' not in parameters:
+            raise ValueError("entry hook does not accept managed source publication")
+        kwargs['publish_source'] = publish_source
     return hook(*args, **kwargs)
 
 
@@ -236,8 +240,11 @@ class ComfyUIEngine:
         build = (job.get("hooks") or {}).get("build")
         if build is None:
             return None
+        options = {}
+        if job.get('publish_source') is not None:
+            options['publish_source'] = job['publish_source']
         built = _call_hook(build, job.get("inputs", {}), job.get("files", {}), _job_dir(job),
-                           check_runtime=bool(job.get('check_runtime', False)))
+                           check_runtime=bool(job.get('check_runtime', False)), **options)
         if not isinstance(built, dict) or "workflow" not in built:
             raise ValueError("build must return {'workflow': ..., 'bindings': ..., 'plan': ...}")
         from astrid.core.generation.entries import prepare_execution_bindings

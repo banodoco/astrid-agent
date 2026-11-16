@@ -14,6 +14,7 @@ relative imports) and takes engine-side facts from the ``engine`` argument the e
 from __future__ import annotations
 
 import importlib.util
+import json
 import shutil
 import sys
 import tempfile
@@ -113,7 +114,7 @@ def _state_dir(job_dir) -> Path:
     return (Path(job_dir) if job_dir else Path(tempfile.mkdtemp(prefix="astrid-h3-"))) / "h3"
 
 
-def build(inputs, files, out, *, engine=None, check_runtime=False):
+def build(inputs, files, out, *, engine=None, check_runtime=False, publish_source=None):
     """{workflow, bindings, plan, assets, bundle}: the chosen trio's graph, bindings, sealed plan, media, folder."""
     # Source inspection checks its own tools during planning. Output composition
     # tools belong to execution, on the machine that will run after_outputs.
@@ -132,6 +133,17 @@ def build(inputs, files, out, *, engine=None, check_runtime=False):
     else:
         document, asset_map = _plain_request(inputs, files, facts)
     request = request_module.normalize_request(document)
+    reserved = "__astrid_h3_prepared__"
+    if reserved in request_module._asset_ids(request):
+        raise ValueError("H3 request asset name is reserved for internal prepared-source handoff")
+    frozen_source = None
+    if reserved in asset_map:
+        try:
+            frozen_source = json.loads(Path(asset_map.pop(reserved)).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"invalid H3 prepared-source handoff: {exc}") from exc
+        if not isinstance(frozen_source, dict):
+            raise ValueError("H3 prepared-source handoff must be an object")
     run_logs = facts.run_logs
     for name, relative in {
         "h3.preparation": "preparation.json",
@@ -141,7 +153,12 @@ def build(inputs, files, out, *, engine=None, check_runtime=False):
         "h3.verification": "verify.json",
     }.items():
         run_logs.declare(work.parent, run_logs.LogDecl(name, "run", str(Path("h3") / relative)))
-    paths, preparation, compilation = stages.compile_stages(request, asset_map, work / "plan")
+    options = {}
+    if frozen_source is not None:
+        options["frozen_source"] = frozen_source
+    if publish_source is not None:
+        options["publish_source"] = publish_source
+    paths, preparation, compilation = stages.compile_stages(request, asset_map, work / "plan", **options)
     _shared("prepare").write_preparation(work / "preparation.json", preparation)
     bindings = compilation["workflow_inputs"]
     facts.assert_no_unresolved_placeholders(bindings)

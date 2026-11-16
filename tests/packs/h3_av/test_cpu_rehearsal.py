@@ -32,10 +32,10 @@ FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "h3_cpu"
 def _request() -> object:
     return normalize_request({
         "version": 1, "operation": "continue",
-        "source": {"asset": "source", "range": [0, 1]}, "output": {"duration": 2},
+        "source": {"asset": "source", "range": [0, 5 / 3]}, "output": {"duration": 8 / 3},
         "content": {"prompt": "continue"},
-        "changes": {"video": [{"during": [1, 2], "area": {"full_frame": True}, "action": "generate"}],
-                    "audio": [{"during": [1, 2], "action": "generate"}]},
+        "changes": {"video": [{"during": [5 / 3, 8 / 3], "area": {"full_frame": True}, "action": "generate"}],
+                    "audio": [{"during": [5 / 3, 8 / 3], "action": "generate"}]},
         "references": [], "overrides": {},
     })
 
@@ -123,7 +123,7 @@ def fake_comfy(tmp_path):
     source = tmp_path / "source.mp4"
     subprocess.run([
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-        "-f", "lavfi", "-i", "color=c=blue:s=1024x576:r=24:d=1", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+        "-f", "lavfi", "-i", "color=c=blue:s=1024x576:r=24:d=1.6666666667", "-f", "lavfi", "-i", "sine=frequency=440:duration=1.6666666667",
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(source),
     ], check=True, capture_output=True, timeout=60)
     graph, compilation = _generate_graph(tmp_path, source)
