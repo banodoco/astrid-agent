@@ -125,3 +125,7 @@ emission/reload semantic identity. Submit through `astrid generate video --entry
 CPU tests cover structure, bindings, duration and managed transport. Live target
 schema/model attestation, GPU memory sufficiency, and visual acceptance remain
 to be tested on the target machine.
+
+The bundled continuation workflow pairs are historical source captures. Compile them
+through the H3 request path, which emits the selected, compatible LoRA and settings
+into a request-specific bundle before execution.

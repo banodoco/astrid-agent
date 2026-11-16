@@ -15,7 +15,7 @@ from astrid.packs.h3_av.shared.generation import (
     CHARACTER_SWAP_FILENAME,
     CHARACTER_SWAP_REVISION,
     CHARACTER_SWAP_SHA256,
-    TURBO_FILENAME,
+    PIKA_REF2VA_FILENAME,
 )
 from astrid.packs.h3_av.shared.request import H3RequestError, load_request_document, load_request, normalize_request
 from astrid.packs.h3_av.shared.request_v2 import REF2VA_MODEL, effective_settings
@@ -267,7 +267,7 @@ def test_native_v2_compile_binds_exact_references_and_connected_lora_chain(
     }
     connected = {row["name"]: row for row in compiled["effective_configuration"]["connected_model_assets"]}
     assert CHARACTER_SWAP_FILENAME in connected
-    assert (TURBO_FILENAME in connected) is turbo_enabled
+    assert (PIKA_REF2VA_FILENAME in connected) is turbo_enabled
     assert compiled["effective_configuration"]["turbo"]["enabled"] is turbo_enabled
     assert (compiled["effective_configuration"]["turbo"]["asset"] is not None) is turbo_enabled
 
@@ -288,7 +288,7 @@ def test_native_v2_compile_binds_exact_references_and_connected_lora_chain(
     by_class = {row["class_type"]: row["inputs"] for row in api.values()}
     assert by_class["ModelAttentionBackend"]["attention"] == "comfy kitchen attention"
     loras = [row["inputs"]["lora_name"] for row in api.values() if row["class_type"] == "LoraLoaderModelOnly"]
-    assert loras == ([CHARACTER_SWAP_FILENAME, TURBO_FILENAME] if turbo_enabled else [CHARACTER_SWAP_FILENAME])
+    assert loras == ([CHARACTER_SWAP_FILENAME, PIKA_REF2VA_FILENAME] if turbo_enabled else [CHARACTER_SWAP_FILENAME])
     character = next(row for row in api.values() if row["inputs"].get("lora_name") == CHARACTER_SWAP_FILENAME)
     assert character["inputs"]["strength_model"] == 0.7
     assert by_class["BasicScheduler"]["scheduler"] == "karras"
@@ -296,7 +296,7 @@ def test_native_v2_compile_binds_exact_references_and_connected_lora_chain(
     assert by_class["RandomNoise"]["noise_seed"] == 731
     assert by_class["KSamplerSelect"]["sampler_name"] == "heun"
     if turbo_enabled:
-        turbo_node = next(row for row in api.values() if row["inputs"].get("lora_name") == TURBO_FILENAME)
+        turbo_node = next(row for row in api.values() if row["inputs"].get("lora_name") == PIKA_REF2VA_FILENAME)
         assert turbo_node["inputs"]["strength_model"] == 0.4
     assert workflow.validate().ok
 

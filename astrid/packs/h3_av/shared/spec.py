@@ -642,11 +642,12 @@ def canonical_spec(
                     "extend", (start, duration), refs=tuple(ref.name for ref in refs), stream="av"
                 )
             ]
-        settings = dict(value["overrides"])
+        from .request_v2 import v1_native_settings
+
+        settings = v1_native_settings(value["overrides"])
         if value["operation"] == "edit":
             settings = {
                 "model": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
-                "steps": 20,
                 "seed": 0,
                 **settings,
             }

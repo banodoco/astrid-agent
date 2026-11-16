@@ -287,3 +287,29 @@ def test_plan_rejects_a_preserve_only_spec(tmp_path: Path) -> None:
     assert caught.value.code == "h3.plan.single_pass"
 
 
+
+
+def test_v1_named_choice_and_edit_settings_reach_plan_and_graph(tmp_path: Path) -> None:
+    from vibecomfy.security.provenance import Provenance
+    from vibecomfy.workflow_bundle import load_bundle
+
+    raw = dict(_source_edit().value)
+    raw["overrides"] = {"turbo_lora": "pika_flex_8step", "video_shift": 9}
+    plan = plan_request(normalize_request(raw), asset_map=_assets(tmp_path, source=True), out_dir=tmp_path / "default")
+    assert plan["compilation"]["effective_settings"]["steps"] == 8
+    assert plan["compilation"]["effective_settings"]["turbo"]["lora"] == "pika_flex_8step"
+    assert not any(row["field"] in {"overrides.turbo_lora", "overrides.video_shift"} for row in plan["ignored_fields"])
+    manifest = json.loads(Path(plan["compilation"]["manifest_path"]).read_text())
+    graph = load_bundle(manifest["workflow"]["workflow.py"]["path"], trust=Provenance.USER_CONFIRMED).workflow
+    api = graph.compile("api", run_inputs=manifest["workflow_inputs"])
+    shift = next(row for row in api.values() if row["class_type"] == "MiniMaxH3SigmaShift")
+    assert shift["inputs"]["shift_video"] == 9
+    assert next(row for row in api.values() if row["class_type"] == "BasicScheduler")["inputs"]["steps"] == 8
+
+    raw["overrides"]["steps"] = 12
+    explicit = plan_request(normalize_request(raw), asset_map=_assets(tmp_path, source=True), out_dir=tmp_path / "explicit")
+    assert explicit["compilation"]["effective_settings"]["steps"] == 12
+    assert explicit["compilation"]["workflow_inputs"]["steps"] == 12
+    raw["overrides"]["turbo_lora"] = "lightx2v_8step"
+    with pytest.raises(H3RequestError, match="lightx2v_8step.*no matching variant"):
+        plan_request(normalize_request(raw), asset_map=_assets(tmp_path, source=True), out_dir=tmp_path / "unmatched")

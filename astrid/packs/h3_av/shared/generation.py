@@ -209,7 +209,7 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
                               scheduler: str = "simple", video_references: list[dict[str, Any]] | None = None,
                               adapter_strength: float | None = None, turbo_enabled: bool = True,
                               character_swap_sha256: str = CHARACTER_SWAP_SHA256,
-                              turbo_filename: str = TURBO_FILENAME, video_shift: float = 12.0, audio_shift: float = 3.0,
+                              turbo_filename: str = PIKA_REF2VA_FILENAME, video_shift: float = 12.0, audio_shift: float = 3.0,
                               masked_edit: dict[str, Any] | None = None):
     """Build ordinary H3 nodes and one muxed sink, ready for canonical emission.
 
