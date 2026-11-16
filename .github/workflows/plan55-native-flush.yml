@@ -5,6 +5,7 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - "tests/conftest.py"
+      - "tests/integrations/runpod_slot_pod.py"
       - "tests/_local_speed_*.py"
       - "tests/local_speed_*.py"
       - "tests/local_speed_native.wprp"
@@ -104,6 +105,7 @@ jobs:
           tests/core/generation/test_local_speed_meter_collector.py
           tests/core/generation/test_local_speed_report_capture.py
           tests/core/generation/test_local_speed_runtime_support.py
+          tests/core/generation/test_local_speed_schema_encoding.py
           --junitxml=native-reader.xml
       - name: Prove private Runtime directory creation and unsafe-directory refusal
         run: >-

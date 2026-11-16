@@ -42,7 +42,7 @@ def _snapshots():
     rows = {}
     for path in sorted(glob.glob(str(cache_dir() / "*.json"))):
         try:
-            data = json.loads(Path(path).read_text())
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
         except ValueError:
             continue
         if not isinstance(data, dict):

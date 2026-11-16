@@ -122,7 +122,7 @@ def test_real_runtime_creates_and_reuses_private_support(real_runtime, tmp_path)
 
 
 @pytest.mark.integration
-@pytest.mark.skipif(sys.platform != "win32", reason="requires actual Windows DACL enforcement")
+@pytest.mark.windows_native
 def test_real_windows_runtime_refuses_existing_unprotected_support(real_runtime, tmp_path):
     support = tmp_path / "unprotected-support"
     support.mkdir()
