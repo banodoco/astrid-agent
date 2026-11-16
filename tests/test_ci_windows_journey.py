@@ -255,14 +255,15 @@ def test_journey_installs_chiptune_from_the_pinned_source_before_the_task(monkey
     calls = []
 
     def cli(module, argv, name, **kwargs):
-        calls.append(argv)
+        calls.append((module, argv))
         return json.dumps({"packs": []}) if argv[:2] == ["packs", "list"] else "{}"
 
     monkeypatch.setattr(journey, "cli", cli)
     journey.install_journey_packs()
-    assert calls[-1] == ["packs", "add", "https://github.com/banodoco/poms_packs", "--revision",
-                         "2379ab54aca522019ff4f869cfdf9375bdb56dfc", "--pack-id", "chiptune",
-                         "--subpath", "chiptune", "--yes"]
+    assert [module for module, _ in calls] == ["astrid.omp_agent", "astrid.omp_agent"]
+    assert calls[-1][1] == ["packs", "add", "https://github.com/banodoco/poms_packs", "--revision",
+                            "2379ab54aca522019ff4f869cfdf9375bdb56dfc", "--pack-id", "chiptune",
+                            "--subpath", "chiptune", "--yes"]
 
 
 def sdk_invocation(argv, task_id="task-1"):

@@ -102,6 +102,23 @@ def test_journey_packs_install_from_the_pinned_source_through_packs_add():
     assert calls == [["packs", "list", "--json"]]
 
 
+def test_submit_task_installs_packs_through_installed_launcher_entry(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_installed_cli(version, argv, evidence, name, **kwargs):
+        calls.append((argv, kwargs.get("module")))
+        return json.dumps({"packs": []})
+
+    monkeypatch.setattr(journey, "installed_cli", fake_installed_cli)
+    monkeypatch.setattr(journey, "installed_cli_with_capture", lambda *args, **kwargs: json.dumps({
+        "details": {"astridTaskRefs": [{"task_id": "task-1"}]},
+    }))
+    assert journey.submit_task({}, tmp_path, "test-project", create_project=False) == "task-1"
+    assert len(calls) == 2
+    assert all(module == "astrid.omp_agent" for _, module in calls)
+    assert calls[0][0] == ["packs", "list", "--json"]
+
+
 def test_tst_b1_production_uses_shipped_manifest_bytes_without_source_override(tmp_path):
     app, shipped = app_checkout(tmp_path)
     original = shipped.read_bytes()
