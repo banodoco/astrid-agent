@@ -29,6 +29,7 @@ Choose the route by the requested result. Read only that route's guidance:
 | Generate with the user's own ComfyUI: "my ComfyUI", "my saved workflow", local generation | [Run on your own ComfyUI](../../vibecomfy/docs/SKILL.md#run-on-your-own-comfyui) |
 | Find a project, inspect a run, or open a render | The CLI recipes below |
 | **Edit a timeline** (clips, timing, text, layout, effects), then publish and point the user to the editor (render only if asked) | [Timeline editing](../../timeline/docs/SKILL.md) |
+| **Transcribe speech** to find a spoken word or choose a cut point | [Transcribe media](../../timeline/docs/transcripts/SKILL.md) |
 | Generate images, video, or audio (including Foley); understand, assemble, compare, or publish work | [Creative work](creative-work/SKILL.md), then the relevant pack |
 | Reuse a character or other saved subject | [References](../../media/docs/references.md) |
 | Build your own reusable tool, workflow, or visual element | [Pack builder](pack-builder/SKILL.md) |
