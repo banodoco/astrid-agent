@@ -186,7 +186,7 @@ def test_windows_file_fsync_errors_are_not_skipped(source, tmp_path, windows_fs,
     assert len(windows_fs.replacements) == 1
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Requires real POSIX directory fsync.")
+@pytest.mark.posix_native
 @pytest.mark.parametrize("platform", ["linux", "darwin"])
 def test_posix_sync_flushes_files_and_all_directories(source, monkeypatch, platform):
     synced = set()
@@ -204,7 +204,7 @@ def test_posix_sync_flushes_files_and_all_directories(source, monkeypatch, platf
     assert synced == {(p.stat().st_dev, p.stat().st_ino) for p in [source, *source.rglob("*")]}
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Exercises POSIX directory-open failure.")
+@pytest.mark.posix_native
 def test_posix_directory_open_failure_is_not_ignored(source, tmp_path, monkeypatch):
     root = tmp_path / "packs"
     first = install(source, root)
@@ -225,7 +225,7 @@ def test_posix_directory_open_failure_is_not_ignored(source, tmp_path, monkeypat
     assert not list(root.glob(".install-*"))
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Tests Windows sync with real POSIX atomic exchange.")
+@pytest.mark.posix_native
 def test_windows_sync_preserves_group_update_and_rollback(source, tmp_path, windows_fs, monkeypatch):
     # Keep the real host's already-bound exchange: this proves the Windows
     # sync change preserves transaction rollback, not Windows native exchange.
