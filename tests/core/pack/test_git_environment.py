@@ -282,7 +282,7 @@ def test_planted_windows_ssh_in_working_directory_is_not_resolved(tmp_path: Path
     assert env["PATH"] == str(real_ssh.parent)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX shell and planted executable")
+@pytest.mark.posix_native
 def test_planted_ssh_in_working_directory_never_runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     real_git = shutil.which("git")
     if real_git is None:
@@ -342,7 +342,7 @@ def test_unusable_recorded_git_falls_back_to_absolute_path_lookup(tmp_path: Path
     assert found == str(real)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX execute permission")
+@pytest.mark.posix_native
 def test_recorded_git_that_lost_its_execute_bit_falls_back_to_absolute_path_lookup(tmp_path: Path) -> None:
     recorded = _executable(tmp_path / "Program Files" / "Git" / "cmd" / "git")
     recorded.chmod(0o644)

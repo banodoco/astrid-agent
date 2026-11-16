@@ -841,7 +841,7 @@ def test_manifest_lifecycle_version_satisfies_pack_declaration():
     assert LIFECYCLE_PIN["version"] == tools.LIFECYCLE_VERSION
 
 
-@pytest.mark.skipif(os.name == "nt", reason="the POSIX secure step is not used on Windows")
+@pytest.mark.posix_native
 def test_missing_runtime_lock_names_the_missing_path_not_aliasing(tmp_path):
     from astrid.core.rendering._local_schema import READER_INPUTS, SCHEMA_RELATIVE_PATH
     from astrid.installer import backend as backend_module
@@ -859,7 +859,7 @@ def test_missing_runtime_lock_names_the_missing_path_not_aliasing(tmp_path):
     assert str(caught.value) == "staged Agent is missing: runtime.lock.json"
 
 
-@pytest.mark.skipif(os.name == "nt", reason="the POSIX secure step is not used on Windows")
+@pytest.mark.posix_native
 @pytest.mark.parametrize("missing", ["candidate", "py", "lib", "site-packages"])
 def test_missing_candidate_or_product_root_directory_is_named(tmp_path, missing):
     """The message names the directory that is missing, never "py" for every one of them."""
