@@ -29,6 +29,28 @@ def test_pack_command_rejects_script_outside_selected_root(tmp_path: Path) -> No
         pack_command_args([str(foreign)], "hivemind", root)
 
 
+@pytest.mark.parametrize("case", ["parent_escape", "outward_symlink", "missing", "non_python"])
+def test_pack_command_refuses_unsafe_script_paths(tmp_path: Path, case: str) -> None:
+    root = tmp_path / "hivemind"
+    root.mkdir()
+    outside = tmp_path / "outside.py"
+    outside.write_text("pass\n", encoding="utf-8")
+    if case == "parent_escape":
+        argument = "../outside.py"
+    elif case == "outward_symlink":
+        alias = root / "alias.py"
+        alias.symlink_to(outside)
+        argument = "alias.py"
+    elif case == "missing":
+        argument = "missing.py"
+    else:
+        (root / "run.txt").write_text("pass\n", encoding="utf-8")
+        argument = "run.txt"
+
+    with pytest.raises(ValueError):
+        pack_command_args([argument], "hivemind", root)
+
+
 @pytest.mark.parametrize("excluded", [".generated", "__pycache__"])
 def test_pack_command_rejects_digest_excluded_script_directory(tmp_path: Path, excluded: str) -> None:
     root = tmp_path / "hivemind"

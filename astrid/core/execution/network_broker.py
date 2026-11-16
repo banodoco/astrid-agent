@@ -234,13 +234,18 @@ class ObservableNetworkBroker:
     def _route_allowed(self, target: str) -> bool:
         if not self._strict:
             return True
-        parsed = urlsplit(target)
-        if parsed.scheme not in {"http", "https", "tcp"} or not parsed.hostname:
+        try:
+            parsed = urlsplit(target)
+            parsed_port = parsed.port
+        except ValueError:
+            return False
+        if (parsed.scheme not in {"http", "https", "tcp"} or not parsed.hostname
+                or parsed.username is not None or parsed.password is not None):
             return False
         default_port = 443 if parsed.scheme == "https" else 80
         if parsed.scheme == "tcp":
             default_port = None
-        normalized = f"{parsed.scheme}://{parsed.hostname.lower()}:{parsed.port or default_port}"
+        normalized = f"{parsed.scheme}://{parsed.hostname.lower()}:{parsed_port or default_port}"
         if parsed.scheme != "tcp":
             normalized += parsed.path or "/"
         for route in self.allowed_routes:
@@ -265,7 +270,7 @@ class ObservableNetworkBroker:
                 continue
             if https_tunnel and declared_port is None:
                 declared_port = 443
-            actual_port = parsed.port or default_port
+            actual_port = parsed_port or default_port
             if declared.hostname and declared.hostname.lower() == parsed.hostname.lower() and (declared_port is None or declared_port == actual_port):
                 return True
         return False

@@ -58,6 +58,7 @@ def test_https_declaration_allows_real_connect_tunnel_and_fences_destination():
         assert response.startswith(b"HTTP/1.1 200 Connection Established")
         allowed.sendall(b"tls-like payload")
         assert allowed.recv(128) == b"tls-like payload"
+        assert {"kind": "route", "detail": f"tcp://localhost:{port}|allowed=true"} in broker.evidence()
         allowed.close()
         allowed = None
 
