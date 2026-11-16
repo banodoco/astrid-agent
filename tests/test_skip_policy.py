@@ -8,9 +8,12 @@ hide a test. tests/lanes.py is the one place that may build a skip.
 from __future__ import annotations
 
 import ast
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
+
+from tests import lanes
 
 REPO = Path(__file__).resolve().parents[1]
 REGISTRY = "tests/lanes.py"
@@ -69,6 +72,64 @@ def test_the_scanner_finds_every_way_to_hide_a_test(source: str) -> None:
 def test_the_scanner_leaves_lane_markers_and_plain_strings_alone() -> None:
     source = "import pytest\n\n@pytest.mark.ffmpeg\ndef test():\n    text = 'pytest.skip is not called'\n"
     assert hidden_gates(source) == []
+
+
+def _xfail_entry(today: date) -> dict[str, object]:
+    return {
+        "nodeid": "tests/test_example.py::test_known_gap",
+        "reason": "Known, narrowly scoped failure",
+        "issue": "https://github.com/banodoco/astrid-dev/issues/742",
+        "owner": "maintainer",
+        "expires": (today + timedelta(days=7)).isoformat(),
+        "strict": True,
+    }
+
+
+def test_the_xfail_registry_is_valid_and_empty() -> None:
+    assert lanes.DECLARED_XFAILS == {}
+    assert lanes.declared_xfail_errors() == []
+
+
+@pytest.mark.parametrize(
+    ("change", "expected"),
+    [
+        ("nodeid", "missing or invalid exact nodeid"),
+        ("reason", "missing reason"),
+        ("issue", "missing or invalid issue URL"),
+        ("owner", "missing owner"),
+        ("expires", "expiry must be a future ISO date"),
+        ("past", "expiry must be a future ISO date"),
+        ("far-future", "expiry must be a future ISO date"),
+        ("strict", "strict must be true"),
+    ],
+)
+def test_xfail_registry_rejects_missing_metadata_expired_or_non_strict(
+    change: str, expected: str
+) -> None:
+    today = date(2026, 11, 16)
+    entry = _xfail_entry(today)
+    if change in {"nodeid", "reason", "issue", "owner", "expires"}:
+        entry.pop(change)
+    elif change == "past":
+        entry["expires"] = (today - timedelta(days=1)).isoformat()
+    elif change == "far-future":
+        entry["expires"] = (today + timedelta(days=15)).isoformat()
+    else:
+        entry["strict"] = False
+
+    errors = lanes.declared_xfail_errors({"known-gap": entry}, today=today)
+
+    assert any(expected in error for error in errors)
+
+
+def test_xfail_registry_rejects_more_than_ten_entries() -> None:
+    today = date(2026, 11, 16)
+    entries = {
+        f"gap-{index}": {**_xfail_entry(today), "nodeid": f"tests/test_{index}.py::test_gap"}
+        for index in range(11)
+    }
+
+    assert any("maximum is 10" in error for error in lanes.declared_xfail_errors(entries, today=today))
 
 
 def test_no_test_file_skips_by_hand() -> None:

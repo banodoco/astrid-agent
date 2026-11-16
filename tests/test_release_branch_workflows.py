@@ -1,5 +1,8 @@
+import os
+import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 WF = Path(__file__).resolve().parents[1] / ".github" / "workflows"
@@ -20,11 +23,51 @@ def test_pull_requests_into_release_mains_run_only_the_cheap_ci_subset():
             continue
         if name in heavy:
             assert job["if"] == "github.event_name != 'pull_request'", name
+        elif name == "unit":
+            assert job["if"] == "always()", name
         else:
             assert "if" not in job, name
     group = wf["jobs"]["unit-shard"]["strategy"]["matrix"]["group"]
     assert "'[1]'" in group and "pull_request" in group
     assert "github.event.pull_request.number" in wf["concurrency"]["group"]
+
+
+@pytest.mark.parametrize("checks", ["success", "failure", "cancelled", "skipped"])
+@pytest.mark.parametrize("shards", ["success", "failure", "cancelled", "skipped"])
+def test_unit_aggregate_rejects_any_unsuccessful_dependency(checks, shards):
+    job = load("ci.yml")["jobs"]["unit"]
+    assert job["needs"] == ["checks", "unit-shard"]
+    assert job["env"] == {
+        "CHECKS_RESULT": "${{ needs.checks.result }}",
+        "SHARDS_RESULT": "${{ needs.unit-shard.result }}",
+    }
+    result = subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", job["steps"][0]["run"]],
+        env={**os.environ, "CHECKS_RESULT": checks, "SHARDS_RESULT": shards},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == (0 if checks == shards == "success" else 1), result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    "workflow,job_name,expected_commands",
+    [("ci.yml", "unit-shard", 1), ("ci.yml", "darwin-native", 1),
+     ("ci.yml", "windows-native-and-installer", 4), ("lanes.yml", "integration", 1)],
+)
+def test_named_pytest_jobs_retain_every_command_result(workflow, job_name, expected_commands):
+    job = load(workflow)["jobs"][job_name]
+    commands = [step["run"] for step in job["steps"] if "python -m pytest" in step.get("run", "")]
+    assert len(commands) == expected_commands
+    destinations = [command.split("--junitxml=", 1)[1].split(".xml", 1)[0] + ".xml" for command in commands]
+    assert len(destinations) == len(set(destinations)), "separate commands must not overwrite each other's results"
+    assert all(destination.startswith("test-results/") for destination in destinations)
+    assert all("-rA" in command for command in commands)
+    upload = next(step for step in job["steps"] if step.get("with", {}).get("name", "").startswith("test-results-"))
+    assert upload["if"] == "always()"
+    assert upload["with"]["path"] == "test-results/*.xml"
+    assert upload["with"]["retention-days"] == 90
+    assert upload["with"]["if-no-files-found"] == "error"
 
 
 def test_landing_reference_job_runs_only_for_pull_requests_into_release_branches():

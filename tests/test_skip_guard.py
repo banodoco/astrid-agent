@@ -7,6 +7,7 @@ lane hooks. A skip passes only when a registry lane declares it, and it is then 
 from __future__ import annotations
 
 import sys
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -29,7 +30,15 @@ def run(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     bare_path = tmp_path / "empty-path"
     bare_path.mkdir()
 
-    def go(source: str, *args: str, job: str = "", bare_path_env: bool = False) -> pytest.RunResult:
+    def go(
+        source: str, *args: str, job: str = "", bare_path_env: bool = False, declarations: dict | None = None
+    ) -> pytest.RunResult:
+        if declarations is not None:
+            pytester.makeconftest(
+                "from tests import lanes\n"
+                f"lanes.DECLARED_XFAILS.update({declarations!r})\n"
+                + HOOKS
+            )
         pytester.makepyfile(test_case=source)
         if job:
             monkeypatch.setenv("ASTRID_CI_JOB", job)
@@ -38,6 +47,19 @@ def run(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
         return pytester.runpytest_subprocess("-p", "no:cacheprovider", "-o", "addopts=", *args)
 
     return go
+
+
+def _xfail_declaration(reason: str) -> dict[str, dict[str, object]]:
+    return {
+        "known-gap": {
+            "nodeid": "test_case.py::test_x",
+            "reason": reason,
+            "issue": "https://github.com/banodoco/astrid-dev/issues/742",
+            "owner": "maintainer",
+            "expires": (date.today() + timedelta(days=7)).isoformat(),
+            "strict": True,
+        }
+    }
 
 
 def test_an_undeclared_skip_in_a_test_body_fails_the_run(run) -> None:
@@ -86,6 +108,66 @@ def test_an_xfail_fails_the_run(run) -> None:
     result = run("import pytest\n\n@pytest.mark.xfail(reason='known gap')\ndef test_x():\n    assert False\n")
     assert result.ret != 0
     result.stdout.fnmatch_lines(["*an xfail hides the result*"])
+
+
+def test_an_exact_registered_strict_xfail_is_allowed_and_listed(run) -> None:
+    reason = "[declared-xfail:known-gap] tracked failure"
+    source = (
+        "import pytest\n\n"
+        f"@pytest.mark.xfail(reason={reason!r}, strict=True)\n"
+        "def test_x():\n    assert False\n\n"
+        "def test_control():\n    pass\n"
+    )
+
+    result = run(source, declarations=_xfail_declaration(reason))
+
+    assert result.ret == 0, result.stdout.str()
+    result.stdout.fnmatch_lines(["*declared xfails (1)*", "XFAILED test_case.py::test_x"])
+
+
+def test_a_declared_strict_xfail_that_starts_passing_fails_the_run(run) -> None:
+    reason = "[declared-xfail:known-gap] tracked failure"
+    source = f"import pytest\n\n@pytest.mark.xfail(reason={reason!r}, strict=True)\ndef test_x():\n    pass\n"
+
+    result = run(source, declarations=_xfail_declaration(reason))
+
+    assert result.ret != 0
+    result.stdout.fnmatch_lines(["*XPASS(strict)*"])
+
+
+def test_a_registered_xfail_cannot_disable_execution(run) -> None:
+    reason = "[declared-xfail:known-gap] tracked failure"
+    source = (
+        "from tests.lanes import declared_xfail\n\n"
+        "@declared_xfail('known-gap')(run=False)\n"
+        "def test_x():\n    assert False\n\n"
+        "def test_control():\n    pass\n"
+    )
+
+    result = run(source, declarations=_xfail_declaration(reason))
+
+    assert result.ret != 0, result.stdout.str()
+    result.stdout.fnmatch_lines(["*an xfail hides the result*"])
+
+
+def test_a_registered_non_strict_xfail_fails_the_run(run) -> None:
+    reason = "[declared-xfail:known-gap] tracked failure"
+    source = f"import pytest\n\n@pytest.mark.xfail(reason={reason!r}, strict=False)\ndef test_x():\n    assert False\n"
+
+    result = run(source, declarations=_xfail_declaration(reason))
+
+    assert result.ret != 0
+    result.stdout.fnmatch_lines(["*xfail hides the result*"])
+
+
+def test_invalid_xfail_registry_metadata_fails_during_pytest_configuration(run) -> None:
+    invalid = _xfail_declaration("[declared-xfail:known-gap] tracked failure")
+    invalid["known-gap"].pop("issue")
+
+    result = run("def test_control():\n    pass\n", declarations=invalid)
+
+    assert result.ret != 0
+    result.stderr.fnmatch_lines(["*Invalid DECLARED_XFAILS*", "*missing or invalid issue URL*"])
 
 
 def test_a_declared_platform_skip_passes_and_is_listed_by_test_id(run) -> None:

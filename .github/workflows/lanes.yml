@@ -174,13 +174,17 @@ jobs:
       - name: Check out VibeComfy at the pinned engine revision
         uses: actions/checkout@v4
         with:
-          repository: peteromallet/VibeComfy
+          repository: banodoco/VibeComfy
           ref: ${{ steps.vibecomfy-pin.outputs.revision }}
           path: vibecomfy-checkout
 
       - name: Record VibeComfy checkout
+        env:
+          VIBECOMFY_REVISION: ${{ steps.vibecomfy-pin.outputs.revision }}
         run: |
-          echo "- VibeComfy: $(git -C vibecomfy-checkout rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+          checked_out="$(git -C vibecomfy-checkout rev-parse HEAD)"
+          test "$checked_out" = "$VIBECOMFY_REVISION"
+          echo "- VibeComfy: banodoco/VibeComfy at $checked_out (engine revision verified)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install VibeComfy
         run: python -m pip install -e ./vibecomfy-checkout
@@ -255,7 +259,16 @@ jobs:
           echo "- ComfyUI: $checked_out" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Integration tests (shard)
-        run: python -m pytest -v -rA --durations=40 -m "integration and not opt_in and not app_checkout" --splits 4 --group ${{ matrix.group }}
+        run: python -m pytest -v -rA --junitxml=test-results/integration-${{ matrix.group }}-ubuntu-latest.xml --durations=40 -m "integration and not opt_in and not app_checkout" --splits 4 --group ${{ matrix.group }}
+
+      - name: Upload integration test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-integration-${{ matrix.group }}-ubuntu-latest
+          path: test-results/*.xml
+          retention-days: 90
+          if-no-files-found: error
 
       - name: Save pip cache on main or int branches (C-08)
         if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/') || (startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main'))) && steps.c08-agent-lanes-2.outputs.cache-hit != 'true' }}
@@ -345,13 +358,17 @@ jobs:
       - name: Check out VibeComfy at the pinned engine revision
         uses: actions/checkout@v4
         with:
-          repository: peteromallet/VibeComfy
+          repository: banodoco/VibeComfy
           ref: ${{ steps.vibecomfy-pin.outputs.revision }}
           path: vibecomfy-checkout
 
       - name: Record VibeComfy checkout
+        env:
+          VIBECOMFY_REVISION: ${{ steps.vibecomfy-pin.outputs.revision }}
         run: |
-          echo "- VibeComfy: $(git -C vibecomfy-checkout rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+          checked_out="$(git -C vibecomfy-checkout rev-parse HEAD)"
+          test "$checked_out" = "$VIBECOMFY_REVISION"
+          echo "- VibeComfy: banodoco/VibeComfy at $checked_out (engine revision verified)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install VibeComfy
         run: python -m pip install -e ./vibecomfy-checkout
