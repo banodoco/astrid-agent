@@ -11,6 +11,18 @@ import sys
 from pathlib import Path
 from typing import Mapping
 
+from astrid.core.pack.identity import _EXCLUDED_DIRS
+
+
+def _require_digest_covered_path(path: Path, root: Path, *, is_directory: bool = False) -> None:
+    try:
+        relative = path.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("action source escapes admitted pack root") from exc
+    components = relative.parts if is_directory else relative.parts[:-1]
+    if any(part in _EXCLUDED_DIRS for part in components):
+        raise ValueError("action source is inside a digest-excluded directory")
+
 
 class _PackSourceLoader(importlib.abc.Loader):
     """Compile admitted Python source directly; never consult pack bytecode."""
@@ -68,6 +80,7 @@ class _PackSourceFinder(importlib.abc.MetaPathFinder):
                 raise ModuleNotFoundError(f"no selected Python source for {fullname!r}")
         if not directory.is_relative_to(root) or (source is not None and not source.is_relative_to(root)):
             raise ValueError("action import escapes admitted pack root")
+        _require_digest_covered_path(directory if source is None else source, root, is_directory=source is None)
         loader = _PackSourceLoader(source, directory)
         spec = importlib.util.spec_from_loader(fullname, loader, is_package=package)
         if source is not None:
@@ -266,4 +279,5 @@ def pack_command_args(arguments: list[str], pack_id: str, root: Path) -> list[st
         selected_root = root.resolve()
         if not source.is_relative_to(selected_root) or not source.is_file() or source.suffix != ".py":
             raise ValueError("external command script is outside selected pack")
+        _require_digest_covered_path(source, selected_root)
     return args

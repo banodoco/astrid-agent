@@ -29,6 +29,31 @@ def test_pack_command_rejects_script_outside_selected_root(tmp_path: Path) -> No
         pack_command_args([str(foreign)], "hivemind", root)
 
 
+@pytest.mark.parametrize("excluded", [".generated", "__pycache__"])
+def test_pack_command_rejects_digest_excluded_script_directory(tmp_path: Path, excluded: str) -> None:
+    root = tmp_path / "hivemind"
+    script = root / excluded / "run.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("pass\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="digest-excluded"):
+        pack_command_args([f"{excluded}/run.py"], "hivemind", root)
+
+
+def test_selected_source_finder_rejects_digest_excluded_module(tmp_path: Path) -> None:
+    from astrid.core.pack.imports import _PackSourceFinder, pack_module_path
+
+    root = tmp_path / "hivemind"
+    source = root / ".generated" / "secret.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("pass\n", encoding="utf-8")
+    module_path, aliases = pack_module_path(Path(".generated/secret.py"))
+    finder = _PackSourceFinder({"hivemind": {"root": str(root)}}, {"hivemind": aliases})
+
+    with pytest.raises(ValueError, match="digest-excluded"):
+        finder.find_spec(f"astrid.packs.hivemind.{module_path}")
+
+
 def test_pack_worker_runs_relative_script_from_selected_root(tmp_path: Path) -> None:
     from astrid.core.pack.identity import pack_digest
 
