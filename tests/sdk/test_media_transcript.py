@@ -474,3 +474,43 @@ def test_publish_registers_after_timeline_commit_and_survives_document_failure(m
     assert tl.publish(client=object())["new_head"] == "rev-1"
     assert sequence == ["publish", "transcript"]
     assert "document unavailable" in capsys.readouterr().err
+
+
+def test_transcript_show_handles_parent_and_repeated_shot_occurrences(monkeypatch, capsys):
+    """Use real checkout clip handles, including an assetless effect and a repeated shot."""
+    from astrid.packs.timeline import cli_working
+    from astrid.sdk import media_transcript
+    from astrid.sdk.timeline_checkout import Checkout
+
+    media = 'sha256:' + '9' * 64
+    content = build_transcript(media, 'line', 'hello', [[1.0, 1.5, 'hello']])
+    monkeypatch.setattr(media_transcript, 'read_transcript',
+                        lambda client, project, media_id, source: {'content': content})
+    bundle = {
+        'project_id': 'p', 'timeline_id': 't',
+        'parent': {'config': {'registry': {'assets': {'audio': {'media_id': media}}}},
+                   'clips': [{'id': 'parent-audio', 'clipType': 'media', 'asset': 'audio',
+                              'track': 'music', 'at': 30, 'from': 0, 'to': 2},
+                             {'id': 'text', 'clipType': 'am-type', 'track': 'visual',
+                              'at': 0, 'hold': 2}]},
+        'placements': [{'shot_id': 'shot', 'occurrence_id': 'one', 'placement': {'start_ms': 0}, 'duration_ms': 4000},
+                       {'shot_id': 'shot', 'occurrence_id': 'two', 'placement': {'start_ms': 10000}, 'duration_ms': 4000}],
+        'shots': {'shot': {'internal_timeline': {
+            'tracks': [], 'registry': {'assets': {'audio': {'media_id': media}}},
+            'clips': [{'id': 'shot-audio', 'clipType': 'media', 'track': 'audio', 'asset': 'audio',
+                       'at': 0.5, 'from': 0, 'to': 2, 'speed': 2},
+                      {'id': 'effect', 'clipType': 'am-type', 'track': 'visual', 'at': 0, 'hold': 1}]}}},
+    }
+    timeline = Checkout(bundle)
+    monkeypatch.setattr(Checkout, 'open', classmethod(lambda cls, project, ref, client: timeline))
+    args = SimpleNamespace(client=object(), project='p', media_id=media, source=None,
+                           source_range=None, clip=None, timeline='cut', json=False)
+    assert cli_working._cmd_transcripts_show(args) == 0
+    output = capsys.readouterr().out
+    assert 'timeline 1.000–1.250s [shot-audio]' in output
+    assert 'timeline 11.000–11.250s [shot-audio]' in output
+    assert 'timeline 31.000–31.500s [parent-audio]' in output
+    assert output.count('[shot-audio]') == 2
+    args.media_id, args.clip = None, 'parent-audio'
+    assert cli_working._cmd_transcripts_show(args) == 0
+    assert 'timeline 31.000–31.500s [parent-audio]' in capsys.readouterr().out

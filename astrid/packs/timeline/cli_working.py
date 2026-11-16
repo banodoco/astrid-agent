@@ -494,14 +494,29 @@ def _cmd_transcripts_show(parsed: argparse.Namespace) -> int:
         from astrid.sdk.timeline_checkout import Checkout
 
         tl = Checkout.open(need_project(parsed), parsed.timeline, client=parsed.client)
+        from astrid.sdk.timeline.doc import _row_start
+
+        # Checkout.clips() exposes one handle per placement but its legacy
+        # handle resolves start through the first placement of a shot. Enumerate
+        # placements explicitly so repeated shots keep their own clocks.
+        seen = set()
+        placements = tl.bundle.get("placements")
         for clip in tl.clips():
+            identity = (clip.shot_id, clip.id)
+            if identity in seen:
+                continue
+            seen.add(identity)
             if parsed.clip and clip.id != parsed.clip:
                 continue
-            shot = (tl.bundle.get("shots") or {}).get(clip.shot_id) or {}
-            internal = shot.get("internal_timeline") or {}
-            assets = (internal.get("registry") or {}).get("assets") or {}
-            asset = assets.get(clip.asset or {}) or {}
-            clip_media_id = asset.get("media_id") or asset.get("content_sha256")
+            if clip.shot_id in ("", "parent"):
+                holder = tl.bundle.get("parent") or {}
+            else:
+                shot = (tl.bundle.get("shots") or {}).get(clip.shot_id) or {}
+                holder = shot.get("internal_timeline") or {}
+            registry = holder.get("registry") or (holder.get("config") or {}).get("registry") or {}
+            assets = registry.get("assets") or {}
+            asset = assets.get(clip.asset) if clip.asset else None
+            clip_media_id = (asset.get("media_id") or asset.get("content_sha256")) if isinstance(asset, Mapping) else None
             if resolved_media_id and clip_media_id != resolved_media_id:
                 continue
             if parsed.clip and not isinstance(clip_media_id, str):
@@ -513,9 +528,15 @@ def _cmd_transcripts_show(parsed: argparse.Namespace) -> int:
             raw_to = raw.get("to")
             source_out = (float(raw_to) if raw_to is not None
                           else source_in + clip.duration * speed)
-            clips.append({"clip_id": clip.id, "source_start": source_in,
-                          "source_end": source_out,
-                          "timeline_start": clip.start, "speed": speed})
+            if clip.shot_id in ("", "parent") or not isinstance(placements, list):
+                starts = [clip.start]
+            else:
+                starts = [_row_start(row) / 1000 + clip.at for row in placements
+                          if row.get("shot_id") == clip.shot_id]
+            for start in starts:
+                clips.append({"clip_id": clip.id, "source_start": source_in,
+                              "source_end": source_out,
+                              "timeline_start": start, "speed": speed})
         if not clips:
             target = f"clip {parsed.clip!r}" if parsed.clip else "any clip"
             raise VerbError(f"{target} does not use media {resolved_media_id or parsed.media_id} in timeline {parsed.timeline!r}")
