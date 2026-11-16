@@ -32,6 +32,9 @@
         "sampler": {"type": "string"},
         "scheduler": {"type": "string"},
         "seed": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+        "cfg": {"const": 1.0},
+        "video_shift": {"type": "number", "minimum": 0},
+        "audio_shift": {"type": "number", "minimum": 0},
         "guidance_scale": {"type": "number", "minimum": 0},
         "guidance": {"type": "number", "minimum": 0},
         "turbo": {
@@ -39,6 +42,7 @@
           "additionalProperties": false,
           "properties": {
             "enabled": {"type": "boolean"},
+            "lora": {"enum": ["pika_flex_8step", "lightx2v_8step"]},
             "strength": {"type": "number", "minimum": 0}
           }
         },

@@ -90,7 +90,8 @@ def test_adapter_defaults_aliases_and_legacy_replay_are_canonical_without_mutati
         "sampler": "res_multistep",
         "scheduler": "simple",
         "seed": 123456789,
-        "turbo": {"enabled": True, "strength": 0.95},
+        "turbo": {"enabled": True, "lora": "pika_flex_8step", "strength": 1.0},
+        "cfg": 1.0, "video_shift": 12.0, "audio_shift": 3.0,
         "adapter": {"id": "character_swap_v1", "strength": 1.0},
     }
     assert normalized.value["model_tags"] == {"performance": "<Video 1>", "replacement": "<Picture 1>"}
@@ -129,7 +130,7 @@ def test_adapter_defaults_aliases_and_legacy_replay_are_canonical_without_mutati
     sealed = read_prepared_request(legacy, digest, require_normalized_v2=True)
     assert sealed.digest == digest
     assert sealed.value == legacy
-    assert effective_settings(sealed)["turbo"] == {"enabled": True, "strength": 0.35}
+    assert effective_settings(sealed)["turbo"] == {"enabled": True, "lora": "pika_flex_8step", "strength": 0.35}
     assert "turbo" not in sealed.value["settings"]
 
     tampered_replay = copy.deepcopy(normalize_request(raw).value)

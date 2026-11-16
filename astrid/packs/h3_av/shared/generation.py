@@ -22,6 +22,7 @@ CHARACTER_SWAP_REPOSITORY = "akatz-ai/MiniMax-H3-Character-Swap-LoRA"
 CHARACTER_SWAP_REVISION = "62407e0cc8089c363abd9ce4b0b27662abb237af"
 CHARACTER_SWAP_FILENAME = "h3_character_swap_pro4500_1000.safetensors"
 CHARACTER_SWAP_SHA256 = "4b2a3f420ae804c0aa3422761ff84dbd1bf52eef6900ffab6d2e66df63cb4e79"
+PIKA_REF2VA_FILENAME = "pika_h3_flex_turbo_8step_hd_ref2va.safetensors"
 TURBO_FILENAME = "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors"
 _T9_MODEL_SUBSTITUTE_MODE = "deterministic_cpu_model_boundary_v1"
 _T9_MODEL_SUBSTITUTE_PURPOSE = "h3_character_swap_public_runtime_cpu_acceptance_v1"
@@ -208,6 +209,7 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
                               scheduler: str = "simple", video_references: list[dict[str, Any]] | None = None,
                               adapter_strength: float | None = None, turbo_enabled: bool = True,
                               character_swap_sha256: str = CHARACTER_SWAP_SHA256,
+                              turbo_filename: str = TURBO_FILENAME, video_shift: float = 12.0, audio_shift: float = 3.0,
                               masked_edit: dict[str, Any] | None = None):
     """Build ordinary H3 nodes and one muxed sink, ready for canonical emission.
 
@@ -249,7 +251,7 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
     }
     if turbo_enabled:
         model_assets["turbo_lora"] = _locked_asset(
-            locked_models, f"loras/{TURBO_FILENAME}", filename=TURBO_FILENAME, subdir="loras")
+            locked_models, f"loras/{turbo_filename}", filename=turbo_filename, subdir="loras")
     if adapter_strength is not None:
         model_assets["character_swap_lora"] = ModelAsset(
             filename=CHARACTER_SWAP_FILENAME,
@@ -298,11 +300,11 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
             upstream = character_swap.out("MODEL")
         if turbo_enabled:
             turbo = LoraLoaderModelOnly(
-                model=upstream, lora_name=TURBO_FILENAME,
+                model=upstream, lora_name=turbo_filename,
                 strength_model=guidance, _id="turbo_lora",
             )
             upstream = turbo.out("MODEL")
-        shifted = node("MiniMaxH3SigmaShift", _outputs=("MODEL",), model=upstream, shift_audio=3.0, shift_video=12.0)
+        shifted = node("MiniMaxH3SigmaShift", _outputs=("MODEL",), model=upstream, shift_audio=audio_shift, shift_video=video_shift)
         refs = {}
         for index in range(len(references)):
             ident = f"reference_{index}"
