@@ -214,9 +214,11 @@ def fetch_verified(entry: dict[str, Any], path: Path, *, root: Path, part: Path,
 
     if part.exists() and part.stat().st_size >= entry['size_bytes']:
         part.unlink()  # nothing left to resume from
+    owned = None
     if client is None:
-        import httpx
-        client = httpx
+        # The operating system's trust store, so antivirus and company proxies that inspect HTTPS work.
+        from astrid.core.util.http import trusted_httpx_client
+        client = owned = trusted_httpx_client()
     resuming = _ResumingClient(client, part, deadline, progress)
     error = None
     try:
@@ -226,6 +228,9 @@ def fetch_verified(entry: dict[str, Any], path: Path, *, root: Path, part: Path,
         # force-verified before it can be accepted.
         logging.getLogger(__name__).debug('fetch failed for %s', label, exc_info=True)
         error = exc
+    finally:
+        if owned is not None:
+            owned.close()
     # A caller may pre-claim `path` as an empty placeholder: only bytes fetch actually published count here.
     published = path.exists() and (error is None or path.stat().st_size > 0)
     if published:

@@ -16,11 +16,17 @@ import httpx
 import pytest
 
 from astrid.core.generation.asset_gaps import (
-    AttachedDownloadRefused, _fetch_into_folder, apply_attached_model_download,
-    plan_attached_model_download, render_attached_download_plan,
+    AttachedDownloadRefused,
+    _fetch_into_folder,
+    apply_attached_model_download,
+    plan_attached_model_download,
+    render_attached_download_plan,
 )
 from astrid.core.generation.backends.comfy_target import (
-    ComfyModelMissing, ComfyTarget, ComfyTargetClient, _capture_model_resolution,
+    ComfyModelMissing,
+    ComfyTarget,
+    ComfyTargetClient,
+    _capture_model_resolution,
 )
 from astrid.core.generation.engine_contracts import ModelSpec
 from astrid.core.model_catalog.registry import ModelRegistry
@@ -608,3 +614,42 @@ def test_a_changed_url_or_sha256_still_refuses_with_plan_changed(comfy, models, 
                                       sources=changed_sha, http_client=_http())
     assert caught.value.code == "plan_changed"
     assert file_server.requested[asked:] == [] and not (Path(third["folder"]) / third["file"]).exists()
+
+
+class _InspectedHttps:
+    """A client behind HTTPS inspection: every connection fails certificate verification."""
+
+    def stream(self, *args, **kwargs):
+        import ssl
+        try:
+            raise ssl.SSLCertVerificationError("self-signed certificate in certificate chain")
+        except ssl.SSLCertVerificationError as error:
+            raise httpx.ConnectError("certificate verify failed") from error
+
+
+def test_a_certificate_failure_names_https_inspection_not_a_bug(comfy, models, file_server):
+    root, _ = models
+    plan = _plan(comfy, file_server)
+    with pytest.raises(AttachedDownloadRefused) as caught:
+        apply_attached_model_download(comfy.client, "z-image", "t2i", plan_sha256=plan["plan_sha256"],
+                                      sources=_sources(file_server), http_client=_InspectedHttps())
+    assert caught.value.code == "tls_verification_failed"
+    assert "antivirus or a company proxy" in str(caught.value)
+    assert "Run the same command again" in str(caught.value)
+    assert not [n for n in _files(root) if not n.endswith(".astrid-resume")]
+
+
+def test_without_a_given_client_downloads_use_the_operating_system_trust(comfy, models, file_server, monkeypatch):
+    from astrid.core.util import http as astrid_http
+
+    made = []
+
+    def trusted(**kwargs):
+        made.append(kwargs)
+        return _http()
+
+    monkeypatch.setattr(astrid_http, "trusted_httpx_client", trusted)
+    plan = _plan(comfy, file_server)
+    apply_attached_model_download(comfy.client, "z-image", "t2i", plan_sha256=plan["plan_sha256"],
+                                  sources=_sources(file_server))
+    assert len(made) == len(plan["files"])

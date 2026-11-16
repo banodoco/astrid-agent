@@ -565,7 +565,13 @@ def _fetch_into_folder(item: dict[str, Any], http_client, *, progress=None) -> i
 
 def _stopped(plan: dict[str, Any], done: list[dict[str, Any]], failed: dict[str, Any], exc: Exception) -> AttachedDownloadRefused:
     """Say truthfully what this run finished and what it did not, so the same digest can be confirmed again."""
+    from astrid.core.contracts.errors import TLS_VERIFICATION_CODE, _tls_verification_failure
+
     code = exc.code if isinstance(exc, AttachedDownloadRefused) else 'download_failed'
+    if _tls_verification_failure(exc) is not None:
+        code = TLS_VERIFICATION_CODE
+        exc = RuntimeError('the secure connection could not be verified, most likely because a program on this '
+                           'computer (antivirus or a company proxy) is inspecting HTTPS')
     finished = ', '.join(d['file'] for d in done) or 'none (no file was published)'
     rest = ', '.join(f['file'] for f in plan['files'][plan['files'].index(failed) + 1:]) or 'none'
     part = Path(failed['folder']) / f".{failed['file']}.astrid-resume"
