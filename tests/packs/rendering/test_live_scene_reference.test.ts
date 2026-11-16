@@ -17,6 +17,7 @@ import {
   type LiveSceneReference,
 } from '../../../astrid/packs/rendering/ui/threejs-live-editor/liveSceneDocument';
 import {
+  configureLiveSceneLoader,
   createLiveSceneDocuments,
   peekLiveScene,
   resolveLiveScene,
@@ -201,6 +202,15 @@ describe('live-scene document cache', () => {
     expect(peekLiveScene(storage, reference, documents)).toBeUndefined();
     await expect(resolveLiveScene(storage, reference, documents)).resolves.toMatchObject({ html: '<html>pkg</html>' });
     expect(loader).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses the configured loader, and fails explicitly before one is installed', async () => {
+    const reference = { revision: 'r9', source: { objectId: 'pkg9', revision: 'r9' }, packageBody: '{}' };
+    await expect(resolveLiveScene(makeStorage(), reference, createLiveSceneDocuments())).rejects.toThrow('No live-scene loader is configured');
+    const loader = vi.fn<LiveSceneLoader>(async (_storage, objectId, revision) => docFor(objectId, revision));
+    configureLiveSceneLoader(loader);
+    await expect(resolveLiveScene(makeStorage(), reference, createLiveSceneDocuments())).resolves.toMatchObject({ html: '<html>pkg9</html>' });
+    expect(loader).toHaveBeenCalledTimes(1);
   });
 
   it('rejects a value that is neither inline nor a reference', async () => {

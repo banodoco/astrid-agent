@@ -1,9 +1,16 @@
 // @vitest-environment jsdom
 import { createElement } from 'react';
 import { render, cleanup, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { SceneSurface } from '../../../astrid/packs/rendering/ui/threejs-live-editor/SceneSurface';
-import { ingestPreparedPackage } from '../../../astrid/packs/rendering/ui/threejs-live-editor/authoring';
+import { ingestPreparedPackage, loadLiveSceneSource } from '../../../astrid/packs/rendering/ui/threejs-live-editor/authoring';
+import { configureLiveSceneLoader } from '../../../astrid/packs/rendering/ui/threejs-live-editor/liveSceneCache';
+
+// The surface never imports authoring (the Remotion build bundles it); the editor installs this loader.
+beforeAll(() => {
+  configureLiveSceneLoader(async (storage, objectId, revision) =>
+    (await loadLiveSceneSource(storage as Parameters<typeof loadLiveSceneSource>[0], objectId, revision)).liveScene);
+});
 
 afterEach(cleanup);
 
@@ -62,15 +69,16 @@ describe('SceneSurface with a stored reference', () => {
 
   it('loads the package once per revision: a re-mount reads nothing new', async () => {
     const { storage, liveScene } = await fixture();
+    // The fixture's own ingest read the package once (read-back verification); only reads after it count.
+    const baseline = storage.reads.filter((id) => id === liveScene.source.objectId).length;
     const first = mount(liveScene, storage);
     await waitFor(() => expect(first.container.querySelector('iframe')).not.toBeNull());
-    const packageReads = storage.reads.filter((id) => id === liveScene.source.objectId).length;
-    expect(packageReads).toBe(1);
+    expect(storage.reads.filter((id) => id === liveScene.source.objectId)).toHaveLength(baseline + 1);
     cleanup();
 
     const second = mount(liveScene, storage);
     await waitFor(() => expect(second.container.querySelector('iframe')).not.toBeNull());
-    expect(storage.reads.filter((id) => id === liveScene.source.objectId)).toHaveLength(1);
+    expect(storage.reads.filter((id) => id === liveScene.source.objectId)).toHaveLength(baseline + 1);
   });
 
   it('shows an inline error, never a blank frame, when the object is missing', async () => {

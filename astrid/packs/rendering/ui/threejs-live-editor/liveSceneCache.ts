@@ -1,8 +1,17 @@
-import type { ProjectObjectStorage } from '@astrid/editor-sdk';
 import { hasInlineHtml, readLiveScene, type LiveSceneDocument } from './liveSceneDocument';
 
+/**
+ * The part of the editor's project object storage a scene reader needs. Declared locally and
+ * structurally so this module (and SceneSurface, which the Remotion build bundles) never imports the
+ * editor SDK; the SDK's ProjectObjectStorage satisfies it.
+ */
+export interface SceneObjectStorage {
+  read(objectId: string): Promise<Uint8Array>;
+}
+type ProjectObjectStorage = SceneObjectStorage;
+
 /** Loads and integrity-verifies one scene from the object store (authoring.loadLiveSceneSource). */
-export type LiveSceneLoader = (storage: ProjectObjectStorage, objectId: string, revision: string) => Promise<LiveSceneDocument>;
+export type LiveSceneLoader = (storage: SceneObjectStorage, objectId: string, revision: string) => Promise<LiveSceneDocument>;
 
 type Entry = { readonly promise: Promise<LiveSceneDocument>; document?: LiveSceneDocument };
 
@@ -13,13 +22,22 @@ export type LiveSceneDocuments = {
   load(storage: ProjectObjectStorage, objectId: string, revision: string): Promise<LiveSceneDocument>;
 };
 
-const defaultLoader: LiveSceneLoader = async (storage, objectId, revision) => {
-  // Lazy: the authoring module is only needed when a clip carries a reference instead of inline HTML.
-  const authoring = await import('./authoring');
-  return (await authoring.loadLiveSceneSource(storage, objectId, revision)).liveScene;
+const unconfiguredLoader: LiveSceneLoader = async () => {
+  throw new Error('No live-scene loader is configured');
 };
 
-export function createLiveSceneDocuments(loader: LiveSceneLoader = defaultLoader): LiveSceneDocuments {
+let configuredLoader: LiveSceneLoader = unconfiguredLoader;
+
+/**
+ * Installs the loader used for references without inline HTML. The editor entry points (the extension
+ * and the explorer panel) install one that calls authoring.loadLiveSceneSource; the Remotion build
+ * never does, because every render path hands it inline HTML through the props.
+ */
+export function configureLiveSceneLoader(loader: LiveSceneLoader): void {
+  configuredLoader = loader;
+}
+
+export function createLiveSceneDocuments(loader: LiveSceneLoader = (...args) => configuredLoader(...args)): LiveSceneDocuments {
   const scopes = new WeakMap<ProjectObjectStorage, Map<string, Entry>>();
   const entriesFor = (storage: ProjectObjectStorage): Map<string, Entry> => {
     let entries = scopes.get(storage);

@@ -891,7 +891,8 @@ def test_render_rejects_incomplete_or_invalid_shot_text_snapshot(data):
         shot_text_snapshot(client, 'project', 'shot')
 
 
-def test_managed_htmlless_live_scene_resolves_entry_html_into_render_inputs(tmp_path: Path) -> None:
+def test_managed_htmlless_live_scene_snapshot_stays_byte_identical_to_the_runtime_freeze(tmp_path: Path) -> None:
+    """The agent never fills html: its snapshot digest must equal the admitted one."""
     from tests.packs.rendering.test_live_scene_boundary import _package, _without_html
 
     html = "<html><body>reference only</body></html>"
@@ -905,14 +906,22 @@ def test_managed_htmlless_live_scene_resolves_entry_html_into_render_inputs(tmp_
     snapshot = _snapshot(runtime)
     validate_managed_render_snapshot(snapshot)
     scene = snapshot.config["clips"][0]["app"]["liveScene"]
-    assert scene["html"] == html
-    assert scene["source"] == package["source"]
-    assert "html" not in package
-    assert runtime.read_object_ids == ["entry-object"]
+    assert scene == package and "html" not in scene
+    # The Runtime freezes exactly the stored clip; the digest of the agent's
+    # snapshot is the digest of that same html-less document.
+    frozen = {"config": {"tracks": snapshot.config["tracks"], "clips": runtime.timeline["config"]["clips"]}, "registry": snapshot.registry}
+    sent = {"config": {"tracks": snapshot.config["tracks"], "clips": snapshot.config["clips"]}, "registry": snapshot.registry}
+    assert _canonical_digest(sent) == _canonical_digest(frozen)
+    # No object read: the entry bytes reach the renderer through the host, not this snapshot.
+    assert runtime.read_object_ids == []
 
     timeline_path, _registry_path, _authority = materialize_managed_render_snapshot(tmp_path, snapshot)
     written = json.loads(timeline_path.read_text(encoding="utf-8"))
-    assert written["clips"][0]["app"]["liveScene"]["html"] == html
+    assert "html" not in written["clips"][0]["app"]["liveScene"]
+
+
+def _canonical_digest(value: object) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
 def test_managed_inline_live_scene_never_reads_runtime_objects() -> None:
@@ -925,21 +934,3 @@ def test_managed_inline_live_scene_never_reads_runtime_objects() -> None:
     snapshot = _snapshot(runtime)
     validate_managed_render_snapshot(snapshot)
     assert runtime.read_object_ids == []
-
-
-@pytest.mark.parametrize("stored", [None, b"<html>tampered</html>"])
-def test_managed_htmlless_live_scene_with_missing_or_wrong_object_fails_admission(stored) -> None:
-    from tests.packs.rendering.test_live_scene_boundary import _package, _without_html
-
-    runtime = _Runtime()
-    if stored is not None:
-        runtime.objects["entry-object"] = stored
-    runtime.timeline["config"] = {"tracks": [{"id": "v1", "kind": "visual", "label": "V1"}], "clips": [
-        {"id": "scene", "track": "v1", "clipType": "haus.astrid.liveScene", "at": 0, "from": 0, "to": 1,
-         "app": {"liveScene": _without_html(_package("<html>real</html>"))}}
-    ]}
-    with pytest.raises(ManagedRenderValidationError, match="entry-object") as error:
-        _snapshot(runtime)
-    assert error.value.details["validator"] == "prepared_live_scene_object"
-    assert error.value.details["path"] == "$.clips[0].app.liveScene"
-

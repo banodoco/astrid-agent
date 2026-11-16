@@ -10,6 +10,7 @@ import {
   type PanelRenderProps,
 } from '@astrid/editor-sdk';
 import { LIVE_SCENE_CLIP_TYPE_ID, THREEJS_LIVE_EDITOR_EXTENSION_ID } from './identity';
+import { configureLiveSceneLoader } from './liveSceneCache';
 import type { CommandContribution, ProjectObjectStorage } from '@astrid/editor-sdk';
 
 /** Stable first-party identity used by the host release allowlist. */
@@ -31,6 +32,11 @@ let liveSceneAuthoringModule: Promise<LiveSceneAuthoringModule> | undefined;
 function loadLiveSceneAuthoring(): Promise<LiveSceneAuthoringModule> {
   return liveSceneAuthoringModule ??= import('./authoring');
 }
+
+// The scene surface never imports the SDK or authoring (the Remotion build bundles it); the editor
+// installs the loader that reads a stored reference's entry HTML from the project object store.
+configureLiveSceneLoader(async (storage, objectId, revision) =>
+  (await (await loadLiveSceneAuthoring()).loadLiveSceneSource(storage as ProjectObjectStorage, objectId, revision)).liveScene);
 
 // IDs are validated by defineExtension; this cast only attaches the SDK brand.
 const THREEJS_LIVE_EDITOR_EXTENSION_ID_BRANDED = THREEJS_LIVE_EDITOR_EXTENSION_ID as unknown as ExtensionId;

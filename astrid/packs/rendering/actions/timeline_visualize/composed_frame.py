@@ -879,7 +879,19 @@ class RemotionFrameProvider:
         actual = copy.deepcopy(props.get("timeline"))
         if not isinstance(actual, dict) or not isinstance(props.get("assets"), Mapping):
             raise SceneQueryUnavailable("capture timeline or assets missing")
-        expected_timeline = copy.deepcopy(self._timeline)
+        # The renderer fills reference-only live-scene HTML from the host's
+        # verified entry objects into its props. Fill the frozen timeline the
+        # same way, so the whole-timeline comparison below still sees every
+        # other field byte for byte (and a missing entry fails here, loudly).
+        from astrid.packs.rendering.shared.live_scenes.package import (
+            LiveSceneHtmlError,
+            fill_live_scene_html,
+        )
+
+        try:
+            expected_timeline = copy.deepcopy(dict(fill_live_scene_html(self._timeline, self.materialized_objects)))
+        except LiveSceneHtmlError as exc:
+            raise SceneQueryUnavailable(f"capture live scene is not renderable: {exc}") from exc
         # Staging adds only this reserved parameter. Check its bytes against the
         # declared pack assets before comparing the entire serialized timeline.
         for clip, expected_clip in zip(actual.get("clips", []), expected_timeline["clips"]):

@@ -156,8 +156,9 @@ def test_htmlless_reference_package_validates_and_threejs_admits_it():
     assert _support_reasons(config) == []
 
 
-@pytest.mark.parametrize('html', ['', '   ', 7])
+@pytest.mark.parametrize('html', ['', '   ', 7, None])
 def test_present_html_must_still_be_a_nonempty_string(html):
+    # ``"html": null`` is a present key, which the Runtime rejects: Python agrees.
     with pytest.raises(ValueError, match='envelope'):
         validate_package({**PACKAGE, 'html': html})
 

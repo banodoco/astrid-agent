@@ -1594,6 +1594,32 @@ def _prepare_managed_render_inputs(
     return values, authority
 
 
+def _authorize_live_scene_objects(
+    input_manifest: list[str], config: object, *, packages: bool,
+) -> None:
+    """Add the objects of html-less live-scene clips to a task's input ids.
+
+    The entry object is what the host fetches for the renderer; ``packages``
+    also adds each package object first, matching the order in which the
+    Runtime derives a saved-timeline render's input ids.
+    """
+    if not isinstance(config, Mapping):
+        return
+    from astrid.packs.rendering.shared.live_scenes.package import live_scene_entry_refs
+
+    try:
+        refs = live_scene_entry_refs(config)
+    except (ValueError, TypeError, KeyError) as exc:
+        raise CapabilityValidationError(f"live scene in the timeline snapshot is invalid: {exc}") from exc
+    present = {str(value).removeprefix("sha256:") for value in input_manifest}
+    for ref in refs:
+        for object_id in ((ref["package_object_id"],) if packages else ()) + (ref["entry_object_id"],):
+            normalized = object_id.removeprefix("sha256:")
+            if normalized not in present:
+                present.add(normalized)
+                input_manifest.append("sha256:" + normalized)
+
+
 def _discover_invocation_manifest_path(
     raw_result: Mapping[str, Any],
     *,
@@ -2792,6 +2818,11 @@ def _kernel_invoke(
                     continue
                 seen.add(normalized)
                 input_manifest.append(candidate)
+    if isinstance(raw_snapshot, Mapping):
+        # A live-scene clip persists a reference only: its package and entry
+        # objects are authorized here (after the media, in the order the
+        # Runtime derives them) and the host fetches the entry for the renderer.
+        _authorize_live_scene_objects(input_manifest, raw_snapshot.get("config"), packages=True)
 
     # Timeline visualization carries its immutable snapshot in the
     # host-owned authority context rather than in public ``inputs``.  The
@@ -2848,6 +2879,8 @@ def _kernel_invoke(
                     continue
                 seen.add(normalized)
                 input_manifest.append(candidate)
+        if isinstance(authority_snapshot, Mapping):
+            _authorize_live_scene_objects(input_manifest, authority_snapshot.get("config"), packages=False)
 
     if (str(capability.id) == "rendering.timeline_visualize"
             and isinstance(idempotency_context, Mapping)

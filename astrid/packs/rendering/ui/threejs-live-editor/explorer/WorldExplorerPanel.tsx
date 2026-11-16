@@ -1,9 +1,9 @@
 import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent, type MouseEvent, type PointerEvent } from 'react';
-import type { ExtensionContext, PanelRenderProps, ProjectDocumentSurface, TimelineSnapshot } from '@astrid/editor-sdk';
+import type { ExtensionContext, PanelRenderProps, ProjectDocumentSurface, ProjectObjectStorage, TimelineSnapshot } from '@astrid/editor-sdk';
 import { LIVE_SCENE_CLIP_TYPE_ID } from '../identity';
 import type { SceneExplore, SceneInfo, SceneStatus } from '../runtime';
 import { hasInlineHtml, persistedLiveScene, type LiveSceneDocument } from '../liveSceneDocument';
-import { liveSceneDocuments } from '../liveSceneCache';
+import { configureLiveSceneLoader, liveSceneDocuments } from '../liveSceneCache';
 import { loadLibrary, updateLibrary } from './library';
 import { defaultExploreSpeed, FreeCamera, type ViewPose } from './camera';
 import {
@@ -51,6 +51,10 @@ import { WorldList } from './WorldList';
 
 type AuthoringModule = typeof import('../authoring');
 const loadAuthoring = (): Promise<AuthoringModule> => import('../authoring');
+
+// The scene cache is SDK-free (the Remotion build bundles it); the panel installs the real loader.
+configureLiveSceneLoader(async (storage, objectId, revision) =>
+  (await (await loadAuthoring()).loadLiveSceneSource(storage as ProjectObjectStorage, objectId, revision)).liveScene);
 
 const LazyShotStillRenderer = lazy(() =>
   import('../shotStillRenderer').then(({ ShotStillRenderer }) => ({ default: ShotStillRenderer })),

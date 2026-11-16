@@ -108,8 +108,10 @@ function makeSettings(store = new Map<string, unknown>()) {
 /** The sample package as a real live scene envelope, the same shape a timeline clip carries. */
 async function sampleLiveScene() {
   const parsed = await parsePreparedScenePackage(new TextEncoder().encode(SAMPLE_WORLD.packageJson));
-  const ingested = await ingestPreparedPackage(makeStorage(), parsed);
-  return { liveScene: ingested.liveScene, duration: parsed.manifest.duration };
+  const storage = makeStorage();
+  const ingested = await ingestPreparedPackage(storage, parsed);
+  // The persisted reference carries no HTML: keep the ingested objects so every harness's storage can serve them.
+  return { liveScene: ingested.liveScene, duration: parsed.manifest.duration, objects: storage.objects };
 }
 const SAMPLE = await sampleLiveScene();
 /** The sample's length, and how the panel prints it: m:ss, and m:ss.t for the travel readout. */
@@ -151,6 +153,8 @@ function makeHarness(options: HarnessOptions = {}) {
   const projectId = options.projectId === undefined ? 'p1' : options.projectId;
   const settings = options.settings ?? makeSettings();
   const storage = options.storage ?? makeStorage();
+  // A clip stores a reference only, so the sample's package and entry must be readable from this storage.
+  for (const [id, bytes] of SAMPLE.objects) if (!storage.objects.has(id)) storage.objects.set(id, bytes);
   const documents = options.documents ?? fakeDocuments({ projectId: projectId ?? 'none', library: options.library });
   let snapshot: Record<string, unknown> = {
     projectId,

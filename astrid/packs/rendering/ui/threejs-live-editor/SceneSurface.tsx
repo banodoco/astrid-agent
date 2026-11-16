@@ -11,9 +11,8 @@ import {
   type SceneView,
 } from './runtime';
 import { sceneTrace, traceId } from './diagnostics';
-import type { ProjectObjectStorage } from '@astrid/editor-sdk';
 import { hasInlineHtml, readLiveScene, type LiveSceneDocument } from './liveSceneDocument';
-import { peekLiveScene, resolveLiveScene } from './liveSceneCache';
+import { peekLiveScene, resolveLiveScene, type SceneObjectStorage } from './liveSceneCache';
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -33,7 +32,7 @@ type ResolvedScene = { document?: LiveSceneDocument; error?: string };
  * The document for a stored scene. Inline HTML is used as-is; a reference is loaded from the project
  * object store once per revision (liveSceneCache). `document` is undefined while it loads.
  */
-function useLiveSceneDocument(source: unknown, storage: ProjectObjectStorage | undefined): ResolvedScene {
+function useLiveSceneDocument(source: unknown, storage: SceneObjectStorage | undefined): ResolvedScene {
   const inline = hasInlineHtml(source) ? source : undefined;
   const cached = inline ? undefined : peekLiveScene(storage, source);
   const stored = inline || cached ? undefined : readLiveScene(source);
@@ -178,7 +177,7 @@ function sceneOverlay(state: 'loading' | 'unavailable', width: number, height: n
 
 export function SceneSurface({ source, storage, sourceTime, width, height, view, worldTime, capture, onStatus, onReady, showStatus = false }: {
   /** A loaded document, or a stored reference (loaded from `storage` when it has no inline HTML). */
-  source: unknown; storage?: ProjectObjectStorage; sourceTime: number; width: number; height: number;
+  source: unknown; storage?: SceneObjectStorage; sourceTime: number; width: number; height: number;
   /** The explorer's free view. Never set by the timeline preview or exports: the scene then draws its authored camera. */
   view?: SceneView;
   /** World time for the explorer (sourceTime equals it); never set by the timeline preview or exports. */

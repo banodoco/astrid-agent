@@ -51,6 +51,21 @@ class LiveSceneHtmlError(ValueError):
         super().__init__(f"live scene entry object {object_id!r} {reason}")
 
 
+class LiveSceneFilesUnavailable(LiveSceneHtmlError):
+    """A render has no object store to read an html-less scene's entry HTML from."""
+
+    def __init__(self, object_id: str, clip_id: object) -> None:
+        self.clip_id = clip_id
+        ValueError.__init__(
+            self,
+            f"live scene in clip {clip_id!r}: the scene's files (entry object {object_id!r}) are not "
+            "available for a local file render, because they exist only in the project's object store; "
+            "render the project's saved timeline (managed render) so the Runtime supplies them",
+        )
+        self.object_id = object_id
+        self.reason = "is not available for a local file render"
+
+
 def validate_package(package: object) -> None:
     """Validate only bytes and metadata; never unpack or execute package content."""
     if not isinstance(package, Mapping):
@@ -60,9 +75,11 @@ def validate_package(package: object) -> None:
     source = package.get("source")
     package_body = package.get("packageBody")
     html = package.get("html")
-    # ``html`` is optional: a reference-only scene is verified against its entry
-    # object by ``resolve_live_scene_html`` before any renderer consumes it.
-    has_html = html is not None
+    # ``html`` is optional as a KEY: a reference-only scene is verified against
+    # its entry object by ``resolve_live_scene_html`` before any renderer
+    # consumes it. A present key must be a non-empty string, exactly as the
+    # Runtime requires, so ``"html": null`` is rejected rather than read as absent.
+    has_html = "html" in package
     if (
         not isinstance(revision, str)
         or not _SHA256_DIGEST.fullmatch(revision)
@@ -135,7 +152,7 @@ def resolve_live_scene_html(
     a raised exception from it is reported as an unreadable object.
     """
     validate_package(package)
-    if package.get("html") is not None:
+    if "html" in package:
         return package
     body = json.loads(str(package["packageBody"]), parse_constant=_reject_json_constant)
     entry = body["entry"]
@@ -158,3 +175,78 @@ def resolve_live_scene_html(
     except UnicodeDecodeError as exc:
         raise LiveSceneHtmlError(object_id, "is not valid UTF-8 HTML") from exc
     return {**package, "html": html}
+
+
+def _is_live_scene_clip(clip: object) -> bool:
+    return isinstance(clip, Mapping) and clip.get("clipType") == "haus.astrid.liveScene"
+
+
+def _scene_of(clip: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    app = clip.get("app")
+    scene = app.get("liveScene") if isinstance(app, Mapping) else None
+    return scene if isinstance(scene, Mapping) else None
+
+
+def live_scene_entry_refs(config: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The entry objects of every html-less live-scene clip in ``config``.
+
+    Each item names the clip, its package object and the entry object its package declares
+    (``entry_object_id`` is the package's own ``entry.object_id``, the id a
+    renderer later looks up). Clips with inline ``html`` need no object.
+    """
+    refs: list[dict[str, Any]] = []
+    clips = config.get("clips") if isinstance(config, Mapping) else None
+    for clip in clips if isinstance(clips, list) else ():
+        scene = _scene_of(clip) if _is_live_scene_clip(clip) else None
+        if scene is None or "html" in scene:
+            continue
+        validate_package(scene)
+        entry = json.loads(str(scene["packageBody"]), parse_constant=_reject_json_constant)["entry"]
+        refs.append({
+            "clip_id": clip.get("id"),
+            "package_object_id": str(scene["source"]["objectId"]),
+            "entry_object_id": str(entry["object_id"]),
+            "entry_size": entry["size"],
+        })
+    return refs
+
+
+def fill_live_scene_html(
+    timeline: Mapping[str, Any], materialized_objects: Mapping[str, Any] | None,
+) -> Mapping[str, Any]:
+    """Return ``timeline`` with ``html`` filled for its html-less live-scene clips.
+
+    The bytes come from the host's ``materialized_objects`` handoff (object id
+    or bare digest -> file path or bytes) and are verified against the digest
+    and size the package declares. Clips that carry inline ``html`` are left
+    untouched. With no handoff at all (a local render of a timeline file) an
+    html-less clip fails with ``LiveSceneFilesUnavailable``; a handoff that
+    lacks the entry, or whose bytes do not verify, fails with
+    ``LiveSceneHtmlError``. Nothing is ever rendered blank.
+    """
+    from pathlib import Path
+
+    clips = timeline.get("clips")
+    if not isinstance(clips, list):
+        return timeline
+
+    def read_object(object_id: str) -> bytes | None:
+        value = materialized_objects.get(object_id) if isinstance(materialized_objects, Mapping) else None
+        if value is None:
+            return None
+        if isinstance(value, (bytes, bytearray)):
+            return bytes(value)
+        return Path(value).read_bytes()
+
+    resolved: list[Any] = []
+    for clip in clips:
+        scene = _scene_of(clip) if _is_live_scene_clip(clip) else None
+        if scene is not None and "html" not in scene:
+            if not materialized_objects:
+                validate_package(scene)
+                entry = json.loads(str(scene["packageBody"]), parse_constant=_reject_json_constant)["entry"]
+                raise LiveSceneFilesUnavailable(str(entry["object_id"]), clip.get("id"))
+            app = clip["app"]
+            clip = {**clip, "app": {**app, "liveScene": resolve_live_scene_html(scene, read_object)}}
+        resolved.append(clip)
+    return {**timeline, "clips": resolved}

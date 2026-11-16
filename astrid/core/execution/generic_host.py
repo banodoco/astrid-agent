@@ -9353,6 +9353,13 @@ class GenericPackHost:
                         OPENAI_IMAGE_STORAGE_POLICY.validate_reference_bytes(data, index=int(name[-2:]))
             except ValueError as exc:
                 raise HostError(str(exc)) from exc
+        # A live-scene clip persists a reference, not its HTML. Hand every
+        # renderer the verified entry object so it can fill the HTML into its
+        # own props; the frozen snapshot itself is never rewritten.
+        self._materialize_scene_entries(
+            snapshot_config, values.get("timeline_authority"),
+            fetch_object=fetch_object, materialized_objects=materialized_objects,
+        )
         if materialized_objects:
             values["materialized_root"] = str(managed_root)
             values["materialized_objects"] = materialized_objects
@@ -9360,6 +9367,54 @@ class GenericPackHost:
             return values.mint_source(attempt)
         except ValueError as exc:
             raise HostError(str(exc)) from exc
+
+    @staticmethod
+    def _materialize_scene_entries(
+        snapshot_config: Any,
+        timeline_authority: Any,
+        *,
+        fetch_object: Callable[..., Path],
+        materialized_objects: dict[str, str],
+    ) -> None:
+        """Fetch the HTML entry object of every html-less live-scene clip.
+
+        The entries come from the frozen snapshot's own packages and from the
+        Runtime authority's ``scene_objects``. Each is fetched through the same
+        authorized, digest-checked ``fetch_object`` as every other managed
+        input (so an entry the Runtime did not put in the task's input object
+        ids is refused), its size is checked against the Runtime record, and it
+        is registered under both the ``sha256:`` object id and the bare digest.
+        """
+        from astrid.packs.rendering.shared.live_scenes.package import live_scene_entry_refs
+
+        if isinstance(timeline_authority, str):
+            try:
+                timeline_authority = json.loads(timeline_authority)
+            except ValueError:
+                timeline_authority = None
+        wanted: dict[str, tuple[str, Any]] = {}
+        try:
+            declared = live_scene_entry_refs(snapshot_config) if isinstance(snapshot_config, Mapping) else []
+        except (ValueError, TypeError, KeyError) as exc:
+            raise HostError(f"live scene package in the frozen snapshot is invalid: {exc}") from exc
+        recorded = timeline_authority.get("scene_objects") if isinstance(timeline_authority, Mapping) else None
+        for item in (*declared, *(recorded if isinstance(recorded, list) else ())):
+            if not isinstance(item, Mapping) or not isinstance(item.get("entry_object_id"), str):
+                raise HostError("live scene object record has no entry_object_id")
+            digest = item["entry_object_id"].removeprefix("sha256:")
+            size = item.get("entry_size")
+            known = wanted.get(digest)
+            if known is not None and known[1] is not None and size is not None and known[1] != size:
+                raise HostError(f"live scene entry {digest} has conflicting declared sizes")
+            wanted[digest] = (str(item.get("clip_id")), size if size is not None else (known[1] if known else None))
+        for digest, (clip_id, size) in wanted.items():
+            destination = fetch_object(
+                "sha256:" + digest, digest, f"scene entry of clip {clip_id}", filename="scene.html",
+            )
+            if size is not None and destination.stat().st_size != size:
+                raise HostError(f"live scene entry {digest} size differs from the Runtime record")
+            materialized_objects["sha256:" + digest] = str(destination)
+            materialized_objects[digest] = str(destination)
 
     def _start_network_broker(
         self,
