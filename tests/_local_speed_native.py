@@ -136,8 +136,18 @@ def xml_events(path: Path):
     tracerpt versions cannot render Thread V3's variable tail; its documented
     ProcessId/TThreadId uint32 prefix is still usable (Thread_V2_TypeGroup1).
     """
-    for _, element in ET.iterparse(path, events=("end",)):
+    # tracerpt can produce millions of Event siblings. Clearing each Event
+    # alone leaves its empty Element attached to the parent and makes retained
+    # XML memory grow with trace length. Remove it from the actual parent only
+    # AFTER its complete row has been decoded and yielded. Keep every event and
+    # the exact loss/flush/completion requirements; this is not event sampling.
+    open_elements = []
+    for action, element in ET.iterparse(path, events=("start", "end")):
+        if action == "start":
+            open_elements.append(element)
+            continue
         if local_name(element.tag) != "Event":
+            open_elements.pop()
             continue
         system = next((x for x in element if local_name(x.tag) == "System"), None)
         fields = {}
@@ -184,6 +194,9 @@ def xml_events(path: Path):
                "at_ns": at, "pid": header_pid, "tid": header_tid,
                "fields": fields, "decode_error": error}
         element.clear()
+        if len(open_elements) > 1:
+            open_elements[-2].remove(element)
+        open_elements.pop()
 
 
 def trace_etw(path: Path, summary_path: Path) -> dict:
