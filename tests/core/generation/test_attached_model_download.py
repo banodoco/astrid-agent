@@ -653,3 +653,95 @@ def test_without_a_given_client_downloads_use_the_operating_system_trust(comfy, 
     apply_attached_model_download(comfy.client, "z-image", "t2i", plan_sha256=plan["plan_sha256"],
                                   sources=_sources(file_server))
     assert len(made) == len(plan["files"])
+
+
+@pytest.mark.parametrize("tamper", ["same_size_wrong_sha", "wrong_size"])
+def test_rerun_refuses_a_listed_file_that_no_longer_matches_confirmation(
+    comfy, models, file_server, tamper
+):
+    root, _ = models
+    initial = _plan(comfy, file_server)
+    first = initial["files"][0]
+    path = Path(first["folder"]) / first["file"]
+    expected = BLOBS[_url_path(first["url"])]
+    path.write_bytes(expected)
+    _list_on_comfy(comfy, first["folder"], first["file"])
+
+    if tamper == "same_size_wrong_sha":
+        changed = bytes([expected[0] ^ 1]) + expected[1:]
+    else:
+        changed = expected[:-1]
+    path.write_bytes(changed)
+    asked = len(file_server.requested)
+
+    with pytest.raises(AttachedDownloadRefused) as caught:
+        _apply(comfy, file_server, initial["plan_sha256"])
+
+    assert caught.value.code == "present_file_mismatch"
+    assert first["file"] in str(caught.value) and "no files were downloaded" in str(caught.value).lower()
+    assert path.read_bytes() == changed
+    assert file_server.requested[asked:] == []
+    assert _files(root) == [f"{Path(first['folder']).name}/{first['file']}"]
+
+
+def test_rerun_refuses_when_comfy_lists_a_missing_confirmed_file(comfy, models, file_server):
+    root, _ = models
+    initial = _plan(comfy, file_server)
+    first = initial["files"][0]
+    _list_on_comfy(comfy, first["folder"], first["file"])
+    current = _plan(comfy, file_server)
+    assert current["plan_sha256"] == initial["plan_sha256"]
+    asked = len(file_server.requested)
+
+    with pytest.raises(AttachedDownloadRefused) as caught:
+        _apply(comfy, file_server, initial["plan_sha256"])
+
+    assert caught.value.code == "present_file_missing"
+    assert first["file"] in str(caught.value) and "listed" in str(caught.value).lower()
+    assert _files(root) == [] and file_server.requested[asked:] == []
+
+
+def test_completed_confirmation_can_be_reapplied_without_network_or_file_writes(comfy, models, file_server):
+    root, _ = models
+    initial = _plan(comfy, file_server)
+    for item in initial["files"]:
+        path = Path(item["folder"]) / item["file"]
+        path.write_bytes(BLOBS[_url_path(item["url"])])
+        _list_on_comfy(comfy, item["folder"], item["file"])
+    completed = _plan(comfy, file_server)
+    assert completed["plan_sha256"] == initial["plan_sha256"]
+    before = {name: (root / name).stat().st_mtime_ns for name in _files(root)}
+    asked = len(file_server.requested)
+
+    result = _apply(comfy, file_server, initial["plan_sha256"])
+
+    wanted = [item["file"] for item in initial["files"]]
+    assert result["downloaded"] == []
+    assert result["present"] == wanted
+    assert [item["file"] for item in result["done"]] == wanted
+    assert "present and verified" in result["next_step"].lower()
+    assert file_server.requested[asked:] == []
+    assert {name: (root / name).stat().st_mtime_ns for name in _files(root)} == before
+
+
+def test_rerun_verifies_matching_symlinked_present_file_without_changing_it(comfy, models, file_server, tmp_path):
+    root, _ = models
+    initial = _plan(comfy, file_server)
+    first = initial["files"][0]
+    target = tmp_path / "user-model-copy.bin"
+    target.write_bytes(BLOBS[_url_path(first["url"])])
+    link = Path(first["folder"]) / first["file"]
+    link.symlink_to(target)
+    _list_on_comfy(comfy, first["folder"], first["file"])
+    asked = len(file_server.requested)
+
+    result = _apply(comfy, file_server, initial["plan_sha256"])
+
+    assert result["present"] == [first["file"]]
+    assert result["done"][0]["file"] == first["file"]
+    assert link.is_symlink() and link.resolve() == target
+    assert target.read_bytes() == BLOBS[_url_path(first["url"])]
+    assert file_server.requested[asked:] == [_url_path(item["url"]) for item in initial["files"][1:]]
+    assert sorted(str(path.relative_to(root)) for path in root.rglob("*") if path.is_file()) == sorted([
+        f"{Path(item['folder']).name}/{item['file']}" for item in initial["files"][1:]
+    ] + [f"{Path(first['folder']).name}/{first['file']}"])
