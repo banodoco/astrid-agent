@@ -34,9 +34,19 @@ def _expected_workflow_digest(source: Path) -> str:
     from astrid.packs.vibecomfy.production_engine import _workflow_content_digest
     from vibecomfy.workflow_bundle import emit_bundle
 
-    entry = entries.find_entry('transcription')
-    if not entry or entry.get('kind') != 'audio' or 'transcribe' not in entry.get('modes', []):
+    # Do not let a user entry with the same name define the verifier's authority.
+    import yaml
+    pack = Path(__file__).resolve().parents[1] / 'packs' / 'generation'
+    manifest = pack / 'extensions' / 'vibecomfy.workflows' / 'transcription.yaml'
+    declaration = yaml.safe_load(manifest.read_text(encoding='utf-8'))
+    candidates = [row for row in declaration.get('entries', []) if row.get('id') == 'transcription']
+    if len(candidates) != 1:
         raise ValueError('the installed transcription entry is unavailable')
+    entry = dict(candidates[0])
+    entry['bundle'] = str((manifest.parent / declaration['ready_root'] / entry['bundle']).resolve())
+    if (entry.get('kind') != 'audio' or 'transcribe' not in entry.get('modes', [])
+            or not Path(entry['bundle']).is_relative_to(pack.resolve())):
+        raise ValueError('the installed transcription entry is invalid')
     workflow, plan, assets = entries.prepare(entries.bundle_path(entry), target_client=None,
         mode='transcribe', binds=entry.get('binds'), defaults=entry.get('defaults'),
         values={'audio_ref': str(source)})
@@ -94,8 +104,14 @@ def import_transcription_run(client: Any, project: str, media_id: str, run_id: s
             raise ValueError('run workflow does not match the installed transcription workflow')
         duration = ffprobe_duration_seconds(path)
     output_result = _data(client.tasks.list_managed_outputs(task_id), 'task outputs')
-    if isinstance(output_result, tuple):
-        output_result = output_result[0]
+    from .pagination import page_pair
+    page = page_pair(output_result)
+    if page is not None:
+        if page[1] is not None:
+            raise ValueError('transcription outputs span multiple pages')
+        output_result = page[0]
+    if not isinstance(output_result, list):
+        raise ValueError('transcription output page is malformed')
     outputs = [row for row in output_result if isinstance(row, Mapping)
                and row.get('output_port') == 'vibecomfy_run' and row.get('role') == 'result']
     if len(outputs) != 1:

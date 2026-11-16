@@ -108,8 +108,9 @@ def test_run_and_from_run_commands_parse():
 def test_run_command_stores_stubbed_generation(monkeypatch):
     import astrid.core.media as media
     import astrid.sdk.transcript_run as module
-    from astrid.sdk.generation import generate
+    import astrid.sdk.generation as generation
     from astrid.core.cli.domain_timelines import build_parser
+    import astrid.packs.timeline.cli  # install the product's execution handlers
     monkeypatch.setattr(module, '_expected_workflow_digest', lambda _: 'expected')
     monkeypatch.setattr(media, 'ffprobe_duration_seconds', lambda _: 2)
     client = Client()
@@ -118,9 +119,28 @@ def test_run_command_stores_stubbed_generation(monkeypatch):
         seen.update(kwargs)
         assert Path(kwargs['audio_ref']).read_bytes() == b'source media'
         return {'kernel_run_id': 'run-1'}
-    monkeypatch.setattr(generate, 'audio', audio)
+    monkeypatch.setattr(generation, 'generate', SimpleNamespace(audio=audio))
     args = build_parser(client).parse_args(['transcripts', 'run', client.media_id, '--project', 'p',
                                             '--placement', 'managed'])
     assert args.handler(args) == 0
     assert seen['entry'] == 'transcription' and seen['placement'] == 'managed'
     assert client.document['content']['media_id'] == client.media_id
+
+
+def test_real_entry_reconstructs_admitted_workflow(monkeypatch, tmp_path):
+    """The verifier rebuilds the same bundle generation emits for this asset."""
+    from astrid.core.generation import entries
+    from astrid.packs.vibecomfy.production_engine import _workflow_content_digest
+    from astrid.sdk.transcript_run import _expected_workflow_digest
+    from vibecomfy.workflow_bundle import emit_bundle
+
+    media = tmp_path / 'source.wav'
+    media.write_bytes(b'source media')
+    entry = entries.find_entry('transcription')
+    workflow, plan, _ = entries.prepare(entries.bundle_path(entry), target_client=None,
+        mode='transcribe', binds=entry.get('binds'), defaults=entry.get('defaults'),
+        values={'audio_ref': str(media)})
+    assert not plan['unbound']
+    bundle = tmp_path / 'workflow.py'
+    emit_bundle(workflow, bundle, {'operation': 'authored'})
+    assert _expected_workflow_digest(media) == _workflow_content_digest(bundle)
