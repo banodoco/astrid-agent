@@ -125,6 +125,21 @@ def test_projection_preserves_frames_trim_audio_and_occurrence_placement() -> No
     assert audio["hold"] == 1
 
 
+def test_projection_canonicalizes_stored_legacy_registry_without_mutating_graph() -> None:
+    source = graph()
+    revision = next(item for item in source["shot_revisions"] if item["shot_id"] == "shot-alpha")
+    legacy_source = {"media_id": "m-image", "width": 1672, "height": 941, "resolution": "1672x941"}
+    asset = copy.deepcopy(revision["assets"][0])
+    asset.update(asset_id="legacy-image", object_id="m-image", media_type="image/png", source=legacy_source)
+    revision["assets"] = [asset]
+    projected = project_shot_composition(source)
+    occurrence_entry = projected.registry["assets"]["legacy-image"]
+    assert occurrence_entry["media_id"] == "m-image"
+    assert occurrence_entry["resolution"] == "1672x941"
+    assert "width" not in occurrence_entry and "height" not in occurrence_entry
+    assert revision["assets"][0]["source"] == legacy_source
+
+
 def test_linked_occurrences_remain_distinct_and_export_metadata_is_qualified() -> None:
     projected = project_shot_composition(graph())
     linked = [item for item in projected.config["clips"] if item.get("shot_id") == "shot-alpha"]

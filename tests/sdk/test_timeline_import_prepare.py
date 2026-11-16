@@ -30,6 +30,19 @@ def test_legacy_internal_assets_are_reversible_and_registry_is_unchanged():
     assert result["registry"] == registry
 
 
+def test_legacy_import_canonicalizes_registry_and_internal_asset_dimensions():
+    entry = {"media_id": "sha256:" + "a" * 64, "width": 1672, "height": 941, "resolution": "1672x941"}
+    source = {"shots": {"s": {"internal_timeline": {
+        "assets": {"a": copy.deepcopy(entry)},
+        "registry": {"assets": {"a": copy.deepcopy(entry)}},
+    }}}}
+    _normalize_legacy_internal_assets(source)
+    internal = source["shots"]["s"]["internal_timeline"]
+    expected = {"media_id": entry["media_id"], "resolution": "1672x941"}
+    assert {key: value for key, value in internal["assets"][0].items() if key != "id"} == expected
+    assert internal["registry"]["assets"]["a"] == expected
+
+
 @pytest.mark.parametrize("assets", [{"": {}}, {"a": None}, {"a": 2}, {"a": {"id": "a"}},
                                      {"a": {"id": "other"}}])
 def test_legacy_internal_assets_refuse_ambiguous_or_invalid_entries(assets):

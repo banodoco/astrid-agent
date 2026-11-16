@@ -99,6 +99,26 @@ contract is the public `timelines.visualize`/`open_composition` SDK surface
 plus `rendering.render` with `timeline_ref`; there is intentionally no
 `astrid/sdk/timeline_rendering.py` facade to restore.
 
+### Save and inspect one clean composed frame
+
+Use `--at` to capture one timeline moment. With `--out`, Astrid saves the
+decorated review page at the export root and the raw frame image under
+`frames/`. The summary names the clean composed frame when the request uses
+`--mode composed` without visualization overlays; copy that exact path into
+an image viewer to inspect the pixels without page or card decoration:
+
+```bash
+python3 -m astrid timelines show <timeline> --project <project> --json
+python3 -m astrid timelines visualize <timeline> --project <project> \
+  --mode composed --at 6.5 --format png --out /tmp/timeline-at-6-5
+python3 -c 'from PIL import Image; Image.open("/tmp/timeline-at-6-5/frames/frame-000000156.png").show()'
+```
+
+The example frame number assumes 24 fps at 6.5 seconds. Use the path printed
+as `clean composed frame` for the selected timeline and moment. If `--labels`,
+`--overlay`, `--layers` or `--highlight` is requested, the summary calls the
+export a raw frame image instead of claiming it has no visualization overlays.
+
 ## Render and validate output
 
 Only when the user asks for a render or an exported file. When one is required, use the supported runtime-owned route:

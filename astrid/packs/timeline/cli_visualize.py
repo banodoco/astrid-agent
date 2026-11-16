@@ -424,10 +424,37 @@ def _visualization_summary(outputs: Mapping[str, Any], *, parsed: argparse.Names
     timing = outputs.get("timing") if isinstance(outputs.get("timing"), Mapping) else {}
     label = {"contact": "contact sheet", "motion": "motion sheet" if inputs.get("preset") == "cut" else
              f"{inputs.get('preset')} view", "filmstrip": "filmstrip"}.get(view, view)
-    lines = [f"{label}: {primary or '(no page produced; see --json)'}"]
+    if primary:
+        lines = [f"{label}: {primary}"]
+    elif outputs.get("evidence_kind") == "declared_inputs":
+        lines = [f"{label}: no picture produced (inputs mode is render-free; it lists declared inputs)"]
+    else:
+        lines = [f"{label}: no picture produced (no PNG page was returned)"]
     for page in pages:
         if page != primary:
             lines.append(f"  also: {page}")
+    artifacts = outputs.get("artifacts")
+    if isinstance(artifacts, Mapping):
+        for kind in ("png", "md"):
+            artifact = artifacts.get(kind)
+            if isinstance(artifact, Mapping) and artifact.get("filename"):
+                artifact_label = "Markdown" if kind == "md" else kind.upper()
+                lines.append(f"  {artifact_label} artifact: {artifact['filename']}")
+    exported = outputs.get("exported")
+    if isinstance(exported, Mapping):
+        for page in exported.get("pages") or []:
+            lines.append(f"  exported PNG: {page}")
+        if exported.get("markdown"):
+            lines.append(f"  exported Markdown: {exported['markdown']}")
+        frames = [str(frame) for frame in exported.get("frames") or [] if frame]
+        if len(frames) == 1:
+            clean_composed = (
+                getattr(parsed, "mode", None) == "composed"
+                and not inputs.get("layers")
+                and not inputs.get("highlight")
+            )
+            label = "clean composed frame (no visualization overlays)" if clean_composed else "raw frame image"
+            lines.append(f"  {label}: {frames[0]}")
     if outputs.get("preview"):
         lines.append(f"  preview for humans (animated, sampled frames at real timing): {outputs['preview']}")
     frames = timing.get("frames")
@@ -444,7 +471,11 @@ def _visualization_summary(outputs: Mapping[str, Any], *, parsed: argparse.Names
                    f"{frames} frames on one page"
                    + (f" (window {float(window_info.get('end', 0)) - float(window_info.get('start', 0)):.2f} s: "
                       f"--window S widens it, up to {_preset_max()[str(preset)]:g} s)" if str(preset) in _preset_max() else "")),
-    }.get(view, f"{frames} frames")
+    }.get(
+        view,
+        "declared inputs inspected; no frames captured"
+        if outputs.get("evidence_kind") == "declared_inputs" else f"{frames} frames",
+    )
     lines.extend(_visualization_revision_lines(outputs))
     lines.append(f"  {what}" + (f" · frames {resolution}" if resolution else ""))
     if timing.get("capture_s") is not None:
@@ -478,14 +509,37 @@ def _visualization_summary(outputs: Mapping[str, Any], *, parsed: argparse.Names
             lines.append(f"  … {len(findings) - 14} more in findings.txt next to the page")
     project = str(parsed.project or "<project>")
     timeline = str(inputs.get("timeline_slug") or "<timeline>")
-    base = ["python3", "-m", "astrid", "timelines", "visualize", timeline, "--project", project]
+    command = _cli()._astrid_cli_command()
+    base = [*command, "timelines", "visualize", timeline, "--project", project]
     if inputs.get("revision_id"):
         base += ["--revision-id", str(inputs["revision_id"])]
-    lint = ["python3", "-m", "astrid", "timelines", "lint", timeline, "--project", project]
-    show = ["python3", "-m", "astrid", "timelines", "show", timeline, "--project", project]
+    lint = [*command, "timelines", "lint", timeline, "--project", project]
+    show = [*command, "timelines", "show", timeline, "--project", project]
     beats = ["--beats", str(parsed.beats)] if getattr(parsed, "beats", None) else []
     window = outputs.get("window") if isinstance(outputs.get("window"), Mapping) else None
-    if view == "motion" and window and inputs.get("preset") != "cut":
+    if outputs.get("evidence_kind") == "declared_inputs" and not primary:
+        input_command = [
+            *command, "timelines", "visualize", timeline, "--project", project,
+            "--mode", "inputs", "--format", "md", "--out", "artifacts",
+        ]
+        composed_command = [
+            *command, "timelines", "visualize", timeline, "--project", project,
+            "--mode", "composed", "--format", "png",
+        ]
+        for name, flag in (
+            ("range", "--range"), ("at", "--at"), ("frame", "--frame"),
+            ("shot", "--shot"), ("clip", "--clip"), ("occurrence", "--occurrence"),
+            ("asset", "--asset"), ("render_run", "--render-run"),
+            ("revision_id", "--revision-id"),
+        ):
+            value = inputs.get(name)
+            if value not in (None, ""):
+                composed_command += [flag, str(value)]
+        nexts = [
+            ("get a picture", composed_command),
+            ("export declared inputs", input_command),
+        ]
+    elif view == "motion" and window and inputs.get("preset") != "cut":
         nexts = _window_navigation(window, base)
     elif view == "motion":
         cut = str(inputs.get("cut") or "N")
@@ -977,13 +1031,18 @@ def cmd_visualize(parsed: argparse.Namespace) -> int:
         if timing is not None:
             human_outputs["timing"] = timing
         if export_dir:
-            human_outputs["exported"] = cli._export_visualization(human_outputs, export_dir)
+            human_outputs["exported"] = cli._export_visualization(
+                human_outputs, export_dir, client=parsed.client, project=parsed.project,
+            )
     if parsed.json or human_outputs is None or not result.ok:
         return print_result(envelope, as_json=parsed.json)
     print(_visualization_summary(human_outputs, parsed=parsed, inputs=inputs))
     if human_outputs.get("exported"):
         exported = human_outputs["exported"]
-        print(f"exported: {exported['dir']}  ({len(exported['pages'])} page(s), {len(exported['frames'])} frame(s))")
+        print(f"export directory: {exported['dir']}")
+        if len(exported["frames"]) > 1:
+            frame_dir = Path(exported["frames"][0]).parent
+            print(f"  raw frames: {len(exported['frames'])} file(s) in {frame_dir}")
     return 0
 
 
