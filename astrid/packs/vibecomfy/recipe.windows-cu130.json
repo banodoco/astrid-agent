@@ -4,7 +4,7 @@
   "platform": "windows-x86_64-cu130",
   "pins": {
     "path": "packs/runpod/pins.json",
-    "sha256": "e1b0b8ce00a01a09113cbe4de34264cdf82a66d40512dea52ca2b69ac96e5c4a"
+    "sha256": "dad82648fdd1b234d324e32729afdf283cf519642fb870dd46d151fa1073a9bc"
   },
   "source_bindings": [
     {
@@ -26,6 +26,11 @@
       "name": "videohelpersuite",
       "pin": "videohelpersuite",
       "relative_path": "runtime/ComfyUI/custom_nodes/ComfyUI-VideoHelperSuite"
+    },
+    {
+      "name": "comfyui-whisper",
+      "pin": "comfyui-whisper",
+      "relative_path": "runtime/ComfyUI/custom_nodes/ComfyUI-Whisper"
     }
   ],
   "environments": [
@@ -91,7 +96,7 @@
   "primary_environment": "comfy",
   "models_lock": {
     "path": "packs/vibecomfy/models.lock.json",
-    "sha256": "15644292198c752e4c4c37d4eb6f86afd2c7232181bc9606921ac0ef2dcff093"
+    "sha256": "f5d8ad7fbd8b99d26fe4559a2d26aa88325a0bd62249c22005c5d22faca2c43a"
   },
   "start": {
     "argv": [
@@ -120,5 +125,14 @@
     ],
     "timeout_seconds": 120,
     "poll_interval_seconds": 2
-  }
+  },
+  "source_patches": [
+    {
+      "source": "comfyui-whisper",
+      "path": "apply_whisper.py",
+      "sha256_before": "89a9b9e522d9d5fa0c8655a370fdc6a88bc8a819f3bbbb17cf880981ad7a4832",
+      "sha256_after": "c3c72c746f81923fb0a1249e67645353010ec205e0f8ef4135533977287c347c",
+      "replacement": "packs/runpod/patches/ComfyUI-Whisper-apply_whisper.py"
+    }
+  ]
 }

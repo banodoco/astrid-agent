@@ -360,6 +360,16 @@
       "destination": "text_encoders/qwen_4b_ace15.safetensors",
       "bytes": 8379154232,
       "sha256": "ffe5ffb855086c2ab55e467e9859fb01894781020a0376484dd19de166b79873"
+    },
+    {
+      "name": "large-v3-turbo",
+      "repository": null,
+      "revision": null,
+      "path": null,
+      "url": "https://openaipublic.azureedge.net/main/whisper/models/aff26ae408abcba5fbf8813c21e62b0941638c5f6eebfb145be0c9839262a19a/large-v3-turbo.pt",
+      "destination": "stt/whisper/large-v3-turbo.pt",
+      "bytes": 1617941637,
+      "sha256": "aff26ae408abcba5fbf8813c21e62b0941638c5f6eebfb145be0c9839262a19a"
     }
   ]
 }
