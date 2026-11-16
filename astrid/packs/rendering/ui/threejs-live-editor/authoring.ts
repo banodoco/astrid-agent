@@ -13,7 +13,6 @@ import type {
 } from '@astrid/editor-sdk';
 import type { SceneManifest } from './runtime';
 import { LIVE_SCENE_CLIP_TYPE_ID, THREEJS_LIVE_EDITOR_EXTENSION_ID } from './identity';
-import { persistedLiveScene, type LiveSceneDocument, type LiveSceneReference } from './liveSceneDocument';
 
 const SHA256_DIGEST = /^sha256:[0-9a-f]{64}$/;
 const ENTRY_NAME = /^[\w./-]+\.html$/;
@@ -379,8 +378,7 @@ async function ingestPackage(
   readonly entry: ProjectObjectMetadata;
   readonly assets: readonly ProjectObjectMetadata[];
   readonly package: ProjectObjectMetadata;
-  /** The persisted reference only; the entry HTML is already stored as the entry object. */
-  readonly liveScene: LiveSceneReference;
+  readonly liveScene: Record<string, unknown>;
 }> {
   validatePackageInput(input);
   const entry = await ingestVerified(storage, input.entry.bytes, input.entry.mediaType, input.entry.filename!);
@@ -402,25 +400,26 @@ async function ingestPackage(
       revision: packageObject.digest,
       source: { objectId: packageObject.object_id, revision: packageObject.digest },
       packageBody: body,
+      html: new TextDecoder().decode(input.entry.bytes),
     },
   };
 }
 
-/** Ingest a prepared package and return its persisted reference without placing it. */
+/** Ingest a prepared package and return the scene envelope without placing it. */
 export async function ingestPreparedPackage(
   storage: ProjectObjectStorage,
   input: LiveScenePackageInput,
-): Promise<{ package: ProjectObjectMetadata; liveScene: LiveSceneReference }> {
+): Promise<{ package: ProjectObjectMetadata; liveScene: Record<string, unknown> }> {
   const ingested = await ingestPackage(storage, input);
   return { package: ingested.package, liveScene: ingested.liveScene };
 }
 
-/** Load and verify an already-ingested canonical package and its HTML entry (both digests are checked). */
+/** Load and verify an already-ingested canonical package and its HTML entry. */
 export async function loadLiveSceneSource(
   storage: ProjectObjectStorage,
   objectId: string,
   revision: string,
-): Promise<{ liveScene: LiveSceneDocument; manifest: SceneManifest }> {
+): Promise<{ liveScene: Record<string, unknown>; manifest: SceneManifest }> {
   const bytes = await storage.read(objectId);
   if (await digestBytes(bytes) !== revision) fail('Stored world failed integrity verification');
   let packageBody: string;
@@ -453,16 +452,10 @@ export async function loadLiveSceneSource(
 type CapturedSceneSource = {
   readonly objectId: string;
   readonly packageBody: string;
-  /** Present only on legacy clips that still carry inline HTML. */
-  readonly html?: string;
+  readonly html: string;
 };
 
-/** Two captures name the same source. An inline HTML cache counts as part of the source: gaining, losing or changing it is a change. */
-function sameCapturedSource(left: CapturedSceneSource, right: CapturedSceneSource): boolean {
-  return left.objectId === right.objectId && left.packageBody === right.packageBody && left.html === right.html;
-}
-
-/** Check the public reader and clip agree on the OLD source identity.
+/** Check the public reader and inline cache agree on the OLD source identity.
  * Persisted bytes are verified separately before any candidate is ingested. */
 function capturedPlacement(
   snapshot: TimelineSnapshot,
@@ -479,7 +472,7 @@ function capturedPlacement(
   const liveScene = clip.app?.liveScene;
   if (sources.length !== 1 || !source || source.clipId !== id || !source.sourceObjectId
     || !isRecord(liveScene) || !isRecord(liveScene.source)
-    || typeof liveScene.packageBody !== 'string') {
+    || typeof liveScene.packageBody !== 'string' || typeof liveScene.html !== 'string') {
     fail(`Clip ${id} has no immutable scene package source`);
   }
   if (source.sourceRevision !== capture.packageRevision || source.packageRevision !== capture.packageRevision
@@ -487,15 +480,7 @@ function capturedPlacement(
     || liveScene.source.objectId !== source.sourceObjectId) {
     fail(`Live-scene placement ${id} does not match the captured old package identity`);
   }
-  const html = typeof liveScene.html === 'string' ? liveScene.html : undefined;
-  return {
-    clip,
-    source: {
-      objectId: source.sourceObjectId,
-      packageBody: liveScene.packageBody,
-      ...(html === undefined ? {} : { html }),
-    },
-  };
+  return { clip, source: { objectId: source.sourceObjectId, packageBody: liveScene.packageBody, html: liveScene.html } };
 }
 
 async function validateExistingSource(
@@ -521,9 +506,8 @@ async function validateExistingSource(
     || entry.digest !== capture.entryRevision) {
     fail('Existing live-scene canonical entry does not match the captured old entry identity');
   }
-  // The entry object is verified against its digest either way; inline HTML, when a legacy clip still has it, must match it.
   const entryBytes = await readVerified(storage, entry);
-  if (source.html !== undefined && !bytesEqual(entryBytes, new TextEncoder().encode(source.html))) {
+  if (!bytesEqual(entryBytes, new TextEncoder().encode(source.html))) {
     fail('Existing live-scene HTML cache does not match the canonical entry');
   }
 }
@@ -666,12 +650,10 @@ function liveScenePatch(
 export function placementOperations(
   snapshot: TimelineSnapshot,
   placements: readonly PreparedScenePlacement[],
-  liveScene: LiveSceneReference,
+  liveScene: Record<string, unknown>,
 ): TimelinePatchOperation[] {
   const operations: TimelinePatchOperation[] = [];
   let order = 0;
-  // Clip app data holds the reference only. The HTML lives in the entry object, never on the timeline.
-  const reference = persistedLiveScene(liveScene);
   const tracks = new Set(snapshot.tracks.map((track) => track.id));
   for (const placement of placements) {
     if (!tracks.has(placement.track)) {
@@ -688,7 +670,7 @@ export function placementOperations(
       op: 'clip.update',
       target: placement.id,
       payload: {
-        mode: 'merge', from: placement.from, to: placement.to, speed: placement.rate, app: { liveScene: reference },
+        mode: 'merge', from: placement.from, to: placement.to, speed: placement.rate, app: { liveScene },
         ...(placement.label ? { label: placement.label } : {}),
       },
       order: order++,
@@ -766,7 +748,7 @@ export async function importPreparedMapleScene(
 /** Place an already-ingested live scene as new clips on the timeline. */
 export async function placeLiveScene(
   ctx: AuthoringContext,
-  liveScene: LiveSceneReference,
+  liveScene: Record<string, unknown>,
   duration: number,
   placements: readonly PreparedScenePlacement[],
 ): Promise<{ affectedPlacements: string[]; acknowledgedTimelineVersion: number }> {
@@ -862,7 +844,8 @@ export async function publishLiveSceneEdit(
   const clips = placementIds.map((id, index) => {
     const placement = capturedPlacement(current, id, capture);
     const oldSource = captured[index].source;
-    if (!sameCapturedSource(placement.source, oldSource)) {
+    if (placement.source.objectId !== oldSource.objectId || placement.source.packageBody !== oldSource.packageBody
+      || placement.source.html !== oldSource.html) {
       fail(`Live-scene placement ${id} changed its captured old source during publication`);
     }
     return placement.clip;
@@ -1058,8 +1041,7 @@ async function captureMaplePublication(
     fail('Existing live-scene canonical entry does not match the manifest');
   }
   const entryBytes = await readVerified(storage, entry);
-  const legacyHtml = firstCaptured.source.html;
-  if (legacyHtml !== undefined && !bytesEqual(entryBytes, new TextEncoder().encode(legacyHtml))) {
+  if (!bytesEqual(entryBytes, new TextEncoder().encode(firstCaptured.source.html))) {
     fail('Existing live-scene HTML cache does not match the canonical entry');
   }
   const capture: LiveScenePublicationCapture = {

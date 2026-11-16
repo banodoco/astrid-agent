@@ -3,7 +3,7 @@ import hashlib
 import json
 import math
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from typing import Any
 
 _SHA256_DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -42,15 +42,6 @@ def _reject_json_constant(value: str) -> None:
     raise ValueError(f"invalid JSON constant {value}")
 
 
-class LiveSceneHtmlError(ValueError):
-    """The entry HTML object of an html-less live scene cannot be resolved."""
-
-    def __init__(self, object_id: str, reason: str) -> None:
-        self.object_id = object_id
-        self.reason = reason
-        super().__init__(f"live scene entry object {object_id!r} {reason}")
-
-
 def validate_package(package: object) -> None:
     """Validate only bytes and metadata; never unpack or execute package content."""
     if not isinstance(package, Mapping):
@@ -60,9 +51,6 @@ def validate_package(package: object) -> None:
     source = package.get("source")
     package_body = package.get("packageBody")
     html = package.get("html")
-    # ``html`` is optional: a reference-only scene is verified against its entry
-    # object by ``resolve_live_scene_html`` before any renderer consumes it.
-    has_html = html is not None
     if (
         not isinstance(revision, str)
         or not _SHA256_DIGEST.fullmatch(revision)
@@ -72,7 +60,8 @@ def validate_package(package: object) -> None:
         or not isinstance(source.get("revision"), str)
         or not _SHA256_DIGEST.fullmatch(source["revision"])
         or not isinstance(package_body, str)
-        or (has_html and (not isinstance(html, str) or not html.strip()))
+        or not isinstance(html, str)
+        or not html.strip()
     ):
         raise ValueError("missing or invalid scene package envelope")
     if revision != source["revision"]:
@@ -80,7 +69,7 @@ def validate_package(package: object) -> None:
 
     try:
         package_bytes = package_body.encode("utf-8")
-        html_bytes = html.encode("utf-8") if has_html else None
+        html_bytes = html.encode("utf-8")
     except UnicodeEncodeError as exc:
         raise ValueError("scene package contains invalid UTF-8 text") from exc
     if revision != _digest(package_bytes):
@@ -115,46 +104,7 @@ def validate_package(package: object) -> None:
     for index, asset in enumerate(assets):
         _metadata(asset, f"asset[{index}]")
 
-    if html_bytes is None:
-        return
     if entry["digest"] != _digest(html_bytes):
         raise ValueError("scene entry digest mismatch")
     if entry["size"] != len(html_bytes):
         raise ValueError("scene entry size mismatch")
-
-
-def resolve_live_scene_html(
-    package: Mapping[str, Any], read_bytes: Callable[[str], bytes | None]
-) -> Mapping[str, Any]:
-    """Return ``package`` with ``html`` filled from its entry object.
-
-    A scene that already carries ``html`` is returned unchanged and never
-    touches ``read_bytes``. Otherwise the entry object named by ``packageBody``
-    is read by id and verified against the digest and size the package declares.
-    ``read_bytes`` returns the object's bytes, or ``None`` when it is absent;
-    a raised exception from it is reported as an unreadable object.
-    """
-    validate_package(package)
-    if package.get("html") is not None:
-        return package
-    body = json.loads(str(package["packageBody"]), parse_constant=_reject_json_constant)
-    entry = body["entry"]
-    object_id = str(entry["object_id"])
-    try:
-        data = read_bytes(object_id)
-    except Exception as exc:  # noqa: BLE001 - every reader failure fails the render
-        raise LiveSceneHtmlError(object_id, f"is unreadable: {exc}") from exc
-    if data is None:
-        raise LiveSceneHtmlError(object_id, "is missing from the object store")
-    if not isinstance(data, (bytes, bytearray)):
-        raise LiveSceneHtmlError(object_id, "did not return bytes")
-    data = bytes(data)
-    if _digest(data) != entry["digest"]:
-        raise LiveSceneHtmlError(object_id, "digest does not match the scene package")
-    if len(data) != entry["size"]:
-        raise LiveSceneHtmlError(object_id, "size does not match the scene package")
-    try:
-        html = data.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise LiveSceneHtmlError(object_id, "is not valid UTF-8 HTML") from exc
-    return {**package, "html": html}

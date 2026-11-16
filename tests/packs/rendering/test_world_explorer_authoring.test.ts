@@ -226,9 +226,7 @@ describe('world explorer authoring: ingest and load', () => {
 
     const loaded = await loadLiveSceneSource(storageOf(h), pkg.object_id, pkg.digest);
 
-    // Ingest returns the persisted reference (no HTML); loading adds the verified entry HTML.
-    expect(liveScene).not.toHaveProperty('html');
-    expect(loaded.liveScene).toEqual({ ...liveScene, html: SCENE_HTML });
+    expect(loaded.liveScene).toEqual(liveScene);
     expect(loaded.liveScene).toMatchObject({
       revision: pkg.digest,
       source: { objectId: pkg.object_id, revision: pkg.digest },
@@ -267,7 +265,7 @@ describe('world explorer authoring: ingest and load', () => {
 });
 
 describe('world explorer authoring: placementOperations', () => {
-  const liveScene = { revision: 'sha256:r', source: { objectId: 'o', revision: 'sha256:r' }, packageBody: '{}' };
+  const liveScene = { revision: 'sha256:r', source: { objectId: 'o', revision: 'sha256:r' }, packageBody: '{}', html: '<html/>' };
 
   it('adds no track when the placement track already exists', () => {
     const snapshot = snapshotOf([], [V1_VISUAL], 7, 'project-a', 'timeline-a');
@@ -308,7 +306,7 @@ describe('world explorer authoring: placementOperations', () => {
 });
 
 describe('world explorer authoring: placeLiveScene', () => {
-  const liveScene = { revision: 'sha256:r', source: { objectId: 'o', revision: 'sha256:r' }, packageBody: '{}' };
+  const liveScene = { revision: 'sha256:r', source: { objectId: 'o', revision: 'sha256:r' }, packageBody: '{}', html: '<html/>' };
 
   it('rejects when the snapshot has no projectId', async () => {
     const h = harness({ projectId: '' , tracks: [V1_VISUAL] });
@@ -366,7 +364,7 @@ describe('world explorer authoring: placeLiveScene', () => {
 });
 
 describe('world explorer authoring: updateLiveSceneClip', () => {
-  const liveScene = { revision: 'sha256:r', source: { objectId: 'o', revision: 'sha256:r' }, packageBody: '{}' };
+  const liveScene = { revision: 'sha256:r', source: { objectId: 'o', revision: 'sha256:r' }, packageBody: '{}', html: '<html/>' };
   const liveClip: RawClip = {
     id: 'live-1', at: 0, from: 0, to: 10, speed: 1, track: 'V1',
     clipType: LIVE_SCENE_CLIP_TYPE_ID, app: { liveScene },
@@ -421,7 +419,7 @@ describe('world explorer authoring: updateLiveSceneClip', () => {
 });
 
 describe('world explorer authoring: add-to-video with the explorer model', () => {
-  const liveScene = { revision: 'sha256:r', source: { objectId: 'o', revision: 'sha256:r' }, packageBody: '{}' };
+  const liveScene = { revision: 'sha256:r', source: { objectId: 'o', revision: 'sha256:r' }, packageBody: '{}', html: '<html/>' };
   // Stretch 5..15 at rate 2 occupies 5 seconds of timeline.
   const stretch = { from: 5, to: 15, speed: 2 };
   const playhead = 3;

@@ -11,9 +11,6 @@ import {
   type SceneView,
 } from './runtime';
 import { sceneTrace, traceId } from './diagnostics';
-import type { ProjectObjectStorage } from '@astrid/editor-sdk';
-import { hasInlineHtml, readLiveScene, type LiveSceneDocument } from './liveSceneDocument';
-import { peekLiveScene, resolveLiveScene } from './liveSceneCache';
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -25,43 +22,7 @@ function suppliedRevision(value: unknown): string {
     : '';
 }
 
-const UNAVAILABLE = "This scene's files could not be loaded";
-
-type ResolvedScene = { document?: LiveSceneDocument; error?: string };
-
-/**
- * The document for a stored scene. Inline HTML is used as-is; a reference is loaded from the project
- * object store once per revision (liveSceneCache). `document` is undefined while it loads.
- */
-function useLiveSceneDocument(source: unknown, storage: ProjectObjectStorage | undefined): ResolvedScene {
-  const inline = hasInlineHtml(source) ? source : undefined;
-  const cached = inline ? undefined : peekLiveScene(storage, source);
-  const stored = inline || cached ? undefined : readLiveScene(source);
-  const key = stored ? `${stored.source.objectId}@${stored.revision}` : '';
-  const [loaded, setLoaded] = useState<{ key: string; document?: LiveSceneDocument; error?: string }>();
-  useEffect(() => {
-    if (!stored || !key) return;
-    if (!storage) {
-      setLoaded({ key, error: 'Project storage is unavailable' });
-      return;
-    }
-    let active = true;
-    resolveLiveScene(storage, stored).then(
-      (document) => { if (active) setLoaded({ key, document }); },
-      (error: unknown) => { if (active) setLoaded({ key, error: messageOf(error) }); },
-    );
-    return () => { active = false; };
-    // `stored` is derived from `key` and `source`; the key is the identity that matters.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, storage]);
-  if (inline) return { document: inline };
-  if (cached) return { document: cached };
-  if (!stored) return { error: 'Missing scene source/revision' };
-  if (loaded?.key !== key) return {};
-  return loaded.document ? { document: loaded.document } : { error: loaded.error ?? UNAVAILABLE };
-}
-
-type SceneRequest = { pkg?: ValidatedScenePackage; error?: string; revision: string; pending?: boolean };
+type SceneRequest = { pkg?: ValidatedScenePackage; error?: string; revision: string };
 type SceneDocument = {
   request: SceneRequest;
   generation: number;
@@ -160,25 +121,8 @@ function SceneInstance({ document, component, frame, visible, width, height, onS
   });
 }
 
-function sceneOverlay(state: 'loading' | 'unavailable', width: number, height: number, detail?: string) {
-  const loading = state === 'loading';
-  return createElement('div', {
-    'data-testid': loading ? 'astrid-live-scene-loading' : 'astrid-live-scene-unavailable',
-    role: loading ? 'status' : 'alert',
-    style: {
-      position: 'absolute', inset: 0, width, height, display: 'grid', placeItems: 'center', padding: 16,
-      background: '#111', color: 'white', font: '12px sans-serif', textAlign: 'center',
-    },
-  }, loading
-    ? 'Loading live scene…'
-    : createElement('span', null, UNAVAILABLE, detail ? createElement('span', {
-      style: { display: 'block', marginTop: 6, opacity: 0.7, font: '11px monospace' },
-    }, detail) : null));
-}
-
-export function SceneSurface({ source, storage, sourceTime, width, height, view, worldTime, capture, onStatus, onReady, showStatus = false }: {
-  /** A loaded document, or a stored reference (loaded from `storage` when it has no inline HTML). */
-  source: unknown; storage?: ProjectObjectStorage; sourceTime: number; width: number; height: number;
+export function SceneSurface({ source, sourceTime, width, height, view, worldTime, capture, onStatus, onReady, showStatus = false }: {
+  source: unknown; sourceTime: number; width: number; height: number;
   /** The explorer's free view. Never set by the timeline preview or exports: the scene then draws its authored camera. */
   view?: SceneView;
   /** World time for the explorer (sourceTime equals it); never set by the timeline preview or exports. */
@@ -189,16 +133,12 @@ export function SceneSurface({ source, storage, sourceTime, width, height, view,
   /** Called once per loaded scene, when its document first becomes the displayed one. */
   onReady?: (info: SceneInfo) => void;
 }) {
-  const resolved = useLiveSceneDocument(source, storage);
-  const revision = suppliedRevision(source);
   const requested = useMemo<SceneRequest>(() => {
-    if (resolved.error) return { error: resolved.error, revision };
-    if (!resolved.document) return { revision, pending: true };
     try {
-      const pkg = validateScenePackage(resolved.document);
+      const pkg = validateScenePackage(source);
       return { pkg, revision: pkg.package.revision };
-    } catch (error) { return { error: messageOf(error), revision }; }
-  }, [resolved.document, resolved.error, revision]);
+    } catch (error) { return { error: messageOf(error), revision: suppliedRevision(source) }; }
+  }, [source]);
   // Fence completion immediately when props change, including before effects
   // clean up an obsolete integrity check or host.
   const desired = useRef(requested); desired.current = requested;
@@ -250,9 +190,7 @@ export function SceneSurface({ source, storage, sourceTime, width, height, view,
       setStatus(value); callback.current?.(value);
     };
     setCandidate(undefined);
-    if (requested.pending) {
-      report({ phase: 'loading', revision: requested.revision });
-    } else if (!requested.pkg) {
+    if (!requested.pkg) {
       report({ phase: 'error', revision: requested.revision, error: requested.error ?? 'Invalid scene package' });
     } else {
       const pkg = requested.pkg;
@@ -285,11 +223,6 @@ export function SceneSurface({ source, storage, sourceTime, width, height, view,
   const currentCandidate = candidate?.request === requested ? candidate : undefined;
   const documents = [displayed, currentCandidate].filter((document): document is SceneDocument => !!document);
   const diagnostic = requested.pkg?.package.html.includes('<!-- astrid-l1b-diagnostic -->') || requested.pkg?.__l1bTrace === true;
-  // Never a blank frame: while the scene loads, or when it cannot be loaded or verified, say so inline.
-  const overlay = displayed ? null
-    : requested.pending ? sceneOverlay('loading', width, height)
-    : !requested.pkg || status.phase === 'error' ? sceneOverlay('unavailable', width, height, requested.error)
-    : null;
   return createElement('div', {
     'data-testid': 'astrid-live-scene-entry', 'data-phase': status.phase,
     'data-desired-time': sourceTime.toFixed(3), 'data-source-time': displayedStatus?.sourceTime?.toFixed(3),
@@ -300,7 +233,7 @@ export function SceneSurface({ source, storage, sourceTime, width, height, view,
     key: document.instance, document, component: component.current,
     frame: document.request === requested ? frame.current : undefined,
     visible: document === displayed, width, height, onStatus: receiveStatus,
-  })), overlay, showStatus ? createElement('div', {
+  })), showStatus ? createElement('div', {
     style: { position: 'absolute', left: 8, top: 8, background: '#000b', color: 'white', font: '12px monospace', padding: 6 },
   }, `${status.phase} · displayed ${displayedStatus?.revision ?? '…'} · requested ${requested.revision} · source ${displayedStatus?.sourceTime?.toFixed(3) ?? '…'}s · requested ${sourceTime.toFixed(3)}s${status.error ? ` · ${status.error}` : ''}`) : null);
 }
