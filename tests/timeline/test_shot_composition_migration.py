@@ -61,7 +61,11 @@ def test_inventory_and_dry_run_are_read_only_and_rehearsal_is_deterministic():
 
 
 def test_child_migration_preserves_identity_metadata_and_uses_canonical_graph():
-    plan = plan_shot_composition_migration(_source(), project_id="project-1", timeline_id="main")
+    source = _source()
+    source["projects"][0]["timelines"][0]["child_timelines"]["child-1"]["registry"]["assets"]["media-a"].update(
+        width=1672, height=941, resolution="1672x941"
+    )
+    plan = plan_shot_composition_migration(source, project_id="project-1", timeline_id="main")
     assert plan.identity_mapping["occurrences"]["occ-1"]["occurrence_id"] == "occ-1"
     assert plan.graph["occurrences"][0]["occurrence_id"] == "occ-1"
     shot = plan.publication["shot_revisions"][0]
@@ -70,6 +74,9 @@ def test_child_migration_preserves_identity_metadata_and_uses_canonical_graph():
     assert shot["payload"]["selected_variants"] == {"pool-1": "alt-1"}
     assert shot["payload"]["provenance"]["lineage"] == "source-cut"
     assert plan.publication["dependency_manifest"]["shots"][0]["internal_timeline_revision_id"] == shot["internal_timeline_revision_id"]
+    internal_assets = shot["payload"]["internal_timeline"]["registry"]["assets"]
+    assert internal_assets["media-a"]["resolution"] == "1672x941"
+    assert "width" not in internal_assets["media-a"] and "height" not in internal_assets["media-a"]
     assert "pinnedShotGroups" not in plan.publication["parent_composition"]["config"]
     assert all(clip.get("clipType") != "shot" for clip in plan.publication["parent_composition"]["clips"])
 

@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .duration import clip_timeline_duration
+from .asset_dimensions import canonicalize_asset_dimensions
 from .shot_composition import validate_shot_composition
 from .validators.meta import validate_meta, validate_timeline_meta_locations
 
@@ -297,6 +298,10 @@ def _add_assets(registry: dict[str, Any], revision: Mapping[str, Any]) -> None:
         digest = asset.get("digest")
         object_id = asset.get("object_id")
         entry = copy.deepcopy(dict(asset.get("source", {}))) if isinstance(asset.get("source"), Mapping) else {}
+        try:
+            entry = canonicalize_asset_dimensions(asset_id, entry)
+        except ValueError as exc:
+            raise ShotCompositionProjectionError(str(exc)) from exc
         if isinstance(object_id, str):
             entry.setdefault("media_id", object_id)
         if isinstance(digest, str):
@@ -777,7 +782,10 @@ def project_runtime_parent_composition(
             if not isinstance(asset_id, str) or not isinstance(entry, Mapping):
                 raise ShotCompositionProjectionError("internal registry assets must be named objects")
             projected_id = f"{occurrence_id}:{asset_id}"
-            assets[projected_id] = copy.deepcopy(dict(entry))
+            try:
+                assets[projected_id] = canonicalize_asset_dimensions(projected_id, entry)
+            except ValueError as exc:
+                raise ShotCompositionProjectionError(str(exc)) from exc
             asset_ids[asset_id] = projected_id
 
         speed = _placement_speed(occurrence.get("speed", 1), path=f"occurrences[{index}].speed")
