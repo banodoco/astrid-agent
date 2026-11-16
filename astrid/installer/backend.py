@@ -2065,8 +2065,10 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             }
             if error is None:
                 write_json(marker, {**current_marker, "command_shim": None, "command_path": None})
+            self.say("Connect this computer at https://astrid.haus/?connect=1")
             try:
-                webbrowser.open("https://astrid.haus/?connect=1")
+                if os.environ.get("ASTRID_NO_BROWSER") != "1":
+                    webbrowser.open("https://astrid.haus/?connect=1")
             except OSError:
                 pass
             return
@@ -2098,8 +2100,10 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         write_json(marker, {**current_marker,
                             "command_shim": str(shim) if shim else current_marker.get("command_shim"),
                             "command_path": effects.get("path_added") or previously_owned_path})
+        self.say("Connect this computer at https://astrid.haus/?connect=1")
         try:
-            webbrowser.open("https://astrid.haus/?connect=1")
+            if os.environ.get("ASTRID_NO_BROWSER") != "1":
+                webbrowser.open("https://astrid.haus/?connect=1")
         except OSError:
             pass  # The printed URL remains usable on headless computers.
         if hint:

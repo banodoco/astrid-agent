@@ -43,6 +43,10 @@ PUBLIC_INSTALL_LINE_WINDOWS = "& ([scriptblock]::Create((irm https://astrid.haus
 # this is the one copy in Agent code. scripts/render_readme.py imports it, and
 # tests/test_handoff_sentence.py asserts it equals the skill's sentence.
 HANDOFF_SENTENCE = "Next: set up generation with the astrid-setup skill."
+# With --skills off there is no setup skill to hand off to. The command is on PATH only when
+# --command is on; otherwise the run-astrid launcher in the install folder is the way in.
+SCAN_HINT = "Next: run `astrid generate scan` to find your ComfyUI."
+SCAN_HINT_LAUNCHER = "Next: run `run-astrid generate scan` in Astrid's install folder to find your ComfyUI."
 
 
 def _repair_next() -> str:
@@ -120,6 +124,10 @@ class Outcome:
     # The installer log, shown last on a warned success; never inside a program root.
     details: str | None = None
     runtime_running: bool = False
+    # The resolved --skills and --command choices, and the agent build (first 8 hex of its commit).
+    skills: bool = True
+    command: bool = True
+    build: str | None = None
 
     @property
     def exit_code(self) -> int:
@@ -145,9 +153,10 @@ class Outcome:
         notes = (", but " + " and ".join(WARNINGS[name]["phrase"] for name in self.warnings)
                  if self.kind in SUCCESS and self.warnings else "")
         if self.kind == "updated":
+            build = f" (build {self.build})" if self.build else ""
             if self.start is None:
-                return [f"Astrid installed: {release(self.target)}{notes}.", HANDOFF_SENTENCE]
-            return [f"Astrid updated: {release(self.start)} → {release(self.target)}{notes}."]
+                return [f"Astrid installed: {release(self.target)}{build}{notes}.", self._handoff()]
+            return [f"Astrid updated: {release(self.start)} → {release(self.target)}{build}{notes}."]
         if self.kind == "already-current":
             return [f"Astrid is already up to date ({release(self.still)}){notes}. Nothing was changed."]
         if self.kind == "repaired":
@@ -176,6 +185,11 @@ class Outcome:
             return [f"Astrid was NOT installed: {why}", "Setup did not finish; some downloaded files may remain."]
         still = "Setup did not finish; some downloaded files may remain." if self.still is None else f"Astrid is still {release(self.still)}."
         return [f"Astrid did NOT update: {why}", still]
+
+    def _handoff(self) -> str:
+        if self.skills:
+            return HANDOFF_SENTENCE
+        return SCAN_HINT if self.command else SCAN_HINT_LAUNCHER
 
     def record(self) -> dict:
         return {"format": FORMAT, **asdict(self), "exit_code": self.exit_code,

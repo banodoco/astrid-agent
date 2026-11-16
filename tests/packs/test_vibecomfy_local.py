@@ -189,12 +189,60 @@ def test_scan_reports_local_comfyui_and_endpoint_data(tmp_path: Path) -> None:
     ]
 
 
-def test_scan_returns_errors_for_unavailable_ports() -> None:
+def test_scan_treats_a_port_with_nothing_listening_as_a_probe_miss() -> None:
     result = scan([1])
     assert result["servers"] == []
-    assert result["errors"]
-    assert result["errors"][0]["port"] == 1
-    assert result["errors"][0]["endpoint"] == "/system_stats"
+    assert result["errors"] == []
+
+
+class _FailingStatsHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        self.send_error(500)
+
+    def log_message(self, _format: str, *_args: object) -> None:
+        return
+
+
+def test_scan_reports_a_server_that_answers_system_stats_with_an_error() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _FailingStatsHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        result = scan([server.server_address[1]])
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert result["servers"] == []
+    assert [(error["port"], error["endpoint"]) for error in result["errors"]] == [
+        (server.server_address[1], "/system_stats"),
+    ]
+
+
+class _NoWorkflowFolderHandler(_ComfyHandler):
+    def do_GET(self) -> None:
+        if urlsplit(self.path).path == "/userdata":
+            self.requested.append(self.path)
+            self.send_error(404)
+            return
+        super().do_GET()
+
+
+def test_scan_treats_a_missing_workflow_folder_as_no_saved_workflows(tmp_path: Path) -> None:
+    server, thread = _server(tmp_path)
+    server.RequestHandlerClass = _NoWorkflowFolderHandler
+    try:
+        result = scan([server.server_address[1]])
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert result["errors"] == []
+    assert len(result["servers"]) == 1
+    assert result["servers"][0]["workflows"] == []
+    assert result["servers"][0]["workflows_detail"] == []
 
 
 def test_scan_discovers_pinokio_running_comfyui_and_python(
