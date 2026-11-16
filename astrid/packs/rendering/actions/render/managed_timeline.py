@@ -280,6 +280,19 @@ def _validate_render_element_clip_types(
         if not isinstance(clip, Mapping):
             continue
         clip_type = clip.get("clipType", "media")
+        if 'fit' in clip:
+            tracks = {row.get('id'): row for row in config.get('tracks', []) if isinstance(row, Mapping)}
+            track = tracks.get(clip.get('track'), {})
+            assets = snapshot.registry.get('assets', {}) if isinstance(snapshot.registry, Mapping) else {}
+            asset = assets.get(clip.get('asset'), {}) if isinstance(assets, Mapping) else {}
+            asset_type = str(asset.get('type', '')).lower() if isinstance(asset, Mapping) else ''
+            if (clip_type not in {'media', 'video', 'image'} or track.get('kind') == 'audio'
+                    or asset_type.startswith('audio')):
+                path = f"$.clips[{index}].fit"
+                reason = f"clip {clip.get('id', '?')!r} property fit is unsupported for clip kind {clip_type!r}"
+                raise ManagedRenderValidationError(reason, path=path, reason=reason,
+                                                   recovery='Remove fit or use a visual media clip.',
+                                                   validator='visual_clip_fit')
         if clip_type == "haus.astrid.liveScene":
             from astrid.packs.rendering.shared.live_scenes.package import validate_package
 

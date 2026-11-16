@@ -901,3 +901,20 @@ def test_unsupported_clip_property_names_clip_and_property():
     with pytest.raises(ValueError, match=r"clip 'my-clip'.*unexpectedAppearance"):
         validate_timeline({'tracks': [{'id': 'v', 'kind': 'visual', 'label': 'V'}], 'clips': [
             {'id': 'my-clip', 'track': 'v', 'at': 0, 'unexpectedAppearance': 1}]})
+
+
+@pytest.mark.parametrize('kind', ['text', 'effect-layer', 'example.effect', 'audio'])
+def test_explicit_fit_on_nonmedia_names_clip_and_kind(kind):
+    snapshot = SimpleNamespace(timeline_slug='main', registry={'assets': {}})
+    config = {'tracks': [{'id': 'v', 'kind': 'visual'}],
+              'clips': [{'id': 'bad', 'track': 'v', 'clipType': kind, 'fit': 'cover'}]}
+    with pytest.raises(ManagedRenderValidationError, match=rf"bad.*fit.*{kind}"):
+        managed_timeline._validate_render_element_clip_types(snapshot, config)
+
+
+@pytest.mark.parametrize('kind', ['image', 'video', 'media'])
+def test_visual_media_fit_is_admitted(kind):
+    snapshot = SimpleNamespace(timeline_slug='main', registry={'assets': {'a': {'type': 'video/mp4'}}})
+    config = {'tracks': [{'id': 'v', 'kind': 'visual', 'fit': 'cover'}],
+              'clips': [{'id': 'good', 'track': 'v', 'clipType': kind, 'asset': 'a', 'fit': 'contain'}]}
+    managed_timeline._validate_render_element_clip_types(snapshot, config)
