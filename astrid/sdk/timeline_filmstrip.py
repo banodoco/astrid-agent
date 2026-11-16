@@ -295,6 +295,40 @@ def _timeline_snapshot(envelope: Mapping) -> Mapping:
     return snapshot
 
 
+
+def _hydrate_render_snapshot(envelope: Mapping, client: Any) -> Mapping:
+    """Open the selected task's immutable snapshot, verifying identity and bytes."""
+    inputs = envelope.get('inputs', {})
+    if not isinstance(inputs, Mapping):
+        _fail('Render has malformed frozen inputs; rerender the selected timeline.')
+    ref = inputs.get('timeline_snapshot_ref')
+    if ref is None:
+        return envelope
+    if not isinstance(ref, Mapping) or 'timeline_snapshot' in inputs or 'timeline_snapshot' in envelope:
+        _fail('Render snapshot reference is malformed or ambiguous; rerender the timeline.')
+    authority = _authority(envelope)
+    for ref_key, authority_key in (('project_id', 'project_id'), ('timeline_id', 'timeline_id'),
+                                   ('revision_id', 'parent_revision_id'),
+                                   ('revision_digest', 'parent_content_digest')):
+        if ref.get(ref_key) is not None and ref.get(ref_key) != authority.get(authority_key):
+            _fail('Render snapshot reference differs from its authority; rerender the timeline.')
+    digest = _digest(ref.get('digest'))
+    response = client.get_object(digest)
+    raw = response if isinstance(response, bytes) else response.get('data') if isinstance(response, Mapping) else getattr(response, 'data', None)
+    if not isinstance(raw, bytes) or 'sha256:' + hashlib.sha256(raw).hexdigest() != digest:
+        _fail('Render snapshot bytes do not match their digest; rerender the timeline.')
+    try:
+        snapshot = json.loads(raw)
+    except (ValueError, UnicodeDecodeError):
+        _fail('Render snapshot is invalid JSON; rerender the timeline.')
+    if not isinstance(snapshot, Mapping):
+        _fail('Render snapshot is invalid; rerender the timeline.')
+    result = deepcopy(dict(envelope))
+    result['inputs'] = dict(result['inputs'])
+    result['inputs'].pop('timeline_snapshot_ref')
+    result['inputs']['timeline_snapshot'] = snapshot
+    return result
+
 def _canonical_shot_occurrences(config: Mapping[str, Any]) -> list[dict[str, Any]]:
     app = config.get("app") if isinstance(config, Mapping) else None
     composition = app.get("astrid_shot_composition") if isinstance(app, Mapping) else None
@@ -1075,6 +1109,7 @@ def prepare_filmstrip(
     if selected is None:
         _status_failure(render_status(lifecycle="absent", output={"timeline": selector}, project=project))
     run, task, envelope, authority = selected
+    envelope = _hydrate_render_snapshot(envelope, client)
     if 'output' not in components['resolved']:
         timeline_snapshot = _timeline_snapshot(envelope)
         config = timeline_snapshot.get('config', {})
@@ -1265,7 +1300,7 @@ def prepare_filmstrip(
     if provenance_outputs:
         provenance_id = _digest(provenance_outputs[0].get('digest') or provenance_outputs[0].get('object_id'))
         response = client.get_object(provenance_id)
-        raw = response.get('data') if isinstance(response, Mapping) else response.data
+        raw = response if isinstance(response, bytes) else response.get('data') if isinstance(response, Mapping) else getattr(response, 'data', None)
         if not isinstance(raw, bytes) or 'sha256:' + hashlib.sha256(raw).hexdigest() != provenance_id:
             _fail('Render provenance bytes do not match their digest; rerender the timeline.')
         try:
