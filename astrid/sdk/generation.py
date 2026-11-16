@@ -1492,9 +1492,9 @@ class GenerationFacade:
         try:
             if kwargs.get("model") == "h3":
                 inputs = dict(kwargs.get("inputs") or {})
-                supplied_map = inputs.get("asset_map") or {}
-                if isinstance(supplied_map, (str, Path)):
-                    supplied_map = json.loads(Path(supplied_map).read_text(encoding="utf-8"))
+                from astrid.core.generation.entries import read_file_map_document
+                supplied_map = read_file_map_document(
+                    inputs.get("asset_map") or {}, allow_output_handles=True, allow_empty=True)
                 if isinstance(supplied_map, Mapping) and "__astrid_h3_prepared__" in supplied_map:
                     raise CapabilityValidationError("the H3 prepared-source handoff is reserved for the runtime")
                 handles = self._h3_handle_assets(inputs)
@@ -1509,10 +1509,9 @@ class GenerationFacade:
                     kwargs["project"] = project
                     root = Path(mkdtemp(prefix="astrid-h3-handles-"))
                     job_dirs.append(root)
-                    supplied = inputs.get("asset_map") or {}
-                    if isinstance(supplied, (str, Path)):
-                        supplied = json.loads(Path(supplied).read_text(encoding="utf-8"))
-                    mapping = dict(supplied)
+                    if not isinstance(supplied_map, Mapping):
+                        raise CapabilityValidationError("H3 asset_map must be a readable map of asset IDs to files")
+                    mapping = dict(supplied_map)
                     lineage = []
                     for index, handle in enumerate(handles):
                         descriptor, record = resolve_media_handle(client, project, handle)
