@@ -517,6 +517,9 @@ def _cmd_transcripts_show(parsed: argparse.Namespace) -> int:
             assets = registry.get("assets") or {}
             asset = assets.get(clip.asset) if clip.asset else None
             clip_media_id = (asset.get("media_id") or asset.get("content_sha256")) if isinstance(asset, Mapping) else None
+            if (parsed.clip and parsed.media_id is None and resolved_media_id is not None
+                    and isinstance(clip_media_id, str) and clip_media_id != resolved_media_id):
+                raise VerbError(f"clip {parsed.clip!r} matches different media; provide MEDIA_ID to choose")
             if resolved_media_id and clip_media_id != resolved_media_id:
                 continue
             if parsed.clip and not isinstance(clip_media_id, str):
@@ -526,17 +529,28 @@ def _cmd_transcripts_show(parsed: argparse.Namespace) -> int:
             raw = clip.data
             source_in, speed = float(raw.get("from") or 0), float(raw.get("speed") or 1)
             raw_to = raw.get("to")
-            source_out = (float(raw_to) if raw_to is not None
-                          else source_in + clip.duration * speed)
+            duration_end = source_in + clip.duration * speed
+            source_out = min(float(raw_to), duration_end) if raw_to is not None else duration_end
             if clip.shot_id in ("", "parent") or not isinstance(placements, list):
-                starts = [clip.start]
-            else:
-                starts = [_row_start(row) / 1000 + clip.at for row in placements
-                          if row.get("shot_id") == clip.shot_id]
-            for start in starts:
                 clips.append({"clip_id": clip.id, "source_start": source_in,
                               "source_end": source_out,
-                              "timeline_start": start, "speed": speed})
+                              "timeline_start": clip.start, "speed": speed})
+            else:
+                for row in placements:
+                    if row.get("shot_id") != clip.shot_id:
+                        continue
+                    # A shot occurrence can be shorter than its internal clip.
+                    # Only map the portion actually visible within that occurrence.
+                    length = float(row.get("duration_ms") or 0) / 1000
+                    visible_start = max(0.0, clip.at)
+                    visible_end = min(length, clip.at + clip.duration)
+                    if visible_end <= visible_start:
+                        continue
+                    clips.append({"clip_id": clip.id,
+                                  "source_start": source_in + (visible_start - clip.at) * speed,
+                                  "source_end": min(source_out, source_in + (visible_end - clip.at) * speed),
+                                  "timeline_start": _row_start(row) / 1000 + visible_start,
+                                  "speed": speed})
         if not clips:
             target = f"clip {parsed.clip!r}" if parsed.clip else "any clip"
             raise VerbError(f"{target} does not use media {resolved_media_id or parsed.media_id} in timeline {parsed.timeline!r}")

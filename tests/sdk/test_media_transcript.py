@@ -514,3 +514,53 @@ def test_transcript_show_handles_parent_and_repeated_shot_occurrences(monkeypatc
     args.media_id, args.clip = None, 'parent-audio'
     assert cli_working._cmd_transcripts_show(args) == 0
     assert 'timeline 31.000–31.500s [parent-audio]' in capsys.readouterr().out
+
+
+def test_transcript_show_rejects_ambiguous_clip_media_and_respects_shot_edge(monkeypatch, capsys):
+    from astrid.packs.timeline import cli_working
+    from astrid.sdk import media_transcript
+    from astrid.sdk.timeline_checkout import Checkout
+
+    first, second = 'sha256:' + '1' * 64, 'sha256:' + '2' * 64
+    content = build_transcript(first, 'line', 'in out', [[1, 1.5, 'in'], [3, 3.5, 'out']])
+    monkeypatch.setattr(media_transcript, 'read_transcript',
+                        lambda client, project, media_id, source: {'content': content})
+    def shot(media):
+        return {'internal_timeline': {'tracks': [], 'registry': {'assets': {'audio': {'media_id': media}}},
+            'clips': [{'id': 'shared', 'clipType': 'media', 'track': 'audio', 'asset': 'audio',
+                       'at': 0, 'from': 0, 'to': 4}]}}
+    timeline = Checkout({'project_id': 'p', 'timeline_id': 't', 'parent': {'config': {}, 'clips': []},
+        'placements': [{'shot_id': 'a', 'occurrence_id': 'a1', 'placement': {'start_ms': 0}, 'duration_ms': 2000},
+                       {'shot_id': 'b', 'occurrence_id': 'b1', 'placement': {'start_ms': 10000}, 'duration_ms': 4000}],
+        'shots': {'a': shot(first), 'b': shot(second)}})
+    monkeypatch.setattr(Checkout, 'open', classmethod(lambda cls, project, ref, client: timeline))
+    args = SimpleNamespace(client=object(), project='p', media_id=None, source=None,
+                           source_range=None, clip='shared', timeline='cut', json=False)
+    assert cli_working._cmd_transcripts_show(args) != 0
+    assert 'different media' in capsys.readouterr().err
+    args.media_id = first
+    assert cli_working._cmd_transcripts_show(args) == 0
+    output = capsys.readouterr().out
+    assert 'source 1.000–1.500s  in  timeline 1.000–1.500s' in output
+    assert 'out' not in output
+
+
+def test_transcript_show_respects_parent_clip_hold(monkeypatch, capsys):
+    from astrid.packs.timeline import cli_working
+    from astrid.sdk import media_transcript
+    from astrid.sdk.timeline_checkout import Checkout
+    media = 'sha256:' + '3' * 64
+    content = build_transcript(media, 'line', 'in out', [[1, 1.5, 'in'], [3, 3.5, 'out']])
+    monkeypatch.setattr(media_transcript, 'read_transcript', lambda *args: {'content': content})
+    timeline = Checkout({'project_id': 'p', 'timeline_id': 't',
+        'parent': {'registry': {'assets': {'audio': {'media_id': media}}}, 'config': {},
+                   'clips': [{'id': 'audio', 'clipType': 'media', 'track': 'music', 'asset': 'audio',
+                              'at': 10, 'from': 0, 'to': 4, 'hold': 2}]},
+        'placements': [], 'shots': {}})
+    monkeypatch.setattr(Checkout, 'open', classmethod(lambda cls, project, ref, client: timeline))
+    args = SimpleNamespace(client=object(), project='p', media_id=None, source=None,
+                           source_range=None, clip='audio', timeline='cut', json=False)
+    assert cli_working._cmd_transcripts_show(args) == 0
+    output = capsys.readouterr().out
+    assert 'timeline 11.000–11.500s' in output
+    assert 'out' not in output
