@@ -49,8 +49,8 @@ def _render_compatible_projection(
 
     Detached candidates accept exact Runtime media identities and convenient
     clip-local placement fields.  The renderer consumes the older shared
-    timeline schema, where media is selected through ``clip.asset``, fit is a
-    track property, and rectangles are ordinary clip geometry.  Project those
+    timeline schema, where media is selected through ``clip.asset`` and
+    rectangles are ordinary clip geometry. Project those
     equivalent spellings here, after the immutable composition is resolved but
     before managed-media admission and schema validation.  Publication remains
     byte-for-byte the candidate compiled by the authoring bundle.
@@ -92,12 +92,6 @@ def _render_compatible_projection(
         if identity is not None:
             assets_by_media.setdefault(identity, []).append(str(asset_key))
 
-    raw_tracks = normalized_config.get("tracks", [])
-    tracks_by_id = {
-        str(track.get("id")): track
-        for track in raw_tracks
-        if isinstance(track, dict) and isinstance(track.get("id"), str)
-    } if isinstance(raw_tracks, list) else {}
     raw_clips = normalized_config.get("clips", [])
     if not isinstance(raw_clips, list):
         return normalized_config, normalized_registry
@@ -174,30 +168,6 @@ def _render_compatible_projection(
                 "media_id": str(direct_value),
                 "asset": selected_asset,
             }
-
-        if "fit" in raw_clip:
-            fit = raw_clip.pop("fit")
-            track_id = raw_clip.get("track")
-            track = tracks_by_id.get(str(track_id))
-            if track is None:
-                raise ManagedRenderValidationError(
-                    f"canonical timeline clip {index} cannot project fit without its track",
-                    path=f"$.clips[{index}].fit",
-                    reason="clip-local fit references a missing track",
-                    recovery="Attach the clip to an existing visual track, then retry.",
-                    validator="authoring_render_projection",
-                )
-            existing_fit = track.get("fit")
-            if existing_fit is not None and existing_fit != fit:
-                raise ManagedRenderValidationError(
-                    f"canonical timeline clip {index} conflicts with track fit {existing_fit!r}",
-                    path=f"$.clips[{index}].fit",
-                    reason="the existing renderer supports one fit policy per track",
-                    recovery="Use a separate visual track for clips with a different fit policy.",
-                    validator="authoring_render_projection",
-                )
-            track["fit"] = fit
-            compatibility["fit"] = {"value": fit, "projected_to_track": str(track_id)}
 
         rect = raw_clip.pop("rect", None)
         if rect is not None:

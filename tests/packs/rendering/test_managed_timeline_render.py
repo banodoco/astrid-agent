@@ -22,6 +22,16 @@ from astrid.sdk.exceptions import CapabilityValidationError
 from astrid.sdk.invocation import _prepare_managed_render_inputs
 
 
+def test_projection_preserves_independent_clip_fit():
+    config = {"tracks": [{"id": "v1", "fit": "contain"}], "clips": [
+        {"id": "fit", "track": "v1", "fit": "contain"},
+        {"id": "fill", "track": "v1", "fit": "cover"},
+    ]}
+    projected, _ = managed_timeline._render_compatible_projection(config, {"assets": {}})
+    assert projected == config
+    assert projected is not config
+
+
 @pytest.mark.parametrize("location", ["config", "duplicate", "payload"])
 def test_saved_parent_clip_precedence_preserves_prepared_scene(location):
     from astrid.core.timeline.shot_composition_projection import project_runtime_parent_composition
