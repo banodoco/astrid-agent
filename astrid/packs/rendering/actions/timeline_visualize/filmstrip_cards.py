@@ -861,6 +861,12 @@ def plan_filmstrip(
         raise ValueError(f'Unknown sampling mode: {mode}')
     motion_cut = None
     motion_window = None
+    # Explicit addresses must be inside the render before motion derives and
+    # clips its context padding around them.
+    if options.get('at') is not None:
+        clock.validate_timestamp(options['at'])
+    if options.get('range') is not None:
+        clock.validate_range(*options['range'])
     if options.get('view') == 'motion' or mode == 'motion':
         from .motion.window import resolve_window
         motion_window = resolve_window(snapshot, options, float(fps), total_frames_of(snapshot))

@@ -785,7 +785,7 @@ def _validate_timeline_visualize_inputs(
         snapshot = (
             context.get("capture_snapshot") if values.get("composed_capture") else None
         ) or context.get("filmstrip_snapshot") or context.get("input_snapshot")
-        if (view == "filmstrip" and isinstance(snapshot, Mapping)
+        if (isinstance(snapshot, Mapping)
                 and (snapshot.get("metadata") or {}).get("timeline_range") is not None):
             from astrid.packs.rendering.actions.timeline_visualize.render_clock import RenderClock
 
