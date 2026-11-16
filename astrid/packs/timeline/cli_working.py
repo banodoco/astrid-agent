@@ -387,6 +387,76 @@ def _configure_transcripts_sync(subparser: argparse.ArgumentParser) -> None:
 
 
 @guard(2)
+def _cmd_transcripts_import(parsed: argparse.Namespace) -> int:
+    from astrid.sdk.media_transcript import import_transcript_words
+
+    if bool(parsed.file) == bool(parsed.from_run):
+        raise ValueError("provide exactly one words file or --from-run")
+    if parsed.from_run:
+        from astrid.sdk.transcript_run import import_transcription_run
+        status = import_transcription_run(parsed.client, need_project(parsed), parsed.media_id, parsed.from_run,
+                                          replace=parsed.replace, expected_version=parsed.expected_version)
+        print(f"{status} transcript for {parsed.media_id} from run {parsed.from_run}")
+        return 0
+    payload = json.loads(parsed.file.expanduser().read_text(encoding="utf-8"))
+    words = payload.get("words") if isinstance(payload, Mapping) else payload
+    if not isinstance(words, list):
+        raise ValueError("words file must be a list or an object containing a words list")
+    if isinstance(payload, Mapping):
+        if payload.get("media_id", parsed.media_id) != parsed.media_id:
+            raise ValueError("words file media_id does not match the requested media id")
+        if payload.get("source_id", parsed.source) != parsed.source:
+            raise ValueError("words file source_id does not match the requested source id")
+    segment_id = payload.get("segment_id", parsed.segment) if isinstance(payload, Mapping) else parsed.segment
+    text = payload.get("text", parsed.text) if isinstance(payload, Mapping) else parsed.text
+    status = import_transcript_words(
+        parsed.client, need_project(parsed), parsed.media_id, words,
+        segment_id=str(segment_id), text=text,
+        source=parsed.source, replace=parsed.replace, expected_version=parsed.expected_version,
+    )
+    print(f"{status} transcript for {parsed.media_id} ({parsed.source})")
+    return 0
+
+
+@guard(2)
+def _cmd_transcripts_run(parsed: argparse.Namespace) -> int:
+    import hashlib
+    import tempfile
+    from astrid.sdk.generation import generate
+    from astrid.sdk.media_handles import resolve_media_handle
+    from astrid.sdk.transcript_run import import_transcription_run
+
+    project = need_project(parsed)
+    descriptor, _ = resolve_media_handle(parsed.client, project, parsed.media_id)
+    digest = descriptor["digest"]
+    raw = parsed.client.media.read_bytes(digest)
+    if "sha256:" + hashlib.sha256(raw).hexdigest() != digest:
+        raise ValueError("media bytes do not match their digest")
+    with tempfile.TemporaryDirectory(prefix="astrid-transcription-") as tmp:
+        path = Path(tmp) / descriptor["filename"]
+        path.write_bytes(raw)
+        options = {name: getattr(parsed, name) for name in ("placement", "engine", "execution", "align", "recovery_path")
+                   if getattr(parsed, name, None) is not None}
+        result = generate.audio(entry="transcription", mode="transcribe", audio_ref=str(path),
+                                project=project, client=parsed.client, consent=tuple(parsed.consent), **options)
+    if getattr(result, "ok", True) is False:
+        raise ValueError(f"transcription failed: {getattr(result, 'error', None)}")
+    value = result.to_dict() if hasattr(result, "to_dict") else result
+    run_id = value.get("kernel_run_id") or value.get("run_id") if isinstance(value, Mapping) else None
+    if not run_id and isinstance(value, Mapping) and value.get("task_id"):
+        task_result = parsed.client.tasks.show(value["task_id"])
+        if not task_result.ok or not isinstance(task_result.data, Mapping):
+            raise ValueError("cannot read transcription task to locate its run")
+        run_id = task_result.data.get("run_id")
+    if not run_id:
+        raise ValueError("transcription result has no run id")
+    status = import_transcription_run(parsed.client, project, digest, run_id,
+                                      replace=parsed.replace, expected_version=parsed.expected_version)
+    print(f"{status} transcript for {digest} from run {run_id}")
+    return 0
+
+
+@guard(2)
 def _cmd_transcripts_sync(parsed: argparse.Namespace) -> int:
     from astrid.sdk.timeline_checkout import Checkout
     from astrid.sdk.timeline_transcripts import sync_narration_transcripts
@@ -396,6 +466,111 @@ def _cmd_transcripts_sync(parsed: argparse.Namespace) -> int:
     print(f"{'dry run: ' if parsed.dry_run else ''}{len(report)} narration transcript item(s)")
     for item in report:
         print(f"  {item['status']}: {item['label']}" + (f" ({item['reason']})" if item.get("reason") else ""))
+    return 0
+
+
+@guard(2)
+def _cmd_transcripts_show(parsed: argparse.Namespace) -> int:
+    from astrid.sdk.media_transcript import read_transcript
+    from astrid.sdk.timeline_transcript_show import map_transcript_words
+    from astrid.sdk.whisper_transcript import whisper_source_id
+
+    source_range = None
+    if parsed.source_range:
+        try:
+            left, right = parsed.source_range.split("..", 1)
+            source_range = (float(left), float(right))
+        except (ValueError, TypeError) as exc:
+            raise VerbError("--range must be START..END in source-media seconds") from exc
+        if source_range[0] < 0 or source_range[1] <= source_range[0]:
+            raise VerbError("--range must be a non-empty nonnegative source-media interval")
+    if parsed.clip and not parsed.timeline:
+        raise VerbError("--clip requires --timeline")
+    if not parsed.media_id and not parsed.clip:
+        raise VerbError("provide MEDIA_ID or select a timeline --clip")
+    clips = []
+    resolved_media_id = parsed.media_id
+    if parsed.timeline:
+        from astrid.sdk.timeline_checkout import Checkout
+
+        tl = Checkout.open(need_project(parsed), parsed.timeline, client=parsed.client)
+        from astrid.sdk.timeline.doc import _row_start
+
+        # Checkout.clips() exposes one handle per placement but its legacy
+        # handle resolves start through the first placement of a shot. Enumerate
+        # placements explicitly so repeated shots keep their own clocks.
+        seen = set()
+        placements = tl.bundle.get("placements")
+        for clip in tl.clips():
+            identity = (clip.shot_id, clip.id)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            if parsed.clip and clip.id != parsed.clip:
+                continue
+            if clip.shot_id in ("", "parent"):
+                holder = tl.bundle.get("parent") or {}
+            else:
+                shot = (tl.bundle.get("shots") or {}).get(clip.shot_id) or {}
+                holder = shot.get("internal_timeline") or {}
+            registry = holder.get("registry") or (holder.get("config") or {}).get("registry") or {}
+            assets = registry.get("assets") or {}
+            asset = assets.get(clip.asset) if clip.asset else None
+            clip_media_id = (asset.get("media_id") or asset.get("content_sha256")) if isinstance(asset, Mapping) else None
+            if (parsed.clip and parsed.media_id is None and resolved_media_id is not None
+                    and isinstance(clip_media_id, str) and clip_media_id != resolved_media_id):
+                raise VerbError(f"clip {parsed.clip!r} matches different media; provide MEDIA_ID to choose")
+            if resolved_media_id and clip_media_id != resolved_media_id:
+                continue
+            if parsed.clip and not isinstance(clip_media_id, str):
+                raise VerbError(f"clip {clip.id!r} has no managed media digest")
+            if resolved_media_id is None and isinstance(clip_media_id, str):
+                resolved_media_id = clip_media_id
+            raw = clip.data
+            source_in, speed = float(raw.get("from") or 0), float(raw.get("speed") or 1)
+            raw_to = raw.get("to")
+            duration_end = source_in + clip.duration * speed
+            source_out = min(float(raw_to), duration_end) if raw_to is not None else duration_end
+            if clip.shot_id in ("", "parent") or not isinstance(placements, list):
+                clips.append({"clip_id": clip.id, "source_start": source_in,
+                              "source_end": source_out,
+                              "timeline_start": clip.start, "speed": speed})
+            else:
+                for row in placements:
+                    if row.get("shot_id") != clip.shot_id:
+                        continue
+                    # A shot occurrence can be shorter than its internal clip.
+                    # Only map the portion actually visible within that occurrence.
+                    length = float(row.get("duration_ms") or 0) / 1000
+                    visible_start = max(0.0, clip.at)
+                    visible_end = min(length, clip.at + clip.duration)
+                    if visible_end <= visible_start:
+                        continue
+                    clips.append({"clip_id": clip.id,
+                                  "source_start": source_in + (visible_start - clip.at) * speed,
+                                  "source_end": min(source_out, source_in + (visible_end - clip.at) * speed),
+                                  "timeline_start": _row_start(row) / 1000 + visible_start,
+                                  "speed": speed})
+        if not clips:
+            target = f"clip {parsed.clip!r}" if parsed.clip else "any clip"
+            raise VerbError(f"{target} does not use media {resolved_media_id or parsed.media_id} in timeline {parsed.timeline!r}")
+    assert resolved_media_id is not None
+    source = parsed.source or whisper_source_id("large-v3-turbo.pt")
+    document = read_transcript(parsed.client, need_project(parsed), resolved_media_id, source)
+    if document is None:
+        raise VerbError(f"no transcript for {resolved_media_id} ({source})")
+    content = document.get("content") if isinstance(document, Mapping) else None
+    if not isinstance(content, Mapping):
+        raise VerbError("transcript document has no content")
+    rows = map_transcript_words(content, source_range=source_range, clips=clips)
+    if parsed.json:
+        print(json.dumps(rows, ensure_ascii=False, indent=2))
+    else:
+        for row in rows:
+            line = f"source {row['source_start']:.3f}–{row['source_end']:.3f}s  {row.get('text', '')}"
+            if "timeline_start" in row:
+                line += f"  timeline {row['timeline_start']:.3f}–{row['timeline_end']:.3f}s [{row['clip_id']}]"
+            print(line)
     return 0
 
 

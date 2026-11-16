@@ -11,6 +11,8 @@ resources:
   - kind: skill
     path: docs/narrated/SKILL.md
   - kind: skill
+    path: docs/transcripts/SKILL.md
+  - kind: skill
     path: docs/review/SKILL.md
   - kind: skill
     path: docs/shots/SKILL.md

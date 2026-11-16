@@ -1212,3 +1212,42 @@ def test_storage_inventory_never_deletes_volume_content(inventory_pod):
     assert {str(p): p.read_bytes() for p in c.models.rglob('*') if p.is_file()} == before
     assert c.models in c.listings
     assert 'storage.inventory' in (c.prep.logs_root / 'logs.json').read_text()
+
+
+def test_nodes_restore_links_recipe_checkout_on_worker(tmp_path):
+    """The managed worker runs the pinned checkout's node setup before restore."""
+    import subprocess
+    import sys
+
+    checkout = tmp_path / 'runtime/vibecomfy'
+    package = checkout / 'vibecomfy'
+    commands = package / 'commands'
+    commands.mkdir(parents=True)
+    (package / '__init__.py').write_text('')
+    (commands / '__init__.py').write_text('')
+    (package / 'comfy_nodes').mkdir()
+    (commands / 'runpod_setup.py').write_text(
+        'def link_vibecomfy_custom_node(*, custom_nodes, package_root):\n'
+        '    custom_nodes.mkdir(parents=True, exist_ok=True)\n'
+        '    (custom_nodes / "vibecomfy_custom_nodes").symlink_to(package_root / "vibecomfy/comfy_nodes")\n'
+    )
+    prep = ManagedEnginePreparation.__new__(ManagedEnginePreparation)
+    prep.root = str(tmp_path)
+    prep.mode = 'align'
+    prep.recipe = SimpleNamespace(sources=[SimpleNamespace(name='vibecomfy', relative_path='runtime/vibecomfy'),
+                                           SimpleNamespace(name='comfyui', relative_path='runtime/ComfyUI')])
+    prep.adapter = SimpleNamespace(join=lambda *parts: str(Path(*parts)))
+    calls = []
+
+    def native(program, *args, step):
+        calls.append((program, args, step))
+        if len(calls) == 1:
+            subprocess.run([sys.executable, '-I', '-c', program, *args], check=True)
+        else:
+            assert (tmp_path / 'runtime/ComfyUI/custom_nodes/vibecomfy_custom_nodes').resolve() == package / 'comfy_nodes'
+
+    prep._native = native
+    prep._command(['nodes', 'restore'])
+    assert len(calls) == 2
+    assert all(call[2] == 'nodes_restore' for call in calls)
+    assert calls[1][1] == ('nodes', 'restore')

@@ -821,6 +821,17 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
             python = self.adapter.venv_python(self.adapter.join(self.root, primary.relative_path))
             self.pip_bootstrap = json.loads(self._native(native_pip_program(), json.dumps({"python_executable": python}),
                                                         step="pip_bootstrap").stdout)
+        if argv[0] == "nodes":
+            # Run the checkout's own setup helper on the worker.  The recipe
+            # source was verified against the installation receipt above; do
+            # not resolve this helper from the host's Python environment.
+            source = next(s for s in self.recipe.sources if s.name == "vibecomfy")
+            checkout = self.adapter.join(self.root, source.relative_path)
+            comfy = self.adapter.join(self.root, next(s.relative_path for s in self.recipe.sources if s.name == "comfyui"))
+            program = ("import sys;from pathlib import Path;sys.path.insert(0, sys.argv[1]);"
+                       "from vibecomfy.commands.runpod_setup import link_vibecomfy_custom_node;"
+                       "link_vibecomfy_custom_node(custom_nodes=Path(sys.argv[2]), package_root=Path(sys.argv[1]))")
+            self._native(program, checkout, self.adapter.join(comfy, "custom_nodes"), step="nodes_restore")
         program = "import sys;from vibecomfy.cli import main;sys.exit(main(sys.argv[1:]))"
         if argv[0] in {"prepare", "doctor", "fetch"}:
             # This is the host's own canonical renderer output, never admitted

@@ -107,10 +107,13 @@ _working_cmd_lines = _provided('_working_cmd_lines')
 _working_cmd_lint = _provided('_working_cmd_lint')
 _working_cmd_rename = _provided('_working_cmd_rename')
 _working_cmd_restructure = _provided('_working_cmd_restructure')
+_working_cmd_transcripts_import = _provided('_working_cmd_transcripts_import')
+_working_cmd_transcripts_run = _provided('_working_cmd_transcripts_run')
+_working_cmd_transcripts_show = _provided('_working_cmd_transcripts_show')
 _working_cmd_transcripts_sync = _provided('_working_cmd_transcripts_sync')
 _working_cmd_words = _provided('_working_cmd_words')
 
-_HANDLER_NAMES = frozenset({'_as_timeline_verb', '_cmd_apply', '_cmd_archive', '_cmd_assets', '_cmd_check', '_cmd_checkout', '_cmd_commit', '_cmd_create', '_cmd_diff', '_cmd_edit', '_cmd_elements', '_cmd_export', '_cmd_history', '_cmd_import', '_cmd_inspect', '_cmd_list', '_cmd_place_element', '_cmd_recover', '_cmd_redo', '_cmd_render', '_cmd_replace_parent_media', '_cmd_script', '_cmd_show', '_cmd_status', '_cmd_undo', '_cmd_update_element', '_cmd_visualize', '_find_run_find', '_guarded', '_log_run_log', '_pending_cmd_drop', '_pending_cmd_list', '_pending_cmd_retry', '_pending_cmd_show', '_pending_run', '_with_steps', '_working_cmd_discard', '_working_cmd_duplicate', '_working_cmd_lines', '_working_cmd_lint', '_working_cmd_rename', '_working_cmd_restructure', '_working_cmd_transcripts_sync', '_working_cmd_words'})
+_HANDLER_NAMES = frozenset({'_as_timeline_verb', '_cmd_apply', '_cmd_archive', '_cmd_assets', '_cmd_check', '_cmd_checkout', '_cmd_commit', '_cmd_create', '_cmd_diff', '_cmd_edit', '_cmd_elements', '_cmd_export', '_cmd_history', '_cmd_import', '_cmd_inspect', '_cmd_list', '_cmd_place_element', '_cmd_recover', '_cmd_redo', '_cmd_render', '_cmd_replace_parent_media', '_cmd_script', '_cmd_show', '_cmd_status', '_cmd_undo', '_cmd_update_element', '_cmd_visualize', '_find_run_find', '_guarded', '_log_run_log', '_pending_cmd_drop', '_pending_cmd_list', '_pending_cmd_retry', '_pending_cmd_show', '_pending_run', '_with_steps', '_working_cmd_discard', '_working_cmd_duplicate', '_working_cmd_lines', '_working_cmd_lint', '_working_cmd_rename', '_working_cmd_restructure', '_working_cmd_transcripts_import', '_working_cmd_transcripts_run', '_working_cmd_transcripts_show', '_working_cmd_transcripts_sync', '_working_cmd_words'})
 
 
 def _add_idempotency_key(subparser: argparse.ArgumentParser) -> None:
@@ -1454,6 +1457,47 @@ def _working_configure_transcripts_sync(subparser: argparse.ArgumentParser) -> N
     subparser.set_defaults(handler=_working_cmd_transcripts_sync)
 
 
+def _working_configure_transcripts_show(subparser: argparse.ArgumentParser) -> None:
+    subparser.add_argument("media_id", nargs="?", help="Project-managed sha256 media id (omit when selecting --clip).")
+    _add_project_arg(subparser, required=True)
+    subparser.add_argument("--source", default=None, help="Transcript source id (default: the pinned Whisper workflow source).")
+    subparser.add_argument("--range", dest="source_range", help="Source-media seconds as START..END.")
+    subparser.add_argument("--timeline", help="Timeline UUID, ULID, or slug for occurrence mapping.")
+    subparser.add_argument("--clip", help="Restrict mapping to this clip id (requires --timeline).")
+    subparser.add_argument("--json", action="store_true", help="Print word rows as JSON.")
+    subparser.set_defaults(handler=_working_cmd_transcripts_show)
+
+
+def _working_configure_transcripts_import(subparser: argparse.ArgumentParser) -> None:
+    subparser.add_argument("media_id", help="Project-managed sha256 media id.")
+    subparser.add_argument("file", nargs="?", type=Path, help="Complete JSON words file in source-media seconds.")
+    subparser.add_argument("--from-run", help="Import the output of a completed transcription run.")
+    _add_project_arg(subparser, required=True)
+    subparser.add_argument("--source", default="astrid.import",
+                           help="Imported transcript source id, separate from narration backfill.")
+    subparser.add_argument("--segment", default="imported", help="Segment id for these words.")
+    subparser.add_argument("--text", default=None, help="Segment text (defaults to joined word text).")
+    subparser.add_argument("--replace", action="store_true",
+                           help="Replace the complete existing transcript document.")
+    subparser.add_argument("--expected-version", type=int, default=None,
+                           help="Required current document version with --replace.")
+    subparser.set_defaults(handler=_working_cmd_transcripts_import)
+
+
+def _working_configure_transcripts_run(subparser: argparse.ArgumentParser) -> None:
+    subparser.add_argument("media_id", help="Project-managed sha256 media id.")
+    _add_project_arg(subparser, required=True)
+    subparser.add_argument("--placement", default="auto")
+    subparser.add_argument("--engine")
+    subparser.add_argument("--execution")
+    subparser.add_argument("--align", choices=("align", "check", "trust"))
+    subparser.add_argument("--consent", action="append", choices=("user_env",), default=[])
+    subparser.add_argument("--recovery-path")
+    subparser.add_argument("--replace", action="store_true")
+    subparser.add_argument("--expected-version", type=int)
+    subparser.set_defaults(handler=_working_cmd_transcripts_run)
+
+
 _FAMILY = "timelines"
 
 
@@ -1577,8 +1621,15 @@ def build_parser(client: Any) -> argparse.ArgumentParser:
 
 
         nested = subparser.add_subparsers(dest="transcript_command", required=True)
-        register_product_commands(nested, (CommandSpec("sync", help="Backfill narration transcript documents from published VO clips.",
-                                                       configure=_working_configure_transcripts_sync),),
+        register_product_commands(nested, (
+            CommandSpec("show", help="Read a media transcript and map words through timeline clip occurrences.",
+                        configure=_working_configure_transcripts_show),
+            CommandSpec("run", help="Transcribe a whole project media file and store its words.",
+                        configure=_working_configure_transcripts_run),
+            CommandSpec("sync", help="Backfill narration transcript documents from published VO clips.",
+                        configure=_working_configure_transcripts_sync),
+            CommandSpec("import", help="Attach a complete words file to a source media id.",
+                        configure=_working_configure_transcripts_import),),
                                   family=_FAMILY, client=client)
 
 
