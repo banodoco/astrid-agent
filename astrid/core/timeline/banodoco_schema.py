@@ -348,7 +348,7 @@ _THEME_OVERRIDES_ALLOWED = frozenset({"visual", "generation", "voice", "audio", 
 _CLIP_ALLOWED = frozenset(
     {
         "id", "at", "track", "clipType", "label", "asset", "from", "to", "speed", "hold",
-        "volume", "x", "y", "width", "height", "cropTop", "cropBottom",
+        "volume", "fit", "x", "y", "width", "height", "cropTop", "cropBottom",
         "cropLeft", "cropRight", "opacity", "params", "text", "entrance", "exit",
         "continuous", "transition", "effects", "source_uuid", "generation",
         "pool_id", "clip_order", "app", "label", "keyframes",
