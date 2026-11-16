@@ -4,8 +4,10 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+from xml.etree import ElementTree as ET
 
 from tests import local_speed_native_capture as capture
+from tests import _local_speed_native as native
 
 
 class DecodeChecks(unittest.TestCase):
@@ -66,6 +68,31 @@ class DecodeChecks(unittest.TestCase):
         record = json.loads((self.root / "decode.json").read_text())
         self.assertFalse(record["decode_completed"])
         self.assertIn("decode_finished_epoch_ns", record)
+
+
+class StreamedXmlChecks(unittest.TestCase):
+    def test_completed_events_are_removed_from_their_real_parent(self):
+        # Simulate a nested tracerpt document with many fully parsed siblings.
+        # A stream retaining empty Event objects indefinitely fails this oracle.
+        wrapper = ET.Element("Trace")
+        events = ET.SubElement(wrapper, "Events")
+        for _ in range(512):
+            item = ET.SubElement(events, "Event")
+            system = ET.SubElement(item, "System")
+            ET.SubElement(system, "Provider", Guid="{68fdd900-4a3e-11d1-84f4-0000f80464e3}")
+            ET.SubElement(system, "Opcode").text = "0"
+
+        def parsed(element):
+            yield "start", element
+            for child in list(element):
+                yield from parsed(child)
+            yield "end", element
+
+        with patch.object(native.ET, "iterparse", return_value=parsed(wrapper)):
+            decoded = list(native.xml_events(Path("synthetic-only.xml")))
+        self.assertEqual(len(decoded), 512)
+        self.assertTrue(all(item["opcode"] == 0 for item in decoded))
+        self.assertEqual(len(events), 0, "completed siblings were retained in memory")
 
 
 if __name__ == "__main__":
