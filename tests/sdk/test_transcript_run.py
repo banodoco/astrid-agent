@@ -129,7 +129,7 @@ def test_run_and_from_run_commands_parse():
     assert imp.file is None and imp.from_run == 'run-1'
 
 
-def test_run_command_stores_stubbed_generation(monkeypatch):
+def test_run_command_stores_stubbed_generation(monkeypatch, capsys):
     import astrid.core.media as media
     import astrid.sdk.transcript_run as module
     import astrid.sdk.generation as generation
@@ -149,6 +149,17 @@ def test_run_command_stores_stubbed_generation(monkeypatch):
     assert args.handler(args) == 0
     assert seen['entry'] == 'transcription' and seen['placement'] == 'managed'
     assert client.document['content']['media_id'] == client.media_id
+    capsys.readouterr()
+    from astrid.sdk.timeline_checkout import Checkout
+    clip = SimpleNamespace(id='clip-1', shot_id='shot-1', asset='asset-1', start=10.0,
+                           duration=0.5, data={'from': 0.0, 'to': 1.0, 'speed': 2.0})
+    timeline = SimpleNamespace(bundle={'shots': {'shot-1': {'internal_timeline': {
+        'registry': {'assets': {'asset-1': {'media_id': client.media_id}}}}}}}, clips=lambda: [clip])
+    monkeypatch.setattr(Checkout, 'open', classmethod(lambda cls, project, ref, client: timeline))
+    show = build_parser(client).parse_args(['transcripts', 'show', '--project', 'p',
+                                            '--timeline', 'cut', '--clip', 'clip-1'])
+    assert show.handler(show) == 0
+    assert 'source 0.000–1.000s  hello  timeline 10.000–10.500s [clip-1]' in capsys.readouterr().out
 
 
 def test_real_entry_reconstructs_admitted_workflow(monkeypatch, tmp_path):
