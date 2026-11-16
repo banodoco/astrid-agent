@@ -130,3 +130,33 @@ def test_up_unloaded_macos_service_re_registers(managed):
     result = managed_runtime_lifecycle(action='up', source_checkout=managed.source, data_root=managed.data)
     assert result['status'] == 'started'
     assert managed.events == ['settings', 'register', 'start', 'verify']
+
+
+@pytest.mark.parametrize('count,pid,accepted', [('0', None, True), ('1', None, False), (None, None, False), ('0', '123', False), ('0\n\tactive count = unknown', None, False)])
+def test_scheduled_launchd_requires_unambiguous_inactive_owner(managed, tmp_path, count, pid, accepted):
+    import plistlib
+    from runtime_protocol import platform
+    manager = service.Service(managed.root, tmp_path / 'log', lambda *_a, **_kw: '', home=tmp_path, system='darwin')
+    version = core.current(managed.root)
+    write(version.root / 'version.json', version.document())
+    manager.path.parent.mkdir(parents=True)
+    manager.path.write_text(service.render('darwin', version, managed.data, manager.log, env_file=manager.env_file))
+    argv = plistlib.loads(manager.path.read_bytes())['ProgramArguments']
+    target = f'gui/{platform.current_user()}/{service.LABEL}'
+    lines = [f'{target} = {{', f'\tpath = {manager.path}', '\tstate = spawn scheduled',
+             f'\tprogram = {argv[0]}']
+    if count is not None:
+        lines.append(f'\tactive count = {count}')
+    if pid:
+        lines.append(f'\tpid = {pid}')
+    lines += ['\targuments = {', '\n'.join(argv), '\t}', '}']
+    observation = '\n'.join(lines)
+    if accepted:
+        identity, state = manager._launchd_stop_identity(observation, managed.data)
+        assert identity['target'] == target
+        assert state == {'state': 'spawn scheduled', 'pid': None}
+        manager.run = lambda _argv: observation
+        assert manager.validate_stop_target(version, managed.data, owner_pid=42, require_stopped=True) == identity
+    else:
+        with pytest.raises(ValueError, match='not proven inactive'):
+            manager._launchd_stop_identity(observation, managed.data)

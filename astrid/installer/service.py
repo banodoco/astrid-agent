@@ -709,9 +709,18 @@ class Service:
         if len(states) != 1 or len(pids) > 1 or len(paths) != 1 or len(programs) != 1:
             raise ValueError("The launchd service identity is malformed.")
         state = states[0].strip()
-        if state not in {"running", "not running"}:
+        if state not in {"running", "not running", "spawn scheduled"}:
             raise ValueError("The launchd service state is unknown; refusing to stop it.")
         pid = int(pids[0]) if pids else None
+        if state == "spawn scheduled":
+            # launchd retries a KeepAlive service after its process exited.
+            # Treat the pending invocation as stopped only with unambiguous
+            # top-level zero-active evidence and no PID. C1 holds the Runtime
+            # owner fence while the callback rechecks and boots the job out.
+            counts = re.findall(r"^" + re.escape(opening_indent) + r"active count[ \t]*=[ \t]*([^\r\n]*)$",
+                                metadata, re.MULTILINE)
+            if [count.strip() for count in counts] != ["0"] or pid is not None:
+                raise ValueError("The scheduled launchd service is not proven inactive; refusing to stop it.")
         if pid is not None and pid <= 0:
             raise ValueError("The launchd service PID is malformed.")
         # launchctl prints raw argv lines, including a multiline final script.
@@ -834,7 +843,7 @@ class Service:
             if expected_identity is not None and identity != expected_identity:
                 raise ValueError("The loaded launchd service changed during Runtime stop.")
             if require_stopped:
-                if state != "not running" or pid is not None:
+                if state not in {"not running", "spawn scheduled"} or pid is not None:
                     raise ValueError("The launchd service did not remain stopped after Runtime exit.")
             elif state == "running":
                 if owner_pid is None or pid != owner_pid:
