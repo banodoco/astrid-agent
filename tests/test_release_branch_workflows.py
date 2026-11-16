@@ -57,17 +57,26 @@ def test_unit_aggregate_rejects_any_unsuccessful_dependency(checks, shards):
 )
 def test_named_pytest_jobs_retain_every_command_result(workflow, job_name, expected_commands):
     job = load(workflow)["jobs"][job_name]
-    commands = [step["run"] for step in job["steps"] if "python -m pytest" in step.get("run", "")]
+    pytest_steps = [step for step in job["steps"] if "python -m pytest" in step.get("run", "")]
+    commands = [step["run"] for step in pytest_steps]
     assert len(commands) == expected_commands
     destinations = [command.split("--junitxml=", 1)[1].split(".xml", 1)[0] + ".xml" for command in commands]
     assert len(destinations) == len(set(destinations)), "separate commands must not overwrite each other's results"
-    assert all(destination.startswith("test-results/") for destination in destinations)
+    result_directories = [step.get("env", {}).get("TEST_RESULTS_DIR", "") for step in pytest_steps]
+    assert all("test-results-" in destination or "test-results-" in directory
+               for destination, directory in zip(destinations, result_directories))
+    assert all(".xml" in destination for destination in destinations)
     assert all("-rA" in command for command in commands)
     upload = next(step for step in job["steps"] if step.get("with", {}).get("name", "").startswith("test-results-"))
     assert upload["if"] == "always()"
-    assert upload["with"]["path"] == "test-results/*.xml"
+    assert "${{ runner.temp }}" in upload["with"]["path"]
+    assert "*.xml" in upload["with"]["path"]
     assert upload["with"]["retention-days"] == 90
-    assert upload["with"]["if-no-files-found"] == "error"
+    assert upload["with"]["if-no-files-found"] == "warn"
+    summary = next(step for step in job["steps"] if step.get("name") == "Summarize test result XML")
+    assert summary["if"] == "always()"
+    assert "no XML files; no test result available" in summary["run"]
+    assert "raise SystemExit(1)" in summary["run"] or "exit 1" in summary["run"]
 
 
 def test_landing_reference_job_runs_only_for_pull_requests_into_release_branches():

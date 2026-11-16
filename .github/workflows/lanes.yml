@@ -1,5 +1,5 @@
 # The heavy lanes the per-push run (ci.yml) deselects: integration (real Runtime daemons, subprocesses, the network)
-# and opt_in. Nightly, on request, and on pushes to main/release-1 and release/*/main, so regressions are seen promptly.
+# and opt_in. Nightly, on request, and on pushes to main/release-1, release/*/main and Release 14's plan branch.
 # Lanes with no job (workstation, omp, gpu, app_checkout: a GPU, the owner's workstation files or another repo's checkout) are listed by name in every run (tests/lanes.py).
 name: Lanes
 
@@ -13,7 +13,7 @@ on:
         required: false
         type: string
   push:
-    branches: [main, release-1, "int/**", "release/*/main"]
+    branches: [main, release-1, "int/**", "release/*/main", "release/14/plan-39"]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -259,16 +259,40 @@ jobs:
           echo "- ComfyUI: $checked_out" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Integration tests (shard)
-        run: python -m pytest -v -rA --junitxml=test-results/integration-${{ matrix.group }}-ubuntu-latest.xml --durations=40 -m "integration and not opt_in and not app_checkout" --splits 4 --group ${{ matrix.group }}
+        run: mkdir -p "$TEST_RESULTS_DIR" && python -m pytest -v -rA --junitxml="$TEST_RESULTS_DIR/integration.xml" --durations=40 -m "integration and not opt_in and not app_checkout" --splits 4 --group ${{ matrix.group }}
+        shell: bash
+        env:
+          TEST_RESULTS_DIR: ${{ runner.temp }}/test-results-integration-${{ matrix.group }}-${{ runner.os }}
+      - name: Summarize test result XML
+        if: always()
+        env:
+          TEST_RESULTS_DIR: ${{ runner.temp }}/test-results-integration-${{ matrix.group }}-${{ runner.os }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from xml.etree import ElementTree as ET
+          files = sorted(Path(os.environ['TEST_RESULTS_DIR']).glob('*.xml'))
+          if not files:
+              print('JUnit: no XML files; no test result available')
+              raise SystemExit(1)
+          root = ET.parse(files[0]).getroot()
+          suites = [root] if root.tag == 'testsuite' else list(root.iter('testsuite'))
+          counts = [sum(int(suite.get(key, '0')) for suite in suites) for key in ('tests', 'failures', 'errors', 'skipped')]
+          line = f'{files[0].name}: tests={counts[0]} failures={counts[1]} errors={counts[2]} skipped={counts[3]}'
+          print(line)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+              summary.write(line + '\n')
+          PY
 
-      - name: Upload integration test results
+      - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results-integration-${{ matrix.group }}-ubuntu-latest
-          path: test-results/*.xml
+          name: test-results-integration-${{ matrix.group }}-${{ runner.os }}
+          path: ${{ runner.temp }}/test-results-integration-${{ matrix.group }}-${{ runner.os }}/*.xml
           retention-days: 90
-          if-no-files-found: error
+          if-no-files-found: warn
 
       - name: Save pip cache on main or int branches (C-08)
         if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/') || (startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main'))) && steps.c08-agent-lanes-2.outputs.cache-hit != 'true' }}

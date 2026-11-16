@@ -5,8 +5,8 @@ name: CI
 
 on:
   push:
-    branches: [main, release-1, "int/**", "release/*/main"]
-  # Plan and fix branches land in release/<N>/main by pull request; their own pushes start nothing. A pull request
+    branches: [main, release-1, "int/**", "release/*/main", "release/14/plan-39"]
+  # Release 14's plan branch runs on push for qualification. A pull request
   # runs only the cheap subset: fast checks, unit shard 1 of 8 (and the unit aggregate), and boundary. The heavy jobs
   # (windows, darwin, release wheels, shards 2-8) carry `if: github.event_name != 'pull_request'` and run on the push.
   pull_request:
@@ -38,34 +38,55 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - name: Prepare test result directory
+        run: New-Item -ItemType Directory -Force "$env:RUNNER_TEMP/test-results-windows-native-and-installer" | Out-Null
       - name: Install package with dev extras
         run: python -m pip install -e '.[dev]'
       - name: Install the pinned Runtime and client
         run: python scripts/ci_install_runtime.py
       - name: Check native PowerShell cleanup exit codes
-        run: python -m pytest -q -rA --junitxml=test-results/windows-installer.xml tests/test_installer_windows_tasks.py
+        run: python -m pytest -q -rA --junitxml="$env:RUNNER_TEMP/test-results-windows-native-and-installer/installer-windows-tasks.xml" tests/test_installer_windows_tasks.py
       - name: Check Windows pack-host identity and service launcher binding
-        run: python -m pytest -q -rA --junitxml=test-results/windows-host.xml tests/sdk/test_host_recovery.py tests/test_services.py -k windows
+        run: python -m pytest -q -rA --junitxml="$env:RUNNER_TEMP/test-results-windows-native-and-installer/host-recovery-services.xml" tests/sdk/test_host_recovery.py tests/test_services.py -k windows
       - name: Check Remotion admission and captured source handoff
-        run: python -m pytest -q -rA --junitxml=test-results/windows-remotion.xml tests/core/rendering/test_remotion_host_regressions.py
+        run: python -m pytest -q -rA --junitxml="$env:RUNNER_TEMP/test-results-windows-native-and-installer/remotion-host-regressions.xml" tests/core/rendering/test_remotion_host_regressions.py
       - name: Check native Windows process and permission behavior
         run: >-
-          python -m pytest -q -rA --junitxml=test-results/windows-native.xml
+          python -m pytest -q -rA --junitxml="$env:RUNNER_TEMP/test-results-windows-native-and-installer/native-windows.xml"
           tests/core/execution/test_platform_helpers.py::test_windows_scope_job_kills_descendants_after_leader_exit
           tests/core/execution/test_platform_helpers.py::test_windows_lock_and_owner_permissions_are_native
           tests/core/execution/test_platform_helpers.py::test_windows_scope_dies_when_owner_process_exits
           tests/test_generic_host_child_output.py
           tests/test_host_child_stdin.py
-          tests/test_windows_child_stdin.py
-
-      - name: Upload Windows test results
+          tests/test_windows_child_stdin.py -rAP
+      - name: Summarize test result XML
+        if: always()
+        shell: pwsh
+        env:
+          TEST_RESULTS_DIR: ${{ runner.temp }}/test-results-windows-native-and-installer
+        run: |
+          $files = @(Get-ChildItem -LiteralPath $env:TEST_RESULTS_DIR -Filter '*.xml' -File -ErrorAction SilentlyContinue)
+          if ($files.Count -eq 0) { Write-Output 'JUnit: no XML files; no test result available'; exit 1 }
+          $totalTests = 0; $totalFailures = 0; $totalErrors = 0; $totalSkipped = 0
+          foreach ($file in $files) {
+            [xml]$doc = Get-Content -LiteralPath $file.FullName -Raw
+            if ($doc.DocumentElement.LocalName -eq 'testsuite') { $suites = @($doc.DocumentElement) } else { $suites = @($doc.DocumentElement.SelectNodes('.//testsuite')) }
+            $tests = 0; $failures = 0; $errors = 0; $skipped = 0
+            foreach ($suite in $suites) { $tests += [int]$suite.tests; $failures += [int]$suite.failures; $errors += [int]$suite.errors; $skipped += [int]$suite.skipped }
+            $line = "$($file.Name): tests=$tests failures=$failures errors=$errors skipped=$skipped"
+            Write-Output $line; Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value $line
+            $totalTests += $tests; $totalFailures += $failures; $totalErrors += $errors; $totalSkipped += $skipped
+          }
+          $total = "JUnit total: tests=$totalTests failures=$totalFailures errors=$totalErrors skipped=$totalSkipped"
+          Write-Output $total; Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value $total
+      - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results-windows-native-and-installer-windows-latest
-          path: test-results/*.xml
+          name: test-results-windows-native-and-installer-all-${{ runner.os }}
+          path: ${{ runner.temp }}/test-results-windows-native-and-installer/*.xml
           retention-days: 90
-          if-no-files-found: error
+          if-no-files-found: warn
 
       - name: Save pip cache on main or int branches (C-08)
         if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/') || (startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main'))) && steps.c08-agent-ci-5.outputs.cache-hit != 'true' }}
@@ -324,16 +345,9 @@ jobs:
         env:
           PYTHONUNBUFFERED: 1
           ASTRID_PYTEST_HARD_EXIT_ON_LEAKED_THREADS: 1
-        run: python -m pytest -v -rA --junitxml=test-results/unit-${{ matrix.group }}-${{ matrix.os }}.xml --durations=40 --splits 8 --group ${{ matrix.group }} --durations-path tests/.test_durations --store-durations --clean-durations
-
-      - name: Upload unit test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-results-unit-${{ matrix.group }}-${{ matrix.os }}
-          path: test-results/*.xml
-          retention-days: 90
-          if-no-files-found: error
+          TEST_RESULTS_DIR: ${{ runner.temp }}/test-results-unit-shard-${{ matrix.group }}-${{ runner.os }}
+        run: mkdir -p "$TEST_RESULTS_DIR" && python -m pytest -v -rA --junitxml="$TEST_RESULTS_DIR/unit-shard.xml" --durations=40 --splits 8 --group ${{ matrix.group }} --durations-path tests/.test_durations --store-durations --clean-durations
+        shell: bash
 
       - name: Upload measured test durations
         if: always()
@@ -344,6 +358,40 @@ jobs:
           path: tests/.test_durations
           include-hidden-files: true
           if-no-files-found: error
+
+      - name: Summarize test result XML
+        if: always()
+        env:
+          TEST_RESULTS_DIR: ${{ runner.temp }}/test-results-unit-shard-${{ matrix.group }}-${{ runner.os }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from xml.etree import ElementTree as ET
+          files = sorted(Path(os.environ['TEST_RESULTS_DIR']).glob('*.xml'))
+          if not files:
+              print('JUnit: no XML files; no test result available')
+              raise SystemExit(1)
+          totals = [0, 0, 0, 0]
+          for path in files:
+              root = ET.parse(path).getroot()
+              suites = [root] if root.tag == 'testsuite' else list(root.iter('testsuite'))
+              counts = [sum(int(suite.get(key, '0')) for suite in suites) for key in ('tests', 'failures', 'errors', 'skipped')]
+              print(f'{path.name}: tests={counts[0]} failures={counts[1]} errors={counts[2]} skipped={counts[3]}')
+              totals = [left + right for left, right in zip(totals, counts)]
+          line = f'JUnit total: tests={totals[0]} failures={totals[1]} errors={totals[2]} skipped={totals[3]}'
+          print(line)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+              summary.write(line + '\n')
+          PY
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-unit-shard-${{ matrix.group }}-${{ runner.os }}
+          path: ${{ runner.temp }}/test-results-unit-shard-${{ matrix.group }}-${{ runner.os }}/*.xml
+          retention-days: 90
+          if-no-files-found: warn
 
       - name: Save pip cache on main or int branches (C-08)
         if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/') || (startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main'))) && steps.c08-agent-ci-3.outputs.cache-hit != 'true' }}
@@ -405,6 +453,9 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - name: Prepare test result directory
+        run: mkdir -p "$RUNNER_TEMP/test-results-darwin-native"
+        shell: bash
 
       - name: Restore npm cache (C-08)
         id: c08-agent-ci-1
@@ -468,16 +519,39 @@ jobs:
 
       # The lanes the default run deselects and only this job provides: native macOS, the Remotion install, headless Chromium, the Codex CLI.
       - name: Darwin native, Remotion and browser tests
-        run: python -m pytest -q -rA --junitxml=test-results/darwin-native-macos-latest.xml -m "darwin_native or remotion or chrome or codex_cli"
-
-      - name: Upload Darwin test results
+        run: python -m pytest -q -rA --junitxml="$TEST_RESULTS_DIR/darwin-native.xml" -m "darwin_native or remotion or chrome or codex_cli"
+        shell: bash
+        env:
+          TEST_RESULTS_DIR: ${{ runner.temp }}/test-results-darwin-native
+      - name: Summarize test result XML
+        if: always()
+        env:
+          TEST_RESULTS_DIR: ${{ runner.temp }}/test-results-darwin-native
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from xml.etree import ElementTree as ET
+          files = sorted(Path(os.environ['TEST_RESULTS_DIR']).glob('*.xml'))
+          if not files:
+              print('JUnit: no XML files; no test result available')
+              raise SystemExit(1)
+          root = ET.parse(files[0]).getroot()
+          suites = [root] if root.tag == 'testsuite' else list(root.iter('testsuite'))
+          counts = [sum(int(suite.get(key, '0')) for suite in suites) for key in ('tests', 'failures', 'errors', 'skipped')]
+          line = f'{files[0].name}: tests={counts[0]} failures={counts[1]} errors={counts[2]} skipped={counts[3]}'
+          print(line)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+              summary.write(line + '\n')
+          PY
+      - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results-darwin-native-macos-latest
-          path: test-results/*.xml
+          name: test-results-darwin-native-all-${{ runner.os }}
+          path: ${{ runner.temp }}/test-results-darwin-native/*.xml
           retention-days: 90
-          if-no-files-found: error
+          if-no-files-found: warn
 
   # Release wheel (testing plan R-1: kept from the old m8 artifact job). Hashed build tools, one wheel,
   # installed with only the hashed runtime lock, and the toolchain recorded next to it. It is also the

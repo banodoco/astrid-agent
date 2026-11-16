@@ -102,7 +102,7 @@
   {
     "path": "astrid/core/execution/_child_bridge.py",
     "code": "BLE001",
-    "count": 4
+    "count": 2
   },
   {
     "path": "astrid/core/execution/_child_bridge.py",
@@ -162,7 +162,7 @@
   {
     "path": "astrid/core/execution/generic_host.py",
     "code": "BLE001",
-    "count": 80
+    "count": 79
   },
   {
     "path": "astrid/core/execution/generic_host.py",
@@ -187,7 +187,7 @@
   {
     "path": "astrid/core/execution/generic_host.py",
     "code": "I001",
-    "count": 13
+    "count": 2
   },
   {
     "path": "astrid/core/execution/generic_host_worker.py",
@@ -212,11 +212,6 @@
   {
     "path": "astrid/core/execution/orchestrator/registry.py",
     "code": "I001",
-    "count": 1
-  },
-  {
-    "path": "astrid/core/execution/orchestrator/runner.py",
-    "code": "BLE001",
     "count": 1
   },
   {
@@ -375,11 +370,6 @@
     "count": 1
   },
   {
-    "path": "astrid/core/gateway/dispatch.py",
-    "code": "I001",
-    "count": 4
-  },
-  {
     "path": "astrid/core/gateway/hivemind.py",
     "code": "BLE001",
     "count": 1
@@ -401,11 +391,6 @@
   },
   {
     "path": "astrid/core/generation/_engine_release_entry.py",
-    "code": "I001",
-    "count": 1
-  },
-  {
-    "path": "astrid/core/generation/_engine_target_files.py",
     "code": "I001",
     "count": 1
   },
@@ -455,28 +440,13 @@
     "count": 2
   },
   {
-    "path": "astrid/core/generation/backends/registry.py",
-    "code": "I001",
-    "count": 1
-  },
-  {
     "path": "astrid/core/generation/backends/vibecomfy.py",
     "code": "BLE001",
-    "count": 4
-  },
-  {
-    "path": "astrid/core/generation/backends/vibecomfy_workflow.py",
-    "code": "I001",
-    "count": 2
+    "count": 3
   },
   {
     "path": "astrid/core/generation/backends/workflow.py",
     "code": "I001",
-    "count": 1
-  },
-  {
-    "path": "astrid/core/generation/cli.py",
-    "code": "BLE001",
     "count": 1
   },
   {
@@ -502,11 +472,6 @@
   {
     "path": "astrid/core/generation/engine_execution.py",
     "code": "I001",
-    "count": 2
-  },
-  {
-    "path": "astrid/core/generation/engine_install_task.py",
-    "code": "F401",
     "count": 1
   },
   {
@@ -520,19 +485,9 @@
     "count": 1
   },
   {
-    "path": "astrid/core/generation/engine_readiness.py",
-    "code": "I001",
-    "count": 5
-  },
-  {
     "path": "astrid/core/generation/engine_recipe.py",
     "code": "E701",
-    "count": 41
-  },
-  {
-    "path": "astrid/core/generation/engine_recipe.py",
-    "code": "E702",
-    "count": 1
+    "count": 27
   },
   {
     "path": "astrid/core/generation/engine_recipe.py",
@@ -550,19 +505,9 @@
     "count": 1
   },
   {
-    "path": "astrid/core/generation/engine_runner_target.py",
-    "code": "I001",
-    "count": 1
-  },
-  {
     "path": "astrid/core/generation/engine_startup.py",
     "code": "BLE001",
     "count": 4
-  },
-  {
-    "path": "astrid/core/generation/entries.py",
-    "code": "BLE001",
-    "count": 1
   },
   {
     "path": "astrid/core/generation/entries.py",
@@ -586,13 +531,8 @@
   },
   {
     "path": "astrid/core/generation/preflight.py",
-    "code": "E731",
-    "count": 1
-  },
-  {
-    "path": "astrid/core/generation/preflight.py",
     "code": "I001",
-    "count": 7
+    "count": 6
   },
   {
     "path": "astrid/core/generation/producer_result.py",
@@ -875,11 +815,6 @@
     "count": 1
   },
   {
-    "path": "astrid/core/pack/validate_first_party.py",
-    "code": "I001",
-    "count": 1
-  },
-  {
     "path": "astrid/core/pack/validate_layout.py",
     "code": "BLE001",
     "count": 3
@@ -1085,11 +1020,6 @@
     "count": 1
   },
   {
-    "path": "astrid/installer/backend.py",
-    "code": "I001",
-    "count": 1
-  },
-  {
     "path": "astrid/installer/boundary_handoff.py",
     "code": "F401",
     "count": 1
@@ -1101,16 +1031,6 @@
   },
   {
     "path": "astrid/installer/choices.py",
-    "code": "I001",
-    "count": 1
-  },
-  {
-    "path": "astrid/installer/cli.py",
-    "code": "I001",
-    "count": 1
-  },
-  {
-    "path": "astrid/installer/core.py",
     "code": "I001",
     "count": 1
   },
@@ -1127,11 +1047,6 @@
   {
     "path": "astrid/installer/service.py",
     "code": "BLE001",
-    "count": 1
-  },
-  {
-    "path": "astrid/installer/tools.py",
-    "code": "I001",
     "count": 1
   },
   {
@@ -1260,46 +1175,6 @@
     "count": 1
   },
   {
-    "path": "astrid/packs/h3_av/actions/compile/compile.py",
-    "code": "F841",
-    "count": 1
-  },
-  {
-    "path": "astrid/packs/h3_av/actions/compose/run.py",
-    "code": "I001",
-    "count": 1
-  },
-  {
-    "path": "astrid/packs/h3_av/actions/prepare/run.py",
-    "code": "I001",
-    "count": 1
-  },
-  {
-    "path": "astrid/packs/h3_av/actions/transform/run.py",
-    "code": "BLE001",
-    "count": 7
-  },
-  {
-    "path": "astrid/packs/h3_av/actions/transform/run.py",
-    "code": "E731",
-    "count": 2
-  },
-  {
-    "path": "astrid/packs/h3_av/actions/verify/run.py",
-    "code": "I001",
-    "count": 1
-  },
-  {
-    "path": "astrid/packs/h3_av/actions/verify/verify.py",
-    "code": "I001",
-    "count": 1
-  },
-  {
-    "path": "astrid/packs/h3_av/cli.py",
-    "code": "I001",
-    "count": 1
-  },
-  {
     "path": "astrid/packs/h3_av/shared/compose.py",
     "code": "F841",
     "count": 1
@@ -1308,11 +1183,6 @@
     "path": "astrid/packs/h3_av/shared/generation.py",
     "code": "I001",
     "count": 2
-  },
-  {
-    "path": "astrid/packs/h3_av/shared/input_bundle.py",
-    "code": "I001",
-    "count": 1
   },
   {
     "path": "astrid/packs/h3_av/shared/request_v2.py",
@@ -1393,11 +1263,6 @@
     "path": "astrid/packs/rendering/actions/sprite_sheet/upscale.py",
     "code": "F401",
     "count": 3
-  },
-  {
-    "path": "astrid/packs/rendering/actions/sprite_sheet/upscale.py",
-    "code": "F821",
-    "count": 4
   },
   {
     "path": "astrid/packs/rendering/actions/timeline_storyboard/run.py",
@@ -1680,11 +1545,6 @@
     "count": 1
   },
   {
-    "path": "astrid/packs/runpod/h3_release.py",
-    "code": "I001",
-    "count": 1
-  },
-  {
     "path": "astrid/packs/runpod/h3_release_bootstrap.py",
     "code": "I001",
     "count": 1
@@ -1693,11 +1553,6 @@
     "path": "astrid/packs/runpod/installed_session.py",
     "code": "BLE001",
     "count": 2
-  },
-  {
-    "path": "astrid/packs/runpod/installed_session.py",
-    "code": "I001",
-    "count": 1
   },
   {
     "path": "astrid/packs/runpod/pod_source_identity.py",
@@ -1720,54 +1575,14 @@
     "count": 4
   },
   {
-    "path": "astrid/packs/runpod/remote_placement.py",
-    "code": "E741",
-    "count": 2
-  },
-  {
-    "path": "astrid/packs/runpod/remote_placement.py",
-    "code": "I001",
-    "count": 2
-  },
-  {
     "path": "astrid/packs/runpod/shared/common.py",
     "code": "BLE001",
     "count": 3
   },
   {
-    "path": "astrid/packs/runpod/target_selection.py",
-    "code": "BLE001",
-    "count": 7
-  },
-  {
-    "path": "astrid/packs/runpod/target_selection.py",
-    "code": "I001",
-    "count": 1
-  },
-  {
-    "path": "astrid/packs/runpod/worker_owner.py",
-    "code": "BLE001",
-    "count": 6
-  },
-  {
-    "path": "astrid/packs/runpod/worker_owner.py",
-    "code": "I001",
-    "count": 4
-  },
-  {
     "path": "astrid/packs/runpod/worker_preparation.py",
     "code": "BLE001",
-    "count": 6
-  },
-  {
-    "path": "astrid/packs/runpod/worker_preparation.py",
-    "code": "F401",
-    "count": 1
-  },
-  {
-    "path": "astrid/packs/runpod/worker_preparation.py",
-    "code": "I001",
-    "count": 2
+    "count": 5
   },
   {
     "path": "astrid/packs/runpod/worker_process.py",
@@ -2107,7 +1922,7 @@
   {
     "path": "astrid/packs/vibecomfy/actions/run/run.py",
     "code": "I001",
-    "count": 5
+    "count": 3
   },
   {
     "path": "astrid/packs/vibecomfy/actions/validate/run.py",
@@ -2125,27 +1940,12 @@
     "count": 1
   },
   {
-    "path": "astrid/packs/vibecomfy/endpoint_checkout.py",
-    "code": "I001",
-    "count": 3
-  },
-  {
     "path": "astrid/packs/vibecomfy/local.py",
     "code": "I001",
     "count": 1
   },
   {
-    "path": "astrid/packs/vibecomfy/local_server_engine.py",
-    "code": "I001",
-    "count": 2
-  },
-  {
     "path": "astrid/packs/vibecomfy/media/runtime.py",
-    "code": "I001",
-    "count": 1
-  },
-  {
-    "path": "astrid/packs/vibecomfy/production_engine.py",
     "code": "I001",
     "count": 1
   },
@@ -2247,7 +2047,7 @@
   {
     "path": "astrid/sdk/generation.py",
     "code": "I001",
-    "count": 13
+    "count": 1
   },
   {
     "path": "astrid/sdk/generation_publication.py",
