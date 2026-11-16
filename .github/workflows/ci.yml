@@ -5,12 +5,12 @@ name: CI
 
 on:
   push:
-    branches: [main, release-1, "int/**"]
+    branches: [main, release-1, "int/**", "release/*/main"]
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/int/r1' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/int/r1' && !(startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main')) }}
 
 env:
   PYTEST_ADDOPTS: -rA
@@ -53,7 +53,7 @@ jobs:
           tests/test_windows_child_stdin.py -rP
 
       - name: Save pip cache on main or int branches (C-08)
-        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/')) && steps.c08-agent-ci-5.outputs.cache-hit != 'true' }}
+        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/') || (startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main'))) && steps.c08-agent-ci-5.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
@@ -169,7 +169,7 @@ jobs:
         run: make collection
 
       - name: Save pip cache on main or int branches (C-08)
-        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/')) && steps.c08-agent-ci-4.outputs.cache-hit != 'true' }}
+        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/') || (startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main'))) && steps.c08-agent-ci-4.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
@@ -321,7 +321,7 @@ jobs:
           if-no-files-found: error
 
       - name: Save pip cache on main or int branches (C-08)
-        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/')) && steps.c08-agent-ci-3.outputs.cache-hit != 'true' }}
+        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/') || (startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main'))) && steps.c08-agent-ci-3.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
@@ -439,13 +439,13 @@ jobs:
   # installed with only the hashed runtime lock, and the toolchain recorded next to it. It is also the
   # one check that every Python pyproject.toml admits (>=3.11) installs and imports Astrid.
       - name: Save npm cache on main or int branches (C-08)
-        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/')) && steps.c08-agent-ci-1.outputs.cache-hit != 'true' }}
+        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/') || (startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main'))) && steps.c08-agent-ci-1.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           path: "${{ runner.os == 'Windows' && '~/AppData/Local/npm-cache' || '~/.npm' }}"
           key: npm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('remotion/package-lock.json') }}
       - name: Save pip cache on main or int branches (C-08)
-        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/')) && steps.c08-agent-ci-2.outputs.cache-hit != 'true' }}
+        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/') || (startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main'))) && steps.c08-agent-ci-2.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
