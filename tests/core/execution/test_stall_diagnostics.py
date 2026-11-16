@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -169,6 +169,114 @@ def test_cancel_failure_keeps_old_timer_sink_until_later_cancel_succeeds():
     assert timers.cancels == 2
     assert dump_file.closed
     assert len(timers.arms) == 1
+
+
+def test_timer_schedule_overflow_is_best_effort_and_closes_duplicated_fd():
+    clock = Clock()
+    read_fd, write_fd = os.pipe()
+    timer_files = []
+    timer_fds = []
+
+    def overflow(delay, **kwargs):
+        timer_files.append(kwargs["file"])
+        timer_fds.append(kwargs["file"].fileno())
+        raise OverflowError("synthetic native timeout range failure")
+
+    diagnostics = TaskStallDiagnostics(timeout=10, clock=clock, timer=overflow, fd=write_fd)
+    try:
+        diagnostics.begin("task-a", "phase-a")
+        assert diagnostics._tasks["task-a"].token == "phase-a"
+        assert diagnostics._owner is None and not diagnostics._timer_armed
+        assert len(timer_files) == 1 and timer_files[0].closed
+        with pytest.raises(OSError):
+            os.fstat(timer_fds[0])
+        os.fstat(read_fd)
+        os.fstat(write_fd)
+    finally:
+        diagnostics.end("task-a")
+        os.close(read_fd)
+        os.close(write_fd)
+
+
+def test_fdopen_oserror_closes_duplicate_and_keeps_task_best_effort(monkeypatch):
+    from astrid.core.execution import stall_diagnostics as module
+
+    clock, timers = Clock(), TimerSpy()
+    read_fd, write_fd = os.pipe()
+    duplicates = []
+    real_dup = os.dup
+    def capture_dup(fd):
+        duplicate = real_dup(fd)
+        duplicates.append(duplicate)
+        return duplicate
+    def fail_fdopen(*_args, **_kwargs):
+        raise OSError("synthetic fd wrapper failure")
+    monkeypatch.setattr(module.os, "dup", capture_dup)
+    monkeypatch.setattr(module.os, "fdopen", fail_fdopen)
+    diagnostics = _diagnostics(clock, timers, fd=write_fd)
+    try:
+        diagnostics.begin("task-a", "phase-a")
+        assert diagnostics._tasks["task-a"].token == "phase-a"
+        assert diagnostics._owner is None and not diagnostics._timer_armed
+        assert len(duplicates) == 1
+        with pytest.raises(OSError):
+            os.fstat(duplicates[0])
+        os.fstat(read_fd)
+        os.fstat(write_fd)
+    finally:
+        diagnostics.end("task-a")
+        os.close(read_fd)
+        os.close(write_fd)
+
+
+def test_idle_sink_close_oserror_is_best_effort():
+    clock, timers = Clock(), TimerSpy()
+
+    class FailingClose:
+        closed = False
+
+        def fileno(self):
+            return 2
+
+        def close(self):
+            self.closed = True
+            raise OSError("synthetic sink close failure")
+
+    diagnostics = _diagnostics(clock, timers)
+    sink = FailingClose()
+    diagnostics._file = sink
+    diagnostics.begin("task-a", "phase-a")
+    diagnostics.end("task-a")
+    assert sink.closed
+    assert diagnostics._file is None
+    assert diagnostics._tasks == {}
+
+
+def test_timer_failure_sink_close_oserror_is_best_effort():
+    clock = Clock()
+
+    class FailingClose:
+        closed = False
+
+        def fileno(self):
+            return 2
+
+        def close(self):
+            self.closed = True
+            raise OSError("synthetic sink close failure")
+
+    sink = FailingClose()
+    def timer_failure(*_args, **_kwargs):
+        raise ValueError("synthetic timer setup failure")
+    diagnostics = TaskStallDiagnostics(
+        timeout=10, clock=clock, timer=timer_failure, cancel=lambda: None,
+    )
+    diagnostics._file = sink
+    diagnostics.begin("task-a", "phase-a")
+    assert sink.closed
+    assert diagnostics._file is None
+    assert diagnostics._owner is None and not diagnostics._timer_armed
+    diagnostics.end("task-a")
 
 
 def test_real_faulthandler_timer_dumps_all_threads_to_existing_stderr(tmp_path):

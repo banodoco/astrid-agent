@@ -79,7 +79,7 @@ class TaskStallDiagnostics:
         if self._timer_armed:
             try:
                 self._cancel()
-            except Exception:
+            except (OSError, RuntimeError, ValueError):
                 # Keep the descriptor alive if faulthandler may still use it.
                 return
             self._timer_armed = False
@@ -91,20 +91,20 @@ class TaskStallDiagnostics:
                 self._timer(delay, repeat=False, file=self._ensure_file(), exit=False)
                 self._timer_armed = True
                 self._armed_deadline = next_deadline
-            except Exception:
+            except (OSError, RuntimeError, ValueError, OverflowError):
                 # Diagnostics must never change task outcomes.
                 self._owner = None
                 self._armed_deadline = None
                 if self._file is not None:
                     try:
                         self._file.close()
-                    except Exception:
+                    except (OSError, ValueError):
                         pass
                     self._file = None
         elif self._file is not None:
             try:
                 self._file.close()
-            except Exception:
+            except (OSError, ValueError):
                 pass
             self._file = None
 
