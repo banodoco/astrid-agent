@@ -1,0 +1,133 @@
+name: Plan 55 offline Windows trace decoding
+on:
+  push:
+    branches: ["p55/windows-trace-decode-20261116"]
+    paths:
+      - "tests/local_speed_native_capture.py"
+      - "tests/local_speed_decode_check.py"
+      - ".github/workflows/plan55-trace-replay.yml"
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: plan55-offline-trace-replay
+  cancel-in-progress: false
+jobs:
+  decode:
+    name: Decode retained Windows trace, no generation or permission retry
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Check offline conversion boundaries, not product behavior
+        run: python -m tests.local_speed_decode_check
+      - name: Retrieve only the exact existing proof and ETL members
+        shell: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          import hashlib, json, os, pathlib, shutil, urllib.error, urllib.parse, urllib.request, zipfile
+          out = pathlib.Path("trace-replay")
+          out.mkdir()
+          expected = "79ff6ce339b569cd769c993705edb9cf4f133439d0b9ccac6d46df7e7da25578"
+          endpoint = "https://api.github.com/repos/banodoco/astrid-agent/actions/artifacts/14260928127"
+          headers = {"Authorization": "Bearer " + os.environ["GH_TOKEN"], "Accept": "application/vnd.github+json"}
+          with urllib.request.urlopen(urllib.request.Request(endpoint, headers=headers), timeout=60) as response:
+              meta = json.load(response)
+          assert meta["digest"] == "sha256:" + expected
+          assert meta["workflow_run"]["id"] == 43934937473
+          assert meta["workflow_run"]["head_sha"] == "13a6501b730ce1038ed17be893fdb05ac3935d24"
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl): return None
+          try:
+              urllib.request.build_opener(NoRedirect).open(urllib.request.Request(endpoint + "/zip", headers=headers), timeout=60)
+              raise RuntimeError("expected archive redirect")
+          except urllib.error.HTTPError as exc:
+              if exc.code != 302: raise
+              location = exc.headers["Location"]
+          assert urllib.parse.urlsplit(location).scheme == "https"
+          digest, size = hashlib.sha256(), 0
+          with urllib.request.urlopen(location, timeout=120) as source, open("original.zip", "wb") as target:
+              while chunk := source.read(1024 * 1024):
+                  size += len(chunk)
+                  if size > 800 * 1024 * 1024: raise RuntimeError("archive too large")
+                  digest.update(chunk); target.write(chunk)
+          assert digest.hexdigest() == expected
+          selected = {
+              "plan55-meter-proof/native/trace.etl": "trace.etl",
+              "plan55-meter-proof/native/proof.log": "proof.log",
+              "plan55-meter-proof/counters.xml": "counters.xml",
+              "plan55-meter-proof/summary.json": "original-summary.json",
+          }
+          member_hashes = {}
+          with zipfile.ZipFile("original.zip") as source:
+              for member, filename in selected.items():
+                  info = source.getinfo(member)
+                  limit = 4 * 1024**3 if filename == "trace.etl" else 16 * 1024**2
+                  if info.file_size > limit: raise RuntimeError("member exceeds declared bound")
+                  value = hashlib.sha256()
+                  with source.open(member) as incoming, (out / filename).open("wb") as target:
+                      while chunk := incoming.read(1024 * 1024):
+                          value.update(chunk); target.write(chunk)
+                  member_hashes[member] = {"sha256": value.hexdigest(), "bytes": info.file_size}
+          (out / "identity.json").write_text(json.dumps({"artifact": 14260928127, "archive_sha256": expected,
+              "source_run": 43934937473, "generation_head": meta["workflow_run"]["head_sha"],
+              "decoder_head": os.environ["GITHUB_SHA"], "members": member_hashes}, indent=2), encoding="utf-8")
+      - name: Convert the finished trace and preserve the exact decoder status
+        shell: python
+        run: |
+          import json, pathlib
+          from tests.local_speed_native_capture import decode_saved_trace
+          root = pathlib.Path("trace-replay")
+          original = json.loads((root / "original-summary.json").read_text(encoding="utf-8"))
+          capture = original["counter_capture"]
+          assert capture["proof_exit"] == capture["start_exit"] == capture["stop_exit"] == 0
+          result = decode_saved_trace(root)
+          print(json.dumps(result))
+          raise SystemExit(0 if result["decode_completed"] else 1)
+      - name: Apply existing strict attribution and complete-evidence checks
+        shell: python
+        run: |
+          import hashlib, json, pathlib
+          from tests._local_speed_native import count_interval, trace_etw
+          from tests.local_speed_meter_run import parse_reports, require_junit
+          root = pathlib.Path("trace-replay")
+          result = {"scope": "re-decoding existing Windows evidence; not a new generation run or speed improvement",
+                    "status": "NO-RESULT", "budget_certified": False}
+          try:
+              result["junit"] = require_junit(root / "counters.xml")
+              rows = parse_reports(root / "proof.log", instrumented=True)
+              trace = trace_etw(root / "trace.xml", root / "trace-summary.txt")
+              result["native_gaps"] = trace["gaps"]
+              result["loss_values"] = trace.get("loss_values")
+              result["callers"] = [{"caller": row["caller"], "counts": count_interval(trace, row["interval"])} for row in rows]
+              for item in result["callers"]:
+                  if item["counts"]["native_flushes"] is None or item["counts"]["observed_failed_flushes"]:
+                      raise RuntimeError("strict native completeness/flush verification failed")
+              result["status"] = "PASS"
+          except Exception as exc:
+              result["error"] = type(exc).__name__ + ": " + str(exc)
+          finally:
+              (root / "replay-result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+              print(json.dumps(result))
+          raise SystemExit(0 if result["status"] == "PASS" else 1)
+      - name: Preserve bounded original identities and new decoder proof
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: plan55-offline-trace-replay-${{ github.run_id }}
+          path: |
+            trace-replay/identity.json
+            trace-replay/original-summary.json
+            trace-replay/counters.xml
+            trace-replay/proof.log
+            trace-replay/decode.json
+            trace-replay/decode.log
+            trace-replay/trace-summary.txt
+            trace-replay/replay-result.json
+          retention-days: 14

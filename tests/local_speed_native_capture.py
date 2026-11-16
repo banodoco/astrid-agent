@@ -16,6 +16,11 @@ import subprocess
 import sys
 import time
 
+# Offline conversion of a finished ETL is not part of the caller's timer.
+# The real Windows capture completed its tests but the old 180-second decode
+# stopped at about 46%. Keep conversion bounded without changing proof limits.
+TRACE_DECODE_TIMEOUT_SECONDS = 900
+
 
 def run_bounded(command, *, log: Path, timeout: int) -> int:
     options = {"start_new_session": True} if os.name != "nt" else {
@@ -36,12 +41,43 @@ def run_bounded(command, *, log: Path, timeout: int) -> int:
             return 124
 
 
+def decode_saved_trace(output: Path, *, tracerpt: str | None = None,
+                       timeout: int = TRACE_DECODE_TIMEOUT_SECONDS) -> dict:
+    """Decode an existing completed capture; never start or repeat a proof.
+
+    The caller must separately require successful proof/stop statuses and
+    complete trace/loss accounting. A decoded file alone qualifies nothing.
+    Original ETL bytes are input-only; existing diagnostic output may be
+    replaced by tracerpt's explicit -y option on this owned proof directory.
+    """
+    if isinstance(timeout, bool) or not isinstance(timeout, int) or not 1 <= timeout <= TRACE_DECODE_TIMEOUT_SECONDS:
+        raise ValueError("decode timeout must be an integer between 1 and 900 seconds")
+    output = Path(output)
+    if not (output / "trace.etl").is_file():
+        raise FileNotFoundError("completed input trace.etl is required")
+    tracerpt = tracerpt or shutil.which("tracerpt")
+    if not tracerpt:
+        raise RuntimeError("tracerpt unavailable; native flush count is unknown")
+    command = [tracerpt, str(output / "trace.etl"), "-of", "XML", "-o", str(output / "trace.xml"),
+               "-summary", str(output / "trace-summary.txt"), "-y"]
+    result = {"decode_command": command, "decode_timeout_seconds": timeout,
+              "decode_started_epoch_ns": time.time_ns(), "decode_completed": False}
+    try:
+        result["decode_exit"] = run_bounded(command, log=output / "decode.log", timeout=timeout)
+        result["decode_completed"] = result["decode_exit"] == 0
+    finally:
+        result["decode_finished_epoch_ns"] = time.time_ns()
+        (output / "decode.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    return result
+
+
 def capture(output: Path, command: list[str], timeout: int) -> dict:
     if not command:
         raise ValueError("native capture requires an actual proof command")
     output.mkdir(parents=True, exist_ok=False)
     meta = {"schema": "astrid.local-speed-native-capture.v1", "command": command,
             "platform": platform.platform(), "python": sys.version,
+            "proof_timeout_seconds": timeout,
             "started_epoch_ns": time.time_ns(), "completed": False}
     try:
         if sys.platform.startswith("linux"):
@@ -63,8 +99,6 @@ def capture(output: Path, command: list[str], timeout: int) -> dict:
             meta["start_command"] = start
             meta["start_exit"] = run_bounded(start, log=output / "start.log", timeout=60)
             if meta["start_exit"]:
-                # In particular, do NOT cancel someone else's active recording
-                # or elevate permissions after a refusal.
                 raise RuntimeError("WPR start refused or failed; see start.log; not retried")
             try:
                 meta["proof_exit"] = run_bounded(command, log=output / "proof.log", timeout=timeout)
@@ -74,10 +108,7 @@ def capture(output: Path, command: list[str], timeout: int) -> dict:
                 meta["stop_exit"] = run_bounded(stop, log=output / "stop.log", timeout=120)
             if meta["stop_exit"]:
                 raise RuntimeError("WPR stop did not produce a completed trace; see stop.log")
-            decode = [tracerpt, str(output / "trace.etl"), "-of", "XML", "-o", str(output / "trace.xml"),
-                      "-summary", str(output / "trace-summary.txt"), "-y"]
-            meta["decode_command"] = decode
-            meta["decode_exit"] = run_bounded(decode, log=output / "decode.log", timeout=180)
+            meta.update(decode_saved_trace(output, tracerpt=tracerpt))
             meta["completed"] = meta["decode_exit"] == 0 and meta["proof_exit"] != 124
             meta["observer"] = "WPR FileIO/FileIOInit"
         else:
