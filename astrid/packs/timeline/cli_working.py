@@ -390,6 +390,14 @@ def _configure_transcripts_sync(subparser: argparse.ArgumentParser) -> None:
 def _cmd_transcripts_import(parsed: argparse.Namespace) -> int:
     from astrid.sdk.media_transcript import import_transcript_words
 
+    if bool(parsed.file) == bool(parsed.from_run):
+        raise ValueError("provide exactly one words file or --from-run")
+    if parsed.from_run:
+        from astrid.sdk.transcript_run import import_transcription_run
+        status = import_transcription_run(parsed.client, need_project(parsed), parsed.media_id, parsed.from_run,
+                                          replace=parsed.replace, expected_version=parsed.expected_version)
+        print(f"{status} transcript for {parsed.media_id} from run {parsed.from_run}")
+        return 0
     payload = json.loads(parsed.file.expanduser().read_text(encoding="utf-8"))
     words = payload.get("words") if isinstance(payload, Mapping) else payload
     if not isinstance(words, list):
@@ -407,6 +415,39 @@ def _cmd_transcripts_import(parsed: argparse.Namespace) -> int:
         source=parsed.source, replace=parsed.replace, expected_version=parsed.expected_version,
     )
     print(f"{status} transcript for {parsed.media_id} ({parsed.source})")
+    return 0
+
+
+@guard(2)
+def _cmd_transcripts_run(parsed: argparse.Namespace) -> int:
+    import hashlib
+    import tempfile
+    from astrid.sdk.generation import generate
+    from astrid.sdk.media_handles import resolve_media_handle
+    from astrid.sdk.transcript_run import import_transcription_run
+
+    project = need_project(parsed)
+    descriptor, _ = resolve_media_handle(parsed.client, project, parsed.media_id)
+    digest = descriptor["digest"]
+    raw = parsed.client.media.read_bytes(digest)
+    if "sha256:" + hashlib.sha256(raw).hexdigest() != digest:
+        raise ValueError("media bytes do not match their digest")
+    with tempfile.TemporaryDirectory(prefix="astrid-transcription-") as tmp:
+        path = Path(tmp) / descriptor["filename"]
+        path.write_bytes(raw)
+        options = {name: getattr(parsed, name) for name in ("placement", "engine", "execution", "align", "recovery_path")
+                   if getattr(parsed, name, None) is not None}
+        result = generate.audio(entry="transcription", mode="transcribe", audio_ref=str(path),
+                                project=project, client=parsed.client, consent=tuple(parsed.consent), **options)
+    if getattr(result, "ok", True) is False:
+        raise ValueError(f"transcription failed: {getattr(result, 'error', None)}")
+    value = result.to_dict() if hasattr(result, "to_dict") else result
+    run_id = value.get("kernel_run_id") or value.get("run_id") if isinstance(value, Mapping) else None
+    if not run_id:
+        raise ValueError("transcription result has no run id")
+    status = import_transcription_run(parsed.client, project, digest, run_id,
+                                      replace=parsed.replace, expected_version=parsed.expected_version)
+    print(f"{status} transcript for {digest} from run {run_id}")
     return 0
 
 
