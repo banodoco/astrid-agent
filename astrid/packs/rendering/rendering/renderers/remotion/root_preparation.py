@@ -21,6 +21,7 @@ from runtime_protocol import platform
 from astrid.core.env_vars import ASTRID_INTERNAL_INVOCATION, ASTRID_PACKS_PATH
 from astrid.core.rendering.contracts import FrameWindow
 from astrid.core.rendering.remotion_runtime import RemotionRuntimeTools, probe_context
+from astrid.packs.rendering.shared.live_scenes.package import resolve_live_scene_html
 
 
 def _compile_verified_canonical_transitions(
@@ -71,6 +72,41 @@ def _compile_verified_canonical_transitions(
         raise ValueError("canonical transition compiler returned an invalid vector")
     source.validate(timeline_path, assets_path)
     props["compiledTransitions"] = compiled
+
+
+def _timeline_with_live_scene_html(
+    timeline: Mapping[str, Any], materialized_objects: Mapping[str, Any] | None,
+) -> Mapping[str, Any]:
+    """Fill ``html`` for reference-only live-scene clips from host materialization.
+
+    Clips that still carry inline ``html`` are left untouched. A missing or
+    unverifiable entry object raises ``LiveSceneHtmlError`` and fails the render.
+    """
+    clips = timeline.get("clips")
+    if not isinstance(clips, list):
+        return timeline
+
+    def read_object(object_id: str) -> bytes | None:
+        value = materialized_objects.get(object_id) if isinstance(materialized_objects, Mapping) else None
+        if value is None:
+            return None
+        if isinstance(value, (bytes, bytearray)):
+            return bytes(value)
+        return Path(value).read_bytes()
+
+    resolved: list[Any] = []
+    for clip in clips:
+        app = clip.get("app") if isinstance(clip, Mapping) else None
+        scene = app.get("liveScene") if isinstance(app, Mapping) else None
+        if (
+            isinstance(clip, Mapping)
+            and clip.get("clipType") == "haus.astrid.liveScene"
+            and isinstance(scene, Mapping)
+            and scene.get("html") is None
+        ):
+            clip = {**clip, "app": {**app, "liveScene": resolve_live_scene_html(scene, read_object)}}
+        resolved.append(clip)
+    return {**timeline, "clips": resolved}
 
 
 def _accounted_attempt_root(
@@ -299,9 +335,12 @@ def _prepared_remotion_root_selected(
             # document or None, which selects the intentional built-in style.
             theme_for_props = backend._resolved_theme_for_render(timeline_path, theme_path)
             merged_props = {
-                "timeline": backend._serialize_timeline(
-                    timeline_path,
-                    default_theme=str(theme_for_props.get("id") or "banodoco-default"),
+                "timeline": _timeline_with_live_scene_html(
+                    backend._serialize_timeline(
+                        timeline_path,
+                        default_theme=str(theme_for_props.get("id") or "banodoco-default"),
+                    ),
+                    materialized_objects,
                 ),
                 "assets": resolved_registry,
                 "theme": theme_for_props,

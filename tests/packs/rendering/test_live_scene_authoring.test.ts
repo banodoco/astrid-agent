@@ -73,7 +73,8 @@ describe('pack-owned ACP source authoring', () => {
     expect(f.testHarness.calls.indexOf('apply')).toBeLessThan(f.testHarness.calls.indexOf('flush'));
     const expected = MAPLE_HTML.replace('"t":55,"fov":41', '"t":55,"fov":49');
     for (const clip of f.testHarness.clips) {
-      expect(sceneOf(clip).html).toBe(expected);
+      expect(sceneOf(clip).html).toBeUndefined();
+      expect(entryHtmlOf(f.testHarness, clip)).toBe(expected);
       expect(clip.app?.sentinel).toEqual({ retained: true });
     }
   });
@@ -87,7 +88,7 @@ describe('pack-owned ACP source authoring', () => {
     ] }, f.execution);
     expect(result.kind).toBe('published');
     const expected = html.replace('const spin = 1;', 'const spin = 2;').replace('const label = "before";', 'const label = "after";');
-    expect(bytes(String(sceneOf(f.testHarness.clips[0]).html))).toEqual(bytes(expected));
+    expect(bytes(entryHtmlOf(f.testHarness, f.testHarness.clips[0]))).toEqual(bytes(expected));
   });
 
   it.each([
@@ -119,7 +120,7 @@ describe('pack-owned ACP source authoring', () => {
       };
       await expect(executeLiveSceneAuthoring(f.testHarness.ctx, f.publish, f.execution)).rejects.toThrow(/cancelled|scope changed|stale/);
       expect(f.testHarness.patch.current).toBeUndefined();
-      expect(sceneOf(f.testHarness.clips[0]).html).toBe(MAPLE_HTML);
+      expect(entryHtmlOf(f.testHarness, f.testHarness.clips[0])).toBe(MAPLE_HTML);
     }
   });
 
@@ -626,9 +627,16 @@ function sceneOf(clip: RawClip): {
   revision: string;
   source: { objectId: string; revision: string };
   packageBody: string;
-  html: string;
+  /** Only legacy clips carry inline HTML; published or imported clips store the reference alone. */
+  html?: string;
 } {
   return clip.app!.liveScene as ReturnType<typeof sceneOf>;
+}
+
+/** The HTML a clip shows: its package's entry object, which is where the timeline-stored reference points. */
+function entryHtmlOf(testHarness: Harness, clip: RawClip): string {
+  const body = JSON.parse(sceneOf(clip).packageBody) as { entry: ProjectObjectMetadata };
+  return new TextDecoder().decode(testHarness.objects.get(body.entry.object_id));
 }
 
 describe('captured old-source live-scene publication', () => {
@@ -649,7 +657,7 @@ describe('captured old-source live-scene publication', () => {
     expect(result.flushReceipt.version).toBe(9);
     expect(testHarness.calls[testHarness.calls.length - 1]).toBe('flush');
     for (const clip of testHarness.clips) {
-      const html = sceneOf(clip).html;
+      const html = entryHtmlOf(testHarness, clip);
       const journey = JSON.parse(html.match(/<script[^>]+>([\s\S]*?)<\/script>/)![1]) as { camera: { knots: Array<{ t: number; fov: number }> } };
       expect(journey.camera.knots.find((knot) => knot.t === MAPLE_CAMERA_EDIT_SOURCE_TIME)?.fov).toBe(MAPLE_CAMERA_EDIT_FOV);
     }
@@ -695,8 +703,9 @@ describe('captured old-source live-scene publication', () => {
     for (const [index, clip] of testHarness.clips.slice(0, 2).entries()) {
       expect(sceneOf(clip)).toMatchObject({
         revision: result.revision, source: { objectId: result.package.object_id, revision: result.revision },
-        html: '<html><body>Edited Maple caption</body></html>',
       });
+      expect(sceneOf(clip).html).toBeUndefined();
+      expect(entryHtmlOf(testHarness, clip)).toBe('<html><body>Edited Maple caption</body></html>');
       expect(clip.app).toMatchObject({ sentinel: { placement: index }, unrelated: `keep-${index}` });
       expect(testHarness.objects.get(result.package.object_id)).toEqual(bytes(sceneOf(clip).packageBody));
     }

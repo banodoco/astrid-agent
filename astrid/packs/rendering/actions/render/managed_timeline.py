@@ -345,6 +345,53 @@ def _validate_render_element_clip_types(
         )
 
 
+def _resolve_live_scene_clips(config: Mapping[str, Any], *, client: Any) -> dict[str, Any]:
+    """Fill reference-only live-scene HTML from the bound Runtime client.
+
+    Inline ``html`` is never read again. A reference-only clip whose entry
+    object cannot be read or verified fails admission instead of rendering empty.
+    """
+    from astrid.packs.rendering.shared.live_scenes.package import (
+        LiveSceneHtmlError,
+        resolve_live_scene_html,
+    )
+
+    resolved = dict(config)
+    clips = config.get("clips")
+    if not isinstance(clips, list):
+        return resolved
+
+    def read_object(object_id: str) -> bytes:
+        return client.media.read_bytes(object_id)
+
+    updated: list[Any] = []
+    for index, clip in enumerate(clips):
+        app = clip.get("app") if isinstance(clip, Mapping) else None
+        scene = app.get("liveScene") if isinstance(app, Mapping) else None
+        if (
+            isinstance(clip, Mapping)
+            and clip.get("clipType") == "haus.astrid.liveScene"
+            and isinstance(scene, Mapping)
+            and scene.get("html") is None
+        ):
+            path = f"$.clips[{index}].app.liveScene"
+            try:
+                scene = resolve_live_scene_html(scene, read_object)
+            except (ValueError, TypeError) as exc:
+                validator = "prepared_live_scene_object" if isinstance(exc, LiveSceneHtmlError) else "prepared_live_scene_package"
+                raise ManagedRenderValidationError(
+                    f"live scene at {path} is not renderable: {exc}",
+                    path=path,
+                    reason=str(exc),
+                    recovery="Restore the scene's entry object in the Runtime object store, then retry.",
+                    validator=validator,
+                ) from exc
+            clip = {**clip, "app": {**app, "liveScene": scene}}
+        updated.append(clip)
+    resolved["clips"] = updated
+    return resolved
+
+
 def _normalize_pinned_element_references(config: Mapping[str, Any]) -> dict[str, Any]:
     """Project editor element refs onto the fields the Remotion backend reads.
 
@@ -1148,6 +1195,7 @@ def resolve_managed_render_snapshot(
     from astrid.core.rendering.project_elements import resolve_project_elements
 
     config = resolve_project_elements(config, project=project_id, client=client)
+    config = _resolve_live_scene_clips(config, client=client)
     registry = _runtime_snapshot_registry(
         stored_registry,
         project_ref=project_ref,

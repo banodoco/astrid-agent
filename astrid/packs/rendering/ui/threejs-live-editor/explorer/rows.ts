@@ -1,5 +1,6 @@
 // The one world list: worlds in the video, then library worlds.
 import type { TimelineSnapshot } from '@astrid/editor-sdk';
+import type { StoredLiveScene } from '../liveSceneDocument';
 import { PLACEHOLDER_LABEL, UNTITLED_WORLD, worldKey, worldsFromSnapshot, type ShotMove, type TimelineWorld, type LibraryEntry, type WorldEvent, type WorldUse } from './model';
 
 /** One world the explorer can open: from the timeline, or from the project library. */
@@ -13,8 +14,8 @@ export type Row = {
   readonly uses: readonly WorldUse[];
   readonly events: readonly WorldEvent[];
   readonly shots: readonly ShotMove[];
-  /** Present for timeline worlds, whose package already rides on their clips. */
-  readonly liveScene?: Record<string, unknown>;
+  /** Present for timeline worlds: the reference their clips store (inline HTML only on legacy clips). */
+  readonly liveScene?: StoredLiveScene;
   /** Set only when another row has the same name, to tell them apart: "library" for the library copy, else the tracks the clips sit on ("on V3, V6"), else a short revision. Never "in video". */
   readonly qualifier?: string;
 };

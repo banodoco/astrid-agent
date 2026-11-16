@@ -10,7 +10,7 @@ import {
   type PanelRenderProps,
 } from '@astrid/editor-sdk';
 import { LIVE_SCENE_CLIP_TYPE_ID, THREEJS_LIVE_EDITOR_EXTENSION_ID } from './identity';
-import type { CommandContribution } from '@astrid/editor-sdk';
+import type { CommandContribution, ProjectObjectStorage } from '@astrid/editor-sdk';
 
 /** Stable first-party identity used by the host release allowlist. */
 // IDs are validated by defineExtension; these casts only attach the SDK brands.
@@ -49,6 +49,8 @@ type LiveSceneClipProps = {
   readonly time: number;
   readonly sourceTime: number;
   readonly source?: Record<string, unknown>;
+  /** Project object storage, used to load the entry HTML of a clip that stores only a reference. */
+  readonly storage?: ProjectObjectStorage;
   readonly width: number;
   readonly height: number;
 };
@@ -62,6 +64,7 @@ const LiveSceneClip: FC<LiveSceneClipProps> = ({
   height,
   sourceTime,
   source,
+  storage,
 }) => {
   return createElement(Suspense, {
     fallback: createElement('div', {
@@ -77,7 +80,7 @@ const LiveSceneClip: FC<LiveSceneClipProps> = ({
         placeItems: 'center',
       },
     }, 'Loading live scene…'),
-  }, createElement(LazySceneSurface, { source: source?.liveScene, sourceTime, width, height, showStatus: false }));
+  }, createElement(LazySceneSurface, { source: source?.liveScene, storage, sourceTime, width, height, showStatus: false }));
 };
 
 const LazyWorldExplorerPanel = lazy(() =>
@@ -123,11 +126,14 @@ export const threejsLiveEditorExtension = defineExtension({
   },
 
   activate(ctx: ExtensionContext): DisposeHandle {
+    // The host passes clip props only; storage comes from this extension's context.
+    const BoundLiveSceneClip: FC<Omit<LiveSceneClipProps, 'storage'>> = (props) =>
+      createElement(LiveSceneClip, { ...props, storage: ctx.creative?.projectObjects });
     const registration = ctx.clipTypes.registerClipType(
       LIVE_SCENE_CLIP_TYPE_ID,
       // The SDK renderer union is intentionally broad; the host invokes this
       // trusted component with the same props shape used by the timeline.
-      LiveSceneClip as unknown as ClipRenderer,
+      BoundLiveSceneClip as unknown as ClipRenderer,
       undefined,
       { label: 'Live Three.js Scene' },
     );
