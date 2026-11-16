@@ -137,7 +137,7 @@ def test_run_command_stores_stubbed_generation(monkeypatch):
     def audio(**kwargs):
         seen.update(kwargs)
         assert Path(kwargs['audio_ref']).read_bytes() == b'source media'
-        return {'kernel_run_id': 'run-1'}
+        return {'task_id': 'task-1'}
     monkeypatch.setattr(generation, 'generate', SimpleNamespace(audio=audio))
     args = build_parser(client).parse_args(['transcripts', 'run', client.media_id, '--project', 'p',
                                             '--placement', 'managed'])
