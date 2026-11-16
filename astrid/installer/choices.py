@@ -66,9 +66,14 @@ def resolve_choices(*, explicit: Mapping[str, object] | None = None,
 
 
 def unattended_consent_required(*, existing_install: bool, accept_recommended: bool,
-                                interactive: bool) -> bool:
-    """Whether a fresh noninteractive install must stop for consent."""
-    return not existing_install and not accept_recommended and not interactive
+                                interactive: bool, explicit: Mapping[str, object] | None = None) -> bool:
+    """Whether a fresh noninteractive install must stop for consent.
+
+    Naming every choice on the command line is consent to exactly that set.
+    """
+    if existing_install or accept_recommended or interactive:
+        return False
+    return not all(name in (explicit or {}) for name in CHOICE_NAMES)
 
 
 def render_plan(choices: Mapping[str, bool]) -> str:

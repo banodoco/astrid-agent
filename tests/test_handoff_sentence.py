@@ -54,3 +54,21 @@ def test_the_sentence_text_is_held_in_one_agent_code_place():
             for path in (ROOT / folder).rglob("*.py")
             if SENTENCE in path.read_text(encoding="utf-8")]
     assert hits == ["astrid/installer/outcome.py"], hits
+
+
+def test_skills_off_closes_with_a_scan_hint_that_matches_the_command_on_path():
+    from astrid.installer.outcome import SCAN_HINT, SCAN_HINT_LAUNCHER
+
+    on_path = Outcome("updated", 12, None, 12, skills=False).headline()
+    assert on_path == ["Astrid installed: Release 12.", SCAN_HINT]
+    assert "astrid generate scan" in SCAN_HINT and SENTENCE not in on_path
+    launcher = Outcome("updated", 12, None, 12, skills=False, command=False).headline()
+    assert launcher[1] == SCAN_HINT_LAUNCHER and "run-astrid generate scan" in launcher[1]
+
+
+def test_installed_line_names_the_build_when_the_manifest_named_it():
+    assert Outcome("updated", 12, None, 12, build="4ae35ed0").headline()[0] == (
+        "Astrid installed: Release 12 (build 4ae35ed0).")
+    assert Outcome("updated", 11, 11, 12, build="4ae35ed0").headline()[0] == (
+        "Astrid updated: Release 11 → Release 12 (build 4ae35ed0).")
+    assert Outcome("updated", 12, None, 12).headline()[0] == "Astrid installed: Release 12."

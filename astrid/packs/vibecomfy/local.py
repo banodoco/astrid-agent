@@ -40,6 +40,12 @@ def _error(port: int, endpoint: str, exc: Exception) -> dict[str, Any]:
     return {"port": port, "endpoint": endpoint, "error": str(exc)}
 
 
+def _nothing_answered(exc: BaseException) -> bool:
+    """A refused connection or a silent port: no server is there to be wrong."""
+    reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+    return isinstance(reason, (ConnectionRefusedError, TimeoutError))
+
+
 def _first_custom_nodes(folder_paths: Any) -> str | None:
     if not isinstance(folder_paths, dict):
         return None
@@ -267,7 +273,9 @@ def _probe_server(
     try:
         stats = get_json("/system_stats")
     except (OSError, urllib.error.URLError, http.client.HTTPException, TimeoutError, ValueError) as exc:
-        if not require_comfyui_shape:
+        # Nothing listening (or silent) on this port is a probe miss, not an error; a server
+        # that answers with something other than ComfyUI's stats is still reported.
+        if not require_comfyui_shape and not _nothing_answered(exc):
             errors.append(_error(port, "/system_stats", exc))
         return None, errors
 
@@ -311,6 +319,12 @@ def _probe_server(
     try:
         query = urllib.parse.urlencode({"dir": "workflows", "full_info": "true", "recurse": "true"})
         workflows = get_json("/userdata?" + query)
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            errors.append(_error(port, "/userdata?dir=workflows", exc))
+        else:
+            # ComfyUI has no saved-workflows folder yet: nothing is saved, which is not an error.
+            server["workflows"], server["workflows_detail"] = [], []
     except (OSError, urllib.error.URLError, http.client.HTTPException, TimeoutError, ValueError) as exc:
         errors.append(_error(port, "/userdata?dir=workflows", exc))
     else:

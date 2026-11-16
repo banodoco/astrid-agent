@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import traceback
 from pathlib import Path
@@ -416,6 +417,7 @@ class _Run:
         self.system: str | None = None
         self.root: Path | None = None
         self.choices: dict[str, bool] | None = None
+        self.build: str | None = None  # the manifest's agent commit, first 8 characters
         self.installer: Any | None = None
         self.transaction_id = None
         self.journal: Path | None = None  # the update journal, and what it held when the run began
@@ -448,6 +450,10 @@ class _Run:
         self.target = install_release(manifest)
         # A manifest that names no release leaves the target to the activated release (see activated()).
         self.target_source = "manifest" if "release" in manifest else "default"
+        agent = manifest.get("agent")
+        agent_sha = agent.get("sha") if isinstance(agent, dict) else None
+        if isinstance(agent_sha, str) and re.fullmatch(r"[0-9a-f]{40}", agent_sha):
+            self.build = agent_sha[:8]
         return manifest
 
     def activated(self, release: int | None) -> None:
@@ -481,7 +487,10 @@ class _Run:
         from dataclasses import replace
 
         # Every non-zero outcome ends with Next and Details (outcome.next_steps).
-        outcome = replace(outcome, log=str(self.log) if self.log is not None else None)
+        choices = self.choices or {}
+        outcome = replace(outcome, log=str(self.log) if self.log is not None else None,
+                          skills=choices.get("skills", True), command=choices.get("command", True),
+                          build=self.build)
         if self.log is not None:
             # Beside install.log, which diagnostics already read; never in a selected root.
             write_record(self.log.with_name(RECORD), outcome, *self.protected,
@@ -524,6 +533,8 @@ def parser() -> argparse.ArgumentParser:
                         help="run inside a seccomp sandbox such as OpenShell: Runtime's sandbox process control "
                              "(docs/setup/openshell-sandbox.md); selected for this install or update")
     result.add_argument("--yes", action="store_true", help="accept the recommended setup choices")
+    result.add_argument("--no-browser", action="store_true",
+                        help="do not open astrid.haus in a browser; the link is still printed")
     result.set_defaults(choices={})
     for name in CHOICE_NAMES:
         flag = "--skill-copies" if name == "skill_copies" else f"--{name}"
@@ -534,6 +545,9 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
+    if args.no_browser:
+        # The backend reads this where it would open the connect page (ASTRID_NO_BROWSER=1).
+        os.environ["ASTRID_NO_BROWSER"] = "1"
     mode = ("rollback" if args.rollback else "update-recovery" if args.update_recovery else "app-update" if args.update_app else "update" if args.update else "uninstall" if args.uninstall
             else "doctor" if args.doctor is not None else "install")
     run = _Run(mode)
@@ -835,7 +849,7 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 if mode in {"install", "update"} and unattended_consent_required(
                         existing_install=existing_install, accept_recommended=args.yes,
-                        interactive=sys.stdin.isatty()):
+                        interactive=sys.stdin.isatty(), explicit=args.choices):
                     print(render_plan(resolved_choices))
                     print("Exact rerun command: " + consent_rerun_command(args.choices, windows=backend.service.system == "win32"))
                     run.choices = resolved_choices

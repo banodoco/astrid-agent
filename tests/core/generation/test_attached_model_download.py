@@ -5,19 +5,28 @@ import errno
 import hashlib
 import http.server
 import os
+import re
 import shutil
 import threading
+from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 import httpx
 import pytest
 
 from astrid.core.generation.asset_gaps import (
-    AttachedDownloadRefused, _fetch_into_folder, apply_attached_model_download,
-    plan_attached_model_download, render_attached_download_plan,
+    AttachedDownloadRefused,
+    _fetch_into_folder,
+    apply_attached_model_download,
+    plan_attached_model_download,
+    render_attached_download_plan,
 )
 from astrid.core.generation.backends.comfy_target import (
-    ComfyModelMissing, ComfyTarget, ComfyTargetClient, _capture_model_resolution,
+    ComfyModelMissing,
+    ComfyTarget,
+    ComfyTargetClient,
+    _capture_model_resolution,
 )
 from astrid.core.generation.engine_contracts import ModelSpec
 from astrid.core.model_catalog.registry import ModelRegistry
@@ -45,15 +54,24 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if blob is None:
             self.send_error(404)
             return
-        self.send_response(200)
-        self.send_header("Content-Length", str(len(blob)))
+        ranged = self.headers.get("Range")
+        self.server.ranges.append((self.path, ranged))
+        start = int(re.fullmatch(r"bytes=(\d+)-", ranged).group(1)) if ranged else 0
+        if start:
+            self.send_response(206)
+            self.send_header("Content-Range", f"bytes {start}-{len(blob) - 1}/{len(blob)}")
+        else:
+            self.send_response(200)
+        self.send_header("Content-Length", str(len(blob) - start))
         self.end_headers()
+        stop = self.server.cut_at.get(self.path, len(blob))
         if self.path in self.server.truncated:
-            self.wfile.write(blob[:3])
-            self.wfile.flush()
+            stop = min(stop, start + 3)
+        self.wfile.write(blob[start:stop])
+        self.wfile.flush()
+        if stop < len(blob):
+            # the promised length never arrives: an interrupted download
             self.close_connection = True
-            return  # the promised length never arrives: an interrupted download
-        self.wfile.write(blob)
 
     def log_message(self, *args):
         pass
@@ -67,6 +85,7 @@ def file_server(monkeypatch):
                         lambda url: real(url) or url.startswith("http://127.0.0.1:"))
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
     server.blobs, server.requested, server.truncated = dict(BLOBS), [], set()
+    server.ranges, server.cut_at = [], {}  # (path, Range header) per request; path -> byte offset where the body is cut
     threading.Thread(target=server.serve_forever, daemon=True).start()
     yield server
     server.shutdown()
@@ -174,19 +193,23 @@ def test_with_the_digest_each_file_lands_in_the_folder_the_server_reports(comfy,
     assert result["restarted"] is False
 
 
-def test_an_interrupted_download_leaves_no_partial_file(comfy, models, file_server):
+def test_an_interrupted_download_keeps_only_its_resumable_part(comfy, models, file_server):
     root, _ = models
     plan = _plan(comfy, file_server)
     file_server.truncated.add("/vae.bin")
-    with pytest.raises(Exception):
+    with pytest.raises(AttachedDownloadRefused):
         _apply(comfy, file_server, plan["plan_sha256"])
     assert not (root / "vae" / "ae.safetensors").exists()
-    # nothing but verified, complete files; no temp, part or receipt litter anywhere under models
+    # complete, verified files plus the interrupted file's resumable part; no temp or receipt litter under models
     left = _files(root)
-    assert all(name.endswith(".safetensors") for name in left), left
-    assert "vae/ae.safetensors" not in left
+    assert "vae/.ae.safetensors.astrid-resume" in left
+    assert (root / "vae" / ".ae.safetensors.astrid-resume").read_bytes() == BLOBS["/vae.bin"][:3]
+    assert [n for n in left if not n.endswith(".astrid-resume")] == [
+        "diffusion_models/z_image_turbo_bf16.safetensors", "text_encoders/qwen_3_4b.safetensors"]
     assert not (root / ".vibecomfy").exists()
     for name in left:
+        if name.endswith(".astrid-resume"):
+            continue
         key = name.split("/")[0]
         assert (root / name).read_bytes() == BLOBS[WANTED[key][1]]
 
@@ -374,8 +397,10 @@ def test_a_failed_publish_without_hard_links_leaves_no_placeholder(comfy, models
         return real_replace(src, dst, *args, **kwargs)
 
     monkeypatch.setattr(os, "replace", replace)
-    with pytest.raises(OSError):
+    with pytest.raises(AttachedDownloadRefused) as caught:  # the failure is reported with what finished before it
         _apply(comfy, file_server, plan["plan_sha256"])
+    assert isinstance(caught.value.__cause__, OSError)
+    assert "Its partial download is kept" not in str(caught.value)  # a verified file is never left as a partial
     assert not (root / "vae" / "ae.safetensors").exists()
     assert not [n for n in _files(root) if n.startswith("vae/")]
 
@@ -463,3 +488,168 @@ def test_a_file_of_the_old_staging_name_is_never_deleted(comfy, models, file_ser
     assert theirs.read_bytes() == b"the person's own file, not Astrid's"
     assert sorted(p.name for p in (root / "vae").iterdir()) == ["ae.safetensors.astrid-partial"]
     assert not (root / ".vibecomfy").exists()
+
+
+LOADERS = {"diffusion_models": ("UNETLoader", "unet_name"), "text_encoders": ("CLIPLoader", "clip_name"),
+           "vae": ("VAELoader", "vae_name")}
+
+
+def _list_on_comfy(comfy, folder, name):
+    """ComfyUI rescans its model folders after a publish, so the finished file is one the server lists."""
+    loader, field = LOADERS[Path(folder).name]
+    comfy.info[loader]["input"]["required"][field] = [[name]]
+
+
+def _url_path(url):
+    return urlsplit(url).path
+
+
+def test_a_failed_file_says_what_finished_and_what_did_not(comfy, models, file_server):
+    root, _ = models
+    plan = _plan(comfy, file_server)
+    first, second, third = plan["files"]
+    file_server.truncated.add(_url_path(second["url"]))
+    with pytest.raises(AttachedDownloadRefused) as caught:
+        _apply(comfy, file_server, plan["plan_sha256"])
+    text = str(caught.value)
+    assert second["file"] in text and f"Finished in this run: {first['file']}." in text
+    assert f"Not downloaded: {third['file']}." in text and caught.value.code == "download_failed"
+    assert "Nothing was written" not in text and "resumes it" in text
+    assert (Path(first["folder"]) / first["file"]).read_bytes() == BLOBS[_url_path(first["url"])]
+
+
+def test_the_same_digest_then_fetches_only_the_rest(comfy, models, file_server, capsys):
+    root, _ = models
+    plan = _plan(comfy, file_server)
+    first, second, third = plan["files"]
+    file_server.truncated.add(_url_path(second["url"]))
+    with pytest.raises(AttachedDownloadRefused):
+        _apply(comfy, file_server, plan["plan_sha256"])
+    _list_on_comfy(comfy, first["folder"], first["file"])  # the finished file is now listed by ComfyUI
+    file_server.truncated.clear()
+    asked = len(file_server.requested)
+    again = _plan(comfy, file_server)
+    assert again["plan_sha256"] == plan["plan_sha256"]
+    assert [p["file"] for p in again["present"]] == [first["file"]]
+    assert "already on your ComfyUI" in render_attached_download_plan(again)
+    capsys.readouterr()
+    result = _apply(comfy, file_server, plan["plan_sha256"])
+    assert [d["file"] for d in result["downloaded"]] == [second["file"], third["file"]]
+    assert result["downloaded"][0]["resumed_from_bytes"] == 3  # the interrupted file continued, not restarted
+    assert file_server.requested[asked:] == [_url_path(second["url"]), _url_path(third["url"])]
+    for f in (second, third):
+        assert (Path(f["folder"]) / f["file"]).read_bytes() == BLOBS[_url_path(f["url"])]
+    assert not [n for n in _files(root) if n.endswith(".astrid-resume")]
+    captured = capsys.readouterr()
+    assert captured.out == ""  # progress is on stderr only
+    assert f"Downloaded {second['file']}" in captured.err and f"Downloaded {third['file']}" in captured.err
+
+
+def test_a_truncated_large_file_resumes_with_a_range_request(comfy, models, file_server, monkeypatch, capsys):
+    from astrid.core.generation import asset_gaps
+    root, _ = models
+    monkeypatch.setattr(asset_gaps, "_PROGRESS_STEP", 64 << 10)
+    big = bytes(range(256)) * 1024  # 256 KiB
+    file_server.blobs["/big.bin"] = big
+    sources = _sources(file_server)
+    base = f"http://127.0.0.1:{file_server.server_port}"
+    sources["vae/ae.safetensors"] = ModelSpec("ae.safetensors", None, None, None, base + "/big.bin",
+                                              "vae/ae.safetensors", len(big), hashlib.sha256(big).hexdigest())
+    plan = plan_attached_model_download(comfy.client, "z-image", "t2i", sources=sources)
+
+    def apply():
+        return apply_attached_model_download(comfy.client, "z-image", "t2i", plan_sha256=plan["plan_sha256"],
+                                             sources=sources, http_client=_http())
+
+    file_server.cut_at["/big.bin"] = 100_000
+    with pytest.raises(AttachedDownloadRefused):
+        apply()
+    assert (root / "vae" / ".ae.safetensors.astrid-resume").read_bytes() == big[:100_000]
+    for f in plan["files"]:
+        if (Path(f["folder"]) / f["file"]).exists():
+            _list_on_comfy(comfy, f["folder"], f["file"])
+    file_server.cut_at.clear()
+    file_server.requested.clear()
+    file_server.ranges.clear()
+    capsys.readouterr()
+    result = apply()
+    assert [r for path, r in file_server.ranges if path == "/big.bin"] == ["bytes=100000-"]
+    assert file_server.requested == ["/big.bin"]
+    assert (root / "vae" / "ae.safetensors").read_bytes() == big
+    assert result["downloaded"][-1]["resumed_from_bytes"] == 100_000
+    err = capsys.readouterr().err
+    assert "ae.safetensors: " in err and " of " in err  # periodic progress
+    assert "resumed from 100000 bytes" in err
+
+
+def test_a_changed_url_or_sha256_still_refuses_with_plan_changed(comfy, models, file_server):
+    root, _ = models
+    plan = _plan(comfy, file_server)
+    first, second, third = plan["files"]
+    file_server.truncated.add(_url_path(second["url"]))
+    with pytest.raises(AttachedDownloadRefused):
+        _apply(comfy, file_server, plan["plan_sha256"])
+    _list_on_comfy(comfy, first["folder"], first["file"])
+    file_server.truncated.clear()
+    asked = len(file_server.requested)
+
+    def key(f):
+        return f"{Path(f['folder']).name}/{f['file']}"
+
+    changed_url = _sources(file_server)
+    spec = changed_url[key(third)]
+    changed_url[key(third)] = ModelSpec(spec.name, None, None, None, spec.url + "?rev=2", spec.destination,
+                                        spec.bytes, spec.sha256)
+    with pytest.raises(AttachedDownloadRefused) as caught:
+        apply_attached_model_download(comfy.client, "z-image", "t2i", plan_sha256=plan["plan_sha256"],
+                                      sources=changed_url, http_client=_http())
+    assert caught.value.code == "plan_changed"
+
+    changed_sha = _sources(file_server)  # the file ComfyUI already lists: its digest is part of the plan too
+    spec = changed_sha[key(first)]
+    changed_sha[key(first)] = ModelSpec(spec.name, None, None, None, spec.url, spec.destination, spec.bytes,
+                                        hashlib.sha256(b"other").hexdigest())
+    with pytest.raises(AttachedDownloadRefused) as caught:
+        apply_attached_model_download(comfy.client, "z-image", "t2i", plan_sha256=plan["plan_sha256"],
+                                      sources=changed_sha, http_client=_http())
+    assert caught.value.code == "plan_changed"
+    assert file_server.requested[asked:] == [] and not (Path(third["folder"]) / third["file"]).exists()
+
+
+class _InspectedHttps:
+    """A client behind HTTPS inspection: every connection fails certificate verification."""
+
+    def stream(self, *args, **kwargs):
+        import ssl
+        try:
+            raise ssl.SSLCertVerificationError("self-signed certificate in certificate chain")
+        except ssl.SSLCertVerificationError as error:
+            raise httpx.ConnectError("certificate verify failed") from error
+
+
+def test_a_certificate_failure_names_https_inspection_not_a_bug(comfy, models, file_server):
+    root, _ = models
+    plan = _plan(comfy, file_server)
+    with pytest.raises(AttachedDownloadRefused) as caught:
+        apply_attached_model_download(comfy.client, "z-image", "t2i", plan_sha256=plan["plan_sha256"],
+                                      sources=_sources(file_server), http_client=_InspectedHttps())
+    assert caught.value.code == "tls_verification_failed"
+    assert "antivirus or a company proxy" in str(caught.value)
+    assert "Run the same command again" in str(caught.value)
+    assert not [n for n in _files(root) if not n.endswith(".astrid-resume")]
+
+
+def test_without_a_given_client_downloads_use_the_operating_system_trust(comfy, models, file_server, monkeypatch):
+    from astrid.core.util import http as astrid_http
+
+    made = []
+
+    def trusted(**kwargs):
+        made.append(kwargs)
+        return _http()
+
+    monkeypatch.setattr(astrid_http, "trusted_httpx_client", trusted)
+    plan = _plan(comfy, file_server)
+    apply_attached_model_download(comfy.client, "z-image", "t2i", plan_sha256=plan["plan_sha256"],
+                                  sources=_sources(file_server))
+    assert len(made) == len(plan["files"])

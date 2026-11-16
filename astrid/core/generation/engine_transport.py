@@ -110,8 +110,8 @@ class EngineEndpointTransport:
         exact pod origin: environment proxy/CA configuration applies, redirects
         are never followed and the URL is always the validated claimed origin.
         """
-        import httpx
-        return httpx.AsyncClient(timeout=timeout, follow_redirects=False)
+        from astrid.core.util.http import trusted_async_httpx_client
+        return trusted_async_httpx_client(timeout=timeout, follow_redirects=False)
 
     def _route_deadline(self):
         """The caller's absolute local deadline; otherwise the lifecycle grace."""
