@@ -203,6 +203,7 @@ def candidate_preview_snapshot(
         composition_graph=projected.graph,
         expansion={
             "canonical": True,
+            "placement_migrations": placement_findings,
             "parent_revision_id": publication["parent_revision_id"],
             "children": [
                 {"timeline_id": row["timeline_id"], "revision_id": row["revision_id"],

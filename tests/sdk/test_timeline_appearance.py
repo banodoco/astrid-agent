@@ -41,7 +41,7 @@ def test_package_placement_provenance_and_missing_canvas():
 def test_revision_closure_normalizes_child_with_own_canvas_without_mutation():
     from astrid.sdk.timeline._appearance import normalize_revision_closure
 
-    config = {'output': {'resolution': '1280x720'}, 'tracks': [{'id': 'v', 'kind': 'visual'}],
+    config = {'output': {'resolution': '1280x720', 'fps': 30, 'file': 'output.mp4'}, 'tracks': [{'id': 'v', 'kind': 'visual'}],
               'clips': [{'id': 'child', 'track': 'v', 'clipType': 'media', 'x': 0}]}
     parent = {'payload': {'config': {**copy.deepcopy(config), 'clips': []}, 'clips': []}}
     child = {'revision_id': 'r', 'payload': copy.deepcopy(config)}
@@ -59,7 +59,7 @@ def test_revision_closure_normalizes_child_with_own_canvas_without_mutation():
 def test_legacy_expansion_refuses_lost_child_track_context():
     from astrid.core.timeline.expand_shots import expand_shot_clips, ShotExpansionError
 
-    base = {'output': {'resolution': '1280x720'}, 'tracks': [{'id': 'v', 'kind': 'visual'}]}
+    base = {'output': {'resolution': '1280x720', 'fps': 30, 'file': 'output.mp4'}, 'tracks': [{'id': 'v', 'kind': 'visual'}]}
     parent = {**copy.deepcopy(base), 'clips': [{'id': 'shot', 'clipType': 'shot', 'track': 'v',
               'at': 0, 'hold': 1, 'params': {'shot_id': 's', 'timeline_document_id': 'd'}}]}
     child = {**copy.deepcopy(base), 'clips': [{'id': 'a', 'clipType': 'media', 'track': 'v', 'at': 0, 'hold': 1}]}
@@ -70,7 +70,7 @@ def test_legacy_expansion_refuses_lost_child_track_context():
 def test_child_canvas_normalization_then_parent_canvas_placement():
     from astrid.sdk.timeline._appearance import normalize_revision_closure
 
-    parent = {'payload': {'config': {'output': {'resolution': '1280x720'}, 'tracks': [], 'clips': []}, 'clips': []}}
+    parent = {'payload': {'config': {'output': {'resolution': '1280x720', 'fps': 30, 'file': 'output.mp4'}, 'tracks': [], 'clips': []}, 'clips': []}}
     child = {'revision_id': 'r', 'payload': {'output': {'resolution': '1920x1080'},
         'tracks': [{'id': 'v', 'kind': 'visual', 'scale': 2}],
         'clips': [{'id': 'positioned', 'track': 'v', 'clipType': 'media', 'x': 0},
@@ -110,7 +110,7 @@ def test_repeated_child_mixed_markers_survive_track_projection():
     from astrid.core.timeline.shot_composition_projection import _build_track_group
     from astrid.sdk.timeline._appearance import normalize_revision_closure
 
-    parent = {'payload': {'config': {'output': {'resolution': '1280x720'}, 'tracks': [], 'clips': []}, 'clips': []}}
+    parent = {'payload': {'config': {'output': {'resolution': '1280x720', 'fps': 30, 'file': 'output.mp4'}, 'tracks': [], 'clips': []}, 'clips': []}}
     child = {'revision_id': 'r', 'payload': {'output': {'resolution': '1920x1080'},
         'tracks': [{'id': 'v', 'kind': 'visual', 'label': 'V'},
                    {'id': 'w', 'kind': 'visual', 'label': 'W',
@@ -186,7 +186,7 @@ def test_clip_fit_type_mirrors_runtime_schema():
 
 def test_missing_child_canvas_refusal_names_revision_and_clip():
     from astrid.sdk.timeline._appearance import normalize_revision_closure
-    parent = {'payload': {'config': {'output': {'resolution': '1280x720', 'fps': 24},
+    parent = {'payload': {'config': {'output': {'resolution': '1280x720', 'fps': 24, 'file': 'output.mp4'},
                                     'tracks': [], 'clips': []}, 'clips': []}}
     child = {'revision_id': 'opening-rev', 'payload': {'tracks': [{'id': 'v', 'kind': 'visual', 'scale': 2}],
              'clips': [{'id': 'opening-image', 'track': 'v', 'clipType': 'image', 'x': 0}]}}
@@ -196,7 +196,7 @@ def test_missing_child_canvas_refusal_names_revision_and_clip():
 
 def test_canvasless_child_proof_preserves_no_output_and_uses_parent():
     from astrid.sdk.timeline._appearance import normalize_revision_closure
-    parent = {'payload': {'config': {'output': {'resolution': '1280x720', 'fps': 24}, 'tracks': [], 'clips': []}, 'clips': []}}
+    parent = {'payload': {'config': {'output': {'resolution': '1280x720', 'fps': 24, 'file': 'output.mp4'}, 'tracks': [], 'clips': []}, 'clips': []}}
     child = {'revision_id': 'opening', 'payload': {'tracks': [{'id': 'v', 'kind': 'visual',
              'app': {'scaleAppliesToPositionedClips': True}}],
              'clips': [{'id': 'image', 'track': 'v', 'clipType': 'image'}]}}
@@ -210,8 +210,8 @@ def test_canvasless_child_proof_preserves_no_output_and_uses_parent():
 @pytest.mark.parametrize('marker', ['true', 2])
 def test_raw_invalid_scale_marker_refused_before_render_normalization(marker):
     from astrid.sdk.timeline._appearance import normalize_revision_closure
-    parent = {'payload': {'config': {'output': {'resolution': '1280x720', 'fps': 24}, 'tracks': [], 'clips': []}, 'clips': []}}
-    child = {'revision_id': 'bad-marker', 'payload': {'output': {'resolution': '1280x720', 'fps': 24},
+    parent = {'payload': {'config': {'output': {'resolution': '1280x720', 'fps': 24, 'file': 'output.mp4'}, 'tracks': [], 'clips': []}, 'clips': []}}
+    child = {'revision_id': 'bad-marker', 'payload': {'output': {'resolution': '1280x720', 'fps': 24, 'file': 'output.mp4'},
              'tracks': [{'id': 'v', 'kind': 'visual', 'scale': 2,
                          'app': {'scaleAppliesToPositionedClips': marker}}],
              'clips': [{'id': 'a', 'track': 'v', 'clipType': 'image', 'x': 0}]}}
@@ -223,7 +223,7 @@ def test_raw_invalid_scale_marker_refused_before_render_normalization(marker):
 
 def test_rect_alias_is_exposed_before_normalization_for_parent_and_child():
     from astrid.sdk.timeline._appearance import normalize_revision_closure
-    config = {'output': {'resolution': '1280x720', 'fps': 24},
+    config = {'output': {'resolution': '1280x720', 'fps': 24, 'file': 'output.mp4'},
               'tracks': [{'id': 'v', 'kind': 'visual', 'scale': 2}],
               'clips': [{'id': 'a', 'track': 'v', 'clipType': 'image',
                          'rect': {'x': 10, 'y': 10, 'width': 100, 'height': 100}}]}
@@ -250,3 +250,58 @@ def test_rect_alias_guarded_edit_writes_conversion_and_normalization():
     assert (clip['x'], clip['y'], clip['width'], clip['height']) == (325, 185, 50, 50)
     assert any(w['ref'] == 'parent/clip:a' and w['path'] == ['rect'] and w['after'] == {'state': 'absent'}
                for w in ctx.record['writes'])
+
+
+@pytest.mark.parametrize('output', [None, {'resolution': '1280x720'}, {'fps': 30}])
+def test_read_normalization_refuses_explicit_null_or_incomplete_output(output):
+    from astrid.sdk.timeline._appearance import normalize_for_read
+    config = {'output': output, 'tracks': [{'id': 'v', 'kind': 'visual'}],
+              'clips': [{'id': 'a', 'track': 'v', 'clipType': 'image', 'asset': 'a'}]}
+    with pytest.raises(ValueError, match='output'):
+        normalize_for_read(config, parent_canvas=True)
+
+
+def test_runtime_theme_refused_when_legacy_canvas_was_resolved_without_it():
+    from types import SimpleNamespace
+    from astrid.sdk.invocation import _reject_uncaptured_legacy_theme
+    from astrid.sdk.exceptions import CapabilityValidationError
+    snapshot = SimpleNamespace(expansion={'placement_migrations': [
+        {'kind': 'canvas', 'source': 'legacy-render-resolved'}]})
+    with pytest.raises(CapabilityValidationError, match='theme_path.*verified legacy canvas'):
+        _reject_uncaptured_legacy_theme(snapshot, {'theme': 'sha256:example'})
+    _reject_uncaptured_legacy_theme(snapshot, {})
+
+
+def test_render_manifest_carries_legacy_canvas_warning(tmp_path):
+    import json
+    from astrid.packs.rendering.actions.render.run import _write_render_manifest
+    output = tmp_path / 'out.mp4'
+    output.write_bytes(b'video')
+    authority = {'expansion': {'placement_migrations': [{'kind': 'canvas',
+        'source': 'legacy-render-resolved', 'after': {'resolution': '1920x1080', 'fps': 30}}]}}
+    _write_render_manifest(output, timeline_path=tmp_path / 'timeline.json', selector='rendering.remotion',
+                           timeline_authority=authority)
+    manifest = json.loads((tmp_path / 'manifest.json').read_text())
+    assert manifest['warnings'] == ['Legacy render-resolved canvas 1920x1080 at 30 fps was used in memory; the timeline was not changed.']
+
+
+def test_composed_capture_refuses_unverified_explicit_legacy_theme():
+    from pathlib import Path
+    from astrid.packs.rendering.actions.timeline_visualize.composed_frame import _reject_uncaptured_legacy_theme
+    snapshot = {'metadata': {'capture_authority': {'expansion': {'placement_migrations': [
+        {'kind': 'canvas', 'source': 'legacy-render-resolved'}]}}}}
+    with pytest.raises(ValueError, match='theme_path.*verified legacy canvas'):
+        _reject_uncaptured_legacy_theme(snapshot, Path('/theme.json'))
+    _reject_uncaptured_legacy_theme(snapshot, None)
+
+
+def test_guarded_edit_does_not_persist_legacy_render_canvas():
+    bundle = initial_bundle()
+    bundle['parent']['config'].pop('output', None)
+    bundle['parent']['clips'][0]['clipType'] = 'image'
+    before = copy.deepcopy(bundle)
+    ctx = Recording(bundle, {}, 0)
+    with pytest.raises(ValueError, match='output.resolution'):
+        normalize_owner(ctx, 'parent/clip:a')
+    assert ctx.state.bundle == before
+    assert not ctx.record['writes']

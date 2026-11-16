@@ -117,7 +117,7 @@ def test_help_exposes_current_edit_entry_and_legacy_working_copy(command, capsys
 def test_appearance_clip_edit_uses_guarded_commit(command, capsys):
     run, generated = command
     bundle = generated.bundles['r0']
-    bundle['parent']['config']['output']['resolution'] = '1280x720'
+    bundle['parent']['config']['output'].update(resolution='1280x720', file='output.mp4')
     for clip in bundle['parent']['clips']:
         clip['clipType'] = 'media'
     bundle['parent']['clips'][1]['x'] = 10
@@ -136,7 +136,7 @@ def test_appearance_clip_edit_uses_guarded_commit(command, capsys):
 def test_appearance_inspects_package_placement_without_render(command, capsys):
     run, generated = command
     parent = generated.bundles['r0']['parent']
-    parent['config']['output']['resolution'] = '1280x720'
+    parent['config']['output'].update(resolution='1280x720', file='output.mp4')
     parent['registry'] = {'assets': {'matrix': {'resolution': '1920x800'}}}
     parent['clips'][0].update(clipType='media', asset='matrix', fit='cover')
     assert run('appearance', 't', '--project', 'p', '--clip', 'parent/clip:a', '--json') == 0
@@ -148,7 +148,7 @@ def test_appearance_inspects_package_placement_without_render(command, capsys):
 
 def test_appearance_track_inspection_reports_canvas_context(command, capsys):
     run, generated = command
-    generated.bundles['r0']['parent']['config']['output']['resolution'] = '1280x720'
+    generated.bundles['r0']['parent']['config']['output'].update(resolution='1280x720', file='output.mp4')
     assert run('appearance', 't', '--project', 'p', '--track', 'parent/track:picture', '--json') == 0
     data = json.loads(capsys.readouterr().out)['data']
     assert data['canvas'] == data['source_canvas'] == {'width': 1280, 'height': 720}
@@ -160,7 +160,7 @@ def test_appearance_track_inspection_reports_canvas_context(command, capsys):
 def test_appearance_inspection_matches_normalized_rect_projection(command, capsys):
     run, generated = command
     parent = generated.bundles['r0']['parent']
-    parent['config']['output']['resolution'] = '1280x720'
+    parent['config']['output'].update(resolution='1280x720', file='output.mp4')
     parent['config']['tracks'][0]['scale'] = 2
     parent['registry'] = {'assets': {'matrix': {'resolution': '1920x800'}}}
     parent['clips'][0].update(clipType='media', asset='matrix', rect={'x': 10, 'y': 10, 'width': 100, 'height': 100})
@@ -175,10 +175,26 @@ def test_appearance_inspection_matches_normalized_rect_projection(command, capsy
 def test_appearance_inspect_refuses_malformed_intrinsic_resolution(command, capsys, fit, resolution):
     run, generated = command
     parent = generated.bundles['r0']['parent']
-    parent['config']['output']['resolution'] = '1280x720'
+    parent['config']['output'].update(resolution='1280x720', file='output.mp4')
     parent['registry'] = {'assets': {'matrix': {'resolution': resolution}}}
     parent['clips'][0].update(clipType='media', asset='matrix', fit=fit)
     assert run('appearance', 't', '--project', 'p', '--clip', 'parent/clip:a', '--json') != 0
     error = json.loads(capsys.readouterr().out)['error']['message']
     assert 'a' in error and 'matrix' in error and 'resolution' in error
     assert generated.calls == []
+
+
+def test_appearance_inspects_canvasless_parent_with_named_legacy_warning(command, capsys):
+    run, generated = command
+    parent = generated.bundles['r0']['parent']
+    parent['config'].pop('output', None)
+    parent['registry'] = {'assets': {'matrix': {'resolution': '1920x800'}}}
+    parent['clips'][0].update(clipType='media', asset='matrix', fit='cover')
+    original = copy.deepcopy(parent)
+    assert run('appearance', 't', '--project', 'p', '--clip', 'parent/clip:a', '--json') == 0
+    data = json.loads(capsys.readouterr().out)['data']
+    assert data['canvas'] == {'width': 1920, 'height': 1080}
+    assert data['source_canvas_description'] == 'legacy render-resolved; not authored'
+    assert data['warnings'][0]['source'] == 'legacy-render-resolved'
+    assert data['warnings'][0]['after']['resolution'] == '1920x1080'
+    assert parent == original and generated.calls == []

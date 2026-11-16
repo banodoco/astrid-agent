@@ -39,7 +39,7 @@ def canvas(config, ref):
     output = config.get('output') or {}
     match = re.fullmatch(r'([1-9][0-9]*)[xX]([1-9][0-9]*)', str(output.get('resolution', '')))
     if not match:
-        raise CommandError(f'{ref} property output.resolution is missing or invalid; set the authored timeline output in the editor (a guarded CLI output command is not yet available)')
+        raise CommandError(f'{ref} property output.resolution is missing or invalid; authored timeline output is unavailable; a guarded CLI output command is not yet available')
     return {'width': int(match[1]), 'height': int(match[2])}
 
 
@@ -60,6 +60,33 @@ def canonicalize_rect_aliases(config):
                 clip[key] = copy.deepcopy(value)
         findings.append({'kind': 'rect-alias', 'clipId': clip.get('id'), 'before': rect})
     return result, findings
+
+
+def normalize_for_read(config, *, parent_canvas=False):
+    """Normalize a copy, supplying only the existing export resolver's legacy fact.
+
+    The optional fact is never used by guarded authored edits and is not stored.
+    """
+    canonical, aliases = canonicalize_rect_aliases(config)
+    if parent_canvas and 'output' in canonical:
+        output = canonical['output']
+        if not isinstance(output, dict):
+            raise CommandError('timeline property output is invalid; expected a complete authored output')
+        if 'resolution' in output and not {'resolution', 'fps', 'file'} <= set(output):
+            raise CommandError('timeline property output is incomplete; resolution, fps and file are required')
+    request = {'operation': 'normalize', 'config': canonical}
+    if parent_canvas and 'output' not in canonical:
+        from astrid.core.rendering.profile import resolve_render_profile
+        profile = resolve_render_profile(canonical)
+        request['options'] = {'legacyCanvas': {'width': profile.width, 'height': profile.height,
+            'fps': profile.fps_rational[0] / profile.fps_rational[1], 'source': 'legacy-render-resolved'}}
+    normalized = package_query(request)
+    if parent_canvas and 'output' in normalized['config']:
+        output = normalized['config']['output']
+        if not isinstance(output, dict) or not {'resolution', 'fps', 'file'} <= set(output):
+            raise CommandError('timeline property output is incomplete; resolution, fps and file are required')
+    normalized['findings'] = aliases + normalized['findings']
+    return normalized
 
 
 def normalize_owner(ctx, ref):
@@ -147,13 +174,12 @@ def normalize_revision_closure(parent, internals):
     needs_canvas = media(config) or any(media(row['payload']) for row in internals)
     if not needs_canvas:
         return parent, internals, []
-    canonical, alias_findings = canonicalize_rect_aliases(config)
-    result = package_query({'operation': 'normalize', 'config': canonical})
+    result = normalize_for_read(config, parent_canvas=True)
     canvas(result['config'], 'parent timeline')
     payload['config'] = result['config']
     if separate:
         payload['clips'] = copy.deepcopy(result['config']['clips'])
-    findings = [{'owner': 'parent', **item} for item in alias_findings + result['findings']]
+    findings = [{'owner': 'parent', **item} for item in result['findings']]
     for row in internals:
         child = row['payload']
         if not media(child):

@@ -57,7 +57,7 @@ def test_candidate_capture_authority_matches_sdk_projection():
     from astrid.sdk.authoring_render_preview import candidate_projection
     document = app_document()
     parent = document['parent_revision']
-    parent['payload']['config']['output']['resolution'] = '1280x720'
+    parent['payload']['config']['output'].update(resolution='1280x720', file='out.mp4')
     parent['payload']['config']['tracks'][0]['scale'] = 2
     parent['payload']['clips'][0]['rect'] = {'x': 10, 'y': 10, 'width': 100, 'height': 100}
     parent['payload']['config']['clips'][0]['rect'] = copy.deepcopy(parent['payload']['clips'][0]['rect'])
@@ -89,4 +89,38 @@ def test_candidate_capture_authority_matches_sdk_projection():
         Reader(), project_id=document['project_id'], timeline_id=document['timeline_id'], preview=preview)
     expansion.pop('_host_transition_contract')
     assert authority == {'config': config, 'registry': registry, 'expansion': expansion}
+    assert document == original
+
+
+def test_standalone_legacy_canvas_is_read_only_and_shared_with_capture_authority():
+    document = app_document()
+    parent = document['parent_revision']
+    parent['payload']['config'].pop('output', None)
+    parent['payload']['config'].pop('theme_overrides', None)
+    parent['content_digest'] = _digest(parent['payload'])
+    child = document['internal_timeline_revisions'][0]
+    for track in child['payload']['tracks']:
+        track.setdefault('app', {})['scaleAppliesToPositionedClips'] = True
+    child['content_digest'] = _digest(child['payload'])
+    document['dependency_manifest'] = _manifest(document['shot_revisions'], document['internal_timeline_revisions'], [
+        {'media_id': value, 'content_digest': value} for value in (OLD, AUDIO)], [])
+    original = copy.deepcopy(document)
+
+    class Reader:
+        def get_project_parent_composition_revision(self, project, timeline, revision):
+            return {**copy.deepcopy(parent), 'project_id': project, 'timeline_id': timeline}
+        def get_project_shot_revision(self, project, shot, revision):
+            return {**copy.deepcopy(next(row for row in document['shot_revisions'] if row['revision_id'] == revision)), 'project_id': project}
+        def get_project_timeline_revision(self, project, timeline, revision):
+            return {**copy.deepcopy(next(row for row in document['internal_timeline_revisions'] if row['revision_id'] == revision)), 'project_id': project}
+
+    parent_row, projected, expansion = _project_exact_parent_head(
+        client=Reader(), project_id=document['project_id'], timeline_id=document['timeline_id'],
+        parent_revision_id=parent['revision_id'])
+    authority = create_runtime_commit_service().project_capture(document)
+    assert authority == {'config': projected.config, 'registry': projected.registry,
+                         'expansion': {**expansion, 'parent_content_digest': parent_row['content_digest']}}
+    finding = next(row for row in expansion['placement_migrations'] if row.get('source') == 'legacy-render-resolved')
+    assert finding['after']['resolution'] == '1920x1080' and finding['after']['fps'] == 30
+    assert 'output' not in document['parent_revision']['payload']['config']
     assert document == original

@@ -5,7 +5,7 @@ for await (const chunk of process.stdin) input += chunk;
 try {
   const request = JSON.parse(input);
   const answer = request.operation === 'normalize'
-    ? normalizeClipPlacementWithFindings(request.config)
+    ? normalizeClipPlacementWithFindings(request.config, request.options)
     : request.operation === 'resolve'
       ? resolveClipPlacement({...request.input, intrinsic: request.asset === undefined ? request.input.intrinsic : (() => {
           const intrinsic = intrinsicMediaSize(request.asset);
