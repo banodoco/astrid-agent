@@ -431,9 +431,6 @@ def _v2_mask_schedule(
 def _validate_frozen_source(request: H3Request, source: Mapping[str, Any], path: Path,
                             envelope: Mapping[str, Any]) -> dict[str, Any]:
     """Verify the controller's sealed derivative before using local coordinates."""
-    from .engine_facts import facts
-    from .conform import _probe
-
     record = envelope.get("conform")
     if (envelope.get("version") != 1 or envelope.get("request_digest") != request.digest
             or envelope.get("asset") != source.get("asset") or not isinstance(record, Mapping)):
@@ -468,29 +465,9 @@ def _validate_frozen_source(request: H3Request, source: Mapping[str, Any], path:
     if (managed.get("digest") != "sha256:" + digest or managed.get("sha256") != digest
             or not path.is_file() or _file_digest(path) != digest):
         raise PreparationError("prepared source digest mismatch")
-    _check_source_av_rate(str(source["asset"]), path)
-    streams = _video_stream_types(path)
-    if "video" not in streams:
-        raise PreparationError("prepared source has no video stream")
-    if ("audio" in streams) != (record.get("audio") is not None):
-        raise PreparationError("prepared source audio presence differs from its provenance")
-    probe = _probe(path)
-    video = next((row for row in probe.get("streams", []) if row.get("codec_type") == "video"), {})
-    try:
-        video_frames = int(video.get("nb_frames", 0))
-    except (TypeError, ValueError) as exc:
-        raise PreparationError("prepared source frame count is unavailable") from exc
-    if video_frames != expected_frames:
-        raise PreparationError("prepared source frame count does not match its range")
-    measurement: Mapping[str, Any] = {"has_audio": False, "video_frames": video_frames}
-    if "audio" in streams:
-        try:
-            measurement = facts().measure_source_av(path)
-        except ValueError as exc:
-            raise PreparationError(f"prepared source failed decoded AV validation: {exc}") from exc
-        if int(measurement["video_frames"]) != expected_frames:
-            raise PreparationError("prepared source decoded frame count does not match its range")
-    return {**record, "worker_validation": dict(measurement)}
+    if not isinstance(record.get("decoded_av"), Mapping):
+        raise PreparationError("prepared source decoded AV measurement is missing")
+    return dict(record)
 
 
 def prepare_request(
