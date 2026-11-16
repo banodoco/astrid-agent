@@ -1,7 +1,11 @@
 """visualize --out DIR exports the settled view; it used to be refused outright."""
 from pathlib import Path
+import json
 import sys
+import shutil
 from types import SimpleNamespace
+
+import pytest
 
 from astrid.packs.timeline.cli import _export_visualization, _visualization_navigation_help
 from astrid.packs.timeline.cli_visualize import _visualization_summary
@@ -64,6 +68,68 @@ def test_out_materializes_managed_markdown_artifact(tmp_path: Path) -> None:
     assert (out / "inputs.md").read_text() == "# Runtime artifact\n"
 
 
+def test_media_materialization_failure_is_typed_without_success_summary(tmp_path, capsys):
+    from astrid.packs.timeline import cli
+    from astrid.sdk.contracts import DomainResult
+
+    class Timelines:
+        def open_bundle(self, project, ref, revision_id=None):
+            return SimpleNamespace(ok=True, data={"bundle": {"base_parent": {"revision_id": "rev-1"}}})
+
+        def visualize(self, *args, **kwargs):
+            return DomainResult.success({"artifacts": {
+                "png": {"object_id": "sha256:managed-png", "filename": "view.png"},
+            }})
+
+    class Media:
+        def open(self, project, object_id, **kwargs):
+            return SimpleNamespace(ok=False, error={"code": "size_limit", "message": "artifact exceeds export limit"})
+
+    client = SimpleNamespace(timelines=Timelines(), media=Media())
+    parser = cli.build_parser(client)
+    parsed = parser.parse_args(["visualize", "main", "--project", "demo", "--mode", "inputs",
+                                "--out", str(tmp_path / "out"), "--json"])
+
+    assert cli._cmd_visualize(parsed) == 1
+    captured = capsys.readouterr()
+    envelope = json.loads(captured.out)
+    assert envelope["ok"] is False
+    assert envelope["error"]["code"] == "size_limit"
+    assert envelope["error"]["message"] == "artifact exceeds export limit"
+    assert envelope["error"]["details"]["artifacts"]["png"]["object_id"] == "sha256:managed-png"
+    assert envelope["error"]["details"]["files_written"] == []
+    assert "export directory:" not in captured.out
+    assert "filmstrip:" not in captured.out
+    assert "unstructured" not in captured.err
+
+    parsed = parser.parse_args(["visualize", "main", "--project", "demo", "--mode", "inputs",
+                                "--out", str(tmp_path / "out-human")])
+    assert cli._cmd_visualize(parsed) == 1
+    human = capsys.readouterr()
+    assert human.out == ""
+    assert "size_limit: artifact exceeds export limit" in human.err
+    assert "unstructured" not in human.err
+
+
+def test_export_write_failure_keeps_managed_references_and_partial_file_list(tmp_path, monkeypatch):
+    from astrid.packs.timeline.cli import VisualizationExportError
+    source = tmp_path / "source.png"
+    source.write_bytes(b"image")
+    monkeypatch.setattr(shutil, "copy2", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("disk full")))
+
+    with pytest.raises(VisualizationExportError, match="disk full") as failure:
+        _export_visualization(
+            {"pages": [str(source)], "artifacts": {"png": {
+                "status": "unavailable", "object_id": "sha256:managed",
+            }}},
+            str(tmp_path / "export"),
+        )
+
+    assert failure.value.code == "invocation_error"
+    assert failure.value.artifacts["png"]["object_id"] == "sha256:managed"
+    assert failure.value.written == []
+
+
 def test_navigation_suggestions_preserve_python_module_invocation(monkeypatch) -> None:
     monkeypatch.setattr(sys, "orig_argv", ["/venv/bin/python", "-m", "astrid", "timelines", "visualize"], raising=False)
     monkeypatch.setattr(sys, "argv", ["/checkout/astrid/__main__.py", "timelines", "visualize"])
@@ -91,6 +157,19 @@ def test_navigation_suggestions_preserve_console_launcher(monkeypatch) -> None:
 
     assert navigation["commands"]["rerun"].startswith("/opt/astrid/bin/astrid timelines visualize ")
     assert navigation["commands"]["controls"] == "/opt/astrid/bin/astrid timelines visualize --help"
+
+
+def test_render_export_suggestion_uses_media_open_materialization_flags():
+    from astrid.packs.timeline.cli import _render_video_handle
+
+    result = SimpleNamespace(
+        kernel_run_id="run-123", run_id=None,
+        outputs={"managed_outputs": [{"output_port": "video", "ordinal": 0}]},
+    )
+    suggestion = _render_video_handle(result, "demo")["export"]
+    assert suggestion == (
+        "media open --project demo 'run:run-123/video#0' --materialize --cache-root ./rendered-video"
+    )
 
 
 def test_declared_inputs_summary_explains_no_picture_and_suggests_composed(monkeypatch) -> None:
@@ -143,3 +222,13 @@ def test_single_export_frame_is_described_neutrally_when_composition_is_uncertai
         )
         assert "raw frame image: /tmp/export/frames/frame-000000156.png" in summary
         assert "clean composed frame" not in summary
+
+
+def test_composed_summary_uses_the_pinned_revision_from_source_identity() -> None:
+    summary = _visualization_summary(
+        {"source_identity": {"kind": "revision", "revision_id": "rev-pinned"}},
+        parsed=SimpleNamespace(project="demo", beats=None, mode="composed"),
+        inputs={"view": "filmstrip", "timeline_slug": "main"},
+    )
+    assert "  committed revision rev-pinned" in summary.splitlines()
+    assert "revision unavailable" not in summary

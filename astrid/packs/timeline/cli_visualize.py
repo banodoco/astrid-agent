@@ -413,6 +413,11 @@ def _visualization_revision_lines(outputs: Mapping[str, Any]) -> list[str]:
         if snapshot_label.get("status") == "candidate":
             return ["  unsaved candidate (committed base unavailable)"]
         return ["  revision unavailable"]
+    source_identity = outputs.get("source_identity")
+    if isinstance(source_identity, Mapping) and source_identity.get("kind") == "revision":
+        revision = source_identity.get("revision_id")
+        if isinstance(revision, str) and revision:
+            return [f"  committed revision {revision}"]
     return ["  revision unavailable"]
 
 
@@ -1031,9 +1036,20 @@ def cmd_visualize(parsed: argparse.Namespace) -> int:
         if timing is not None:
             human_outputs["timing"] = timing
         if export_dir:
-            human_outputs["exported"] = cli._export_visualization(
-                human_outputs, export_dir, client=parsed.client, project=parsed.project,
-            )
+            try:
+                human_outputs["exported"] = cli._export_visualization(
+                    human_outputs, export_dir, client=parsed.client, project=parsed.project,
+                )
+            except cli.VisualizationExportError as exc:
+                return print_result(DomainResult.failure(ErrorObject(
+                    exc.code,
+                    exc.args[0],
+                    {
+                        "artifacts": exc.artifacts,
+                        "files_written": exc.written,
+                        "export_dir": export_dir,
+                    },
+                )), as_json=parsed.json)
     if parsed.json or human_outputs is None or not result.ok:
         return print_result(envelope, as_json=parsed.json)
     print(_visualization_summary(human_outputs, parsed=parsed, inputs=inputs))

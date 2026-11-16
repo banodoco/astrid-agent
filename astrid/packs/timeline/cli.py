@@ -1779,6 +1779,16 @@ def _cmd_visualize(parsed: argparse.Namespace) -> int:
     return cmd_visualize(parsed)
 
 
+class VisualizationExportError(RuntimeError):
+    """A delivery failure with the settled references and partial export state."""
+
+    def __init__(self, code: str, message: str, *, artifacts: Mapping[str, Any], written: list[str]):
+        super().__init__(message)
+        self.code = code
+        self.artifacts = dict(artifacts)
+        self.written = list(written)
+
+
 def _export_visualization(
     outputs: Mapping[str, Any], out_dir: str, *, client: Any = None, project: str | None = None,
 ) -> dict[str, Any]:
@@ -1789,7 +1799,24 @@ def _export_visualization(
     import tempfile
 
     dest = Path(out_dir).expanduser().resolve()
-    dest.mkdir(parents=True, exist_ok=True)
+    written: list[str] = []
+    artifacts = outputs.get("artifacts")
+    managed = dict(artifacts) if isinstance(artifacts, Mapping) else {}
+
+    def copy_file(source: Path, target: Path) -> str:
+        try:
+            shutil.copy2(source, target)
+        except OSError as exc:
+            raise VisualizationExportError(
+                "invocation_error", str(exc), artifacts=managed, written=written,
+            ) from exc
+        written.append(str(target))
+        return str(target)
+
+    try:
+        dest.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise VisualizationExportError("invocation_error", str(exc), artifacts=managed, written=written) from exc
     pages = [str(page) for page in outputs.get("pages") or [] if page]
     primary = outputs.get("primary_page") or outputs.get("png")
     if primary and str(primary) not in pages:
@@ -1800,9 +1827,7 @@ def _export_visualization(
     if isinstance(markdown, (str, os.PathLike)):
         markdown_source = Path(markdown)
         if markdown_source.is_file():
-            shutil.copy2(markdown_source, dest / markdown_source.name)
-            copied_markdown = str(dest / markdown_source.name)
-    artifacts = outputs.get("artifacts")
+            copied_markdown = copy_file(markdown_source, dest / markdown_source.name)
     if isinstance(artifacts, Mapping):
         for kind, artifact in artifacts.items():
             if kind not in {"png", "md"} or not isinstance(artifact, Mapping):
@@ -1813,28 +1838,55 @@ def _export_visualization(
             if not isinstance(object_id, str) or not object_id:
                 continue
             if client is None or not project:
-                raise RuntimeError(f"cannot export managed visualization artifact {kind} without Runtime client/project")
-            with tempfile.TemporaryDirectory(prefix=".astrid-artifact-", dir=dest) as scratch:
-                opened = client.media.open(
-                    project, object_id, materialize=True, cache_root=Path(scratch), max_bytes=64 * 1024 * 1024,
+                raise VisualizationExportError(
+                    "invocation_error", f"cannot export managed visualization artifact {kind} without Runtime client/project",
+                    artifacts=managed, written=written,
                 )
-                if not getattr(opened, "ok", False):
-                    error = getattr(opened, "error", None) or {}
-                    message = error.get("message") if isinstance(error, Mapping) else None
-                    raise RuntimeError(f"could not materialize visualization artifact {kind} {object_id}: {message or opened}")
-                opened_data = getattr(opened, "data", None)
-                local_path = opened_data.get("local_path") if isinstance(opened_data, Mapping) else None
-                if not isinstance(local_path, str) or not Path(local_path).is_file():
-                    raise RuntimeError(f"Runtime returned no materialized file for visualization artifact {kind} {object_id}")
-                source = Path(local_path)
-                target = dest / source.name
-                if target.exists():
-                    expected = object_id.removeprefix("sha256:")
-                    actual = hashlib.sha256(target.read_bytes()).hexdigest()
-                    if actual != expected:
-                        raise FileExistsError(f"refusing to overwrite different file while exporting: {target}")
-                else:
-                    shutil.copy2(source, target)
+            try:
+                with tempfile.TemporaryDirectory(prefix=".astrid-artifact-", dir=dest) as scratch:
+                    opened = client.media.open(
+                        project, object_id, materialize=True, cache_root=Path(scratch), max_bytes=64 * 1024 * 1024,
+                    )
+                    if not getattr(opened, "ok", False):
+                        error = getattr(opened, "error", None) or {}
+                        message = error.get("message") if isinstance(error, Mapping) else getattr(error, "message", None)
+                        code = error.get("code") if isinstance(error, Mapping) else getattr(error, "code", None)
+                        raise VisualizationExportError(
+                            str(code or "invocation_error"),
+                            str(message or f"could not materialize visualization artifact {kind}"),
+                            artifacts=managed, written=written,
+                        )
+                    opened_data = getattr(opened, "data", None)
+                    local_path = opened_data.get("local_path") if isinstance(opened_data, Mapping) else None
+                    if not isinstance(local_path, str) or not Path(local_path).is_file():
+                        raise VisualizationExportError(
+                            "invocation_error", f"Runtime returned no materialized file for visualization artifact {kind}",
+                            artifacts=managed, written=written,
+                        )
+                    source = Path(local_path)
+                    target = dest / source.name
+                    if target.exists():
+                        expected = object_id.removeprefix("sha256:")
+                        try:
+                            actual = hashlib.sha256(target.read_bytes()).hexdigest()
+                        except OSError as exc:
+                            raise VisualizationExportError(
+                                "invocation_error", str(exc), artifacts=managed, written=written,
+                            ) from exc
+                        if actual != expected:
+                            raise VisualizationExportError(
+                                "invocation_error", f"refusing to overwrite different file while exporting: {target}",
+                                artifacts=managed, written=written,
+                            )
+                    else:
+                        copy_file(source, target)
+            except Exception as exc:
+                if isinstance(exc, VisualizationExportError):
+                    raise
+                raise VisualizationExportError(
+                    str(getattr(exc, "code", None) or "invocation_error"),
+                    str(getattr(exc, "message", None) or exc), artifacts=managed, written=written,
+                ) from exc
             if kind == "md":
                 copied_markdown = str(target)
             elif str(target) not in copied_pages:
@@ -1843,17 +1895,18 @@ def _export_visualization(
         source = Path(page)
         target = dest / source.name
         if source.is_file() and str(target) not in copied_pages:
-            shutil.copy2(source, dest / source.name)
-            copied_pages.append(str(dest / source.name))
+            copied_pages.append(copy_file(source, dest / source.name))
     view_dir = Path(pages[0]).parent if pages else None
     if view_dir is not None and (view_dir / "frames").is_dir():
-        (dest / "frames").mkdir(exist_ok=True)
+        try:
+            (dest / "frames").mkdir(exist_ok=True)
+        except OSError as exc:
+            raise VisualizationExportError("invocation_error", str(exc), artifacts=managed, written=written) from exc
         for frame in sorted((view_dir / "frames").iterdir()):
             if frame.is_file() and frame.suffix.lower() in {".png", ".jpg", ".jpeg"}:
-                shutil.copy2(frame, dest / "frames" / frame.name)
-                copied_frames.append(str(dest / "frames" / frame.name))
+                copied_frames.append(copy_file(frame, dest / "frames" / frame.name))
         if (view_dir / "frame-index.json").is_file():
-            shutil.copy2(view_dir / "frame-index.json", dest / "frame-index.json")
+            copy_file(view_dir / "frame-index.json", dest / "frame-index.json")
     return {
         "dir": str(dest), "pages": copied_pages, "markdown": copied_markdown,
         "frames": copied_frames,
@@ -2421,7 +2474,11 @@ def _render_video_handle(result: Any, project: Any) -> dict[str, str]:
     for row in (outputs.get("managed_outputs") or []) if isinstance(outputs, Mapping) else []:
         if isinstance(row, Mapping) and str(row.get("output_port")) == "video" and run_id:
             handle = f"run:{run_id}/video#{row.get('ordinal') or 0}"
-            return {"video": handle, "export": f"media open {handle} --project {project} --to FILE.mp4"}
+            return {
+                "video": handle,
+                "export": f"media open --project {shlex.quote(str(project))} {shlex.quote(handle)} "
+                          "--materialize --cache-root ./rendered-video",
+            }
     return {}
 
 
