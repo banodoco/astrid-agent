@@ -1,0 +1,122 @@
+name: Plan 55 existing meter failure diagnostic
+on:
+  push:
+    branches: ["p55/current-meter-diagnostic-20261116"]
+    paths: [".github/workflows/plan55-current-diagnostic.yml"]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: plan55-current-diagnostic
+  cancel-in-progress: false
+jobs:
+  inspect:
+    name: Inspect existing Windows meter evidence without rerunning generation
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    outputs:
+      diagnosis: ${{ steps.extract.outputs.diagnosis }}
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Read only small result members of the original archive
+        id: extract
+        shell: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          import hashlib, json, os, pathlib, re, urllib.error, urllib.parse, urllib.request, zipfile
+          import xml.etree.ElementTree as ET
+          artifact = 14260928127
+          expected = "e96b3c8ef56f5c5b065f1d90b0d639db22887ec0c4591002d9d3cd7243f99044"
+          out = pathlib.Path("diagnostic")
+          out.mkdir()
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+          request = urllib.request.Request(
+              f"https://api.github.com/repos/banodoco/astrid-agent/actions/artifacts/{artifact}/zip",
+              headers={"Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                       "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"})
+          try:
+              urllib.request.build_opener(NoRedirect).open(request, timeout=60)
+              raise RuntimeError("expected temporary archive redirect")
+          except urllib.error.HTTPError as exc:
+              if exc.code != 302:
+                  raise
+              location = exc.headers["Location"]
+          if urllib.parse.urlsplit(location).scheme != "https":
+              raise RuntimeError("archive redirect is not HTTPS")
+          digest = hashlib.sha256()
+          total = 0
+          archive = pathlib.Path("original.zip")
+          # No Authorization header is forwarded to storage. No signed URL is logged.
+          with urllib.request.urlopen(location, timeout=120) as source, archive.open("wb") as target:
+              while chunk := source.read(1024 * 1024):
+                  total += len(chunk)
+                  if total > 800 * 1024 * 1024:
+                      raise RuntimeError("archive exceeds declared diagnostic bound")
+                  digest.update(chunk)
+                  target.write(chunk)
+          if digest.hexdigest() != expected:
+              raise RuntimeError("original artifact hash mismatch")
+          cases, excerpts = [], []
+          with zipfile.ZipFile(archive) as zipped:
+              inventory = [{"name": item.filename, "bytes": item.file_size} for item in zipped.infolist()]
+              (out / "inventory.json").write_text(json.dumps(inventory, indent=2), encoding="utf-8")
+              for item in zipped.infolist():
+                  name = item.filename
+                  # Never parse the large native ETW XML or extract any archive path.
+                  if name.endswith("summary.json") and item.file_size <= 4 * 1024 * 1024:
+                      raw = zipped.read(item)
+                      data = json.loads(raw)
+                      excerpts.append({"member": name, "sha256": hashlib.sha256(raw).hexdigest(), "data": data})
+                  elif name.endswith(".xml") and item.file_size <= 8 * 1024 * 1024 and ("junit" in name.lower() or "latency" in name.lower() or "counter" in name.lower()):
+                      root = ET.fromstring(zipped.read(item))
+                      for case in root.iter("testcase"):
+                          for child in case:
+                              if child.tag in {"failure", "error"}:
+                                  text = child.get("message", "") + "\n" + (child.text or "")
+                                  cases.append({"member": name, "test": case.get("name"), "kind": child.tag,
+                                                "message": text[:6000]})
+                  elif name.endswith(".log") and "meter" in name and item.file_size <= 32 * 1024 * 1024:
+                      tail = bytearray()
+                      with zipped.open(item) as stream:
+                          while chunk := stream.read(65536):
+                              tail.extend(chunk)
+                              if len(tail) > 24000:
+                                  del tail[:-24000]
+                      excerpts.append({"member": name, "tail": tail.decode("utf-8", errors="replace")})
+          result = {"source_run": 43934937473, "artifact": artifact, "archive_sha256": expected,
+                    "cases": cases, "excerpts": excerpts,
+                    "scope": "existing evidence extraction only; no product or generation execution"}
+          (out / "result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+          parts = []
+          for case in cases:
+              text = " ".join(case["message"].split())
+              parts.append(str(case["test"]) + ": " + text[:280])
+          if not parts:
+              for value in excerpts:
+                  if "data" in value:
+                      parts.append(value["member"] + ": " + json.dumps(value["data"], separators=(",", ":"))[:500])
+          message = " | ".join(parts)[:1600] or "No JUnit failures found; inspect retained bounded summary"
+          message = re.sub(r"Bearer\s+\S+", "Bearer [redacted]", message)
+          # Job metadata exposes a bounded diagnosis when the log-reading tool is unavailable.
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as target:
+              target.write("diagnosis=" + message.replace("\n", " ") + "\n")
+          print(message)
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: plan55-bounded-current-diagnostic-${{ github.run_id }}
+          path: diagnostic
+          retention-days: 14
+  diagnosis:
+    name: "Diagnostic only — ${{ needs.inspect.outputs.diagnosis }}"
+    needs: inspect
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Record extraction completion, not product success
+        run: echo 'Existing artifact inspected; this job does not qualify the product.'
