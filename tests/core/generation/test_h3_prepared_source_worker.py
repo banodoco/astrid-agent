@@ -136,6 +136,26 @@ def test_h3_worker_trusts_sealed_measurement_without_probing_again(
     assert result["decoded_av"] == frozen_source["conform"]["decoded_av"]
 
 
+def test_controller_checks_conformed_source_rate_once(
+    frozen_source: dict[str, object], monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    from astrid.packs.h3_av.shared import conform, prepare
+
+    calls = []
+    check = prepare._check_source_av_rate
+
+    def counted(asset, path):
+        calls.append(Path(path))
+        return check(asset, path)
+
+    monkeypatch.setattr(prepare, "_check_source_av_rate", counted)
+    monkeypatch.setattr(conform, "_check_source_av_rate", counted)
+    prepare.prepare_request(frozen_source["request"], asset_map={"source": str(frozen_source["source"])},
+                            out_dir=tmp_path / "second-controller-build")
+    assert len(calls) == 1
+    assert calls[0].name == "source.mp4"
+
+
 def test_h3_worker_build_consumes_frozen_source_without_reconforming(
     frozen_source: dict[str, object], monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:

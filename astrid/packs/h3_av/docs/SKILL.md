@@ -376,6 +376,10 @@ one without audio. Plain
 `video_ref` selects the whole video up to its last complete 24-fps frame; the
 selected range is included in the dry-run.
 
+Preparation measures the conformed clip when it is created. Its managed object
+carries that measurement and its source lineage. Later stages verify the object
+descriptor and digest and reuse the recorded measurement.
+
 Masks and pixel-coordinate regions refer to the prepared 1024×576 canvas and
 clip-relative clock, after the specified fit. Supply masks already aligned to
 that canvas and time range; H3 does not transform source-coordinate masks.
