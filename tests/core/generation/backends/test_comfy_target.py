@@ -295,14 +295,14 @@ def test_uncertain_prompt_acceptance_is_not_replayed(kind, mode, comfy, endpoint
     assert not any(path == "/interrupt" for _, path, _ in network["upstream"])
 
 
-def test_attached_interrupt_is_scoped_to_its_witnessed_running_prompt(comfy, network):
+def test_attached_running_cancellation_is_explicitly_refused(comfy, network):
     client = attached(network)
     client.submit_prompt(PROMPT)
     comfy["running"] = "ours"
-    client.cancel_prompt("ours")
-    assert comfy["controls"] == [
-        ("/queue", {"delete": ["ours"]}), ("/interrupt", {"prompt_id": "ours"}),
-    ]
+    with pytest.raises(ValueError, match="running-job cancellation.*global interrupt") as refusal:
+        client.cancel_prompt("ours")
+    assert refusal.value.code == "running_cancellation_unsupported"
+    assert comfy["controls"] == [("/queue", {"delete": ["ours"]})]
 
 
 @pytest.mark.parametrize("queue", [{}, {"queue_running": {}}, {"queue_running": [[0, None]]}])

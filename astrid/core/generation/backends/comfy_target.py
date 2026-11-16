@@ -63,6 +63,24 @@ def validate_identity(value: str) -> str:
     return value
 
 
+class ComfyCancellationRefused(ValueError):
+    """A running prompt cannot safely be cancelled by this transport.
+
+    Keep ValueError compatibility for existing cleanup callers while exposing a
+    machine-readable refusal. A prompt-id check followed by a global interrupt
+    is not atomic: another user's prompt may start between those operations.
+    """
+
+    code = "running_cancellation_unsupported"
+
+    def __init__(self, prompt_id: str) -> None:
+        self.prompt_id = prompt_id
+        super().__init__(
+            "Comfy running-job cancellation is unsupported; refusing global interrupt; "
+            "leave the job running and wait for its terminal result"
+        )
+
+
 class _NoRedirectHandler(urllib_request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         raise ValueError("comfy target remote request redirected unexpectedly")
@@ -226,11 +244,9 @@ class ComfyTargetClient:
                              and bool(payload["delete"])
                              and all(isinstance(item, str) and item in self._witnessed_prompts
                                      for item in payload["delete"]))
-            scoped_interrupt = (path == "/interrupt" and isinstance(payload, dict)
-                                and set(payload) == {"prompt_id"}
-                                and isinstance(payload["prompt_id"], str)
-                                and payload["prompt_id"] in self._witnessed_prompts)
-            if not (scoped_delete or scoped_interrupt):
+            # /interrupt is a global operation even when it accepts a prompt_id:
+            # the server's check and interrupt are not one atomic operation.
+            if not scoped_delete:
                 raise ValueError("attached Comfy target refuses unowned control operations")
         try:
             return self._json(path, payload, timeout=timeout, response_limit=response_limit,
@@ -318,6 +334,12 @@ class ComfyTargetClient:
         return result
 
     def cancel_prompt(self, prompt_id: str) -> None:
+        """Delete only this attempt's queued prompt; refuse running cancellation.
+
+        Deleting an exact pending ID cannot interrupt another user's work. If
+        that prompt is already running (including a queue-to-running race),
+        preserve it and report an explicit refusal instead of global interrupt.
+        """
         prompt_id = self._prompt_id(prompt_id)
         if not self.owns_prompt(prompt_id):
             raise ValueError("Comfy cancellation requires witnessed prompt acceptance")
@@ -329,7 +351,7 @@ class ComfyTargetClient:
                 for item in running)):
             raise ValueError("Comfy queue response has invalid running prompt identities")
         if any(item[1] == prompt_id for item in running):
-            self.request_json("/interrupt", {"prompt_id": prompt_id})
+            raise ComfyCancellationRefused(prompt_id)
 
     def upload_media(self, source: Path, *, task_id: str, kind: str = "image",
                      expected_sha256: str | None = None) -> str:
