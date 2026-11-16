@@ -750,6 +750,27 @@ def test_latest_render_refuses_canonical_head_change_before_projection():
         prepare_filmstrip({}, project='p', client=client)
 
 
+def test_public_visualize_facade_preserves_explicit_revision_through_real_preflight():
+    from astrid.sdk.invocation import _validate_timeline_visualize_inputs
+    from astrid.sdk.remote import RemoteTimelines
+
+    class ManagedRenderClient(ComposedCaptureClient):
+        def get_task(self, task_id):
+            task = super().get_task(task_id)
+            task['result']['outputs'][0]['name'] = 'video'
+            return task
+
+    client = ManagedRenderClient(run_revision='R1')
+
+    def invoke(_capability, *, project, inputs, **_kwargs):
+        return _validate_timeline_visualize_inputs(inputs, project=project, _client=client)
+
+    with pytest.raises(CapabilityValidationError, match='conflicts with the saved revision'):
+        RemoteTimelines(client, invoker=invoke).visualize(
+            'p', 'cut', revision_id='R2', options={'render_run': 'run'},
+        )
+
+
 def test_refuses_changed_script_bytes():
     client = FakeClient(); client.raw = b'wrong'
     with pytest.raises(CapabilityValidationError, match='bytes'):

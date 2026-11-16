@@ -1109,6 +1109,10 @@ def prepare_filmstrip(
     if selected is None:
         _status_failure(render_status(lifecycle="absent", output={"timeline": selector}, project=project))
     run, task, envelope, authority = selected
+    requested_revision = inputs.get('revision_id')
+    render_revision = _identifier(authority, 'parent_revision_id', 'head_revision_id', 'revision_id')
+    if requested_revision not in (None, '') and str(requested_revision) != str(render_revision):
+        _fail('Explicit revision_id conflicts with the saved revision selected by render_run.')
     envelope = _hydrate_render_snapshot(envelope, client)
     if 'output' not in components['resolved']:
         timeline_snapshot = _timeline_snapshot(envelope)
