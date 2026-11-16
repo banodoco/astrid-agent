@@ -43,7 +43,8 @@ def command(parsed):
         state = State(session._bundle(session._state()))
         owner = ref.rsplit('/', 1)[0]
         config = state.config(owner)
-        size = canvas(config, ref)
+        source_size = canvas(config, ref)
+        size = canvas(state.config('parent'), ref) if owner != 'parent' else source_size
         normalized = package_query({'operation': 'normalize', 'config': {**config,
             'clips': state.collection(owner, 'clip'), 'tracks': state.collection(owner, 'track')}})
         if kind == 'track':
@@ -60,7 +61,7 @@ def command(parsed):
             intrinsic = {'width': int(match[1]), 'height': int(match[2])}
             answer = {'placement': package_query({'operation': 'resolve', 'input': {
                 'clip': clip, 'track': track, 'canvas': size, 'intrinsic': intrinsic}}),
-                'migration': normalized['findings']}
+                'source_canvas': source_size, 'canvas': size, 'migration': normalized['findings']}
         return print_result(DomainResult.success(answer), as_json=parsed.json,
                             human_renderer=lambda value: json.dumps(value, indent=2, ensure_ascii=False))
     except Exception as exc:

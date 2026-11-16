@@ -108,9 +108,6 @@ def normalize_revision_closure(parent, internals):
         if not media(child):
             continue
         child_canvas = canvas(child, f"internal timeline {row.get('revision_id')}")
-        if child_canvas != parent_canvas and child.get('clips'):
-            clip = child['clips'][0]
-            raise CommandError(f"clip {clip.get('id', '?')} property canvas differs between child and parent timelines")
         normalized = package_query({'operation': 'normalize', 'config': child})
         row['payload'] = normalized['config']
         findings.extend({'owner': row.get('revision_id'), **item} for item in normalized['findings'])
