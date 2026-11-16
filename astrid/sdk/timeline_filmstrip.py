@@ -313,7 +313,13 @@ def _hydrate_render_snapshot(envelope: Mapping, client: Any) -> Mapping:
         if ref.get(ref_key) is not None and ref.get(ref_key) != authority.get(authority_key):
             _fail('Render snapshot reference differs from its authority; rerender the timeline.')
     digest = _digest(ref.get('digest'))
-    response = client.get_object(digest)
+    from .workspace_client import WorkspaceClientError
+    try:
+        response = client.get_object(digest)
+    except WorkspaceClientError as exc:
+        if exc.status != 404:
+            raise
+        _fail('Render snapshot object is missing; rerender the timeline.')
     raw = response if isinstance(response, bytes) else response.get('data') if isinstance(response, Mapping) else getattr(response, 'data', None)
     if not isinstance(raw, bytes) or 'sha256:' + hashlib.sha256(raw).hexdigest() != digest:
         _fail('Render snapshot bytes do not match their digest; rerender the timeline.')

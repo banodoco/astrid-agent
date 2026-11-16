@@ -883,7 +883,7 @@ def _align_snapshot_to_render(snapshot: dict, video: Path) -> None:
     snapshot["metadata"]["asset_integrity"] = _asset_integrity_from_registry(snapshot.get("registry"))
     from .render_clock import RenderClock
     clock = RenderClock(snapshot)
-    if clock.start or (snapshot.get("metadata") or {}).get("timeline_range") is not None:
+    if (snapshot.get("metadata") or {}).get("timeline_range") is not None:
         if rendered_frames != clock.end - clock.start:
             raise ValueError('Rendered video duration disagrees with its timeline range; rerender the timeline.')
         rendered_end = clock.end
