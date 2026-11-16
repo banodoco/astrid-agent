@@ -937,15 +937,19 @@ def _project_exact_parent_head(
     )
 
     try:
-        # Snapshot canonical images, keeping GET-only decoration on the read rows.
+        # Preserve each immutable source's track and canvas context before flattening.
+        from astrid.sdk.timeline._appearance import normalize_revision_closure
+
+        parent_image = {**{key: parent[key] for key in PARENT_IMAGE_FIELDS},
+                        "project_id": project_id, "timeline_id": timeline_id}
+        internal_images = [{**{key: row[key] for key in INTERNAL_IMAGE_FIELDS},
+                            "project_id": row.get("project_id", project_id)} for row in internals]
+        parent_image, internal_images, placement_findings = normalize_revision_closure(parent_image, internal_images)
         projected = project_runtime_parent_composition(
-            {**{key: parent[key] for key in PARENT_IMAGE_FIELDS},
-             "project_id": project_id, "timeline_id": timeline_id},
+            parent_image,
             shot_revisions=[{**{key: row[key] for key in SHOT_IMAGE_FIELDS},
                              "project_id": row.get("project_id", project_id)} for row in shots],
-            internal_timeline_revisions=[
-                {**{key: row[key] for key in INTERNAL_IMAGE_FIELDS},
-                 "project_id": row.get("project_id", project_id)} for row in internals],
+            internal_timeline_revisions=internal_images,
         )
     except ValueError as exc:
         raise ValueError(f"canonical parent revision closure is not renderable: {exc}") from exc
@@ -969,6 +973,7 @@ def _project_exact_parent_head(
         })
     expansion = {
         "canonical": True,
+        "placement_migrations": placement_findings,
         "parent_revision_id": parent_revision_id,
         "children": [
             {

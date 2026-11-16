@@ -112,3 +112,22 @@ def test_help_exposes_current_edit_entry_and_legacy_working_copy(command, capsys
     output = capsys.readouterr().out
     assert 'legacy detached working copy' in output
     assert '--set' in output and '--swap-asset' in output
+
+
+def test_appearance_clip_edit_uses_guarded_commit(command, capsys):
+    run, generated = command
+    bundle = generated.bundles['r0']
+    bundle['parent']['config']['output']['resolution'] = '1280x720'
+    for clip in bundle['parent']['clips']:
+        clip['clipType'] = 'media'
+    bundle['parent']['clips'][1]['x'] = 10
+    assert run('appearance', 't', '--project', 'p', '--clip', 'parent/clip:a',
+               '--set', 'fit=cover', '--json') == 0
+    body = json.loads(generated.calls[0][0])
+    assert body['commands'][0]['op'] == 'clip.set'
+    assert body['merge'] == 'atomic'
+    state = State(generated.bundles['r1'])
+    assert state.entity('parent/clip:a')['fit'] == 'cover'
+    assert state.entity('parent/clip:b')['fit'] == 'cover'
+    assert state.entity('parent/track:picture')['app']['clipPlacementVersion'] == 1
+    capsys.readouterr()

@@ -57,6 +57,16 @@ def expand_shot_clips(
     - A ``shot`` clip nested inside a sub-document fails closed (no recursion).
     - Unknown/missing timeline_document_id fails closed via the loader error.
     """
+    from astrid.sdk.timeline._appearance import canvas, package_query
+
+    # The legacy expander cannot carry child track groups. Normalize the
+    # source copy first, then refuse children whose context would be lost.
+    config = deepcopy(dict(config))
+    canvas(config, 'parent timeline')
+    normalized = package_query({'operation': 'normalize', 'config': config})
+    if normalized['findings']:
+        _LOGGER.warning('Parent placement migrations: %s', normalized['findings'])
+    config = normalized['config']
     raw_clips = config.get("clips", [])
     if not isinstance(raw_clips, list):
         raise ShotExpansionError("timeline clips must be a list")
@@ -156,7 +166,19 @@ def expand_shot_clips(
                 f"Failed to load sub-timeline {timeline_document_id}: {exc}"
             ) from exc
 
+        sub_config = deepcopy(dict(sub_config))
+        canvas(sub_config, f"shot {clip.get('id', '?')}")
+        normalized = package_query({'operation': 'normalize', 'config': sub_config})
+        if normalized['findings']:
+            _LOGGER.warning('Shot %s placement migrations: %s', clip.get('id', '?'), normalized['findings'])
+        sub_config = normalized['config']
         raw_sub_clips = sub_config.get("clips", [])
+        for source_clip in raw_sub_clips if isinstance(raw_sub_clips, list) else []:
+            if isinstance(source_clip, Mapping) and source_clip.get('clipType') == 'media':
+                raise ShotExpansionError(
+                    f"Shot clip {clip.get('id', '?')} child clip {source_clip.get('id', '?')} "
+                    "property track cannot be preserved by legacy expansion"
+                )
         if not isinstance(raw_sub_clips, list):
             raise ShotExpansionError(
                 f"sub-timeline {timeline_document_id} clips must be a list"

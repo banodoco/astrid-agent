@@ -68,8 +68,11 @@ def candidate_projection(preview: Mapping[str, Any], *, client: Any, project_id:
         "content_digest": publication["content_digest"],
         "payload": copy.deepcopy(publication["parent_composition"]),
     }
+    from astrid.sdk.timeline._appearance import normalize_revision_closure
+    parent, internals, placement_findings = normalize_revision_closure(parent, internals)
     projected = project_runtime_parent_composition(parent, shot_revisions=shots, internal_timeline_revisions=internals)
     marker = {
+        "placement_migrations": placement_findings,
         "label": "Unpublished working copy",
         "base_parent": copy.deepcopy(dict(frozen.get("base_parent") or {})),
         "candidate_digest": compilation.candidate_digest,
@@ -160,6 +163,8 @@ def candidate_preview_snapshot(
         "content_digest": publication["content_digest"],
         "payload": copy.deepcopy(publication["parent_composition"]),
     }
+    from astrid.sdk.timeline._appearance import normalize_revision_closure
+    parent, internals, placement_findings = normalize_revision_closure(parent, internals)
     projected = project_runtime_parent_composition(
         parent, shot_revisions=shots, internal_timeline_revisions=internals
     )

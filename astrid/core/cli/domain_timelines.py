@@ -1453,6 +1453,23 @@ def _working_configure_transcripts_sync(subparser: argparse.ArgumentParser) -> N
     subparser.set_defaults(handler=_working_cmd_transcripts_sync)
 
 
+def _configure_appearance(subparser: argparse.ArgumentParser) -> None:
+    from astrid.packs.timeline.cli_appearance import command
+
+    subparser.add_argument("ref", help="Timeline id or slug.")
+    _add_project_arg(subparser, required=True)
+    target = subparser.add_mutually_exclusive_group(required=True)
+    target.add_argument("--clip", help="Exact parent/clip:ID or occurrence:ID/clip:ID.")
+    target.add_argument("--track", help="Exact parent/track:ID or occurrence:ID/track:ID.")
+    subparser.add_argument("--set", dest="set_values", action="append", default=[], metavar="FIELD=VALUE",
+                           help="Set an appearance field; repeat for multiple fields.")
+    subparser.add_argument("--clear", action="append", default=[], metavar="FIELD", help="Clear an appearance field.")
+    subparser.add_argument("--dry-run", action="store_true", help="Preview a guarded edit.")
+    _add_idempotency_key(subparser)
+    _add_json_flag(subparser, default=False)
+    subparser.set_defaults(handler=command)
+
+
 _FAMILY = "timelines"
 
 
@@ -1461,6 +1478,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("export", help="Export the saved head and its media into a .astrid archive.", configure=_configure_export),
     CommandSpec("checkout", help="Create or open a detached editable working copy.", configure=_configure_checkout),
     CommandSpec("commit", help="Commit a detached timeline document through Runtime.", configure=_configure_commit),
+    CommandSpec("appearance", help="Inspect or guard-edit clip and track appearance.", configure=_configure_appearance),
     CommandSpec("edit", help="Commit a clip move or trim, or edit a legacy detached working copy.", configure=_configure_edit),
     CommandSpec("assets", help="List timeline asset keys, media details, and every clip using each key.", configure=_configure_assets),
     CommandSpec("find", help="Find what you hear or see: addresses and times.", configure=_configure_find),
