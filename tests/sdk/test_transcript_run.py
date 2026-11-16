@@ -51,6 +51,7 @@ class Client:
                                       'invocation_preflight': {'workflow_content_digest': self.workflow_digest}}}}
         self.outputs = [{'output_port': 'vibecomfy_run', 'role': 'result', 'object_id': self.output_id}]
         self.document = None
+        self.document_id = None
         self.projects = SimpleNamespace(show=lambda _: DomainResult.success(self.project))
         self.runs = SimpleNamespace(show=lambda _: DomainResult.success({'task_ids': ['task-1']}))
         self.tasks = SimpleNamespace(show=lambda _: DomainResult.success(self.task),
@@ -60,10 +61,13 @@ class Client:
                                      read_bytes=lambda d: self.objects[d])
         self.documents = SimpleNamespace(show=self.show, create=self.create, update=self.update)
 
-    def show(self, *args, **kwargs):
-        return DomainResult.success(self.document) if self.document else DomainResult.failure(ErrorObject('not_found', 'missing', {}))
+    def show(self, document_id, *, project):
+        assert project == 'project-1'
+        return DomainResult.success(self.document) if self.document and document_id == self.document_id else DomainResult.failure(ErrorObject('not_found', 'missing', {}))
 
-    def create(self, *, kind, content, **kwargs):
+    def create(self, *, kind, content, project, document_id):
+        assert project == 'project-1'
+        self.document_id = document_id
         self.document = {'kind': kind, 'content': content, 'version': 1}
         return DomainResult.success(self.document)
 
