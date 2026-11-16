@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from astrid.pack_api import add_choice_arg
+from astrid.core.util.http import os_trust_ssl_context
 
 HUGGING_FACE_MODELS_API = "https://huggingface.co/api/models"
 DEFAULT_DISCOVERY_LIMIT = 1000
@@ -407,7 +408,7 @@ def _fetch_models(
 
     request = urllib.request.Request(url, headers=headers, method="GET")
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with urllib.request.urlopen(request, timeout=timeout, context=os_trust_ssl_context()) as response:
             raw_data = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")

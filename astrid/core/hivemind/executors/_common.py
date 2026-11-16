@@ -30,6 +30,8 @@ import urllib.parse
 import urllib.request
 from typing import Any, Mapping
 
+from astrid.core.util.http import os_trust_ssl_context
+
 # ---------------------------------------------------------------------------
 # Defaults (baked in — overridable via environment variables)
 # ---------------------------------------------------------------------------
@@ -141,7 +143,7 @@ def _http_get(url: str, headers: dict[str, str], timeout: float = 30.0) -> dict[
     Raises *urllib.error.HTTPError* on non-2xx status.
     """
     req = urllib.request.Request(url, headers=headers, method="GET")
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with urllib.request.urlopen(req, timeout=timeout, context=os_trust_ssl_context()) as resp:
         body = resp.read().decode("utf-8")
     return json.loads(body)  # type: ignore[no-any-return]
 
@@ -152,7 +154,7 @@ def _http_post(url: str, headers: dict[str, str], body: bytes) -> dict[str, Any]
     Raises *urllib.error.HTTPError* on non-2xx status.
     """
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with urllib.request.urlopen(req, timeout=30, context=os_trust_ssl_context()) as resp:
         raw = resp.read().decode("utf-8")
     return json.loads(raw)  # type: ignore[no-any-return]
 

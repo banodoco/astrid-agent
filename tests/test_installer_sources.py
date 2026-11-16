@@ -2,8 +2,9 @@
 
 import io
 import json
-import shutil
 import os
+import shutil
+import ssl
 import subprocess
 import sys
 import zipfile
@@ -44,7 +45,9 @@ def test_first_tool_archive_creates_its_missing_parent(tmp_path, monkeypatch):
         bundle.writestr("bun-linux-x64/bun", b"tool executable")
     requests = []
 
-    def response(request, *, timeout):
+    def response(request, *, timeout, context):
+        assert context.verify_mode == ssl.CERT_REQUIRED
+        assert context.check_hostname is True
         url = request.full_url
         requests.append((url, timeout))
         return io.BytesIO(payload.getvalue())

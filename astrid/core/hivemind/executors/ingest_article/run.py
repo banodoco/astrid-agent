@@ -11,6 +11,9 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+from astrid.core.contracts.errors import TLS_VERIFICATION_CODE, coerce_astrid_error
+from astrid.core.util.http import os_trust_ssl_context
+
 # -- dual-import guard (T5 pattern) -------------------------------------------
 try:
     from .._common import (
@@ -223,7 +226,7 @@ def fetch_html(url: str) -> str:
         },
         method="GET",
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with urllib.request.urlopen(req, timeout=30, context=os_trust_ssl_context()) as resp:
         # Try to read with the encoding from Content-Type, fall back to utf-8
         raw = resp.read()
         content_type = resp.headers.get("Content-Type", "")
@@ -281,6 +284,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     except urllib.error.URLError as exc:
+        error = coerce_astrid_error(exc)
+        if error.code == TLS_VERIFICATION_CODE:
+            output_json({"error": error.to_envelope()}, args.out)
+            return 1
         output_json(
             {"error": f"Failed to fetch {args.url}: {exc.reason}"},
             args.out,
