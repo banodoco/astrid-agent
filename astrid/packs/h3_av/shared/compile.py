@@ -267,9 +267,6 @@ def _require_native(request: H3Request) -> tuple[float, float]:
     for reference in value["references"]:
         if reference["purpose"] == "audio":
             raise CompilationError("native reference slots are image references; audio references are unsupported")
-    for name in ("sampler", "guidance"):
-        if name in value["overrides"] and value["overrides"][name] != _DEFAULTS[name]:
-            raise CompilationError(f"overrides.{name} is not a public input of the native graph")
     return source_end, float(duration)
 
 
