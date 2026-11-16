@@ -37,6 +37,57 @@ def test_hivemind_parser_preserves_json_before_or_after_subcommand() -> None:
     parser = _parser()
     assert parser.parse_args(["--json", "search", "query"]).json is True
     assert parser.parse_args(["search", "query", "--json"]).json is True
+    assert parser.parse_args(["--json", "item", "--kind", "resource", "--id", "42"]).json is True
+    assert parser.parse_args(["item", "--kind", "resource", "--id", "42", "--json"]).json is True
+
+
+def test_hivemind_item_invokes_get_item_and_renders_artifact_json(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    from types import SimpleNamespace
+
+    from astrid.core.gateway.hivemind import dispatch
+    from astrid.sdk.client import AstridClient
+
+    item = {"item": {"item_id": "42", "title": "Example"}, "cited_by": []}
+    calls: list[dict[str, object]] = []
+
+    class FakeClient:
+        media = SimpleNamespace(read_bytes=lambda digest: b'{"item":{"item_id":"42","title":"Example"},"cited_by":[]}')
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def invoke_result(self, capability_id, **kwargs):
+            calls.append({"capability_id": capability_id, **kwargs})
+            return SimpleNamespace(to_dict=lambda: {
+                "ok": True,
+                "run_id": "run-1",
+                "capability_id": capability_id,
+                "outputs": {"artifacts": [{"name": "item", "digest": "abc"}]},
+                "raw_result": {},
+            })
+
+    monkeypatch.setattr(AstridClient, "open_from_launcher", lambda: FakeClient())
+    assert dispatch("hivemind", [
+        "item", "--kind", "resource", "--id", "42", "--revision-id", "7", "--json",
+    ]) == 0
+
+    import json
+
+    envelope = json.loads(capsys.readouterr().out)
+    assert envelope["ok"] is True
+    assert envelope["data"]["item"] == item
+    assert calls == [{
+        "capability_id": "hivemind.get_item",
+        "kind": "executor",
+        "inputs": {"kind": "resource", "id": "42", "revision_id": "7"},
+        "wait": True,
+        "timeout_seconds": 120.0,
+    }]
 
 
 def test_undeclared_pack_operation_is_usage_error(capsys: pytest.CaptureFixture[str]) -> None:
