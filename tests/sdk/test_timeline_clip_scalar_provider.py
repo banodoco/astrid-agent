@@ -157,3 +157,40 @@ def test_hold_captured_after_move_refuses_changed_basis_without_recapture(ref, o
     with pytest.raises(CommitRejected):
         realm.call([sealed])
     assert before == (realm.head, realm.entries, realm.documents)
+
+
+def test_appearance_normalizes_owner_in_same_provider_commit():
+    document = app_document()
+    payload = document['parent_revision']['payload']
+    payload['config']['output']['resolution'] = '1280x720'
+    payload['clips'][0]['x'] = 10
+    payload['config']['clips'][0]['x'] = 10
+    from astrid.sdk.timeline.commit import _digest
+    document['parent_revision']['content_digest'] = _digest(payload)
+    realm = DetachedRealm(document)
+    captured = capture_clip_set(current(realm), PARENT, values={'fit': 'contain'})
+    accepted = realm.call([captured])
+    updated = current(realm)
+    assert clip(updated, PARENT)['fit'] == 'contain'
+    assert clip(updated, 'parent/clip:f2-app-clip')['fit'] == 'cover'
+    assert updated['parent']['config']['tracks'][0]['app']['clipPlacementVersion'] == 1
+    undone = realm.call([inverse([accepted['receipt']['receipt_id']])])
+    restored = bundle_from_document(undone['data']['canonical_document'])
+    assert 'fit' not in clip(restored, PARENT)
+    assert 'fit' not in clip(restored, 'parent/clip:f2-app-clip')
+
+
+def test_appearance_stale_owner_dependency_refuses_without_publication():
+    document = app_document()
+    payload = document['parent_revision']['payload']
+    payload['config']['output']['resolution'] = '1280x720'
+    from astrid.sdk.timeline.commit import _digest
+    document['parent_revision']['content_digest'] = _digest(payload)
+    realm = DetachedRealm(document)
+    base = copy.deepcopy(realm.head)
+    captured = capture_clip_set(current(realm), PARENT, values={'fit': 'cover'})
+    realm.call([capture_track_set(current(realm), 'parent/track:V1', values={'label': 'Changed'})])
+    prior = copy.deepcopy(realm.head)
+    with pytest.raises(CommitRejected):
+        realm.call([captured], base=base)
+    assert realm.head == prior
