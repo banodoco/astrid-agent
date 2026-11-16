@@ -1020,7 +1020,11 @@ def plan_filmstrip(
             for cut in picture:
                 if wanted and cut['index'] not in wanted:
                     continue
-                add(cut['tile_frame'], 'cut_tile')
+                start, end = max(first, cut['start_frame']), min(stop, cut['end_frame'])
+                if start >= end:
+                    continue
+                tile = cut['tile_frame']
+                add(tile if start <= tile < end else (start + end) // 2, 'cut_tile')
                 if cut.get('sequence'):
                     # a sequence is one tile; its first and last steps ride along as a mini-strip
                     add(cut['start_frame'], 'sequence_step')
@@ -1042,8 +1046,9 @@ def plan_filmstrip(
                 occurrence_key = clip.get('occurrence_id') or clip.get('shot_id')
                 if not snapshot.get('occurrences') and occurrence_key and occurrence_key not in seen_shots:
                     shot_spans = [spans[id(c)] for c in selected if (c.get('occurrence_id') or c.get('shot_id')) == occurrence_key]
-                    midpoint = (min(a for a, b in shot_spans) + max(b for a, b in shot_spans)) / 2
-                    add(math.floor(midpoint), 'shot_midpoint')
+                    start = max(first, min(a for a, b in shot_spans))
+                    end = min(stop, max(b for a, b in shot_spans))
+                    add((start + end) // 2, 'shot_midpoint')
                     seen_shots.add(occurrence_key)
         if mode == 'shots':
             for occurrence in snapshot.get('occurrences', []):
@@ -1051,7 +1056,7 @@ def plan_filmstrip(
                     continue
                 start, end = occurrence['start_frame'], occurrence['end_frame']
                 if start < stop and end > first:
-                    add((start + end) // 2, 'shot_midpoint')
+                    add((max(start, first) + min(end, stop)) // 2, 'shot_midpoint')
     if not reasons:
         raise ValueError('No rendered frames match the requested sample and filters.')
     contact_info = None
