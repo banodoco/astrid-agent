@@ -92,9 +92,20 @@ def build_whisper_transcript(
 
     result_digest = whisper_result_digest(result)
     grouped: list[list[dict[str, Any]]] = [[] for _ in segments]
+    # The upstream node emits both lists in chronological order. Sweep them
+    # together rather than rescanning all segments for each word.
+    if any(segments[i][1] > segments[i + 1][1] for i in range(len(segments) - 1)):
+        raise ValueError("segments_alignment must be ordered by start time")
+    if any(words[i][1] > words[i + 1][1] for i in range(len(words) - 1)):
+        raise ValueError("words_alignment must be ordered by start time")
+    active: list[int] = []
+    next_segment = 0
     for word_index, (word_text, start, end) in enumerate(words):
-        matches = [i for i, (_, seg_start, seg_end) in enumerate(segments)
-                   if start >= seg_start and end <= seg_end]
+        while next_segment < len(segments) and segments[next_segment][1] <= start:
+            active.append(next_segment)
+            next_segment += 1
+        active = [i for i in active if segments[i][2] >= start]
+        matches = [i for i in active if end <= segments[i][2]]
         if len(matches) != 1:
             raise ValueError(f"word {word_index} has ambiguous or missing segment membership")
         identity = json.dumps([media_id, source_id, result_digest, word_index, start, end, word_text],
