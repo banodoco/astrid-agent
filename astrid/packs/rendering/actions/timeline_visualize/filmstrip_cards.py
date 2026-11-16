@@ -632,9 +632,9 @@ def _evenly_spaced(total, count):
     return sorted({(i * (total - 1) + count // 2) // count for i in range(1, count + 1)})
 
 
-def _boundary_index(snapshot, clips, spans, total, fps):
+def _boundary_index(snapshot, clips, spans, total, fps, start=0):
     entries = [
-        {'frame': 0, 'time_seconds': 0.0, 'kind': 'rendered_first_frame', 'source': 'decoded_render'},
+        {'frame': start, 'time_seconds': float(Fraction(start, 1) / fps), 'kind': 'rendered_first_frame', 'source': 'decoded_render'},
         {'frame': total - 1, 'time_seconds': float(Fraction(total - 1, 1) / fps),
          'kind': 'rendered_eof', 'source': 'decoded_render'},
     ]
@@ -745,7 +745,8 @@ def _event_coverage(events, reasons, *, first, stop):
 
 def _full_overview(snapshot, clips, spans, total, fps, limit, events=(), start=0):
     """Plan a bounded full-render overview while retaining boundary evidence."""
-    entries = _boundary_index(snapshot, clips, spans, total, fps)
+    entries = [entry for entry in _boundary_index(snapshot, clips, spans, total, fps, start)
+               if start <= entry['frame'] < total]
     reasons = {}
 
     def add(frame, reason):
@@ -808,7 +809,7 @@ def _full_overview(snapshot, clips, spans, total, fps, limit, events=(), start=0
         'not_promised': ['every fast-cut boundary is sampled', 'overview cards provide exact navigation for every frame'],
     }
     return reasons, {'schema': 'astrid.filmstrip.boundary-index.v1', 'clock': 'rendered_decoded',
-                     'rendered_frame_count': total, 'entries': entries}, coverage
+                     'rendered_frame_count': total - start, 'entries': entries}, coverage
 
 
 def total_frames_of(snapshot: Mapping) -> int:
@@ -1088,13 +1089,14 @@ def plan_filmstrip(
                 continue
         relevant_events.append(event)
     if boundary_index is None:
-        boundary_index = _boundary_index(snapshot, clips, spans, total, fps)
+        boundary_index = [entry for entry in _boundary_index(snapshot, clips, spans, total, fps, clock.start)
+                          if clock.start <= entry['frame'] < clock.end]
         selected = set(reasons)
         for entry in boundary_index:
             entry['selected'] = entry['frame'] in selected
         coverage = {
             'clock': 'rendered_decoded',
-            'full_duration': first == 0 and stop == total,
+            'full_duration': first == clock.start and stop == total,
             'window_seconds': [float(lo), float(hi)],
             'selected_frame_count': len(reasons),
             'selected_fraction': len(reasons) / max(1, stop - first),
