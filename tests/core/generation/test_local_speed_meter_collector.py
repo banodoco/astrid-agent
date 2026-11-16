@@ -13,7 +13,8 @@ def rows(instrumented):
                        "verified_states": ["succeeded", "succeeded"], "outputs": [
                            {"phase": phase, "bytes": 1, "sha256": "a" * 64, "dimensions": [1, 1]}
                            for phase in ("warmup", "delivered")]},
-             "observer_gaps": [], "process_observations": [{"pid": 1}], "output_hash_streams": 2}
+             "observer_gaps": [], "process_observations": [{"pid": 1}], "output_hash_streams": 2,
+             "process_start_counts": {"pack_worker": 1, "cli": 1 if caller == "fresh_python_cli" else 0}}
             for caller in ("resident_sdk", "fresh_python_cli")]
 
 
@@ -28,7 +29,7 @@ def test_complete_pair_has_one_report_per_actual_caller(tmp_path, instrumented):
     assert len(parse_reports(write(tmp_path, rows(instrumented)), instrumented=instrumented)) == 2
 
 
-@pytest.mark.parametrize("mutation", ["missing", "duplicate", "mode", "output", "task", "submit", "coverage", "hash"])
+@pytest.mark.parametrize("mutation", ["missing", "duplicate", "mode", "output", "task", "submit", "coverage", "hash", "worker", "cli"])
 def test_incomplete_or_falsely_green_report_is_rejected(tmp_path, mutation):
     value = rows(True)
     if mutation == "missing": value.pop()
@@ -39,6 +40,8 @@ def test_incomplete_or_falsely_green_report_is_rejected(tmp_path, mutation):
     elif mutation == "submit": value[0]["attached_http_paths"]["POST /prompt"] = 2
     elif mutation == "coverage": value[0]["observer_gaps"] = ["missing worker"]
     elif mutation == "hash": value[0]["output_hash_streams"] = 0
+    elif mutation == "worker": value[0]["process_start_counts"]["pack_worker"] = 0
+    elif mutation == "cli": value[1]["process_start_counts"]["cli"] = 0
     with pytest.raises(ValueError): parse_reports(write(tmp_path, value), instrumented=True)
 
 
@@ -46,3 +49,28 @@ def test_junit_skips_are_not_passes(tmp_path):
     path = tmp_path / "results.xml"
     path.write_text('<testsuites><testsuite tests="2" failures="0" errors="0" skipped="1"/></testsuites>')
     with pytest.raises(ValueError): require_junit(path)
+
+
+def test_each_phase_gets_a_fresh_short_owned_pytest_base(tmp_path, monkeypatch):
+    from pathlib import Path
+    from tests.local_speed_meter_run import meter_command
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    first, second = meter_command(tmp_path, "latency"), meter_command(tmp_path, "counters")
+    bases = [Path(next(value.split("=", 1)[1] for value in command if value.startswith("--basetemp=")))
+             for command in (first, second)]
+    assert bases[0] != bases[1]
+    for base in bases:
+        assert base.parent == tmp_path
+        assert base.name.startswith("p55-") and len(base.name) <= 16
+        assert base.is_dir() and list(base.iterdir()) == []
+    assert "--junitxml=" + str(tmp_path / "latency.xml") in first
+    assert "--junitxml=" + str(tmp_path / "counters.xml") in second
+
+
+def test_unknown_phase_does_not_create_or_remove_files(tmp_path, monkeypatch):
+    from tests.local_speed_meter_run import meter_command
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    before = set(tmp_path.iterdir())
+    with pytest.raises(ValueError, match="unknown meter phase"):
+        meter_command(tmp_path, "../other")
+    assert set(tmp_path.iterdir()) == before

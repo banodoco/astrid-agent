@@ -20,7 +20,7 @@ import pytest
 from PIL import Image
 
 from astrid.core.generation.delivery import deliver_generation
-from tests.integrations.test_runpod_host_endpoint_r5 import tuple_sources  # noqa: F401
+from tests.integrations.local_speed_sources import tuple_sources  # noqa: F401
 from tests.integrations.test_runpod_slot_path_cpu import _drive
 from tests.integrations.test_workflow_file_placements_cpu import INPUTS, _workflow_file
 

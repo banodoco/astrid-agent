@@ -14,6 +14,7 @@ from pathlib import Path
 import platform
 import subprocess
 import sys
+import tempfile
 import time
 import xml.etree.ElementTree as ET
 
@@ -66,6 +67,11 @@ def parse_reports(log: Path, *, instrumented: bool) -> list[dict]:
                 raise ValueError("Python counter coverage is incomplete")
             if row.get("output_hash_streams", 0) <= 0:
                 raise ValueError("output hashing was not observed")
+            starts = row.get("process_start_counts", {})
+            if starts.get("pack_worker", 0) != 1:
+                raise ValueError("baseline must observe exactly one pack worker start")
+            if starts.get("cli", 0) != (1 if row["caller"] == "fresh_python_cli" else 0):
+                raise ValueError("baseline CLI start count mismatch")
     return reports
 
 
@@ -77,6 +83,20 @@ def require_junit(path: Path) -> dict:
     if counts != {"tests": 2, "failures": 0, "errors": 0, "skipped": 0}:
         raise ValueError(f"actual meter tests did not both pass: {counts}")
     return counts
+
+
+def fresh_pytest_base() -> Path:
+    """Own a short empty path; never point pytest's reset at an existing tree."""
+    parent = Path(os.environ.get("RUNNER_TEMP") or tempfile.gettempdir()).resolve()
+    return Path(tempfile.mkdtemp(prefix="p55-", dir=parent))
+
+
+def meter_command(output: Path, phase: str) -> list[str]:
+    if phase not in {"latency", "counters"}:
+        raise ValueError("unknown meter phase")
+    base = fresh_pytest_base()
+    return [sys.executable, "-m", "pytest", "-q", "-s", "-rA", "-m", "integration",
+            SELECTOR, f"--junitxml={output / (phase + '.xml')}", f"--basetemp={base}"]
 
 
 def main() -> int:
@@ -92,8 +112,7 @@ def main() -> int:
                "scope": "attached stand-in through real SDK/CLI, Runtime, host and worker; not GPU proof"}
     original_mode = os.environ.pop("ASTRID_LS2_OBSERVE", None)
     try:
-        latency_command = [sys.executable, "-m", "pytest", "-q", "-s", "-rA", "-m", "integration",
-                           SELECTOR, f"--junitxml={output / 'latency.xml'}"]
+        latency_command = meter_command(output, "latency")
         (output / "latency-command.json").write_text(json.dumps(latency_command, indent=2) + "\n")
         latency_exit = run_bounded(latency_command, log=output / "latency.log", timeout=args.timeout)
         (output / "latency.exit").write_text(str(latency_exit) + "\n")
@@ -105,8 +124,8 @@ def main() -> int:
             row["overhead_seconds"] = row["caller_seconds"] - row["standin_execution_seconds"][0]
             row["queue_time_subtracted"] = False
         os.environ["ASTRID_LS2_OBSERVE"] = "1"
-        counter_command = [sys.executable, "-m", "pytest", "-q", "-s", "-rA", "-m", "integration",
-                           SELECTOR, f"--junitxml={output / 'counters.xml'}"]
+        counter_command = meter_command(output, "counters")
+        (output / "counter-command.json").write_text(json.dumps(counter_command, indent=2) + "\n")
         captured = capture(output / "native", counter_command, args.timeout)
         summary["counter_capture"] = captured
         if not captured["completed"] or captured.get("proof_exit") != 0:

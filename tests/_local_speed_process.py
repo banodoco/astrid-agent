@@ -20,6 +20,8 @@ PREFIX = "PLAN55_PROCESS_OBSERVATION "
 MARKER = "# PLAN55_OBSERVER_INSTALLED_AFTER_ADMISSION"
 MAX_EVENTS = 100000
 MAX_REPORT_BYTES = 16384
+PACK_MODULE = "astrid.packs.vibecomfy.actions.run.run"
+_UNSEEN = object()
 
 
 class PatchSet:
@@ -40,7 +42,7 @@ def classify_command(argv: Any) -> str:
     if not isinstance(argv, (list, tuple)) or not argv:
         return "external"
     text = " ".join(str(x) for x in argv[1:])
-    if "astrid.core.execution.generic_host_worker" in text:
+    if "astrid.core.execution.generic_host_worker" in text or PACK_MODULE in text:
         return "pack_worker"
     if "runtime_protocol" in text or "astrid_runtime.daemon" in text:
         return "runtime"
@@ -83,16 +85,17 @@ def instrument_argv(argv: Any, hash_source: str, observer_source: str,
             gaps.add("unrecognized admitted worker startup")
             return argv
         before = code[:code.rfind(call)]
-    elif role == "cli" and "-m" in values:
+    elif "-m" in values:
         index = values.index("-m")
-        if values[index + 1] != "astrid":
-            gaps.add("unrecognized CLI module")
+        module = values[index + 1]
+        if module not in {"astrid", PACK_MODULE}:
+            gaps.add("unrecognized admitted module")
             return argv
         flags, arguments = values[1:index], values[index + 2:]
         values = [values[0], *flags, "-c", "", *arguments]
         index = values.index("-c") + 1
-        before = "import sys,runpy\nsys.argv=['astrid',*sys.argv[1:]]\n"
-        call = "runpy.run_module('astrid',run_name='__main__',alter_sys=True)"
+        before = f"import sys,runpy\nsys.argv=[{module!r},*sys.argv[1:]]\n"
+        call = f"runpy.run_module({module!r},run_name='__main__',alter_sys=True)"
     else:
         gaps.add("unrecognized worker entrypoint")
         return argv
@@ -129,6 +132,9 @@ class ProcessObserver:
         self.started = None
         self.previous_profile = self.previous_thread_profile = None
         self.hashes = None
+        self.code_kinds = {}
+        self.c_kinds = {time.sleep: "sleep"}
+        self.c_kinds.update({getattr(os, name): name for name in ("fsync", "fdatasync") if hasattr(os, name)})
 
     def event(self, kind: str, **fields) -> None:
         with self.lock:
@@ -138,25 +144,37 @@ class ProcessObserver:
             self.events.append({"at_ns": time.monotonic_ns(), "kind": kind, **fields})
 
     def profile(self, frame, event, arg) -> None:
+        # Resolve Python code identity only once. The previous implementation
+        # formatted filenames and queried thread identity on every Python/C
+        # event, multiplying the cost of the existing repeated source scans.
         if event == "call":
-            filename = frame.f_code.co_filename.replace("\\", "/")
-            name = frame.f_code.co_name
-            if filename.endswith("/vibecomfy/workflow.py") and name == "compile":
-                self.event("workflow_compile")
-            elif filename.endswith("/vibecomfy/workflow_bundle.py"):
-                if name == "compile":
-                    self.event("bundle_compile")
-                elif name == "emit_bundle_with_candidate":
-                    self.event("bundle_emission")
+            code = frame.f_code
+            # Code-object equality ignores filenames; use identity and retain
+            # the object so an ID cannot be recycled into a different module.
+            cached = self.code_kinds.get(id(code))
+            kind = cached[1] if cached is not None else _UNSEEN
+            if kind is _UNSEEN:
+                filename = code.co_filename.replace("\\", "/")
+                name = code.co_name
+                kind = None
+                if filename.endswith("/vibecomfy/workflow.py") and name == "compile":
+                    kind = "workflow_compile"
+                elif filename.endswith("/vibecomfy/workflow_bundle.py"):
+                    if name == "compile":
+                        kind = "bundle_compile"
+                    elif name in {"emit_bundle", "emit_bundle_with_candidate"}:
+                        kind = "bundle_emission"
+                self.code_kinds[id(code)] = (code, kind)
+            if kind is not None:
+                self.event(kind)
         elif event in {"c_call", "c_return", "c_exception"}:
-            name = getattr(arg, "__name__", "")
-            module = getattr(arg, "__module__", "")
-            if (module == "time" and name == "sleep") or (module in {"posix", "nt"} and name in {"fsync", "fdatasync"}):
-                self.event(name + {"c_call": "_attempt", "c_return": "_success", "c_exception": "_error"}[event])
-        # Preserve any existing profiler rather than silently disabling it.
-        previous = self.previous_profile if threading.get_ident() == self.start_thread else self.previous_thread_profile
-        if previous is not None:
-            previous(frame, event, arg)
+            kind = self.c_kinds.get(arg)
+            if kind is not None:
+                self.event(kind + {"c_call": "_attempt", "c_return": "_success", "c_exception": "_error"}[event])
+        if self.previous_profile is not None or self.previous_thread_profile is not None:
+            previous = self.previous_profile if threading.get_ident() == self.start_thread else self.previous_thread_profile
+            if previous is not None:
+                previous(frame, event, arg)
 
     def start(self) -> None:
         if self.started is not None:

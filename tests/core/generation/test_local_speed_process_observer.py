@@ -55,19 +55,20 @@ def test_compile_and_emission_boundaries_are_distinct():
     namespace = {}
     exec(compile("def compile(): pass", "/fixture/vibecomfy/workflow.py", "exec"), namespace)
     workflow_compile = namespace["compile"]
-    exec(compile("def compile(): pass\ndef emit_bundle_with_candidate(): pass",
+    exec(compile("def compile(): pass\ndef emit_bundle_with_candidate(): pass\ndef emit_bundle(): pass",
                  "/fixture/vibecomfy/workflow_bundle.py", "exec"), namespace)
     meter.start()
     try:
         workflow_compile()
         namespace["compile"]()
         namespace["emit_bundle_with_candidate"]()
+        namespace["emit_bundle"]()
         report = meter.snapshot()
     finally:
         meter.stop()
     assert report["counts"]["workflow_compile"] == 1
     assert report["counts"]["bundle_compile"] == 1
-    assert report["counts"]["bundle_emission"] == 1
+    assert report["counts"]["bundle_emission"] == 2
 
 
 def test_actual_spawn_is_counted_and_unrelated_argv_is_untouched():
@@ -192,3 +193,46 @@ def test_profiler_and_hash_constructor_are_restored():
     meter.stop()
     assert hashlib.sha256 is original
     assert sys.getprofile() is prior
+
+
+def test_direct_pack_module_is_observed_without_changing_its_entrypoint_semantics(tmp_path):
+    from tests._local_speed_process import PACK_MODULE
+    root = tmp_path
+    for part in PACK_MODULE.split(".")[:-1]:
+        root = root / part
+        root.mkdir()
+        (root / "__init__.py").write_text("")
+    (root / "run.py").write_text(
+        "import hashlib,sys\nhashlib.sha256(" + repr(DATA) + ").hexdigest()\n"
+        "print(sys.argv[1:])\n")
+    meter = observer()
+    meter.start()
+    try:
+        child = subprocess.run([sys.executable, "-X", "utf8", "-m", PACK_MODULE, "--job", "owned"],
+                               cwd=tmp_path, env={**os.environ, "PYTHONPATH": ""},
+                               capture_output=True, text=True, timeout=30)
+        parent = meter.snapshot()
+    finally:
+        meter.stop()
+    reports, gaps = read_reports([child.stderr])
+    assert child.returncode == 0 and child.stdout.strip() == "['--job', 'owned']"
+    assert gaps == [] and len(reports) == 1
+    assert reports[0]["role"] == "pack_worker" and reports[0]["output_hash_streams"] == 1
+    assert parent["process_starts"][0]["child_role"] == "pack_worker"
+    assert child.args[1:3] == ["-X", "utf8"]
+
+
+def test_unrelated_code_identity_is_cached_once_not_reformatted_on_every_call():
+    namespace = {}
+    exec(compile("def unrelated(): return 1", "/fixture/irrelevant.py", "exec"), namespace)
+    meter = observer()
+    meter.start()
+    try:
+        for _ in range(1000):
+            assert namespace["unrelated"]() == 1
+        code = namespace["unrelated"].__code__
+        assert meter.code_kinds[id(code)][0] is code
+        assert meter.code_kinds[id(code)][1] is None
+        assert "bundle_emission" not in meter.snapshot()["counts"]
+    finally:
+        meter.stop()
