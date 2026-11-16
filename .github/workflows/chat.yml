@@ -3,6 +3,9 @@ name: Chat service
 on:
   push:
     branches: [main, release-1, "int/**", "release/*/main"]
+  # Pull requests into a release main run the `chat` job only (one Ubuntu runner); the Windows launcher job runs on pushes.
+  pull_request:
+    branches: ["release/*/main"]
   workflow_dispatch:
 
 concurrency:
@@ -11,6 +14,7 @@ concurrency:
 
 jobs:
   windows-launchers:
+    if: github.event_name != 'pull_request'
     runs-on: windows-latest
     timeout-minutes: 30
     steps:

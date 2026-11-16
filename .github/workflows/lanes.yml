@@ -761,10 +761,18 @@ jobs:
           receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
           PY
 
+      # Everything SHA256SUMS lists must be in the directory and must survive the upload. upload-artifact v4.4+
+      # skips hidden files (artifacts/.astrid-registry-state.json is one), hence include-hidden-files below and
+      # this guard, which takes the same setting.
+      - name: Check the receipt manifest against what will be uploaded
+        if: ${{ always() }}
+        run: python3 scripts/check_receipt_upload.py "$GITHUB_WORKSPACE/installed-wheel-receipt" --include-hidden-files
+
       - name: Upload installed-wheel receipt
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: installed-wheel-receipt-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ github.workspace }}/installed-wheel-receipt
+          include-hidden-files: true
           if-no-files-found: warn
