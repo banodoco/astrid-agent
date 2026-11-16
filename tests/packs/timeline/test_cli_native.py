@@ -131,3 +131,16 @@ def test_appearance_clip_edit_uses_guarded_commit(command, capsys):
     assert state.entity('parent/clip:b')['fit'] == 'cover'
     assert state.entity('parent/track:picture')['app']['clipPlacementVersion'] == 1
     capsys.readouterr()
+
+
+def test_appearance_inspects_package_placement_without_render(command, capsys):
+    run, generated = command
+    parent = generated.bundles['r0']['parent']
+    parent['config']['output']['resolution'] = '1280x720'
+    parent['registry'] = {'assets': {'matrix': {'resolution': '1920x800'}}}
+    parent['clips'][0].update(clipType='media', asset='matrix', fit='cover')
+    assert run('appearance', 't', '--project', 'p', '--clip', 'parent/clip:a', '--json') == 0
+    data = json.loads(capsys.readouterr().out)['data']
+    assert data['placement']['local']['media']['x'] == -224
+    assert data['placement']['provenance']['fit'] == 'clip'
+    assert generated.calls == []
