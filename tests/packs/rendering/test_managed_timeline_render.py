@@ -890,3 +890,11 @@ def test_render_rejects_incomplete_or_invalid_shot_text_snapshot(data):
     client = SimpleNamespace(shots=SimpleNamespace(list_text_bindings=lambda *args, **kwargs: _result(data)))
     with pytest.raises(CapabilityValidationError):
         shot_text_snapshot(client, 'project', 'shot')
+
+
+def test_unsupported_clip_property_names_clip_and_property():
+    from astrid.core.timeline.validators.timeline import validate_timeline
+
+    with pytest.raises(ValueError, match=r"clip 'my-clip'.*unexpectedAppearance"):
+        validate_timeline({'tracks': [{'id': 'v', 'kind': 'visual', 'label': 'V'}], 'clips': [
+            {'id': 'my-clip', 'track': 'v', 'at': 0, 'unexpectedAppearance': 1}]})
