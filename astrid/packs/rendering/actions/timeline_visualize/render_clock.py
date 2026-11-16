@@ -3,6 +3,14 @@ from fractions import Fraction
 from collections.abc import Mapping
 
 
+def normalize_time(value):
+    """Normalize authored decimal and rational times consistently."""
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        return Fraction(int(value[0]), int(value[1]))
+    result = Fraction(str(value))
+    return result.limit_denominator(1_000_000_000) if isinstance(value, float) else result
+
+
 class RenderClock:
     def __init__(self, snapshot):
         self.snapshot = snapshot
@@ -38,6 +46,7 @@ class RenderClock:
 
     def validate_timestamp(self, time):
         """Refuse an explicit timestamp outside the half-open rendered clock."""
+        time = normalize_time(time)
         start = Fraction(self.start, 1) / self.fps
         end = Fraction(self.end, 1) / self.fps
         if time < start or time >= end:
@@ -50,6 +59,7 @@ class RenderClock:
 
     def validate_range(self, start, end):
         """Apply render-window bounds to a requested half-open range."""
+        start, end = normalize_time(start), normalize_time(end)
         if self._timeline_range() is None:
             return
         if start < Fraction(self.start, 1) / self.fps:

@@ -36,13 +36,7 @@ from .inspector_navigation import build_inspector_navigation
 from .provenance import snapshot_label
 
 
-def _q(value):
-    if isinstance(value, (list, tuple)) and len(value) == 2:
-        return Fraction(int(value[0]), int(value[1]))
-    result = Fraction(str(value))
-    # Runtime JSON floats can carry arithmetic noise at exact frame boundaries.
-    # Preserve explicit decimal strings; recover float rationals to nanosecond precision.
-    return result.limit_denominator(1_000_000_000) if isinstance(value, float) else result
+from .render_clock import normalize_time as _q
 
 
 def _frame_span(clip, fps):

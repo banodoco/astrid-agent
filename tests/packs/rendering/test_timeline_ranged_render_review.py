@@ -76,6 +76,43 @@ def test_ranged_render_uses_recorded_fractional_fps_for_absolute_frame_and_label
     assert card["time_label"] == "6.540s"
 
 
+@pytest.mark.parametrize(("address", "refused"), [
+    ({"timestamp": 6.6}, False),
+    ({"range": (6.6, 8.8)}, False),
+    ({"range": (6.5, 8.8)}, True),
+    ({"range": (6.6, 8.81)}, True),
+])
+def test_render_clock_normalizes_decimal_timestamps_before_boundary_comparisons(address, refused):
+    clock = RenderClock(_snapshot(
+        fps=(30, 1),
+        duration_frames=264,
+        timeline_range={"start_frame": 198, "end_frame": 264, "fps_rational": [30, 1]},
+    ))
+    validate = (
+        (lambda: clock.validate_timestamp(address["timestamp"]))
+        if "timestamp" in address
+        else (lambda: clock.validate_range(*address["range"]))
+    )
+
+    # Decimal CLI values should compare as their authored decimal rationals.
+    if refused:
+        with pytest.raises(ValueError, match="outside the rendered range"):
+            validate()
+    else:
+        validate()
+
+
+def test_render_clock_rejects_timestamp_at_exclusive_decimal_end():
+    clock = RenderClock(_snapshot(
+        fps=(30, 1),
+        duration_frames=198,
+        timeline_range={"start_frame": 0, "end_frame": 198, "fps_rational": [30, 1]},
+    ))
+
+    with pytest.raises(ValueError, match="outside the rendered range"):
+        clock.validate_timestamp(6.6)
+
+
 def test_legacy_snapshot_without_timeline_range_keeps_zero_based_frames():
     card = plan_filmstrip(_snapshot(), {"at": 1.0})["cards"][0]
 
