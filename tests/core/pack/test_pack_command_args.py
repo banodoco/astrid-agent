@@ -1,5 +1,7 @@
 from pathlib import Path
 import json
+import subprocess
+import sys
 
 import pytest
 
@@ -26,21 +28,25 @@ def test_pack_command_rejects_script_outside_selected_root(tmp_path: Path) -> No
         pack_command_args([str(foreign)], "hivemind", root)
 
 
-def test_pack_worker_runs_relative_script_from_selected_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-                                                            capsys: pytest.CaptureFixture[str]) -> None:
-    from astrid.core.execution.generic_host_worker import _run_pack_command
+def test_pack_worker_runs_relative_script_from_selected_root(tmp_path: Path) -> None:
     from astrid.core.pack.identity import pack_digest
 
     root = tmp_path / "testpack"
     script = root / "actions" / "search" / "run.py"
     script.parent.mkdir(parents=True)
     script.write_text("print('pack script ran')\n", encoding="utf-8")
-    monkeypatch.chdir(tmp_path)
     control = {"pack_id": root.name, "root": str(root), "source_digest": pack_digest(root),
                "argv": ["actions/search/run.py"]}
 
-    assert _run_pack_command(json.dumps(control)) == 0
-    assert capsys.readouterr().out == "pack script ran\n"
+    result = subprocess.run(
+        [sys.executable, "-m", "astrid.core.execution.generic_host_worker", "--pack-command", json.dumps(control)],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "pack script ran\n"
 
 
 def test_core_pack_does_not_add_core_modules_as_external_pack_collection() -> None:
