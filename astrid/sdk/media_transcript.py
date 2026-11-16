@@ -10,6 +10,7 @@ from typing import Any
 
 SCHEMA = "media.transcript/v1"
 NARRATION_SOURCE = "astrid.narration"
+IMPORT_SOURCE = "astrid.import"
 WHISPER_SOURCE = "whisper"
 _DOCUMENT_DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
@@ -108,7 +109,7 @@ def write_transcript(client: Any, project: str, media_id: str, source: str,
 def import_transcript_words(
     client: Any, project: str, media_id: str, words: Sequence[Sequence[Any],], *,
     segment_id: str, text: str | None = None, source_offset: float = 0.0,
-    source: str = NARRATION_SOURCE, replace: bool = False,
+    source: str = IMPORT_SOURCE, replace: bool = False,
     expected_version: int | None = None,
 ) -> str:
     """Import a complete words file whose timestamps are source-media seconds.
@@ -138,11 +139,15 @@ def import_transcript_words(
                    row.get("word", row.get("text")))
         if not isinstance(row, Sequence) or isinstance(row, (str, bytes)) or len(row) < 3:
             raise ValueError("each word must contain start, end, and text")
+        if isinstance(row[0], bool) or isinstance(row[1], bool):
+            raise ValueError("word times must be numeric source seconds, not booleans")
+        if not isinstance(row[2], str) or not row[2].strip():
+            raise ValueError("word text must be a non-empty string")
         try:
             start, end = float(row[0]) + offset, float(row[1]) + offset
         except (TypeError, ValueError, OverflowError) as exc:
             raise ValueError("word times must be finite source seconds") from exc
-        spoken = str(row[2])
+        spoken = row[2]
         if not math.isfinite(start) or not math.isfinite(end) or start < 0 or end < start or not spoken.strip():
             raise ValueError("word times must be ordered nonnegative source seconds and text must be non-empty")
         shifted.append([start, end, spoken])

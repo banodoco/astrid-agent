@@ -1458,7 +1458,8 @@ def _working_configure_transcripts_import(subparser: argparse.ArgumentParser) ->
     subparser.add_argument("media_id", help="Project-managed sha256 media id.")
     subparser.add_argument("file", type=Path, help="Complete JSON words file in source-media seconds.")
     _add_project_arg(subparser, required=True)
-    subparser.add_argument("--source", default="astrid.narration", help="Transcript source id.")
+    subparser.add_argument("--source", default="astrid.import",
+                           help="Imported transcript source id, separate from narration backfill.")
     subparser.add_argument("--segment", default="imported", help="Segment id for these words.")
     subparser.add_argument("--text", default=None, help="Segment text (defaults to joined word text).")
     subparser.add_argument("--source-offset", type=float, default=0.0,

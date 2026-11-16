@@ -78,6 +78,7 @@ def test_import_words_uses_source_seconds_and_refuses_unpinned_replacement():
     assert [(word["start"], word["end"]) for word in stored["segments"][0]["words"]] == [
         (12.1, 12.3), (12.4, 12.6)]
     assert stored["segments"][0]["start"] == 12.1
+    assert stored["source_id"] == "astrid.import"
 
     with pytest.raises(ValueError, match="whole-document replacement"):
         import_transcript_words(client, "slug", media, [[0.0, 0.2, "replacement"]],
@@ -127,6 +128,18 @@ def test_import_rejects_invalid_word_rows(words):
                                 segment_id="line")
 
 
+@pytest.mark.parametrize("words", [
+    [[0.0, 0.1, None]], [[0.0, 0.1, 3]], [[0.0, 0.1, ""]], [[0.0, 0.1, "  "]],
+    [[True, 0.1, "word"]], [[0.0, False, "word"]],
+])
+def test_import_rejects_missing_or_invalid_word_text_and_boolean_times(words):
+    from astrid.sdk.media_transcript import import_transcript_words
+
+    with pytest.raises(ValueError, match="word"):
+        import_transcript_words(fake_client(), "slug", "sha256:" + "e" * 64, words,
+                                segment_id="line")
+
+
 def test_transcripts_import_parser_requires_media_identity_and_file():
     from astrid.core.cli.domain_timelines import build_parser
 
@@ -137,6 +150,7 @@ def test_transcripts_import_parser_requires_media_identity_and_file():
     ])
     assert (args.media_id, args.file, args.project, args.source_offset,
             args.replace, args.expected_version) == (media, Path("words.json"), "demo", 4.5, True, 3)
+    assert args.source == "astrid.import"
 
 
 def test_sync_preserves_the_exact_server_pin_from_create_result_without_rereading():
