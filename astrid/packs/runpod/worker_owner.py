@@ -154,6 +154,7 @@ class RunPodLeaseOwner:
         self.deadline_timer = self.expiry_retry_timer = self.warm_lease = self.key = None
         self.closed, self.started = False, False
         self._release_inflight = False
+        self._capacity_retry_operation: str | None = None
         self._acquisition_cancel = threading.Event()
         self._observer_lock = threading.Lock()
         self._failure_observers: dict[tuple[str, str, int, str], threading.Event] = {}
@@ -672,6 +673,10 @@ class RunPodLeaseOwner:
                     self.started = False
                     self._cancel()
                     operation = current["operation_id"]
+                    self._capacity_retry_operation = (operation if
+                        current.get("state") in {"capacity_retry_ready", "capacity_exhausted"}
+                        and current.get("safe_to_retry") is True and current.get("pod_id") is None
+                        and current.get("capacity_rejection") == "ProviderCapacityUnavailable" else None)
                     self.deadline_timer = self.timer(self._provider_retry_delay(current), lambda: self._retry_recovery(operation))
                 raise
             self._arm(claimed)
@@ -694,13 +699,27 @@ class RunPodLeaseOwner:
               cancelled: Callable[[], bool] | None = None) -> Mapping[str, Any]:
         """Claim through ordinary acquisition, then retain without a generation job."""
         with self.lock:
-            if self.closed or not self.started:
+            if self.closed:
                 raise RunPodWorkerOwnerError("claim requires a running host with a live RunPod owner")
             from .target_selection import PaidRunConsent, PaidSelectionError
             if (not isinstance(consent, PaidRunConsent) or consent.preparation_seconds != 0
                     or consent.execution_seconds != 0 or consent.idle_seconds != requested_idle_seconds
                     or requested_idle_seconds <= 0):
                 raise PaidSelectionError("claim requires fresh paid consent for finite initial idle retention")
+            if not self.started and self._capacity_retry_operation is not None:
+                if self._release_inflight or self._acquisition_cancel.is_set():
+                    raise AcquisitionUnresolvedError("lease release is already in progress")
+                raw = self.selection._read()
+                if raw is not None and raw.get("operation_id") == self._capacity_retry_operation:
+                    self._discard_stale_capacity_intent(raw)
+                # The recovery timer may already have cleared the verified intent.
+                # Never reopen for any remaining or different custody.
+                if self.selection._read() is None:
+                    self._cancel()
+                    self._capacity_retry_operation = None
+                    self.started = True
+            if not self.started:
+                raise RunPodWorkerOwnerError("claim requires a running host with a live RunPod owner")
             invocation = self.acquire(consent, requested_idle_seconds=requested_idle_seconds,
                                       cancelled=cancelled)
             self.settle(invocation)

@@ -1257,3 +1257,70 @@ def test_manual_claim_cancellation_reaches_capacity_wait(small_lease):
     with pytest.raises(target_selection.CapacityWaitCancelled):
         owner.claim(grant, requested_idle_seconds=600, cancelled=lambda: bool(stopped))
     assert c.creates == 0 and not c.owner.path.exists()
+
+@pytest.mark.parametrize("recovery_first", [False, True])
+def test_manual_claim_retries_after_definite_capacity_rejection(small_lease, monkeypatch, recovery_first):
+    import runpod_lifecycle
+    from runpod_lifecycle.errors import ProviderCapacityUnavailable
+
+    c = small_lease
+    owner = c.fresh()
+    owner.start_fresh_claim()
+    attempts = []
+
+    async def reject(*args, **kwargs):
+        attempts.append(kwargs["name"])
+        raise runpod_lifecycle.LaunchFailure("no capacity") from ProviderCapacityUnavailable(503, "no capacity")
+
+    monkeypatch.setattr(runpod_lifecycle, "launch_when_available", reject)
+    with pytest.raises(target_selection.CapacityExhaustedError):
+        owner.claim(manual_claim_grant(c, wait_for_capacity=False), requested_idle_seconds=600)
+    assert c.read()["state"] in {"capacity_retry_ready", "capacity_exhausted"}
+    assert not owner.started and len(attempts) == 1 and not c.pods
+    before = c.owner.path.read_bytes()
+    with pytest.raises(target_selection.PaidSelectionError):
+        owner.claim(replace(manual_claim_grant(c, invocation_id="invalid"), idle_seconds=0), requested_idle_seconds=600)
+    assert c.owner.path.read_bytes() == before and len(attempts) == 1
+    if recovery_first:
+        c.clock.advance(5)
+        assert not c.owner.path.exists()
+    with pytest.raises(target_selection.CapacityExhaustedError):
+        owner.claim(manual_claim_grant(c, invocation_id="new-consent", wait_for_capacity=False), requested_idle_seconds=600)
+    assert len(attempts) == 2 and attempts[0] != attempts[1]
+    assert not c.pods and not c.deletes
+
+
+def test_manual_claim_capacity_retry_refuses_matching_pod_and_inflight_release(small_lease, monkeypatch):
+    import runpod_lifecycle
+    from runpod_lifecycle.errors import ProviderCapacityUnavailable
+
+    c = small_lease
+    owner = c.fresh()
+    owner.start_fresh_claim()
+    async def reject(*args, **kwargs):
+        raise runpod_lifecycle.LaunchFailure("no capacity") from ProviderCapacityUnavailable(503, "no capacity")
+    monkeypatch.setattr(runpod_lifecycle, "launch_when_available", reject)
+    with pytest.raises(target_selection.CapacityExhaustedError):
+        owner.claim(manual_claim_grant(c, wait_for_capacity=False), requested_idle_seconds=600)
+    record = c.read()
+    owner._release_inflight = True
+    with pytest.raises(AcquisitionUnresolvedError, match="in progress"):
+        owner.claim(manual_claim_grant(c, invocation_id="new-consent", wait_for_capacity=False), requested_idle_seconds=600)
+    owner._release_inflight = False
+    c.pods.append({"id": "unexpected", "name": record["request_name"]})
+    with pytest.raises(RunPodWorkerOwnerError, match="live RunPod owner"):
+        owner.claim(manual_claim_grant(c, invocation_id="new-consent", wait_for_capacity=False), requested_idle_seconds=600)
+    assert c.read()["state"] == "allocation_unknown" and not c.deletes
+
+
+def test_manual_claim_stopped_owner_never_reopens_ambiguous_custody(small_lease):
+    c = small_lease
+    owner = c.fresh()
+    owner.start_fresh_claim()
+    c.owner.path.parent.mkdir(parents=True, exist_ok=True)
+    c.owner.path.write_text(json.dumps({"state": "allocation_unknown", "operation_id": "ambiguous"}))
+    owner.started = False
+    before = c.owner.path.read_bytes()
+    with pytest.raises(RunPodWorkerOwnerError, match="live RunPod owner"):
+        owner.claim(manual_claim_grant(c, wait_for_capacity=False), requested_idle_seconds=600)
+    assert c.owner.path.read_bytes() == before and c.creates == 0 and not c.deletes
