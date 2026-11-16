@@ -92,10 +92,19 @@ class _Runtime:
         self.timelines = SimpleNamespace(show=self._show_timeline, list=self._list_timelines, inspect=self._inspect_timeline)
         # Remote SDK list reads expose the generated client's JSON-safe page
         # pair, including the terminal null cursor.
+        self.objects: dict[str, bytes] = {}
+        self.read_object_ids: list[str] = []
         self.media = SimpleNamespace(
-            list=lambda _project, **_kwargs: _result([self.media_rows, None])
+            list=lambda _project, **_kwargs: _result([self.media_rows, None]),
+            read_bytes=self._read_bytes,
         )
         self.shots = SimpleNamespace(show=self._show_shot, list_text_bindings=lambda _project, **kwargs: _result([[row for row in self.text_binding_rows if row["shot_id"] == kwargs["shot_id"]], None]))
+
+    def _read_bytes(self, object_id: str) -> bytes:
+        self.read_object_ids.append(object_id)
+        if object_id not in self.objects:
+            raise LookupError(f"object {object_id} not found")
+        return self.objects[object_id]
 
     def _show_timeline(self, _project: str, ref: str):
         row = self.extra_timelines.get(ref)
@@ -880,3 +889,57 @@ def test_render_rejects_incomplete_or_invalid_shot_text_snapshot(data):
     client = SimpleNamespace(shots=SimpleNamespace(list_text_bindings=lambda *args, **kwargs: _result(data)))
     with pytest.raises(CapabilityValidationError):
         shot_text_snapshot(client, 'project', 'shot')
+
+
+def test_managed_htmlless_live_scene_resolves_entry_html_into_render_inputs(tmp_path: Path) -> None:
+    from tests.packs.rendering.test_live_scene_boundary import _package, _without_html
+
+    html = "<html><body>reference only</body></html>"
+    package = _without_html(_package(html))
+    runtime = _Runtime()
+    runtime.objects["entry-object"] = html.encode("utf-8")
+    runtime.timeline["config"] = {"tracks": [{"id": "v1", "kind": "visual", "label": "V1"}], "clips": [
+        {"id": "scene", "track": "v1", "clipType": "haus.astrid.liveScene", "at": 0, "from": 0, "to": 1, "app": {"liveScene": package}}
+    ]}
+
+    snapshot = _snapshot(runtime)
+    validate_managed_render_snapshot(snapshot)
+    scene = snapshot.config["clips"][0]["app"]["liveScene"]
+    assert scene["html"] == html
+    assert scene["source"] == package["source"]
+    assert "html" not in package
+    assert runtime.read_object_ids == ["entry-object"]
+
+    timeline_path, _registry_path, _authority = materialize_managed_render_snapshot(tmp_path, snapshot)
+    written = json.loads(timeline_path.read_text(encoding="utf-8"))
+    assert written["clips"][0]["app"]["liveScene"]["html"] == html
+
+
+def test_managed_inline_live_scene_never_reads_runtime_objects() -> None:
+    from tests.packs.rendering.test_live_scene_boundary import _package
+
+    runtime = _Runtime()
+    runtime.timeline["config"] = {"tracks": [{"id": "v1", "kind": "visual", "label": "V1"}], "clips": [
+        {"id": "scene", "track": "v1", "clipType": "haus.astrid.liveScene", "at": 0, "from": 0, "to": 1, "app": {"liveScene": _package()}}
+    ]}
+    snapshot = _snapshot(runtime)
+    validate_managed_render_snapshot(snapshot)
+    assert runtime.read_object_ids == []
+
+
+@pytest.mark.parametrize("stored", [None, b"<html>tampered</html>"])
+def test_managed_htmlless_live_scene_with_missing_or_wrong_object_fails_admission(stored) -> None:
+    from tests.packs.rendering.test_live_scene_boundary import _package, _without_html
+
+    runtime = _Runtime()
+    if stored is not None:
+        runtime.objects["entry-object"] = stored
+    runtime.timeline["config"] = {"tracks": [{"id": "v1", "kind": "visual", "label": "V1"}], "clips": [
+        {"id": "scene", "track": "v1", "clipType": "haus.astrid.liveScene", "at": 0, "from": 0, "to": 1,
+         "app": {"liveScene": _without_html(_package("<html>real</html>"))}}
+    ]}
+    with pytest.raises(ManagedRenderValidationError, match="entry-object") as error:
+        _snapshot(runtime)
+    assert error.value.details["validator"] == "prepared_live_scene_object"
+    assert error.value.details["path"] == "$.clips[0].app.liveScene"
+

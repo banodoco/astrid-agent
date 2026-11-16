@@ -1,6 +1,7 @@
 // Pure world-explorer model: worlds, uses, library, stretches, keys, travel clock.
 import type { TimelineSnapshot } from '@astrid/editor-sdk';
 import { LIVE_SCENE_CLIP_TYPE_ID } from '../identity';
+import { readLiveScene, type StoredLiveScene } from '../liveSceneDocument';
 
 /** Something that happens in the world, in world seconds; `end` is absent for a point event. */
 export type WorldEvent = { readonly name: string; readonly start: number; readonly end?: number };
@@ -11,7 +12,8 @@ export type WorldUse = { clipId: string; track: string; at: number; from: number
 export type LibraryEntry = { objectId: string; revision: string; name: string; duration: number; authoredFps: number; events: WorldEvent[]; shots: ShotMove[]; sample?: true };
 /** Names a timeline world can be given, best first: the clip's label, a name its package declares, a name from its entry file. */
 export type NameHints = { label?: string; declared?: string; file?: string };
-export type TimelineWorld = { objectId: string; revision: string; duration: number; authoredFps: number; uses: WorldUse[]; liveScene: Record<string, unknown>; nameHints: NameHints };
+/** `liveScene` is the clip's stored value: the reference, plus inline HTML only on legacy clips. */
+export type TimelineWorld = { objectId: string; revision: string; duration: number; authoredFps: number; uses: WorldUse[]; liveScene: StoredLiveScene; nameHints: NameHints };
 
 export const worldKey = (w: { objectId: string; revision: string }) => `${w.objectId}@${w.revision}`;
 
@@ -35,10 +37,9 @@ export function worldsFromSnapshot(snapshot: TimelineSnapshot): TimelineWorld[] 
   const uses: { world: TimelineWorld; use: WorldUse }[] = [];
   for (const clip of snapshot.clips) {
     if (clip.clipType !== LIVE_SCENE_CLIP_TYPE_ID) continue;
-    const ls = clip.app?.liveScene;
-    if (!isRecord(ls) || !isRecord(ls.source)) continue;
+    const ls = readLiveScene(clip.app?.liveScene);
+    if (!ls) continue;
     const { objectId, revision } = ls.source;
-    if (typeof objectId !== 'string' || typeof revision !== 'string' || typeof ls.packageBody !== 'string') continue;
     const key = `${objectId}@${revision}`;
     let world = byKey.get(key);
     if (!world) {

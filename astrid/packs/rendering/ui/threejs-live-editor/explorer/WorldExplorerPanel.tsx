@@ -2,6 +2,8 @@ import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, 
 import type { ExtensionContext, PanelRenderProps, ProjectDocumentSurface, TimelineSnapshot } from '@astrid/editor-sdk';
 import { LIVE_SCENE_CLIP_TYPE_ID } from '../identity';
 import type { SceneExplore, SceneInfo, SceneStatus } from '../runtime';
+import { hasInlineHtml, persistedLiveScene, type LiveSceneDocument } from '../liveSceneDocument';
+import { liveSceneDocuments } from '../liveSceneCache';
 import { loadLibrary, updateLibrary } from './library';
 import { defaultExploreSpeed, FreeCamera, type ViewPose } from './camera';
 import {
@@ -149,7 +151,7 @@ export function WorldExplorerPanel(props: PanelRenderProps & { context: Extensio
   const [library, setLibrary] = useState<LibraryEntry[]>([]);
   const [libraryReady, setLibraryReady] = useState(false);
   const [selected, setSelected] = useState<Row | null>(null);
-  const [loaded, setLoaded] = useState<{ key: string; liveScene: Record<string, unknown> } | null>(null);
+  const [loaded, setLoaded] = useState<{ key: string; liveScene: LiveSceneDocument } | null>(null);
   const [loadError, setLoadError] = useState<{ key: string; message: string } | null>(null);
   const [revealed, setRevealed] = useState(false);
   const [sceneError, setSceneError] = useState<string | null>(null);
@@ -724,7 +726,8 @@ export function WorldExplorerPanel(props: PanelRenderProps & { context: Extensio
     setListOpen(false);
     setNotice(null);
     writeSetting(ctx, lastWorldKey(projectId), row.key);
-    if (row.liveScene) {
+    // A legacy clip's inline HTML is used as-is; otherwise the verified entry is loaded once per revision.
+    if (row.liveScene && hasInlineHtml(row.liveScene)) {
       setLoaded({ key: row.key, liveScene: row.liveScene });
       return;
     }
@@ -732,9 +735,8 @@ export function WorldExplorerPanel(props: PanelRenderProps & { context: Extensio
       setLoadError({ key: row.key, message: 'Project storage is unavailable, so this world cannot be opened.' });
       return;
     }
-    loadAuthoring()
-      .then(({ loadLiveSceneSource }) => loadLiveSceneSource(storage, row.objectId, row.revision))
-      .then(({ liveScene: source }) => {
+    liveSceneDocuments.load(storage, row.objectId, row.revision)
+      .then((source) => {
         if (!mounted.current || token !== openRequest.current) return;
         setLoaded({ key: row.key, liveScene: source });
       }, (cause: unknown) => {
@@ -1106,7 +1108,8 @@ export function WorldExplorerPanel(props: PanelRenderProps & { context: Extensio
       const { track } = freeVisualTrack(snapshot, at, span);
       const id = newClipId(snapshot);
       const authoring = await loadAuthoring();
-      await authoring.placeLiveScene(ctx, liveScene, selected.duration, [
+      // The timeline stores the reference only; the HTML stays in the project object store.
+      await authoring.placeLiveScene(ctx, persistedLiveScene(liveScene), selected.duration, [
         { id, track, at, from: use.from, to: use.to, rate: use.speed, label: clipName(selected.name, range ? range.name : mode === 'shots' ? shot?.name : undefined) },
       ]);
       if (!mounted.current) return;
@@ -1241,7 +1244,7 @@ export function WorldExplorerPanel(props: PanelRenderProps & { context: Extensio
   const inFullscreen = fullscreen?.active === true;
   const specFor = (range: Stretch & { name: string }) => video?.dragSource?.({
     clipType: LIVE_SCENE_CLIP_TYPE_ID, from: range.from, to: range.to, speed: range.speed,
-    label: clipName(selected?.name ?? '', range.name), ...(liveScene ? { app: { liveScene } } : {}),
+    label: clipName(selected?.name ?? '', range.name), ...(liveScene ? { app: { liveScene: persistedLiveScene(liveScene) } } : {}),
   }) ?? null;
   const gallery = selected && liveScene ? (
     <ShotGallery
