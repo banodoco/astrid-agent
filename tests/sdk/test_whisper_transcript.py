@@ -53,6 +53,13 @@ def test_rejects_ambiguous_membership_and_words_beyond_media_duration():
         build_whisper_transcript(MEDIA, "source", beyond, media_duration=2)
 
 
+def test_rejects_word_outside_its_segment_even_inside_media():
+    result = ("x", [{"value": "x", "start": 0, "end": 1}],
+              [{"value": "x", "start": 0.9, "end": 1.1}])
+    with pytest.raises(ValueError, match="ambiguous or missing"):
+        build_whisper_transcript(MEDIA, "source", result, media_duration=2)
+
+
 class Documents:
     def __init__(self, row=None):
         self.row = row
