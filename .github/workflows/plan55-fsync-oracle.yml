@@ -1,0 +1,41 @@
+name: Plan 55 closed-fd observer oracle
+on:
+  push:
+    branches: ["p55/ls2-fsync-error-oracle-20261116"]
+    paths:
+      - "tests/core/generation/test_local_speed_process_observer.py"
+      - ".github/workflows/plan55-fsync-oracle.yml"
+permissions:
+  contents: read
+jobs:
+  oracle:
+    name: Original observer oracle (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test module dependency
+        run: python -m pip install pytest
+      - name: Exercise actual observer and previously invalid argument
+        shell: python
+        run: |
+          import os, pathlib, tempfile
+          from tests.core.generation.test_local_speed_process_observer import test_failed_sync_is_not_lost_by_c_function_identity_filter
+          try:
+              os.fsync(-1)
+          except ValueError:
+              print("Original -1 argument rejected before profiled C failure")
+          else:
+              raise AssertionError("original negative fd unexpectedly accepted")
+          with tempfile.TemporaryDirectory(prefix="p55-fsync-oracle-") as location:
+              test_failed_sync_is_not_lost_by_c_function_identity_filter(pathlib.Path(location))
+          print("Verified actual observer test: one attempted C fsync, one C error, zero success")
