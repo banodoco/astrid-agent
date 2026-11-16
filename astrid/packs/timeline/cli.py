@@ -1808,7 +1808,8 @@ def _export_visualization(
             shutil.copy2(source, target)
         except OSError as exc:
             raise VisualizationExportError(
-                "invocation_error", str(exc), artifacts=managed, written=written,
+                "invocation_error", exc.strerror or "could not write visualization export file",
+                artifacts=managed, written=written,
             ) from exc
         written.append(str(target))
         return str(target)
@@ -1816,7 +1817,10 @@ def _export_visualization(
     try:
         dest.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        raise VisualizationExportError("invocation_error", str(exc), artifacts=managed, written=written) from exc
+        raise VisualizationExportError(
+            "invocation_error", exc.strerror or "could not create visualization export directory",
+            artifacts=managed, written=written,
+        ) from exc
     pages = [str(page) for page in outputs.get("pages") or [] if page]
     primary = outputs.get("primary_page") or outputs.get("png")
     if primary and str(primary) not in pages:
@@ -1871,11 +1875,12 @@ def _export_visualization(
                             actual = hashlib.sha256(target.read_bytes()).hexdigest()
                         except OSError as exc:
                             raise VisualizationExportError(
-                                "invocation_error", str(exc), artifacts=managed, written=written,
+                                "invocation_error", exc.strerror or "could not inspect existing visualization export file",
+                                artifacts=managed, written=written,
                             ) from exc
                         if actual != expected:
                             raise VisualizationExportError(
-                                "invocation_error", f"refusing to overwrite different file while exporting: {target}",
+                                "invocation_error", "refusing to overwrite an existing different visualization export file",
                                 artifacts=managed, written=written,
                             )
                     else:
@@ -1883,9 +1888,12 @@ def _export_visualization(
             except Exception as exc:
                 if isinstance(exc, VisualizationExportError):
                     raise
+                message = getattr(exc, "message", None)
+                if not message:
+                    message = exc.strerror if isinstance(exc, OSError) else str(exc)
                 raise VisualizationExportError(
                     str(getattr(exc, "code", None) or "invocation_error"),
-                    str(getattr(exc, "message", None) or exc), artifacts=managed, written=written,
+                    str(message or "could not materialize visualization artifact"), artifacts=managed, written=written,
                 ) from exc
             if kind == "md":
                 copied_markdown = str(target)
@@ -1901,7 +1909,10 @@ def _export_visualization(
         try:
             (dest / "frames").mkdir(exist_ok=True)
         except OSError as exc:
-            raise VisualizationExportError("invocation_error", str(exc), artifacts=managed, written=written) from exc
+            raise VisualizationExportError(
+                "invocation_error", exc.strerror or "could not create visualization frame export directory",
+                artifacts=managed, written=written,
+            ) from exc
         for frame in sorted((view_dir / "frames").iterdir()):
             if frame.is_file() and frame.suffix.lower() in {".png", ".jpg", ".jpeg"}:
                 copied_frames.append(copy_file(frame, dest / "frames" / frame.name))

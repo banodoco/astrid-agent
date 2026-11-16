@@ -115,9 +115,12 @@ def test_export_write_failure_keeps_managed_references_and_partial_file_list(tmp
     from astrid.packs.timeline.cli import VisualizationExportError
     source = tmp_path / "source.png"
     source.write_bytes(b"image")
-    monkeypatch.setattr(shutil, "copy2", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("disk full")))
+    monkeypatch.setattr(
+        shutil, "copy2",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError(28, "No space left on device", "/secret/export/view.png")),
+    )
 
-    with pytest.raises(VisualizationExportError, match="disk full") as failure:
+    with pytest.raises(VisualizationExportError, match="No space left on device") as failure:
         _export_visualization(
             {"pages": [str(source)], "artifacts": {"png": {
                 "status": "unavailable", "object_id": "sha256:managed",
@@ -126,6 +129,7 @@ def test_export_write_failure_keeps_managed_references_and_partial_file_list(tmp
         )
 
     assert failure.value.code == "invocation_error"
+    assert "/secret" not in str(failure.value)
     assert failure.value.artifacts["png"]["object_id"] == "sha256:managed"
     assert failure.value.written == []
 
