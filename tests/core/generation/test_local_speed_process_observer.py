@@ -262,13 +262,17 @@ def test_fast_rejection_still_chains_a_preexisting_profiler():
     assert calls == ["call", "return", "c_return"]
 
 
-def test_failed_sync_is_not_lost_by_c_function_identity_filter():
+def test_failed_sync_is_not_lost_by_c_function_identity_filter(tmp_path):
+    # A negative fd is rejected by Python before os.fsync emits a C exception;
+    # a closed, previously valid fd exercises the actual profiled C failure.
     meter = observer()
     meter.start()
     try:
+        with (tmp_path / "closed-fsync").open("wb") as handle:
+            closed_fd = handle.fileno()
         begin = time.monotonic_ns()
         with pytest.raises(OSError):
-            os.fsync(-1)
+            os.fsync(closed_fd)
         report = meter.snapshot(begin)
     finally:
         meter.stop()
