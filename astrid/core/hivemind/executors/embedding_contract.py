@@ -57,7 +57,7 @@ from astrid.core.util.http import os_trust_ssl_context
 # One source of truth: the frozen task-0.8 reference contract owns normalization,
 # hashing, and every version constant. Re-export them so callers import from one
 # place and so a contract bump in one module propagates everywhere.
-from executors.workflow_representation import (  # noqa: F401  (re-exported API)
+from .workflow_representation import (  # noqa: F401  (re-exported API)
     CANONICALIZATION_VERSION,
     CHUNKING_VERSION,
     SECRET_SCAN_VERSION,
