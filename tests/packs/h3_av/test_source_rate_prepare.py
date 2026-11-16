@@ -254,10 +254,15 @@ def test_missing_ffprobe_has_coded_error(monkeypatch: pytest.MonkeyPatch, tmp_pa
     }
 
 
-def test_non_media_fixture_retains_existing_behavior(tmp_path: Path) -> None:
+def test_unreadable_source_is_rejected_before_submission(tmp_path: Path) -> None:
     source = tmp_path / "fixture.mp4"
     source.write_bytes(b"opaque non-media test fixture")
-    assert prepare_request(_v1("edit"), asset_map={"source": str(source)})["runtime_submission"] == "eligible"
+    with pytest.raises(PreparationError) as raised:
+        prepare_request(_v1("edit"), asset_map={"source": str(source)})
+    envelope = coerce_astrid_error(raised.value).to_envelope()
+    assert envelope["code"] == "H3_SOURCE_AV_PROBE"
+    assert envelope["field"] == "source.asset"
+    assert "cannot read media streams" in envelope["message"]
 
 
 def test_source_free_generate_never_probes_a_source(

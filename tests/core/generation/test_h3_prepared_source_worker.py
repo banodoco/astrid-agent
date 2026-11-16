@@ -120,6 +120,42 @@ def test_h3_worker_refuses_managed_source_descriptor_mismatch(
         _validate_h3_prepared_handoff(inputs, files)
 
 
+def test_h3_worker_trusts_sealed_measurement_without_probing_again(
+    frozen_source: dict[str, object], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from astrid.packs.h3_av.shared.prepare import _validate_frozen_source
+
+    def unexpected_probe(*_args, **_kwargs):
+        pytest.fail("worker re-probed an already measured prepared source")
+
+    monkeypatch.setattr("subprocess.run", unexpected_probe)
+    request = frozen_source["request"]
+    source = request.value["media"][0]
+    result = _validate_frozen_source(request, source, Path(frozen_source["source_path"]),
+                                     frozen_source["envelope"])
+    assert result["decoded_av"] == frozen_source["conform"]["decoded_av"]
+
+
+def test_controller_checks_conformed_source_rate_once(
+    frozen_source: dict[str, object], monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    from astrid.packs.h3_av.shared import conform, prepare
+
+    calls = []
+    check = prepare._check_source_av_rate
+
+    def counted(asset, path):
+        calls.append(Path(path))
+        return check(asset, path)
+
+    monkeypatch.setattr(prepare, "_check_source_av_rate", counted)
+    monkeypatch.setattr(conform, "_check_source_av_rate", counted)
+    prepare.prepare_request(frozen_source["request"], asset_map={"source": str(frozen_source["source"])},
+                            out_dir=tmp_path / "second-controller-build")
+    assert len(calls) == 1
+    assert calls[0].name == "source.mp4"
+
+
 def test_h3_worker_build_consumes_frozen_source_without_reconforming(
     frozen_source: dict[str, object], monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
@@ -143,11 +179,11 @@ def test_h3_worker_build_consumes_frozen_source_without_reconforming(
     worker_conform = built["plan"]["source_conform"]
     expected_conform = frozen_source["conform"]
     assert {key: worker_conform[key] for key in expected_conform} == expected_conform
-    worker_validation = worker_conform["worker_validation"]
-    assert worker_validation["video_frames"] == expected_conform["output"]["frames"]
-    assert worker_validation["audio_samples"] > 0
-    assert worker_validation["audio_sample_rate"] == 32000
-    assert worker_validation["fractional_mismatch"] <= 0.005
+    measurement = worker_conform["decoded_av"]
+    assert measurement["video_frames"] == expected_conform["output"]["frames"]
+    assert measurement["audio_samples"] > 0
+    assert measurement["audio_sample_rate"] == 32000
+    assert measurement["fractional_mismatch"] <= 0.005
     assert built["assets"]["source_video"].read_bytes() == Path(frozen_source["source_path"]).read_bytes()
     state = json.loads((tmp_path / "worker-job" / "h3" / "build-state.json").read_text(encoding="utf-8"))
     assert state["request_digest"] == frozen_source["request"].digest

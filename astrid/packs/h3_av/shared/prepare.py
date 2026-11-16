@@ -212,9 +212,11 @@ def _check_source_av_rate(asset_id: str, path: Path) -> None:
         payload = None
     streams = payload.get("streams") if isinstance(payload, Mapping) else None
     if not isinstance(streams, list):
-        # Not a readable media container, such as a non-media fixture. There is no
-        # measurable frame rate to certify; composition still requires real media.
-        return
+        raise _SourceAVError(
+            f"H3_SOURCE_AV_PROBE: cannot read media streams for source {asset_id!r}",
+            code="H3_SOURCE_AV_PROBE", field="source.asset",
+            fix="Provide a readable audiovisual source and retry",
+        )
     video = next((row for row in streams if isinstance(row, Mapping) and row.get("codec_type") == "video"), None)
     audio = next((row for row in streams if isinstance(row, Mapping) and row.get("codec_type") == "audio"), None)
     if video is None:
@@ -272,7 +274,7 @@ def _check_source_av_rate(asset_id: str, path: Path) -> None:
     )
 
 
-def _check_source_av_rates(request: H3Request, assets: list[dict[str, Any]]) -> None:
+def _check_source_av_rates(request: H3Request, assets: list[dict[str, Any]], *, checked_asset: str | None = None) -> None:
     """Probe each resolved source-backed video input; source-free and audio-only requests are not probed."""
     value = request.value
     if value.get("version") == 2:
@@ -294,6 +296,8 @@ def _check_source_av_rates(request: H3Request, assets: list[dict[str, Any]]) -> 
         if record.get("status") == "resolved" and isinstance(record.get("path"), str)
     }
     for asset_id in dict.fromkeys(targets):
+        if asset_id == checked_asset:
+            continue
         path = resolved.get(asset_id)
         # An unresolved source is blocked_until_resolution, so no pod can be held for it.
         if path is not None:
@@ -427,9 +431,6 @@ def _v2_mask_schedule(
 def _validate_frozen_source(request: H3Request, source: Mapping[str, Any], path: Path,
                             envelope: Mapping[str, Any]) -> dict[str, Any]:
     """Verify the controller's sealed derivative before using local coordinates."""
-    from .engine_facts import facts
-    from .conform import _probe
-
     record = envelope.get("conform")
     if (envelope.get("version") != 1 or envelope.get("request_digest") != request.digest
             or envelope.get("asset") != source.get("asset") or not isinstance(record, Mapping)):
@@ -446,7 +447,6 @@ def _validate_frozen_source(request: H3Request, source: Mapping[str, Any], path:
         frame_value = (expected_range[1] - expected_range[0]) * 24
         expected_frames = round(frame_value)
         valid = (expected_range[0] >= 0 and expected_frames > 0
-                 and abs(frame_value - expected_frames) <= Fraction(1, 1000000)
                  and len(actual_range) == 2 and expected_range == actual_range
                  and output["fit"] == source.get("fit", "fill")
                  and output["frames"] == expected_frames
@@ -465,29 +465,9 @@ def _validate_frozen_source(request: H3Request, source: Mapping[str, Any], path:
     if (managed.get("digest") != "sha256:" + digest or managed.get("sha256") != digest
             or not path.is_file() or _file_digest(path) != digest):
         raise PreparationError("prepared source digest mismatch")
-    _check_source_av_rate(str(source["asset"]), path)
-    streams = _video_stream_types(path)
-    if "video" not in streams:
-        raise PreparationError("prepared source has no video stream")
-    if ("audio" in streams) != (record.get("audio") is not None):
-        raise PreparationError("prepared source audio presence differs from its provenance")
-    probe = _probe(path)
-    video = next((row for row in probe.get("streams", []) if row.get("codec_type") == "video"), {})
-    try:
-        video_frames = int(video.get("nb_frames", 0))
-    except (TypeError, ValueError) as exc:
-        raise PreparationError("prepared source frame count is unavailable") from exc
-    if video_frames != expected_frames:
-        raise PreparationError("prepared source frame count does not match its range")
-    measurement: Mapping[str, Any] = {"has_audio": False, "video_frames": video_frames}
-    if "audio" in streams:
-        try:
-            measurement = facts().measure_source_av(path)
-        except ValueError as exc:
-            raise PreparationError(f"prepared source failed decoded AV validation: {exc}") from exc
-        if int(measurement["video_frames"]) != expected_frames:
-            raise PreparationError("prepared source decoded frame count does not match its range")
-    return {**record, "worker_validation": dict(measurement)}
+    if not isinstance(record.get("decoded_av"), Mapping):
+        raise PreparationError("prepared source decoded AV measurement is missing")
+    return dict(record)
 
 
 def prepare_request(
@@ -562,13 +542,16 @@ def prepare_request(
                     continue
                 path = resolved_paths.get(str(item["asset"]))
                 if path is not None:
+                    if source_conform is not None and item["asset"] == source["asset"]:
+                        timeline_audio_presence[str(item["asset"])] = source_conform.get("audio") is not None
+                        continue
                     streams = _video_stream_types(path)
                     if "video" not in streams:
                         raise PreparationError("Character Swap timeline source contains no video stream")
                     timeline_audio_presence[str(item["asset"])] = "audio" in streams
         _validate_mask_assets(request, assets)
         # Runs after the Character Swap stream inspection so its more specific errors win.
-        _check_source_av_rates(request, assets)
+        _check_source_av_rates(request, assets, checked_asset=str(source["asset"]) if source_conform is not None else None)
         try:
             schedule = _v2_mask_schedule(request, timeline_audio_presence=timeline_audio_presence)
         except MaskScheduleError as exc:
@@ -594,7 +577,7 @@ def prepare_request(
     except MaskScheduleError as exc:
         raise PreparationError(str(exc)) from exc
     assets = _resolve_assets(request, asset_map)
-    _check_source_av_rates(request, assets)
+    _check_source_av_rates(request, assets, checked_asset=str(source["asset"]) if source_conform is not None else None)
     unresolved = [record["asset"] for record in assets if record["status"] != "resolved"]
     # Managed identifiers are intentionally retained for the runtime, but a
     # local asset map must never silently contain a missing path.
