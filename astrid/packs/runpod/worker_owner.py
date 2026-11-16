@@ -366,8 +366,10 @@ class RunPodLeaseOwner:
                     and lease.get("state") == "idle"
                     and now < lease["idle_expires_at"] and now < lease["paid_expires_at"]):
                 try:
+                    from .target_selection import PaidSelectionError, _require_allocation_bound
+                    _require_allocation_bound(record)
                     self.selection._owned(record, self.selection._recorded_offer(record))
-                except AcquisitionUnresolvedError:
+                except (AcquisitionUnresolvedError, PaidSelectionError):
                     # Incompatible custody cannot be adopted, but still needs
                     # the same exact recovery as an interrupted invocation.
                     pass

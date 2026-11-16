@@ -178,6 +178,17 @@ def _utc(value: str) -> datetime:
     return result
 
 
+def _require_allocation_bound(record: Mapping[str, Any]) -> None:
+    """Reuse only a claim whose original provider deadline still covers it."""
+    try:
+        bound = _utc(record["allocation_terminate_after"])
+        expires = _utc(record["paid_limits"]["expires_at"])
+        if expires > bound:
+            raise ValueError("paid expiry exceeds provider deadline")
+    except (KeyError, TypeError, ValueError, PaidSelectionError) as exc:
+        raise PaidSelectionError("provider termination deadline cannot be confirmed; release and claim again") from exc
+
+
 def _digest(value: Mapping[str, Any]) -> str:
     return "sha256:" + hashlib.sha256(json.dumps(
         dict(value), sort_keys=True, separators=(",", ":"), allow_nan=False,
@@ -924,6 +935,7 @@ class RunPodSelectionOwner:
                           **({"policy_digest": consent.policy_digest, "max_hourly_usd": consent.max_hourly_usd}
                              if consent.policy_digest is not None else {})}
             if record["state"] == "claimed":
+                _require_allocation_bound(record)
                 try:
                     observation = await observe_exact_target(config.api_key, RunPodTargetContract(
                         str(record["pod_id"]), offer.gpu_type_id or offer.gpu_type, p.image, p.volume_id, p.volume_name,
