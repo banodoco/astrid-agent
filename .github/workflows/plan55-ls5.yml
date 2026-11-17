@@ -1,4 +1,4 @@
-name: Plan 55 connection pin proof
+name: Plan 55 held connection proof
 on:
   pull_request:
     branches: ["release/14/plan-55"]
@@ -8,8 +8,13 @@ on:
       - "astrid/packs/vibecomfy/pins.json"
       - "astrid/packs/**/recipe.*.json"
       - "astrid/core/generation/backends/comfy_target.py"
+      - "astrid/core/generation/backends/comfy_held.py"
       - "astrid/core/generation/backends/vibecomfy_local_server.py"
+      - "astrid/packs/vibecomfy/local_server_engine.py"
       - "tests/core/generation/backends/test_comfy*.py"
+      - "tests/helpers/ls5_comfy_peer.py"
+      - "tests/integrations/test_ls5_meter.py"
+      - "tests/ls5_meter_run.py"
       - ".github/workflows/plan55-ls5.yml"
 permissions:
   contents: read
@@ -26,9 +31,11 @@ jobs:
       PYTEST_ADDOPTS: "-rA"
       ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/runtime
       ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/vibe
+      ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/lifecycle
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-python@v5
@@ -101,6 +108,12 @@ jobs:
           set -o pipefail
           python -m pytest -q -rA tests/test_runtime_transport.py --junitxml=../plan55-ls5-proof/vibe-transport.xml 2>&1 | tee ../plan55-ls5-proof/vibe-transport.log
           rc=${PIPESTATUS[0]}; echo "$rc" > ../plan55-ls5-proof/vibe-transport.exit; exit "$rc"
+      - name: Prove Agent guarded transport and attempt custody
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q -rA tests/core/generation/backends/test_comfy_target.py tests/core/generation/backends/test_comfy_held_transport.py --junitxml=plan55-ls5-proof/agent-transport.xml 2>&1 | tee plan55-ls5-proof/agent-transport.log
+          rc=${PIPESTATUS[0]}; echo "$rc" > plan55-ls5-proof/agent-transport.exit; exit "$rc"
       - name: Preserve exact result manifest
         if: ${{ always() }}
         shell: python

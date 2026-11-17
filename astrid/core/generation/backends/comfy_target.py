@@ -18,6 +18,7 @@ import threading
 import time
 import uuid
 from collections.abc import Mapping
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -106,7 +107,8 @@ class ComfyTargetClient:
     reply arrives. Reconciliation or a new attempt belongs to the caller.
     """
 
-    def __init__(self, target: ComfyTarget, *, endpoint_transport=None, opener=None):
+    def __init__(self, target: ComfyTarget, *, endpoint_transport=None, opener=None,
+                 generation=None, held_session=None):
         if not isinstance(target, ComfyTarget):
             raise TypeError("ComfyTargetClient requires a ComfyTarget")
         if target.kind == "pod":
@@ -120,11 +122,20 @@ class ComfyTargetClient:
         self.target = target
         self.endpoint_transport = endpoint_transport
         self._opener = opener or open_comfy_http
+        self.generation = generation
+        self.held_session = held_session
         self._prompt_lock = threading.Lock()
         self._prompt_attempted = False
         self._witnessed_prompts: set[str] = set()
         self._folder_paths_read = False
         self._folder_paths: Any = None
+
+    def _generation_guard(self):
+        return self.generation.guard() if self.generation is not None else nullcontext()
+
+    def _current(self, value):
+        with self._generation_guard():
+            return value
 
     @property
     def http_origin(self) -> str:
@@ -171,6 +182,7 @@ class ComfyTargetClient:
 
     def _json(self, path, payload=None, *, timeout=10.0, response_limit=64 * 1024,
               acknowledge_empty=True):
+        self._current(None)
         timeout = float(timeout)
         if not math.isfinite(timeout) or not 0 < timeout <= LOCAL_HTTP_SECONDS:
             raise ValueError("Comfy request timeout must be finite and at most 30 seconds")
@@ -233,8 +245,8 @@ class ComfyTargetClient:
             if not (scoped_delete or scoped_interrupt):
                 raise ValueError("attached Comfy target refuses unowned control operations")
         try:
-            return self._json(path, payload, timeout=timeout, response_limit=response_limit,
-                              acknowledge_empty=payload is not None)
+            return self._current(self._json(path, payload, timeout=timeout, response_limit=response_limit,
+                                           acknowledge_empty=payload is not None))
         except (OSError, urllib_error.URLError) as exc:
             raise ValueError(f"comfy target {path} request failed") from exc
 
@@ -269,7 +281,7 @@ class ComfyTargetClient:
                     provenance._system_stats_source = self
                 except (ValueError, OSError):
                     provenance.system_stats({})
-        return payload
+        return self._current(payload)
 
     def system_stats(self, *, timeout: float = 5.0) -> dict[str, Any]:
         payload = self.request_json("/system_stats", timeout=timeout, response_limit=64 * 1024)
@@ -277,7 +289,8 @@ class ComfyTargetClient:
             raise ValueError("Comfy system_stats response is not an object")
         return payload
 
-    def submit_prompt(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+    def _begin_prompt(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        self._current(None)
         if not isinstance(payload, Mapping):
             raise ValueError("Comfy prompt payload must be an object")
         # Freeze and bound before marking the attempt; there is no retry after
@@ -289,6 +302,10 @@ class ComfyTargetClient:
             if self._prompt_attempted:
                 raise TransportError("prompt already attempted; do not resubmit; reconcile the original attempt")
             self._prompt_attempted = True
+        return body
+
+    def submit_prompt(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        body = self._begin_prompt(payload)
         try:
             result = self._json("/prompt", body, timeout=HTTP_TRANSFER_SECONDS, acknowledge_empty=False)
             if not isinstance(result, dict):
@@ -315,9 +332,10 @@ class ComfyTargetClient:
                             response_limit=MAX_JSON_BYTES, acknowledge_empty=False)
         if not isinstance(result, dict):
             raise ValueError("Comfy history response is not an object")
-        return result
+        return self._current(result)
 
     def cancel_prompt(self, prompt_id: str) -> None:
+        self._current(None)
         prompt_id = self._prompt_id(prompt_id)
         if not self.owns_prompt(prompt_id):
             raise ValueError("Comfy cancellation requires witnessed prompt acceptance")
@@ -333,6 +351,7 @@ class ComfyTargetClient:
 
     def upload_media(self, source: Path, *, task_id: str, kind: str = "image",
                      expected_sha256: str | None = None) -> str:
+        self._current(None)
         if kind not in _MANAGED_KIND_RULES:
             raise ValueError(f"unsupported local_server managed asset kind: {kind}")
         rule = _MANAGED_KIND_RULES[kind]
@@ -361,7 +380,7 @@ class ComfyTargetClient:
                 frozen = Path(staging) / safe_source_name
                 frozen.write_bytes(data)
                 self.endpoint_transport.put(frozen, str(root / subfolder / safe_source_name))
-            return f"{subfolder}/{safe_source_name}"
+            return self._current(f"{subfolder}/{safe_source_name}")
         # Local Comfy inputs use a content-addressed shared name. Reuse it only
         # when /view can confirm the exact byte length; an existing but
         # different-sized file is never repaired in the shared namespace.
@@ -372,7 +391,7 @@ class ComfyTargetClient:
         content_subfolder = "astrid/content"
         content_state, content_size = self._input_size(content_name, content_subfolder)
         if content_state == "present" and content_size == len(data):
-            return f"{content_subfolder}/{content_name}"
+            return self._current(f"{content_subfolder}/{content_name}")
         if content_state == "missing":
             filename, upload_subfolder = content_name, content_subfolder
         else:
@@ -403,10 +422,11 @@ class ComfyTargetClient:
                 or name in {"", ".", ".."} or "\\" in name
                 or result.get("subfolder") != upload_subfolder or result.get("type") != "input"):
             raise ValueError("ComfyUI returned an unsafe uploaded image reference")
-        return f"{upload_subfolder}/{name}"
+        return self._current(f"{upload_subfolder}/{name}")
 
     def _input_size(self, filename: str, subfolder: str) -> tuple[str, int | None]:
         """Return present size, confirmed absence, or unknown for a local input."""
+        self._current(None)
         query = urllib_parse.urlencode({"filename": filename, "subfolder": subfolder, "type": "input"})
         request = urllib_request.Request(self.http_origin + "/view?" + query, method="HEAD",
                                         headers={"Accept-Encoding": "identity"})
@@ -436,6 +456,7 @@ class ComfyTargetClient:
 
     def download_output(self, descriptor: object, destination: Path, *,
                         expected_sha256: str | None = None) -> Path:
+        self._current(None)
         filename, subfolder, output_type = validate_output_descriptor(descriptor)
         expected = None if expected_sha256 is None else _digest_hex(expected_sha256)
         destination = Path(destination)
@@ -499,9 +520,10 @@ class ComfyTargetClient:
                     os.fsync(temporary.fileno())
             if expected is not None and digest.hexdigest() != expected:
                 raise ValueError(f"comfy target downloaded output {filename!r} changed during custody")
-            os.replace(temporary_path, destination)
-            temporary_path = None
-            return destination
+            with self._generation_guard():
+                os.replace(temporary_path, destination)
+                temporary_path = None
+                return destination
         except (OSError, urllib_error.URLError) as exc:
             raise ValueError(f"comfy target could not download output {filename!r}") from exc
         finally:
