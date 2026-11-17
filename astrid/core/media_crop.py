@@ -14,6 +14,10 @@ row (or column) is a bar only when both hold:
 - its values are near-uniform: standard deviation at most ``_BAR_MAX_STD``
   (a dark but textured edge is therefore kept).
 
+Side bars (left and right) are kept only as a symmetric pair: both must be dark
+and within 4 px of each other in width, as real pillarboxing is. A dark band on
+one side only is picture and is not cropped.
+
 Each edge may remove at most ``_BAR_MAX_EDGE_FRACTION`` of its dimension. A
 larger band is refused with the edges that were measured, so the caller can
 pass an explicit ``--box``. Video samples several frames across the clip and
@@ -48,6 +52,11 @@ _BAR_STD_PER_THRESHOLD = 0.2
 """A bar row/column is near-uniform: its value standard deviation is at most
 ``max(_BAR_MIN_STD, _BAR_STD_PER_THRESHOLD * threshold)``. The limit scales with
 the threshold, so faint film grain in a black band still counts as a bar."""
+
+_BAR_SIDE_TOLERANCE = 4
+"""Left and right bars count only when they are within this many pixels of each
+other: real pillarboxing is symmetric, while a dark band on one side only is
+picture (a dark wall at the frame edge, for example)."""
 
 _BAR_EXTEND_ROWS = 16
 """After the uniform core, keep extending while rows stay dark, up to this many
@@ -168,7 +177,20 @@ def _leading_bar(dark: Any, uniform: Any) -> int:
     return extent
 
 
+def _paired_sides(edges: dict[str, int]) -> dict[str, int]:
+    """Keep side bars only as a symmetric pair; a one-sided dark band is picture.
+
+    Top and bottom are independent. Left and right must both be dark and within
+    ``_BAR_SIDE_TOLERANCE`` px of each other, otherwise both are dropped.
+    """
+    left, right = edges["left"], edges["right"]
+    if left and right and abs(left - right) <= _BAR_SIDE_TOLERANCE:
+        return edges
+    return {**edges, "left": 0, "right": 0}
+
+
 def _box_from_edges(edges: dict[str, int], width: int, height: int, threshold: int) -> BarDetection:
+    edges = _paired_sides(edges)
     found = ", ".join(f"{name}={edges[name]}" for name in _EDGES)
     percent = int(_BAR_MAX_EDGE_FRACTION * 100)
     for name in _EDGES:

@@ -406,6 +406,45 @@ def list_plans(client: Any, project: str, timeline: str, *, revision_id: str | N
     })
 
 
+def _canonical_media(client: Any, project: str, value: Any) -> Any:
+    """One media id in canonical form. A full digest (bare or labelled) needs no lookup; a prefix is
+    resolved in *project* by the shared resolver and refused when it names nothing or is ambiguous."""
+    from astrid.sdk.media_ids import MediaIdError, resolve_media_id
+
+    if not isinstance(value, str):
+        return value  # validate_plan refuses a non-string id
+    try:
+        return resolve_media_id(client, project, value)
+    except MediaIdError as exc:
+        raise ShotPlanError(exc.message) from exc
+
+
+def canonical_plan_media(client: Any, project: str, plan: Mapping[str, Any]) -> dict[str, Any]:
+    """A copy of *plan* with every media id in ``inputs`` and ``takes`` in canonical ``sha256:`` form."""
+
+    def media(value: Any) -> Any:
+        return _canonical_media(client, project, value)
+
+    out = copy.deepcopy(dict(plan))
+    inputs = out.get("inputs")
+    if isinstance(inputs, Mapping):
+        inputs = dict(inputs)
+        for key in ("references", "masks"):
+            if isinstance(inputs.get(key), list):
+                inputs[key] = [media(item) for item in inputs[key]]
+        voice = inputs.get("voice")
+        if isinstance(voice, Mapping) and isinstance(voice.get("media"), str):
+            inputs["voice"] = {**voice, "media": media(voice["media"])}
+        out["inputs"] = inputs
+    takes = out.get("takes")
+    if isinstance(takes, list):
+        out["takes"] = [
+            {**take, "media": media(take["media"])} if isinstance(take, Mapping) and isinstance(take.get("media"), str) else take
+            for take in takes
+        ]
+    return out
+
+
 def set_plan(client: Any, project: str, timeline: str, shot: str, *, patch: Mapping[str, Any] | None = None,
              replace: bool = False, unset: Sequence[str] = (), add_takes: Sequence[Mapping[str, Any]] = (),
              message: str | None = None, idempotency_key: str | None = None, outbox_path: Any = None):
@@ -419,6 +458,12 @@ def set_plan(client: Any, project: str, timeline: str, shot: str, *, patch: Mapp
     try:
         bundle = _open(client, project, timeline)
         sid = resolve_shot(bundle, shot)
+        # Media ids are written in their canonical form, so every reader sees one spelling.
+        if patch:
+            patch = canonical_plan_media(client, project, patch)
+        add_takes = [{**take, "media": _canonical_media(client, project, take["media"])}
+                     if isinstance(take, Mapping) and isinstance(take.get("media"), str) else take
+                     for take in add_takes]
         # Validate once up front so a bad patch is refused without opening a commit.
         current = read_plan(bundle["shots"][sid])
         preview = merge_plan(current, patch, replace=replace, unset=unset, add_takes=add_takes)

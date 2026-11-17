@@ -3390,6 +3390,7 @@ def _as_timeline_verb(handler):
 
 def _cmd_assets(parsed: argparse.Namespace) -> int:
     """List registry keys, media facts and the clips that use each key."""
+    from astrid.sdk.media_ids import media_id_text
     from astrid.sdk.timeline_checkout import Checkout, find_draft
 
     path = find_draft(parsed.project, parsed.ref, parsed.draft, client=parsed.client)
@@ -3403,7 +3404,9 @@ def _cmd_assets(parsed: argparse.Namespace) -> int:
         return 0
     for row in rows:
         media = row["media"]
-        digest = str(media.get("content_sha256") or media.get("media_id") or "unknown")
+        # Registry rows are canonical when resolve_handle_entry wrote them; some writers and older timelines
+        # keep the bare digest. Every printed media id is the canonical sha256: form.
+        digest = media_id_text(media.get("content_sha256") or media.get("media_id") or "unknown")
         kind = str(media.get("type") or "unknown")
         size = media.get("size_bytes", media.get("size"))
         size_text = f"{size} bytes" if size is not None else str(media.get("resolution") or "size unknown")

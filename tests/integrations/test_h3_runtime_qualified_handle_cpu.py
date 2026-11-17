@@ -154,7 +154,7 @@ def test_existing_digest_from_another_project_is_refused_before_h3_task(
         assert foreign.ok, foreign.to_dict()
         from astrid.sdk.media_handles import MediaHandleError
 
-        with pytest.raises(MediaHandleError, match="not media in project") as caught:
+        with pytest.raises(MediaHandleError, match="no media in project") as caught:
             facade.video(entry="h3", request=str(request_path), project=foreign.data["project_id"],
                          client=client, placement=controls["placement"], wait=True)
         return {"refused": True, "error": str(caught.value)}
@@ -164,5 +164,5 @@ def test_existing_digest_from_another_project_is_refused_before_h3_task(
                     _client, _project_id, provider, result
                 ):
         assert result["refused"] is True
-        assert "not media in project" in result["error"]
+        assert "no media in project" in result["error"]
         assert not provider.generations, "project-scoped handle refusal occurred after machine task admission"
