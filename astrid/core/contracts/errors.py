@@ -19,11 +19,13 @@ from __future__ import annotations
 
 import json
 import re
+import ssl
 import sys
 from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
+from urllib.error import URLError
 
 from astrid.core.audit.util import SECRET_VALUE_RE, redact
 
@@ -235,6 +237,83 @@ def error_from_result(result: object) -> AstridError | None:
     return coerce_astrid_error(inner, state_snapshot=snapshot)
 
 
+TLS_VERIFICATION_CODE = "tls_verification_failed"
+_URL_HOST = re.compile(r"https?://([A-Za-z0-9.-]+|\[[0-9A-Fa-f:]+\])")
+
+
+def _tls_verification_failure(value: BaseException) -> ssl.SSLCertVerificationError | None:
+    """Return the certificate failure found anywhere in *value*'s exception chain.
+
+    Walks ``__cause__``/``__context__`` and ``URLError.reason``, so httpx-style
+    wrappers and urllib's wrapping both resolve to the root TLS error.
+    """
+    pending: list[BaseException] = [value]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, ssl.SSLCertVerificationError):
+            return current
+        if isinstance(current, URLError) and isinstance(current.reason, BaseException):
+            pending.append(current.reason)
+        for linked in (current.__cause__, current.__context__):
+            if isinstance(linked, BaseException):
+                pending.append(linked)
+    return None
+
+
+def _tls_failure_host(value: BaseException) -> str | None:
+    """Best-effort host of the request that failed certificate verification."""
+    pending: list[BaseException] = [value]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        try:
+            url = getattr(getattr(current, "request", None), "url", None)
+        except RuntimeError:  # httpx raises when no request was attached
+            url = None
+        host = getattr(url, "host", None)
+        if isinstance(host, str) and host:
+            return host
+        for linked in (current.__cause__, current.__context__):
+            if isinstance(linked, BaseException):
+                pending.append(linked)
+    match = _URL_HOST.search(str(value))
+    return match.group(1) if match else None
+
+
+def _tls_verification_error(
+    value: BaseException,
+    *,
+    state_snapshot: object | None,
+) -> AstridError:
+    """Structured, non-degraded error for a certificate the computer does not trust."""
+
+    host = _tls_failure_host(value)
+    where = f" to {host}" if host else ""
+    snapshot = build_state_snapshot(getattr(value, "state_snapshot", None))
+    if state_snapshot is not None:
+        snapshot.update(build_state_snapshot(state_snapshot))
+    return AstridError(
+        f"The secure connection{where} could not be verified, most likely because "
+        "a program on this computer (antivirus or a company proxy) is inspecting HTTPS.",
+        recovery_command="allow Astrid through the HTTPS inspection, then retry",
+        state_snapshot=snapshot,
+        code=TLS_VERIFICATION_CODE,
+        fix=(
+            "turn off HTTPS scanning for this host in the antivirus or proxy, or install "
+            "its root certificate in the system certificate store, then retry"
+        ),
+        degraded=False,
+        source_type=type(value).__name__,
+    )
+
+
 def coerce_astrid_error(
     value: object,
     *,
@@ -242,6 +321,11 @@ def coerce_astrid_error(
     degraded: bool = False,
 ) -> AstridError:
     """Normalize exceptions, legacy shapes, and result payloads."""
+
+    if isinstance(value, BaseException) and _tls_verification_failure(value) is not None:
+        # Checked before the AstridError branches: HTTP wrappers keep the TLS cause
+        # chained, and this failure is a machine-trust problem, never a bug.
+        return _tls_verification_error(value, state_snapshot=state_snapshot)
 
     fields = getattr(value, "astrid_error_fields", None)
     if callable(fields) and isinstance(value, Exception) and not isinstance(value, AstridError):
