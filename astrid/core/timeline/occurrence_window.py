@@ -18,16 +18,18 @@ def source_offset_ms(value: Any, *, duration_ms: float | None = None,
                      content_extent_ms: float | None = None) -> float:
     """Return the offset in ms, or raise ValueError when it is not a valid window origin.
 
-    Valid: absent/None (0), or a finite number >= 0 (never clamped); a zero start/end mapping
-    is the legacy spelling of zero. When the content extent is known, a positive offset must
+    Valid: absent/None (0), a finite number >= 0 (never clamped), or the {start, end} mapping whose
+    start is such a number. When the content extent is known, a positive offset must
     leave its window inside that content (offset + duration <= extent).
     """
     if value is None:
         return 0.0
     if isinstance(value, Mapping):
-        if value.get("start", 0) == 0 and value.get("end", 0) == 0:
+        # Stored heads spell it {"start": ms, "end": ms}; "start" is the window origin and "end" is
+        # legacy: it is never read, and a trim leaves it unchanged. (Every stored head has 0/0.)
+        value = value.get("start", value.get("start_ms", 0))
+        if value is None:
             return 0.0
-        raise ValueError("source_offset mapping is not a window origin")
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
         raise ValueError("source_offset must be a finite number of milliseconds")
     if value < 0:

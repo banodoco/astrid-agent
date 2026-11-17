@@ -10,7 +10,7 @@ from astrid.sdk import timeline_intent as intent
 
 from ._command_state import State, equal
 from ._common import AUDIO_KINDS, TIME_RE, TimelineEditError, _length_seconds, _r
-from .capture import move_intent, number, occurrence_origin, occurrence_start, rate
+from .capture import move_intent, number, occurrence_origin, rate
 from .checkout import Checkout
 from .commands import execute
 from .model import Clip, _is_formula_or_moment

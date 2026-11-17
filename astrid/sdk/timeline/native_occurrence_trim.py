@@ -98,7 +98,11 @@ def occurrence_trim(ctx, command):
             ctx.write(owner, ['placement', 'start_ms'], new_start)
         if 'at_ms' in row:
             ctx.write(owner, ['at_ms'], new_start)
-        ctx.write(owner, ['source_offset'], new_offset)
+        # A stored {start, end} mapping stays a mapping: only its start (the window origin) changes.
+        if isinstance(row.get('source_offset'), dict):
+            ctx.write(owner, ['source_offset', 'start'], new_offset)
+        else:
+            ctx.write(owner, ['source_offset'], new_offset)
     ctx.write(owner, ['duration_ms'], new_duration)
 
 

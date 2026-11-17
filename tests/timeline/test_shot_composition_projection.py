@@ -64,7 +64,7 @@ def test_occurrence_timing_is_media_specific_and_matches_shared_projection_vecto
             assert clip["hold"] == pytest.approx(expected["hold"]), clip_id
         assert clip.get("speed") == expected.get("speed"), clip_id
         assert _clip_duration(clip) == pytest.approx(expected["timeline_duration"]), clip_id
-    assert clips["audio-track-inherited"]["app"]["astrid_shot_composition"]["source_offset"] == 350
+    assert clips["audio-track-inherited"]["app"]["astrid_shot_composition"]["source_offset"] == 0
     assert clips["audio-track-inherited"]["app"]["astrid_shot_composition"]["speed"] == 1.5
     assert projected.config["clips"][0] == vectors["parent_clip"]
     tracks = {track["id"]: track for track in projected.config["tracks"]}
@@ -111,8 +111,9 @@ def test_projection_preserves_frames_trim_audio_and_occurrence_placement() -> No
     projected = project_shot_composition(source)
     video = next(item for item in projected.config["clips"] if item["shot_occurrence_id"] == "occ-1" and item["app"]["astrid_shot_composition"]["source_clip_id"] == "alpha-video")
     assert video["at"] == 0
-    assert video["from"] == pytest.approx(2.007)
-    assert video["to"] == pytest.approx(4.007)  # one second of the two-times-speed source remains
+    # 7 ms of shot time are hidden before the window; at child speed 2 that advances the source by 14 ms
+    assert video["from"] == pytest.approx(2.014)
+    assert video["to"] == pytest.approx(4.014)  # one second of the two-times-speed source remains
     assert video["volume"] == 0
     assert video["app"]["astrid_shot_composition"]["source_offset"] == 7
     assert video["app"]["astrid_shot_composition"]["speed"] == 1.5

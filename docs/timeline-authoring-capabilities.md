@@ -33,6 +33,7 @@ authoring-bundle field model:
 | --- | --- |
 | `clip.move` | Move a scoped parent/occurrence clip with explicit timing intent. |
 | `clip.trim` | Change literal source endpoints without recapturing the base. |
+| `occurrence.trim` | Trim one edge of an occurrence window (`edge` start/end, `to_ms`); content stays anchored in timeline time and `source_offset` is the window origin into the shot. |
 | `track.set` | Set or clear a registered track field. |
 | `track.create` | Create a track with a stable caller-supplied identity. |
 | Registered M2 commands | Use only operations listed by the installed command registry/help. |

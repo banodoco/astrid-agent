@@ -149,3 +149,50 @@ def test_an_end_trim_hides_content_without_failing_the_final_validation():
     from astrid.core.timeline.authoring_bundle import AuthoringBundleError
     with pytest.raises(AuthoringBundleError, match='half-open bounds'):  # no baseline: judged in full
         validate_final_candidate(copy.deepcopy(shorter))
+
+
+def test_overrun_check_is_relative_to_the_window_origin():
+    """A start-trimmed shot is not an overrun; a clip that really runs past the window end still is."""
+    from astrid.sdk.timeline_checkout import Checkout
+
+    trimmed = trim(populated(), edge='start', to_ms=12000).bundle   # window [2 s, 6 s] of the shot
+    assert Checkout(copy.deepcopy(trimmed))._length_findings() == {}
+    for clip in trimmed['shots'][row(trimmed)['shot_id']]['internal_timeline']['clips']:
+        if clip['id'] == 'voice-1':
+            continue  # audio is exempt from the overrun rule
+        clip.update(at=5, hold=3)  # ends at shot time 8 s, past the window end at 6 s
+    found = Checkout(copy.deepcopy(trimmed))._length_findings()
+    assert [key[1] for key in found] == ['picture-1']
+
+
+def test_a_stored_mapping_offset_stays_a_mapping():
+    value = populated()
+    value['placements'][0]['source_offset'] = {'start': 0, 'end': 0}
+    after = row(trim(value, edge='start', to_ms=12000).bundle)
+    assert after['source_offset'] == {'start': 2000, 'end': 0}
+
+
+def leaves(value, path=()):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            yield from leaves(child, path + (key,))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            yield from leaves(child, path + (index,))
+    else:
+        yield path, value
+
+
+@pytest.mark.parametrize(('edge', 'to_ms', 'changed'), [
+    ('end', 14000, {('duration_ms',)}),
+    ('start', 12000, {('placement', 'start_ms'), ('source_offset',), ('duration_ms',)}),
+])
+def test_only_the_target_occurrences_trim_fields_change_in_the_whole_document(edge, to_ms, changed):
+    original = populated()
+    original['placements'][0]['at_ms'] = 10000
+    changed = changed | ({('at_ms',)} if edge == 'start' else set())
+    after = trim(original, edge=edge, to_ms=to_ms).bundle
+    before_leaves, after_leaves = dict(leaves(original)), dict(leaves(after))
+    assert before_leaves.keys() == after_leaves.keys()
+    differing = {path for path in before_leaves if before_leaves[path] != after_leaves[path]}
+    assert differing == {('placements', 0) + path for path in changed}

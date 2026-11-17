@@ -1,0 +1,22 @@
+{
+  "description": "source_offset is the window origin into the shot's internal timeline: a child at internal time tau appears at start - offset + tau and is visible only inside [start, start + duration]. Shot A|B|C|D is trimmed at its start edge from 10 s to 12 s (offset 2 s, duration 6 s, end fixed at 18 s). Stored heads spell source_offset as {start, end} in ms; 'start' is the origin and 'end' is legacy and never read. Survey 18 Nov 2026: 0 heads and 0 revisions in the stack copy (17 heads, 54 revisions) and the live realm (7 heads, 9 revisions) hold a nonzero offset, so redefining the projections changes no existing head. Consumers (Agent projection, Runtime visual_seam, Runtime timeline_inspection, App) must reproduce `expected` from `occurrence` and `clips`; times in seconds.",
+  "occurrence": {
+    "occurrence_id": "occ-1",
+    "placement": {"start_ms": 12000, "track": "picture"},
+    "duration_ms": 6000,
+    "source_offset": {"start": 2000, "end": 0},
+    "speed": 1
+  },
+  "clips": [
+    {"id": "A", "track": "picture", "clipType": "media", "asset": "a", "at": 0, "from": 0, "hold": 4},
+    {"id": "B", "track": "picture", "clipType": "media", "asset": "a", "at": 4, "from": 0, "hold": 4},
+    {"id": "C", "track": "picture", "clipType": "media", "asset": "a", "at": 0, "from": 0, "hold": 1.5},
+    {"id": "D", "track": "picture", "clipType": "media", "asset": "a", "at": 7, "from": 0, "hold": 3}
+  ],
+  "expected": [
+    {"id": "A", "at": 12, "hold": 2, "from": 2},
+    {"id": "B", "at": 14, "hold": 4, "from": 0},
+    {"id": "D", "at": 17, "hold": 1, "from": 0}
+  ],
+  "hidden": ["C"]
+}
