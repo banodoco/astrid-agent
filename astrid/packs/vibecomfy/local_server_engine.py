@@ -240,18 +240,27 @@ class PreparedLocalWorkflow:
     provider: Any
 
     def require_current(self, bundle: Any, *, context: Any, url: str) -> None:
-        from vibecomfy.prepared import PreparedWorkflowContext, PreparedWorkflowUnavailable
+        from vibecomfy.prepared import PreparedWorkflowContext, PreparedWorkflowSession, PreparedWorkflowUnavailable
 
         if (type(context) is not PreparedWorkflowContext or
                 bundle.revision_id != self.source_revision or
                 context.target_identity != url or context != self.session.context):
             raise PreparedWorkflowUnavailable("prepared workflow source or target generation changed")
-        self.session.require_target(url)
+        PreparedWorkflowSession.require_target(self.session, url)
+
+    def accepts(self, bundle: Any, bindings: dict[str, Any], *, context: Any,
+                url: str, attempt_id: str) -> bool:
+        from vibecomfy.prepared import PreparedWorkflowSession
+
+        self.require_current(bundle, context=context, url=url)
+        return PreparedWorkflowSession.accepts(self.session, self.handle, bindings, attempt_id=attempt_id)
 
     def fill(self, bundle: Any, bindings: dict[str, Any], *, context: Any,
              url: str, attempt_id: str) -> tuple[Any, Any]:
+        from vibecomfy.prepared import PreparedWorkflowSession
+
         self.require_current(bundle, context=context, url=url)
-        return self.session.fill(self.handle, bindings, attempt_id=attempt_id, context=context)
+        return PreparedWorkflowSession.fill(self.session, self.handle, bindings, attempt_id=attempt_id, context=context)
 
 
 def prepare_local_workflow(bundle: Any, bindings: dict[str, Any], provider: Any, *,
@@ -478,6 +487,10 @@ def run_local_server(
     bundle = _canonical_bundle_value(resolved)
     if prepared_workflow is not None:
         prepared_workflow.require_current(bundle, context=prepared_context, url=url)
+        if not prepared_workflow.accepts(
+                bundle, dict(run_inputs or {}), context=prepared_context, url=url,
+                attempt_id=attempt_identity or task_identity):
+            prepared_workflow = None
     values = _workflow_comfy_configuration(bundle)
     values.update({
         "runtime_root": str(vibecomfy_runtime_root(destination)),

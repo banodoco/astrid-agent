@@ -185,3 +185,51 @@ def test_h3_executable_hooks_keep_the_existing_full_path(monkeypatch):
         raise AssertionError("an executable entry must not be frozen")
     monkeypatch.setattr(engine, "_capture_live_schemas", forbidden)
     assert engine.prepare_local_workflow(None, {}, None, context=None, executable_hooks=True) is None
+
+
+@pytest.mark.parametrize("change", ["additional_input", "omitted_input"])
+def test_unusable_prepared_fill_uses_full_path_before_upload(comfy, tmp_path, monkeypatch, change):
+    from astrid.core.generation.backends import vibecomfy_local_server as backend
+
+    comfy.schema["LoadImage"] = {
+        "input": {"required": {"image": [["server-existing.png"], {"image_upload": True}]}},
+        "output": ["IMAGE", "MASK"], "output_name": ["IMAGE", "MASK"],
+    }
+    bundle = fixture_bundle(media=True)
+    admitted = {"image": "portrait.png"}
+    values = {"image": "portrait.png", "prefix": "fresh/name"}
+    if change == "omitted_input":
+        admitted, values = values, admitted
+    held, context = admit(bundle, admitted, comfy, tmp_path)
+    events = []
+
+    def capture(owner, name, event):
+        original = getattr(owner, name)
+
+        def wrapped(*args, **kwargs):
+            events.append(event)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(owner, name, wrapped)
+
+    capture(engine, "_live_preflight", "full-preflight")
+    capture(engine, "local_server_bundle", "full-bundle")
+    capture(backend, "upload_image", "upload")
+    capture(engine, "_approve_live", "full-approval")
+
+    def incompatible_fill(*_args, **_kwargs):
+        raise AssertionError("an incompatible prepared fill was used after upload")
+
+    monkeypatch.setattr(type(held.session), "fill", incompatible_fill)
+    destination = tmp_path / "attempt" / "outputs"
+    source = destination / "engine-input" / "portrait.png"
+    source.parent.mkdir(parents=True)
+    Image.new("RGB", (16, 16), (20, 30, 40)).save(source)
+    result = run_prepared(bundle, held, context, comfy, destination, values, 0)
+    assert events == ["full-preflight", "full-bundle", "upload", "full-approval"]
+    assert_owned_result(result, destination, comfy, 0)
+    assert len([1 for method, path, _ in comfy.calls if path == "/upload/image"]) == 1
+    assert len(comfy.prompts) == 1
+    assert comfy.prompts[0]["1"]["inputs"]["image"] == "astrid/task-1/uploaded.png"
+    prefix = values.get("prefix", "astrid")
+    assert comfy.prompts[0]["2"]["inputs"]["filename_prefix"] == prefix + "_astrid_attempt-0"
