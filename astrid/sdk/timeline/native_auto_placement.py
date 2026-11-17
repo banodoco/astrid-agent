@@ -47,7 +47,7 @@ from astrid.core.timeline.duration import clip_end_frame, clip_start_frame
 
 from ._command_state import CommandError, State
 from ._recording import Recording
-from .capture import number, occurrence_start, rate
+from .capture import number, occurrence_origin, occurrence_start, rate
 from .native_occurrence_media_commands import capture_occurrence_add_media
 from .native_parent_media_commands import capture_clip_add_media
 from .native_placement_commands import (
@@ -123,7 +123,8 @@ def auto_place_completion(bundle, owner, clip_id, media, *, ownership, verified_
     # Both births re-check this at replay.
     if sum(1 for other in bundle['placements'] if other['shot_id'] == row['shot_id']) != 1:
         raise CommandError('shared authored placement is unsupported', kind='unsupported_ownership', ref=owner)
-    origin = occurrence_start(row)
+    origin = occurrence_origin(row)
+    window = occurrence_start(row)
     home = (row.get('placement') or {}).get('track', row.get('track'))
     fps = rate(state.config('parent').get('output', {}).get('fps'))
     clips = state.collection(owner, 'clip')
@@ -138,7 +139,7 @@ def auto_place_completion(bundle, owner, clip_id, media, *, ownership, verified_
         resolution, consumed = 'fallback-at', []
     else:
         ends = [_end_frame(clip, origin, fps) for clip in clips if clip.get('track') == lane]
-        frame = max(ends, default=math.floor(origin * fps + Fraction(1, 2)))
+        frame = max(ends, default=math.floor(window * fps + Fraction(1, 2)))
         resolution, consumed = 'lane-end', [clip['id'] for clip in clips]
     length = COMPLETION_SECONDS if kind == 'image' or duration is None else duration
     command, on = _birth(bundle, owner, clip_id, media, kind, lane, home, origin, fps, frame, length,
@@ -240,7 +241,8 @@ def auto_place_shared(bundle, owner, clip_id, media, *, ownership, verified_medi
         return {'commands': [command],
                 'capture': {'owner': owner, 'clip': clip_id, 'kind': kind, 'media': dict(media),
                             'resolution': 'pooled'}}
-    origin = occurrence_start(row)
+    origin = occurrence_origin(row)
+    window = occurrence_start(row)
     fps = rate(state.config('parent').get('output', {}).get('fps'))
     clips = state.collection(owner, 'clip')
     found = next((clip for clip in clips if anchor is not None and clip.get('id') == anchor), None)
@@ -252,7 +254,7 @@ def auto_place_shared(bundle, owner, clip_id, media, *, ownership, verified_medi
                'lane': lane, 'consumed': consumed,
                'fps': {'numerator': fps.numerator, 'denominator': fps.denominator}}
     if frame is None:
-        start = max((_end_frame(clip, origin, fps) for clip in clips), default=math.floor(origin * fps + Fraction(1, 2)))
+        start = max((_end_frame(clip, origin, fps) for clip in clips), default=math.floor(window * fps + Fraction(1, 2)))
         capture.update(resolution='append', extent_frame=start)
     else:
         if isinstance(frame, bool) or not isinstance(frame, int):

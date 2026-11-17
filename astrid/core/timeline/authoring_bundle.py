@@ -23,6 +23,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
+from .occurrence_window import source_offset_ms
 from .parent_registry import ParentRegistryError, effective_parent_registry
 from .validators.meta import validate_meta, validate_timeline_meta_locations
 
@@ -826,14 +827,6 @@ def _is_default_speed(value: Any) -> bool:
     return isinstance(value, Mapping) and value.get("numerator") == 1 and value.get("denominator") == 1
 
 
-def _is_default_source_offset(value: Any) -> bool:
-    return value in (None, 0, 0.0, {}) or (
-        isinstance(value, Mapping)
-        and value.get("start", 0) == 0
-        and value.get("end", 0) == 0
-    )
-
-
 def _validate_placement_capabilities(
     placement: Mapping[str, Any], *, path: str, fields: set[str] | None = None
 ) -> None:
@@ -845,8 +838,10 @@ def _validate_placement_capabilities(
     """
 
     if fields is None or "source_offset" in fields:
-        if not _is_default_source_offset(placement.get("source_offset")):
-            raise UnsupportedAuthoringEditError(f"{path}.source_offset requires an internal clip source trim")
+        try:
+            source_offset_ms(placement.get("source_offset"))
+        except ValueError as exc:
+            raise UnsupportedAuthoringEditError(f"{path}.source_offset: {exc}") from exc
     if fields is None or "speed" in fields:
         if not _is_default_speed(placement.get("speed")):
             raise UnsupportedAuthoringEditError(f"{path}.speed requires an explicit clip playback-rate edit")

@@ -18,7 +18,15 @@ from astrid.core.timeline.duration import clip_start_frame
 from ._command_state import CommandError
 from ._delete_commands import _unreferenced
 from ._media_inputs import _verified
-from .capture import _duration, move, move_intent, number, occurrence_start, rate
+from .capture import (
+    _duration,
+    move,
+    move_intent,
+    number,
+    occurrence_offset,
+    occurrence_origin,
+    rate,
+)
 from .native_occurrence_media_commands import _exclusive, _owner, add_media
 
 PLACEMENT_INTENT = {'ownership': 'occurrence'}
@@ -44,6 +52,8 @@ def placement_move(ctx, command):
     move(ctx, command)
     if owner != 'parent':
         extent = number(ctx.read(owner, ['duration_ms']), 'occurrence.duration_ms', positive=True) / 1000
+        # The window ends at source_offset + duration in shot-local time.
+        extent += occurrence_offset(ctx.state.occurrence(owner))
         moved = ctx.state.entity(ref)
         start = moved['at'] if 'at' in moved else moved['at_ms'] / 1000
         if start + _duration(moved) > extent + 1e-9:
@@ -92,7 +102,7 @@ def placement_create(ctx, command):
         raise CommandError('placement requires a referenced lane', kind='unsupported_timing', ref=owner)
     fps = rate(ctx.read('parent', ['config', 'output', 'fps']))
     frame = clip_start_frame({'at': number(args['on'], 'on'), 'hold': 1}, float(fps))
-    at = float(Fraction(frame, 1) / fps) - occurrence_start(row)
+    at = float(Fraction(frame, 1) / fps) - occurrence_origin(row)
     clip = {'id': args['id'], 'clipType': 'image', 'asset': args['media']['asset'], 'track': lane,
             'at': at, 'hold': args['hold']}
     add_media(ctx, {'select': owner, 'args': {'row': clip, 'media': args['media'],

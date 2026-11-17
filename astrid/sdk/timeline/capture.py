@@ -72,6 +72,18 @@ def occurrence_start(row):
                   'occurrence start') / 1000
 
 
+def occurrence_offset(row, *, content_extent_ms=None):
+    """Seconds of shot-local time the occurrence's window starts at (the one rule: _occurrence_window)."""
+    from ._occurrence_window import occurrence_offset_ms
+
+    return occurrence_offset_ms(row, content_extent_ms=content_extent_ms) / 1000
+
+
+def occurrence_origin(row):
+    """Timeline seconds at which shot-local time zero sits: the start less the source offset."""
+    return occurrence_start(row) - occurrence_offset(row)
+
+
 def _duration(clip):
     speed = clip.get('speed')
     if speed is not None:
@@ -183,6 +195,7 @@ def move(ctx, command):
             raise
         raise CommandError(str(exc), kind='unsupported_timing', ref=ref) from exc
     origin = 0.0
+    offset = 0.0
     if owner != 'parent':
         ctx.read(owner, ['occurrence_id'])
         ctx.read(owner + '/shot', ['shot_id'])
@@ -192,11 +205,13 @@ def move(ctx, command):
         for key in ('time_map', 'timeMap'):
             if row.get(key) is not None:
                 raise CommandError(f"unsupported occurrence {key}", kind='unsupported_map', ref=owner)
-        offset, speed = row.get('source_offset'), row.get('speed')
-        if (isinstance(offset, bool) or isinstance(speed, bool)
-                or offset not in (None, 0) or speed not in (None, 1)):
+        speed = row.get('speed')
+        if isinstance(speed, bool) or speed not in (None, 1):
             raise CommandError("clip.move v1 requires a translation-only occurrence map",
                                kind='unsupported_map', ref=owner)
+        # A trimmed window keeps content anchored in timeline time: shot-local zero sits at
+        # start - source_offset. Only a malformed offset is refused here.
+        offset = occurrence_offset(row)
         origin = occurrence_start(row)
         lane = (row.get('placement') or {}).get('track', row.get('track'))
         if isinstance(lane, str):
@@ -214,8 +229,8 @@ def move(ctx, command):
                 next_start = min(next_start, start)
         if float(quantized) + duration > next_start + 1e-9:
             raise CommandError("moved interval crosses the next occurrence", kind='occurrence_boundary', ref=owner)
-    local = float(quantized) - origin
-    if local < 0:
+    local = float(quantized) - origin + offset
+    if local < offset:
         raise CommandError("moved interval precedes its occurrence", kind='occurrence_boundary', ref=owner)
     _provenance(ctx, owner)
     ctx.bind('move.target', ref, dependencies=['move.images', 'move.quantization', *source_dependencies])

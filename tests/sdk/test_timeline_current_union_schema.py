@@ -147,13 +147,14 @@ def without_inverse_steps(schema):
 def s2_slice():
     candidate = without_text(without_doc_patch(without_inverse_steps(_SCHEMA)))
     for definition in ('WordAnchor', 'ClipAnchorArgs', 'TimelineInitArgs',
-                       'AssembledTargetArgs', 'ClipAddMediaArgs', 'OccurrenceCreateArgs'):
+                       'AssembledTargetArgs', 'ClipAddMediaArgs', 'OccurrenceCreateArgs',
+                       'OccurrenceTrimArgs'):
         del candidate['$defs'][definition]
     candidate['$defs']['EditCommand']['allOf'] = [
         item for item in candidate['$defs']['EditCommand']['allOf']
         if item['if']['properties']['op']['const'] not in
         ('clip.anchor', 'timeline.init', 'timeline.assembled-target', 'clip.add-media',
-         'occurrence.create', 'clip.swap-media')]
+         'occurrence.create', 'occurrence.trim', 'clip.swap-media')]
     previous = baseline('agent-frozen-s2-26ef2bbb')
     assert candidate['$defs']['Intent']['properties']['ownership']['enum'].pop() == 'parent'
     candidate['$defs']['ClipSetArgs']['description'] = previous['$defs']['ClipSetArgs']['description']
@@ -180,8 +181,8 @@ def test_inverse_steps_is_exactly_the_new_optional_shape():
 
 def test_next_successor_is_exactly_complete_frozen_s2_plus_reviewed_additions():
     assert s2_slice() == baseline('agent-frozen-s2-26ef2bbb')
-    assert len(_SCHEMA['$defs']) == 58
-    assert len(_SCHEMA['$defs']['EditCommand']['allOf']) == 30
+    assert len(_SCHEMA['$defs']) == 59
+    assert len(_SCHEMA['$defs']['EditCommand']['allOf']) == 31
 
 
 def test_each_added_definition_and_operation_matches_its_approved_source():
@@ -189,6 +190,7 @@ def test_each_added_definition_and_operation_matches_its_approved_source():
     conditions = {item['if']['properties']['op']['const']: item
                   for item in _SCHEMA['$defs']['EditCommand']['allOf']}
     additions['text'] = json.loads((FIXTURES / 'text-command-additions.json').read_text())
+    additions['trim'] = json.loads((FIXTURES / 'occurrence-trim-additions.json').read_text())
     for source in additions.values():
         for name, value in source['definitions'].items():
             assert _SCHEMA['$defs'][name] == value
@@ -231,13 +233,13 @@ def test_closed_union_operation_inventory_is_exactly_the_supported_cohort():
     expected = {'doc.patch', 'text-binding.set', 'clip.swap-media', 'occurrence.create', 'clip.add', 'clip.add-media', 'clip.anchor', 'clip.delete', 'clip.move',
                 'clip.set', 'clip.set-element', 'clip.set-params', 'clip.split', 'clip.trim',
                 'occurrence.add-media', 'occurrence.delete', 'occurrence.duplicate',
-                'occurrence.swap-media', 'placement.create', 'placement.move',
+                'occurrence.swap-media', 'occurrence.trim', 'placement.create', 'placement.move',
                 'placement.unplace', 'producer.guard', 'shot.pool', 'shot.set',
                 'timeline.assembled-target', 'timeline.init', 'timeline.inverse',
                 'timeline.restore', 'track.create', 'track.set'}
     actual = [item['if']['properties']['op']['const']
               for item in _SCHEMA['$defs']['EditCommand']['allOf']]
-    assert len(actual) == len(set(actual)) == 30
+    assert len(actual) == len(set(actual)) == 31
     # These approved provider commands have no frozen wire-schema tuple; the
     # closed union remains exactly the 30 published tuples below.
     provider_only = {'media.admit', 'occurrence.fork', 'occurrence.place-shared',

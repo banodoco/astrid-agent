@@ -1,0 +1,16 @@
+{
+  "command": {
+    "schema_version": 1,
+    "op": "occurrence.trim",
+    "version": "1",
+    "select": "occurrence:occ-1",
+    "args": {
+      "occurrence_id": "occ-1",
+      "edge": "start",
+      "to_ms": 12000
+    },
+    "intent": {
+      "ownership": "occurrence"
+    }
+  }
+}

@@ -9,6 +9,7 @@ from typing import Any
 
 from astrid.core.timeline import moments as mo
 from astrid.core.timeline.authoring_bundle import _digest
+from astrid.core.timeline.occurrence_window import source_offset_ms
 from astrid.sdk import timeline_intent as intent
 from astrid.sdk.media_transcript import SCHEMA, transcript_document_id
 from astrid.sdk.timeline._common import TimelineEditError
@@ -297,8 +298,12 @@ def evaluate(bundle, sources, bindings, policy, legacy_declarations=()):
         placement = row.get("placement") or {}
         for value in (row, placement):
             _maps(value, occurrence)
-            if value.get("speed") not in (None, 1) or value.get("source_offset") not in (None, 0):
+            if value.get("speed") not in (None, 1):
                 raise TimingCompileError("placement source map requires the canonical authoring adapter")
+            try:
+                source_offset_ms(value.get("source_offset"))
+            except ValueError as exc:
+                raise TimingCompileError(str(exc)) from exc
         start_ms = placement.get("start_ms", row.get("at_ms", 0))
         if row.get("at_ms") is not None and _timing_number(row["at_ms"]) != _timing_number(start_ms):
             raise TimingCompileError("contradictory placement starts")
@@ -309,11 +314,13 @@ def evaluate(bundle, sources, bindings, policy, legacy_declarations=()):
         placement_ends.append(offset + length)
         occurrence_intervals[occurrence] = (offset, offset + length)
         internal = bundle["shots"][sid]["internal_timeline"]
+        shot_origin = _timing_number(source_offset_ms(row.get("source_offset"))) / 1000
         for clip in internal.get("clips", []):
             owner = (occurrence, sid, clip["id"])
             if owner in clips:
                 raise TimingCompileError(f"duplicate clip owner {owner}")
-            clips[owner], offsets[owner], internals[owner] = clip, offset, internal
+            # Shot-local zero sits at start - source_offset; the window itself is [start, start + length].
+            clips[owner], offsets[owner], internals[owner] = clip, offset - shot_origin, internal
     parent = bundle.get("parent") or {}
     for clip in parent.get("clips", []):
         owner = ("parent", "", clip["id"])

@@ -52,6 +52,7 @@ def operations():
     )
     from .native_occurrence_shared import PARAMETERS as SHARED_PARAMETERS
     from .native_occurrence_shared import occurrence_place_shared
+    from .native_occurrence_trim import occurrence_trim
     from .native_parent_media_commands import (
         DUPLICATE_MEDIA_PARAMETERS,
         assembled_target,
@@ -81,6 +82,8 @@ def operations():
             'clip.anchor': Operation(_SCHEMA['$defs']['ClipAnchorArgs'], declare, {'anchor': 'follow'}, True),
             'occurrence.create': Operation(_SCHEMA['$defs']['OccurrenceCreateArgs'], occurrence_create,
                                           OCCURRENCE_INTENT),
+            'occurrence.trim': Operation(_SCHEMA['$defs']['OccurrenceTrimArgs'], occurrence_trim,
+                                         OCCURRENCE_INTENT, True),
             'clip.move': Operation(_SCHEMA['$defs']['ClipMoveArgs'], move, MOVE_INTENT, True),
             'placement.move': Operation(_SCHEMA['$defs']['ClipMoveArgs'], placement_move, MOVE_INTENT, True),
             'occurrence.delete': Operation(_SCHEMA['$defs']['OccurrenceDeleteArgs'], occurrence_delete, OCCURRENCE_INTENT, True),

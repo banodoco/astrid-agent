@@ -7,7 +7,7 @@ import re
 from ._command_state import ABSENT, CommandError, equal
 from ._media_inputs import _verified
 from ._recording import active
-from .capture import MAP_FIELDS, RELATIONS, number, occurrence_start, rate
+from .capture import MAP_FIELDS, RELATIONS, number, occurrence_offset, occurrence_start, rate
 
 MEDIA_INTENT = {'ownership': 'occurrence'}
 
@@ -24,8 +24,9 @@ def _owner(ctx, ref, *, child=False):
         ctx.read(owner, path)
     row = ctx.state.occurrence(owner)
     occurrence_start(row)
-    if (not active(row) or isinstance(row.get('source_offset'), bool) or isinstance(row.get('speed'), bool)
-            or row.get('source_offset') not in (None, 0)
+    # A trimmed window (source_offset >= 0) is supported; a malformed offset is refused here.
+    offset = occurrence_offset(row)
+    if (not active(row) or isinstance(row.get('speed'), bool)
             or row.get('speed') not in (None, 1)
             or any(row.get(key) is not None for key in ('time_map', 'timeMap'))):
         raise CommandError('media edit requires an active translation-only occurrence', kind='unsupported_map')
@@ -36,7 +37,7 @@ def _owner(ctx, ref, *, child=False):
     if ctx.read(owner + '/source', ['source_window']) is not None:
         raise CommandError('internal source_window is unsupported', kind='unsupported_map')
     ctx.bind('media.owner', owner)
-    return owner, row['duration_ms'] / 1000
+    return owner, row['duration_ms'] / 1000 + offset
 
 
 def _exclusive(ctx, owner):

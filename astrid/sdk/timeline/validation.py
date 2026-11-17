@@ -350,8 +350,6 @@ def _validate_clip_list(
     registry: Mapping[str, Any],
     bound: Fraction | None = None,
     baseline: Mapping[str, Any] | None = None,
-    baseline_bound: Fraction | None = None,
-
 ) -> dict[str, Mapping[str, Any]]:
     if not isinstance(registry, Mapping):
         _fail(f"{path.rsplit('.', 1)[0]}.registry", "must be an object")
@@ -372,9 +370,10 @@ def _validate_clip_list(
                 _fail(f"{clip_path}.track", "must reference an existing track")
         timing_changed = not _same_fields(
             clip, prior, ("at", "at_ms", "from", "to", "hold", "duration", "speed"))
-        # D12a checks the interval when its declaration or occurrence bound is
-        # written. An unrelated edit preserves an existing overrun verbatim.
-        if timing_changed or bound != baseline_bound:
+        # D12a checks the interval when its declaration is written (always, without a baseline).
+        # An unrelated edit preserves an existing overrun verbatim, and so does a trim of the
+        # occurrence's window: content past the window's end is hidden, not rewritten.
+        if timing_changed:
             start, duration = _clip_duration(clip, clip_path)
             if bound is not None and start + duration > bound:
                 _fail(clip_path, "timeline interval must fit the occurrence's half-open bounds")
@@ -759,6 +758,10 @@ def validate_final_candidate(
         start = _validation_number(start_ms, f"candidate.placements[{occurrence_id!r}].placement.start_ms") / 1000
         if start < 0:
             _fail(f"candidate.placements[{occurrence_id!r}].placement.start_ms", "must not be negative")
+        # The window ends at source_offset + duration in shot-local time (offset 0 unless trimmed).
+        offset_ms = placement.get("source_offset")
+        if isinstance(offset_ms, (int, float)) and not isinstance(offset_ms, bool) and offset_ms > 0:
+            duration_ms += _validation_number(offset_ms, f"candidate.placements[{occurrence_id!r}].source_offset")
         bound = duration_ms / 1000
         shot_value: Any = shots[shot_id]
         internal_value = shot_value.get("internal_timeline") if isinstance(shot_value, Mapping) else None
@@ -777,12 +780,10 @@ def validate_final_candidate(
                 or not _same_fields(placement, previous_placement, ("shot_id",))
                 or not _same_fields(candidate, baseline, ("project_id", "timeline_id"))):
             baseline_internal = {}
-        previous_bound = (bound if baseline_internal and _same_fields(
-            placement, previous_placement, ("duration_ms",)) else None)
         child_clips = _validate_clip_list(
             child_config.get("clips", []), path=f"candidate.shots[{shot_id!r}].internal_timeline.clips",
             tracks=child_tracks, registry=child_config.get("registry", {}), bound=bound,
-            baseline=baseline_internal, baseline_bound=previous_bound,
+            baseline=baseline_internal,
         )
         before_child = _identity_rows(baseline_internal.get("clips", []), "baseline.clips", "id") if isinstance(baseline_internal, Mapping) and isinstance(baseline_internal.get("clips"), list) else {}
         for clip_id, clip in child_clips.items():

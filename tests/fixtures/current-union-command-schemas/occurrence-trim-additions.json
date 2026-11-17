@@ -1,0 +1,68 @@
+{
+  "definitions": {
+    "OccurrenceTrimArgs": {
+      "type": "object",
+      "required": [
+        "occurrence_id",
+        "edge",
+        "to_ms"
+      ],
+      "properties": {
+        "occurrence_id": {
+          "type": "string",
+          "pattern": "^(?!.*::)(?=.*\\S)[^/]+$"
+        },
+        "edge": {
+          "enum": [
+            "start",
+            "end"
+          ],
+          "description": "Which edge of the occurrence window moves; the other edge and the content's timeline position stay fixed."
+        },
+        "to_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "New absolute timeline position of that edge in milliseconds."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "operations": {
+    "occurrence.trim": {
+      "if": {
+        "properties": {
+          "op": {
+            "const": "occurrence.trim"
+          }
+        },
+        "required": [
+          "op"
+        ]
+      },
+      "then": {
+        "properties": {
+          "version": {
+            "const": "1"
+          },
+          "select": {
+            "type": "string",
+            "pattern": "^occurrence:(?!.*::)[^/]+$"
+          },
+          "args": {
+            "$ref": "#/$defs/OccurrenceTrimArgs"
+          },
+          "intent": {
+            "type": "object",
+            "properties": {
+              "ownership": {
+                "const": "occurrence"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      }
+    }
+  }
+}

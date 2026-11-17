@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .duration import clip_timeline_duration
+from .occurrence_window import source_offset_ms
 from .asset_dimensions import canonicalize_asset_dimensions
 from .shot_composition import validate_shot_composition
 from .validators.meta import validate_meta, validate_timeline_meta_locations
@@ -211,10 +212,14 @@ def _audio_clip(
 
 
 def _source_offset_seconds(occurrence: Mapping[str, Any], *, path: str) -> float:
+    """The window origin into the shot's timeline, in seconds (the one rule: occurrence_window)."""
     value = occurrence.get("source_offset", occurrence.get("source_offset_ms", 0))
     if isinstance(value, Mapping):
         value = value.get("start", value.get("start_ms", 0))
-    return _number(value, f"{path}.source_offset") / 1000.0
+    try:
+        return source_offset_ms(value) / 1000.0
+    except ValueError as exc:
+        raise ShotCompositionProjectionError(f"{path}.source_offset: {exc}") from exc
 
 
 def _placement_speed(value: Any, *, path: str) -> float:
@@ -447,25 +452,27 @@ def _project_clip(
     if effective_speed <= 0:
         raise ShotCompositionProjectionError(f"{path}.speed must be positive")
     source_duration = _duration({**clip, "speed": effective_speed}, path=path)
-    absolute_at = occurrence_start + relative_at
+    # source_offset is the window origin into the shot's timeline: a child at internal time tau
+    # sits at start - offset + tau and is visible only inside [start, end] (offset 0: unchanged).
+    origin = occurrence_start - _source_offset_seconds(occurrence, path=path)
+    absolute_at = origin + relative_at
     absolute_end = absolute_at + source_duration
     if absolute_at >= occurrence_end or absolute_end <= occurrence_start:
         return None
+    visible_start = max(absolute_at, occurrence_start)
     clipped_end = min(absolute_end, occurrence_end)
-    visible_duration = max(0.0, clipped_end - absolute_at)
+    visible_duration = max(0.0, clipped_end - visible_start)
     if visible_duration <= 0:
         return None
-    source_from = _number(clip.get("from", 0), f"{path}.from", default=0.0)
+    cut = visible_start - absolute_at  # shot time hidden before the window
+    source_from = _number(clip.get("from", 0), f"{path}.from", default=0.0) + cut * effective_speed
     if "hold" in clip:
         clip["hold"] = visible_duration * effective_speed
     elif "to" in clip:
         clip["to"] = source_from + visible_duration * effective_speed
-    clip["at"] = absolute_at
-    source_offset = 0.0 if is_audio else _source_offset_seconds(occurrence, path=path)
-    if "from" in clip or "to" in clip or source_offset:
-        clip["from"] = source_from + source_offset
-    if "to" in clip:
-        clip["to"] += source_offset
+    clip["at"] = visible_start
+    if "from" in clip or "to" in clip or (cut > 0 and clip.get("clipType") != "image"):
+        clip["from"] = source_from
     if authored_child_speed is not None:
         clip["speed"] = effective_speed
     elif not is_audio and effective_speed != 1:

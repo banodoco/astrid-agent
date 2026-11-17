@@ -176,15 +176,15 @@ def test_complete_s2_schema_is_retained_additively():
 
     # The frozen S2 slice is retained inside the current schema, which also
     # carries the approved doc.patch and per-step inverse additions.
-    assert len(schema['$defs']) == 58
+    assert len(schema['$defs']) == 59
     schema = without_inverse_steps(without_doc_patch(without_text(schema)))
     for name in ('AssembledTargetArgs', 'ClipAddMediaArgs', 'WordAnchor', 'ClipAnchorArgs',
-                 'OccurrenceCreateArgs'):
+                 'OccurrenceCreateArgs', 'OccurrenceTrimArgs'):
         del schema['$defs'][name]
     del schema['$defs']['TimelineInitArgs']
     conditions = schema['$defs']['EditCommand']['allOf']
     added = {'timeline.init', 'timeline.assembled-target', 'clip.add-media', 'clip.anchor',
-             'occurrence.create', 'clip.swap-media'}
+             'occurrence.create', 'occurrence.trim', 'clip.swap-media'}
     assert {item['if']['properties']['op']['const'] for item in conditions} >= added
     conditions[:] = [item for item in conditions
                      if item['if']['properties']['op']['const'] not in added]
