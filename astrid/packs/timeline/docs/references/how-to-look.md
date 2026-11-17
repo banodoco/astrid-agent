@@ -15,8 +15,13 @@ asks for a render or a file.
 - **After a correction**, at the same moments again.
 - **Before you answer** "does it look right?" or say the work is done.
 
-Each run prints the path of the page it drew. Open that image and look at it;
-a page you did not open is not a look. (`timelines check --at` and `--sweep`
+Each run prints the path of the page it drew as its last line (`page: …`), a
+stable copy named by timeline, view and time (for example
+`…/timeline-visualize/<project>/pages/rough-cut-c2/frame-14.00s.png`); the
+hash-named folder beside it is the cache. Open that image and look at it; a page
+you did not open is not a look. The `next:` commands under it are copyable as
+printed. If it says it waited for the Runtime, another task held the capture
+first; nothing was lost. (`timelines check --at` and `--sweep`
 compare a detached working copy with the published timeline; after a commit,
 use `visualize` as below.)
 
@@ -26,8 +31,11 @@ Look at a named revision so you know what you saw. In `timelines history
 <timeline> --project <project> --json`, the row whose `publication_id` is your
 receipt has your revision as `id` and the one before it as `parent`. Pass it
 with `--revision-id` when you need to pin the view. Without it, `visualize`
-defaults to the published revision. The result prints the revision it drew; if
-it says `revision unavailable`, say so rather than guess. In your report, give
+defaults to the published revision. `--revision-id` takes the full id or the
+8-character short id that pages and `timelines history` print. The result prints
+the revision it drew; if it says `revision unavailable`, say so rather than guess.
+Page headers show the short id; the full id and the capture source are in the
+findings (`REVISION`, `SOURCE`) and the JSON. In your report, give
 the revision, the moments you looked at and what you saw.
 
 ## Point at a moment
@@ -53,6 +61,17 @@ a settled frame from each:
 python3 -m astrid timelines visualize <timeline> --project <project> --preset overview
 python3 -m astrid timelines visualize <timeline> --project <project> --preset overview --cuts 121,122,123
 ```
+
+The header gives the timeline's name, length, cuts, shots and short revision.
+Each tile reads `cut N` and its time (the number `timelines show` prints and
+`--cut` takes), the shot's own name, and the words under it: `no voice under
+this cut` when no VO clip plays there, `no words stored` when one does but its
+words are not stored yet (`timelines transcripts run`). `--shot-plans` also
+writes each shot's plan (methods · status · takes) on its tiles. The audio lane
+under the shot band draws music up, voice down and sfx; a red box marks silence
+only where a line is placed or planned (a VO clip, a shot script or a plan
+line), so an intended silence such as a logo opening is not flagged. Grey
+hatching is audio that could not be read; it is not called silent.
 
 Tiles are small and a settled frame usually misses transitions, entrances and
 exits. One page holds at most 120 cuts; for a longer film, page through the
@@ -101,7 +120,19 @@ python3 -m astrid timelines visualize <timeline> --project <project> --at 12.5 -
 ```
 
 `--at` a time gives one 1280x720 frame. When text is small or placement is close to
-an edge, capture at the output size with `--size`. `--highlight` outlines one
+an edge, capture at the output size with `--size`. For a detail (lenses, a
+mouth, a 1-px outline) add `--region X,Y,W,H` (canvas px) or `--zoom <layer>`:
+the frame is captured at the canvas size and the box is drawn at source
+resolution, with a thumbnail showing where it sits:
+
+```bash
+python3 -m astrid timelines visualize <timeline> --project <project> --at 14 --region 300,0,1200,450
+python3 -m astrid timelines visualize <timeline> --project <project> --at 'c08 +2f' --zoom c08.app
+```
+
+From a frame view, `previous frame` / `next frame` step one frame; from a
+window, `shorter time window` and `longer time window` change the time span
+(never the picture size). `--highlight` outlines one
 layer and, like `--layer bounds`, draws the title-safe and action-safe
 margins. An entrance can be invisible on its first frame; look two frames in.
 

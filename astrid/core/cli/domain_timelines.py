@@ -1072,6 +1072,11 @@ def _visualize_add_visualize_flags(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--shot-plans", dest="shot_plans", action="store_true", default=False,
                            help="Label each shot with its plan (metadata.plan): method codes, status, takes and "
                                 "line, under the picture's summary (see timelines shots plan).")
+    subparser.add_argument("--region", default=None, metavar="X,Y,W,H",
+                           help="With --at: also draw this canvas-px rectangle of the frame at source resolution "
+                                "(e.g. the lenses, a mouth); the frame is captured at the canvas size.")
+    subparser.add_argument("--zoom", default=None, metavar="LAYER",
+                           help="With --at: like --region, around this layer's box at that moment (c08.app).")
     subparser.add_argument("--no-rules", dest="no_rules", action="store_true",
                            help="motion view: ignore astrid-lint.toml.")
     subparser.add_argument("--render-every", dest="render_every", type=float, default=None,

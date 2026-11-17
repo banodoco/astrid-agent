@@ -3689,6 +3689,9 @@
             "--range": {
               "required": false
             },
+            "--region": {
+              "required": false
+            },
             "--render-every": {
               "required": false
             },
@@ -3745,6 +3748,9 @@
               "required": false
             },
             "--window": {
+              "required": false
+            },
+            "--zoom": {
               "required": false
             }
           },
