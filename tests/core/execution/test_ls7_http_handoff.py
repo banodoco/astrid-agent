@@ -22,6 +22,38 @@ from tests.test_generic_host import _write_manifest
 from tests.test_generic_host_result_json import _success_boundary
 
 
+@pytest.mark.parametrize("cached_epoch", [None, 999])
+def test_private_serving_slot_wait_uses_live_epoch(tmp_path, real_runtime, cached_epoch):
+    """A fresh/fenced slot must reach the real wait before its first claim."""
+    _write_manifest(tmp_path / "pack")
+    daemon = real_runtime()
+    worker_id = "ls7-slot-host"
+    token, _ = daemon.credentials.provision(worker_id, [
+        "handshake", "worker:register", "worker:execute", "tasks:read",
+    ])
+    transport = RuntimeProtocolClient(daemon.endpoint, token)
+    host = GenericPackHost(pack_roots=[tmp_path / "pack"], client=transport,
+                           executor_id=worker_id, max_concurrency=2,
+                           attempt_base=tmp_path / "attempts")
+    slot = None
+    try:
+        host.discover()
+        host.register()
+        slot = transport.fork_for_host_slot()
+        slot._runtime_epoch = cached_epoch
+        assert slot.supports_task_waits()
+        observed = slot.wait_for_work(executor_id=worker_id, capability_ids=["test.echo"], timeout_seconds=0)
+        assert observed["available"] is False
+        assert observed["runtime_epoch"] == daemon.service._runtime_state["runtime_epoch"]
+        assert daemon.service.store.conn.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 0
+        assert daemon.service.store.conn.execute("SELECT COUNT(*) FROM command_idempotency WHERE command_kind='task.claim'").fetchone()[0] == 0
+    finally:
+        if slot is not None:
+            slot.cancel_waits()
+        host.shutdown()
+        daemon.stop()
+
+
 @pytest.mark.parametrize("lose_result_response", [False, True])
 def test_registered_thin_request_wakes_host_and_sdk_without_extra_commit(tmp_path, monkeypatch, real_runtime, lose_result_response):
     path = _write_manifest(tmp_path / "pack")

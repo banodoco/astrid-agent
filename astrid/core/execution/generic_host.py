@@ -5737,8 +5737,12 @@ class RuntimeProtocolClient:
         return "task_resolution.v1" in capabilities
 
     def wait_for_work(self, *, executor_id: str, capability_ids: list[str], timeout_seconds: float, target=None):
+        # A private serving-slot transport may not have claimed yet, and a
+        # retained idle cache may precede a Runtime restart. Read the live
+        # bootstrap epoch as claim_next does; attempt fences stay separate.
+        epoch = self._current_runtime_epoch()
         return self.generated.wait_for_work(executor_id=executor_id, capability_ids=capability_ids,
-            runtime_epoch=int(self._runtime_epoch), target=target, timeout_seconds=timeout_seconds)
+            runtime_epoch=epoch, target=target, timeout_seconds=timeout_seconds)
 
     def new_task_observer(self):
         observer = type(self.generated)(self.endpoint, self.credential, timeout=self.timeout)
