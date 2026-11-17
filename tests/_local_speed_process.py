@@ -27,6 +27,8 @@ MARKER = "# PLAN55_OBSERVER_INSTALLED_AFTER_ADMISSION"
 MAX_EVENTS = 100000
 MAX_REPORT_BYTES = 16384
 WAIT_KINDS = ("event_wait", "condition_wait", "asyncio_sleep", "selector_wait")
+RUNTIME_WRITE_CONTEXTS = ("background_lifetime_reaper", "http_lifetime_reap",
+                          "http_heartbeat", "http_request", "unattributed_runtime")
 PACK_MODULE = "astrid.packs.vibecomfy.actions.run.run"
 _UNSEEN = object()
 
@@ -150,6 +152,8 @@ class ProcessObserver:
         self.context = threading.local()
         self.runtime_connection = None
         self.runtime_commit_code = None
+        self.runtime_background_code = self.runtime_background_owner = None
+        self.runtime_reap_code = self.runtime_reap_owner = None
         self.commit_starts = {}
         self.wait_ids = itertools.count()
 
@@ -209,9 +213,27 @@ class ProcessObserver:
                 return result
         self.patches.setattr(asyncio, "sleep", async_sleep)
 
-    @staticmethod
-    def _write_origin(frame):
+    def runtime_write_context(self, frame):
+        """A missing HTTP route is not evidence of autonomous background work."""
+        reap = False
+        while frame is not None:
+            if (frame.f_code is self.runtime_background_code and
+                    frame.f_locals.get("self") is self.runtime_background_owner):
+                return "background_lifetime_reaper"
+            if (frame.f_code is self.runtime_reap_code and
+                    frame.f_locals.get("self") is self.runtime_reap_owner):
+                reap = True
+            frame = frame.f_back
+        route = getattr(self.context, "route", None)
+        if route:
+            if reap:
+                return "http_lifetime_reap"
+            return "http_heartbeat" if route.endswith("/heartbeat") else "http_request"
+        return "unattributed_runtime"
+
+    def _write_origin(self, frame):
         """Classify observed stack ancestry, never assume unmatched is background."""
+        context = self.runtime_write_context(frame)
         names = []
         while frame is not None:
             filename = frame.f_code.co_filename.replace("\\", "/")
@@ -226,7 +248,15 @@ class ProcessObserver:
             return "vibecomfy_evidence"
         if any("/astrid/core/generation/delivery.py" in f for f, _ in names):
             return "caller_delivery"
-        if any("/runtime_protocol/" in f and any(word in n for word in ("heartbeat", "maintenance", "reclaim")) for f, n in names):
+        # Agent callers also use Runtime's shared dirfd/platform helpers. The
+        # filesystem shim does not make their evidence a Runtime-server write.
+        if any("/astrid/core/execution/" in f for f, _ in names):
+            return "agent_host_evidence"
+        if any("/astrid/sdk/" in f for f, _ in names):
+            return "agent_sdk_evidence"
+        if any("/astrid/" in f for f, _ in names):
+            return "agent_other"
+        if context == "background_lifetime_reaper":
             return "runtime_background"
         if any("/runtime_protocol/" in f for f, _ in names):
             return "runtime_other"
@@ -240,7 +270,9 @@ class ProcessObserver:
                 continue
 
             def sync(fd, _original=original, _name=name):
-                origin = owner._write_origin(sys._getframe(1))
+                frame = sys._getframe(1)
+                origin = owner._write_origin(frame)
+                context = owner.runtime_write_context(frame) if origin.startswith("runtime_") else origin
                 started = time.time_ns()
                 success = False
                 try:
@@ -249,6 +281,7 @@ class ProcessObserver:
                     return result
                 finally:
                     owner.event("application_sync", operation=_name, origin=origin,
+                                write_context=context,
                                 route=getattr(owner.context, "route", None),
                                 epoch_start_ns=started, epoch_end_ns=time.time_ns(), success=success)
             self.patches.setattr(os, name, sync)
@@ -296,6 +329,7 @@ class ProcessObserver:
                     started = self.commit_starts.pop(tid)
                     self.event("runtime_outer_commit_" + ("success" if event == "c_return" else "error"),
                                epoch_start_ns=started, epoch_end_ns=time.time_ns(),
+                               write_context=self.runtime_write_context(frame),
                                route=getattr(self.context, "route", None))
         if self.chain_profiles:
             previous = self.previous_profile if threading.get_ident() == self.start_thread else self.previous_thread_profile

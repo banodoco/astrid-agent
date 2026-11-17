@@ -33,7 +33,8 @@ from tests.integrations.local_speed_sources import tuple_sources  # noqa: F401
 from tests.integrations.test_runpod_slot_path_cpu import _drive
 from tests.integrations.test_workflow_file_placements_cpu import INPUTS, _workflow_file
 
-pytestmark = [pytest.mark.integration, pytest.mark.timeout(600)]
+pytestmark = [pytest.mark.integration, pytest.mark.timeout(600),
+              pytest.mark.filterwarnings("error::pytest.PytestUnhandledThreadExceptionWarning")]
 
 
 def sample_indices():
@@ -364,6 +365,8 @@ def test_attached_caller_observation(
             report["sqlite"] = {"before": meter.sqlite_before, "after": meter.sqlite_after,
                                 "database": meter.runtime.database}
             report["write_spans"] = [dict(span, pid=row["pid"]) for row in rows for span in row.get("write_spans", [])]
+            report["write_spans"].extend(meter.runtime.write_context_spans(
+                meter.start_ns, meter.reply_ns, meter.wall_reply_ns))
             report["output_hash_streams"] = sum(row.get("output_hash_streams", 0) for row in rows)
             report["output_hash_bytes"] = sum(row.get("output_hash_bytes", 0) for row in rows)
             report["native_flushes"] = None

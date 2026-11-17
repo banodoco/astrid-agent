@@ -42,6 +42,14 @@ proof continues to require two succeeded Runtime records and verified delivery.
 Forced-write evidence reports effective SQLite settings before and after the
 call, successful outer commits separately from attempted COMMIT statements,
 application sync origins and Runtime routes, and platform write-through calls.
+The autonomous lifetime reaper is identified by its exact server/code owner;
+HTTP-triggered reaping and heartbeat/progress commits remain separate contexts.
+Native writes carry both an operation category and a request/background
+context, including WAL or checkpoint work outside an observed commit call.
+An absent request route is not evidence of background work. A Runtime commit
+or native write without a recognized context cannot qualify the gate.
+Agent host/SDK evidence retains its producer identity when it uses Runtime's
+shared filesystem helper; the helper alone does not make it a server write.
 Linux native tracing retains descriptor paths and matches actual syncs to
 observed application/commit spans. WAL-file syncs during a commit, WAL syncs
 outside a commit and database/checkpoint syncs remain distinct measured facts;

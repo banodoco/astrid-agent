@@ -9,7 +9,7 @@ import sys
 import threading
 import time
 
-from tests._local_speed_runtime import request_path
+from tests._local_speed_runtime import RuntimeObserver, request_path
 from tests.core.generation.test_local_speed_process_observer import observer
 
 
@@ -26,6 +26,102 @@ def test_event_wait_loop_is_counted_once_without_its_internal_condition():
     assert row["counts"]["event_wait_attempt"] == 8
     assert row["counts"]["event_wait_success"] == 8
     assert row["counts"].get("condition_wait_attempt", 0) == 0
+
+
+def test_commit_origin_requires_the_observed_background_owner_and_preserves_http_work():
+    connection, meter = sqlite3.connect(":memory:"), observer()
+    connection.execute("CREATE TABLE proof (value INTEGER)")
+    meter.runtime_connection = connection
+
+    def commit():
+        connection.execute("INSERT INTO proof VALUES (1)")
+        connection.commit()
+
+    class Server:
+        def reap(self):
+            commit()
+
+    class Store:
+        def reap(self):
+            commit()
+
+    server, store = Server(), Store()
+    meter.runtime_background_code, meter.runtime_background_owner = Server.reap.__code__, server
+    meter.runtime_reap_code, meter.runtime_reap_owner = Store.reap.__code__, store
+    meter.start()
+    try:
+        server.reap()
+        Server().reap()  # Same code from another server is not our background work.
+        meter.context.route = "GET /v1/tasks/<task>"
+        store.reap()
+        meter.context.route = "POST /v1/attempts/<attempt>/heartbeat"
+        commit()
+        meter.context.route = "POST /v1/tasks"
+        commit()
+        row = meter.snapshot()
+    finally:
+        meter.stop()
+        connection.close()
+    assert row["counts"]["runtime_outer_commit_success"] == 5
+    assert [span["write_context"] for span in row["write_spans"]] == [
+        "background_lifetime_reaper", "unattributed_runtime", "http_lifetime_reap",
+        "http_heartbeat", "http_request",
+    ]
+
+
+def test_active_runtime_scope_is_retained_only_through_the_measured_reply():
+    runtime = RuntimeObserver.__new__(RuntimeObserver)
+    runtime.requests = [{"kind": "runtime_request_span", "monotonic_start_ns": 10,
+                         "monotonic_end_ns": 20, "epoch_start_ns": 110, "epoch_end_ns": 120}]
+    runtime.background = [{"kind": "runtime_background_span", "monotonic_start_ns": 15,
+                           "monotonic_end_ns": None, "epoch_start_ns": 115, "epoch_end_ns": None}]
+    spans = runtime.write_context_spans(18, 30, 130)
+    assert len(spans) == 2
+    assert spans[0]["epoch_end_ns"] == 120
+    assert spans[1]["epoch_end_ns"] == 130
+    assert spans[1]["clipped_at_reply"] is True
+    assert runtime.background[0]["epoch_end_ns"] is None
+    assert runtime.write_context_spans(31, 40, 140)[0]["kind"] == "runtime_background_span"
+
+
+def test_background_wrapper_preserves_service_arguments_results_and_failures(monkeypatch):
+    from types import SimpleNamespace
+
+    import pytest
+
+    calls = []
+
+    class Server:
+        def _reap_task_lifetimes(self, runtime, *, token=None):
+            calls.append((self, runtime, token))
+            if isinstance(runtime, Exception):
+                raise runtime
+            return token
+
+    class Handler:
+        def _dispatch(self):
+            raise AssertionError("unused dispatch")
+
+    monkeypatch.setitem(sys.modules, "runtime_protocol", SimpleNamespace(platform=SimpleNamespace()))
+    monkeypatch.setitem(sys.modules, "runtime_protocol.server",
+                        SimpleNamespace(RuntimeHTTPServer=Server, RuntimeHandler=Handler))
+    server, other = Server(), Server()
+    runtime = RuntimeObserver.__new__(RuntimeObserver)
+    runtime.daemon, runtime.process = SimpleNamespace(httpd=server), observer()
+    runtime.requests, runtime.background = [], []
+    runtime.install()
+    try:
+        service = object()
+        assert server._reap_task_lifetimes(service, token="result") == "result"
+        assert other._reap_task_lifetimes(service, token="other") == "other"
+        failure = ValueError("preserved failure")
+        with pytest.raises(ValueError, match="preserved failure"):
+            server._reap_task_lifetimes(failure)
+    finally:
+        runtime.process.patches.undo()
+    assert calls == [(server, service, "result"), (other, service, "other"), (server, failure, None)]
+    assert len(runtime.background) == 2
+    assert all(span["epoch_end_ns"] is not None for span in runtime.background)
 
 
 def test_direct_condition_wait_is_visible():

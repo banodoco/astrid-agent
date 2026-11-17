@@ -16,6 +16,8 @@ import re
 import struct
 import xml.etree.ElementTree as ET
 
+from tests._local_speed_process import RUNTIME_WRITE_CONTEXTS
+
 FILE_IO = "90cbdc39-4a3e-11d1-84f4-0000f80464e3"
 THREAD = "3d6fa8d1-fe05-11d0-9dda-00c04fd7ba7c"
 PROCESS = "3d6fa8d0-fe05-11d0-9dda-00c04fd7ba7c"
@@ -309,9 +311,11 @@ def attribute_writes(native: dict, observation: dict) -> dict:
     spans = observation["write_spans"]
     counts = Counter({name: 0 for name in (
         "sqlite_wal_during_commit", "sqlite_wal_outside_commit", "sqlite_checkpoint_database",
-        "runtime_publication", "vibecomfy_evidence", "caller_delivery", "runtime_background",
+        "runtime_publication", "vibecomfy_evidence", "caller_delivery", "agent_host_evidence", "agent_sdk_evidence", "agent_other", "runtime_background",
         "runtime_other", "other_application", "platform_write_through",
     )})
+    contexts = Counter({name: 0 for name in (*RUNTIME_WRITE_CONTEXTS,
+        "vibecomfy_evidence", "caller_delivery", "agent_host_evidence", "agent_sdk_evidence", "agent_other", "other_application")})
     unknown, attributed = [], []
     for event in native.get("events", []):
         if not event["success"]:
@@ -323,22 +327,31 @@ def attribute_writes(native: dict, observation: dict) -> dict:
                    and span["epoch_start_ns"] - 1000 <= event["start_ns"]
                    and event["end_ns"] <= span["epoch_end_ns"] + 1000]
         app = [span for span in matches if span["kind"] == "application_sync" and span["success"]]
+        commits = [span for span in matches if span["kind"] == "runtime_outer_commit_success"]
+        scopes = [span for span in matches if span["kind"] in {"runtime_request_span", "runtime_background_span"}]
         if len(app) == 1:
             category = app[0]["origin"]
             route = app[0].get("route")
+            context = app[0].get("write_context", category)
         elif event.get("path") == database + "-wal":
-            commits = [span for span in matches if span["kind"] == "runtime_outer_commit_success"]
             category = "sqlite_wal_during_commit" if commits else "sqlite_wal_outside_commit"
-            route = commits[0].get("route") if len(commits) == 1 else None
+            scope = commits[0] if len(commits) == 1 else scopes[0] if len(scopes) == 1 else {}
+            route, context = scope.get("route"), scope.get("write_context", "unattributed_runtime")
         elif event.get("path") == database:
-            category, route = "sqlite_checkpoint_database", None
+            category = "sqlite_checkpoint_database"
+            scope = commits[0] if len(commits) == 1 else scopes[0] if len(scopes) == 1 else {}
+            route, context = scope.get("route"), scope.get("write_context", "unattributed_runtime")
         else:
             unknown.append({**event, "reason": "native write has no observed attribution"})
             continue
         counts[category] += 1
-        attributed.append({**event, "category": category, "route": route})
+        contexts[context] += 1
+        attributed.append({**event, "category": category, "route": route, "write_context": context})
+        if context == "unattributed_runtime":
+            unknown.append({**event, "reason": "Runtime write lacks request or background scope"})
     complete = (native.get("native_flushes") is not None and not native.get("coverage_gaps")
                 and not unknown and sum(counts.values()) == native["native_flushes"])
     return {"status": "PASS" if complete else "NO-RESULT", "counts": dict(sorted(counts.items())),
+            "contexts": dict(sorted(contexts.items())),
             "unattributed": unknown, "events": attributed,
             "wal_scope": "WAL-file syncs are distinct from successful outer commits; checkpoint and WAL reuse within commit are not inferred away"}

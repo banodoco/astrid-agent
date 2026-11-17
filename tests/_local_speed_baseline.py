@@ -12,6 +12,8 @@ import re
 import statistics
 from collections import Counter
 
+from tests._local_speed_process import RUNTIME_WRITE_CONTEXTS
+
 SCHEMA = "astrid.local-speed-baseline.v2"
 # LS-2.2: fix the policy before measuring. A faster candidate is welcome; a
 # slower one does not receive an absolute allowance as the product improves.
@@ -80,15 +82,22 @@ def counter_values(row, *, known_counter_names=()):
         if counts.get("runtime_outer_commit_error", 0) or counts.get("platform_write_through_error", 0):
             raise ValueError("a commit or platform forced write failed")
         values.update({"runtime_http." + path: count for path, count in row["runtime_http_paths"].items()})
-        for origin in ("runtime_publication", "vibecomfy_evidence", "caller_delivery", "runtime_background",
+        for origin in ("runtime_publication", "vibecomfy_evidence", "caller_delivery", "agent_host_evidence", "agent_sdk_evidence", "agent_other", "runtime_background",
                        "runtime_other", "other_application"):
             values["application_write." + origin] = 0
+        for context in RUNTIME_WRITE_CONTEXTS:
+            values["runtime_committed." + context] = 0
         for span in row["write_spans"]:
             if span["kind"] == "application_sync":
                 if not span["success"]:
                     raise ValueError("an attributed application write failed")
                 key = "application_write." + span["origin"]
                 values[key] = values.get(key, 0) + 1
+            elif span["kind"] == "runtime_outer_commit_success":
+                context = span.get("write_context", "unattributed_runtime")
+                if context not in RUNTIME_WRITE_CONTEXTS or context == "unattributed_runtime":
+                    raise ValueError("Runtime commit lacks request or background scope")
+                values["runtime_committed." + context] += 1
         modes = row["sqlite"]
         if modes["before"] != modes["after"]:
             raise ValueError("effective SQLite mode changed during the job")
@@ -97,6 +106,7 @@ def counter_values(row, *, known_counter_names=()):
             if attribution.get("status") != "PASS":
                 raise ValueError("native forced-write attribution is incomplete")
             values.update({"native." + name: value for name, value in attribution["counts"].items()})
+            values.update({"native_context." + name: value for name, value in attribution["contexts"].items()})
     # These maps are complete enumerations from a live observer, so an operation
     # that did not occur is an observed zero. Preserve the reference's vocabulary
     # explicitly instead of deleting its counter. Missing coverage never enters

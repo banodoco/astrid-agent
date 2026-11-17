@@ -1,6 +1,8 @@
 """Observe the exact Runtime used by the meter without changing its behavior."""
 
+import os
 import re
+import threading
 import time
 from collections import Counter
 from urllib.parse import unquote, urlsplit
@@ -20,9 +22,26 @@ class RuntimeObserver:
     def __init__(self, daemon, process):
         self.daemon, self.process = daemon, process
         self.requests = []
+        self.background = []
         self.database = str(daemon.service.store.db_path)
         process.runtime_connection = daemon.service.store.conn
         process.runtime_commit_code = daemon.service.store._transaction.__wrapped__.__code__
+        process.runtime_background_code = type(daemon.httpd)._reap_task_lifetimes.__code__
+        process.runtime_background_owner = daemon.httpd
+        process.runtime_reap_code = daemon.service.store.reap_overdue_leases.__func__.__code__
+        process.runtime_reap_owner = daemon.service.store
+
+    @staticmethod
+    def _span(kind, context, route=None):
+        return {"kind": kind, "write_context": context, "route": route,
+                "pid": os.getpid(), "tid": threading.get_native_id(),
+                "monotonic_start_ns": time.monotonic_ns(), "monotonic_end_ns": None,
+                "epoch_start_ns": time.time_ns(), "epoch_end_ns": None}
+
+    @staticmethod
+    def _finish(span):
+        span["epoch_end_ns"] = time.time_ns()
+        span["monotonic_end_ns"] = time.monotonic_ns()
 
     def sqlite_mode(self):
         store = self.daemon.service.store
@@ -32,7 +51,7 @@ class RuntimeObserver:
 
     def install(self):
         from runtime_protocol import platform
-        from runtime_protocol.server import RuntimeHandler
+        from runtime_protocol.server import RuntimeHandler, RuntimeHTTPServer
 
         owner, original = self, RuntimeHandler._dispatch
 
@@ -40,15 +59,29 @@ class RuntimeObserver:
             if handler.server is not owner.daemon.httpd:
                 return original(handler)
             route = request_path(handler.command, handler.path)
-            owner.requests.append((time.monotonic_ns(), route))
+            span = owner._span("runtime_request_span", "http_heartbeat" if route.endswith("/heartbeat") else "http_request", route)
+            owner.requests.append(span)
             previous = getattr(owner.process.context, "route", None)
             owner.process.context.route = route
             try:
                 return original(handler)
             finally:
+                owner._finish(span)
                 owner.process.context.route = previous
 
         self.process.patches.setattr(RuntimeHandler, "_dispatch", dispatch)
+        reap = RuntimeHTTPServer._reap_task_lifetimes
+
+        def background_reap(server, *args, **kwargs):
+            if server is not owner.daemon.httpd:
+                return reap(server, *args, **kwargs)
+            span = owner._span("runtime_background_span", "background_lifetime_reaper")
+            owner.background.append(span)
+            try:
+                return reap(server, *args, **kwargs)
+            finally:
+                owner._finish(span)
+        self.process.patches.setattr(RuntimeHTTPServer, "_reap_task_lifetimes", background_reap)
         if hasattr(platform, "_move_file_write_through"):
             move = platform._move_file_write_through
 
@@ -67,5 +100,19 @@ class RuntimeObserver:
         return self
 
     def report(self, start_ns, reply_ns):
-        return dict(sorted(Counter(route for at, route in self.requests
-                                   if start_ns <= at <= reply_ns).items()))
+        return dict(sorted(Counter(span["route"] for span in self.requests
+                                   if start_ns <= span["monotonic_start_ns"] <= reply_ns).items()))
+
+    def write_context_spans(self, start_ns, reply_ns, epoch_reply_ns):
+        """Retain known request/reaper scope even if it is still active at reply."""
+        spans = []
+        for original in [*self.requests, *self.background]:
+            span = dict(original)
+            if (span["monotonic_start_ns"] > reply_ns or
+                    (span["monotonic_end_ns"] is not None and span["monotonic_end_ns"] < start_ns)):
+                continue
+            if span["epoch_end_ns"] is None or span["epoch_end_ns"] > epoch_reply_ns:
+                span["epoch_end_ns"] = epoch_reply_ns
+                span["clipped_at_reply"] = True
+            spans.append(span)
+        return spans
