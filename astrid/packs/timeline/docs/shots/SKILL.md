@@ -51,3 +51,56 @@ print([(row["occurrence_id"], canonical[row["occurrence_id"]]["shot_id"],
 ```
 
 The repeated occurrence shares the stored shot, so edits to that shot appear in both placements.
+
+## Shot plans
+
+A shot's plan (what it shows, how it will be made, its inputs, status and takes) lives in one place:
+the key `plan` in the shot's own metadata on the timeline (`payload.metadata.plan`). It is saved
+with every timeline revision (each write is a new revision; earlier revisions keep the earlier
+plan), it travels in `.astrid` exports and imports, and a duplicated timeline keeps it (while its
+text bindings are cleared, so re-bind the narration). Every skill
+and agent reads and writes plans **only through the commands below**, never by editing metadata
+by hand, so the shape stays checked and other metadata stays untouched.
+
+The shape (`version` 1; every other key is optional; any other key is refused):
+
+```json
+{
+  "version": 1,
+  "on_screen": ["Morpheus"],
+  "line": "You have two options.",
+  "intent": "new line in the real shot, old man in the lenses",
+  "method": ["LM", "R"],
+  "check": "mouth follows the voice track; lenses show the old man",
+  "inputs": {"references": ["<media id>"], "voice": {"media": "<media id>", "range": [5.0, 8.0]}, "masks": ["<media id>"]},
+  "status": "planned",
+  "takes": [{"generation": "<run id>", "media": "<media id>", "note": "first take"}]
+}
+```
+
+- `method`: the recast method codes `V LC LM R M E K` (see the [recast skill](../../../h3_av/docs/recast-scene/SKILL.md#stage-3---shot-list-pick-a-method-for-each-shot)).
+- `status`: `planned`, `in_progress`, `take_ready` or `approved`.
+- `line` is a label for planning. The narration itself is the shot's `voiceover_script` text
+  (`timelines shots text set --kind voiceover_script`); address it by shot and kind, never by binding id.
+- `inputs.voice.range` is the shot's slice of the voice track, in seconds.
+
+Write, read, list and see:
+
+```bash
+python3 -m astrid timelines shots plan set <shot> --project <project> --timeline <timeline> --set method=LM,R --set status=planned
+python3 -m astrid timelines shots plan set <shot> --project <project> --timeline <timeline> --json-file plan.json
+python3 -m astrid timelines shots plan set <shot> --project <project> --timeline <timeline> --set inputs.voice.media=<media id> --set inputs.voice.range=5,8
+python3 -m astrid timelines shots plan set <shot> --project <project> --timeline <timeline> --add-take '{"generation": "<run id>", "media": "<media id>"}' --set status=take_ready
+python3 -m astrid timelines shots plan show <shot> --project <project> --timeline <timeline>
+python3 -m astrid timelines shots plan list --project <project> --timeline <timeline>
+python3 -m astrid timelines visualize <timeline> --project <project> --preset overview --shot-plans
+```
+
+`<shot>` is a shot id, an occurrence id or the exact shot name. `set` merges: the fields you give
+replace those fields (`inputs` and `inputs.voice` merge key by key), `--add-take` appends,
+`--unset inputs.voice` removes a field, `--replace` starts from an empty plan. A bad plan is refused
+with the reason before anything is written. `show` and `list` take `--revision-id` to read a saved
+revision. `list` also names the shots with no plan (`unplanned`) and the planned shots not yet
+`approved` (`not_approved`; `K` shots need no approval). `visualize --shot-plans` prints one line per
+placed shot under the picture's summary: its time, name, method codes, status, takes and line. From
+Python, the same calls are `astrid.sdk.shot_plan.set_plan`, `show_plan` and `list_plans`.
