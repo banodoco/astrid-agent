@@ -179,7 +179,8 @@ def test_h3_executable_hooks_keep_the_existing_full_path(monkeypatch):
 
     contribution = Path(engine.__file__).parents[1] / "h3_av/extensions/vibecomfy.workflows/h3.yaml"
     entry = yaml.safe_load(contribution.read_text())
-    assert "build" in str(entry) and "after_outputs" in str(entry)
+    assert entry["build"] == "hooks.py:build"
+    assert entry["after_outputs"] == "hooks.py:after_outputs"
     def forbidden(*args, **kwargs):
         raise AssertionError("an executable entry must not be frozen")
     monkeypatch.setattr(engine, "_capture_live_schemas", forbidden)

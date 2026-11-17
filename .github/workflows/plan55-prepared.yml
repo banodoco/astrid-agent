@@ -1,0 +1,96 @@
+name: Plan 55 prepared local workflow proof
+
+on:
+  pull_request:
+    branches: [release/14/plan-55]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  prepared:
+    if: github.event_name == 'workflow_dispatch' || github.head_ref == 'p55/ls-4'
+    name: LS-4 ${{ matrix.source }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [baseline, candidate]
+    env:
+      ASTRID_CI_JOB: lanes-integration
+      ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/runtime-checkout
+      ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/vibecomfy-checkout
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.source == 'baseline' && '19103ea6acbc030b3379e840ccc03491e47f1a0e' || github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Read this source's dependency pins
+        id: pins
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          print('runtime=' + json.loads(Path('runtime.lock.json').read_text())['source_commit'])
+          print('vibe=' + json.loads(Path('astrid/packs/vibecomfy/pins.json').read_text())['sources']['vibecomfy']['revision'])
+          PY
+      - name: Check out the unchanged Runtime pin
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-runtime
+          ref: ${{ steps.pins.outputs.runtime }}
+          path: runtime-checkout
+      - name: Check out the selected VibeComfy candidate or baseline
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/VibeComfy
+          ref: ${{ steps.pins.outputs.vibe }}
+          path: vibecomfy-checkout
+      - name: Install test dependencies
+        id: install
+        run: |
+          python -m pip install -e '.[dev]'
+          python -m pip install --no-deps -e ./runtime-checkout -e ./runtime-checkout/packages/python
+          python -m pip install -e ./vibecomfy-checkout
+      - name: Record exact source and dependency identities
+        run: |
+          mkdir -p proof
+          git rev-parse HEAD > proof/source.txt
+          git rev-parse 'HEAD^{tree}' >> proof/source.txt
+          git -C vibecomfy-checkout rev-parse HEAD >> proof/source.txt
+          git -C vibecomfy-checkout rev-parse 'HEAD^{tree}' >> proof/source.txt
+          git -C runtime-checkout rev-parse HEAD >> proof/source.txt
+          python -VV >> proof/source.txt
+          uname -a >> proof/source.txt
+          python -m pip freeze > proof/dependencies.txt
+      - name: Unchanged attached-server regressions
+        run: |
+          python -m pytest -q -m integration \
+            tests/packs/vibecomfy/test_local_server_run.py \
+            --junitxml=proof/regressions.xml 2>&1 | tee proof/regressions.log
+      - name: Unchanged executable H3 build and output hooks
+        if: always() && steps.install.outcome == 'success'
+        run: |
+          python -m pytest -q tests/core/generation/test_h3_local_job.py \
+            --junitxml=proof/hooks.xml 2>&1 | tee proof/hooks.log
+      - name: Prepared local-server integration
+        if: always() && matrix.source == 'candidate' && steps.install.outcome == 'success'
+        run: |
+          python -m pytest -q -m integration \
+            tests/packs/vibecomfy/test_prepared_local_server.py \
+            --junitxml=proof/prepared.xml 2>&1 | tee proof/prepared.log
+      - name: Retain exact-head proof including failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: plan55-ls4-agent-${{ matrix.source }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: proof/
+          if-no-files-found: error
+          retention-days: 30
