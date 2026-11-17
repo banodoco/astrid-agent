@@ -7711,6 +7711,9 @@ class GenericPackHost:
                         owner.credential_source, name, explicit=owner._credential_source_is_explicit),
                 )
                 owner._target_bindings_kind = kind
+                # A newly installed observer must join the coordinator's
+                # deadlines even while every serving slot is subscribed.
+                owner._claim_loop_wake.set()
             elif owner._target_bindings_kind != kind:
                 raise HostError("host already retains a different target provider")
             return owner._target_bindings
@@ -15195,8 +15198,14 @@ class GenericPackHost:
                     if idle:
                         deadlines.append(pack_ack_at)
                     deadlines.extend(value for index, value in retry_at.items() if index not in active and value > now)
-                    deadlines.append(getattr(self, "_machines_observed_at", now) + float(os.environ.get("ASTRID_MACHINE_LIVENESS_SECONDS") or 60.0))
-                    self._claim_loop_wake.wait(max(0.0, min(deadlines) - time.monotonic()))
+                    # No observer means no machine-maintenance deadline.
+                    # Its initial -inf timestamp otherwise turns every idle
+                    # Event.wait into wait(0), starving unrelated host work.
+                    if callable(getattr(self._target_bindings, "observe", None)):
+                        deadlines.append(self._machines_observed_at + float(os.environ.get("ASTRID_MACHINE_LIVENESS_SECONDS") or 60.0))
+                    next_wake = min(deadlines)
+                    self._claim_loop_wake.wait(
+                        None if next_wake == float("inf") else max(0.0, next_wake - time.monotonic()))
                 else:
                     self._shutdown.wait(min(0.05, poll_delay))
             return results

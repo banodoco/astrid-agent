@@ -4,11 +4,12 @@ from __future__ import annotations
 import json
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
 from astrid.core.execution.generic_host import GenericPackHost
-from tests.core.execution.test_generic_host_claim_loop import Backend, Client, world
+from tests.core.execution.test_generic_host_claim_loop import Backend, Client, run_thread, world
 
 
 class ReadyClient(Client):
@@ -86,3 +87,79 @@ def test_successful_claim_consumes_the_prior_ready_observation_once(world, capac
         assert sum(map(len, backend.wait_times.values())) == capacity
     finally:
         host.shutdown()
+
+
+@pytest.mark.parametrize("provider_present", [False, True])
+def test_parallel_coordinator_wait_rate_is_bounded_without_machine_observer(
+    world, monkeypatch, provider_present
+):
+    backend = Backend(0)
+    backend.wait_times, backend.mode = {}, "empty-claim"
+    host = GenericPackHost(pack_roots=[world], client=ReadyClient(backend), max_concurrency=2)
+    host.discover()
+    if provider_present:
+        host._target_bindings = SimpleNamespace(close=lambda: None)
+    waits = []
+    original_wait = host._claim_loop_wake.wait
+
+    def wait(timeout=None):
+        waits.append(timeout)
+        return original_wait(timeout)
+
+    monkeypatch.setattr(host._claim_loop_wake, "wait", wait)
+    thread, outcome = run_thread(host)
+    try:
+        backend.wait(lambda: bool(backend.wait_times))
+        threading.Event().wait(.26)
+        print(json.dumps({"provider_present": provider_present,
+                          "coordinator_wait_calls": len(waits),
+                          "nonpositive_waits": sum(value is not None and value <= 0 for value in waits)}))
+        assert len(waits) <= 32, "idle coordinator spun on an inactive maintenance deadline"
+    finally:
+        host.shutdown()
+        thread.join(3)
+    assert not thread.is_alive() and "error" not in outcome
+
+
+def test_lazily_created_machine_observer_wakes_parked_coordinator(world, monkeypatch):
+    class WaitingClient(ReadyClient):
+        def fork_for_host_slot(self):
+            client = WaitingClient(self.backend)
+            self.backend.clients.append(client)
+            return client
+
+        def wait_for_work(self, **kwargs):
+            with self.backend.condition:
+                self.backend.wait_times[id(self)] = [time.monotonic()]
+                self.backend.condition.notify_all()
+            assert self.backend.release.wait(5), "fixture work wait was not released"
+            return {"available": False, "capability_ids": [], "reason": "timeout"}
+
+    backend = Backend(0)
+    backend.wait_times = {}
+    host = GenericPackHost(pack_roots=[world], client=WaitingClient(backend), max_concurrency=2)
+    host.discover()
+    monkeypatch.setattr(host, "_pack_refresh_delay", lambda: 30.0)
+    parked, observed = threading.Event(), threading.Event()
+    original_wait = host._claim_loop_wake.wait
+
+    def wait(timeout=None):
+        if timeout is None or timeout >= 5:
+            parked.set()
+        return original_wait(timeout)
+
+    monkeypatch.setattr(host._claim_loop_wake, "wait", wait)
+    bindings = SimpleNamespace(observe=observed.set, close=lambda: None)
+    monkeypatch.setattr("astrid.core.execution.target_provider.resolve_target_provider",
+                        lambda *args: SimpleNamespace(TargetProviderBindings=lambda **kwargs: bindings))
+    thread, outcome = run_thread(host)
+    try:
+        backend.wait(lambda: len(backend.wait_times) == 2)
+        assert parked.wait(1), "coordinator did not park while subscriptions were idle"
+        assert host._host_target_bindings("fixture") is bindings
+        assert observed.wait(1), "new machine observer did not wake the coordinator"
+    finally:
+        backend.release.set()
+        host.shutdown()
+        thread.join(3)
+    assert not thread.is_alive() and "error" not in outcome
