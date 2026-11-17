@@ -17,6 +17,8 @@ A commit proves what is stored; it does not prove what the film looks like. `tim
 | A cut or range in motion (entrances, transitions, timing) | `run-astrid timelines visualize T --project P --cut 8` or `--preset motion --range 11.6..13.4` |
 | Before and after an edit | `run-astrid timelines visualize T --project P --preset compare --from <rev> --to <rev> --range 11..14` |
 
+Timing: an overview of a long film can take a couple of minutes and may move to the background; the page path is printed when it finishes. If another task is using the Runtime, a look waits behind it.
+
 Limits worth knowing: the overview holds up to 120 cuts per page (page on with `--cuts`); `--preset motion` shows up to 3 s at every second frame, `--every-frames 1` every frame (up to 60); a plain `--range` scans up to 30 s at two frames a second, too coarse for an effect under a second. An entrance can be invisible on its first frame: look two frames in. `--view diff --from --to` compares the documents only (which cuts changed), not pixels. `--plan` shows what a view would capture without capturing.
 
 Pin what you looked at with `--revision-id` (from `timelines history`) when it matters, and say in your report which revision and moments you looked at.

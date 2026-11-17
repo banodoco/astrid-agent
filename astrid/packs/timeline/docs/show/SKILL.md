@@ -22,6 +22,8 @@ Before you look at pixels or change anything, read what the timeline *is*. Show 
 | What changed, and when | `run-astrid timelines history T --project P` |
 
 ## Example (Into the Minkhole)
+Track names describe today's media, not the target: the approved cut's voice track is "Temporary voiceover — Daniel" (a system voice), while each shot's plan says what the final voice must be (Morpheus).
+
 `timelines shots plan list` on the approved cut lists nine shots with their methods: "02c Blue pill - Morpheus speaks: LC+R, planned, 'tuning workflows by hand,'". `timelines assets` shows that one voice file, `blue`, plays in four clips across four shots. `timelines show --clip blue-voiceover-part-3 --detail` gives its source range (3.967-8.258 s of that file).
 
 ## Next
