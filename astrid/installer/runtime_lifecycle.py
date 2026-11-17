@@ -9,6 +9,31 @@ import os
 import sys
 from pathlib import Path
 
+# Stable prefix of the refusal raised for Pinokio-managed installs. The SDK
+# matches it to replace the generic "run the install line again" next action
+# with the install's real start command.
+PINOKIO_OWNED_REFUSAL = "Pinokio owns this Astrid installation; use its controls."
+
+
+def pinokio_start_command(root: Path, version) -> str:
+    """Return the supported foreground start for a Pinokio-managed install.
+
+    ``root`` is the installation's program root; its ``run`` launcher is the
+    supported entry point (``python -m astrid_runtime run`` is refused).
+    """
+    from runtime_protocol.door import DEFAULT_DOOR_PORT
+
+    port = version.env.get("ASTRID_RUNTIME_DOOR_PORT") if version is not None else None
+    if not (isinstance(port, str) and port.isdigit()):
+        port = str(DEFAULT_DOOR_PORT)
+    return f"{Path(root).absolute() / 'run'} --door-port {port}"
+
+
+def pinokio_refusal_message(root: Path, version) -> str:
+    return (f"{PINOKIO_OWNED_REFUSAL} The supported start for this install is "
+            f"`{pinokio_start_command(root, version)}`; Pinokio's Start button does the same "
+            "where Pinokio is present.")
+
 
 def managed_runtime_lifecycle(*, action: str, source_checkout: Path, data_root: Path,
                               wait: bool = False) -> dict | None:
@@ -47,7 +72,11 @@ def managed_runtime_lifecycle(*, action: str, source_checkout: Path, data_root: 
                 or marker.get("owner") != LABEL or marker.get("data_root") != str(data)):
             raise ValueError("Managed Astrid selection is missing or inconsistent; no Runtime was stopped.")
         if marker.get("managed_by") == "pinokio" or selection.get("managed_by") == "pinokio":
-            raise ValueError("Pinokio owns this Astrid installation; use its controls.")
+            try:
+                installed = current(root)
+            except (OSError, ValueError):
+                installed = None
+            raise ValueError(pinokio_refusal_message(root, installed))
         if marker.get("managed_by") not in (None, "") or selection.get("managed_by") not in (None, ""):
             raise ValueError("Unknown Astrid installation manager; no Runtime was stopped.")
         if pending_transaction(root):

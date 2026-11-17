@@ -160,3 +160,26 @@ def test_scheduled_launchd_requires_unambiguous_inactive_owner(managed, tmp_path
     else:
         with pytest.raises(ValueError, match='not proven inactive'):
             manager._launchd_stop_identity(observation, managed.data)
+
+
+def test_pinokio_refusal_names_the_installed_absolute_start_command(managed, monkeypatch):
+    from runtime_protocol.door import DEFAULT_DOOR_PORT
+
+    write(managed.root / 'install.json', {'owner': service.LABEL, 'data_root': str(managed.data), 'managed_by': 'pinokio'})
+    version_dir = managed.root / 'versions' / 'v13'
+    installed = core.Version(version_dir, version_dir / 'py' / 'bin' / 'python', managed.profile,
+                             {'ASTRID_RUNTIME_DOOR_PORT': '8791'}, release=13)
+    monkeypatch.setattr(core, 'current', lambda _: installed)
+    with pytest.raises(ValueError) as caught:
+        managed_runtime_lifecycle(action='up', source_checkout=managed.source, data_root=managed.data)
+    message = str(caught.value)
+    assert message.startswith('Pinokio owns this Astrid installation; use its controls.')
+    assert f'`{managed.root / "run"} --door-port 8791`' in message
+    assert "Pinokio's Start button" in message
+    assert 'install line' not in message
+    assert 'stop' not in managed.events
+
+    monkeypatch.setattr(core, 'current', lambda _: None)
+    with pytest.raises(ValueError) as caught:
+        managed_runtime_lifecycle(action='up', source_checkout=managed.source, data_root=managed.data)
+    assert f'`{managed.root / "run"} --door-port {DEFAULT_DOOR_PORT}`' in str(caught.value)

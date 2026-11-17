@@ -397,6 +397,38 @@ def test_launcher_rejection_preserves_structured_runtime_cause(monkeypatch, tmp_
     assert caught.value.details["recovery_action"] == "inspect the realm admission report"
 
 
+def test_pinokio_managed_rejection_names_the_real_start_command(monkeypatch, tmp_path):
+    """A Pinokio-owned install is started by its launcher, not by reinstalling."""
+    from astrid.installer.runtime_lifecycle import pinokio_refusal_message
+    from runtime_protocol.door import DEFAULT_DOOR_PORT
+
+    monkeypatch.setenv("ASTRID_RUNTIME_LAUNCHER", "/usr/bin/astrid-runtime")
+    monkeypatch.setattr(autobootstrap, "_discovery_present", lambda _root: False)
+    program = tmp_path / "Pinokio" / "astrid" / "program"
+    refusal = pinokio_refusal_message(program, None)
+    start = f"{program / 'run'} --door-port {DEFAULT_DOOR_PORT}"
+    assert refusal.count("`") == 2 and f"`{start}`" in refusal
+    assert "Pinokio's Start button" in refusal
+
+    monkeypatch.setattr(
+        autobootstrap.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 1, json.dumps({"ok": False, "error": refusal}), ""
+        ),
+    )
+
+    with pytest.raises(autobootstrap.AutoBootstrapError) as caught:
+        autobootstrap.ensure_runtime(start_pack_host=False, data_root=tmp_path / "support")
+
+    message = str(caught.value)
+    assert caught.value.code == "runtime_bootstrap_rejected"
+    assert message.startswith("neutral runtime bootstrap was not ready: Pinokio owns this Astrid installation")
+    assert "run the Astrid install line again" not in message
+    assert caught.value.next_action == f"start Astrid with `{start}`"
+    assert Path(start.split(" ")[0]).is_absolute()
+
+
 def test_open_from_launcher_relays_lifecycle_code_and_cause(monkeypatch):
     def rejected():
         raise autobootstrap.AutoBootstrapError(

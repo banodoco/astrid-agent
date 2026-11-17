@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -230,6 +231,16 @@ def _acquisition_file_lock(
         handle.close()
 
 
+def _pinokio_start_command(reason: str) -> str | None:
+    """Return the start command named by a Pinokio-managed refusal, if any."""
+    from astrid.installer.runtime_lifecycle import PINOKIO_OWNED_REFUSAL
+
+    if not reason.startswith(PINOKIO_OWNED_REFUSAL):
+        return None
+    match = re.search(r"`([^`]+)`", reason)
+    return match.group(1) if match else None
+
+
 def _lifecycle_result(
     value: Mapping[str, Any],
     *,
@@ -260,6 +271,16 @@ def _lifecycle_result(
                 reason,
                 next_action="astrid-runtime restart",
                 code="runtime_identity_mismatch",
+                details=raw_details,
+            )
+        start_command = _pinokio_start_command(reason)
+        if start_command is not None:
+            # Pinokio-managed installs are started by their launcher, not by a
+            # reinstall; name that command instead of the install line.
+            raise AutoBootstrapError(
+                f"neutral runtime {action} was not ready: {reason}",
+                next_action=f"start Astrid with `{start_command}`",
+                code="runtime_" + action + "_rejected",
                 details=raw_details,
             )
         raise AutoBootstrapError(
