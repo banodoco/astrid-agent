@@ -584,15 +584,16 @@ def _show_projected(parsed: argparse.Namespace, tl: Any, source_range: tuple[flo
     from astrid.sdk.timeline.words import default_source_order, load_timeline_transcripts, project_words
 
     project = need_project(parsed)
-    # Default: the Whisper transcript (what this command has always shown). --source S shows S instead.
-    # A transcriptReferences pin still wins for its media, whatever its source.
+    # Default: the Whisper transcript (what this command has always shown), and a transcriptReferences
+    # pin wins for its media. An explicit --source S shows S and ignores pins.
     source_choice = [parsed.source] if parsed.source else [default_source_order()[0]]
     issues: list[str] = []
     transcripts = load_timeline_transcripts(parsed.client, project, tl.bundle, sources=source_choice,
                                             any_media=True, issues=issues)
     for issue in issues:
         print(f"pin problem: {issue}", file=sys.stderr)
-    rows = project_words(tl.bundle, transcripts, "parent", sources=source_choice, media="any")
+    rows = project_words(tl.bundle, transcripts, "parent", sources=source_choice, media="any",
+                         references=set() if parsed.source else None)
     media = parsed.media_id
     if parsed.clip:
         if not any(row["clip_id"] == parsed.clip for row in rows) and not any(

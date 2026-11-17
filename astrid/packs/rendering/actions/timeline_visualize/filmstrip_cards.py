@@ -112,6 +112,13 @@ def _word_entry(raw):
     return float(start), float(end), text.strip()
 
 
+def _word_status(records):
+    """Caption status of timed VO: a stored transcript when any record came from one, else clip app.words."""
+    if any(record.get('timing_basis') == 'stored_word' for record in records):
+        return 'word-aligned VO (stored transcript)'
+    return 'word-aligned VO (app.words)'
+
+
 def _timed_word_records(clips, time, *, window=WORD_CAPTION_WINDOW_SECONDS, speech_words=None):
     """Word-aligned VO text near ``time`` from the active clips' ``app.words``.
 
@@ -182,7 +189,7 @@ def _project_display_scripts(cards):
         if card.get('captions'):
             card['caption_status'] = 'timed caption'
         elif card.get('timed_words'):
-            card['caption_status'] = 'word-aligned VO (app.words)'
+            card['caption_status'] = _word_status(card['timed_words'])
         elif displayed:
             card['caption_status'] = 'shot script context (not word-aligned)'
         elif card.get('scripts'):
@@ -1141,7 +1148,7 @@ def plan_filmstrip(
         scripts = [s for s in snapshot.get('scripts', []) if _q(s['start']) <= time < _q(s['end'])]
         captions = _speech_caption_records(snapshot, time)
         timed_words = _timed_word_records(active, time, speech_words=snapshot.get('speech_words'))
-        caption_status = ('timed caption' if captions else 'word-aligned VO (app.words)' if timed_words
+        caption_status = ('timed caption' if captions else _word_status(timed_words) if timed_words
                           else 'no timed text available')
         target = f"frame-{frame:09d}"
         extension = str(options.get('frame_extension') or 'jpg').lstrip('.')
@@ -1208,7 +1215,7 @@ def _lines(card):
     if card.get('captions'):
         status = 'timed caption'
     elif word_text:
-        status = 'word-aligned VO (app.words)'
+        status = _word_status(card.get('timed_words') or [])
     elif card.get('display_scripts'):
         status = 'shot script context (not word-aligned)'
     elif 'display_scripts' in card:
