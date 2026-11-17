@@ -67,7 +67,7 @@ Operational families:
 
 External tools:
   python3 -m astrid hivemind search QUERY [--limit N] [--json]
-  python3 -m astrid hivemind item --kind {message,resource,revision} --id ID [--revision-id ID] [--json]
+  python3 -m astrid hivemind item --kind {{message,resource,revision}} --id ID [--revision-id ID] [--json]
 
 Nested mounts (manifest-owned):
   python3 -m astrid timelines shots ...
