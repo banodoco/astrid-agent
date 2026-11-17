@@ -252,13 +252,14 @@ class ComfyTargetClient:
 
     def folder_paths(self) -> Any:
         """The server's model folder paths, read at most once per client (one attempt); None if unavailable."""
+        self._current(None)
         if not self._folder_paths_read:
             self._folder_paths_read = True
             try:
                 self._folder_paths = self.request_json("/internal/folder_paths", timeout=5, response_limit=64 * 1024)
             except (ValueError, OSError, TransportError):
                 self._folder_paths = None
-        return self._folder_paths
+        return self._current(self._folder_paths)
 
     def object_info(self) -> dict[str, Any]:
         """Capture schema through this target's existing attested transport."""

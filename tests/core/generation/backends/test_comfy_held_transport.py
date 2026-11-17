@@ -188,7 +188,7 @@ def test_drop_during_post_keeps_the_accepted_witness():
         assert peer.counts()["POST /prompt"] == 1
 
 
-@pytest.mark.parametrize("operation", ["schema", "upload", "download", "cancel", "submit"])
+@pytest.mark.parametrize("operation", ["schema", "folder_paths", "upload", "download", "cancel", "submit"])
 def test_retired_generation_refuses_all_new_io(operation, tmp_path):
     with ComfyPeer() as peer, ComfyTargetSession(ComfyTarget(peer.url, "attached")) as owner:
         client = owner.client()
@@ -197,6 +197,7 @@ def test_retired_generation_refuses_all_new_io(operation, tmp_path):
         source.write_bytes(b"input")
         destination.write_bytes(b"previous")
         calls = {"schema": client.object_info,
+                 "folder_paths": client.folder_paths,
                  "upload": lambda: client.upload_media(source, task_id="task"),
                  "download": lambda: client.download_output(DESCRIPTOR, destination),
                  "cancel": lambda: client.cancel_prompt("ours"),

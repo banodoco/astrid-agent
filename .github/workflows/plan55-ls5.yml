@@ -15,6 +15,8 @@ on:
       - "tests/helpers/ls5_comfy_peer.py"
       - "tests/integrations/test_ls5_meter.py"
       - "tests/ls5_meter_run.py"
+      - "tests/ls5_meter_compare.py"
+      - "tests/_ls5_meter_observer.py"
       - ".github/workflows/plan55-ls5.yml"
 permissions:
   contents: read
@@ -24,7 +26,7 @@ concurrency:
 jobs:
   prove:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       ASTRID_CI_JOB: lanes-integration
       PYTHONDONTWRITEBYTECODE: "1"
@@ -114,6 +116,23 @@ jobs:
           set -o pipefail
           python -m pytest -q -rA tests/core/generation/backends/test_comfy_target.py tests/core/generation/backends/test_comfy_held_transport.py --junitxml=plan55-ls5-proof/agent-transport.xml 2>&1 | tee plan55-ls5-proof/agent-transport.log
           rc=${PIPESTATUS[0]}; echo "$rc" > plan55-ls5-proof/agent-transport.exit; exit "$rc"
+      - name: Prove the unchanged attached pack integration cases
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q -rA -m integration tests/packs/vibecomfy/test_local_server_run.py tests/packs/vibecomfy/test_local_server_mask_preflight.py tests/packs/vibecomfy/test_local_server_media.py --junitxml=plan55-ls5-proof/agent-integration.xml 2>&1 | tee plan55-ls5-proof/agent-integration.log
+          rc=${PIPESTATUS[0]}; echo "$rc" > plan55-ls5-proof/agent-integration.exit; exit "$rc"
+      - name: Install native observation tools
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y strace ffmpeg
+      - name: Acquire the same-pin LS-5 comparison with the unchanged LS-2 meter
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m tests.ls5_meter_compare --output plan55-ls5-proof/comparison --samples 2 --counter-samples 1 --timeout 1800 2>&1 | tee plan55-ls5-proof/comparison.log
+          rc=${PIPESTATUS[0]}; echo "$rc" > plan55-ls5-proof/comparison.exit; exit "$rc"
       - name: Preserve exact result manifest
         if: ${{ always() }}
         shell: python
