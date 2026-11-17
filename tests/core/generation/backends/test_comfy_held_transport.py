@@ -480,3 +480,46 @@ def test_cold_socket_import_does_not_launch_platform_probe(tmp_path):
         assert result.returncode == 0, result.stdout + result.stderr
         assert "guarded-cold-transport-completed" in result.stdout
         assert peer.counts()["POST /prompt"] == peer.counts()["GET /ws"] == 1
+
+
+@pytest.mark.parametrize("status", [200, 404, 405, 501, 302, 401, 500, 101])
+def test_http10_response_only_allows_explicit_incompatible_fallback(status):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from websockets.exceptions import InvalidHandshake
+
+    calls = []
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.0"
+
+        def do_GET(self):
+            calls.append(self.path)
+            self.send_response(status)
+            if status == 302:
+                self.send_header("Location", "/escape")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}"
+        with ComfyTargetSession(ComfyTarget(url, "attached")) as owner:
+            if status in {200, 404, 405, 501}:
+                client = owner.client()
+                assert client.transport_evidence["mode"] == "bounded-poll-incompatible"
+                assert client.held_session is None
+            else:
+                with pytest.raises((ValueError, InvalidHandshake)):
+                    owner.client()
+                assert owner.fallback_reason is None
+            assert owner.generation.retired
+        assert len(calls) == 1 and calls[0].startswith("/ws?clientId=")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)

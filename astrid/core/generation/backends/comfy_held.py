@@ -302,15 +302,43 @@ class ComfyTargetSession:
         # VibeComfy already requires websockets>=12. Its protocol client neither
         # discovers proxies nor imports aiohttp's platform.system probe, which
         # can spawn cmd/ver inside the guarded Windows worker.
-        from websockets.exceptions import InvalidStatusCode
+        from websockets.exceptions import InvalidMessage, InvalidStatusCode
         from websockets.legacy.client import WebSocketClientProtocol, connect
+        from websockets.legacy.http import read_response
         from vibecomfy.runtime.transport import ComfyTransport
+
+        incompatible_statuses = {200, 404, 405, 501}
 
         class GuardedProtocol(WebSocketClientProtocol):
             async def read_http_response(self):
-                status, headers = await super().read_http_response()
+                # Inspect a legacy HTTP/1.0 rejection with the same bounded
+                # status/header parser. Such a response can select fallback,
+                # but can never establish a websocket upgrade.
+                class ResponseReader:
+                    first = True
+                    http10 = False
+
+                    async def readline(reader):
+                        line = await self.reader.readline()
+                        if reader.first:
+                            reader.first = False
+                            if line.startswith(b"HTTP/1.0 "):
+                                reader.http10 = True
+                                return b"HTTP/1.1 " + line[9:]
+                        return line
+
+                reader = ResponseReader()
+                try:
+                    status, _reason, headers = await read_response(reader)
+                except Exception as exc:
+                    raise InvalidMessage("did not receive a valid HTTP response") from exc
+                self.response_headers = headers
                 if 300 <= status < 400:
                     raise ValueError("comfy target websocket redirected unexpectedly")
+                if reader.http10:
+                    if status in incompatible_statuses:
+                        raise InvalidStatusCode(status, headers)
+                    raise InvalidMessage("Comfy websocket upgrade requires HTTP/1.1")
                 return status, headers
 
         self.sequence += 1
@@ -355,7 +383,7 @@ class ComfyTargetSession:
         try:
             await transport._connect()
         except InvalidStatusCode as exc:
-            if exc.status_code not in {200, 404, 405, 501}:
+            if exc.status_code not in incompatible_statuses:
                 raise
             self.fallback_reason = "Comfy websocket unsupported"
         except BaseException:
