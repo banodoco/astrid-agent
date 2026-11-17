@@ -115,13 +115,15 @@ jobs:
           test "$(git rev-parse "${historical_r12_agent}^{commit}")" = "$historical_r12_agent"
           git -C "$ASTRID_RUNTIME_CHECKOUT" cat-file -e "${historical_busy_runtime}^{tree}"
           git cat-file -e "${historical_r12_agent}^{tree}"
+          git -C "$ASTRID_RUNTIME_CHECKOUT" archive --format=tar "$historical_busy_runtime" >/dev/null
+          git archive --format=tar "$historical_r12_agent" >/dev/null
           {
             echo "## Effective Runtime sources"
             echo "- Runtime checkout: $ASTRID_RUNTIME_CHECKOUT"
             echo "- Runtime lock source: $RUNTIME_LOCK_SHA (checkout HEAD: $locked_runtime)"
             echo "- Runtime historical source: $HISTORICAL_RUNTIME_SHA (resolved: $historical_runtime; object: $historical_type)"
-            echo "- Busy-upgrade historical Runtime tree: $historical_busy_runtime (commit and tree available)"
-            echo "- R12 historical Agent tree: $historical_r12_agent (commit and tree available)"
+            echo "- Busy-upgrade historical Runtime tree: $historical_busy_runtime (commit, tree and archive available)"
+            echo "- R12 historical Agent tree: $historical_r12_agent (commit, tree and archive available)"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Record checked-out refs
