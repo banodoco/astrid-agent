@@ -151,7 +151,7 @@ jobs:
       - name: Install VibeComfy
         run: python -m pip install -e ./vibecomfy-checkout
 
-      # Repo structure is gated in the default lane by a shrink-only baseline
+      # Repo structure is gated in the default lane by a no-new-violations baseline
       # (tests/reshape/test_compare_baselines.py; scripts/reshape/baselines/structure_astrid.json).
 
       - name: Ruff baseline gate

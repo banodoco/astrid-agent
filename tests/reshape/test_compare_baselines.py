@@ -74,9 +74,9 @@ def test_mypy_findings_exit_one_remains_valid(monkeypatch: pytest.MonkeyPatch) -
 
 @pytest.mark.parametrize(
     ("current", "baseline", "code"),
-    [(10, 10, 0), (11, 10, 1), (9, 10, 1)],
+    [(10, 10, 0), (11, 10, 1), (9, 10, 0)],
 )
-def test_count_baselines_are_exact_so_deleted_code_cannot_leave_slack(current: int, baseline: int, code: int) -> None:
+def test_count_baselines_allow_improvements_but_block_regressions(current: int, baseline: int, code: int) -> None:
     from scripts.reshape.count_baseline import verdict
 
     result, message = verdict("Ruff", current, baseline)
@@ -84,7 +84,7 @@ def test_count_baselines_are_exact_so_deleted_code_cannot_leave_slack(current: i
     assert result == code
     assert f"current={current} baseline={baseline}" in message
     if current < baseline:
-        assert "--write-baseline" in message
+        assert "IMPROVEMENT" in message
 
 
 def test_structure_violations_are_normalised_to_survive_unrelated_edits(tmp_path) -> None:
@@ -97,7 +97,107 @@ def test_structure_violations_are_normalised_to_survive_unrelated_edits(tmp_path
     assert normalise(traceback, tmp_path) == "invalid executor folder a/b: failed to extract folder executor metadata"
 
 
-def test_structure_gate_fails_on_a_new_violation_and_on_a_fixed_one() -> None:
+def test_structure_gate_reports_resolved_entries_and_only_blocks_new_ones(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import json
+
+    from scripts.reshape import compare_structure_baseline
+
+    baseline = tmp_path / "structure.json"
+    baseline.write_text(json.dumps({"violations": ["known", "resolved"]}))
+    monkeypatch.setattr("sys.argv", ["compare_structure_baseline", "--baseline", str(baseline)])
+    monkeypatch.setattr(compare_structure_baseline, "current", lambda: ["known"])
+
+    assert compare_structure_baseline.main() == 0
+    output = capsys.readouterr()
+    assert "STRUCTURE improvement (resolved): resolved" in output.out
+
+    monkeypatch.setattr(compare_structure_baseline, "current", lambda: ["known", "resolved"])
+    assert compare_structure_baseline.main() == 0
+    output = capsys.readouterr()
+    assert "Structure violations: current=2 new=0 fixed=0" in output.out
+    assert "IMPROVEMENT" not in output.out
+
+    monkeypatch.setattr(compare_structure_baseline, "current", lambda: ["known", "new"])
+    assert compare_structure_baseline.main() == 1
+    output = capsys.readouterr()
+    assert "STRUCTURE ERROR (new): new" in output.err
+
+
+@pytest.mark.parametrize(
+    ("current", "expected_exit", "message"),
+    [(1, 0, "IMPROVEMENT"), (3, 1, "regressed"), (2, 0, "current=2 baseline=2")],
+)
+def test_ruff_gate_improvement_regression_and_unchanged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    current: int,
+    expected_exit: int,
+    message: str,
+) -> None:
+    import json
+
+    from scripts.reshape import compare_ruff_baseline
+
+    total = tmp_path / "ruff.json"
+    total.write_text(json.dumps({"finding_count": 2}))
+    pairs = tmp_path / "ruff-file-code.json"
+    pairs.write_text("[]")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["compare_ruff_baseline", "--baseline", str(total), "--file-code-baseline", str(pairs)],
+    )
+    monkeypatch.setattr(
+        compare_ruff_baseline,
+        "_run",
+        lambda: {"finding_count": current, "file_code_counts": []},
+    )
+
+    assert compare_ruff_baseline.main() == expected_exit
+    output = capsys.readouterr()
+    assert message in output.out + output.err
+
+
+@pytest.mark.parametrize(
+    ("current", "expected_exit", "message"),
+    [(0, 0, "IMPROVEMENT (ratchet down available)"), (2, 1, "file/code regression"), (1, 0, "")],
+)
+def test_mypy_gate_improvement_regression_and_unchanged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    current: int,
+    expected_exit: int,
+    message: str,
+) -> None:
+    import json
+
+    from scripts.reshape import compare_mypy_baseline
+
+    pairs = tmp_path / "mypy-file-code.json"
+    pairs.write_text(json.dumps([{"path": "a.py", "code": "attr-defined", "count": 1}]))
+    monkeypatch.setattr(
+        "sys.argv",
+        ["compare_mypy_baseline", "--file-code-baseline", str(pairs)],
+    )
+    monkeypatch.setattr(
+        compare_mypy_baseline,
+        "_run",
+        lambda: {
+            "file_code_counts": ([{"path": "a.py", "code": "attr-defined", "count": current}] if current else []),
+            "finding_count": current,
+        },
+    )
+
+    assert compare_mypy_baseline.main() == expected_exit
+    output = capsys.readouterr()
+    if message:
+        assert message in output.out + output.err
+
+
+def test_structure_compare_distinguishes_new_from_resolved_violations() -> None:
     from scripts.reshape.compare_structure_baseline import compare
 
     assert compare(["a", "b"], ["a", "b"]) == ([], [])
@@ -132,19 +232,18 @@ def test_structure_baseline_script_runs_directly_from_outside_the_checkout(tmp_p
     assert "No module named 'scripts'" not in result.stderr
 
 
-def test_the_tree_has_exactly_the_baselined_structure_violations() -> None:
+def test_tree_has_no_new_structure_violations() -> None:
     import json
 
     from scripts.reshape.compare_structure_baseline import BASELINE_PATH, compare, current
 
-    new, fixed = compare(current(), json.loads(BASELINE_PATH.read_text())["violations"])
+    new, _ = compare(current(), json.loads(BASELINE_PATH.read_text())["violations"])
     assert new == [], f"new structure violations: {new}"
-    assert fixed == [], f"fixed violations still in {BASELINE_PATH.name}; regenerate with --write-baseline: {fixed}"
 
 
 @pytest.mark.parametrize(
     ("current", "baseline", "exit_code", "text"),
-    [(2, 1, 1, "regression"), (1, 0, 1, "baseline=0"), (1, 2, 0, "Ratchet down available")],
+    [(2, 1, 1, "regression"), (1, 0, 1, "baseline=0"), (1, 2, 0, "IMPROVEMENT (ratchet down available)")],
 )
 def test_file_code_ratchet(current: int, baseline: int, exit_code: int, text: str) -> None:
     from scripts.reshape.count_baseline import file_code_verdict

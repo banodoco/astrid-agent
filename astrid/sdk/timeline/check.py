@@ -18,6 +18,7 @@ from astrid.core.timeline.cuts import (
 
 from astrid.sdk.timeline import store as _store
 from astrid.sdk.timeline._common import TimelineEditError
+from astrid.sdk.timeline._preexisting import split_findings, warning
 from astrid.sdk.timeline.doc import _get_path
 from astrid.sdk.timeline.model import Clip
 from astrid.sdk.timeline.units import (formula_short, to_canvas)
@@ -280,19 +281,31 @@ class _CheckMixin:
         except Exception:  # noqa: BLE001 - diagnostics remain advisory
             return _scene_only_unavailable()
 
-    def _length_problems(self) -> list[str]:
+    def _length_findings(self) -> dict[tuple[str, str], tuple[tuple[float, float], str]]:
         """Visible clips that run past the end of their shot's placement: the render stops at the shot's end, so
-        they would be cut off. Audio is exempt (a music bed runs out with the film). Blocking."""
-        out = []
+        they would be cut off. Audio is exempt (a music bed runs out with the film). Keyed by shot and clip,
+        signed by the two ends, so a change to either end is a new finding."""
+        out = {}
         tolerance = 0.5 / self.fps
         for clip in self.clips():
             if clip.is_audio:
                 continue
             shot_end = self._shot_start(clip.shot_id) + self._shot_length(clip.shot_id)
             if clip.end > shot_end + tolerance:
-                out.append(f"{clip.address} ends at {clip.end:.2f} s, after its shot ends at {shot_end:.2f} s: "
-                           "the render would cut it off; extend its shot's picture or shorten the clip")
+                out[(clip.shot_id, clip.id)] = ((round(clip.end, 6), round(shot_end, 6)),
+                    f"{clip.address} ends at {clip.end:.2f} s, after its shot ends at {shot_end:.2f} s: "
+                    "the render would cut it off; extend its shot's picture or shorten the clip")
         return out
+
+    def _length_problems(self, base: "Checkout | None" = None) -> tuple[list[str], list[str]]:  # noqa: F821
+        """``(blocking, existing)``: overruns this change introduced or touched block; one the base already had
+        at the same two ends is reported only, so an untouched long-lived timeline can still be edited."""
+        found = self._length_findings()
+        if not found:
+            return [], []
+        before = ({key: sig for key, (sig, _) in base._length_findings().items()} if base is not None else None)
+        introduced, existing = split_findings({key: sig for key, (sig, _) in found.items()}, before)
+        return [found[key][1] for key in introduced], [found[key][1] for key in existing]
 
     def _sprite_problems(self) -> tuple[list[str], list[str]]:
         """(blocking, notes) for pixel sprites: canvas bounds, simultaneous scale, and source integrity."""
@@ -651,7 +664,15 @@ class _CheckMixin:
         blocking += [f"outside {line}" for line in self._outside]
         blocking += [f"type    {line}" for line in self._type_mismatches()]
         blocking += [f"beats   {line}" for line in self._stale_beats()]
-        blocking += [f"length  {line}" for line in self._length_problems()]
+        base_checkout = None
+        if self._length_findings():
+            try:
+                base_checkout = Checkout(base_bundle(candidate))
+            except Exception:  # noqa: BLE001 - with no readable base every overrun counts as new
+                base_checkout = None
+        length_blocking, length_existing = self._length_problems(base_checkout)
+        blocking += [f"length  {line}" for line in length_blocking]
+        existing = [warning(f"length  {line}") for line in length_existing]
         if diagnostics:
             spans = self._managed_scene_spans()
             if spans is None:
@@ -672,7 +693,7 @@ class _CheckMixin:
         if blocking:
             valid = False
         return CheckReport(valid=valid, validation=validation, summary=summary, lint=lint,
-                           problems=blocking + problems + list(dict.fromkeys(self.notes)), changed_cuts=cut_numbers,
+                           problems=blocking + existing + problems + list(dict.fromkeys(self.notes)), changed_cuts=cut_numbers,
                            diff=diff, cut_names=names, blocking=blocking, lint_new=lint_new, lint_old=lint_old,
                            addresses={c.id: c.address for c in self.clips() if c.address != c.id})
 

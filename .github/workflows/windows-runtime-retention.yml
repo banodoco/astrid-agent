@@ -1,0 +1,64 @@
+name: Windows runtime retention
+
+on:
+  pull_request:
+    branches: [main, "release/*/main"]
+    paths:
+      - "astrid/core/execution/generic_host.py"
+      - "astrid/core/generation/vibecomfy_runtime_root.py"
+      - "astrid/sdk/storage_ownership.py"
+      - "tests/core/execution/test_windows_runtime_retention.py"
+      - "tests/core/generation/test_vibecomfy_runtime_root.py"
+      - "runtime.lock.json"
+      - ".github/workflows/windows-runtime-retention.yml"
+  push:
+    branches: [main, "release/*/main"]
+    paths:
+      - "astrid/core/execution/generic_host.py"
+      - "astrid/core/generation/vibecomfy_runtime_root.py"
+      - "astrid/sdk/storage_ownership.py"
+      - "tests/core/execution/test_windows_runtime_retention.py"
+      - "tests/core/generation/test_vibecomfy_runtime_root.py"
+      - "runtime.lock.json"
+      - ".github/workflows/windows-runtime-retention.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-runtime-retention-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-runtime-retention:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install focused test dependencies
+        run: >-
+          python -m pip install pytest==9.0.2 pytest-timeout==2.4.0
+          jsonschema referencing PyYAML httpx filelock "pillow>=12.2,<13"
+          python-dotenv xxhash psutil
+      - name: Install the Agent without unrelated provider dependencies
+        run: python -m pip install --no-deps -e .
+      - name: Install the repository-pinned Runtime and client
+        run: python scripts/ci_install_runtime.py
+      - name: Prove kept attempts, crash recovery and native Windows cleanup
+        run: >-
+          python -m pytest -q -rA
+          tests/core/execution/test_windows_runtime_retention.py
+          tests/core/generation/test_vibecomfy_runtime_root.py
+          --junitxml=windows-runtime-retention.xml
+      - name: Upload exact-head test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-runtime-retention-${{ github.event.pull_request.head.sha || github.sha }}
+          path: windows-runtime-retention.xml

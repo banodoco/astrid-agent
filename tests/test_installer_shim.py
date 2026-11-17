@@ -569,7 +569,8 @@ def test_scratch_install_runs_real_astrid_help_and_forwards_arguments(tmp_path, 
 @pytest.mark.parametrize("command", [True, False])
 @pytest.mark.parametrize(("env", "tty", "opened"), [
     (None, True, True),
-    (None, False, True),
+    (None, False, False),
+    (None, None, False),
     ("1", True, False),
 ])
 def test_connect_page_link_is_always_printed_and_opened_unless_switched_off(
@@ -584,7 +585,7 @@ def test_connect_page_link_is_always_printed_and_opened_unless_switched_off(
     backend.log, backend.say = tmp_path / "install.log", lines.append
     backend.open = lambda: Backend.open(backend)
     monkeypatch.setattr("webbrowser.open", lambda url, *_: calls.append(url))
-    monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: tty))
+    monkeypatch.setattr(sys, "stdin", None if tty is None else SimpleNamespace(isatty=lambda: tty))
     monkeypatch.delenv("ASTRID_NO_BROWSER", raising=False)
     if env is not None:
         monkeypatch.setenv("ASTRID_NO_BROWSER", env)
