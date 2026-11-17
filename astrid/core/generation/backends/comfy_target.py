@@ -100,6 +100,20 @@ class ComfyTarget:
         object.__setattr__(self, "facts", MappingProxyType(dict(self.facts)))
 
 
+class ComfyRequestNotStarted(TransportError):
+    """The selected generation refused a request before writing any bytes.
+
+    A prompt caller may prepare a fresh client after this result. It must not
+    reuse this client's target facts, witnesses or one-submit attempt latch.
+    """
+
+    code = "comfy_request_not_started"
+    request_started = False
+    acceptance_known = True
+    prompt_id = None
+    prompt_not_started = False
+
+
 class ComfyTargetClient:
     """Bounded HTTP and custody for one attempt, with no lifecycle ownership.
 
@@ -315,6 +329,9 @@ class ComfyTargetClient:
                 raise ValueError("Comfy prompt acceptance is not an object")
             self.witness_prompt(result.get("prompt_id"))
             return result
+        except ComfyRequestNotStarted as exc:
+            exc.prompt_not_started = True
+            raise
         except urllib_error.HTTPError as exc:
             if exc.code in {400, 401, 403, 404, 422}:
                 raise

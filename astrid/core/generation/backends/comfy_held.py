@@ -9,10 +9,13 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import select
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from http.client import HTTPConnection
+from socket import MSG_PEEK
 from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request
@@ -23,11 +26,20 @@ from .comfy_target import (
     HTTP_TRANSFER_SECONDS,
     LOCAL_HTTP_SECONDS,
     MAX_JSON_BYTES,
+    ComfyRequestNotStarted,
     ComfyTarget,
     ComfyTargetClient,
     open_comfy_http,
     validate_attached_url,
 )
+
+
+class _HTTPConnectFailed(ValueError):
+    """Keep the attached target's preflight diagnostic at the held boundary."""
+
+
+class _WebsocketRedirect(ValueError):
+    """A redirect is a routing refusal, never a compatibility fallback."""
 
 
 class TargetGeneration:
@@ -102,6 +114,7 @@ class _HeldHTTP:
         self.connection = HTTPConnection(parsed.hostname, parsed.port, timeout=LOCAL_HTTP_SECONDS)
         self.connection.auto_open = 0
         self.connected = False
+        self.last_used = None
         self.dispatch = threading.Lock()
         self.inflight = False
         generation._on_retire.append(self.close_idle)
@@ -119,12 +132,41 @@ class _HeldHTTP:
             try:
                 self.connection.connect()
                 self.connected = True
+                self.last_used = time.monotonic()
                 with self.generation.guard():
                     pass
+            except OSError as exc:
+                self.generation.retire("HTTP connect failed")
+                self.connection.close()
+                raise _HTTPConnectFailed("comfy target /object_info request failed") from exc
             except BaseException:
                 self.generation.retire("HTTP connect failed")
                 self.connection.close()
                 raise
+
+    def _stale_reason(self):
+        """Inspect an idle socket under dispatch ownership; never send a probe."""
+        sock = self.connection.sock
+        if not self.connected or sock is None:
+            return "idle HTTP connection is closed"
+        if self.last_used is not None and time.monotonic() - self.last_used >= 30:
+            return "idle HTTP connection exceeded 30 seconds"
+        timeout = sock.gettimeout()
+        try:
+            if not select.select([sock], [], [], 0)[0]:
+                return None
+            # MSG_DONTWAIT isn't portable to Windows. Preserve the socket's
+            # timeout around a non-blocking peek; dispatch excludes other I/O.
+            sock.setblocking(False)
+            data = sock.recv(1, MSG_PEEK)
+            return ("idle HTTP connection was closed by peer" if not data
+                    else "idle HTTP connection has unexpected unread data")
+        except BlockingIOError:
+            return None
+        except OSError:
+            return "idle HTTP connection is unavailable"
+        finally:
+            sock.settimeout(timeout)
 
     def open(self, request, *, timeout):
         parsed = urlsplit(request.full_url)
@@ -134,9 +176,11 @@ class _HeldHTTP:
         self.dispatch.acquire()
         try:
             with self.generation.guard():
+                stale = self._stale_reason()
+                if stale is not None:
+                    self.generation.retire(stale)
+                    raise ComfyRequestNotStarted(stale + "; prepare a fresh target client")
                 self.inflight = True
-            if not self.connected or self.connection.sock is None:
-                raise TransportError("held Comfy HTTP connection was replaced")
             self.connection.sock.settimeout(timeout)
             self.connection.request(request.get_method(), parsed.path + ("?" + parsed.query if parsed.query else ""),
                                     body=request.data, headers=dict(request.header_items()))
@@ -152,6 +196,7 @@ class _HeldHTTP:
     def finish(self):
         with self.generation.lock:
             self.inflight = False
+            self.last_used = time.monotonic()
             if self.generation.reason is not None:
                 self.connection.close()
         self.dispatch.release()
@@ -299,15 +344,14 @@ class ComfyTargetSession:
         return await asyncio.wrap_future(self.submit(coroutine))
 
     async def _connect(self):
-        # VibeComfy already requires websockets>=12. Its protocol client neither
+        # The explicitly bounded websockets legacy protocol client neither
         # discovers proxies nor imports aiohttp's platform.system probe, which
         # can spawn cmd/ver inside the guarded Windows worker.
-        from websockets.exceptions import InvalidMessage, InvalidStatusCode
+        # A future migration to websockets.asyncio must pass proxy=None.
+        from vibecomfy.runtime.transport import ComfyTransport
+        from websockets.exceptions import InvalidMessage
         from websockets.legacy.client import WebSocketClientProtocol, connect
         from websockets.legacy.http import read_response
-        from vibecomfy.runtime.transport import ComfyTransport
-
-        incompatible_statuses = {200, 404, 405, 501}
 
         class GuardedProtocol(WebSocketClientProtocol):
             async def read_http_response(self):
@@ -334,10 +378,8 @@ class ComfyTargetSession:
                     raise InvalidMessage("did not receive a valid HTTP response") from exc
                 self.response_headers = headers
                 if 300 <= status < 400:
-                    raise ValueError("comfy target websocket redirected unexpectedly")
+                    raise _WebsocketRedirect("comfy target websocket redirected unexpectedly")
                 if reader.http10:
-                    if status in incompatible_statuses:
-                        raise InvalidStatusCode(status, headers)
                     raise InvalidMessage("Comfy websocket upgrade requires HTTP/1.1")
                 return status, headers
 
@@ -382,10 +424,14 @@ class ComfyTargetSession:
         self._transports.append(transport)
         try:
             await transport._connect()
-        except InvalidStatusCode as exc:
-            if exc.status_code not in incompatible_statuses:
-                raise
-            self.fallback_reason = "Comfy websocket unsupported"
+        except (_HTTPConnectFailed, _WebsocketRedirect):
+            generation.retire("Comfy transport connection refused")
+            raise
+        except Exception as exc:  # noqa: BLE001 - all pre-POST websocket failures select bounded fallback
+            # This connection attempt has no prompt and has written no POST.
+            # HTTP preflight still decides reachability/auth on today's path.
+            generation.retire("Comfy websocket unavailable before prompt")
+            self.fallback_reason = f"Comfy websocket unavailable before prompt ({type(exc).__name__})"
         except BaseException:
             generation.retire("Comfy transport connection failed")
             raise

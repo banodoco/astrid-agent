@@ -15,6 +15,7 @@ from astrid.core.generation.engine_contracts import TransportError
 
 from ..vibecomfy_runtime_root import vibecomfy_runtime_root
 from .comfy_target import (
+    ComfyRequestNotStarted,
     ComfyTarget,
     ComfyTargetClient,
     validate_identity,
@@ -42,6 +43,8 @@ class TargetRuntimeClient:
         self._on_event = on_event
         self._recovery = None
         self._released = False
+        self._history_readiness = None
+        self._ready_history = None
         self.evidence = dict(getattr(client, "transport_evidence", {}))
         if self.session is not None:
             self.evidence.update(mode="held", target_generation=client.generation.identity,
@@ -68,6 +71,9 @@ class TargetRuntimeClient:
 
         try:
             return await self.session.wait(post())
+        except ComfyRequestNotStarted as exc:
+            exc.prompt_not_started = True
+            raise
         except HTTPError as exc:
             if exc.code in {400, 401, 403, 404, 422}:
                 raise
@@ -123,11 +129,28 @@ class TargetRuntimeClient:
             raise ValueError("runtime history requires this attempt's witnessed prompt")
         if self.session is None:
             return False
+        if self._history_readiness is not None:
+            return self._history_readiness
         ready = await self.session.wait(self._attempt.history_ready(prompt_id))
         if not ready or self.client.generation.retired:
             self._recovery_client(prompt_id)
+            self._history_readiness = False
             return False
-        return True
+        # Some older servers announce node=null before persisting history.
+        # Check once and cache the response for Vibe's unchanged decoder. An
+        # empty or explicitly non-terminal entry selects its bounded poll;
+        # all malformed/status/output checks remain the decoder's authority.
+        history = await self.history(prompt_id)
+        self._ready_history = (history, self._recovery or self.client)
+        entry = history.get(prompt_id) if isinstance(history, dict) else None
+        status = entry.get("status") if isinstance(entry, dict) else None
+        early = history == {} or (isinstance(status, dict)
+                                  and status.get("status_str") in {"pending", "queued", "running"})
+        if early:
+            self.evidence.update(mode="bounded-poll-early-ready",
+                                 reason="Comfy history-ready event preceded terminal history")
+        self._history_readiness = not early
+        return self._history_readiness
 
     def _recovery_client(self, prompt_id):
         if not self.client.owns_prompt(prompt_id):
@@ -153,6 +176,10 @@ class TargetRuntimeClient:
     async def history(self, prompt_id: str) -> Any:
         if not self.client.owns_prompt(prompt_id):
             raise ValueError("runtime history requires this attempt's witnessed prompt")
+        if self._ready_history is not None:
+            (history, source), self._ready_history = self._ready_history, None
+            if source.generation is None or not source.generation.retired:
+                return source._current(history)
         if self.session is None or self._attempt is None:
             return await asyncio.to_thread(self.client.history, prompt_id)
         if self.client.generation.retired:

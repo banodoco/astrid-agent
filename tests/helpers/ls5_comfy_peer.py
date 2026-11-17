@@ -10,9 +10,12 @@ from aiohttp import web
 
 
 class ComfyPeer:
-    def __init__(self, comfy=None, *, auto_complete=True, delay=0.025):
+    def __init__(self, comfy=None, *, auto_complete=True, delay=0.025, keepalive_timeout=75):
         self.comfy = comfy
         self.auto_complete, self.delay = auto_complete, delay
+        self.keepalive_timeout = keepalive_timeout
+        self.websocket_status = None
+        self.first_status = "status"
         self.history = {} if comfy is None else getattr(comfy, "history", {})
         self.posts, self.calls, self.connections, self.events = [], [], [], []
         self.sockets = {}
@@ -40,7 +43,7 @@ class ComfyPeer:
     async def _start(self):
         app = web.Application(client_max_size=1024 * 1024 * 16)
         app.router.add_route("*", "/{path:.*}", self._handle)
-        self.runner = web.AppRunner(app)
+        self.runner = web.AppRunner(app, keepalive_timeout=self.keepalive_timeout)
         await self.runner.setup()
         self.site = web.TCPSite(self.runner, "127.0.0.1", 0)
         await self.site.start()
@@ -59,6 +62,8 @@ class ComfyPeer:
         self.calls.append((request.method, request.path))
         self.connections.append((request.path, id(request.transport)))
         if request.path == "/ws":
+            if self.websocket_status is not None:
+                return web.json_response({}, status=self.websocket_status)
             if self.mode == "unsupported":
                 self.observe("GET", "/ws", started)
                 return web.json_response({}, status=404)
@@ -69,7 +74,8 @@ class ComfyPeer:
             client_id = request.query["clientId"]
             self.sockets[client_id] = socket
             self.events.append(("socket", client_id))
-            await socket.send_json({"type": "status", "data": {}})
+            if self.first_status is not None:
+                await socket.send_json({"type": self.first_status, "data": {}})
             self.observe("GET", "/ws", started)
             try:
                 async for _message in socket:

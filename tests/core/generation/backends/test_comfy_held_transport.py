@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 import sys
 import textwrap
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -297,7 +299,11 @@ def test_blocked_progress_consumer_cannot_hold_worker_exit():
             asyncio.run(run())
         print("terminal-and-owner-closed", flush=True)
     ''')
-    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=5)
+    root = Path(__file__).resolve().parents[4]
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = os.pathsep.join(filter(None, (str(root), environment.get("PYTHONPATH"))))
+    result = subprocess.run([sys.executable, "-c", code], cwd=root, env=environment,
+                            capture_output=True, text=True, timeout=15)
     assert result.returncode == 0, result.stderr
     assert "terminal-and-owner-closed" in result.stdout
 
@@ -483,9 +489,8 @@ def test_cold_socket_import_does_not_launch_platform_probe(tmp_path):
 
 
 @pytest.mark.parametrize("status", [200, 404, 405, 501, 302, 401, 500, 101])
-def test_http10_response_only_allows_explicit_incompatible_fallback(status):
+def test_http10_response_falls_back_except_for_redirects(status):
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-    from websockets.exceptions import InvalidHandshake
 
     calls = []
 
@@ -509,16 +514,22 @@ def test_http10_response_only_allows_explicit_incompatible_fallback(status):
     try:
         url = f"http://127.0.0.1:{server.server_port}"
         with ComfyTargetSession(ComfyTarget(url, "attached")) as owner:
-            if status in {200, 404, 405, 501}:
+            if status != 302:
                 client = owner.client()
                 assert client.transport_evidence["mode"] == "bounded-poll-incompatible"
                 assert client.held_session is None
+                if status in {401, 500, 101}:
+                    # Only websocket compatibility falls back. The HTTP path
+                    # still refuses auth/server errors and an invalid upgrade.
+                    with pytest.raises(ValueError):
+                        client.object_info()
             else:
-                with pytest.raises((ValueError, InvalidHandshake)):
+                with pytest.raises(ValueError, match="redirect"):
                     owner.client()
                 assert owner.fallback_reason is None
             assert owner.generation.retired
-        assert len(calls) == 1 and calls[0].startswith("/ws?clientId=")
+        assert calls[0].startswith("/ws?clientId=")
+        assert calls[1:] == (["/object_info"] if status in {401, 500, 101} else [])
     finally:
         server.shutdown()
         server.server_close()

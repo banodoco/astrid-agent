@@ -403,15 +403,32 @@ def run_local_server(
     workflow_conversion_object_info_sha256: str | None = None,
 ) -> ProductionRunResult:
     from astrid.core.generation.backends.comfy_held import ComfyTargetSession
-    from astrid.core.generation.backends.comfy_target import ComfyTarget
+    from astrid.core.generation.backends.comfy_target import ComfyRequestNotStarted, ComfyTarget
 
     with ComfyTargetSession(ComfyTarget(comfy_url, "attached")) as session:
-        return _run_local_server(
-            resolved, destination, comfy_url=comfy_url, comfy_output_dir=comfy_output_dir,
-            task_identity=task_identity, attempt_identity=attempt_identity, run_inputs=run_inputs,
-            workflow_conversion_object_info_sha256=workflow_conversion_object_info_sha256,
-            session=session,
-        )
+        for preparation in range(2):
+            try:
+                return _run_local_server(
+                    resolved, destination, comfy_url=comfy_url, comfy_output_dir=comfy_output_dir,
+                    task_identity=task_identity, attempt_identity=attempt_identity, run_inputs=run_inputs,
+                    workflow_conversion_object_info_sha256=workflow_conversion_object_info_sha256,
+                    session=session,
+                )
+            except Exception as exc:
+                # Vibe preserves the typed transport result in its exception
+                # chain. Only an unsent prompt permits one full re-preparation:
+                # new client, schema, media checks and approval. A failed read
+                # after acceptance or a lost POST acknowledgement cannot retry.
+                cause, seen = exc, set()
+                while cause is not None and id(cause) not in seen:
+                    seen.add(id(cause))
+                    if isinstance(cause, ComfyRequestNotStarted) and cause.prompt_not_started:
+                        break
+                    cause = cause.__cause__ or cause.__context__
+                else:
+                    raise
+                if preparation:
+                    raise
 
 
 def _publish_comfy_progress(event):
