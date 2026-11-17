@@ -4,12 +4,15 @@ from __future__ import annotations
 import hashlib
 import re
 import sys
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path, PureWindowsPath
 
 import pytest
 
 from astrid.core.generation import vibecomfy_runtime_root as module
-from astrid.core.generation.vibecomfy_runtime_root import remove_windows_runtime_root, vibecomfy_runtime_root
+from astrid.core.generation.vibecomfy_runtime_root import (
+    remove_windows_runtime_root,
+    vibecomfy_runtime_root,
+)
 
 ROOT = Path(__file__).resolve().parents[3]
 ATTEMPT = "astrid-attempt-" + "a" * 32
@@ -22,12 +25,17 @@ def _windows_destination(user: str = "u" * 40):
 @pytest.mark.parametrize("platform_name", ["linux", "darwin"])
 def test_posix_keeps_the_runtime_folder_inside_the_outputs(tmp_path, platform_name):
     assert vibecomfy_runtime_root(tmp_path, platform_name=platform_name) == tmp_path / ".vibecomfy-runtime"
-    assert str(vibecomfy_runtime_root(tmp_path, platform_name=platform_name)) == str(tmp_path) + "/.vibecomfy-runtime"
+    assert vibecomfy_runtime_root(tmp_path, platform_name=platform_name).parts == (*tmp_path.parts, ".vibecomfy-runtime")
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="the unparameterised call is the host platform")
 def test_default_platform_is_the_host_platform(tmp_path):
-    assert vibecomfy_runtime_root(tmp_path) == tmp_path / ".vibecomfy-runtime"
+    destination = tmp_path / "attempts" / ("b" * 16) / ATTEMPT / "outputs"
+    if sys.platform == "win32":
+        key = hashlib.sha256(ATTEMPT.encode()).hexdigest()[:16]
+        expected = tmp_path.resolve() / "vr" / key
+    else:
+        expected = destination / ".vibecomfy-runtime"
+    assert vibecomfy_runtime_root(destination) == expected
 
 
 def test_windows_uses_a_short_directory_under_the_data_root():
