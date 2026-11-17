@@ -2,7 +2,7 @@
 
 The fixture Runtime and host run in this test process; CLI and pack workers
 are separate. Timing and instrumentation runs are separate. Native flush
-counts are joined from an external trace, never inferred from SQLite commits.
+counts, when requested separately, are never inferred from SQLite commits.
 """
 from __future__ import annotations
 
@@ -26,6 +26,13 @@ from tests.integrations.test_runpod_slot_path_cpu import _drive
 from tests.integrations.test_workflow_file_placements_cpu import INPUTS, _workflow_file
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(600)]
+
+
+def sample_indices():
+    count = int(os.environ.get("ASTRID_LS2_SAMPLES", "1"))
+    if not 1 <= count <= 20:
+        raise ValueError("ASTRID_LS2_SAMPLES must be between 1 and 20")
+    return range(count)
 
 
 class AttachedMeter:
@@ -121,7 +128,8 @@ class AttachedMeter:
 
 
 @pytest.mark.parametrize("caller", ["resident_sdk", "fresh_python_cli"])
-def test_attached_caller_observation(caller, tmp_path, monkeypatch, real_runtime, tuple_sources, request):
+@pytest.mark.parametrize("sample_index", sample_indices())
+def test_attached_caller_observation(caller, sample_index, tmp_path, monkeypatch, real_runtime, tuple_sources, request):
     meter = AttachedMeter()
     connection = tmp_path / "prepared-connection.json"
     workflow = _workflow_file()
@@ -197,6 +205,7 @@ def test_attached_caller_observation(caller, tmp_path, monkeypatch, real_runtime
         assert len(set(provider.comfy.views)) == 2
         report = meter.report()
         report["caller"] = caller
+        report["sample_index"] = sample_index
         report["job"] = "second invocation after successful warm-up in same host session"
         report["proof"] = {"warmup_task_id": warmup_id, "measured_task_id": task_id,
                            "verified_states": ["succeeded", "succeeded"], "outputs": output_proofs}

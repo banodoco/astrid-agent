@@ -1,9 +1,11 @@
-"""Run the actual attached meter twice: unobserved timing and native/Python counts.
+"""Run repeated unobserved timing separately from the standing counters.
 
 The two runs never contribute times to one combined distribution. Output/task
 checks live in the existing integration test; this collector retains them and
 requires complete report coverage before publishing counts. No budget is
-certified until a separately recorded baseline and design budget exist.
+certified until the design budget exists. A reference baseline gates regressions
+in today's path. Native Windows tracing is opt-in LS-13 evidence, not an LS-2
+prerequisite; the absence of a trace stays unknown in every report.
 """
 from __future__ import annotations
 
@@ -20,23 +22,26 @@ import xml.etree.ElementTree as ET
 
 from tests._local_speed_native import count_interval, trace_etw, trace_strace
 from tests.local_speed_native_capture import capture, run_bounded
+from tests._local_speed_baseline import make_baseline, compare_baseline
 
 REPORT_PREFIX = "LOCAL_SPEED_OBSERVATION "
 CALLERS = {"resident_sdk", "fresh_python_cli"}
 SELECTOR = "tests/integrations/test_local_speed_meter.py"
 
 
-def parse_reports(log: Path, *, instrumented: bool) -> list[dict]:
+def parse_reports(log: Path, *, instrumented: bool, samples: int = 1) -> list[dict]:
     reports = []
-    for line in log.read_text(errors="replace").splitlines():
+    for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
         if line.startswith(REPORT_PREFIX):
             try:
                 row = json.loads(line[len(REPORT_PREFIX):])
             except (ValueError, TypeError) as error:
                 raise ValueError("malformed attached meter report") from error
             reports.append(row)
-    if len(reports) != 2 or {row.get("caller") for row in reports} != CALLERS:
-        raise ValueError("both distinct caller reports are required exactly once")
+    expected = {(caller, sample) for caller in CALLERS for sample in range(samples)}
+    if (len(reports) != 2 * samples
+            or {(row.get("caller"), row.get("sample_index", 0)) for row in reports} != expected):
+        raise ValueError("both distinct caller reports are required exactly once per sample")
     for row in reports:
         if row.get("instrumented") is not instrumented:
             raise ValueError("latency/counter report mode mismatch")
@@ -75,12 +80,12 @@ def parse_reports(log: Path, *, instrumented: bool) -> list[dict]:
     return reports
 
 
-def require_junit(path: Path) -> dict:
+def require_junit(path: Path, *, samples: int = 1) -> dict:
     root = ET.parse(path).getroot()
     suites = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
     counts = {name: sum(int(s.get(name, "0")) for s in suites)
               for name in ("tests", "failures", "errors", "skipped")}
-    if counts != {"tests": 2, "failures": 0, "errors": 0, "skipped": 0}:
+    if counts != {"tests": 2 * samples, "failures": 0, "errors": 0, "skipped": 0}:
         raise ValueError(f"actual meter tests did not both pass: {counts}")
     return counts
 
@@ -103,6 +108,11 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--timeout", type=int, default=1800)
+    parser.add_argument("--samples", type=int, choices=range(1, 21), default=5)
+    parser.add_argument("--counter-samples", type=int, choices=range(1, 21), default=2)
+    parser.add_argument("--baseline", type=Path)
+    parser.add_argument("--native", choices=("linux", "all", "none"), default="linux",
+                        help="all retains strict native Windows tracing for LS-13")
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -111,36 +121,68 @@ def main() -> int:
                "budget_certified": False, "latency": None, "counters": None,
                "scope": "attached stand-in through real SDK/CLI, Runtime, host and worker; not GPU proof"}
     original_mode = os.environ.pop("ASTRID_LS2_OBSERVE", None)
+    original_samples = os.environ.get("ASTRID_LS2_SAMPLES")
     try:
+        os.environ["ASTRID_LS2_SAMPLES"] = str(args.samples)
         latency_command = meter_command(output, "latency")
         (output / "latency-command.json").write_text(json.dumps(latency_command, indent=2) + "\n")
         latency_exit = run_bounded(latency_command, log=output / "latency.log", timeout=args.timeout)
         (output / "latency.exit").write_text(str(latency_exit) + "\n")
         if latency_exit:
             raise RuntimeError("uninstrumented attached meter failed; retained latency.log")
-        summary["latency_junit"] = require_junit(output / "latency.xml")
-        summary["latency"] = parse_reports(output / "latency.log", instrumented=False)
+        summary["latency_junit"] = require_junit(output / "latency.xml", samples=args.samples)
+        summary["latency"] = parse_reports(output / "latency.log", instrumented=False, samples=args.samples)
         for row in summary["latency"]:
             row["overhead_seconds"] = row["caller_seconds"] - row["standin_execution_seconds"][0]
             row["queue_time_subtracted"] = False
         os.environ["ASTRID_LS2_OBSERVE"] = "1"
+        os.environ["ASTRID_LS2_SAMPLES"] = str(args.counter_samples)
         counter_command = meter_command(output, "counters")
         (output / "counter-command.json").write_text(json.dumps(counter_command, indent=2) + "\n")
-        captured = capture(output / "native", counter_command, args.timeout)
-        summary["counter_capture"] = captured
-        if not captured["completed"] or captured.get("proof_exit") != 0:
-            raise RuntimeError("instrumented attached meter/capture failed; retained native/proof.log")
-        summary["counter_junit"] = require_junit(output / "counters.xml")
-        summary["counters"] = parse_reports(output / "native/proof.log", instrumented=True)
-        trace = (trace_etw(output / "native/trace.xml", output / "native/trace-summary.txt")
-                 if os.name == "nt" else trace_strace(output / "native"))
-        (output / "native-events.json").write_text(json.dumps(trace, indent=2) + "\n")
-        for row in summary["counters"]:
-            native = count_interval(trace, row["interval"])
-            row["native_observation"] = native
-            row["native_flushes"] = native["native_flushes"]
-            if native["native_flushes"] is None or native["observed_failed_flushes"]:
-                raise RuntimeError("native counter is incomplete or records failed flushes")
+        native_enabled = args.native == "all" or (args.native == "linux" and sys.platform.startswith("linux"))
+        counter_log = output / "counters.log"
+        if native_enabled:
+            captured = capture(output / "native", counter_command, args.timeout)
+            summary["counter_capture"] = captured
+            counter_log = output / "native/proof.log"
+            if not captured["completed"] or captured.get("proof_exit") != 0:
+                raise RuntimeError("instrumented attached meter/capture failed; retained native/proof.log")
+        else:
+            counter_exit = run_bounded(counter_command, log=counter_log, timeout=args.timeout)
+            summary["counter_capture"] = {"observer": "Python process observer", "proof_exit": counter_exit,
+                                          "completed": counter_exit != 124}
+            if counter_exit:
+                raise RuntimeError("instrumented attached meter failed; retained counters.log")
+        summary["counter_junit"] = require_junit(output / "counters.xml", samples=args.counter_samples)
+        summary["counters"] = parse_reports(counter_log, instrumented=True, samples=args.counter_samples)
+        if native_enabled:
+            trace = (trace_etw(output / "native/trace.xml", output / "native/trace-summary.txt")
+                     if os.name == "nt" else trace_strace(output / "native"))
+            (output / "native-events.json").write_text(json.dumps(trace, indent=2) + "\n")
+            for row in summary["counters"]:
+                native = count_interval(trace, row["interval"])
+                row["native_observation"] = native
+                row["native_flushes"] = native["native_flushes"]
+                if native["native_flushes"] is None or native["observed_failed_flushes"]:
+                    raise RuntimeError("native counter is incomplete or records failed flushes")
+        summary["native_flush_coverage"] = ("completed OS operations" if native_enabled else
+                                             "unobserved; Windows native trace belongs to LS-13")
+        source_paths = {"agent": ".", "runtime": os.environ.get("ASTRID_RUNTIME_CHECKOUT"),
+                        "vibecomfy": os.environ.get("ASTRID_VIBECOMFY_CHECKOUT"),
+                        "lifecycle": os.environ.get("ASTRID_TEST_LIFECYCLE_CHECKOUT")}
+        identities = {name: subprocess.check_output(["git", "-C", path, "rev-parse", "HEAD"], text=True).strip()
+                      for name, path in source_paths.items() if path}
+        baseline = make_baseline(summary["latency"], summary["counters"], system=platform.system(), sources=identities)
+        (output / "baseline.json").write_text(json.dumps(baseline, indent=2) + "\n", encoding="utf-8")
+        summary["baseline"] = baseline
+        summary["baseline_status"] = "RECORDED; reference comparison not requested"
+        if args.baseline:
+            reference = json.loads(args.baseline.read_text(encoding="utf-8"))
+            summary["baseline_regressions"] = compare_baseline(baseline, reference)
+            summary["baseline_reference"] = str(args.baseline)
+            if summary["baseline_regressions"]:
+                raise RuntimeError("standing baseline regression; see baseline_regressions")
+            summary["baseline_status"] = "PASS"
         summary["status"] = "PASS"
     except (OSError, ValueError, RuntimeError, ET.ParseError) as error:
         summary["error"] = f"{type(error).__name__}: {error}"
@@ -149,6 +191,10 @@ def main() -> int:
             os.environ.pop("ASTRID_LS2_OBSERVE", None)
         else:
             os.environ["ASTRID_LS2_OBSERVE"] = original_mode
+        if original_samples is None:
+            os.environ.pop("ASTRID_LS2_SAMPLES", None)
+        else:
+            os.environ["ASTRID_LS2_SAMPLES"] = original_samples
         summary["finished_epoch_ns"] = time.time_ns()
         (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps({k: v for k, v in summary.items() if k not in {"latency", "counters"}}, indent=2))

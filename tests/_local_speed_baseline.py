@@ -1,0 +1,108 @@
+"""Standing-meter baseline and explicit tolerances, not the D1 speed budget.
+
+Latency is uninstrumented. Counter caps apply to instrumented jobs only.
+OS flush completions are a separate observation; an absent trace is never zero.
+"""
+from __future__ import annotations
+
+from collections import Counter
+import math
+import re
+import statistics
+
+
+SCHEMA = "astrid.local-speed-baseline.v1"
+# Fixed before the repeated measurements. Hosted-runner scheduling and antivirus
+# vary, so latency uses an upper regression bound; a speed-up is welcome.
+TOLERANCE = {"median_relative": 0.50, "median_seconds": 3.0,
+             "slowest_relative": 1.00, "slowest_seconds": 5.0,
+             "background_relative": 0.50, "background_count": 10}
+CALLERS = ("resident_sdk", "fresh_python_cli")
+
+
+def distribution(values):
+    if not values or any(not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0 for v in values):
+        raise ValueError("a complete finite nonnegative sample distribution is required")
+    return {"samples": len(values), "median": statistics.median(values), "slowest": max(values)}
+
+
+def counter_values(row):
+    counts = row["python_counts"]
+    if any(counts.get(name, 0) for name in ("fsync_error", "fdatasync_error")):
+        raise ValueError("a Python forced-write request failed")
+    values = {"process_start." + key: value for key, value in row["process_start_counts"].items()}
+    for name in ("workflow_compile", "bundle_compile", "bundle_emission", "sleep_attempt",
+                 "fsync_attempt", "fsync_success", "fdatasync_attempt", "fdatasync_success"):
+        values["python." + name] = counts.get(name, 0)
+    paths = Counter()
+    for path, count in row["attached_http_paths"].items():
+        # Prompt IDs identify attempts, not different request operations.
+        paths[re.sub(r"(/history/)[^/?]+", r"\1<prompt>", path)] += count
+    values.update({"comfy_http." + key: value for key, value in paths.items()})
+    values["output_hash_streams"] = row["output_hash_streams"]
+    values["python_forced_write_requests"] = counts.get("fsync_success", 0) + counts.get("fdatasync_success", 0)
+    values["runtime_commit_statements"] = row["runtime_main_connection_commit_statements"]
+    if any(type(v) is not int or v < 0 for v in values.values()):
+        raise ValueError("counter values must be observed nonnegative integers")
+    return dict(sorted(values.items()))
+
+
+def make_baseline(latency, counters, *, system, sources):
+    baseline = {"schema": SCHEMA, "system": system, "sources": sources,
+                "tolerance": dict(TOLERANCE), "callers": {},
+                "fixture": "attached stand-in, 16x16 PNG; no inference, not a D1 workload",
+                "native_windows_flushes": "unqualified; LS-13 owns the native trace",
+                "budget_certified": False}
+    for caller in CALLERS:
+        timings = [row for row in latency if row["caller"] == caller]
+        observed = [counter_values(row) for row in counters if row["caller"] == caller]
+        if not observed:
+            raise ValueError("each caller needs an instrumented counter sample")
+        names = set().union(*(row.keys() for row in observed))
+        baseline["callers"][caller] = {
+            "caller_seconds": distribution([row["caller_seconds"] for row in timings]),
+            "overhead_seconds": distribution([row["overhead_seconds"] for row in timings]),
+            "queue_seconds": distribution([row["standin_queue_seconds"][0] for row in timings]),
+            "execution_seconds": distribution([row["standin_execution_seconds"][0] for row in timings]),
+            "counter_samples": len(observed),
+            "counter_maxima": {key: max(row.get(key, 0) for row in observed) for key in sorted(names)},
+        }
+    return baseline
+
+
+def compare_baseline(actual, reference):
+    """Return every regression. Extra starts/compiles/emissions/hashes fail.
+
+Sleep attempts and Runtime COMMIT statements include existing background
+activity. Their disclosed allowance is distinct from deterministic counters.
+"""
+    if reference.get("schema") != SCHEMA or actual["system"] != reference.get("system"):
+        raise ValueError("baseline schema/system mismatch")
+    if reference.get("tolerance") != TOLERANCE:
+        raise ValueError("baseline tolerance differs from the checked policy")
+    if actual["fixture"] != reference.get("fixture"):
+        raise ValueError("baseline fixture mismatch")
+    if set(reference.get("callers", {})) != set(CALLERS):
+        raise ValueError("baseline must name both callers")
+    failures = []
+    for caller in CALLERS:
+        current, prior = actual["callers"][caller], reference["callers"][caller]
+        if current["overhead_seconds"]["samples"] < prior["overhead_seconds"]["samples"]:
+            raise ValueError("fewer latency samples than the recorded baseline")
+        for statistic in ("median", "slowest"):
+            expected = prior["overhead_seconds"][statistic]
+            limit = expected * (1 + TOLERANCE[statistic + "_relative"]) + TOLERANCE[statistic + "_seconds"]
+            value = current["overhead_seconds"][statistic]
+            if value > limit:
+                failures.append({"caller": caller, "metric": "overhead_seconds." + statistic,
+                                 "actual": value, "limit": limit, "reference": expected})
+        old, new = prior["counter_maxima"], current["counter_maxima"]
+        for name in sorted(set(old) | set(new)):
+            expected, value = old.get(name, 0), new.get(name, 0)
+            limit = expected
+            if name in {"python.sleep_attempt", "runtime_commit_statements"}:
+                limit = math.ceil(expected * (1 + TOLERANCE["background_relative"])) + TOLERANCE["background_count"]
+            if value > limit:
+                failures.append({"caller": caller, "metric": name, "actual": value,
+                                 "limit": limit, "reference": expected})
+    return failures

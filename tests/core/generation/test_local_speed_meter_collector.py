@@ -51,6 +51,25 @@ def test_junit_skips_are_not_passes(tmp_path):
     with pytest.raises(ValueError): require_junit(path)
 
 
+def test_repeated_samples_require_both_callers_at_each_index(tmp_path):
+    value = []
+    for sample in range(5):
+        for row in rows(False):
+            row["sample_index"] = sample
+            value.append(row)
+    assert len(parse_reports(write(tmp_path, value), instrumented=False, samples=5)) == 10
+    value[-1]["sample_index"] = 0
+    with pytest.raises(ValueError):
+        parse_reports(write(tmp_path, value), instrumented=False, samples=5)
+
+
+def test_repeated_junit_requires_every_sample(tmp_path):
+    path = tmp_path / "results.xml"
+    path.write_text('<testsuites><testsuite tests="10" failures="0" errors="0" skipped="0"/></testsuites>')
+    assert require_junit(path, samples=5)["tests"] == 10
+    with pytest.raises(ValueError): require_junit(path, samples=6)
+
+
 def test_each_phase_gets_a_fresh_short_owned_pytest_base(tmp_path, monkeypatch):
     from pathlib import Path
     from tests.local_speed_meter_run import meter_command

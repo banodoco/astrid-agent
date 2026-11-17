@@ -1,4 +1,4 @@
-name: Plan 55 native flush and attached meter
+name: Plan 55 standing attached meter
 on:
   pull_request:
     branches: ["release/14/plan-55"]
@@ -19,7 +19,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   calibrate:
-    name: Native and attached meter (${{ matrix.os }})
+    name: Standing attached meter (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 70
     strategy:
@@ -68,7 +68,7 @@ jobs:
         shell: python
         run: |
           import pathlib, subprocess
-          base = "cb1a590e0008dde7e3fc2d3fbf341ef98401b32a"
+          base = "d10ebd15dbdbc831e4579dab937b7cb46c616cc9"
           changed = subprocess.check_output(["git", "diff", "--name-only", base, "HEAD", "--", "astrid", "runtime.lock.json", "astrid_runtime_client"], text=True).strip()
           if changed:
               raise SystemExit("This baseline measurement changed product bytes: " + changed)
@@ -103,6 +103,7 @@ jobs:
           tests/core/generation/test_local_speed_process_observer.py
           tests/core/generation/test_local_speed_hash_observer.py
           tests/core/generation/test_local_speed_meter_collector.py
+          tests/core/generation/test_local_speed_baseline.py
           tests/core/generation/test_local_speed_report_capture.py
           tests/core/generation/test_local_speed_runtime_support.py
           tests/core/generation/test_local_speed_schema_encoding.py
@@ -116,8 +117,12 @@ jobs:
         run: python -m tests.local_speed_native_run --output plan55-native-proof
       # Owner D12 (dev #765) approves this exact retry after the fixture correction.
       # No Runtime pin, ACL validation, privileges or production permissions change.
-      - name: Measure actual attached SDK and CLI separately from instrumentation
-        run: python -m tests.local_speed_meter_run --output plan55-meter-proof --timeout 1800
+      # R14-P55-02 assigns native Windows trace work to LS-13. Its original
+      # strict capture remains available with --native all and keeps failures.
+      # The standing meter records Python force requests and COMMIT statements
+      # separately; neither is represented as an OS flush count.
+      - name: Record repeated SDK and CLI baseline separately from counters
+        run: python -m tests.local_speed_meter_run --output plan55-meter-proof --timeout 1800 --samples 5 --counter-samples 2
       - name: Preserve exact source identity and proof manifests
         if: ${{ always() }}
         shell: python
