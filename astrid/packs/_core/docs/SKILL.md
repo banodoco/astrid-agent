@@ -267,7 +267,7 @@ the runtime:
 
 Use `timelines show`, `history`, `diff`, `visualize`, and `render` for
 timeline work. Look at your visual edits with `visualize` as often as helps
-([how to look](../../timeline/docs/references/how-to-look.md)); render only
+([timeline-visualize](../../timeline/docs/visualize/SKILL.md)); render only
 when the user asks, and point them to the editor link. Whole-document timeline saves are retired; edits are published
 through the detached authoring bundle. Read the [timeline skill](../../timeline/docs/SKILL.md)
 for editing. Read the [rendering skill](../../rendering/docs/SKILL.md) for
