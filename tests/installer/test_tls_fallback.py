@@ -147,7 +147,7 @@ def test_shared_policy_works_in_dependency_free_bootstrap(tmp_path, monkeypatch)
     source.mkdir()
     shutil.copy2(root / "pyproject.toml", source / "pyproject.toml")
     files = [Path(name) for name in (
-        "astrid/__init__.py", "astrid/version.py", "astrid/installer/__init__.py",
+        "astrid/__init__.py", "astrid/_tls_policy.py", "astrid/version.py", "astrid/installer/__init__.py",
         "astrid/installer/tls_fallback.py",
         "astrid/core/__init__.py",
         "astrid/core/ids.py",

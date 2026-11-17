@@ -274,7 +274,7 @@ def test_certifi_supplements_the_os_store_from_the_first_connection(
 def test_factory_keeps_the_default_os_roots_when_certifi_is_added(monkeypatch):
     original = ssl.create_default_context()
     roots = set(original.get_ca_certs(binary_form=True))
-    monkeypatch.setattr(http_util.ssl, "create_default_context", lambda: original)
+    monkeypatch.setattr(ssl, "create_default_context", lambda: original)
 
     context = os_trust_ssl_context("linux")
 

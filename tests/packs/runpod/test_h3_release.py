@@ -8,6 +8,7 @@ import io
 import json
 import os
 import shlex
+import ssl
 import subprocess
 import sys
 import threading
@@ -413,7 +414,9 @@ def test_remote_ready_is_last_and_failed_recheck_removes_marker(tmp_path, monkey
         if not path.exists():
             remote.atomic_json(path, {"requirements_lock_sha256": "b" * 64})
 
-    def opener(request, timeout):
+    def opener(request, timeout, *, context):
+        assert context.verify_mode == ssl.CERT_REQUIRED
+        assert context.check_hostname is True
         return RangeResponse(payload, 0, len(payload) - 1)
 
     monkeypatch.setattr(remote.os.path, "ismount", lambda _p: True)
@@ -716,6 +719,7 @@ def test_bootstrap_packages_exact_product_sources_deterministically():
 
 
 @pytest.mark.parametrize("source", [
+    "_tls_policy.py",
     "core/generation/engine_contracts.py", "core/generation/model_downloader.py",
     "packs/runpod/h3_release_remote.py", "packs/runpod/h3_release_bootstrap.py",
     *("runtime_protocol/" + name for name in bootstrap._RUNTIME_SOURCES),
@@ -797,7 +801,7 @@ def test_actual_transport_bootstrap_downloads_and_skips_on_stdlib_only_cold_targ
     env["TMPDIR"] = str(temporary)
     source_hashes = {
         "astrid/" + name: hashlib.sha256((Path(build.__file__).parents[2] / name).read_bytes()).hexdigest()
-        for name in ("core/generation/engine_contracts.py", "core/generation/model_downloader.py")
+        for name in ("_tls_policy.py", "core/generation/engine_contracts.py", "core/generation/model_downloader.py")
     }
     source_hashes.update({
         "runtime_protocol/" + name: hashlib.sha256(
@@ -808,7 +812,7 @@ def test_actual_transport_bootstrap_downloads_and_skips_on_stdlib_only_cold_targ
     # wrapper or shared modules. The real provision/build/download/receipt path
     # runs; source checkout, pip/uv and runtime commands are local fakes.
     harness = f'''
-import hashlib,importlib.util,json,os,sys
+import hashlib,importlib.util,json,os,ssl,sys
 from pathlib import Path
 from types import SimpleNamespace
 assert sys.flags.no_site and sys.flags.isolated
@@ -845,7 +849,9 @@ def enter(frame,event,arg):
             remote.atomic_json(path,{{'requirements_lock_sha256':'b'*64}})
     remote.Provisioner.environment=environment
     real_open=downloader.urllib.request.urlopen
-    def local_open(request,timeout):
+    def local_open(request,timeout,*,context):
+        assert context.verify_mode == ssl.CERT_REQUIRED
+        assert context.check_hostname is True
         assert request.full_url.startswith('https://huggingface.co/test/repo/resolve/')
         local=downloader.urllib.request.Request('http://127.0.0.1:{server.server_port}/model',headers={{'Range':request.headers['Range']}})
         return real_open(local,timeout=timeout)

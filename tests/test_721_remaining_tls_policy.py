@@ -2,21 +2,84 @@
 
 from __future__ import annotations
 
+import ast
+import base64
 import contextlib
 import hashlib
 import io
+import shlex
+import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
 from types import SimpleNamespace
 
-from astrid import omp_agent
+from astrid import _tls_policy, omp_agent
 from astrid.core.generation import model_downloader
 from astrid.core.generation.backends import comfy_target
 from astrid.core.generation.engine_contracts import ModelSpec
 from astrid.core.model_setup import acquire
 from astrid.core.util import http as http_util
+
+
+def test_installed_and_standalone_callers_share_the_same_policy():
+    from astrid.packs.runpod import h3_release_remote, pod_watchdog
+
+    assert http_util.os_trust_ssl_context is _tls_policy.os_trust_ssl_context
+    assert h3_release_remote.os_trust_ssl_context is _tls_policy.os_trust_ssl_context
+    assert pod_watchdog.os_trust_ssl_context is _tls_policy.os_trust_ssl_context
+
+
+def test_transported_watchdog_uses_exact_policy_without_an_installed_agent(tmp_path):
+    from pathlib import Path
+
+    from astrid.packs.runpod import pod_watchdog
+
+    commands = []
+    ops = SimpleNamespace(exec=lambda command, timeout: commands.append(command) or (0, "", ""))
+    assert pod_watchdog.write_deadline(ops, 100, 1) is True
+    loader = ast.parse(shlex.split(commands[0])[2])
+    encoded = next(
+        node.args[0].value for node in ast.walk(loader)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "b64decode"
+    )
+    source = base64.b64decode(encoded)
+    assert Path(_tls_policy.__file__).read_text() in [
+        node.value for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    ]
+    program = tmp_path / "pod-watchdog.py"
+    program.write_bytes(source)
+    harness = '''
+import importlib.util, io, ssl, sys
+from pathlib import Path
+assert sys.flags.isolated and sys.flags.no_site
+assert importlib.util.find_spec("astrid") is None
+assert importlib.util.find_spec("certifi") is None
+scope = {"__name__": "__pod_watchdog__"}
+exec(compile(Path(sys.argv[1]).read_bytes(), "pod-watchdog.py", "exec"), scope)
+# The transported program targets Linux. Exercise that branch without any
+# installed Agent, then prove the request seam uses that exact context.
+context = scope["os_trust_ssl_context"]("linux")
+assert context.verify_mode == ssl.CERT_REQUIRED and context.check_hostname
+scope["os_trust_ssl_context"] = lambda: context
+calls = []
+def open_request(request, *, timeout, context):
+    calls.append((request.full_url, timeout, context))
+    return io.BytesIO(b"verified")
+scope["urllib"].request.urlopen = open_request
+with scope["urlopen"](scope["Request"]("https://provider.example.test"), timeout=7) as response:
+    assert response.read() == b"verified"
+assert calls == [("https://provider.example.test", 7, context)]
+assert importlib.util.find_spec("astrid") is None
+'''
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", "-c", harness, str(program)],
+        cwd=tmp_path, capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_openrouter_key_check_uses_the_shared_context(monkeypatch, capsys):
