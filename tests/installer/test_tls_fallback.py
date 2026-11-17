@@ -192,3 +192,55 @@ assert ssl.SSLContext is original_context
         cwd=tmp_path, capture_output=True, text=True, check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_open_with_tls_fallback_keeps_handlers_and_retries_once_natively(monkeypatch):
+    from astrid.installer import tls_fallback
+
+    seen = []
+
+    class _Opener:
+        def __init__(self, fail):
+            self.fail = fail
+
+        def open(self, request, *, timeout):
+            assert timeout == 120
+            if self.fail:
+                raise urllib.error.URLError(ssl.SSLCertVerificationError(1, "CERTIFICATE_VERIFY_FAILED"))
+            return io.BytesIO(b"verified")
+
+    def build_opener(*handlers):
+        seen.append(handlers)
+        return _Opener(fail=len(seen) == 1)
+
+    monkeypatch.setattr(tls_fallback.urllib.request, "build_opener", build_opener)
+    request = tls_fallback.urllib.request.Request("https://example.invalid")
+
+    with tls_fallback.open_with_tls_fallback(request, timeout=120, handlers=("redirect",)) as response:
+        assert response.read() == b"verified"
+
+    assert seen[0] == ("redirect",)
+    assert seen[1][0] == "redirect"
+    native = seen[1][-1]
+    assert isinstance(native, tls_fallback.urllib.request.HTTPSHandler)
+    assert native._context.__class__.__module__ == "astrid.installer._tls_truststore._api"
+    assert len(seen) == 2
+
+
+def test_open_with_tls_fallback_does_not_retry_other_errors(monkeypatch):
+    from astrid.installer import tls_fallback
+
+    attempts = []
+
+    class _Opener:
+        def open(self, request, *, timeout):
+            attempts.append(request)
+            raise urllib.error.URLError(OSError("connection refused"))
+
+    monkeypatch.setattr(tls_fallback.urllib.request, "build_opener", lambda *_h: _Opener())
+
+    with pytest.raises(urllib.error.URLError):
+        tls_fallback.open_with_tls_fallback(
+            tls_fallback.urllib.request.Request("https://example.invalid"), timeout=120,
+        )
+    assert len(attempts) == 1

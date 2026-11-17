@@ -9570,7 +9570,7 @@ class GenericPackHost:
         digest = hashlib.sha256(encoded_bytes).hexdigest()
         # Publish a new immutable spool object before atomically changing the
         # universal receipt, so a crash never invalidates its prior hash.
-        destination = output_root / "outputs" / f"managed-generation-result-{digest}.json"
+        destination = output_root / "outputs" / f"result-{digest}.json"
         if destination.is_symlink() or not destination.resolve().is_relative_to(output_root.resolve()):
             raise HostError("managed result manifest escapes output custody")
         if destination.exists() and destination.read_bytes() != encoded_bytes:

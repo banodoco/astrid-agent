@@ -125,6 +125,30 @@ def test_local_sources_materialize_only_the_pinned_commit(repository, tmp_path, 
     assert (repo / "nested" / "file.txt").read_text() == "uncommitted edit\n"
 
 
+def test_local_vibecomfy_source_omits_docs_and_examples_but_keeps_build_inputs(
+        repository, tmp_path):
+    repo, sha = repository
+    required = repo / "docs/templates/strict_ready_exceptions.json"
+    required.parent.mkdir(parents=True)
+    required.write_text('{"exception": true}\n')
+    (repo / "docs/guide.md").write_text("user documentation")
+    (repo / "examples/demo.py").parent.mkdir(parents=True)
+    (repo / "examples/demo.py").write_text("example")
+    (repo / "vibecomfy").mkdir()
+    (repo / "vibecomfy/__init__.py").write_text("runtime package")
+    git(repo, "add", ".")
+    git(repo, "commit", "--quiet", "-m", "VibeComfy source assets")
+    sha = git(repo, "rev-parse", "HEAD")
+
+    destination = tmp_path / "installed"
+    tools.source("vibecomfy", sha, destination, repo=str(repo))
+
+    assert (destination / "vibecomfy/__init__.py").read_text() == "runtime package"
+    assert (destination / "docs/templates/strict_ready_exceptions.json").read_text() == '{"exception": true}\n'
+    assert not (destination / "docs/guide.md").exists()
+    assert not (destination / "examples").exists()
+
+
 @pytest.mark.parametrize("repo", ["relative/path", "https://example.invalid/repo.git", "git@example.invalid:repo",
                                   "file://other-host/repo", "file:///repo?query=1", "file:///repo#fragment",
                                   "", None, 12])
@@ -769,9 +793,16 @@ def test_legacy_manifest_needs_no_vibecomfy_entry():
 def test_vibecomfy_download_uses_the_pinned_fork(tmp_path, monkeypatch):
     requests = []
 
-    def fetch(url, destination):
+    def fetch(url, destination, *, strip_root, vibecomfy_source):
         requests.append(url)
-        package = destination / "VibeComfy-source" / "vibecomfy"
+        assert strip_root is True
+        assert vibecomfy_source is True
+        assert not tools._keep_vibecomfy_source_path(Path("docs/overview.md"))
+        assert not tools._keep_vibecomfy_source_path(Path("examples/demo.py"))
+        assert tools._keep_vibecomfy_source_path(
+            Path("docs/templates/strict_ready_exceptions.json"))
+        assert tools._keep_vibecomfy_source_path(Path("vibecomfy/__init__.py"))
+        package = destination / "vibecomfy"
         package.mkdir(parents=True)
         (package / "__init__.py").write_text("# installed source\n")
 

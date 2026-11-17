@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import ssl
+import urllib.error
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 from astrid.core.contracts.errors import (
     AstridError,
@@ -8,6 +11,7 @@ from astrid.core.contracts.errors import (
     coerce_astrid_error,
     error_from_result,
     normalize_valid_options,
+    render_astrid_error,
     wrap_degraded_error,
 )
 from astrid.core.contracts.exec_error import ExecError
@@ -560,3 +564,60 @@ def test_to_envelope_omits_code_and_source_type_when_none() -> None:
 
     assert "code" not in envelope
     assert "source_type" not in envelope
+
+
+def _certificate_failure() -> ssl.SSLCertVerificationError:
+    return ssl.SSLCertVerificationError(
+        1, "[SSL: CERTIFICATE_VERIFY_FAILED] self-signed certificate in certificate chain"
+    )
+
+
+def test_httpx_style_tls_chain_is_a_structured_non_bug_error(capsys) -> None:
+    # httpx.ConnectError -> httpcore error -> SSLCertVerificationError, by __cause__.
+    root = _certificate_failure()
+    middle = RuntimeError("httpcore connect failure")
+    middle.__cause__ = root
+    outer = RuntimeError("[SSL: CERTIFICATE_VERIFY_FAILED]")
+    outer.__cause__ = middle
+    outer.request = SimpleNamespace(url=SimpleNamespace(host="files.example.test"))
+
+    error = wrap_degraded_error(outer)
+
+    assert error.code == "tls_verification_failed"
+    assert error.degraded is False
+    assert "files.example.test" in error.cause
+    assert "antivirus" in error.cause and "HTTPS" in error.cause
+    assert error.fix
+    assert render_astrid_error(error) == 2
+    stderr = capsys.readouterr().err
+    assert "code: tls_verification_failed" in stderr
+    assert "unstructured" not in stderr
+
+
+def test_urllib_reason_tls_failure_is_structured_and_names_the_host(capsys) -> None:
+    error = coerce_astrid_error(urllib.error.URLError(_certificate_failure()))
+
+    assert error.code == "tls_verification_failed"
+    assert error.degraded is False
+    assert "could not be verified" in error.cause
+    assert render_astrid_error(error) == 2
+    assert "unstructured" not in capsys.readouterr().err
+
+
+def test_wrapped_astrid_error_keeps_the_tls_code_and_host() -> None:
+    # HttpClient wraps the urllib failure in an AstridError whose message carries the URL.
+    wrapped = AstridError("Network error GET https://models.example.test/v1/x: <urlopen error>")
+    wrapped.__cause__ = urllib.error.URLError(_certificate_failure())
+
+    error = coerce_astrid_error(wrapped)
+
+    assert error.code == "tls_verification_failed"
+    assert error.degraded is False
+    assert "models.example.test" in error.cause
+
+
+def test_non_tls_network_failure_keeps_its_original_shape() -> None:
+    error = wrap_degraded_error(urllib.error.URLError(OSError("connection refused")))
+
+    assert error.code is None
+    assert error.degraded is True

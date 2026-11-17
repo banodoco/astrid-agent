@@ -1,9 +1,7 @@
-"""Shared exact-count gate for the Ruff and mypy baselines (testing plan, Owned debt).
+"""Shared count gate for the Ruff and mypy baselines.
 
-Both gates compare a finding count with the committed baseline. The baseline is exact, like
-`compare_structure_baseline`: a higher count is a regression, and a lower count fails until the
-baseline is rewritten with `--write-baseline`, so deleted code cannot leave slack for a later
-regression to fill.
+A count above its committed baseline is a regression. A lower count is an improvement: it passes
+and is reported so the manager can lock it into the baseline once the merged batch is ready.
 """
 
 from __future__ import annotations
@@ -28,10 +26,7 @@ def verdict(label: str, current: int, baseline: int) -> tuple[int, str]:
     if current > baseline:
         return 1, f"{summary}\nERROR: {label} regressed by {current - baseline}; fix the new findings."
     if current < baseline:
-        return 1, (
-            f"{summary}\nERROR: {label} improved by {baseline - current}; lock it in with "
-            f"`python -m scripts.reshape.compare_{label.lower()}_baseline --write-baseline`."
-        )
+        return 0, f"{summary}\nIMPROVEMENT: {label} findings decreased by {baseline - current}."
     return 0, summary
 
 
@@ -54,7 +49,7 @@ def file_code_verdict(
     if reported:
         lines.append("Reported, not blocking:")
         lines += [f"  {row}" for row in reported]
-    lines += [f"Ratchet down available: {row}" for row in decreases]
+    lines += [f"IMPROVEMENT (ratchet down available): {row}" for row in decreases]
     return int(bool(increases)), "\n".join(lines)
 
 

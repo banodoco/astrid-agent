@@ -5,18 +5,24 @@ name: CI
 
 on:
   push:
-    branches: [main, release-1, "int/**"]
+    branches: [main, release-1, "int/**", "release/*/main"]
+  # Plan and fix branches land in release/<N>/main by pull request; their own pushes start nothing. A pull request
+  # runs only the cheap subset: fast checks, unit shard 1 of 8 (and the unit aggregate), and boundary. The heavy jobs
+  # (windows, darwin, release wheels, shards 2-8) carry `if: github.event_name != 'pull_request'` and run on the push.
+  pull_request:
+    branches: ["release/*/main"]
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/int/r1' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/int/r1' && !(startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main')) }}
 
 env:
   PYTEST_ADDOPTS: -rA
 
 jobs:
   windows-native-and-installer:
+    if: github.event_name != 'pull_request'
     runs-on: windows-latest
     timeout-minutes: 90
     env:
@@ -53,7 +59,7 @@ jobs:
           tests/test_windows_child_stdin.py -rP
 
       - name: Save pip cache on main or int branches (C-08)
-        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/')) && steps.c08-agent-ci-5.outputs.cache-hit != 'true' }}
+        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/') || (startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main'))) && steps.c08-agent-ci-5.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
@@ -145,7 +151,7 @@ jobs:
       - name: Install VibeComfy
         run: python -m pip install -e ./vibecomfy-checkout
 
-      # Repo structure is gated in the default lane by a shrink-only baseline
+      # Repo structure is gated in the default lane by a no-new-violations baseline
       # (tests/reshape/test_compare_baselines.py; scripts/reshape/baselines/structure_astrid.json).
 
       - name: Ruff baseline gate
@@ -169,7 +175,7 @@ jobs:
         run: make collection
 
       - name: Save pip cache on main or int branches (C-08)
-        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/')) && steps.c08-agent-ci-4.outputs.cache-hit != 'true' }}
+        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/') || (startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main'))) && steps.c08-agent-ci-4.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
@@ -192,7 +198,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        group: [1, 2, 3, 4, 5, 6, 7, 8]
+        # A pull request runs shard 1 of 8 only; the job name and --splits 8 are unchanged.
+        group: ${{ fromJSON(github.event_name == 'pull_request' && '[1]' || '[1,2,3,4,5,6,7,8]') }}
 
     steps:
       - name: Check out repository
@@ -321,7 +328,7 @@ jobs:
           if-no-files-found: error
 
       - name: Save pip cache on main or int branches (C-08)
-        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/')) && steps.c08-agent-ci-3.outputs.cache-hit != 'true' }}
+        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/') || (startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main'))) && steps.c08-agent-ci-3.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
@@ -338,6 +345,7 @@ jobs:
 
   darwin-native:
     name: darwin native
+    if: github.event_name != 'pull_request'
     runs-on: macos-latest
     timeout-minutes: 120
     env:
@@ -439,13 +447,13 @@ jobs:
   # installed with only the hashed runtime lock, and the toolchain recorded next to it. It is also the
   # one check that every Python pyproject.toml admits (>=3.11) installs and imports Astrid.
       - name: Save npm cache on main or int branches (C-08)
-        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/')) && steps.c08-agent-ci-1.outputs.cache-hit != 'true' }}
+        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/') || (startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main'))) && steps.c08-agent-ci-1.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           path: "${{ runner.os == 'Windows' && '~/AppData/Local/npm-cache' || '~/.npm' }}"
           key: npm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('remotion/package-lock.json') }}
       - name: Save pip cache on main or int branches (C-08)
-        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/')) && steps.c08-agent-ci-2.outputs.cache-hit != 'true' }}
+        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/') || (startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main'))) && steps.c08-agent-ci-2.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
@@ -453,6 +461,7 @@ jobs:
 
   release:
     name: release wheel / Python ${{ matrix.python-version }}
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -540,3 +549,32 @@ jobs:
 
       - name: All vendored Runtime artifacts match the pinned producer
         run: python scripts/vendor_lock.py check runtime.lock.json --producer runtime-producer
+
+  # A pull request into a release branch comes from a branch of that release and names what it belongs
+  # to: the plan (a plan branch does so by its name) or the astrid-dev issue. See the Release skill,
+  # "How a release runs".
+  landing-reference:
+    name: landing reference
+    if: ${{ github.event_name == 'pull_request' && startsWith(github.base_ref, 'release/') && endsWith(github.base_ref, '/main') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: The pull request comes from a branch of this release and names its plan or issue
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+          TITLE: ${{ github.event.pull_request.title }}
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          release="${BASE_REF#release/}"; release="${release%/main}"
+          if ! printf '%s' "$HEAD_REF" | grep -Eq "^release/${release}/[a-z0-9][a-z0-9-]*$" || [ "$HEAD_REF" = "$BASE_REF" ]; then
+            echo "::error::A pull request into ${BASE_REF} must come from a branch of that release: release/${release}/plan-<PP> or release/${release}/<topic>. This one comes from '${HEAD_REF}'."
+            exit 1
+          fi
+          if printf '%s' "$HEAD_REF" | grep -Eq "^release/${release}/plan-[0-9]+$"; then
+            echo "Plan branch: $HEAD_REF"; exit 0
+          fi
+          if printf '%s\n%s\n' "$TITLE" "$BODY" | grep -Eiq '(plan[ -]?[0-9]+|astrid-dev#[0-9]+|astrid-dev/issues/[0-9]+)'; then
+            echo "Reference found."; exit 0
+          fi
+          echo "::error::A pull request into a release branch must name the plan or the astrid-dev issue it belongs to, for example 'Plan 55' or 'banodoco/astrid-dev#721'."
+          exit 1

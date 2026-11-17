@@ -184,7 +184,10 @@ os.environ["ASTRID_RUNTIME_DATA_ROOT"] = data
 os.environ["ASTRID_RUNTIME_SOURCE_MANIFEST"] = version["profile"]
 os.environ["ASTRID_INSTALL_PROGRAM_ROOT"] = str(root)
 from astrid_runtime.cli import main
-raise SystemExit(main([*args, "--source-manifest", version["profile"]]))
+import inspect
+args = [*args, "--source-manifest", version["profile"]]
+context = {{"profile": version["profile"], "data_root": data}}
+raise SystemExit(main(args, managed_launch=context) if "managed_launch" in inspect.signature(main).parameters else main(args))
 '''
 
 

@@ -8,13 +8,13 @@ on:
         required: false
         type: string
   push:
-    branches: [main, release-1, "windows/**"]
+    branches: [main, release-1, "windows/**", "release/*/main"]
   pull_request:
-    branches: [main]
+    branches: [main, "release/*/main"]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ !(startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main')) }}
 
 permissions:
   contents: read

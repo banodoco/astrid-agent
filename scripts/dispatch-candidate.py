@@ -15,6 +15,7 @@ OLD = "bbba620e3d89eeff8021417f365e6ea584203105"
 AGENT_REMOTE = "https://github.com/banodoco/astrid-agent"
 RUNTIME_REMOTE = "https://github.com/banodoco/astrid-runtime"
 APP_REMOTE = "https://github.com/banodoco/astrid-app"
+DEFAULT_BRANCH = "int/r1"
 
 
 def run(*args, cwd=None):
@@ -40,15 +41,15 @@ def verify_remote_commit(remote, sha, label, run_command=run):
             )
 
 
-def resolve_remote_int_r1(remote, label, run_command=run):
-    """Resolve the current int/r1 head from the remote, not a local cache."""
+def resolve_remote_head(remote, label, branch=DEFAULT_BRANCH, run_command=run):
+    """Resolve the current head of branch from the remote, not a local cache."""
     with tempfile.TemporaryDirectory(prefix="qual-remote-head-") as tmp:
         probe = Path(tmp) / "probe.git"
         try:
             run_command("git", "init", "--bare", "--quiet", str(probe))
             run_command(
                 "git", "-C", str(probe), "fetch", "--quiet", "--no-tags",
-                remote, "refs/heads/int/r1",
+                remote, f"refs/heads/{branch}",
             )
             resolved = run_command(
                 "git", "-C", str(probe), "rev-parse", "FETCH_HEAD^{commit}"
@@ -56,11 +57,11 @@ def resolve_remote_int_r1(remote, label, run_command=run):
         except (OSError, subprocess.CalledProcessError) as exc:
             detail = getattr(exc, "output", "") or str(exc)
             raise ValueError(
-                f"cannot resolve current int/r1 head for {label} from {remote}: {detail.strip()}"
+                f"cannot resolve current {branch} head for {label} from {remote}: {detail.strip()}"
             ) from exc
     if not re.fullmatch(r"[0-9a-f]{40}", resolved):
         raise ValueError(
-            f"remote int/r1 head for {label} did not resolve to a full commit SHA: {resolved}"
+            f"remote {branch} head for {label} did not resolve to a full commit SHA: {resolved}"
         )
     return resolved
 
@@ -68,10 +69,10 @@ def resolve_remote_int_r1(remote, label, run_command=run):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "agent", nargs="?", help="explicit Agent commit; default is the current int/r1 head"
+        "agent", nargs="?", help="explicit Agent commit; default is the current --branch head (int/r1)"
     )
     parser.add_argument(
-        "runtime", nargs="?", help="explicit Runtime commit; default is the current int/r1 head"
+        "runtime", nargs="?", help="explicit Runtime commit; default is the current --branch head (int/r1)"
     )
     parser.add_argument("row", choices=("direct-linux", "direct-macos", "direct-windows", "direct"))
     parser.add_argument("name", help="unique filename without manager prefix")
@@ -80,10 +81,14 @@ def main(argv=None):
     parser.add_argument("--output-dir", type=Path, default=ROOT / "outbox" / "inputs")
     parser.add_argument("--agent-remote", default=AGENT_REMOTE)
     parser.add_argument("--runtime-remote", default=RUNTIME_REMOTE)
+    parser.add_argument(
+        "--branch", default=DEFAULT_BRANCH,
+        help="branch whose heads are the candidate default and that the App is fetched from (default: int/r1)",
+    )
     args = parser.parse_args(argv)
     if (args.agent is None) != (args.runtime is None):
         parser.error(
-            "provide both explicit Agent and Runtime SHAs, or omit both to use current int/r1 heads"
+            f"provide both explicit Agent and Runtime SHAs, or omit both to use current {args.branch} heads"
         )
     if args.mac_runner == "astrid-mac" and args.row != "direct-macos":
         parser.error("astrid-mac requires the direct-macos diagnostic row")
@@ -99,13 +104,13 @@ def main(argv=None):
     if not args.app_repo.is_dir():
         parser.error(f"App repository directory does not exist: {args.app_repo}; pass --app-repo")
 
-    # Every int/r1 workflow candidate must follow today's int/r1 heads.
+    # Every workflow candidate must follow the current heads of --branch.
     # Explicit SHAs are accepted for caller compatibility, but cannot pin a
     # stale commit. Verify exact fetchability before touching App or creating
     # the relay input.
     try:
-        current_agent = resolve_remote_int_r1(args.agent_remote, "Agent")
-        current_runtime = resolve_remote_int_r1(args.runtime_remote, "Runtime")
+        current_agent = resolve_remote_head(args.agent_remote, "Agent", args.branch)
+        current_runtime = resolve_remote_head(args.runtime_remote, "Runtime", args.branch)
         if args.agent is None:
             args.agent = current_agent
             args.runtime = current_runtime
@@ -113,13 +118,13 @@ def main(argv=None):
         verify_remote_commit(args.runtime_remote, args.runtime, "Runtime")
         if args.agent != current_agent:
             raise ValueError(
-                f"Agent SHA {args.agent} is not current int/r1 head {current_agent}; "
-                "int/r1 workflow candidates must install the current head"
+                f"Agent SHA {args.agent} is not current {args.branch} head {current_agent}; "
+                f"{args.branch} workflow candidates must install the current head"
             )
         if args.runtime != current_runtime:
             raise ValueError(
-                f"Runtime SHA {args.runtime} is not current int/r1 head {current_runtime}; "
-                "int/r1 workflow candidates must install the current head"
+                f"Runtime SHA {args.runtime} is not current {args.branch} head {current_runtime}; "
+                f"{args.branch} workflow candidates must install the current head"
             )
     except ValueError as exc:
         parser.error(str(exc))
@@ -127,7 +132,7 @@ def main(argv=None):
     remote = run("git", "-C", str(args.app_repo), "remote", "get-url", "origin")
     with tempfile.TemporaryDirectory(prefix="qual-app-") as tmp:
         run("git", "clone", "--quiet", "--shared", "--no-checkout", str(args.app_repo), tmp)
-        run("git", "fetch", "--quiet", remote, "refs/heads/int/r1", cwd=tmp)
+        run("git", "fetch", "--quiet", remote, f"refs/heads/{args.branch}", cwd=tmp)
         run("git", "checkout", "--quiet", "--detach", "FETCH_HEAD", cwd=tmp)
         path = Path(tmp) / "public/install-manifest.json"
         manifest = json.loads(path.read_text(encoding="utf-8"))
@@ -153,7 +158,7 @@ def main(argv=None):
         json.dump(inputs, f, separators=(",", ":"))
         f.write("\n")
     print(f"Published App {sha} ({branch})")
-    print(f"ACTIONS: astrid-agent journey.yml int/r1 @inputs/M-QUAL-{args.name}")
+    print(f"ACTIONS: astrid-agent journey.yml {args.branch} @inputs/M-QUAL-{args.name}")
 
 
 if __name__ == "__main__":
