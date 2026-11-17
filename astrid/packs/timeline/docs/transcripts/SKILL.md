@@ -59,6 +59,31 @@ is shown when it starts inside the clip's source window, and speed is applied.
 "${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" timelines transcripts show --project <project> --timeline <timeline> --clip <clip-id>
 ```
 
+Both commands take optional hints for the model: `--language <code>` (default: detected
+automatically) and `--prompt "<text>"` (names, spelling or vocabulary to expect; default: none),
+or `--input language=...` / `--input prompt=...` on `generate`. The language list is the
+node's own: today the pinned node declares only `auto`, so a named language is refused until
+the node's schema is recaptured. A run made with hints is imported with the same hints
+(`transcripts import --from-run <run> --prompt "<text>"`), because the import verifies the run
+against the graph those hints make.
+
+## Where a transcript comes from
+
+One media file has one stored transcript per source, in that file's own seconds:
+
+| Source | Written by |
+|---|---|
+| `astrid.transcription/<node>/<model>` (Whisper; the model and node revision are in the source id) | `transcripts run`, `refresh --run-missing`, `generate ... --transcribe` |
+| `astrid.tts` | `generate audio --mode tts`, automatically (the measured word times of the speech) |
+| `astrid.import` | `transcripts import`, and a narrated take's `--words` (`timelines edit --line ... --take ... --words`) |
+| `astrid.narration` | `refresh --convert` (a timeline's old clip words), and the publish-time sync of an unconverted timeline |
+
+Readers use the best available source in that order, unless the timeline pins one
+(`refresh --use-source`). `generate audio|video ... --transcribe` adds the Whisper transcript
+for each output that has audio, after the run completed, on the same `--placement` as the
+generation. It is GPU work and refuses with `--dry-run` or `--no-wait`; a failed transcription
+is reported and never undoes the generation (run `transcripts run <media-id>` later).
+
 ## Refresh a timeline's transcripts
 
 Check every audio media in a timeline, its parent and each shot's sub-timeline, in one
@@ -84,6 +109,20 @@ The report also names two things a refresh cannot fix by itself:
 - a word anchor pinned to an older document version (the transcript was replaced after the anchor
   was made); re-anchor it to the current words;
 - a clip window whose in or out point falls inside a word; move the cut to a gap between words.
+
+### Convert old clip words
+
+A timeline made before transcripts were stored keeps its words on its VO clips (`app.words`, clip
+seconds). `refresh --convert` moves them into `astrid.narration` media transcripts and removes the
+words from those clips in one guarded commit of the published head (the clips keep `segment`,
+`text` and `gap_after_s`). `--dry-run` prints the plan and writes nothing. Each media is converted
+only if the words every reader would then show are identical (text, line, times, each placement);
+otherwise it is `skipped` with the reason and its clips keep their words. One file used for several
+lines is skipped this way: transcribe it (`--run-missing`) instead. A transcript is written and read
+back before any clip loses its words. Once no clip holds words the timeline is marked converted and
+the publish-time narration sync no longer runs for it. A working copy with unpublished edits blocks
+`--convert`: publish or discard it first. Readers still fall back to clip words for timelines that
+are not converted.
 
 Trim, move, speed changes and repeated placements need no refresh: words are read through the
 timeline as it stands. `transcripts sync` still works, but `refresh` replaces it.

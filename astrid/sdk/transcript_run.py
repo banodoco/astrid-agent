@@ -28,7 +28,7 @@ def _bytes(client: Any, digest: str) -> bytes:
     return raw
 
 
-def _expected_workflow_digest(source: Path) -> str:
+def _expected_workflow_digest(source: Path, hints: Mapping[str, str] | None = None) -> str:
     """Recreate exactly the graph the named entry admits for these source bytes."""
     from astrid.core.generation import entries
     from astrid.packs.vibecomfy.production_engine import _workflow_content_digest
@@ -49,7 +49,7 @@ def _expected_workflow_digest(source: Path) -> str:
         raise ValueError('the installed transcription entry is invalid')
     workflow, plan, assets = entries.prepare(entries.bundle_path(entry), target_client=None,
         mode='transcribe', binds=entry.get('binds'), defaults=entry.get('defaults'),
-        values={'audio_ref': str(source)})
+        values={'audio_ref': str(source), **(hints or {})})
     if plan['unbound'] or set(assets) != {'audio_ref'}:
         raise ValueError('the transcription entry has unexpected input bindings')
     with tempfile.TemporaryDirectory(prefix='astrid-transcript-verify-') as tmp:
@@ -112,7 +112,12 @@ def transcription_run_id(client: Any, value: Any) -> str:
 
 
 def import_transcription_run(client: Any, project: str, media_id: str, run_id: str, *,
-                             replace: bool = False, expected_version: int | None = None) -> str:
+                             replace: bool = False, expected_version: int | None = None,
+                             language: str | None = None, prompt: str | None = None) -> str:
+    """Store the transcript a completed transcription run produced.
+
+    ``language`` and ``prompt`` are the optional hints the run was made with; the run is verified against the
+    graph those hints produce, so a run made with hints is imported with the same hints."""
     from astrid.packs.vibecomfy.asset_manifest import read_archive_bytes
     from astrid.sdk.media_handles import resolve_media_handle
     from astrid.core.media import ffprobe_duration_seconds
@@ -149,7 +154,8 @@ def import_transcription_run(client: Any, project: str, media_id: str, run_id: s
         path = Path(tmp) / Path(asset['member']).name
         path.write_bytes(payload)
         receipt = spec.get('invocation_preflight')
-        expected = _expected_workflow_digest(path)
+        expected = _expected_workflow_digest(
+            path, {name: value for name, value in (('language', language), ('prompt', prompt)) if value})
         admitted = _admitted_workflow_digest(client, task, spec)
         if (not isinstance(receipt, Mapping) or receipt.get('workflow_content_digest') != expected
                 or admitted != expected):

@@ -246,6 +246,11 @@ def _parser(contextual: dict[str, Any] | None = None) -> _GenerationParser:
                                   "check: judge models against the target's inventory, fetch nothing (local default); "
                                   "trust: accept the workflow's declared models as present on the target, unverified.")
         command.add_argument("--json", action="store_true", help="Print the SDK result as JSON.")
+        if modality in {'video', 'audio'}:
+            command.add_argument('--transcribe', action='store_true',
+                                 help="After a completed run whose output has audio, transcribe that output on the same "
+                                      "placement (GPU work, the path timelines transcripts run takes) and store its word "
+                                      "transcript; a speech (tts) run always stores its measured words.")
         _common_options(command)
         if 'audio_modes' in spec:
             command.add_argument('--resume', action='store_true', help='Resume from the admission receipt.')
@@ -701,6 +706,11 @@ def _main_request(argv: list[str], stack) -> int:
         parser.error("--model and --entry select different generation entries")
     if parsed.prompt is not None and not parsed.prompt.strip():
         parser.error("prompt must not be empty")
+    if getattr(parsed, 'transcribe', False):
+        if parsed.dry_run or parsed.no_wait:
+            parser.error("--transcribe needs a completed run: drop --dry-run / --no-wait")
+        if parsed.modality == 'audio' and parsed.mode == 'transcribe':
+            parser.error("--mode transcribe already produces a transcript; --transcribe is for generated audio")
     if (parsed.width is None) != (parsed.height is None):
         parser.error("--width and --height must be supplied together")
     if parsed.width is not None and (parsed.width <= 0 or parsed.height <= 0):
@@ -762,6 +772,7 @@ def _main_request(argv: list[str], stack) -> int:
     from .delivery import admitted_project, open_url_for
     admitted = None
     transcription_run = None
+    producer_transcripts: list[dict[str, Any]] = []
     transcribing = parsed.modality == 'audio' and kwargs.get('mode') == 'transcribe'
     try:
         generate = getattr(_generate_facade(), parsed.modality)
@@ -794,6 +805,8 @@ def _main_request(argv: list[str], stack) -> int:
                     result = deliver_generation(result, client=client, out=parsed.out, project=parsed.project)
                     if transcribing:
                         transcription_run = _transcription_run_id(client, result)
+                    else:
+                        producer_transcripts = _store_producer_transcripts(parsed, client, result, kwargs.get('mode'))
                 else:
                     admitted = admitted_project(
                         result.to_dict() if hasattr(result, 'to_dict') else result,
@@ -820,6 +833,8 @@ def _main_request(argv: list[str], stack) -> int:
     if transcription_run and isinstance(payload, dict):
         # The same run id timelines transcripts import --from-run takes, with the media it transcribed.
         payload = {**payload, 'run_id': transcription_run, **({'media_id': media_id} if media_id else {})}
+    if producer_transcripts and isinstance(payload, dict):
+        payload = {**payload, 'transcripts': producer_transcripts}
     if parsed.json or parsed.dry_run or not isinstance(payload, dict):
         print(json.dumps(payload, indent=2, sort_keys=True))
     elif parsed.no_wait:
@@ -831,11 +846,50 @@ def _main_request(argv: list[str], stack) -> int:
             print(path)
         if payload.get("run_dir"):
             print(f"run: {payload['run_dir']}")
+        for row in producer_transcripts:
+            detail = f" ({row['error']})" if row.get('error') else ''
+            print(f"transcript {row['status']}: {row['media_id']} [{row['source']}]{detail}")
         if payload.get('run_id'):
             print(f"transcription run: {payload['run_id']}")
             media = payload.get('media_id') or '<media-id>'
             print(f"import: astrid timelines transcripts import {media} --project <project> --from-run {payload['run_id']}")
     return 0
+
+
+def _store_producer_transcripts(parsed, client, result, mode) -> list[dict[str, Any]]:
+    """Store the word transcripts a completed generation can give its output media.
+
+    A speech (tts) run stores the word timings it measured, source ``astrid.tts`` (free: no GPU). With
+    ``--transcribe`` every audio-bearing output is also transcribed on the generation's own placement, the
+    path ``timelines transcripts run`` takes (GPU work). The generation already succeeded: a failure here is
+    reported in the row and on stderr, and never fails the command."""
+    from astrid.core.generation.delivery import admitted_project
+    from astrid.sdk import transcript_producers as producers
+
+    payload = result.to_dict() if hasattr(result, 'to_dict') else result
+    if not isinstance(payload, dict):
+        return []
+    project = admitted_project(payload, explicit=parsed.project, client=client)
+    rows: list[dict[str, Any]] = []
+    if parsed.modality == 'audio' and mode == 'tts' and project:
+        try:
+            stored = producers.import_tts_words(client, project, payload)
+            if stored:
+                rows.append({**stored, 'source': producers.TTS_SOURCE})
+        except Exception as exc:  # noqa: BLE001 - the speech exists; its words can be imported later
+            print(f'warning: could not store the speech words ({exc}); import them with timelines transcripts import',
+                  file=sys.stderr)
+    if getattr(parsed, 'transcribe', False):
+        if not project:
+            print('warning: --transcribe needs a project: pass --project', file=sys.stderr)
+            return rows
+        options = {name: getattr(parsed, name, None) for name in ('placement', 'engine', 'align')}
+        for row in producers.transcribe_generated(client, project, payload, consent=tuple(parsed.consent), **options):
+            rows.append({**row, 'source': 'whisper'})
+            if row['status'] == 'failed':
+                print(f"warning: transcription of {row['media_id']} failed ({row['error']}); "
+                      f"retry with timelines transcripts run {row['media_id']}", file=sys.stderr)
+    return rows
 
 
 def _transcription_run_id(client, result):

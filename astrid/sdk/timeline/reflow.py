@@ -258,12 +258,14 @@ class _ReflowMixin:
         for key in ("volume", "gain_db"):
             if key in last.data:
                 new[key] = copy.deepcopy(last.data[key])
-        intent.set_line(new, segment, [[_r(a), _r(b), t] for a, b, t in new_words])
+        new["asset"] = self._register_asset(sid, media)
+        rows = [[_r(a), _r(b), t] for a, b, t in new_words]
+        if not self._stage_take_words(sid, new, segment, rows, text):
+            intent.set_line(new, segment, rows)  # media without a sha256 identity: the words stay on the clip
         if text is not None:
             intent.set_line_text(new, text)
         if gap_after is not None:
             intent.set_gap_after(new, _r(gap_after))
-        new["asset"] = self._register_asset(sid, media)
         self._internal(sid)["clips"].append(new)
         before[new["id"]] = gap_new
         out = [f"inserted line {segment} at {first:.3f} s ({new_words[-1][1] - new_words[0][0]:.3f} s of speech)"]

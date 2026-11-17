@@ -1191,7 +1191,9 @@ class Voice(_Suggest):
         data["asset"] = key
         data["from"], data["to"] = 0.0, _r(length)
         data.pop("hold", None)
-        intent.set_line(data, self.segment, [[_r(s), _r(e), t] for s, e, t in new_words])
+        rows = [[_r(s), _r(e), t] for s, e, t in new_words]
+        if not self._tl._stage_take_words(first.shot_id, data, self.segment, rows, text if text is not None else intent.line_text(data)):
+            intent.set_line(data, self.segment, rows)  # media without a sha256 identity: the words stay on the clip
         if text is not None:
             intent.set_line_text(data, text)
         elif intent.line_text(data) is not None and _norm(intent.line_text(data)) != _norm(" ".join(t for _s, _e, t in new_words)):

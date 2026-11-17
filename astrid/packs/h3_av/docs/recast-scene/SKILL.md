@@ -76,7 +76,7 @@ Plan: for every shot, write `method`, `intent`, `check`, the fixed `inputs.refer
 
 - Reference: the speaker's real voice, a clean clip of their real lines with its transcript.
 - Generate the whole script as one continuous performance (voice-clone entry in `astrid generate`).
-- Refresh the transcripts (`astrid timelines transcripts refresh <timeline> --project P --run-missing --placement runpod`, after a `--dry-run`), so the new voice has timed words; replace the temporary voice on the timeline, and re-time the cuts to the words (the refresh report lists any cut that splits a word). Look again (Stage 1 views).
+- A take's words come from its media: a take made with `astrid generate audio --mode tts` already has its measured words; any other voice take gets them from `astrid generate ... --transcribe` right after it is made, or from the refresh below. Refresh the transcripts (`astrid timelines transcripts refresh <timeline> --project P --run-missing --placement runpod`, after a `--dry-run`), so the new voice has timed words; replace the temporary voice on the timeline, and re-time the cuts to the words (the refresh report lists any cut that splits a word). Look again (Stage 1 views).
 - Owner listens. This is the gate before any picture generation.
 - Plan: once the voice track is approved, write each speaking shot's slice of it: `timelines shots plan set <shot> --project P --timeline T --set inputs.voice.media=<voice track media id> --set inputs.voice.range=START,END`. The range is seconds into that voice track media (from its timed words), not timeline time, and needs the media.
 

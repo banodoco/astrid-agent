@@ -127,6 +127,10 @@ def words(clip):
             for row in value] if isinstance(value,list) else []
 def set_line(clip,segment,rows):
     app=_app_w(clip); app["segment"]=segment; app["words"]=[list(row) for row in rows]
+def set_segment(clip,segment): _set(clip,"segment",segment)
+def drop_words(clip):
+    """Remove the clip-local words (the media's stored transcript holds them); the line id and text stay."""
+    _app_w(clip).pop("words",None); _tidy(clip)
 def line_text(clip):
     value=_get(clip,"text"); return value if isinstance(value,str) else None
 def set_line_text(clip,value): _set(clip,"text",None if value is None else str(value))

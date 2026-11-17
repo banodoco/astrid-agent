@@ -3328,8 +3328,14 @@
                 "--from-run": {
                   "required": false
                 },
+                "--language": {
+                  "required": false
+                },
                 "--project": {
                   "required": true
+                },
+                "--prompt": {
+                  "required": false
                 },
                 "--replace": {
                   "required": false
@@ -3352,6 +3358,9 @@
             },
             "refresh": {
               "flags": {
+                "--convert": {
+                  "required": false
+                },
                 "--dry-run": {
                   "required": false
                 },
@@ -3404,11 +3413,17 @@
                 "--expected-version": {
                   "required": false
                 },
+                "--language": {
+                  "required": false
+                },
                 "--placement": {
                   "required": false
                 },
                 "--project": {
                   "required": true
+                },
+                "--prompt": {
+                  "required": false
                 },
                 "--recovery-path": {
                   "required": false

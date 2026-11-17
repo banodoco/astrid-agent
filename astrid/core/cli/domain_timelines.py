@@ -1473,8 +1473,13 @@ def _working_configure_transcripts_refresh(subparser: argparse.ArgumentParser) -
                                 "(pins it in transcriptReferences). Without this or --use-document nothing is recorded.")
     subparser.add_argument("--use-document", default=None, metavar="D",
                            help="Record the stored document D as a media's chosen transcript (pins it).")
+    subparser.add_argument("--convert", action="store_true",
+                           help="Move this timeline's clip words (app.words) into astrid.narration media transcripts, then "
+                                "remove the words from those clips (their line id, text and gap_after_s stay) in one "
+                                "guarded commit of the published head. A media whose projected words would differ is left alone. "
+                                "Use --dry-run to see the plan first.")
     subparser.add_argument("--dry-run", action="store_true",
-                           help="Print the report and what would run or be recorded; write nothing. "
+                           help="Print the report and what would run, be recorded or be converted; write nothing. "
                                 "Without --dry-run a recorded choice writes the working copy (created if none).")
     subparser.set_defaults(handler=_working_cmd_transcripts_refresh)
 
@@ -1503,6 +1508,10 @@ def _working_configure_transcripts_import(subparser: argparse.ArgumentParser) ->
                            help="Replace the complete existing transcript document.")
     subparser.add_argument("--expected-version", type=int, default=None,
                            help="Required current document version with --replace.")
+    subparser.add_argument("--language", default=None, metavar="LANG",
+                           help="With --from-run: the language hint the run was made with (the run is verified against it).")
+    subparser.add_argument("--prompt", default=None,
+                           help="With --from-run: the initial prompt the run was made with (the run is verified against it).")
     subparser.set_defaults(handler=_working_cmd_transcripts_import)
 
 
@@ -1517,6 +1526,10 @@ def _working_configure_transcripts_run(subparser: argparse.ArgumentParser) -> No
     subparser.add_argument("--recovery-path")
     subparser.add_argument("--replace", action="store_true")
     subparser.add_argument("--expected-version", type=int)
+    subparser.add_argument("--language", default=None, metavar="LANG",
+                           help="Language of the speech (e.g. en, fr); default: detected automatically.")
+    subparser.add_argument("--prompt", default=None,
+                           help="Initial prompt for the model: names, spelling, vocabulary to expect; default: none.")
     subparser.set_defaults(handler=_working_cmd_transcripts_run)
 
 

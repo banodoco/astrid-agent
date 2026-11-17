@@ -137,6 +137,7 @@ class _PublishMixin:
             report = checked._check_core()
         if not report.valid:
             raise TimelineEditError("not publishing: " + "; ".join(report.problems or ["the candidate is invalid"]))
+        staged = self._flush_pending_transcripts(client)  # before the commit: a take is never published without its words
         key = idempotency_key or f"edit-{re.sub(r'[^a-z0-9]+', '-', message.lower())[:40].strip('-') or 'timeline'}-{uuid.uuid4().hex[:8]}"
         stored = self.stored_document(restructure=restructure)  # chapters as shots only for a film that opted in
         if restructure:
@@ -160,22 +161,24 @@ class _PublishMixin:
                                               "the durable narration commit")
         # Media is ingested by _register_asset before this point; its registry
         # entry now carries the stable object id. One document covers each take.
-        receipt["transcripts"] = []
+        receipt["transcripts"] = list(staged)
         project_id = str(stored["project_id"])  # the published document names its project
         try:
-            transcript_plan = _transcripts.plan_narration_transcripts(self)
+            # A timeline converted to media transcripts (timelines transcripts refresh --convert) has no clip words
+            # to mirror: the stored transcripts are the one copy, so the narration sync does not run for it.
+            transcript_plan = [] if _transcripts.is_converted(self.bundle) else _transcripts.plan_narration_transcripts(self)
             if any(item["status"] == "planned" for item in transcript_plan):
                 if client is None:
                     from astrid.sdk import AstridClient
 
                     with AstridClient.open_from_launcher(start_pack_host=False) as transcript_client:
-                        receipt["transcripts"] = _transcripts.sync_narration_transcripts(self, transcript_client, project_id)
+                        receipt["transcripts"] += _transcripts.sync_narration_transcripts(self, transcript_client, project_id)
                 else:
-                    receipt["transcripts"] = _transcripts.sync_narration_transcripts(self, client, project_id)
+                    receipt["transcripts"] += _transcripts.sync_narration_transcripts(self, client, project_id)
         except Exception as exc:  # noqa: BLE001 - containment: publication already succeeded
             print(f"note: narration transcript registration failed: {exc}", file=sys.stderr)
         for item in receipt["transcripts"]:
-            if item["status"] == "skipped":
+            if item["status"] == "skipped" and item.get("reason") != "no words":  # a clip whose words live in its media's transcript
                 print(f"note: narration transcript {item['label']}: {item.get('reason', 'skipped')}", file=sys.stderr)
         if self.path:  # publish resets the base: this working copy is the new head, with no changes (AUDIT bug 6)
             before = _journal.document_digest(self.document())
@@ -186,6 +189,38 @@ class _PublishMixin:
                                     evidence=({"kind": "revision", "id": receipt.get("new_head")},))
         receipt["message"] = receipt.pop("_message", message)
         return receipt
+
+    def _flush_pending_transcripts(self, client: Any) -> list[dict[str, Any]]:
+        """Write the transcripts this working copy staged (a take's imported words) to the store, before the commit.
+
+        Each is one media transcript document, written once per media and source; a failure stops the publish
+        (nothing is committed), because a published take without its words would show none. Staged transcripts
+        of media no clip plays any more are left out."""
+        from astrid.sdk import media_transcript
+        from astrid.sdk.timeline.words import timeline_media_ids
+
+        pending = self.bundle.get("pending_transcripts")
+        if not isinstance(pending, Mapping) or not pending:
+            return []
+        used = set(timeline_media_ids(self.bundle))
+        todo = [(media, source, content) for media, sources in pending.items() if media in used
+                for source, content in sources.items()]
+        if not todo:
+            return []
+        if client is None:
+            from astrid.sdk import AstridClient
+
+            with AstridClient.open_from_launcher(start_pack_host=False) as opened:
+                return self._flush_pending_transcripts(opened)
+        project = str(self.bundle["project_id"])
+        report = []
+        for media, source, content in todo:
+            try:
+                status = media_transcript.write_transcript(client, project, media, source, content)
+            except Exception as exc:  # noqa: BLE001 - nothing is committed yet
+                raise TimelineEditError(f"not publishing: could not store the transcript of {media} ({source}): {exc}") from exc
+            report.append({"label": media, "status": status, "source": source})
+        return report
 
     def _commit_document(self, stored: Mapping[str, Any], message: str, *,
                          idempotency_key: str | None, client: Any) -> dict[str, Any]:
@@ -682,6 +717,7 @@ class _PublishMixin:
     def document(self) -> dict[str, Any]:
         """The publishable candidate (derived `_` fields removed)."""
         doc = _strip_derived(copy.deepcopy(self.bundle))
+        doc.pop("pending_transcripts", None)  # staged takes' words go to the transcript store at publish, not into the timeline
         intent.migrate(doc)  # the candidate carries intent under app.astrid; unchanged shots reuse their old revisions and the merged candidate is published without a further migration (old revisions are never rewritten)
         return doc
 

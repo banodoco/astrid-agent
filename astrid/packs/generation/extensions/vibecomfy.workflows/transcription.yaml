@@ -1,6 +1,6 @@
 api: 1
 summary: Whole-media word transcription through the pinned ComfyUI workflow.
-example: astrid generate audio --mode transcribe --audio-ref FILE
+example: astrid generate audio --mode transcribe --audio-ref FILE [--input language=en] [--input prompt="Names to expect"]
 effects: none
 ready_root: ../../workflows
 entries:
@@ -11,8 +11,12 @@ entries:
     needs: []
     inputs:
       - {name: audio_ref, type: file, required: true, description: "Whole audio or video file to transcribe."}
+      - {name: language, type: string, required: false, description: "Language of the speech (e.g. en, fr). Left out: detected automatically."}
+      - {name: prompt, type: string, required: false, description: "Initial prompt for the model: names, spelling or vocabulary to expect. Left out: none."}
     binds:
       audio_ref: audio_ref
+      language: apply_whisper.language
+      prompt: apply_whisper.prompt
     defaults: {}
     # The one default for audio transcribe: a request that names no entry resolves here.
     default_for:

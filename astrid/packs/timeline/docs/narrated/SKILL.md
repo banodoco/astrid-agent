@@ -57,6 +57,20 @@ Replace a line's take with
 Clips on words follow the new word times. Clips on a removed line become
 orphans; move, keep, or remove each one before publishing.
 
+`--words` is the take's own timing file (seconds from the take's start). Astrid stores
+those words as the take media's transcript (source `astrid.import`), not on the clip: the
+clip keeps its media, window, line id and script text, and every reader (words, lines,
+visualize, captions) shows the take's words through the timeline's projection. The same
+holds for `--insert-line`. The transcript is written when the working copy is published
+(a failed write stops the publish). A take whose media has no managed identity yet keeps
+its words on the clip as before. A take made with `astrid generate audio --mode tts` already
+has measured words (source `astrid.tts`); one made any other way gets its words from
+`astrid generate ... --transcribe` or `timelines transcripts refresh --run-missing`.
+
+An older timeline keeps its words on the clips (`app.words`). Move them into media
+transcripts with `timelines transcripts refresh <timeline> --project <project> --convert`
+(`--dry-run` first); see the transcripts skill.
+
 The music bed follows the re-flow policy: `keep-end` (the default) trims it at a
 nearby bar so it ends with the film; `plays-on` leaves it whole, so its beats
 can drift from later clips. Read back the sound section after a re-flow.

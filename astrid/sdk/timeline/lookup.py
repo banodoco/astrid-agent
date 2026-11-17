@@ -27,6 +27,9 @@ from astrid.sdk.timeline.model import Clip, Cut, StepSequence, Voice, Word
 from astrid.sdk.timeline.selection import Selection
 
 
+_MEDIA_DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
+
+
 class _LookupMixin:
     """Checkout: clocks, looking things up (cuts, clips, words), and reading the document's shots and cut groups."""
 
@@ -210,11 +213,52 @@ class _LookupMixin:
         return as_words(project_words(self.bundle, self._stored_transcripts(), "parent"))
 
     def _stored_transcripts(self) -> dict[str, dict[str, dict[str, Any]]]:
-        """Stored media transcripts for this timeline's audio media, read once per media set.
+        """Stored media transcripts for this timeline's audio media, plus the transcripts this working copy
+        has staged but not yet published (``pending_transcripts``; they win over the stored copy of the same source).
 
         A detached checkout (no client) reads none and projects clip-local words only. A failed
         read is noted and falls back the same way, so a timeline view never breaks on the store.
         """
+        loaded = self._read_stored_transcripts()
+        pending = self.bundle.get("pending_transcripts")
+        if not isinstance(pending, Mapping) or not pending:
+            return loaded
+        merged = {media: dict(docs) for media, docs in loaded.items()}
+        for media, sources in pending.items():
+            for source, content in (sources or {}).items():
+                merged.setdefault(media, {})[source] = {"document_id": None, "version": None, "content": content}
+        return merged
+
+    def _stage_take_words(self, shot_id: str, data: dict[str, Any], segment: str, words: Sequence[Any],
+                          text: str | None) -> bool:
+        """Keep a take's words as its media's transcript instead of on the clip.
+
+        The words are seconds of the take's own media (a take plays from 0). They are staged in the working
+        copy (``pending_transcripts``) as source ``astrid.import`` and written to the transcript store when
+        the timeline is published; until then every reader sees them through the same projection. The clip
+        keeps its media, window, line id and script text. Returns False (and writes nothing) when the clip's
+        media has no sha256 identity to key a transcript on, or when this checkout cannot publish a staged
+        transcript; the caller then keeps the words on the clip as before."""
+        from astrid.sdk.media_transcript import IMPORT_SOURCE, build_transcript
+
+        if getattr(self, "session", None) is not None:  # a commit-function session has no working-copy store
+            return False
+        asset = self._registry(shot_id).get(str(data.get("asset") or "")) or {}
+        media = asset.get("media_id") or asset.get("content_sha256")
+        if not isinstance(media, str) or not _MEDIA_DIGEST.fullmatch(media):
+            return False
+        spoken = text if text is not None else " ".join(str(w[2]) for w in words)
+        content = build_transcript(media, segment, spoken, words, source_id=IMPORT_SOURCE)
+        staged = self.bundle.setdefault("pending_transcripts", {}).setdefault(media, {})
+        if IMPORT_SOURCE in staged and staged[IMPORT_SOURCE] != content:
+            self.notes.append(f"media {media[:19]}…: this take's words replace the words staged earlier for the same media")
+        staged[IMPORT_SOURCE] = content
+        intent.set_segment(data, segment)
+        intent.drop_words(data)
+        self._mcache = None
+        return True
+
+    def _read_stored_transcripts(self) -> dict[str, dict[str, dict[str, Any]]]:
         from astrid.sdk.timeline.words import load_timeline_transcripts, timeline_media_ids
 
         client, project = getattr(self, "_scene_client", None), getattr(self, "_scene_project", None)

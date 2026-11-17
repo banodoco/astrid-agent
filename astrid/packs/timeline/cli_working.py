@@ -394,8 +394,9 @@ def _cmd_transcripts_import(parsed: argparse.Namespace) -> int:
         raise ValueError("provide exactly one words file or --from-run")
     if parsed.from_run:
         from astrid.sdk.transcript_run import import_transcription_run
+        hints = {name: getattr(parsed, name) for name in ("language", "prompt") if getattr(parsed, name, None)}
         status = import_transcription_run(parsed.client, need_project(parsed), parsed.media_id, parsed.from_run,
-                                          replace=parsed.replace, expected_version=parsed.expected_version)
+                                          replace=parsed.replace, expected_version=parsed.expected_version, **hints)
         print(f"{status} transcript for {parsed.media_id} from run {parsed.from_run}")
         return 0
     payload = json.loads(parsed.file.expanduser().read_text(encoding="utf-8"))
@@ -420,33 +421,14 @@ def _cmd_transcripts_import(parsed: argparse.Namespace) -> int:
 
 @guard(2)
 def _cmd_transcripts_run(parsed: argparse.Namespace) -> int:
-    import hashlib
-    import tempfile
-    from astrid.sdk.generation import generate
-    from astrid.sdk.media_handles import resolve_media_handle
-    from astrid.sdk.transcript_run import import_transcription_run
+    from astrid.sdk.transcript_producers import run_transcription
 
-    project = need_project(parsed)
-    descriptor, _ = resolve_media_handle(parsed.client, project, parsed.media_id)
-    digest = descriptor["digest"]
-    raw = parsed.client.media.read_bytes(digest)
-    if "sha256:" + hashlib.sha256(raw).hexdigest() != digest:
-        raise ValueError("media bytes do not match their digest")
-    with tempfile.TemporaryDirectory(prefix="astrid-transcription-") as tmp:
-        path = Path(tmp) / descriptor["filename"]
-        path.write_bytes(raw)
-        options = {name: getattr(parsed, name) for name in ("placement", "engine", "execution", "align", "recovery_path")
-                   if getattr(parsed, name, None) is not None}
-        result = generate.audio(entry="transcription", mode="transcribe", audio_ref=str(path),
-                                project=project, client=parsed.client, consent=tuple(parsed.consent), **options)
-    if getattr(result, "ok", True) is False:
-        raise ValueError(f"transcription failed: {getattr(result, 'error', None)}")
-    from astrid.sdk.transcript_run import transcription_run_id
-
-    value = result.to_dict() if hasattr(result, "to_dict") else result
-    run_id = transcription_run_id(parsed.client, value)
-    status = import_transcription_run(parsed.client, project, digest, run_id,
-                                      replace=parsed.replace, expected_version=parsed.expected_version)
+    options = {name: getattr(parsed, name) for name in ("placement", "engine", "execution", "align", "recovery_path")
+               if getattr(parsed, name, None) is not None}
+    status, digest, run_id = run_transcription(
+        parsed.client, need_project(parsed), parsed.media_id, consent=tuple(parsed.consent),
+        replace=parsed.replace, expected_version=parsed.expected_version,
+        language=getattr(parsed, "language", None), prompt=getattr(parsed, "prompt", None), **options)
     print(f"{status} transcript for {digest} from run {run_id}")
     return 0
 
@@ -472,6 +454,10 @@ def _cmd_transcripts_refresh(parsed: argparse.Namespace) -> int:
         raise VerbError("choose one of --use-source and --use-document", 2)
     if parsed.placement and not parsed.run_missing:
         print("note: --placement applies only with --run-missing")
+    if getattr(parsed, "convert", False):
+        if parsed.run_missing or parsed.use_source or parsed.use_document or parsed.shot is not None:
+            raise VerbError("--convert converts the whole published timeline: use it alone (with --dry-run to preview)", 2)
+        return _convert_clip_words(parsed, project)
     draft, _existed = working_copy(parsed, create=False)
     tl = draft if draft is not None else Checkout.open(project, parsed.ref, client=parsed.client)
     if parsed.shot is not None and str(parsed.shot) not in (tl.bundle.get("shots") or {}):
@@ -560,6 +546,45 @@ def _cmd_transcripts_refresh(parsed: argparse.Namespace) -> int:
         print(f"recorded {media} -> {source} in transcriptReferences")
     working.save(quiet=True)
     print("recorded in the working copy (publish to keep it)")
+    return 0
+
+
+def _convert_clip_words(parsed: argparse.Namespace, project: str) -> int:
+    """``refresh --convert``: clip words become astrid.narration media transcripts; the clips lose their words.
+
+    Works on the published head and commits once (a guarded commit). A working copy with unpublished edits
+    would be left on an older base, so it must be published or discarded first."""
+    from astrid.sdk.timeline_checkout import Checkout
+    from astrid.sdk.timeline_transcripts import convert_narration_transcripts, is_converted
+
+    draft, _existed = working_copy(parsed, create=False)
+    if draft is not None and (draft.edits().get("changes") or []):
+        raise VerbError("this timeline has a working copy with unpublished edits: publish or discard it before "
+                        "--convert (the conversion commits the published head)", 2)
+    tl = Checkout.open(project, parsed.ref, client=parsed.client)
+    if is_converted(tl.bundle):
+        print(f"{parsed.ref} is already converted: its clips carry no words, the media transcripts are the one copy")
+        return 0
+    report = convert_narration_transcripts(tl, parsed.client, str(tl.bundle["project_id"]), dry_run=parsed.dry_run)
+    if not report:
+        print("nothing to convert: no clip carries words")
+        return 0
+    for item in report:
+        why = f" ({item['reason']})" if item.get("reason") else ""
+        clips = f" [{', '.join(item['clips'])}]" if item.get("clips") else ""
+        print(f"  {item['status']}: {item['label']}{clips}{why}")
+    converted = [item for item in report if item["status"] == "converted"]
+    if parsed.dry_run:
+        print("dry run: nothing written, nothing published")
+        return 0
+    if not converted:
+        print("nothing converted: every clip keeps its words")
+        return 1
+    receipt = tl.publish("Convert clip words to narration transcripts", client=parsed.client)
+    print(f"converted {len(converted)} media · head {receipt.get('new_head')}"
+          + (" · every clip is converted: the publish-time narration sync is off for this timeline"
+             if is_converted(tl.bundle) else
+             f" · {sum(1 for i in report if i['status'] == 'skipped')} media kept their clip words"))
     return 0
 
 
