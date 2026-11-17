@@ -755,19 +755,38 @@ def render_diff(ctx: LayerContext) -> LayerResult:
 
 
 def render_heat(ctx: LayerContext) -> LayerResult:
-    heat = ctx.shared.get("heat_image")
-    if heat is None:
-        render_diff(ctx)
-        heat = ctx.shared.get("heat_image")
-    if heat is None:
-        return LayerResult(None, [], "heat", page="frames")
-    width = min(ctx.width - 20, 640)
-    height = int(width * heat.size[1] / heat.size[0])
-    image = Image.new("RGB", (ctx.width, 30 + height + 8), PALETTE["bg"])
+    """Where the picture moves: the middle frame greyed, coloured by how often each spot changes."""
+    from .. import clip_views
+
+    start, end = float(ctx.cut["start"]), float(ctx.cut["end"])
+    frames = [f for f in _sorted_frames(ctx) if start - 1e-6 <= f / ctx.fps < end + 1e-6] or _sorted_frames(ctx)
+    images = [image for image in (ctx.frame_image(f) for f in frames) if image is not None]
+    if len(images) < 2:
+        return LayerResult(None, ["HEAT   not drawn: fewer than two frames in the span"], "heat", page="frames")
+    freq, steps = clip_views.change_map(images)
+    from ..motion.sheet import timeline_canvas
+
+    canvas = timeline_canvas(ctx)
+    hot = clip_views.hotspot(freq, canvas)
+    width = min(ctx.width - 20, 1280)
+    picture = clip_views.heat_overlay(clip_views._fit(images[len(images) // 2], width), freq)
+    image = Image.new("RGB", (ctx.width, 30 + picture.size[1] + 62), PALETTE["bg"])
     draw = ImageDraw.Draw(image)
-    draw_text(draw, (10, 6), "where pixels changed during the cut (red), over its middle frame", 15, PALETTE["ink"])
-    image.paste(heat.resize((width, height), Image.LANCZOS), (10, 30))
-    return LayerResult(image, [], "heat", page="frames")
+    draw_text(draw, (10, 6), "where the picture moves: the middle frame greyed, coloured by how often each spot "
+                             f"changes over {steps + 1} frames", 15, PALETTE["ink"])
+    if hot:  # the strongest patch, boxed, so the eye lands on it first
+        k = picture.size[0] / canvas[0]
+        ImageDraw.Draw(picture).rectangle(tuple(round(v * k) for v in hot), outline=clip_views.REGION_COLOUR, width=2)
+    image.paste(picture, (10, 30))
+    clip_views.draw_heat_legend(draw, (10, 36 + picture.size[1]))
+    if hot:
+        draw_text(draw, (300, 54 + picture.size[1]), "yellow box = the strongest change", 12, PALETTE["muted"])
+    if hot:
+        finding = (f"HEAT   strongest change in {clip_views.where_words(hot, canvas)} "
+                   f"(canvas px x {hot[0]}–{hot[2]}, y {hot[1]}–{hot[3]})")
+    else:
+        finding = "HEAT   almost nothing changes over the span"
+    return LayerResult(image, [finding], "heat", page="frames")
 
 
 # ---------------------------------------------------------------- still (pixels)

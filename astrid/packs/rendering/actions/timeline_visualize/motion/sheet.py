@@ -190,6 +190,31 @@ def build_context(
     return ctx
 
 
+def timeline_canvas(ctx: LayerContext) -> tuple[int, int]:
+    """The timeline's own canvas (theme_overrides.visual.canvas), else the motion model's 1920x1080."""
+    config = ctx.shared.get("config") if isinstance(ctx.shared.get("config"), Mapping) else {}
+    canvas = (((config.get("theme_overrides") or {}).get("visual") or {}).get("canvas") or {})
+    try:
+        return int(canvas.get("width") or model.CANVAS[0]), int(canvas.get("height") or model.CANVAS[1])
+    except (TypeError, ValueError, AttributeError):
+        return model.CANVAS
+
+
+def _what_line(ctx: LayerContext) -> str:
+    """One plain line: what this page shows."""
+    names = tuple(ctx.shared.get("layer_names") or ())
+    if names == ("heat",):
+        return "what you are looking at: where the picture moves over the span (a motion map on its middle frame)"
+    window = ctx.shared.get("window") or {}
+    preset = window.get("preset") if ctx.cut.get("window") else "cut"
+    if preset == "frame":
+        return "what you are looking at: one composed frame of the saved revision, as the film shows it"
+    if preset == "cut":
+        return ("what you are looking at: this cut frame by frame (denser after each entrance), "
+                "with what plays when and the checks it fails")
+    return f"what you are looking at: the {preset} window's frames in time order, with what plays when"
+
+
 def _summary_lines(ctx: LayerContext) -> list[str]:
     cut = ctx.cut
     layers = []
@@ -218,6 +243,7 @@ def _summary_lines(ctx: LayerContext) -> list[str]:
     if sequence:
         picture = f"sequence {sequence.get('id')}, {sequence.get('steps')} steps (from {picture})"
     lines = [
+        _what_line(ctx),
         f"picture {picture}" + (f"  +  {' · '.join(layers)}" if layers else ""),
         f'VO "{said}"' if said else silent,
     ]
@@ -225,8 +251,9 @@ def _summary_lines(ctx: LayerContext) -> list[str]:
         lines.append(f"revision {ctx.shared['revision_short']}")
     if ctx.frame_size and ctx.frame_size[0]:
         w, h = ctx.frame_size
-        scale = model.CANVAS[0] / float(w)
-        lines.append(f"canvas {model.CANVAS[0]}×{model.CANVAS[1]} px, frames shown at {w}×{h}: one shown px = {scale:g} canvas px "
+        cw, ch = timeline_canvas(ctx)
+        scale = round(cw / float(w), 2)
+        lines.append(f"canvas {cw}×{ch} px, frames shown at {w}×{h}: one shown px = {scale:g} canvas px "
                      "(every position is in canvas px; one art px of a sprite = its scale in canvas px)")
     return lines
 
