@@ -1083,14 +1083,14 @@ def _retire_host_locked(state: Mapping[str, Any], support: Path, *, foreground: 
         _consume_runtime_cleanup_receipt(state)
 
 
-def _stop_registered_host(state: Mapping[str, Any]) -> None:
-    """Retire a registered host under its lifecycle lock (any Astrid process may)."""
+def _stop_registered_host(state: Mapping[str, Any], *, runtime_support: Path) -> None:
+    """Retire a host under the calling Runtime's support lock and registration."""
     try:
-        lock_path = Path(str(state.get("support_root") or "")) / "generic-host.lock"
+        lock_path = runtime_support / "generic-host.lock"
         with lock_path.open("a+") as lock:
             platform.owner_only(lock.fileno())
             platform.lock_file(lock.fileno())
-            _retire_host_locked(state, lock_path.parent)
+            _retire_host_locked(state, runtime_support)
     except (ImportError, OSError) as exc:
         raise PackHostBootstrapError("prior host registration lock is unavailable; retirement blocked") from exc
 

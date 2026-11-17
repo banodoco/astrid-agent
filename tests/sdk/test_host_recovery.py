@@ -1146,10 +1146,77 @@ def test_stop_registered_host_refuses_superseded_registration(monkeypatch, tmp_p
     monkeypatch.setattr(host_bootstrap, "_registered_host_status", lambda _state: pytest.fail("inspected stale owner"))
 
     with pytest.raises(host_bootstrap.PackHostBootstrapError, match="inconsistent host support"):
-        host_bootstrap._stop_registered_host(state)
+        host_bootstrap._stop_registered_host(state, runtime_support=tmp_path)
 
     assert json.loads(registration.read_text(encoding="utf-8")) == successor
     assert readiness.read_bytes() == b"successor readiness"
+
+
+def test_stop_registered_host_refuses_another_runtime_support_root(monkeypatch, tmp_path):
+    runtime_support = tmp_path / "current-runtime"
+    other_support = tmp_path / "other-runtime"
+    runtime_support.mkdir()
+    other_support.mkdir()
+    state = {"pid": 4321, "support_root": str(other_support)}
+    markers = {}
+    for support in (runtime_support, other_support):
+        registration = support / "generic-host.json"
+        readiness = support / "generic-host.ready.json"
+        registration.write_text(json.dumps(state), encoding="utf-8")
+        readiness.write_bytes(b"registered host readiness")
+        markers.update({path: path.read_bytes() for path in (registration, readiness)})
+    monkeypatch.setattr(host_bootstrap, "_registered_host_status", lambda _state: pytest.fail("inspected foreign owner"))
+    monkeypatch.setattr(host_bootstrap, "_terminate_old_host", lambda _state: pytest.fail("terminated foreign owner"))
+
+    with pytest.raises(host_bootstrap.PackHostBootstrapError, match="inconsistent host support"):
+        host_bootstrap._stop_registered_host(state, runtime_support=runtime_support)
+
+    assert {path: path.read_bytes() for path in markers} == markers
+    assert (runtime_support / "generic-host.lock").is_file()
+    assert not (other_support / "generic-host.lock").exists()
+
+
+def test_stop_registered_host_empty_support_root_does_not_open_cwd_lock(monkeypatch, tmp_path):
+    runtime_support = tmp_path / "current-runtime"
+    cwd = tmp_path / "unrelated-working-directory"
+    runtime_support.mkdir()
+    cwd.mkdir()
+    state = {"pid": 4321, "support_root": ""}
+    markers = {}
+    for support in (runtime_support, cwd):
+        registration = support / "generic-host.json"
+        readiness = support / "generic-host.ready.json"
+        registration.write_text(json.dumps(state), encoding="utf-8")
+        readiness.write_bytes(b"registered host readiness")
+        markers.update({path: path.read_bytes() for path in (registration, readiness)})
+    monkeypatch.chdir(cwd)
+    monkeypatch.setattr(host_bootstrap, "_registered_host_status", lambda _state: pytest.fail("inspected invalid owner"))
+    monkeypatch.setattr(host_bootstrap, "_terminate_old_host", lambda _state: pytest.fail("terminated invalid owner"))
+
+    with pytest.raises(host_bootstrap.PackHostBootstrapError, match="inconsistent host support"):
+        host_bootstrap._stop_registered_host(state, runtime_support=runtime_support)
+
+    assert {path: path.read_bytes() for path in markers} == markers
+    assert not (cwd / "generic-host.lock").exists()
+    assert (runtime_support / "generic-host.lock").is_file()
+
+
+def test_stop_registered_host_retires_the_current_runtime_registration(monkeypatch, tmp_path):
+    state = {"pid": 4321, "support_root": str(tmp_path)}
+    registration = tmp_path / "generic-host.json"
+    readiness = tmp_path / "generic-host.ready.json"
+    registration.write_text(json.dumps(state), encoding="utf-8")
+    readiness.write_bytes(b"registered host readiness")
+    retired = []
+    monkeypatch.setattr(host_bootstrap, "_registered_host_status", lambda _state: "ours")
+    monkeypatch.setattr(host_bootstrap, "_terminate_old_host", lambda current: retired.append(current))
+
+    host_bootstrap._stop_registered_host(state, runtime_support=tmp_path)
+
+    assert retired == [state]
+    assert not registration.exists()
+    assert not readiness.exists()
+    assert (tmp_path / "generic-host.lock").is_file()
 
 
 def test_runtime_shutdown_retires_the_registered_host_synchronously(harness):
