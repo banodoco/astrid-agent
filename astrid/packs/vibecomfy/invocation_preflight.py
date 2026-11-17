@@ -249,6 +249,44 @@ def _prompt_values(workflow: Any, api: Mapping[str, Any], *, reachable_only: boo
     return values
 
 
+def _declares_prompt_input(workflow: Any) -> bool:
+    """True when the entry's public contract declares a prompt the caller must fill.
+
+    ``node:<id>.<field>`` names are not declarations: the bundle registers them
+    automatically for every schema literal (Whisper's optional ``prompt`` among
+    them), so only an author-named input counts.
+    """
+    public_inputs = getattr(workflow, "inputs", None) or {}
+    return any(
+        str(name) == "prompt"
+        or (not str(name).startswith("node:") and str(getattr(spec, "field", "") or "") == "prompt")
+        for name, spec in public_inputs.items()
+    )
+
+
+def _required_prompt_values(workflow: Any, api: Mapping[str, Any], *, declared: bool) -> list[Any]:
+    """Prompt values a prompt-driven workflow must fill.
+
+    A ``prompt`` field only counts when its node is prompt-bearing (a text
+    encoder or prompt node) or the entry declares a prompt input. Optional
+    hints on other nodes, such as Whisper's ``initial_prompt``, are not
+    requirements: an empty hint is the node's default, not a missing prompt.
+    """
+    values: list[Any] = []
+    for node_id in sorted(_reachable_node_ids(workflow)):
+        node = api.get(node_id)
+        if not isinstance(node, Mapping) or not isinstance(node.get("inputs"), Mapping):
+            continue
+        inputs = node["inputs"]
+        class_type = str(node.get("class_type") or "")
+        prompt_node = any(marker.lower() in class_type.lower() for marker in _PROMPT_NODE_MARKERS)
+        if "prompt" in inputs and (prompt_node or declared):
+            values.append(inputs["prompt"])
+        if "text" in inputs and prompt_node:
+            values.append(inputs["text"])
+    return values
+
+
 def _all_inputs(api: Mapping[str, Any], field: str) -> list[Any]:
     values: list[Any] = []
     for node in api.values():
@@ -334,10 +372,14 @@ def _assert_reachable_prompt(
             raise InvocationPreflightError(
                 "VIBECOMFY_PROMPT_BINDING: expected prompt is not present in a reachable prompt node"
             )
-    elif not any(isinstance(value, str) and value.strip() for value in values):
-        raise InvocationPreflightError(
-            "VIBECOMFY_PROMPT_EMPTY: every reachable prompt input is empty"
+    else:
+        required = _required_prompt_values(
+            workflow, api, declared=_declares_prompt_input(workflow)
         )
+        if required and not any(isinstance(value, str) and value.strip() for value in required):
+            raise InvocationPreflightError(
+                "VIBECOMFY_PROMPT_EMPTY: every reachable prompt input is empty"
+            )
 
 
 def _is_h3_workflow(api: Mapping[str, Any]) -> bool:

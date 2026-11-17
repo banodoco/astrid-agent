@@ -437,11 +437,17 @@ def _cmd_transcripts_run(parsed: argparse.Namespace) -> int:
         path.write_bytes(raw)
         options = {name: getattr(parsed, name) for name in ("placement", "engine", "execution", "align", "recovery_path")
                    if getattr(parsed, name, None) is not None}
+        dry_run = bool(getattr(parsed, "dry_run", False))
         result = generate.audio(entry="transcription", mode="transcribe", audio_ref=str(path),
-                                project=project, client=parsed.client, consent=tuple(parsed.consent), **options)
+                                project=project, client=parsed.client, consent=tuple(parsed.consent),
+                                dry_run=dry_run, **options)
     if getattr(result, "ok", True) is False:
         raise ValueError(f"transcription failed: {getattr(result, 'error', None)}")
     value = result.to_dict() if hasattr(result, "to_dict") else result
+    if dry_run:
+        # Staged input, compile and the invocation preflight ran; nothing was admitted or imported.
+        print(json.dumps(value, indent=2, sort_keys=True, default=str))
+        return 0
     run_id = value.get("kernel_run_id") or value.get("run_id") if isinstance(value, Mapping) else None
     if not run_id and isinstance(value, Mapping) and value.get("task_id"):
         task_result = parsed.client.tasks.show(value["task_id"])
