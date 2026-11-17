@@ -93,7 +93,7 @@ def test_registered_thin_request_wakes_host_and_sdk_without_extra_commit(tmp_pat
         monkeypatch.setattr(generic_host.time, "sleep", record_sleep)
         caller = GeneratedClient(daemon.endpoint, daemon.token)
         thin = {"format": "runtime.resolution/v1", "entry_id": "echo", "values": {"text": "precise"}}
-        admitted = caller.admit_thin_task(thin, idempotency_key="http-thin-once")
+        admitted = caller.admit_task(thin_request=thin, idempotency_key="http-thin-once")
         facade = WorkspaceClient(daemon.endpoint, daemon.token)
         tasks = RemoteTasks(facade)
         handshakes = []
@@ -128,7 +128,7 @@ def test_registered_thin_request_wakes_host_and_sdk_without_extra_commit(tmp_pat
         assert len(result["managed_outputs"]) == 1
         task = daemon.service.store.get_task(admitted["task_id"])["task"]
         assert task["spec"]["spec"]["inputs"] == {"mode": "precise", "seed": 17}
-        assert caller.admit_thin_task(thin, idempotency_key="http-thin-once") == admitted
+        assert caller.admit_task(thin_request=thin, idempotency_key="http-thin-once") == admitted
         assert sum(sql == "COMMIT" for sql in statements) == 3
         assert daemon.service.store.conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 1
     finally:

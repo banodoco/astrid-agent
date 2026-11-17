@@ -5723,7 +5723,7 @@ class RuntimeProtocolClient:
         return "task_waits.v1" in capabilities
 
     def supports_resolution_descriptors(self, executor_id: str) -> bool:
-        if not callable(getattr(self.generated, "admit_thin_task", None)):
+        if not callable(getattr(self.generated, "wait_for_work", None)):
             return False
         if self.generated.handshake_info is None:
             self._authenticate_worker(executor_id)
@@ -5742,18 +5742,18 @@ class RuntimeProtocolClient:
         return observer
 
     def close_task_observer(self, observer):
-        observer.cancel_waits()
+        observer._cancel_waits()
         with self._task_observer_lock:
             self._task_observers.discard(observer)
 
     def cancel_waits(self):
-        cancel = getattr(self.generated, "cancel_waits", None)
+        cancel = getattr(self.generated, "_cancel_waits", None)
         if callable(cancel):
             cancel()
         with self._task_observer_lock:
             observers = tuple(self._task_observers)
         for observer in observers:
-            observer.cancel_waits()
+            observer._cancel_waits()
 
     def claim_delegated_child(self, task_id: str, *, executor_id: str,
                               capability_ids: list[str], target: Mapping[str, Any],
