@@ -235,6 +235,18 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      # Frozen prepared-video parity reads this exact historical Agent source.
+      - name: Fetch frozen prepared-video Agent source
+        shell: bash
+        run: |
+          set -euo pipefail
+          historical_agent=c36ca8c94b695b0e25b7d42c89f194661f187423
+          git fetch --no-tags --depth=1 origin "$historical_agent"
+          test "$(git rev-parse "${historical_agent}^{commit}")" = "$historical_agent"
+          git cat-file -e "${historical_agent}:astrid/sdk/timeline/native_parent_media_commands.py"
+          git show "${historical_agent}:astrid/sdk/timeline/native_parent_media_commands.py" >/dev/null
+          echo "- Prepared-video Agent source verified: $historical_agent" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Read the pinned Runtime commit
         id: runtime-pin
         run: echo "commit=$(python -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')" >> "$GITHUB_OUTPUT"
@@ -245,6 +257,21 @@ jobs:
           repository: banodoco/astrid-runtime
           ref: ${{ steps.runtime-pin.outputs.commit }}
           path: astrid-runtime
+
+      # Frozen schemas are read by exact SHA, not at the current Runtime HEAD.
+      - name: Fetch frozen prepared-video Runtime schemas
+        shell: bash
+        run: |
+          set -euo pipefail
+          for historical_runtime in \
+            34eac0041b0891e9011966b39bcbd26053fde5bc \
+            8ea0766f5e9fb23cea26c7398770a8aaac06b258; do
+            git -C "$ASTRID_RUNTIME_CHECKOUT" fetch --no-tags --depth=1 origin "$historical_runtime"
+            test "$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse "${historical_runtime}^{commit}")" = "$historical_runtime"
+            git -C "$ASTRID_RUNTIME_CHECKOUT" cat-file -e "${historical_runtime}:runtime_protocol/schemas/timeline-commit-bundle.json"
+            git -C "$ASTRID_RUNTIME_CHECKOUT" show "${historical_runtime}:runtime_protocol/schemas/timeline-commit-bundle.json" >/dev/null
+            echo "- Prepared-video Runtime schema verified: $historical_runtime" >> "$GITHUB_STEP_SUMMARY"
+          done
 
       - name: Read the pinned RunPod lifecycle revision
         id: lifecycle-pin
