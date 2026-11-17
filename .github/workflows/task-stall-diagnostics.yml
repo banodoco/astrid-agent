@@ -1,0 +1,106 @@
+name: Task stall diagnostics
+
+on:
+  pull_request:
+    branches: ["release/*/main"]
+    paths:
+      - "astrid/core/execution/stall_diagnostics.py"
+      - "tests/core/execution/test_stall_diagnostics.py"
+      - ".github/workflows/task-stall-diagnostics.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: task-stall-diagnostics-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  compare-task-host:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: candidate
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: baseline
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-dev
+          ref: 656be69360e8c91cb593589ae20b120028bf7554
+          path: proof-tools
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install focused test dependencies
+        run: >-
+          python -m pip install pytest==9.0.2 pytest-timeout==2.4.0
+          jsonschema referencing PyYAML httpx filelock "pillow>=12.2,<13"
+          python-dotenv xxhash psutil
+      - name: Install the Agent and repository-pinned Runtime
+        run: |
+          python -m pip install --no-deps -e candidate
+          python candidate/scripts/ci_install_runtime.py
+      - name: Run unchanged lease tests on both exact revisions
+        run: |
+          python - <<'PY'
+          import json, os, subprocess, sys, tempfile
+          from pathlib import Path
+          workspace = Path.cwd()
+          proof = workspace / "proof"
+          proof.mkdir()
+          common = [
+              "tests/core/execution/test_fail_closed_g28.py",
+              "tests/core/execution/test_bug14_settlement_liveness.py",
+              "tests/test_generic_host.py::test_register_and_run_uses_attempt_local_typed_output_and_cleanup",
+              "tests/test_generic_host.py::test_terminal_sidecar_progress_is_heartbeated_before_settlement",
+              "tests/test_generic_host.py::test_child_progress_path_is_the_attempt_root_the_heartbeat_reads",
+          ]
+          identities = {}
+          for side in ("baseline", "candidate"):
+              root = workspace / side
+              identities[side] = {
+                  "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip(),
+                  "tree": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=root, text=True).strip(),
+                  "runtime": json.loads((root / "runtime.lock.json").read_text())["source_commit"],
+                  "python": sys.version,
+              }
+          assert identities["baseline"]["runtime"] == identities["candidate"]["runtime"]
+          (proof / "identities.json").write_text(json.dumps(identities, indent=2) + "\n")
+          for side in ("baseline", "candidate"):
+              selectors = list(common)
+              if side == "candidate":
+                  selectors += [
+                      "tests/core/execution/test_stall_diagnostics.py",
+                      "tests/test_generic_host_result_json.py::test_stalled_materialize_reports_phase_without_waiting_for_heartbeat",
+                  ]
+              with tempfile.TemporaryDirectory(prefix=f"astrid-stall-{side}-") as data:
+                  env = {key: os.environ[key] for key in ("PATH", "HOME", "LANG") if key in os.environ}
+                  env.update(ASTRID_RUNTIME_DATA_ROOT=data, PYTHONDONTWRITEBYTECODE="1")
+                  command = [sys.executable, "-m", "pytest", "-q", "-rA", *selectors,
+                             f"--junitxml={proof / (side + '.xml')}"]
+                  with (proof / (side + ".log")).open("w") as output:
+                      result = subprocess.run(command, cwd=workspace / side, env=env,
+                                              stdout=output, stderr=subprocess.STDOUT, check=False)
+                  identities[side]["command"] = command
+                  identities[side]["exit_status"] = result.returncode
+                  (proof / "identities.json").write_text(json.dumps(identities, indent=2) + "\n")
+                  if result.returncode not in (0, 1):
+                      raise SystemExit(f"{side}: test infrastructure failed, exit {result.returncode}")
+          PY
+      - name: Reject regressions, missing coverage and failing added cases
+        run: |
+          python -I proof-tools/env/baseline-diff.py --baseline release=proof/baseline.log --candidate proof/candidate.log --out proof/comparison
+          test ! -s proof/comparison/no-baseline.txt
+          test ! -s proof/comparison/missing.txt
+          cat proof/comparison/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload source identities and complete test output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task-stall-diagnostics-${{ github.event.pull_request.head.sha }}
+          path: proof/
