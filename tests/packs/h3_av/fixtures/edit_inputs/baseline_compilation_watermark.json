@@ -1,0 +1,165 @@
+{
+  "branch": "source_backed_v2v",
+  "capabilities": {
+    "audio_binding": "source_audio_from_source_video, audio_strength=0",
+    "connected_model_assets": [
+      "minimax_h3_audio_vae_fp32.safetensors",
+      "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+      "minimax_h3_video_vae_int8_convrot.safetensors",
+      "pika_h3_flex_turbo_8step_hd_ref2va.safetensors",
+      "qwen3vl_32b_minimax_h3_int8_convrot.safetensors"
+    ],
+    "edit_binding": {
+      "during_frames": [
+        0,
+        288
+      ],
+      "frame_load_cap": 288,
+      "refs": [],
+      "seed": 123456789,
+      "strength": 1.0
+    },
+    "generation_timing": {
+      "duration": 12.0,
+      "fps": 24,
+      "raw_frames": 294,
+      "requested_frames": 288,
+      "trim_tail_frames": 6
+    },
+    "mask_binding": "mask_0 (static image, spatial, crop disabled, channel red)",
+    "native_v2_branch": "source_backed_v2v",
+    "operation": "transform",
+    "output_contract": "muxed_av_full_timeline",
+    "overrides": [
+      "model",
+      "steps",
+      "seed",
+      "sampler",
+      "guidance",
+      "turbo_lora",
+      "scheduler",
+      "cfg",
+      "video_shift",
+      "audio_shift"
+    ],
+    "public_generation": {
+      "internal_outputs": [],
+      "modality": "video",
+      "selectors": [
+        {
+          "ordinal": 0,
+          "required": true,
+          "selector": "main-0",
+          "variant_key": "original"
+        }
+      ]
+    },
+    "reference_order": [],
+    "references": 0,
+    "source_binding": "source_video",
+    "source_frame_fit": {
+      "audio_tail": "silence",
+      "internal_tail_frames": 6,
+      "source_window_frames": 288,
+      "video_mask_tail": "broadcast_static_mask",
+      "video_tail": "repeat_last_selected_frame"
+    }
+  },
+  "compilation_digest": "76bd7bc49ff5b755bbbd4b5ebcd60bc6b03da375f4e161f92b3758a9dc3ea0b2",
+  "effective_settings": {
+    "audio_shift": 3.0,
+    "cfg": 1.0,
+    "model": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+    "sampler": "res_multistep",
+    "scheduler": "simple",
+    "seed": 123456789,
+    "steps": 8,
+    "turbo": {
+      "enabled": true,
+      "lora": "pika_flex_8step",
+      "strength": 1.0
+    },
+    "video_shift": 12.0
+  },
+  "kind": "h3_av_compilation",
+  "limitations": [
+    "native masked edit is CPU-verified only; spatial mode on ref2va plus Turbo is unproven on GPU",
+    "one modifying video operation per request; static boxes, image masks or per-frame mask video",
+    "audio regeneration, polygon masks and per-operation adapters are unsupported",
+    "box-only regions bind in the graph; end-to-end execution still needs resolved mask propagation for composition paste-back",
+    "windows are limited to 15 s with no automatic chunking",
+    "zero-reference requests assume MiniMaxH3ReferenceToVideo accepts no ref images (unverified)"
+  ],
+  "managed_assets": {
+    "manifest": {
+      "assets": [
+        {
+          "binding": "mask_0",
+          "lineage": {
+            "filename": "resolved-mask.png",
+            "kind": "source_bytes",
+            "sha256": "sha256:60f587d2d6d543eac9de231150413e55bfafc1ce8362b95325abf3b40f3e7f9f"
+          },
+          "member": "assets/60f587d2d6d543ea-resolved-mask.png",
+          "sha256": "60f587d2d6d543eac9de231150413e55bfafc1ce8362b95325abf3b40f3e7f9f",
+          "size": 1379
+        },
+        {
+          "binding": "source_video",
+          "lineage": {
+            "filename": "clip.bin",
+            "kind": "source_bytes",
+            "sha256": "sha256:6452a4d95cf66cfc67c48919fd2a2f75318d94d84977899984edc1b35de3da23"
+          },
+          "member": "assets/6452a4d95cf66cfc-clip.bin",
+          "sha256": "6452a4d95cf66cfc67c48919fd2a2f75318d94d84977899984edc1b35de3da23",
+          "size": 12
+        }
+      ],
+      "kind": "vibecomfy_managed_assets",
+      "schema_version": 2,
+      "workflow_inputs": {
+        "guidance": 1.0,
+        "mask_0": "60f587d2d6d543ea-resolved-mask.png",
+        "model": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+        "prompt": "Clean background in the lower-left corner, no logo or text.",
+        "sampler": "res_multistep",
+        "scheduler": "simple",
+        "seed": 123456789,
+        "source_video": "6452a4d95cf66cfc-clip.bin",
+        "steps": 8
+      }
+    },
+    "path": "<D>/out/managed-assets.zip",
+    "sha256": "8776ee7add5c9a888565841e7348c1167fa5e0340f94632c0fac344dec47c040"
+  },
+  "profile": "h3_av.native.v2",
+  "request_digest": "9ce80a6a5c92e587f2ed950e1acad32460226583780d3d7aa6bac3b687fa763b",
+  "schema_version": 1,
+  "status": "compiled",
+  "workflow": {
+    "source.json": {
+      "path": "<D>/out/workflow-bundle/source.json",
+      "sha256": "7b2369a260e81bb58e97f2d511d645b82e7b31f18abe9b3f18fdf78f3e3741b5"
+    },
+    "workflow.py": {
+      "path": "<D>/out/workflow-bundle/workflow.py",
+      "sha256": "d812eb6b147008a50eff4b990a56392b1245cad1b0ea32b63a71c1ed4f475285"
+    },
+    "workflow.vibe.json": {
+      "path": "<D>/out/workflow-bundle/workflow.vibe.json",
+      "sha256": "df5e867405503923a80aaff070b05547b454ad3e1bd94c6a938be1fa6041b03b"
+    }
+  },
+  "workflow_inputs": {
+    "guidance": 1.0,
+    "mask_0": "60f587d2d6d543ea-resolved-mask.png",
+    "model": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+    "prompt": "Clean background in the lower-left corner, no logo or text.",
+    "sampler": "res_multistep",
+    "scheduler": "simple",
+    "seed": 123456789,
+    "source_video": "6452a4d95cf66cfc-clip.bin",
+    "steps": 8
+  }
+}

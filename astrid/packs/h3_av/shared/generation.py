@@ -203,6 +203,34 @@ def generation_timing(duration: float) -> dict[str, Any]:
             "trim_tail_frames": raw - frames, "duration": frames / 24}
 
 
+def _spliced_replacement_audio(wf, source_audio, replacement: dict[str, Any]):
+    """Replace the source audio over one span with a trimmed clip of equal length.
+
+    Source audio outside the span is kept; the clip is registered as a bound
+    audio input so the compiled manifest maps it to a managed asset.
+    """
+    from vibecomfy.nodes.core import AudioConcat, LoadAudio, TrimAudioDuration
+
+    binding = replacement["binding"]
+    start, end = float(replacement["start"]), float(replacement["end"])
+    window = float(replacement["window"])
+    clip = LoadAudio(audio="", _id=binding)
+    wf.register_input(binding, binding, "audio", "", type="CHOICE", default="", required=True, media_semantics="audio")
+    # Trim the clip to the requested window of its media, so long tracks need no pre-cut.
+    trimmed = TrimAudioDuration(audio=clip.out("AUDIO"), start_index=float(replacement["clip_start"]),
+                                duration=float(replacement["clip_duration"])).out("AUDIO")
+    parts = []
+    if start > 0:
+        parts.append(TrimAudioDuration(audio=source_audio, start_index=0.0, duration=start).out("AUDIO"))
+    parts.append(trimmed)
+    if end < window:
+        parts.append(TrimAudioDuration(audio=source_audio, start_index=end, duration=window - end).out("AUDIO"))
+    result = parts[0]
+    for part in parts[1:]:
+        result = AudioConcat(audio1=result, audio2=part, direction="after").out("AUDIO")
+    return result
+
+
 def build_generation_workflow(*, references: list[str], prompt: str, frames: int,
                               model: str, steps: int, seed: int,
                               sampler: str = "res_multistep", guidance: float = 0.95,
@@ -363,6 +391,8 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
                               type="CHOICE", default="", required=True, media_semantics="video")
             source_frames = source.out("IMAGE")
             source_audio = source.out(2)
+            if masked_edit.get("replacement_audio"):
+                source_audio = _spliced_replacement_audio(wf, source_audio, masked_edit["replacement_audio"])
             source_count = int(masked_edit["frame_load_cap"])
             tail_frames = frames - source_count
             if source_count < 1 or tail_frames < 0:

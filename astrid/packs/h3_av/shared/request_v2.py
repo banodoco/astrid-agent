@@ -392,8 +392,10 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
                 occurrence["audio"] = item["audio"]
             elif modality == "video": occurrence["audio"] = True
             if "range" in item:
-                if modality != "video": raise H3RequestError(f"{path}.range is unsupported for {modality or 'unresolved'} references")
-                occurrence["range"], occurrence["resolved_range"] = _interval(item["range"], f"{path}.range", FPS)
+                if modality not in {"video", "audio"}: raise H3RequestError(f"{path}.range is unsupported for {modality or 'unresolved'} references")
+                # Audio references are replacement clips; their range is in samples.
+                clock = FPS if modality == "video" else Fraction(SAMPLE_RATE)
+                occurrence["range"], occurrence["resolved_range"] = _interval(item["range"], f"{path}.range", clock)
         else:
             if "at" not in item: raise H3RequestError(f"{path}.at is required for timeline media")
             at, at_frame = _at(item["at"], f"{path}.at")
@@ -450,6 +452,21 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
                 target = by_id.get(guide)
                 if target is None: raise H3RequestError(f"guide {guide!r} is dangling")
                 if target["role"] != "reference": raise H3RequestError(f"guide {guide!r} points to timeline media, not a reference")
+                if edit["action"] == "generate" and not _guide_supported(edit["stream"], target.get("modality")):
+                    raise H3RequestError(
+                        f"guide {guide!r} has modality {target.get('modality') or 'unresolved'}; "
+                        f"{edit['stream']} edits support modalities: {', '.join(EDIT_GUIDE_MODALITIES[edit['stream']])}")
+        # Replacement spans are a list: each audio edit names its own clip span.
+        for edit in item["edit"]:
+            if not replacement_edit(edit): continue
+            guides = edit.get("guides", [])
+            if len(guides) != 1: raise H3RequestError("replacement audio edit requires guides naming exactly one audio reference")
+            replacement = by_id[guides[0]]
+            if "resolved_range" not in replacement: raise H3RequestError(f"replacement audio reference {guides[0]!r} requires a range")
+            span = edit["resolved"]["range"][1] - edit["resolved"]["range"][0]
+            length = replacement["resolved_range"][1] - replacement["resolved_range"][0]
+            if span != length:
+                raise H3RequestError(f"replacement audio length must match the edited span: {guides[0]!r} is {length} samples at {SAMPLE_RATE} Hz, the audio edit covers {span}")
     if duration_fraction is None:
         ends: list[Fraction] = []
         for item in occurrences:
@@ -486,6 +503,30 @@ def read_prepared_request(raw: Mapping[str, Any], expected_digest: Any, *, requi
         effective_settings(request)
     if require_normalized_v2 and request.value.get("version") != 2: raise H3RequestError("prepared v2 request is missing normalized derived fields")
     return request
+
+
+# Reference modalities each edit stream's guides accept today. Video references
+# on edits are a capacity change here, not a schema change.
+EDIT_GUIDE_MODALITIES = {"video": ("image",), "audio": ("audio",)}
+
+
+def _guide_supported(stream: str, modality: str | None) -> bool:
+    """Whether an edit stream's guides accept a reference of this modality.
+
+    Video edits take image references (unresolved modality is allowed, as before).
+    Replacement audio takes an audio reference.
+    """
+    if stream == "audio":
+        return modality == "audio"
+    return modality in (None, *EDIT_GUIDE_MODALITIES["video"])
+
+
+def replacement_edit(edit: Mapping[str, Any]) -> bool:
+    """An audio generate edit that names guides is a replacement-audio edit.
+
+    Audio generate edits without guides keep their existing dialogue-driven path.
+    """
+    return edit.get("stream") == "audio" and edit.get("action") == "generate" and bool(edit.get("guides"))
 
 
 def branch_for(request: H3Request) -> str:

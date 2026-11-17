@@ -50,6 +50,8 @@ class Operation:
     stream: str = "video"
     strength: float = 1.0
     seed: int | None = None
+    replacement_asset: str | None = None  # audio regeneration: replacement clip media
+    replacement_range: tuple[Fraction, Fraction] | None = None  # seconds window inside the clip
 
 
 @dataclass(frozen=True)
@@ -193,6 +195,7 @@ def _normalize_spec(
                 "Supply an image mask or box",
             )
     edits = []
+    replacements: list[dict[str, Any]] = []
     ops = []
     for index, op in enumerate(spec.ops):
         path = f"ops[{index}]"
@@ -284,7 +287,7 @@ def _normalize_spec(
                 path,
                 "Use generate without a source; extend with a source",
             )
-        if op.op == "regenerate" and op.stream != "video":
+        if op.op == "regenerate" and op.stream != "video" and not (op.stream == "audio" and op.replacement_asset):
             _fail(
                 "unsupported_op",
                 "Only video regeneration is supported",
@@ -297,6 +300,13 @@ def _normalize_spec(
                 "Preservation has no conditioning references",
                 f"{path}.refs",
                 "Remove refs from the preservation constraint",
+            )
+        if op.replacement_asset is not None and modalities and modalities.get(op.replacement_asset) not in (None, "audio"):
+            _fail(
+                "unsupported_reference",
+                "Replacement audio must be an audio asset",
+                f"{path}.replacement",
+                "Supply an audio reference",
             )
         if op.stream != "video" and op.region is not None:
             _fail(
@@ -315,7 +325,13 @@ def _normalize_spec(
                 }
                 if stream == "video":
                     edit["mask"] = masks[op.region] if op.region else {"full_frame": True}
-                if op.op == "regenerate":
+                if op.op == "regenerate" and stream == "audio":
+                    # Replacement audio becomes a named audio reference that the edit guides.
+                    name = f"replacement-{len(replacements) + 1}"
+                    replacements.append({"id": name, "asset": op.replacement_asset, "role": "reference",
+                                         "modality": "audio", "range": list(op.replacement_range)})
+                    edit["guides"] = [name]
+                elif op.op == "regenerate":
                     edit["guides"] = list(op.refs)
                     if op.strength != 1:
                         edit["strength"] = op.strength
@@ -371,6 +387,7 @@ def _normalize_spec(
         {"id": name, "asset": ref.asset, "role": "reference", "modality": "image"}
         for name, ref in refs.items()
     ]
+    media.extend(replacements)
     if spec.source is not None:
         media.insert(
             0,
@@ -471,8 +488,13 @@ def _from_v2(request: H3Request) -> H3Spec:
         _fail("source_count", "At most one source is supported", "media", "Use one timeline source")
     refs = []
     names = {}
+    audio_refs = {}
+    used_audio = set()
     for item in value["media"]:
         if item["role"] != "reference":
+            continue
+        if item.get("modality") == "audio":
+            audio_refs[item["occurrence_id"]] = item
             continue
         if item.get("modality") != "image" or any(key in item for key in ("range", "audio")):
             _fail(
@@ -514,6 +536,24 @@ def _from_v2(request: H3Request) -> H3Spec:
                     "media.edit",
                     "Use video edits or whole-stream preservation",
                 )
+            if edit["stream"] == "audio" and edit["action"] != "preserve" and edit.get("guides"):
+                # Replacement audio: the single audio reference named by guides.
+                guide = edit["guides"][0]
+                used_audio.add(guide)
+                ops.append(
+                    Operation(
+                        "regenerate",
+                        tuple(_fraction(t, "media.edit.during") for t in edit["during"]),
+                        None,
+                        (),
+                        "audio",
+                        1.0,
+                        None,
+                        replacement_asset=audio_refs[guide]["asset"],
+                        replacement_range=tuple(_fraction(t, "media.range") for t in audio_refs[guide]["range"]),
+                    )
+                )
+                continue
             region = _region(edit["mask"], regions) if edit["stream"] == "video" else None
             default_guides = names if edit["action"] != "preserve" else ()
             guides = tuple(names[name] for name in edit.get("guides", default_guides))
@@ -528,6 +568,8 @@ def _from_v2(request: H3Request) -> H3Spec:
                     edit.get("seed"),
                 )
             )
+    if any(key not in used_audio for key in audio_refs):
+        _fail("unsupported_reference", "Only untimed image references are representable", "media", "Use image references")
     if source is None:
         ops = [
             Operation("generate", (Fraction(0), _fraction(value["duration"], "duration")), refs=tuple(names.values()), stream="av")
