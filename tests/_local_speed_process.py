@@ -9,10 +9,12 @@ from __future__ import annotations
 from collections import Counter
 import asyncio
 import base64
+import itertools
 import json
 import os
 from pathlib import Path
 import subprocess
+import select
 import selectors
 import sys
 import threading
@@ -143,10 +145,13 @@ class ProcessObserver:
         self.sleep_function = time.sleep
         self.fsync_function = getattr(os, "fsync", None)
         self.fdatasync_function = getattr(os, "fdatasync", None)
+        self.select_function = select.select
         self.wait_state = threading.local()
         self.context = threading.local()
         self.runtime_connection = None
+        self.runtime_commit_code = None
         self.commit_starts = {}
+        self.wait_ids = itertools.count()
 
     def event(self, kind: str, **fields) -> None:
         with self.lock:
@@ -164,17 +169,18 @@ class ProcessObserver:
                 # Event.wait enters Condition.wait; count the public wait once.
                 nested = getattr(owner.wait_state, "depth", 0)
                 owner.wait_state.depth = nested + 1
+                wait_id = next(owner.wait_ids)
                 if not nested:
-                    owner.event(kind + "_attempt")
+                    owner.event(kind + "_attempt", wait_id=wait_id)
                 try:
                     result = function(*args, **kwargs)
                 except BaseException:
                     if not nested:
-                        owner.event(kind + "_error")
+                        owner.event(kind + "_error", wait_id=wait_id)
                     raise
                 else:
                     if not nested:
-                        owner.event(kind + "_success")
+                        owner.event(kind + "_success", wait_id=wait_id)
                     return result
                 finally:
                     owner.wait_state.depth = nested
@@ -191,14 +197,15 @@ class ProcessObserver:
 
         async def async_sleep(*args, **kwargs):
             # No thread-local depth survives an await: unrelated tasks share it.
-            owner.event("asyncio_sleep_attempt")
+            wait_id = next(owner.wait_ids)
+            owner.event("asyncio_sleep_attempt", wait_id=wait_id)
             try:
                 result = await original_sleep(*args, **kwargs)
             except BaseException:
-                owner.event("asyncio_sleep_error")
+                owner.event("asyncio_sleep_error", wait_id=wait_id)
                 raise
             else:
-                owner.event("asyncio_sleep_success")
+                owner.event("asyncio_sleep_success", wait_id=wait_id)
                 return result
         self.patches.setattr(asyncio, "sleep", async_sleep)
 
@@ -273,10 +280,12 @@ class ProcessObserver:
             # Identity comparisons avoid hashing every unrelated bound C method.
             kind = ("sleep" if arg is self.sleep_function else
                     "fsync" if arg is self.fsync_function else
-                    "fdatasync" if arg is self.fdatasync_function else None)
+                    "fdatasync" if arg is self.fdatasync_function else
+                    "selector_wait" if arg is self.select_function and not getattr(self.wait_state, "depth", 0) else None)
             if kind is not None:
                 self.event(kind + {"c_call": "_attempt", "c_return": "_success", "c_exception": "_error"}[event])
             elif (self.runtime_connection is not None and
+                  (self.runtime_commit_code is None or frame.f_code is self.runtime_commit_code) and
                   getattr(arg, "__self__", None) is self.runtime_connection and
                   getattr(arg, "__name__", None) == "commit"):
                 tid = threading.get_native_id()
@@ -330,6 +339,10 @@ class ProcessObserver:
             rows = [row for row in self.events if (since_ns is None or row["at_ns"] >= since_ns)
                     and (until_ns is None or row["at_ns"] <= until_ns)]
             counts = Counter(row["kind"] for row in rows)
+            starts = {row["wait_id"]: row for row in self.events if "wait_id" in row and row["kind"].endswith("_attempt")}
+            ends = {row["wait_id"]: row["at_ns"] for row in self.events if "wait_id" in row and not row["kind"].endswith("_attempt")}
+            carry = Counter(row["kind"].removesuffix("_attempt") for key, row in starts.items()
+                            if since_ns is not None and row["at_ns"] < since_ns <= ends.get(key, 2**64))
             processes = [row for row in rows if row["kind"] == "process_start"]
             hashes = self.hashes.snapshot(since_ns, until_ns)
             return {
@@ -338,6 +351,7 @@ class ProcessObserver:
                 "interval": {"monotonic_start_ns": since_ns, "monotonic_reply_ns": until_ns},
                 "counts": dict(sorted(counts.items())), "process_starts": processes,
                 "wait_coverage": list(WAIT_KINDS),
+                "wait_carry_in": {name: carry[name] for name in WAIT_KINDS},
                 "write_spans": [row for row in rows if row["kind"] in {
                     "application_sync", "runtime_outer_commit_success", "runtime_outer_commit_error",
                     "platform_write_through_success", "platform_write_through_error",

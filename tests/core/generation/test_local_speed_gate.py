@@ -79,9 +79,10 @@ def test_old_reference_cannot_hide_a_new_counter_regression_against_the_pair():
 
 def test_gate_workflow_covers_harness_inputs_and_pins_all_direct_dev_requirements():
     import fnmatch
-    from pathlib import Path
     import re
     import tomllib
+    from pathlib import Path
+
     import yaml
     root = Path(__file__).resolve().parents[3]
     workflow = yaml.safe_load((root / ".github/workflows/plan55-native-flush.yml").read_text())
@@ -105,3 +106,46 @@ def test_meter_explicitly_selects_product_defaults_without_modifying_other_journ
     drives = [node for node in ast.walk(module) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "_drive"]
     assert len(drives) == 1
     assert any(keyword.arg == "product_defaults" and isinstance(keyword.value, ast.Constant) and keyword.value.value is True for keyword in drives[0].keywords)
+
+
+def test_windows_cannot_promote_a_reference_from_another_measurement_pair():
+    from tests._local_speed_baseline import approve_reference
+    old, candidate = baseline(), baseline()
+    candidate["measurement"] = {"gate_version": 3}
+    candidate["pair_id"] = "runner-pair-one"
+    paired = copy.deepcopy(candidate)
+    paired["pair_id"] = "runner-pair-two"
+    with pytest.raises(ValueError, match="same runner pair"):
+        approve_reference(candidate, old, coverage_reference=paired)
+
+
+def test_edited_checkout_reference_cannot_grade_itself(tmp_path):
+    import json
+    import subprocess
+
+    from tests.local_speed_paired_run import immutable_reference
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    path = tmp_path / "tests/fixtures/local-speed-baselines/linux.json"
+    path.parent.mkdir(parents=True)
+    prior = baseline()
+    path.write_text(json.dumps(prior))
+    subprocess.run(["git", "-C", str(tmp_path), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "-c", "user.name=Meter test", "-c", "user.email=meter@example.invalid",
+                    "-c", "commit.gpgsign=false", "commit", "-qm", "reference"], check=True)
+    commit = subprocess.check_output(["git", "-C", str(tmp_path), "rev-parse", "HEAD"], text=True).strip()
+    forged = copy.deepcopy(prior)
+    forged["callers"]["resident_sdk"]["overhead_seconds"]["median"] *= 10
+    path.write_text(json.dumps(forged))
+    assert immutable_reference(tmp_path, commit, "Linux") == prior
+
+
+def test_removed_request_is_reported_as_observed_zero_without_losing_its_counter():
+    from tests._local_speed_baseline import make_baseline
+    from tests.core.generation.test_local_speed_baseline import reports
+    timing, counters = reports()
+    reference = baseline()
+    for row in counters:
+        del row["attached_http_paths"]["GET /history/job-one"]
+    candidate = make_baseline(timing, counters, system="Windows", sources={"agent": "reference"}, counter_vocabulary=reference)
+    assert candidate["callers"]["resident_sdk"]["counter_maxima"]["comfy_http.GET /history/<prompt>"] == 0
+    assert compare_baseline(candidate, reference) == []

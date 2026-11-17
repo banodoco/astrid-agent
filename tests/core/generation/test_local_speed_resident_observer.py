@@ -5,10 +5,10 @@ The ordinary attached integration test retains its real Runtime/output proof.
 """
 
 import json
-from pathlib import Path
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 from tests.core.generation.test_local_speed_meter_collector import rows, write
 from tests.local_speed_meter_run import parse_reports

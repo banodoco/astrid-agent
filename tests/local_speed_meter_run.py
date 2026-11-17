@@ -157,6 +157,8 @@ def main() -> int:
     parser.add_argument("--baseline", type=Path)
     parser.add_argument("--paired-reference", type=Path)
     parser.add_argument("--reference-output", type=Path)
+    parser.add_argument("--counter-vocabulary", type=Path,
+                        help="retain explicit observed zeroes for reference request paths")
     parser.add_argument(
         "--native",
         choices=("linux", "all", "none"),
@@ -270,7 +272,8 @@ def main() -> int:
             if path
         }
         baseline = make_baseline(
-            summary["latency"], summary["counters"], system=platform.system(), sources=identities
+            summary["latency"], summary["counters"], system=platform.system(), sources=identities,
+            counter_vocabulary=json.loads(args.counter_vocabulary.read_text(encoding="utf-8")) if args.counter_vocabulary else None,
         )
         (output / "baseline.json").write_text(
             json.dumps(baseline, indent=2) + "\n", encoding="utf-8"

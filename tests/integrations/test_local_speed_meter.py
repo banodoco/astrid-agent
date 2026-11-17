@@ -359,6 +359,7 @@ def test_attached_caller_observation(
                 sum((Counter(row.get("counts", {})) for row in rows), Counter())
             )
             report["wait_coverage"] = sorted(set.intersection(*(set(row.get("wait_coverage", [])) for row in rows)))
+            report["wait_carry_in"] = dict(sum((Counter(row.get("wait_carry_in", {})) for row in rows), Counter()))
             report["runtime_http_paths"] = meter.runtime.report(meter.start_ns, meter.reply_ns)
             report["sqlite"] = {"before": meter.sqlite_before, "after": meter.sqlite_after,
                                 "database": meter.runtime.database}

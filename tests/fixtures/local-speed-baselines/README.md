@@ -6,9 +6,72 @@ and two separate instrumented counter samples. Every sample follows a
 successful warm-up in its own host session and verifies the delivered PNG and
 two distinct succeeded task records.
 
-## Policy
+## LS-2.2 gate
 
-`tests._local_speed_baseline` checks median and slowest overhead. Overhead is
+The standing workflow measures the exact PR base and exact candidate, in that
+order, on one runner with one Python/dependency environment. Each side has five
+uninstrumented samples and two separate counter samples per caller. The base
+has only a byte-checked copy of the current test harness; its product, packs,
+vendored client and source authority remain the base commit. Import locations,
+product and harness identities, dependency freeze and raw results are retained.
+The Windows comparison therefore does not use an unrelated historical runner
+as its only timing control.
+
+The current comparison is **15% relative** for both median and slowest overhead,
+with **no absolute floor**. All counter caps remain upper bounds, including
+waits, commits and forced writes. A missing previously observed counter fails.
+The historical JSON files below retain their original values and acquisition
+policy; those policy fields do not select the current comparison tolerance.
+Newly observed counters are compared with the paired base under the same
+observer, while the existing counters also keep the historical caps.
+
+The attached cell leaves host, SDK and machine polling at product defaults.
+It counts `Event.wait`, direct `Condition.wait`, `asyncio.sleep` and selector
+waits as well as `time.sleep`; an Event's internal Condition is not counted a
+second time. Waits already pending when the interval starts are disclosed
+separately. Runtime claims, task reads and other requests are counted by method
+and normalized path, without query values or per-job identifiers.
+
+Zero worker starts is valid when a worker admitted before the interval supplies
+a complete snapshot for that interval. A whole-lifetime/exit-only report is
+insufficient. `test_local_speed_resident_observer.py` exercises this protocol
+with a real process, two jobs and verified output bytes; it is meter calibration,
+not a claim that LS-8's product implementation has landed. The attached product
+proof continues to require two succeeded Runtime records and verified delivery.
+
+Forced-write evidence reports effective SQLite settings before and after the
+call, successful outer commits separately from attempted COMMIT statements,
+application sync origins and Runtime routes, and platform write-through calls.
+Linux native tracing retains descriptor paths and matches actual syncs to
+observed application/commit spans. WAL-file syncs during a commit, WAL syncs
+outside a commit and database/checkpoint syncs remain distinct measured facts;
+a WAL sync is not automatically called a commit. Unmatched native writes fail
+attribution. Windows native mapping remains explicitly unqualified under
+LS-13; Python calls are never represented as a native count.
+
+`tests.local_speed_paired_run` reads the old reference from the **base Git
+commit**, not the candidate checkout. A proposed replacement cannot grade
+itself. It writes `eligible-reference.json` only after the candidate passes
+both the old-reference and paired-reference comparisons. This is an evidence
+artifact, not an automatic repository reference update. The standalone meter's
+`--reference-output` likewise requires and passes the prior reference first.
+
+The workflow covers the harness dependency paths and `pyproject.toml`.
+`dev-constraints.txt` pins direct development requirements for this lane;
+product dependency source locks are unchanged. The retained environment freeze
+also records transitive versions; this constraints file is not claimed to be
+a fully resolved lock for every package.
+
+Focused proof lives in `test_local_speed_gate.py`, `test_local_speed_waits.py`,
+`test_local_speed_write_attribution.py` and the resident-process probe, alongside
+all original observer/collector tests. `tests.local_speed_gate_probes` retains
+old-accept/new-reject results against Agent `19103ea6` in each hosted artifact.
+The full paired run remains the product acceptance evidence; neither unit
+tests nor an instrumented duration qualify D1 or real GPU performance.
+
+## Original acquisition policy (historical)
+
+The original v2 acquisition checked median and slowest overhead. Overhead is
 caller wall time minus the stand-in execution span; queue time is retained.
 The policy was fixed before acquiring the references: median at most
 `1.5 * reference + 3 seconds`, slowest at most `2 * reference + 5 seconds`.

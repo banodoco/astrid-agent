@@ -11,13 +11,14 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
 import platform
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
+import uuid
+from pathlib import Path
 
 from tests._local_speed_baseline import approve_reference, compare_baseline
 
@@ -39,9 +40,10 @@ def immutable_reference(root, base, system):
     return json.loads(git(root, "show", base + ":" + path))
 
 
-def measure(root, output, native):
+def measure(root, output, native, vocabulary):
     command = [sys.executable, "-m", "tests.local_speed_meter_run", "--output", str(output),
-               "--samples", "5", "--counter-samples", "2", "--timeout", "1800", "--native", native]
+               "--samples", "5", "--counter-samples", "2", "--timeout", "1800", "--native", native,
+               "--counter-vocabulary", str(vocabulary)]
     # The current directory, not an installed editable package, must supply the
     # product. This is checked again in the child before collecting any samples.
     check = "import pathlib,astrid,astrid_runtime_client; r=pathlib.Path.cwd().resolve(); assert pathlib.Path(astrid.__file__).resolve().is_relative_to(r); assert pathlib.Path(astrid_runtime_client.__file__).resolve().is_relative_to(r)"
@@ -69,6 +71,8 @@ def main():
     base_parent = Path(tempfile.mkdtemp(prefix="p55-pair-", dir=os.environ.get("RUNNER_TEMP")))
     base_root = base_parent / "base"
     worktree_created = False
+    previous_pair = os.environ.get("ASTRID_LS2_PAIR_ID")
+    os.environ["ASTRID_LS2_PAIR_ID"] = summary["pair_id"] = str(uuid.uuid4())
     try:
         if git(root, "status", "--porcelain", "--untracked-files=no"):
             raise ValueError("candidate must be the clean exact source being tested")
@@ -93,10 +97,13 @@ def main():
         summary["harness_sha256"] = overlay
         summary["base_tree"] = git(base_root, "rev-parse", "HEAD^{tree}")
         summary["candidate_tree"] = git(root, "rev-parse", "HEAD^{tree}")
-        (output / "pip-freeze.txt").write_text(subprocess.check_output([sys.executable, "-m", "pip", "freeze", "--all"], text=True))
+        freeze = subprocess.check_output([sys.executable, "-m", "pip", "freeze", "--all"], text=True)
+        (output / "pip-freeze.txt").write_text(freeze)
         native = "linux"
-        paired = measure(base_root, output / "reference", native)
-        actual = measure(root, output / "candidate", native)
+        paired = measure(base_root, output / "reference", native, output / "old-reference.json")
+        actual = measure(root, output / "candidate", native, output / "reference/baseline.json")
+        if subprocess.check_output([sys.executable, "-m", "pip", "freeze", "--all"], text=True) != freeze:
+            raise ValueError("dependency environment changed between paired measurements")
         summary["historical_regressions"] = compare_baseline(actual, old, coverage_reference=paired)
         summary["paired_regressions"] = compare_baseline(actual, paired)
         summary["reference_product"] = paired["sources"]
@@ -111,6 +118,10 @@ def main():
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         summary["error"] = f"{type(error).__name__}: {error}"
     finally:
+        if previous_pair is None:
+            os.environ.pop("ASTRID_LS2_PAIR_ID", None)
+        else:
+            os.environ["ASTRID_LS2_PAIR_ID"] = previous_pair
         summary["finished_epoch_ns"] = time.time_ns()
         (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
         if worktree_created:

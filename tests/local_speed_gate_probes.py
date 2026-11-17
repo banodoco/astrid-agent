@@ -3,15 +3,15 @@
 import argparse
 import copy
 import json
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import threading
 import types
+from pathlib import Path
 
 from tests import _local_speed_baseline as current
-from tests.core.generation.test_local_speed_baseline import baseline
+from tests.core.generation.test_local_speed_baseline import baseline, reports
 from tests.core.generation.test_local_speed_meter_collector import rows, write
 from tests.core.generation.test_local_speed_process_observer import TARGETS, observer
 from tests.local_speed_meter_run import parse_reports
@@ -87,6 +87,38 @@ def main():
             probes.append({"probe": "accelerated_claim_poll_cell", "old": "PASS", "new": "FAIL"})
         else:
             raise AssertionError("nondefault meter cell was accepted")
+        resident = rows(True)
+        for row in resident:
+            row["interval"] = {"monotonic_start_ns": 100, "monotonic_reply_ns": 200}
+            row["process_start_counts"]["pack_worker"] = 0
+            row["process_observations"].append({"role": "pack_worker", "pid": 2, "start_ns": 10,
+                "interval": row["interval"], "counts": {}, "coverage_gaps": []})
+        log = write(path, resident)
+        try:
+            old_collector.parse_reports(log, instrumented=True)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("old collector unexpectedly accepted zero starts")
+        assert len(parse_reports(log, instrumented=True)) == 2
+        probes.append({"probe": "resident_worker_with_interval_evidence", "old": "FAIL", "new": "PASS",
+                       "scope": "collector calibration; real retained-process proof is test_local_speed_resident_observer.py"})
+    timing, counts = reports()
+    for row in timing + counts:
+        row.update(gate_version=3, harness_settings={"host_poll_seconds": "product_default"})
+    for row in counts:
+        row.update(native_flushes=1, wait_coverage=["event_wait", "condition_wait", "asyncio_sleep", "selector_wait"],
+                   runtime_http_paths={}, write_spans=[], sqlite={"before": {"journal_mode": "wal", "synchronous": 2},
+                   "after": {"journal_mode": "wal", "synchronous": 2}})
+    old_value = old.make_baseline(timing, counts, system="Linux", sources={})
+    assert old.compare_baseline(old_value, old_value) == []
+    try:
+        current.make_baseline(timing, counts, system="Linux", sources={})
+    except ValueError as error:
+        assert "native forced-write attribution" in str(error)
+        probes.append({"probe": "unattributed_native_write", "old": "PASS", "new": "FAIL"})
+    else:
+        raise AssertionError("unattributed forced write accepted")
     result = {"schema": "astrid.ls2-adversarial-probes.v1", "old_sha": OLD_SHA,
               "candidate_sha": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
               "probes": probes, "status": "PASS"}

@@ -7,6 +7,7 @@ OS flush completions are a separate observation; an absent trace is never zero.
 from __future__ import annotations
 
 import math
+import os
 import re
 import statistics
 from collections import Counter
@@ -40,7 +41,7 @@ def distribution(values):
     return {"samples": len(values), "median": statistics.median(values), "slowest": max(values)}
 
 
-def counter_values(row):
+def counter_values(row, *, known_counter_names=()):
     counts = row["python_counts"]
     if any(counts.get(name, 0) for name in ("fsync_error", "fdatasync_error")):
         raise ValueError("a Python forced-write request failed")
@@ -79,6 +80,9 @@ def counter_values(row):
         if counts.get("runtime_outer_commit_error", 0) or counts.get("platform_write_through_error", 0):
             raise ValueError("a commit or platform forced write failed")
         values.update({"runtime_http." + path: count for path, count in row["runtime_http_paths"].items()})
+        for origin in ("runtime_publication", "vibecomfy_evidence", "caller_delivery", "runtime_background",
+                       "runtime_other", "other_application"):
+            values["application_write." + origin] = 0
         for span in row["write_spans"]:
             if span["kind"] == "application_sync":
                 if not span["success"]:
@@ -93,12 +97,23 @@ def counter_values(row):
             if attribution.get("status") != "PASS":
                 raise ValueError("native forced-write attribution is incomplete")
             values.update({"native." + name: value for name, value in attribution["counts"].items()})
+    # These maps are complete enumerations from a live observer, so an operation
+    # that did not occur is an observed zero. Preserve the reference's vocabulary
+    # explicitly instead of deleting its counter. Missing coverage never enters
+    # this path, and compare_baseline itself never invents zero for a lost key.
+    for name in known_counter_names:
+        if name in values:
+            continue
+        if name.startswith("comfy_http.") and "attached_http_paths" in row:
+            values[name] = 0
+        elif name.startswith("runtime_http.") and row.get("gate_version") == 3 and "runtime_http_paths" in row:
+            values[name] = 0
     if any(type(v) is not int or v < 0 for v in values.values()):
         raise ValueError("counter values must be observed nonnegative integers")
     return dict(sorted(values.items()))
 
 
-def make_baseline(latency, counters, *, system, sources):
+def make_baseline(latency, counters, *, system, sources, counter_vocabulary=None):
     baseline = {
         "schema": SCHEMA,
         "system": system,
@@ -116,10 +131,13 @@ def make_baseline(latency, counters, *, system, sources):
         if len(settings) != 1:
             raise ValueError("harness settings differ between samples")
         baseline["measurement"] = {"gate_version": 3, "harness_settings": dict(settings.pop())}
+        if os.environ.get("ASTRID_LS2_PAIR_ID"):
+            baseline["pair_id"] = os.environ["ASTRID_LS2_PAIR_ID"]
     for caller in CALLERS:
         timings = [row for row in latency if row["caller"] == caller]
         counter_rows = [row for row in counters if row["caller"] == caller]
-        observed = [counter_values(row) for row in counter_rows]
+        names_known = (counter_vocabulary or {}).get("callers", {}).get(caller, {}).get("counter_maxima", {})
+        observed = [counter_values(row, known_counter_names=names_known) for row in counter_rows]
         if not observed:
             raise ValueError("each caller needs an instrumented counter sample")
         native_coverage = {row.get("native_flushes") is not None for row in counter_rows}
@@ -153,7 +171,7 @@ def compare_baseline(actual, reference, *, coverage_reference=None):
     Every observed counter is an upper bound. Background work is reported
     separately by the observer; it is not a reason to forgive extra work.
     """
-    if reference.get("schema") != SCHEMA or actual["system"] != reference.get("system"):
+    if reference.get("schema") != SCHEMA or actual.get("schema") != SCHEMA or actual["system"] != reference.get("system"):
         raise ValueError("baseline schema/system mismatch")
     if reference.get("tolerance") not in (TOLERANCE, LEGACY_TOLERANCE):
         raise ValueError("baseline tolerance differs from the checked policy")
@@ -161,7 +179,7 @@ def compare_baseline(actual, reference, *, coverage_reference=None):
         raise ValueError("baseline fixture mismatch")
     if "measurement" in reference and actual.get("measurement") != reference["measurement"]:
         raise ValueError("baseline measurement coverage/settings mismatch")
-    if set(reference.get("callers", {})) != set(CALLERS):
+    if set(reference.get("callers", {})) != set(CALLERS) or set(actual.get("callers", {})) != set(CALLERS):
         raise ValueError("baseline must name both callers")
     for dependency in ("runtime", "vibecomfy", "lifecycle"):
         if actual["sources"].get(dependency) != reference.get("sources", {}).get(dependency):
@@ -179,11 +197,13 @@ def compare_baseline(actual, reference, *, coverage_reference=None):
             raise ValueError("baseline effective SQLite mode mismatch")
         for statistic in ("median", "slowest"):
             expected = prior["overhead_seconds"][statistic]
+            value = current["overhead_seconds"][statistic]
+            if any(type(item) not in (float, int) or not math.isfinite(item) or item < 0 for item in (expected, value)):
+                raise ValueError("timing statistics must be finite nonnegative observations")
             limit = (
                 expected * (1 + TOLERANCE[statistic + "_relative"])
                 + TOLERANCE[statistic + "_seconds"]
             )
-            value = current["overhead_seconds"][statistic]
             if value > limit:
                 failures.append(
                     {
@@ -224,6 +244,10 @@ def compare_baseline(actual, reference, *, coverage_reference=None):
 
 def approve_reference(actual, old_reference, *, coverage_reference=None):
     """The caller must supply the prior reference, never the proposed replacement."""
+    if actual.get("measurement", {}).get("gate_version") == 3 and actual["system"] == "Windows":
+        if (coverage_reference is None or not actual.get("pair_id")
+                or actual["pair_id"] != coverage_reference.get("pair_id")):
+            raise ValueError("Windows reference must be measured in the same runner pair")
     failures = compare_baseline(actual, old_reference, coverage_reference=coverage_reference)
     if failures:
         raise ValueError("regressed candidate cannot replace the prior reference")

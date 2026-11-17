@@ -1,8 +1,8 @@
 """Observe the exact Runtime used by the meter without changing its behavior."""
 
-from collections import Counter
 import re
 import time
+from collections import Counter
 from urllib.parse import unquote, urlsplit
 
 
@@ -22,6 +22,7 @@ class RuntimeObserver:
         self.requests = []
         self.database = str(daemon.service.store.db_path)
         process.runtime_connection = daemon.service.store.conn
+        process.runtime_commit_code = daemon.service.store._transaction.__wrapped__.__code__
 
     def sqlite_mode(self):
         store = self.daemon.service.store
@@ -30,8 +31,8 @@ class RuntimeObserver:
                     for name in ("journal_mode", "synchronous", "wal_autocheckpoint")}
 
     def install(self):
-        from runtime_protocol.server import RuntimeHandler
         from runtime_protocol import platform
+        from runtime_protocol.server import RuntimeHandler
 
         owner, original = self, RuntimeHandler._dispatch
 
