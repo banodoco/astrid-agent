@@ -221,9 +221,14 @@ class ComfyUIEngine:
         """
         import json
         import urllib.request
+
+        from astrid.core.util.http import os_trust_ssl_context
+
         url = str(endpoint).rstrip("/") + "/object_info"
         try:
-            with urllib.request.urlopen(url, timeout=timeout) as response:  # noqa: S310  (caller-validated endpoint)
+            with urllib.request.urlopen(
+                url, timeout=timeout, context=os_trust_ssl_context()
+            ) as response:  # noqa: S310  (caller-validated endpoint)
                 info = json.loads(response.read().decode("utf-8"))
         except Exception as exc:  # noqa: BLE001  (every failure is a clean not-ready)
             return {"ready": False, "endpoint": endpoint, "reason": f"{type(exc).__name__}: {exc}", "exception": exc}

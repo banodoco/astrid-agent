@@ -28,6 +28,7 @@ from urllib import request as urllib_request
 
 from astrid.core.generation.engine_contracts import TransportError
 from astrid.core.path_utils import has_url_scheme, is_native_absolute_path
+from astrid.core.util.http import os_trust_ssl_context
 
 MAX_JSON_BYTES = 32 * 1024 * 1024
 MAX_DESCRIPTOR_INFO_BYTES = 64 * 1024
@@ -70,7 +71,10 @@ class _NoRedirectHandler(urllib_request.HTTPRedirectHandler):
 def open_comfy_http(request: urllib_request.Request, *, timeout: float) -> Any:
     """Refuse redirects; bypass proxies only on the local HTTP leg."""
     handlers: list[Any] = [_NoRedirectHandler]
-    host = urllib_parse.urlsplit(request.full_url).hostname or ""
+    parsed = urllib_parse.urlsplit(request.full_url)
+    if parsed.scheme == "https":
+        handlers.append(urllib_request.HTTPSHandler(context=os_trust_ssl_context()))
+    host = parsed.hostname or ""
     if host == "localhost" or host.startswith("127.") or host == "::1":
         handlers.append(urllib_request.ProxyHandler({}))
     return urllib_request.build_opener(*handlers).open(request, timeout=timeout)

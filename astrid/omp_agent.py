@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from .core.auth import AUTH_COMMANDS, contributor_auth_system_notice, run_auth
+from .core.util.http import os_trust_ssl_context
 from .core.util.process import replace_process
 from .version import ASTRID_VERSION
 
@@ -507,7 +508,7 @@ def _run_key_command(argv: list[str]) -> int:
         base = "https://openrouter.ai"
     try:
         request = urllib.request.Request(base.rstrip("/") + "/api/v1/auth/key", headers={"Authorization": f"Bearer {key}"})
-        with urllib.request.urlopen(request, timeout=10):
+        with urllib.request.urlopen(request, timeout=10, context=os_trust_ssl_context()):
             pass
     except urllib.error.HTTPError as exc:
         rejected = exc.code in (401, 403)

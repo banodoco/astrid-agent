@@ -29,6 +29,7 @@ from astrid.core.model_setup.manifest import (
     verify_signature,
 )
 from astrid.core.model_setup.preflight import require_disk
+from astrid.core.util.http import os_trust_ssl_context
 
 CHUNK_SIZE = 1 << 20
 ARTIFACTS_DIR_NAME = "artifacts"
@@ -173,12 +174,16 @@ def _download(
     urlopen: Callable[..., object] | None,
 ) -> int:
     """Resume a host scratch file with HTTP Range when possible."""
-    opener = urlopen or urllib.request.urlopen
     part.parent.mkdir(parents=True, exist_ok=True)
     request = urllib.request.Request(url)
     if offset:
         request.add_header("Range", f"bytes={offset}-")
-    with opener(request) as response:  # type: ignore[operator]
+    response = (
+        urllib.request.urlopen(request, context=os_trust_ssl_context())
+        if urlopen is None
+        else urlopen(request)
+    )
+    with response:  # type: ignore[attr-defined]
         status = getattr(response, "status", 200)
         if offset and status == 200:
             offset = 0

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from astrid.core.util.http import os_trust_ssl_context
 from astrid.pack_api import AstridError
 from astrid.pack_api import guard_canonical_entrypoint
 from astrid.pack_api import CredentialsScope
@@ -20,7 +21,6 @@ from pathlib import Path
 from typing import Any
 
 from astrid.pack_api import add_choice_arg
-from astrid.core.util.http import os_trust_ssl_context
 
 HUGGING_FACE_MODELS_API = "https://huggingface.co/api/models"
 DEFAULT_DISCOVERY_LIMIT = 1000
