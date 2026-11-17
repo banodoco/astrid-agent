@@ -1,0 +1,118 @@
+{
+  "schema": "astrid.local-speed-baseline.v2",
+  "system": "Linux",
+  "sources": {
+    "agent": "6bbc74dbe43e5244e3973e0ea303bd92e53211ac",
+    "runtime": "6855dfa8df65cf8ae4c002b57134d6505493c17c",
+    "vibecomfy": "dba38f8644c46f652376f2cd5112ea161e40f09b",
+    "lifecycle": "7f0b025e9391baac9f5c2fb7393617ea6fef0704"
+  },
+  "tolerance": {
+    "median_relative": 0.5,
+    "median_seconds": 3.0,
+    "slowest_relative": 1.0,
+    "slowest_seconds": 5.0,
+    "background_relative": 0.5,
+    "background_count": 10
+  },
+  "callers": {
+    "resident_sdk": {
+      "caller_seconds": {
+        "samples": 5,
+        "median": 22.438058796999997,
+        "slowest": 22.617143855999984
+      },
+      "overhead_seconds": {
+        "samples": 5,
+        "median": 22.438051100999985,
+        "slowest": 22.61713573999998
+      },
+      "queue_seconds": {
+        "samples": 5,
+        "median": 1.7100001059588976e-07,
+        "slowest": 2.1500000002561137e-07
+      },
+      "execution_seconds": {
+        "samples": 5,
+        "median": 7.92100001945073e-06,
+        "slowest": 1.0830000007899798e-05
+      },
+      "counter_samples": 2,
+      "native_flush_coverage": "observed",
+      "counter_maxima": {
+        "comfy_http.GET /history/<prompt>": 1,
+        "comfy_http.GET /object_info": 4,
+        "comfy_http.GET /queue": 2,
+        "comfy_http.GET /system_stats": 2,
+        "comfy_http.GET /view": 1,
+        "comfy_http.POST /prompt": 1,
+        "comfy_http.POST /queue": 2,
+        "native.completed_flushes": 161,
+        "output_hash_streams": 25,
+        "process_start.external": 7,
+        "process_start.pack_worker": 1,
+        "python.bundle_compile": 2,
+        "python.bundle_emission": 3,
+        "python.fdatasync_attempt": 0,
+        "python.fdatasync_success": 0,
+        "python.fsync_attempt": 150,
+        "python.fsync_success": 150,
+        "python.sleep_attempt": 159,
+        "python.workflow_compile": 8,
+        "python_forced_write_requests": 150,
+        "runtime_commit_statements": 1339
+      }
+    },
+    "fresh_python_cli": {
+      "caller_seconds": {
+        "samples": 5,
+        "median": 16.91975967799999,
+        "slowest": 16.991293761999998
+      },
+      "overhead_seconds": {
+        "samples": 5,
+        "median": 16.919752116999916,
+        "slowest": 16.991286650000006
+      },
+      "queue_seconds": {
+        "samples": 5,
+        "median": 1.349999934063817e-07,
+        "slowest": 2.549999749135168e-07
+      },
+      "execution_seconds": {
+        "samples": 5,
+        "median": 7.251999988966418e-06,
+        "slowest": 7.607999918946007e-06
+      },
+      "counter_samples": 2,
+      "native_flush_coverage": "observed",
+      "counter_maxima": {
+        "comfy_http.GET /history/<prompt>": 1,
+        "comfy_http.GET /object_info": 4,
+        "comfy_http.GET /queue": 2,
+        "comfy_http.GET /system_stats": 2,
+        "comfy_http.GET /view": 1,
+        "comfy_http.POST /prompt": 1,
+        "comfy_http.POST /queue": 2,
+        "native.completed_flushes": 160,
+        "output_hash_streams": 25,
+        "process_start.cli": 1,
+        "process_start.external": 7,
+        "process_start.pack_worker": 1,
+        "python.bundle_compile": 2,
+        "python.bundle_emission": 3,
+        "python.fdatasync_attempt": 0,
+        "python.fdatasync_success": 0,
+        "python.fsync_attempt": 150,
+        "python.fsync_success": 150,
+        "python.sleep_attempt": 159,
+        "python.workflow_compile": 8,
+        "python_forced_write_requests": 150,
+        "runtime_commit_statements": 1301
+      }
+    }
+  },
+  "fixture": "attached stand-in, 16x16 PNG; no inference, not a D1 workload",
+  "native_windows_flushes": "unqualified; LS-13 owns the native trace",
+  "budget_certified": false
+}
