@@ -43,8 +43,15 @@ DEFAULT_BAR_THRESHOLD = 16
 _BAR_MAX_BRIGHT_FRACTION = 0.005
 """A bar row/column may contain at most 0.5% pixels above the threshold."""
 
-_BAR_MAX_STD = 1.5
-"""A bar row/column is near-uniform: its value standard deviation is at most this."""
+_BAR_MIN_STD = 1.5
+_BAR_STD_PER_THRESHOLD = 0.2
+"""A bar row/column is near-uniform: its value standard deviation is at most
+``max(_BAR_MIN_STD, _BAR_STD_PER_THRESHOLD * threshold)``. The limit scales with
+the threshold, so faint film grain in a black band still counts as a bar."""
+
+_BAR_EXTEND_ROWS = 16
+"""After the uniform core, keep extending while rows stay dark, up to this many
+rows. This covers JPEG block ringing that is dark but not uniform."""
 
 _BAR_MAX_EDGE_FRACTION = 0.25
 """One edge may remove at most this fraction of its dimension."""
@@ -126,24 +133,39 @@ def _check_threshold(threshold: int) -> None:
 
 
 def _edge_measure(rgb: Any, threshold: int) -> dict[str, int]:
-    """Raw leading bar size per edge, before the per-edge cap is applied."""
+    """Raw leading bar size per edge, before the per-edge cap is applied.
+
+    A bar starts with a dark, near-uniform core (leading rows that are dark and
+    within the spread limit). From the core it extends while rows stay dark,
+    up to ``_BAR_EXTEND_ROWS`` rows, so JPEG ringing at the picture edge is kept.
+    """
     import numpy as np
 
     pixels = np.asarray(rgb, dtype=np.uint8)
     bright = pixels.max(axis=2) > threshold
     values = pixels.astype(np.float32)
-    row_is_bar = (bright.mean(axis=1) <= _BAR_MAX_BRIGHT_FRACTION) & (
-        values.std(axis=(1, 2)) <= _BAR_MAX_STD
-    )
-    col_is_bar = (bright.mean(axis=0) <= _BAR_MAX_BRIGHT_FRACTION) & (
-        values.std(axis=(0, 2)) <= _BAR_MAX_STD
-    )
+    limit = max(_BAR_MIN_STD, _BAR_STD_PER_THRESHOLD * threshold)
+    row_dark = bright.mean(axis=1) <= _BAR_MAX_BRIGHT_FRACTION
+    row_uniform = values.std(axis=(1, 2)) <= limit
+    col_dark = bright.mean(axis=0) <= _BAR_MAX_BRIGHT_FRACTION
+    col_uniform = values.std(axis=(0, 2)) <= limit
     return {
-        "top": _leading_true(row_is_bar),
-        "bottom": _leading_true(row_is_bar[::-1]),
-        "left": _leading_true(col_is_bar),
-        "right": _leading_true(col_is_bar[::-1]),
+        "top": _leading_bar(row_dark, row_uniform),
+        "bottom": _leading_bar(row_dark[::-1], row_uniform[::-1]),
+        "left": _leading_bar(col_dark, col_uniform),
+        "right": _leading_bar(col_dark[::-1], col_uniform[::-1]),
     }
+
+
+def _leading_bar(dark: Any, uniform: Any) -> int:
+    """Length of the bar from one edge: a uniform dark core, then dark extension."""
+    core = _leading_true(dark & uniform)
+    if core == 0:
+        return 0
+    extent = core
+    while extent < len(dark) and extent - core < _BAR_EXTEND_ROWS and dark[extent]:
+        extent += 1
+    return extent
 
 
 def _box_from_edges(edges: dict[str, int], width: int, height: int, threshold: int) -> BarDetection:
@@ -200,9 +222,10 @@ def _open_still(data: bytes) -> tuple[Any, bytes | None]:
     try:
         with Image.open(io.BytesIO(data)) as raw:
             frames = getattr(raw, "n_frames", 1)
-            if frames > 1:
+            # MPO (multi-picture JPEG, e.g. phone depth/stereo) is a still: frame 0 is the photo.
+            if frames > 1 and raw.format != "MPO":
                 raise ValueError(
-                    f"animated image ({frames} frames) is not supported; "
+                    f"animated or multi-page image ({frames} frames) is not supported; "
                     "export one still frame and crop that instead"
                 )
             icc = raw.info.get("icc_profile")
@@ -211,7 +234,9 @@ def _open_still(data: bytes) -> tuple[Any, bytes | None]:
     except (OSError, SyntaxError, Image.DecompressionBombError) as exc:
         raise ValueError(f"not a readable still image: {exc}") from exc
     if image.mode not in _PNG_MODES:
+        # The profile describes the source space (e.g. CMYK); it no longer applies.
         image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
+        icc = None
     return image, icc
 
 
@@ -232,8 +257,8 @@ def crop_image_bytes(data: bytes, box: Box) -> bytes:
     box.check_within(*image.size)
     cropped = image.crop((box.x, box.y, box.x + box.w, box.y + box.h))
     out = io.BytesIO()
-    options: dict[str, Any] = {"icc_profile": icc} if icc else {}
-    cropped.save(out, format="PNG", **options)
+    # Pass the profile explicitly: a None here stops Pillow reusing the source's info["icc_profile"].
+    cropped.save(out, format="PNG", icc_profile=icc)
     return out.getvalue()
 
 
@@ -318,10 +343,13 @@ def crop_media(
     even: bool = False,
     dry_run: bool = False,
     idempotency_key: str | None = None,
+    allow_no_bars: bool = False,
 ) -> DomainResult[Any]:
     """Crop one project media item into a new managed media item.
 
     Exactly one of ``box`` (``"X,Y,W,H"``) or ``remove_bars`` must be given.
+    With ``remove_bars`` and no bars found, nothing is imported unless
+    ``allow_no_bars`` is set (a dry run always just reports the result).
     """
     if (box is None) == (not remove_bars):
         return _failure("validation_error", "give exactly one of --box or --remove-bars", idempotency_key or "", field="box")
@@ -352,6 +380,7 @@ def crop_media(
             width, height = image_size(data)
             detection = detect_bars(_load_rgb(data), threshold=bar_threshold) if remove_bars else None
             plan = _plan(box, detection, width, height)
+            _refuse_if_no_bars(plan, remove_bars=remove_bars, dry_run=dry_run, allow_no_bars=allow_no_bars)
             crop_dims = plan["box"].even() if even else plan["box"]
             crop_dims.check_within(width, height)
             if crop_dims.w <= 0 or crop_dims.h <= 0:
@@ -368,7 +397,7 @@ def crop_media(
             client, data=data, project=project, source=source, source_object_id=source_object_id,
             source_digest=source_digest, filename=filename, box=box, remove_bars=remove_bars,
             bar_threshold=bar_threshold, even=even, dry_run=dry_run,
-            idempotency_key=idempotency_key,
+            idempotency_key=idempotency_key, allow_no_bars=allow_no_bars,
         )
     except (ValueError, MediaProbeError) as exc:
         return _failure("validation_error", str(exc), idempotency_key or "")
@@ -384,6 +413,21 @@ def _plan(box: str | None, detection: BarDetection | None, width: int, height: i
     return {"box": parsed, "bars": None, "audio": None}
 
 
+def _bars_found(plan: dict[str, Any]) -> bool:
+    bars = plan.get("bars")
+    return bars is not None and any(bars["edges"].values())
+
+
+def _refuse_if_no_bars(plan: dict[str, Any], *, remove_bars: bool, dry_run: bool, allow_no_bars: bool) -> None:
+    """Import nothing when --remove-bars found no bars, unless explicitly allowed."""
+    if not remove_bars or dry_run or allow_no_bars or _bars_found(plan):
+        return
+    raise ValueError(
+        "--remove-bars found no bars, so there is nothing to remove; nothing was imported. "
+        "Pass --allow-no-bars to import an uncropped copy, or --box X,Y,W,H to crop explicitly"
+    )
+
+
 def _result(
     source: dict[str, Any], plan: dict[str, Any], crop: Box, kind: str, *, dry_run: bool,
     media: Any = None, provenance: Any = None, provenance_recorded: str | None = None,
@@ -396,6 +440,8 @@ def _result(
         "output": {"width": crop.w, "height": crop.h},
         "detected": plan["bars"],
     }
+    if plan["bars"] is not None:
+        data["bars_found"] = _bars_found(plan)
     if plan.get("audio") is not None:
         data["audio"] = plan["audio"]
     if media is not None:
@@ -489,6 +535,20 @@ def _record_provenance(
     )
 
 
+def _same_derivation(existing: dict[str, Any], metadata: dict[str, Any]) -> bool:
+    """Same crop of the same source: bar and audio detail are not compared.
+
+    ``even`` only matters when the box is not already even: rounding an
+    even box down changes nothing, so an even-only difference is identical.
+    """
+    if not all(existing.get(name) == metadata.get(name) for name in _DERIVATION_FIELDS if name != "even"):
+        return False
+    if existing.get("even") == metadata.get("even"):
+        return True
+    box = metadata.get("box") or {}
+    return box.get("w", 1) % 2 == 0 and box.get("h", 1) % 2 == 0
+
+
 def _identical_relation_exists(
     client: Any, project: str, from_object_id: str, to_object_id: str, metadata: dict[str, Any]
 ) -> bool:
@@ -504,8 +564,7 @@ def _identical_relation_exists(
                 and row.get("to_object_id") == to_object_id
                 and row.get("kind") == "derived_from"
             ):
-                existing = row.get("metadata") or {}
-                if all(existing.get(name) == metadata.get(name) for name in _DERIVATION_FIELDS):
+                if _same_derivation(row.get("metadata") or {}, metadata):
                     return True
         cursor = page.data.get("next_cursor")
         if not cursor:
@@ -541,6 +600,7 @@ def _crop_video(
     client: Any, *, data: bytes, project: str, source: dict[str, Any], source_object_id: str,
     source_digest: str, filename: str, box: str | None, remove_bars: bool,
     bar_threshold: int, even: bool, dry_run: bool, idempotency_key: str | None,
+    allow_no_bars: bool = False,
 ) -> DomainResult[Any]:
     suffix = Path(filename).suffix.lower() or ".mp4"
     with tempfile.TemporaryDirectory(prefix="astrid-crop-") as tmp:
@@ -557,6 +617,7 @@ def _crop_video(
         )
         plan = _plan(box, detection, width, height)
         plan["audio"] = _audio_plan(probe.audio_codec)
+        _refuse_if_no_bars(plan, remove_bars=remove_bars, dry_run=dry_run, allow_no_bars=allow_no_bars)
         crop = plan["box"].even() if even else plan["box"]
         crop.check_within(width, height)
         if crop.w <= 0 or crop.h <= 0:

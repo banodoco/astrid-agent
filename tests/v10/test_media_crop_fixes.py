@@ -421,3 +421,111 @@ def test_relate_failure_after_import_names_the_retry_key_and_retry_succeeds() ->
     assert retried.ok, retried.error
     assert retried.data["provenance_recorded"] == "new"
     assert len(client.media.relations) == 1
+
+
+# -- noisy bands, JPEG ringing, no-bars refusal -----------------------------
+
+
+def _picture(height: int, width: int, rng: np.random.Generator) -> np.ndarray:
+    base = np.linspace(90, 200, width)[None, :, None]
+    return np.clip(base + rng.normal(0, 12, (height, width, 3)), 0, 255).astype(np.uint8)
+
+
+@pytest.mark.parametrize("quality", [75, 85, 95])
+def test_jpeg_letterbox_detects_the_bars_within_one_row(quality: int) -> None:
+    rng = np.random.default_rng(5)
+    arr = _picture(600, 320, rng)
+    arr[:121] = 0
+    arr[600 - 122:] = 0
+    buf = io.BytesIO()
+    Image.fromarray(arr).save(buf, format="JPEG", quality=quality)
+    rgb = np.asarray(Image.open(io.BytesIO(buf.getvalue())).convert("RGB"))
+
+    detection = detect_bars(rgb)
+
+    assert abs(detection.edges["top"] - 121) <= 1, detection.edges
+    assert abs(detection.edges["bottom"] - 122) <= 1, detection.edges
+    assert detection.edges["left"] == 0 and detection.edges["right"] == 0
+
+
+def test_grainy_bands_are_detected() -> None:
+    rng = np.random.default_rng(6)
+    arr = _picture(600, 320, rng).astype(np.float32)
+    arr[:121] = np.clip(rng.normal(6, 2, (121, 320, 3)), 0, 255)
+    arr[600 - 122:] = np.clip(rng.normal(6, 2, (122, 320, 3)), 0, 255)
+
+    detection = detect_bars(arr.astype(np.uint8))
+
+    assert detection.edges["top"] == 121 and detection.edges["bottom"] == 122
+
+
+def test_no_bars_frame_refuses_import_unless_allowed() -> None:
+    rng = np.random.default_rng(7)
+    data = _png_bytes(_picture(120, 160, rng))
+    client = _Client({"M-src": _row("O-src", data, "still.png", "image/png")})
+
+    refused = crop_media(client, project="P", ref="M-src", remove_bars=True)
+    assert not refused.ok and refused.error.code == "validation_error"
+    assert "--allow-no-bars" in refused.error.message
+    assert client.media.objects == {}
+
+    dry = crop_media(client, project="P", ref="M-src", remove_bars=True, dry_run=True)
+    assert dry.ok and dry.data["bars_found"] is False
+    assert dry.data["box"] == {"x": 0, "y": 0, "w": 160, "h": 120}
+    assert client.media.objects == {}
+
+    allowed = crop_media(client, project="P", ref="M-src", remove_bars=True, allow_no_bars=True)
+    assert allowed.ok, allowed.error
+    assert allowed.data["bars_found"] is False
+    assert len(client.media.objects) == 1
+
+
+def test_even_only_difference_on_an_even_box_is_identical() -> None:
+    client = _Client({"M-src": _row("O-src", _bars_png(), "still.png", "image/png")})
+
+    first = crop_media(client, project="P", ref="M-src", box="0,20,320,150")
+    second = crop_media(client, project="P", ref="M-src", box="0,20,320,150", even=True)
+
+    assert first.ok, first.error
+    assert second.ok, second.error
+    assert second.data["provenance_recorded"] == "existing"
+    assert len(client.media.relations) == 1
+
+
+def test_icc_profile_is_dropped_when_pixels_convert_to_rgb() -> None:
+    profile = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+    buf = io.BytesIO()
+    Image.new("CMYK", (40, 30), (0, 255, 0, 0)).save(buf, format="JPEG", icc_profile=profile)
+
+    out = crop_image_bytes(buf.getvalue(), Box(0, 0, 20, 10))
+
+    decoded = Image.open(io.BytesIO(out))
+    assert decoded.mode == "RGB"
+    assert "icc_profile" not in decoded.info
+
+
+def test_mpo_still_uses_frame_zero() -> None:
+    buf = io.BytesIO()
+    Image.new("RGB", (16, 16), "red").save(
+        buf, format="MPO", save_all=True, append_images=[Image.new("RGB", (16, 16), "blue")],
+    )
+    client = _Client({"M-mpo": _row("O-mpo", buf.getvalue(), "photo.jpg", "image/jpeg")})
+
+    result = crop_media(client, project="P", ref="M-mpo", box="0,0,4,4")
+
+    assert result.ok, result.error
+    pixel = np.asarray(Image.open(io.BytesIO(_imported(client))).convert("RGB"))[0, 0]
+    assert pixel[0] > 200 and pixel[2] < 60  # red (frame 0), not blue
+
+
+def test_multi_page_tiff_is_refused() -> None:
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8), "red").save(
+        buf, format="TIFF", save_all=True, append_images=[Image.new("RGB", (8, 8), "blue")],
+    )
+    client = _Client({"M-tif": _row("O-tif", buf.getvalue(), "pages.tif", "image/tiff")})
+
+    result = crop_media(client, project="P", ref="M-tif", box="0,0,4,4", dry_run=True)
+
+    assert not result.ok and result.error.code == "validation_error"
+    assert "not supported" in result.error.message

@@ -254,6 +254,7 @@ def _cmd_crop(parsed: argparse.Namespace) -> int:
         even=parsed.even,
         dry_run=parsed.dry_run,
         idempotency_key=parsed.idempotency_key,
+        allow_no_bars=parsed.allow_no_bars,
     )
     code = print_result(result, as_json=parsed.json)
     audio = result.data.get("audio") if result.ok and isinstance(result.data, dict) else None
@@ -456,6 +457,14 @@ def _configure_crop(subparser: argparse.ArgumentParser) -> None:
         metavar="0..255",
         help="Max channel value still counted as black for --remove-bars "
         f"(default: {DEFAULT_BAR_THRESHOLD}; ignored with --box).",
+    )
+    subparser.add_argument(
+        "--allow-no-bars",
+        dest="allow_no_bars",
+        action="store_true",
+        default=False,
+        help="With --remove-bars: import an uncropped copy when no bars are found "
+        "(otherwise nothing is imported and the command says so).",
     )
     subparser.add_argument(
         "--even",
