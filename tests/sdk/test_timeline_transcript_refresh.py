@@ -99,13 +99,14 @@ def test_recorded_choice_replaces_only_this_media_association():
     new_doc = transcript_document_id(PROJECT, MEDIA_A, W.default_source_order()[0])
     bundle = {"parent": {"config": {"bundle": {"transcriptReferences": {
         "schema": "media.transcript.references/v1",
-        "associations": [{"documentId": other_doc}, {"documentId": old_doc}]}}}}}
+        "associations": [{"documentId": other_doc, "mediaId": MEDIA_B, "sourceId": IMPORT_SOURCE},
+                         {"documentId": old_doc, "mediaId": MEDIA_A, "sourceId": IMPORT_SOURCE}]}}}}}
 
-    rows = with_reference(bundle, {old_doc, new_doc}, new_doc)
+    rows = with_reference(bundle, MEDIA_A, {old_doc, new_doc}, new_doc, W.default_source_order()[0])
 
-    assert {"documentId": other_doc} in rows
-    assert {"documentId": old_doc} not in rows
-    assert rows[-1] == {"documentId": new_doc}
+    assert {"documentId": other_doc, "mediaId": MEDIA_B, "sourceId": IMPORT_SOURCE} in rows
+    assert all(row["documentId"] != old_doc for row in rows)
+    assert rows[-1] == {"documentId": new_doc, "mediaId": MEDIA_A, "sourceId": W.default_source_order()[0]}
 
 
 def test_run_missing_without_placement_is_refused(monkeypatch, capsys):
@@ -115,7 +116,7 @@ def test_run_missing_without_placement_is_refused(monkeypatch, capsys):
     timeline = Checkout(_bundle({"s1": (MEDIA_A, [_clip("c1", to=4.0)])}))
     monkeypatch.setattr(Checkout, "open", classmethod(lambda cls, project, ref, client: timeline))
     args = Namespace(client=object(), project="p", ref="cut", shot=None, run_missing=True, placement=None,
-                     dry_run=True, draft=None)
+                     dry_run=True, draft=None, use_source=None, use_document=None)
 
     assert cli_working._cmd_transcripts_refresh(args) == 2
     assert "--placement" in capsys.readouterr().err
@@ -130,9 +131,117 @@ def test_dry_run_prints_what_it_would_run_and_writes_nothing(monkeypatch, capsys
     monkeypatch.setattr(cli_working, "working_copy", lambda parsed, create: (None, False))
     monkeypatch.setattr(W, "load_timeline_transcripts", lambda client, project, bundle, **kw: {})
     args = Namespace(client=object(), project="p", ref="cut", shot=None, run_missing=True, placement="runpod",
-                     dry_run=True, draft=None)
+                     dry_run=True, draft=None, use_source=None, use_document=None)
 
     assert cli_working._cmd_transcripts_refresh(args) == 0
     out = capsys.readouterr().out
     assert f"would run: astrid timelines transcripts run {MEDIA_A} --project p --placement runpod" in out
-    assert "dry run: nothing recorded" in out
+    assert "no transcript choice recorded" in out
+
+
+class _Result:
+    def __init__(self, data=None, error=None):
+        self.ok = error is None
+        self.data = data
+        self.error = error
+
+
+class _Documents:
+    def __init__(self, docs):
+        self.docs = docs
+
+    def show(self, document_id, project=None):
+        if document_id in self.docs:
+            return _Result(self.docs[document_id])
+        return _Result(error=type("E", (), {"code": "not_found"})())
+
+
+def _stored(media, source, words, version=2):
+    return {"document_id": transcript_document_id(PROJECT, media, source), "version": version,
+            "content": {"schema": "media.transcript/v1", "media_id": media, "source_id": source,
+                        "segments": [{"id": "seg", "words": [{"id": f"word:{i}", "start": s, "end": e, "text": t}
+                                                             for i, (s, e, t) in enumerate(words)]}]}}
+
+
+class _FakeWorking:
+    def __init__(self, bundle):
+        self.bundle = bundle
+        self.saved = False
+
+    def save(self, *args, **kwargs):
+        self.saved = True
+
+
+def test_explicit_choice_is_recorded_and_saved(monkeypatch, capsys):
+    from astrid.packs.timeline import cli_working
+    from astrid.sdk.timeline_checkout import Checkout
+
+    whisper = W.default_source_order()[0]
+    timeline = Checkout(_bundle({"s1": (MEDIA_A, [_clip("c1", to=4.0)])}))
+    stored = {MEDIA_A: {whisper: _stored(MEDIA_A, whisper, [(0, 1, "x")])}}
+    working = _FakeWorking(_bundle({"s1": (MEDIA_A, [_clip("c1", to=4.0)])}))
+    monkeypatch.setattr(Checkout, "open", classmethod(lambda cls, project, ref, client: timeline))
+    monkeypatch.setattr(cli_working, "working_copy", lambda parsed, create: (working, True))
+    monkeypatch.setattr(W, "load_timeline_transcripts", lambda client, project, bundle, **kw: stored)
+    args = Namespace(client=object(), project="p", ref="cut", shot=None, run_missing=False, placement=None,
+                     dry_run=False, draft=None, use_source=whisper, use_document=None)
+
+    assert cli_working._cmd_transcripts_refresh(args) == 0
+    refs = working.bundle["parent"]["config"]["bundle"]["transcriptReferences"]
+    assert refs["associations"] == [{"documentId": stored[MEDIA_A][whisper]["document_id"],
+                                     "mediaId": MEDIA_A, "sourceId": whisper}]
+    assert working.saved
+    assert "recorded" in capsys.readouterr().out
+
+
+def test_default_choice_is_never_recorded(monkeypatch, capsys):
+    from astrid.packs.timeline import cli_working
+    from astrid.sdk.timeline_checkout import Checkout
+
+    whisper = W.default_source_order()[0]
+    timeline = Checkout(_bundle({"s1": (MEDIA_A, [_clip("c1", to=4.0)])}))
+    stored = {MEDIA_A: {whisper: _stored(MEDIA_A, whisper, [(0, 1, "x")])}}
+    touched = []
+    monkeypatch.setattr(Checkout, "open", classmethod(lambda cls, project, ref, client: timeline))
+    monkeypatch.setattr(cli_working, "working_copy", lambda parsed, create: touched.append(create) or (None, False))
+    monkeypatch.setattr(W, "load_timeline_transcripts", lambda client, project, bundle, **kw: stored)
+    args = Namespace(client=object(), project="p", ref="cut", shot=None, run_missing=False, placement=None,
+                     dry_run=False, draft=None, use_source=None, use_document=None)
+
+    assert cli_working._cmd_transcripts_refresh(args) == 0
+    assert True not in touched  # no working copy is created or written for a default pick
+    assert "no transcript choice recorded" in capsys.readouterr().out
+
+
+def test_pin_to_lower_source_says_a_higher_one_is_available():
+    whisper, imported = W.default_source_order()[0], IMPORT_SOURCE
+    bundle = _bundle({"s1": (MEDIA_A, [_clip("c1", to=4.0)])})
+    bundle["parent"]["config"] = {"bundle": {"transcriptReferences": {
+        "schema": "media.transcript.references/v1",
+        "associations": [{"documentId": transcript_document_id(PROJECT, MEDIA_A, imported),
+                          "mediaId": MEDIA_A, "sourceId": imported}]}}}
+    stored = {MEDIA_A: {imported: _stored(MEDIA_A, imported, [(0, 1, "x")]),
+                        whisper: _stored(MEDIA_A, whisper, [(0, 1, "x")])}}
+
+    notes = W.pin_notes(bundle, stored)
+
+    assert notes == [f"{MEDIA_A}: pinned to {imported}; {whisper} is available"]
+
+
+def test_pin_that_cannot_be_loaded_is_reported_not_dropped():
+    from astrid.sdk.timeline.words import load_timeline_transcripts
+
+    bundle = _bundle({"s1": (MEDIA_A, [_clip("c1", to=4.0)])})
+    bundle["parent"]["config"] = {"bundle": {"transcriptReferences": {
+        "schema": "media.transcript.references/v1",
+        "associations": [{"documentId": "transcript:missing", "mediaId": MEDIA_B, "sourceId": IMPORT_SOURCE}]}}}
+    issues = []
+
+    class Client:
+        projects = type("P", (), {"show": lambda _s, name: _Result({"project_id": PROJECT})})()
+        documents = _Documents({})
+
+    loaded = load_timeline_transcripts(Client(), "p", bundle, issues=issues)
+
+    assert loaded == {}
+    assert any("not stored" in issue and MEDIA_B in issue for issue in issues)

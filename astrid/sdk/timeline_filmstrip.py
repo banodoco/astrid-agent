@@ -571,6 +571,24 @@ def _is_verified_speech_annotation(annotation: Mapping) -> bool:
     return annotation.get('spoken') is not False and annotation.get('verified') is not False
 
 
+def _attach_speech_words(snapshot: dict, client: Any, project: str, config: Mapping, registry: Mapping) -> None:
+    """Freeze this render's timed words into the snapshot (``speech_words``): stored transcripts with their
+    document id and version, clip-local words where none is stored. ``None`` means no word read was possible;
+    the readers then fall back to clip ``app.words`` and the reason is kept in the metadata."""
+    from astrid.sdk.timeline.words import frozen_speech_words
+
+    try:
+        if client is None:
+            raise RuntimeError('no runtime client to read stored transcripts')
+        rows, issues = frozen_speech_words(client, project, config, registry)
+        snapshot['speech_words'] = rows
+        if issues:
+            snapshot.setdefault('metadata', {})['speech_words_issues'] = issues
+    except Exception as exc:  # noqa: BLE001 - a read failure must be said, not hidden behind app.words
+        snapshot['speech_words'] = None
+        snapshot.setdefault('metadata', {})['speech_words_issues'] = [f'stored transcripts unavailable: {exc}']
+
+
 def build_filmstrip_snapshot(envelope: Mapping, *, client: Any, project: str, run_id: str, video_digest: str) -> dict:
     """Pure snapshot mapping except verified reads of pinned immutable text objects."""
     inputs = envelope.get('inputs', {})
@@ -948,6 +966,7 @@ def prepare_filmstrip(
         )
         snapshot['config'] = deepcopy(config)
         snapshot['registry'] = deepcopy(registry)
+        _attach_speech_words(snapshot, client, canonical_project, config, registry)
         snapshot['metadata']['selection'] = 'composed_frame_capture'
         snapshot['metadata']['capture_authority'] = deepcopy(authority)
         if host_transition_contract == 'runtime-parent-closure/v1':
@@ -1335,6 +1354,7 @@ def prepare_filmstrip(
     timeline_snapshot = _timeline_snapshot(envelope)
     config = timeline_snapshot.get('config', {})
     registry = timeline_snapshot.get('registry', {})
+    _attach_speech_words(snapshot, client, canonical_project, config, registry)
     try:
         transcript_input = transcript_input_from_snapshot(config, registry)
     except ValueError as exc:

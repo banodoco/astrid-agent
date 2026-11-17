@@ -113,13 +113,12 @@ def stale_anchors(bundle: Mapping[str, Any], transcripts: Mapping[str, Mapping[s
     return found
 
 
-def with_reference(bundle: Mapping[str, Any], media_document_ids: set[str], chosen_document_id: str) -> list[dict[str, Any]]:
-    """Associations after recording one media's chosen document (other media's pins are kept)."""
-    config = (bundle.get("parent") or {}).get("config") or {}
-    bundle_config = config.get("bundle") if isinstance(config, Mapping) else None
-    refs = bundle_config.get("transcriptReferences") if isinstance(bundle_config, Mapping) else None
-    existing = refs.get("associations") if isinstance(refs, Mapping) else None
-    kept = [dict(row) for row in existing or [] if isinstance(row, Mapping)
-            and row.get("documentId") not in media_document_ids]
-    kept.append({"documentId": chosen_document_id})
+def with_reference(bundle: Mapping[str, Any], media: str, media_document_ids: set[str],
+                   document_id: str, source: str) -> list[dict[str, Any]]:
+    """Associations after recording one media's explicit choice: that media's earlier pins are
+    replaced; every other media's pin is kept. The row names its media and source so it can be
+    loaded again (see ``words.load_timeline_transcripts``)."""
+    kept = [row for row in W.reference_rows(bundle)
+            if row.get("mediaId") != media and row["documentId"] not in media_document_ids]
+    kept.append({"documentId": document_id, "mediaId": media, "sourceId": source})
     return kept

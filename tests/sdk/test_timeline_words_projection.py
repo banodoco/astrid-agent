@@ -242,3 +242,121 @@ def test_checkout_word_list_uses_stored_transcript_and_keeps_clip_words_without_
     detached = Checkout(_bundle(placements=[("s1", 0, 4000)], shots={"s1": (MEDIA, [
         _shot_clip("c1", src_from=0.0, to=4.0, app={"astrid": {"words": [[0.0, 0.5, "solo"]]}})])}))
     assert [w.text for w in detached._word_list()] == ["solo"]
+
+
+def test_clip_with_stored_and_clip_words_uses_the_stored_transcript_only():
+    clip = _shot_clip("c1", src_from=0.0, to=4.0,
+                      app={"astrid": {"words": [[0.0, 0.5, "clip"], [1.0, 1.5, "local"]]}})
+    bundle = _bundle(placements=[("s1", 0, 4000)], shots={"s1": (MEDIA, [clip])})
+    transcripts = {MEDIA: {IMPORT_SOURCE: _doc(MEDIA, WORDS)}}
+
+    rows = project_words(bundle, transcripts, "parent")
+
+    assert _texts(rows) == ["one", "two", "three", "four"]
+    assert all(row["source"] == IMPORT_SOURCE for row in rows)
+
+
+def test_empty_clips_fall_back_to_the_mirrored_config_clips():
+    clip = _shot_clip("pc", src_from=0.0, to=4.0, at=2.0)
+    bundle = _bundle(placements=[], shots={})
+    bundle["parent"] = {"clips": [], "tracks": [], "registry": {"assets": {"a1": {"media_id": MEDIA}}},
+                        "config": {"clips": [clip], "tracks": [{"id": "vo", "kind": "vo"}]}}
+    transcripts = {MEDIA: {IMPORT_SOURCE: _doc(MEDIA, WORDS)}}
+
+    rows = project_words(bundle, transcripts, "parent")
+
+    assert _texts(rows) == ["one", "two", "three", "four"]
+    assert rows[0]["timeline_start"] == pytest.approx(2.0)
+
+
+def test_clip_start_is_clamped_to_its_placement_start():
+    clip = _shot_clip("c1", at=-1.0, src_from=0.0, to=4.0)
+    bundle = _bundle(placements=[("s1", 5000, 4000)], shots={"s1": (MEDIA, [clip])})
+    transcripts = {MEDIA: {IMPORT_SOURCE: _doc(MEDIA, WORDS)}}
+
+    rows = project_words(bundle, transcripts, "parent")
+
+    assert rows[0]["timeline_start"] == pytest.approx(5.0)
+
+
+def test_media_any_includes_a_video_clip_with_embedded_audio():
+    clip = _shot_clip("v1", track="visual", src_from=0.0, to=4.0)
+    bundle = _bundle(placements=[("s1", 0, 4000)], shots={"s1": (MEDIA, [clip])})
+    transcripts = {MEDIA: {IMPORT_SOURCE: _doc(MEDIA, WORDS)}}
+
+    assert project_words(bundle, transcripts, "parent") == []
+    rows = project_words(bundle, transcripts, "parent", media="any")
+    assert _texts(rows) == ["one", "two", "three", "four"]
+
+
+def test_frozen_speech_words_drive_the_filmstrip_caption_and_motion_cut_text():
+    from astrid.packs.rendering.actions.timeline_visualize.filmstrip_cards import _timed_word_records
+    from astrid.packs.rendering.actions.timeline_visualize.contact_sheet import _tile_caption
+
+    frozen = [{"text": "frozen", "start": 1.0, "end": 1.4, "clip_id": "c1", "word_id": "word:9"},
+              {"text": "later", "start": 9.0, "end": 9.4, "clip_id": "c1", "word_id": "word:10"}]
+    clip_with_words = {"id": "c1", "at": 0.0, "app": {"astrid": {"words": [[0.0, 0.5, "local"]]}}}
+
+    records = _timed_word_records([clip_with_words], 1.2, speech_words=frozen)
+    assert [r["text"] for r in records] == ["frozen"]
+    assert records[0]["timing_basis"] == "stored_word"
+    assert _tile_caption({"timed_words": records}) == "frozen"
+    # With no frozen speech (None) the clip-local words are the fallback.
+    assert [r["text"] for r in _timed_word_records([clip_with_words], 0.2, speech_words=None)] == ["local"]
+    # An empty frozen list is a real answer: nothing stored near this tile.
+    assert _tile_caption({"timed_words": _timed_word_records([clip_with_words], 1.2, speech_words=[])}) == "no words stored"
+
+
+def test_show_timeline_default_source_is_whisper_and_video_audio_is_included(monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    from astrid.packs.timeline import cli_working
+    from astrid.sdk import media_transcript
+    from astrid.sdk.timeline.words import default_source_order
+    from astrid.sdk.timeline_checkout import Checkout
+
+    whisper = default_source_order()[0]
+    bundle = _bundle(placements=[("s1", 0, 4000)],
+                     shots={"s1": (MEDIA, [_shot_clip("av", track="visual", src_from=0.0, to=4.0)])})
+    bundle["project_id"] = PROJECT
+    timeline = Checkout(bundle)
+    monkeypatch.setattr(Checkout, "open", classmethod(lambda cls, project, ref, client: timeline))
+
+    def read(client, project, media, source):
+        if source == whisper:
+            return {"content": _doc(MEDIA, WORDS, source=whisper)["content"]}
+        if source == IMPORT_SOURCE:
+            return {"content": _doc(MEDIA, [(0.0, 1.0, "imported")], source=IMPORT_SOURCE)["content"]}
+        return None
+
+    monkeypatch.setattr(media_transcript, "read_transcript", read)
+    args = SimpleNamespace(client=object(), project="p", media_id=None, source=None, source_range=None,
+                           clip="av", timeline="cut", json=False)
+
+    assert cli_working._cmd_transcripts_show(args) == 0
+    out = capsys.readouterr().out
+    assert "one" in out and "imported" not in out
+    assert "[av]" in out
+
+    args.source = IMPORT_SOURCE
+    assert cli_working._cmd_transcripts_show(args) == 0
+    assert "imported" in capsys.readouterr().out
+
+
+def test_render_snapshot_freezes_speech_words_with_document_identity_and_says_when_unreadable():
+    from astrid.sdk.timeline_filmstrip import _attach_speech_words
+
+    config = {"clips": [_shot_clip("c1", at=0.0, src_from=0.0, to=4.0)], "tracks": [{"id": "vo", "kind": "vo"}]}
+    registry = {"assets": {"a1": {"media_id": MEDIA}}}
+    docs = {transcript_document_id(PROJECT, MEDIA, IMPORT_SOURCE): _doc(MEDIA, WORDS)}
+
+    snapshot = {"metadata": {}}
+    _attach_speech_words(snapshot, _Client(docs), "minkhole", config, registry)
+    assert [row["text"] for row in snapshot["speech_words"]] == ["one", "two", "three", "four"]
+    assert snapshot["speech_words"][1]["version"] == 3
+    assert snapshot["speech_words"][1]["document_id"] == docs[next(iter(docs))]["document_id"]
+
+    unreadable = {"metadata": {}}
+    _attach_speech_words(unreadable, None, "minkhole", config, registry)
+    assert unreadable["speech_words"] is None
+    assert "unavailable" in unreadable["metadata"]["speech_words_issues"][0]

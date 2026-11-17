@@ -26,8 +26,9 @@ addresses with `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" timelin
 
 Words come from each media's stored transcript, read through the timeline as it
 stands (trim, speed and repeated placements included). If a clip's media has no
-transcript, its words are missing: run `timelines transcripts refresh <timeline> --project <project>`
-(see the transcripts skill) before placing to them.
+stored transcript, its clip-local words (`app.words`) are used instead, if it has any.
+Run `timelines transcripts refresh <timeline> --project <project>` (see the transcripts skill) to see
+which media has a stored transcript and to link one.
 
 ## Arrange selected shots
 

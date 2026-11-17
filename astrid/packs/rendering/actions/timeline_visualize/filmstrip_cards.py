@@ -112,7 +112,7 @@ def _word_entry(raw):
     return float(start), float(end), text.strip()
 
 
-def _timed_word_records(clips, time, *, window=WORD_CAPTION_WINDOW_SECONDS):
+def _timed_word_records(clips, time, *, window=WORD_CAPTION_WINDOW_SECONDS, speech_words=None):
     """Word-aligned VO text near ``time`` from the active clips' ``app.words``.
 
     Only words whose interval overlaps ``[time - window, time + window)`` are
@@ -121,6 +121,18 @@ def _timed_word_records(clips, time, *, window=WORD_CAPTION_WINDOW_SECONDS):
     timeline start in the composed snapshot, so word times are offset by it.
     """
     low, high = float(time) - window, float(time) + window
+    if speech_words is not None:
+        # The frozen speech of the render (stored transcripts first): timeline seconds, already placed.
+        records = []
+        for row in speech_words:
+            start, end = float(row['start']), float(row['end'])
+            if end <= low or start >= high or end <= start:
+                continue
+            records.append({'text': str(row['text']), 'start': start, 'end': end,
+                            'clip_id': row.get('clip_id'),
+                            'timing_basis': 'stored_word' if row.get('word_id') else 'vo_word'})
+        records.sort(key=lambda item: (item['start'], item['end'], str(item['clip_id'])))
+        return records
     records = []
     for clip in clips:
         if not isinstance(clip, Mapping):
@@ -821,11 +833,15 @@ def picture_cut_frames(snapshot: Mapping, fps: Fraction, total: int) -> list[dic
     from astrid.pack_api import picture_cuts
     from astrid.core.timeline.cuts import cut_sample_time, occurrences_from_snapshot
 
-    from .motion.model import elements_from_occurrences, words
+    from .motion.model import Word, elements_from_occurrences, words
 
     occurrences = occurrences_from_snapshot(snapshot)
     cuts = picture_cuts(occurrences, fps=float(fps))
-    spoken = words(elements_from_occurrences(occurrences))
+    frozen = snapshot.get('speech_words')
+    if frozen is not None:  # the render's frozen speech (stored transcripts first), already on the timeline clock
+        spoken = [Word(float(row['start']), float(row['end']), str(row['text'])) for row in frozen]
+    else:
+        spoken = words(elements_from_occurrences(occurrences))
     rows = []
     for cut in cuts:
         said = [w.text for w in spoken if cut['start'] <= (w.start + w.end) / 2 < cut['end'] and w.text != '·']
@@ -1124,7 +1140,7 @@ def plan_filmstrip(
         # contains frozen, timed speech annotations covering this frame.
         scripts = [s for s in snapshot.get('scripts', []) if _q(s['start']) <= time < _q(s['end'])]
         captions = _speech_caption_records(snapshot, time)
-        timed_words = _timed_word_records(active, time)
+        timed_words = _timed_word_records(active, time, speech_words=snapshot.get('speech_words'))
         caption_status = ('timed caption' if captions else 'word-aligned VO (app.words)' if timed_words
                           else 'no timed text available')
         target = f"frame-{frame:09d}"

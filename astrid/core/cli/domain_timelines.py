@@ -1468,8 +1468,14 @@ def _working_configure_transcripts_refresh(subparser: argparse.ArgumentParser) -
     subparser.add_argument("--run-missing", action="store_true",
                            help="Transcribe each missing media, one at a time, with the same path as transcripts run (GPU work).")
     subparser.add_argument("--placement", default=None, help="Where --run-missing runs (required with it, e.g. runpod).")
+    subparser.add_argument("--use-source", default=None, metavar="S",
+                           help="Record S as the chosen transcript source of each audio media that has one "
+                                "(pins it in transcriptReferences). Without this or --use-document nothing is recorded.")
+    subparser.add_argument("--use-document", default=None, metavar="D",
+                           help="Record the stored document D as a media's chosen transcript (pins it).")
     subparser.add_argument("--dry-run", action="store_true",
-                           help="Print the report and what --run-missing would run; write nothing.")
+                           help="Print the report and what would run or be recorded; write nothing. "
+                                "Without --dry-run a recorded choice writes the working copy (created if none).")
     subparser.set_defaults(handler=_working_cmd_transcripts_refresh)
 
 

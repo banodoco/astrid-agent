@@ -37,14 +37,20 @@ def default_source_order() -> tuple[str, ...]:
     return (whisper_source_id(PINNED_MODEL), TTS_SOURCE, IMPORT_SOURCE, NARRATION_SOURCE)
 
 
-def transcript_references(bundle: Mapping[str, Any]) -> set[str]:
-    """Document ids the timeline pins through ``transcriptReferences`` (per-media overrides)."""
+def reference_rows(bundle: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The timeline's ``transcriptReferences`` associations (``documentId``, and ``mediaId``/``sourceId``
+    when recorded by ``timelines transcripts refresh``)."""
     config = (bundle.get("parent") or {}).get("config") or {}
     bundle_config = config.get("bundle") if isinstance(config, Mapping) else None
     refs = bundle_config.get("transcriptReferences") if isinstance(bundle_config, Mapping) else None
     associations = refs.get("associations") if isinstance(refs, Mapping) else None
-    return {str(row["documentId"]) for row in associations or []
-            if isinstance(row, Mapping) and isinstance(row.get("documentId"), str)}
+    return [dict(row) for row in associations or []
+            if isinstance(row, Mapping) and isinstance(row.get("documentId"), str)]
+
+
+def transcript_references(bundle: Mapping[str, Any]) -> set[str]:
+    """Document ids the timeline pins through ``transcriptReferences`` (per-media overrides)."""
+    return {row["documentId"] for row in reference_rows(bundle)}
 
 
 def _registry_assets(holder: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -70,18 +76,21 @@ def _track_is_audio(tracks: Sequence[Mapping[str, Any]], clip: Mapping[str, Any]
     return kind in AUDIO_KINDS or track in AUDIO_KINDS
 
 
+def _own_or_mirror(holder: Mapping[str, Any], key: str) -> list[Any]:
+    """``holder[key]`` when it has rows, else ``holder.config[key]`` (the checkout's own-or-mirror rule)."""
+    config = holder.get("config")
+    own = holder.get(key)
+    mirror = config.get(key) if isinstance(config, Mapping) else None
+    chosen = own or mirror
+    return list(chosen) if isinstance(chosen, list) else []
+
+
 def _holder_clips(holder: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-    clips = holder.get("clips")
-    if not isinstance(clips, list):
-        clips = (holder.get("config") or {}).get("clips") if isinstance(holder.get("config"), Mapping) else None
-    return [c for c in clips or [] if isinstance(c, Mapping)]
+    return [c for c in _own_or_mirror(holder, "clips") if isinstance(c, Mapping)]
 
 
 def _holder_tracks(holder: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-    tracks = holder.get("tracks")
-    if not isinstance(tracks, list):
-        tracks = (holder.get("config") or {}).get("tracks") if isinstance(holder.get("config"), Mapping) else None
-    return [t for t in tracks or [] if isinstance(t, Mapping)]
+    return [t for t in _own_or_mirror(holder, "tracks") if isinstance(t, Mapping)]
 
 
 def _source_window(clip: Mapping[str, Any]) -> tuple[float, float, float]:
@@ -129,7 +138,11 @@ def choose_document(media_docs: Mapping[str, Mapping[str, Any]], references: set
 
 
 def _occurrences(bundle: Mapping[str, Any], scope: str) -> list[dict[str, Any]]:
-    """Each occurrence: which holder plays, at what owner start, for how long, as which shot."""
+    """Each occurrence: which holder plays, at what owner start, for how long, as which shot.
+
+    ``shot:<id>`` is clipped to the first placement's length: the placements of one shot share a
+    length in practice. The parent scope clips each placement by its own length, so a shot whose
+    placements differ shows its full words only where its own placement is long enough."""
     placements = sorted((r for r in bundle.get("placements") or [] if isinstance(r, Mapping)), key=_row_start)
     shots = bundle.get("shots") or {}
     if scope == "parent":
@@ -155,12 +168,14 @@ def _occurrences(bundle: Mapping[str, Any], scope: str) -> list[dict[str, Any]]:
 
 def project_words(bundle: Mapping[str, Any], transcripts: Mapping[str, Mapping[str, Mapping[str, Any]]],
                   scope: str = "parent", *, sources: Sequence[str] | None = None,
-                  references: set[str] | None = None) -> list[dict[str, Any]]:
+                  references: set[str] | None = None, media: str = "audio") -> list[dict[str, Any]]:
     """Every spoken word of a timeline in the given scope, one row per clip occurrence.
 
     ``transcripts`` maps media id -> source id -> ``{"document_id", "version", "content"}``.
     A word is kept when ``from <= t < to`` for its clip; its timeline time is
-    ``owner_start + clip.at + (t - from) / speed``. Rows are sorted by timeline time and
+    ``owner_start + max(0, clip.at) + (t - from) / speed``. ``media="audio"`` takes clips on audio
+    tracks; ``media="any"`` takes every clip with a managed media digest (a video clip with embedded
+    audio included). Rows are sorted by timeline time and
     carry an ``address`` (``<line>:<k>``: the clip's line id, or its own id, and the word's
     index in that line) plus the stored ``word_id``, media, source, document version, clip,
     occurrence, shot, timeline time and source time.
@@ -172,12 +187,14 @@ def project_words(bundle: Mapping[str, Any], transcripts: Mapping[str, Mapping[s
         holder, owner, length = occ["holder"], occ["owner"], occ["length"]
         tracks = _holder_tracks(holder)
         for clip in _holder_clips(holder):
-            if not _track_is_audio(tracks, clip):
+            clip_media = _clip_media_id(holder, clip)
+            if media == "audio" and not _track_is_audio(tracks, clip):
                 continue
-            media = _clip_media_id(holder, clip)
+            if media == "any" and clip_media is None and not intent.words(clip):
+                continue
             segment = intent.line(clip) or str(clip.get("id") or "")
-            clip_at = float(clip.get("at") or 0)
-            chosen = choose_document(transcripts.get(media) or {}, refs, order) if media else None
+            clip_at = max(0.0, float(clip.get("at") or 0))  # a clip never starts before its placement
+            chosen = choose_document(transcripts.get(clip_media) or {}, refs, order) if clip_media else None
             base = {"clip_id": str(clip.get("id") or ""), "shot_id": occ["shot_id"],
                     "occurrence": occ["occurrence"], "segment": segment}
             if chosen is not None:
@@ -190,7 +207,7 @@ def project_words(bundle: Mapping[str, Any], transcripts: Mapping[str, Mapping[s
                     if t0 >= owner + length - _EPS:
                         continue
                     t1 = min(owner + clip_at + (min(e, src_out) - src_in) / speed, owner + length)
-                    rows.append({**base, "word_id": word_id, "text": text, "media_id": media,
+                    rows.append({**base, "word_id": word_id, "text": text, "media_id": clip_media,
                                  "source": source, "version": doc.get("version"),
                                  "document_id": doc.get("document_id"),
                                  "timeline_start": t0, "timeline_end": t1,
@@ -201,7 +218,7 @@ def project_words(bundle: Mapping[str, Any], transcripts: Mapping[str, Mapping[s
                     t0 = owner + clip_at + s
                     if t0 >= owner + length - _EPS:
                         continue
-                    rows.append({**base, "word_id": None, "text": text, "media_id": media,
+                    rows.append({**base, "word_id": None, "text": text, "media_id": clip_media,
                                  "source": "clip", "version": None, "document_id": None,
                                  "timeline_start": t0, "timeline_end": owner + clip_at + e,
                                  "source_start": s, "source_end": e})
@@ -216,39 +233,103 @@ def project_words(bundle: Mapping[str, Any], transcripts: Mapping[str, Mapping[s
     return rows
 
 
-def timeline_media_ids(bundle: Mapping[str, Any]) -> list[str]:
-    """Media digests of every audio clip in the parent and every shot's sub-timeline, in order."""
+def timeline_media_ids(bundle: Mapping[str, Any], *, any_media: bool = False) -> list[str]:
+    """Media digests of the timeline's audio clips (every clip with a digest when ``any_media``),
+    in the parent and every shot's sub-timeline, in order."""
     media_ids: list[str] = []
     for occ in _occurrences(bundle, "parent"):
         tracks = _holder_tracks(occ["holder"])
         for clip in _holder_clips(occ["holder"]):
             media = _clip_media_id(occ["holder"], clip)
-            if media and _track_is_audio(tracks, clip) and media not in media_ids:
+            if media and (any_media or _track_is_audio(tracks, clip)) and media not in media_ids:
                 media_ids.append(media)
     return media_ids
 
 
 def load_timeline_transcripts(client: Any, project: str, bundle: Mapping[str, Any], *,
-                              sources: Sequence[str] | None = None) -> dict[str, dict[str, dict[str, Any]]]:
-    """Read every stored transcript this timeline's audio clips could use (one read per media and source)."""
+                              sources: Sequence[str] | None = None, any_media: bool = False,
+                              issues: list[str] | None = None) -> dict[str, dict[str, dict[str, Any]]]:
+    """Read the stored transcripts a timeline can use: each media's sources in order, plus every document
+    a ``transcriptReferences`` pin names (any source). A pin that cannot be loaded is appended to
+    ``issues`` instead of being dropped silently."""
     from astrid.sdk import media_transcript
 
     order = tuple(sources) if sources is not None else default_source_order()
-    media_ids = timeline_media_ids(bundle)
+    refs = reference_rows(bundle)
     project_id = bundle.get("project_id")
+    wanted: list[tuple[str, str]] = [(media, source) for media in timeline_media_ids(bundle, any_media=any_media)
+                                     for source in order]
+    for ref in refs:
+        media, source = ref.get("mediaId"), ref.get("sourceId")
+        if isinstance(media, str) and isinstance(source, str):
+            wanted.append((media, source))
+        elif issues is not None:
+            issues.append(f"pinned document {ref['documentId']} records no media and source; "
+                          "re-record it with timelines transcripts refresh --use-document")
     loaded: dict[str, dict[str, dict[str, Any]]] = {}
-    for media in media_ids:
-        for source in order:
-            data = media_transcript.read_transcript(client, project, media, source)
-            if not isinstance(data, Mapping) or not isinstance(data.get("content"), Mapping):
+    for media, source in dict.fromkeys(wanted):
+        if source in loaded.get(media, {}):
+            continue
+        data = media_transcript.read_transcript(client, project, media, source)
+        if not isinstance(data, Mapping) or not isinstance(data.get("content"), Mapping):
+            continue
+        document_id = data.get("document_id") or (
+            transcript_document_id(str(project_id), media, source) if project_id else None)
+        version = data.get("version")
+        loaded.setdefault(media, {})[source] = {
+            "document_id": document_id, "version": version if type(version) is int else None,
+            "content": data["content"]}
+    if issues is not None:
+        for ref in refs:
+            media, source = ref.get("mediaId"), ref.get("sourceId")
+            if not (isinstance(media, str) and isinstance(source, str)):
                 continue
-            document_id = data.get("document_id") or (
-                transcript_document_id(str(project_id), media, source) if project_id else None)
-            version = data.get("version")
-            loaded.setdefault(media, {})[source] = {
-                "document_id": document_id, "version": version if type(version) is int else None,
-                "content": data["content"]}
+            doc = loaded.get(media, {}).get(source)
+            if doc is None:
+                issues.append(f"pinned to {source} for {media} ({ref['documentId']}): that transcript is not stored")
+            elif doc.get("document_id") not in (None, ref["documentId"]):
+                issues.append(f"pinned document {ref['documentId']} for {media} is not the stored {source} document")
     return loaded
+
+
+def pin_notes(bundle: Mapping[str, Any], transcripts: Mapping[str, Mapping[str, Mapping[str, Any]]]) -> list[str]:
+    """A pinned source that a higher-ranked stored source (earlier in the default order) would beat."""
+    order = default_source_order()
+    rank = {source: index for index, source in enumerate(order)}
+    notes = []
+    for ref in reference_rows(bundle):
+        media, source = ref.get("mediaId"), ref.get("sourceId")
+        if not (isinstance(media, str) and isinstance(source, str)):
+            continue
+        docs = transcripts.get(media) or {}
+        higher = [other for other in docs if other != source
+                  and rank.get(other, len(order)) < rank.get(source, len(order))]
+        if higher:
+            notes.append(f"{media}: pinned to {source}; {', '.join(higher)} is available")
+    return notes
+
+
+def frozen_speech_words(client: Any, project: str, config: Mapping[str, Any],
+                        registry: Mapping[str, Any] | None) -> tuple[list[dict[str, Any]], list[str]]:
+    """Every timed word of a flattened (render) timeline, frozen with its document id and version:
+    stored transcripts first (any clip with a media digest), clip-local words where no transcript is stored.
+    Returns (rows in parent seconds, issues)."""
+    from astrid.sdk.media_transcript import _project_id
+
+    bundle = {"project_id": _project_id(client, project), "placements": [],
+              "parent": {"clips": [c for c in config.get("clips") or [] if isinstance(c, Mapping)],
+                         "tracks": [t for t in config.get("tracks") or [] if isinstance(t, Mapping)],
+                         "registry": dict(registry or {})},
+              "shots": {}}
+    issues: list[str] = []
+    transcripts = load_timeline_transcripts(client, project, bundle, any_media=True, issues=issues)
+    rows = project_words(bundle, transcripts, "parent", media="any")
+    frozen = [{"address": row["address"], "text": row["text"],
+               "start": round(row["timeline_start"], 6), "end": round(row["timeline_end"], 6),
+               "clip_id": row["clip_id"], "word_id": row.get("word_id"), "media_id": row.get("media_id"),
+               "source": row.get("source"), "version": row.get("version"),
+               "document_id": row.get("document_id")} for row in rows]
+    return frozen, issues
 
 
 def as_words(rows: Sequence[Mapping[str, Any]]) -> list[Any]:

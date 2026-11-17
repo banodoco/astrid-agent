@@ -3366,6 +3366,12 @@
                 },
                 "--shot": {
                   "required": false
+                },
+                "--use-document": {
+                  "required": false
+                },
+                "--use-source": {
+                  "required": false
                 }
               },
               "positionals": [

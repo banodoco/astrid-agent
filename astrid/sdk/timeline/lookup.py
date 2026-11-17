@@ -224,11 +224,13 @@ class _LookupMixin:
         cache = getattr(self, "_transcript_cache", None)
         if cache is not None and cache[0] == key:
             return cache[1]
+        issues: list[str] = []
         try:
-            loaded = load_timeline_transcripts(client, project, self.bundle)
+            loaded = load_timeline_transcripts(client, project, self.bundle, issues=issues)
         except Exception as exc:  # noqa: BLE001 - a read failure must not hide the clip-local words
             self.notes.append(f"stored transcripts unavailable ({exc}); showing clip-local words")
             loaded = {}
+        self.notes.extend(issues)  # a pin that cannot be loaded is said, not silently dropped
         self._transcript_cache = (key, loaded)
         return loaded
 
