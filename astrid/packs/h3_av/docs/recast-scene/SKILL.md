@@ -67,8 +67,8 @@ Output: the **shot list**, the sequence map plus a method column, inputs (masks,
 
 ## Stage 4 - The voice track
 
-- Reference: the speaker's real voice, a clean clip of their real lines with its transcript.
-- Generate the whole script as one continuous performance (voice-clone entry in `astrid generate`).
+- Reference: clean clips of the speaker's real lines, each with its exact words (the transcript). Pass the clip as a project media id; the entry uses the whole media (a time range is a follow-up).
+- Generate the whole script as one continuous performance: `astrid generate audio --entry voice_clone --mode tts`, with the clip as `reference_audio` and its words as `reference_text` (see the [generation skill](../../../generation/docs/SKILL.md#voice-clone)).
 - Transcribe it (timed words), replace the temporary voice on the timeline, and re-time the cuts to the words. Look again (Stage 1 views).
 - Owner listens. This is the gate before any picture generation.
 
@@ -118,7 +118,7 @@ Status, 17 November:
 - Stage 2 must be redone through `visualize`, which is blocked by a broken install that is being fixed.
 - Stage 3 is this table.
 - Methods proven on a GPU: only LC/E (one continuation take, owner-approved lip sync).
-- Gaps: voice-clone entry (exists in VibeComfy, not exposed); masked edit lacks a replacement-audio input (L) and a reference-image input (R); mask tracking (a fixed mask works first); `visualize` lacks region zoom.
+- Gaps: voice-clone entry is exposed as `voice_clone` (stage 4); a reference time range is a follow-up (the whole media is used); masked edit lacks a replacement-audio input (L) and a reference-image input (R); mask tracking (a fixed mask works first); `visualize` lacks region zoom.
 
 ## Task skills this one points to (each to be written and proven)
 

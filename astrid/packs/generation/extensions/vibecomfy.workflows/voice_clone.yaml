@@ -1,0 +1,24 @@
+api: 1
+summary: Speak given text in the voice of a reference clip, through the pinned ComfyUI workflow (Qwen3-TTS Base 1.7B).
+example: astrid generate audio --entry voice_clone --mode tts --inputs-json FILE --out outputs/
+effects: none
+ready_root: ../../workflows
+entries:
+  - id: voice_clone
+    kind: audio
+    modes: [tts]
+    bundle: voice_clone
+    needs: []
+    inputs:
+      - {name: reference_audio, type: file, required: true, description: "Clean clip of the speaker's real lines: a local file, or a project media id or digest (needs --project). The whole media is used; a time range is a follow-up."}
+      - {name: reference_text, type: string, required: true, description: "The exact words spoken in the reference clip, in order. Its transcript."}
+      - {name: target_text, type: string, required: true, description: "The words to speak, in the reference speaker's voice."}
+      - {name: language, type: string, required: false, default: English, choices: [Auto, Chinese, English, Japanese, Korean, French, German, Spanish, Portuguese, Russian, Italian], description: "Language of target_text (default English)."}
+      - {name: seed, type: integer, required: false, default: 125, description: "Sampling seed (default 125)."}
+    binds:
+      reference_audio: reference_audio
+      reference_text: reference_text
+      target_text: target_text
+      language: language
+      seed: seed
+    defaults: {}

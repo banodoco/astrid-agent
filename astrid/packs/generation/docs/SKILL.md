@@ -112,6 +112,24 @@ To cancel a stuck or unwanted generation, run
 over MCP, use the `tasks_cancel` tool. It removes only Astrid's own job from the user's ComfyUI queue;
 other jobs there are untouched.
 
+## Voice clone
+
+`voice_clone` speaks text in the voice of a reference clip (Qwen3-TTS Base 1.7B, in the pinned ComfyUI-QwenTTS node). It is the `tts` mode of `audio`:
+
+```sh
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate audio --entry voice_clone --mode tts --inputs-json FILE --out outputs/
+```
+
+`FILE` is a JSON object with:
+
+- `reference_audio`: the reference clip, either a local file path or a project media id or digest (with `--project`). Use clean clips of the speaker's real lines, with no music. The whole media is used.
+  - **Follow-up, not built yet:** a time range (`start,end` seconds of that media). Until it lands, the whole media is used, so put the clip's lines in their own media item first.
+- `reference_text` (required): the exact words spoken in that clip, in order. It is the clip's transcript.
+- `target_text` (required): the words to speak in that voice.
+- `language` (default `English`) and `seed` (default `125`), both optional.
+
+The model files are pinned in `packs/runpod/models.lock.json` (`qwen-tts-...-1-7b-base-*`). The node never downloads at run time, so a target without them fails before queueing. `--dry-run` shows the plan.
+
 ## Placement
 
 A placement is where a generation runs. Three kinds:

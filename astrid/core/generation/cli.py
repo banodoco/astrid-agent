@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import logging
 import sys
@@ -565,6 +566,36 @@ def _job_command(argv: list[str]) -> int:
 
 def _main(argv: list[str]) -> int:
     """Parse one request and call its existing public SDK method exactly once."""
+    # A media id given as an audio input is written to a file that must outlive generation.
+    with contextlib.ExitStack() as stack:
+        return _main_request(argv, stack)
+
+
+def _media_ref_file(parsed, ref: str, stack) -> tuple[str, str]:
+    """Write a project media id or digest to a file for generation, as timelines transcripts run does.
+
+    Returns ``(path, digest)``. The file lives until ``stack`` closes.
+    """
+    import hashlib
+    import tempfile
+    from astrid.sdk.media_handles import resolve_media_handle
+
+    if not parsed.project:
+        raise ValueError(f"{ref!r} is not a file; a media id needs --project")
+    with _open_client() as client:
+        descriptor, _ = resolve_media_handle(client, parsed.project, ref)
+        digest = descriptor["digest"]
+        raw = client.media.read_bytes(digest)
+    if "sha256:" + hashlib.sha256(raw).hexdigest() != digest:
+        raise ValueError("media bytes do not match their digest")
+    workdir = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="astrid-audio-ref-")))
+    path = workdir / Path(str(descriptor.get("filename") or "media.bin")).name
+    path.write_bytes(raw)
+    return str(path), digest
+
+
+def _main_request(argv: list[str], stack) -> int:
+    """Parse one request; the ExitStack owns any media files materialized for it."""
     if '--job' in argv:
         return _job_command(argv)
     parser = _parser(_context_description(argv))
@@ -671,6 +702,15 @@ def _main(argv: list[str]) -> int:
         values = _values(parsed)
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
+    if parsed.modality == 'audio':
+        # An audio input given as a project media id or digest (not a local file) is read through the Runtime.
+        for key in ('reference_audio', 'audio_ref'):
+            ref = values.get(key)
+            if isinstance(ref, str) and not Path(ref).expanduser().is_file():
+                try:
+                    values[key], _ = _media_ref_file(parsed, ref, stack)
+                except Exception as exc:  # noqa: BLE001 - a bad media reference is a usage error, whatever the Runtime said
+                    parser.error(f"{key} {ref!r} is neither a file nor a readable project media id: {exc}")
     description = None
     if parsed.inputs_json:
         if not (parsed.entry or parsed.model):
