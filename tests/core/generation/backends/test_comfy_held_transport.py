@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
+import sys
+import textwrap
 import threading
 from types import SimpleNamespace
 
@@ -266,6 +269,39 @@ def test_progress_consumer_cannot_hold_completion(no_poll_clock):
             release.set()
 
 
+def test_blocked_progress_consumer_cannot_hold_worker_exit():
+    code = textwrap.dedent('''
+        import asyncio
+        import threading
+        from astrid.core.generation.backends.comfy_held import ComfyTargetSession
+        from astrid.core.generation.backends.comfy_target import ComfyTarget
+        from astrid.core.generation.backends.vibecomfy_local_server import TargetRuntimeClient
+        from tests.helpers.ls5_comfy_peer import ComfyPeer
+        from vibecomfy.runtime.session import SessionConfig, _wait_for_server_history
+
+        entered = threading.Event()
+        def blocked_consumer(event):
+            entered.set()
+            threading.Event().wait()
+
+        with ComfyPeer(auto_complete=False) as peer, ComfyTargetSession(ComfyTarget(peer.url, "attached")) as owner:
+            runtime = TargetRuntimeClient(owner.client(), on_event=blocked_consumer)
+            async def run():
+                prompt = (await runtime._post_prompt({}))["prompt_id"]
+                peer.event(prompt, "progress", value=1, max=2)
+                assert await asyncio.to_thread(entered.wait, 2)
+                peer.complete(prompt)
+                history = await _wait_for_server_history(peer.url, prompt, config=SessionConfig(), client=runtime)
+                assert prompt in history
+                await runtime.release_attempt()
+            asyncio.run(run())
+        print("terminal-and-owner-closed", flush=True)
+    ''')
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=5)
+    assert result.returncode == 0, result.stderr
+    assert "terminal-and-owner-closed" in result.stdout
+
+
 def test_only_owned_preview_events_reach_attempt_consumers(no_poll_clock):
     received = threading.Event()
     first_events, second_events = [], []
@@ -328,6 +364,18 @@ def test_queued_io_is_fenced_before_it_can_start(tmp_path):
         assert not first.is_alive() and not second.is_alive()
         assert len(errors) == 2 and all(isinstance(error, TransportError) for error in errors)
         assert peer.counts() == {"GET /ws": 1, "GET /object_info": 1}
+
+
+def test_optional_folder_endpoint_can_be_absent_on_a_live_pair():
+    with ComfyPeer() as peer, ComfyTargetSession(ComfyTarget(peer.url, "attached")) as owner:
+        client = owner.client()
+        assert client.folder_paths() is None
+        assert not client.generation.retired
+        assert client.object_info() == {}
+        assert len({connection for path, connection in peer.connections if path != "/ws"}) == 1
+        client.generation.retire("optional cached facts must also be fenced")
+        with pytest.raises(TransportError, match="retired"):
+            client.folder_paths()
 
 
 @pytest.mark.parametrize("mode", ["ws-redirect", "http-redirect"])

@@ -199,9 +199,11 @@ class ComfyTargetClient:
         deadline = time.monotonic() + timeout
         with self._opener(request, timeout=timeout) as response:
             status = getattr(response, "status", 200)
+            # A bounded error body must also be consumed before reusing a
+            # held connection (for example an optional endpoint's 404).
+            raw = self._read_bounded(response, response_limit, deadline)
             if not 200 <= status < 300:
                 raise ValueError(f"comfy target {path} returned a non-2xx status")
-            raw = self._read_bounded(response, response_limit, deadline)
         if not raw and acknowledge_empty:
             return {"acknowledged": True}
         try:

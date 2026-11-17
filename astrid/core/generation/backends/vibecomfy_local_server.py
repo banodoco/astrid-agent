@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -83,10 +85,38 @@ class TargetRuntimeClient:
                 continue
             try:
                 # VibeComfy coalesces into one slot. Slow display work cannot
-                # block its socket reader, history-ready event or result.
-                await asyncio.to_thread(self._on_event, event)
+                # block its socket reader, history-ready event or worker exit.
+                await self._publish_event(event)
             except Exception:  # noqa: BLE001 - an advisory consumer cannot fail terminal custody
                 pass  # Progress is advisory; terminal custody is not.
+
+    async def _publish_event(self, event):
+        loop = asyncio.get_running_loop()
+        finished = loop.create_future()
+        context = contextvars.copy_context()
+
+        def finish():
+            if not finished.done():
+                finished.set_result(None)
+
+        def publish():
+            try:
+                if not self._released:
+                    context.run(self._on_event, event)
+            except Exception:  # noqa: BLE001 - consumer errors are advisory
+                pass
+            finally:
+                try:
+                    loop.call_soon_threadsafe(finish)
+                except RuntimeError:
+                    pass  # The owning job already closed its event loop.
+
+        # ThreadPoolExecutor joins its workers at interpreter exit, even after
+        # cancelling the awaiting task. One active daemon callback per attempt avoids
+        # making a stalled display consumer part of the job's terminal path.
+        # Awaiting this callback leaves subsequent events in Vibe's single slot.
+        threading.Thread(target=publish, name="comfy-progress", daemon=True).start()
+        await finished
 
     async def history_ready(self, prompt_id: str) -> bool:
         if not self.client.owns_prompt(prompt_id):
