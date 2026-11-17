@@ -14,27 +14,15 @@ never given, is refused by name before any machine is claimed.
 from __future__ import annotations
 
 import os
-import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
 from urllib.parse import urlsplit
 
-_CORE_PACKS = frozenset({"comfycore", "comfyextras"})
+_CORE_PACKS = ("comfy_core", "comfy_extras")
 _OWNED_PACK = "vibecomfy"
 OWNED_SOURCE = "vibecomfy"
-
-
-def _token(name: str) -> str:
-    """Compare pack names across repository and cache spellings."""
-    name = name.removesuffix(".git").lower()
-    name = re.sub(r"[^a-z0-9]", "", name)
-    return name.removeprefix("comfyui") or name
-
-
-def _repo_token(repository: str) -> str:
-    return _token(urlsplit(repository).path.rstrip("/").rsplit("/", 1)[-1])
 
 
 @lru_cache(maxsize=1)
@@ -66,50 +54,78 @@ def workflow_class_types(api: Mapping[str, Any]) -> frozenset[str]:
                      if isinstance(node, Mapping) and isinstance(node.get("class_type"), str))
 
 
+def _in_pack(class_type: str, slug: str, commit: str | None, *, exact_commit: bool) -> bool:
+    """Whether VibeComfy's shipped schema evidence places ``class_type`` in the pack ``slug``.
+
+    Pack ids are compared exactly.  With a commit, the evidence must have been captured at
+    that commit (identity lookup).  Without ``exact_commit``, evidence for the same pack
+    at another commit is accepted when no capture exists at the requested one.
+    """
+    from vibecomfy.errors import ObjectInfoIdentityAmbiguityError
+    from vibecomfy.porting.object_info.consume import get_class, has_class_identity
+
+    if commit:
+        try:
+            if has_class_identity(class_type, pack_slug=slug, git_commit=commit):
+                return True
+        except ObjectInfoIdentityAmbiguityError:
+            return True  # several captures at this exact identity all place it in the pack
+    if exact_commit:
+        return False
+    entry = get_class(class_type)
+    return bool(entry) and entry.get("pack_slug") == slug
+
+
+def _slug(repository: str) -> str:
+    """A node pack's id: its repository name, exactly as the schema captures name it."""
+    return urlsplit(repository).path.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git")
+
+
 @dataclass(frozen=True)
 class WorkerNodeSet:
     """What one recipe, plus the packs a workflow declares, gives the worker."""
 
     owned: frozenset[str]
-    pack_tokens: frozenset[str]
+    recipe_packs: tuple[tuple[str, str], ...]      # (pack id, pinned commit): installed by the recipe
+    declared_packs: tuple[tuple[str, str], ...]    # (pack id, commit): restored for this workflow
+    core_commit: str | None
     required: frozenset[str]
     has_owned_source: bool
 
-    @staticmethod
-    def _cache_pack(class_type: str) -> str | None:
-        """The pack VibeComfy's shipped schema cache places a class in, through its public API."""
+    def _where(self, class_type: str) -> str:
         from vibecomfy.porting.object_info.consume import get_class
 
         entry = get_class(class_type)
         pack = (entry or {}).get("pack_slug") or (entry or {}).get("pack")
-        return str(pack) if pack else None
+        if not pack:
+            return ("not a ComfyUI core node, not VibeComfy-owned, and in no pack the worker "
+                    "recipe or the workflow declares")
+        if pack == _OWNED_PACK:
+            return "an old VibeComfy node class that its node package no longer registers"
+        return (f"provided by node pack {pack!r}, which the worker recipe does not install "
+                "and the workflow does not declare")
+
+    def provides(self, class_type: str) -> bool:
+        if class_type in self.owned:
+            return self.has_owned_source
+        if class_type in self.required:
+            return True
+        if any(_in_pack(class_type, slug, commit, exact_commit=True) for slug, commit in self.recipe_packs):
+            return True
+        if any(_in_pack(class_type, slug, commit, exact_commit=False) for slug, commit in self.declared_packs):
+            return True
+        return any(_in_pack(class_type, slug, self.core_commit if slug == "comfy_core" else None,
+                            exact_commit=False) for slug in _CORE_PACKS)
 
     def unprovided(self, class_types: Iterable[str]) -> dict[str, str]:
         """Map each class the worker would not have to the plain reason why."""
         missing: dict[str, str] = {}
         for class_type in sorted(set(class_types)):
-            if class_type in self.owned:
-                if not self.has_owned_source:
-                    missing[class_type] = ("a VibeComfy-owned node, but the worker recipe has no "
-                                           f"{OWNED_SOURCE!r} source to link it from")
-                continue
-            if class_type in self.required:
-                continue
-            pack = self._cache_pack(class_type)
-            if pack is None:
-                missing[class_type] = ("not a ComfyUI core node, not VibeComfy-owned, and in no "
-                                       "pack the worker recipe or the workflow declares")
-                continue
-            token = _token(pack)
-            if token == _OWNED_PACK:
-                missing[class_type] = ("an old VibeComfy node class that its node package no "
-                                       "longer registers")
-            elif token in _CORE_PACKS:
-                continue
-            elif not any(token == wanted or (len(wanted) >= 4 and (wanted in token or token in wanted))
-                         for wanted in self.pack_tokens):
-                missing[class_type] = (f"provided by node pack {pack!r}, which the worker recipe does "
-                                       "not install and the workflow does not declare")
+            if class_type in self.owned and not self.has_owned_source:
+                missing[class_type] = ("a VibeComfy-owned node, but the worker recipe has no "
+                                       f"{OWNED_SOURCE!r} source to link it from")
+            elif not self.provides(class_type):
+                missing[class_type] = self._where(class_type)
         return missing
 
     def require(self, class_types: Iterable[str]) -> None:
@@ -133,12 +149,15 @@ class WorkerNodeMissing(ValueError):
 
 def worker_node_set(recipe: Any, declared_nodes: Iterable[Mapping[str, str]] = ()) -> WorkerNodeSet:
     """Build the set from a loaded engine recipe and a workflow's declared node packs."""
-    tokens = {_repo_token(source.pin.repository) for source in recipe.sources
-              if "/custom_nodes/" in "/" + source.relative_path}
-    tokens |= {_repo_token(str(node["repo"])) for node in declared_nodes if node.get("repo")}
+    recipe_packs = tuple((_slug(source.pin.repository), source.pin.revision) for source in recipe.sources
+                         if "/custom_nodes/" in "/" + source.relative_path)
+    comfy = next((source.pin.revision for source in recipe.sources if source.name == "comfyui"), None)
     return WorkerNodeSet(
         owned=owned_node_classes(),
-        pack_tokens=frozenset(token for token in tokens if token),
+        recipe_packs=recipe_packs,
+        declared_packs=tuple((_slug(str(node["repo"])), str(node.get("commit") or ""))
+                             for node in declared_nodes if node.get("repo")),
+        core_commit=comfy,
         required=frozenset(recipe.health.required_nodes),
         has_owned_source=any(source.name == OWNED_SOURCE for source in recipe.sources),
     )

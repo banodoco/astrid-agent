@@ -2048,9 +2048,7 @@ class GenerationFacade:
                 workflow, plan=plan, assets=assets or {},
                 comfy_url=(target_client.target.url if placement.kind == 'attached' and target_client is not None else None),
                 lineage=h3_lineage, source_video=entry_id != 'h3',
-                # H3 is provisioned by its own release manifest (LanPaint and friends), not the
-                # managed recipe, so the recipe's node set is not its worker's node set.
-                worker_nodes=(is_managed_target or is_remote_target) and entry_id != 'h3')
+                worker_nodes=is_managed_target or is_remote_target)
             readiness['entry'].update(preview)
             if align == 'trust':
                 readiness['alignment'] = {'mode': 'trust', 'verified': False}

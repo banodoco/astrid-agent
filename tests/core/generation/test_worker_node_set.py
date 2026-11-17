@@ -128,6 +128,37 @@ def test_every_shipped_entry_is_covered_by_the_worker_node_set(entry_id):
     managed_worker_node_set(declared).require(classes)
 
 
+def _h3_classes(name: str) -> set[str]:
+    import re
+    root = Path(generation_entries.__file__).resolve().parents[2] / "packs/h3_av/workflows" / name
+    return set(re.findall(r"raw_call\(\s*['\"]([^'\"]+)['\"]", (root / "workflow.py").read_text()))
+
+
+@pytest.mark.parametrize("name", ["native_h3_continuation", "native_h3_continuation_refs"])
+def test_native_h3_classes_come_from_the_pack_the_recipe_installs(name):
+    """MiniMaxH3* classes are in no core schema; the recipe pins h3-motion-context, whose
+    classes the shipped capture records at that exact commit."""
+    classes = _h3_classes(name)
+    assert any(c.startswith("MiniMaxH3") for c in classes)
+    assert managed_worker_node_set([]).unprovided(classes) == {}
+
+
+def test_the_lanpaint_h3_workflow_is_not_provided_by_the_managed_worker():
+    """LanPaint is in no recipe pin and no declaration; the check says so by pack name."""
+    missing = managed_worker_node_set([]).unprovided(_h3_classes("lanpaint_h3_av_generalized"))
+    assert "LanPaint_AVEncode" in missing and "'LanPaint'" in missing["LanPaint_AVEncode"]
+
+
+def test_pack_ids_and_commits_are_matched_exactly(tmp_path):
+    from astrid.core.generation import worker_node_set as module
+    # Whisper's class is provided by the pack id "ComfyUI-Whisper" at the recipe pin, not by a
+    # similar-looking pack, a substring, or the same pack at another commit.
+    assert module._in_pack("Apply Whisper", "ComfyUI-Whisper", "006a709848259ed3d69e2f9fcfd7a75f6c860ddd", exact_commit=True)
+    assert not module._in_pack("Apply Whisper", "Whisper", "006a709848259ed3d69e2f9fcfd7a75f6c860ddd", exact_commit=True)
+    assert not module._in_pack("Apply Whisper", "ComfyUI-Whisper", "0" * 40, exact_commit=True)
+    assert not module._in_pack("Apply Whisper", "ComfyUI-Whisper-Extra", "0" * 40, exact_commit=False)
+
+
 # --- the worker side: a warm engine that predates the custom_nodes link -----------------------
 
 class _Runner:
@@ -139,37 +170,44 @@ class _Runner:
         return "skipped", {}
 
 
-def _preparation(monkeypatch, *, probes, used=(OWNED,)):
+def _preparation(monkeypatch, *, probes, owned=(OWNED,), start=None):
     """A preparation whose engine answers `probes` (missing-class lists) in order."""
     prep = object.__new__(ManagedEnginePreparation)
-    nodes = {str(i): SimpleNamespace(class_type=name) for i, name in enumerate(used)}
-    prep._alignment_verification = (SimpleNamespace(runtime_nodes=lambda: nodes),)
+    if owned is not None:
+        prep._owned_classes = tuple(owned)
     prep._preparing_engine = False
     events, answers = [], list(probes)
     monkeypatch.setattr(prep, "_probe_missing", lambda classes: (events.append(("probe", tuple(classes))),
                                                                  answers.pop(0))[1])
     monkeypatch.setattr(prep, "_stop_preparing_engine", lambda: events.append(("stop",)))
-    monkeypatch.setattr(prep, "_start_engine", lambda runner: (events.append(("start",)), ("executed", {}))[1])
+    monkeypatch.setattr(prep, "_start_engine", start or (lambda runner: (events.append(("start",)), ("executed", {"new": 1}))[1]))
     monkeypatch.setattr(prep, "_time_engine", lambda operation: operation())
     return prep, events
 
 
 def test_a_warm_engine_that_predates_the_link_is_restarted_so_it_loads_the_owned_node(monkeypatch):
     prep, events = _preparation(monkeypatch, probes=[[OWNED], []])
-    assert prep._ensure_owned_nodes(_Runner(), "skipped") == "executed"
+    assert prep._ensure_owned_nodes(_Runner(), "skipped", {"old": 1}) == ("executed", {"new": 1})
     assert [event[0] for event in events] == ["probe", "stop", "start", "probe"]
     assert prep._preparing_engine is True
 
 
 def test_a_warm_engine_that_already_has_the_node_is_reused(monkeypatch):
     prep, events = _preparation(monkeypatch, probes=[[]])
-    assert prep._ensure_owned_nodes(_Runner(), "skipped") == "skipped"
+    assert prep._ensure_owned_nodes(_Runner(), "skipped", {"old": 1}) == ("skipped", {"old": 1})
     assert [event[0] for event in events] == ["probe"]
 
 
 def test_a_workflow_without_owned_nodes_does_not_probe_or_restart(monkeypatch):
-    prep, events = _preparation(monkeypatch, probes=[], used=("KSampler",))
-    assert prep._ensure_owned_nodes(_Runner(), "skipped") == "skipped"
+    prep, events = _preparation(monkeypatch, probes=[], owned=())
+    assert prep._ensure_owned_nodes(_Runner(), "skipped")[0] == "skipped"
+    assert events == []
+
+
+def test_unknown_owned_classes_fail_closed(monkeypatch):
+    prep, events = _preparation(monkeypatch, probes=[], owned=None)
+    with pytest.raises(IntegrityError, match="did not determine"):
+        prep._ensure_owned_nodes(_Runner(), "skipped")
     assert events == []
 
 
@@ -180,6 +218,71 @@ def test_an_engine_that_still_lacks_the_node_is_refused_by_name(monkeypatch, sta
         prep._ensure_owned_nodes(_Runner(), start_action)
     assert OWNED in str(caught.value)
     assert sum(event[0] == "stop" for event in events) == stops
+
+
+def test_a_start_failure_after_the_restart_stop_is_reported_without_a_second_stop(monkeypatch):
+    def failing_start(runner):
+        raise RuntimeError("start refused")
+    prep, events = _preparation(monkeypatch, probes=[[OWNED]], start=failing_start)
+    with pytest.raises(RuntimeError, match="start refused"):
+        prep._ensure_owned_nodes(_Runner(), "skipped")
+    assert [event[0] for event in events] == ["probe", "stop"]
+    assert prep._preparing_engine is False and prep._engine_stopped is True
+
+
+def test_doctor_reports_a_restart_start_error_instead_of_stopping_again(monkeypatch):
+    prep, events = _preparation(monkeypatch, probes=[[OWNED]], start=lambda r: (_ for _ in ()).throw(RuntimeError("start refused")))
+    runner = _Runner()
+    prep._alignment_runner = runner
+    prep._alignment_verification = (None, runner, {}, {}, None)
+    prep.recipe = SimpleNamespace(start=SimpleNamespace(port=8188))
+    prep.deadline = 1e18
+    started = []
+    monkeypatch.setattr(prep, "_verify_alignment", lambda *a: None)
+    monkeypatch.setattr(prep, "check", lambda: None)
+    # first start (the warm engine) succeeds, the restart start fails
+    calls = iter([("skipped", {}), None])
+    def start(r):
+        item = next(calls)
+        if item is None:
+            raise RuntimeError("start refused")
+        started.append(item)
+        return item
+    monkeypatch.setattr(prep, "_start_engine", start)
+    with pytest.raises(RuntimeError, match="start refused"):
+        prep._doctor(["doctor", "workflow.py"])
+    assert [e[0] for e in events].count("stop") == 1
+
+
+def test_a_transient_probe_error_does_not_cost_a_healthy_engine_its_life(monkeypatch):
+    prep = object.__new__(ManagedEnginePreparation)
+    prep.recipe = SimpleNamespace(start=SimpleNamespace(port=8188))
+    prep.deadline = 1e18
+    outcomes = [IntegrityError("transient"), SimpleNamespace(stdout='{"missing": []}')]
+    def native(*args, **kwargs):
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+    monkeypatch.setattr(prep, "_native", native)
+    assert prep._probe_missing([OWNED]) == []
+    outcomes[:] = [IntegrityError("down"), IntegrityError("still down")]
+    with pytest.raises(IntegrityError, match="still down"):
+        prep._probe_missing([OWNED])
+
+
+def test_every_mode_links_probes_and_ensures_after_the_engine_is_healthy():
+    """check and trust modes skip nodes restore, so `_prepare` itself must cover them."""
+    import inspect
+    source = inspect.getsource(ManagedEnginePreparation._prepare)
+    link = source.index("self._link_owned_nodes()")
+    start = source.index("self._start_engine(runner)")
+    health = source.index("runner.check_health")
+    ensure = source.index("self._ensure_owned_nodes(")
+    assert link < start < health < ensure
+    between = source[link - 200:ensure]
+    assert "self.mode" not in between.split("self._link_owned_nodes()")[0][-120:]
+    assert "self._owned_classes = self._owned_classes_in(" in source
 
 
 def test_doctor_ensures_owned_nodes_after_health_and_before_it_reads_the_schema(monkeypatch):
@@ -193,7 +296,7 @@ def test_doctor_ensures_owned_nodes_after_health_and_before_it_reads_the_schema(
     monkeypatch.setattr(prep, "check", lambda: None)
     monkeypatch.setattr(prep, "_start_engine", lambda r: (order.append("start"), ("skipped", {}))[1])
     runner.check_health = lambda: order.append("health")
-    monkeypatch.setattr(prep, "_ensure_owned_nodes", lambda r, action: (order.append("ensure"), "executed")[1])
+    monkeypatch.setattr(prep, "_ensure_owned_nodes", lambda r, action, facts=None: (order.append("ensure"), ("executed", {}))[1])
     monkeypatch.setattr(prep, "_native", lambda *a, **k: order.append("doctor") or SimpleNamespace())
     prep._alignment_verification = (None, runner, {}, {}, None)
     prep._doctor(["doctor", "workflow.py"])

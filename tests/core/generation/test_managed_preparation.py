@@ -238,6 +238,7 @@ def doctor_case():
         prep.context = SimpleNamespace(service_client=SimpleNamespace(stop_owned=stop_owned))
         prep._verify_alignment = lambda *args: None
         prep._alignment_verification = ()
+        prep._owned_classes = ()  # fail-closed contract: the workflow's owned classes are always determined
         runner = SimpleNamespace(start=start)
 
         def check_health():

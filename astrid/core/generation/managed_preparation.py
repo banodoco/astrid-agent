@@ -490,6 +490,8 @@ class ManagedEnginePreparation:
         staged_digests.update(self._canonical_members)
         manifest = {**manifest, "engine": DEFAULT_ENGINE, "models_root": configured_models_root(root=self.root)}
         self._has_declared_nodes = bool((manifest.get("extra") or {}).get("nodes"))
+        # Fail closed: every mode needs to know which owned nodes this workflow uses.
+        self._owned_classes = self._owned_classes_in(canonical_workflow)
         commands_type = type(engine).requirements.__globals__["VibeComfyCommands"]
         self.scratch.mkdir(parents=True, exist_ok=True)
         lockfile = self.scratch / "managed-custom-nodes.lock"
@@ -509,6 +511,9 @@ class ManagedEnginePreparation:
             raise IntegrityError("managed engine is missing declared models: " + ", ".join(alignment["missing"]))
         self.check()
         self._verify_alignment(*self._alignment_verification)
+        if self._owned_classes:
+            # check and trust modes never run nodes restore; the link is idempotent.
+            self._link_owned_nodes()
         runner.step_id = "start"
         if callback is not None:
             callback("start_engine")
@@ -517,6 +522,12 @@ class ManagedEnginePreparation:
         self.check()
         runner.step_id = "health"
         health_action, health_facts = self._time_engine(runner.check_health)
+        self.check()
+        checked_facts = start_facts
+        start_action, start_facts = self._ensure_owned_nodes(runner, start_action, start_facts)
+        if start_facts is not checked_facts:  # the engine was restarted; its health is the new engine's
+            runner.step_id = "health"
+            health_action, health_facts = self._time_engine(runner.check_health)
         self.check()
         receipt_sha256 = refresh_installed_launch(runner, raw, start_action=start_action, start_facts=start_facts,
                                                   health_action=health_action, health_facts=health_facts, check=self.check)
@@ -827,13 +838,7 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
             # Run the checkout's own setup helper on the worker.  The recipe
             # source was verified against the installation receipt above; do
             # not resolve this helper from the host's Python environment.
-            source = next(s for s in self.recipe.sources if s.name == "vibecomfy")
-            checkout = self.adapter.join(self.root, source.relative_path)
-            comfy = self.adapter.join(self.root, next(s.relative_path for s in self.recipe.sources if s.name == "comfyui"))
-            program = ("import sys;from pathlib import Path;sys.path.insert(0, sys.argv[1]);"
-                       "from vibecomfy.commands.runpod_setup import link_vibecomfy_custom_node;"
-                       "link_vibecomfy_custom_node(custom_nodes=Path(sys.argv[2]), package_root=Path(sys.argv[1]))")
-            self._native(program, checkout, self.adapter.join(comfy, "custom_nodes"), step="nodes_restore")
+            self._link_owned_nodes()
         program = "import sys;from vibecomfy.cli import main;sys.exit(main(sys.argv[1:]))"
         if argv[0] in {"prepare", "doctor", "fetch"}:
             # This is the host's own canonical renderer output, never admitted
@@ -864,52 +869,77 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
                         error.add_note(f"see `astrid tasks logs {self.task}` (storage.inventory).")
                 raise
 
-    def _owned_classes_used(self):
-        """VibeComfy-owned node classes the admitted workflow uses (those linked into custom_nodes)."""
+    def _link_owned_nodes(self):
+        """Link VibeComfy's own ComfyUI node package into custom_nodes (idempotent)."""
+        source = next(s for s in self.recipe.sources if s.name == "vibecomfy")
+        checkout = self.adapter.join(self.root, source.relative_path)
+        comfy = self.adapter.join(self.root, next(s.relative_path for s in self.recipe.sources if s.name == "comfyui"))
+        program = ("import sys;from pathlib import Path;sys.path.insert(0, sys.argv[1]);"
+                   "from vibecomfy.commands.runpod_setup import link_vibecomfy_custom_node;"
+                   "link_vibecomfy_custom_node(custom_nodes=Path(sys.argv[2]), package_root=Path(sys.argv[1]))")
+        self._native(program, checkout, self.adapter.join(comfy, "custom_nodes"), step="nodes_restore")
+
+    @staticmethod
+    def _owned_classes_in(workflow):
+        """VibeComfy-owned node classes a workflow uses (those linked into custom_nodes)."""
         from .worker_node_set import owned_node_classes
-        admitted = getattr(self, "_alignment_verification", ())
-        if not admitted:
-            return []
-        used = {node.class_type for node in admitted[0].runtime_nodes().values()}
-        return sorted(used & owned_node_classes())
+        return tuple(sorted({node.class_type for node in workflow.runtime_nodes().values()} & owned_node_classes()))
 
     def _probe_missing(self, classes):
         from astrid.packs.vibecomfy.native_preparation import native_owned_node_probe_program
+
+        from .engine_contracts import IntegrityError
         request = {"endpoint": f"http://127.0.0.1:{self.recipe.start.port}", "classes": list(classes),
                    "request_timeout": min(20.0, max(0.001, self.deadline - time.monotonic()))}
-        result = self._native(native_owned_node_probe_program(), json.dumps(request), step="node_probe")
+        for attempt in (1, 2):
+            try:
+                result = self._native(native_owned_node_probe_program(), json.dumps(request), step="node_probe")
+                break
+            except IntegrityError:
+                # One transient probe failure must not cost a healthy warm engine its restart.
+                if attempt == 2:
+                    raise
         missing = json.loads(result.stdout)["missing"]
         return [name for name in missing if isinstance(name, str) and name in classes]
 
-    def _ensure_owned_nodes(self, runner, start_action):
+    def _ensure_owned_nodes(self, runner, start_action, start_facts=None):
         """Make the engine that diagnoses and runs the workflow actually have its owned nodes.
 
         Nodes restore links VibeComfy's own ComfyUI node package into custom_nodes, but
         ComfyUI only reads custom_nodes when it starts.  A warm engine that predates the
         link (for example one left by an earlier job on the same worker) is reused as-is
-        and never loads it, so the diagnosis fails with an unresolved class.  Probe the
-        engine's own schema; restart a reused engine once if it lacks a class the workflow
-        uses, and refuse plainly if it still does.
+        and never loads it.  Probe the engine's own schema in every mode; restart a reused
+        engine once if it lacks a class the workflow uses, and refuse plainly if it still
+        does.  Returns the (action, facts) of the engine start that is now in force.
         """
         from .engine_contracts import IntegrityError
-        needed = self._owned_classes_used()
+        needed = getattr(self, "_owned_classes", None)
+        if needed is None:
+            raise IntegrityError("managed preparation did not determine the workflow's owned node classes")
         if not needed:
-            return start_action
+            return start_action, start_facts
         missing = self._probe_missing(needed)
         if missing and start_action == "skipped":
             self._preparing_engine = True
             self._stop_preparing_engine()
-            runner.step_id = "doctor-restart"
-            start_action, _ = self._start_engine(runner)
+            self._engine_stopped = True
+            runner.step_id = "restart"
+            try:
+                start_action, start_facts = self._start_engine(runner)
+            except BaseException:
+                # The engine is already stopped; report the start error, do not stop again.
+                self._preparing_engine = False
+                raise
+            self._engine_stopped = False
             self._preparing_engine = True
-            runner.step_id = "doctor-restart-health"
+            runner.step_id = "restart-health"
             self._time_engine(runner.check_health)
             missing = self._probe_missing(needed)
         if missing:
             raise IntegrityError(
                 "managed engine does not load VibeComfy node class(es) " + ", ".join(missing)
                 + " that the workflow uses, even after a fresh start; its custom_nodes link did not load")
-        return start_action
+        return start_action, start_facts
 
     def _doctor(self, argv):
         from astrid.packs.vibecomfy.native_preparation import native_doctor_program
@@ -930,7 +960,7 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
                 self._preparing_engine = True
             runner.step_id = "doctor-health"
             self._time_engine(runner.check_health)
-            start_action = self._ensure_owned_nodes(runner, start_action)
+            start_action, _ = self._ensure_owned_nodes(runner, start_action)
             expected = runner.health.object_info_sha256
             request = {"argv": argv, "endpoint": f"http://127.0.0.1:{self.recipe.start.port}",
                        "expected_schema_sha256": expected,
@@ -943,6 +973,11 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
                 raise IntegrityError("managed doctor target schema changed during diagnosis")
             return result
         except BaseException:
+            if getattr(self, "_engine_stopped", False):
+                # An owned-node restart stopped the engine and its start failed: that start
+                # error is the report; there is nothing left to stop or retain.
+                self._engine_stopped = False
+                raise
             if start_action == "skipped" and not self._preparing_engine:
                 # A bad workflow does not own a healthy warm engine. Only
                 # retain it when a fresh probe proves its schema unchanged.
