@@ -135,6 +135,19 @@ def _safe(value) -> str:
     return str(value).encode("ascii", errors="backslashreplace").decode("ascii")
 
 
+def _receipt_outcomes(installer, *, rolled_back: bool = False) -> dict | None:
+    """The installer's step outcomes, plus the Backend's renderer result from this run's Remotion step.
+
+    A rolled-back run's renderer result describes the candidate that was undone, so it is not reported.
+    """
+    if installer is None:
+        return None
+    own = getattr(installer, "outcomes", None) or {}
+    backend = getattr(installer, "backend", None)
+    renderer = {} if rolled_back else (getattr(backend, "outcomes", None) or {})
+    return {**own, **renderer}
+
+
 def _setup_summary(choices, *, mode, outcome=None, outcomes=None, failure=None,
                    install_root: Path | None = None) -> list[str]:
     """The full setup summary. It goes to install.log, never after the receipt in the terminal."""
@@ -482,7 +495,7 @@ class _Run:
                          lambda: (None if self.home is None else
                                   Installation.resolve(self.home, system=self.system, root=self.root)),
                          failure=failure, rolled_back=rolled_back,
-                         warnings=receipt_warnings(getattr(self.installer, "outcomes", None)),
+                         warnings=receipt_warnings(_receipt_outcomes(self.installer, rolled_back=rolled_back)),
                          details=None if self.log is None else str(self.log), before_stop=before_stop)
         from dataclasses import replace
 
@@ -496,7 +509,7 @@ class _Run:
             write_record(self.log.with_name(RECORD), outcome, *self.protected,
                          run={"operation_id": self.operation_id, "started_at": self.started_at})
         _print_run_summary(self.choices, mode=self.mode, outcome=outcome,
-                           outcomes=getattr(self.installer, "outcomes", None), failure=failure,
+                           outcomes=_receipt_outcomes(self.installer, rolled_back=rolled_back), failure=failure,
                            install_root=self.root, log=self.log)
         return outcome.exit_code
 
