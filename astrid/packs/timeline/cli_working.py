@@ -469,6 +469,45 @@ def _cmd_transcripts_sync(parsed: argparse.Namespace) -> int:
     return 0
 
 
+def _show_projected(parsed: argparse.Namespace, tl: Any, source_range: tuple[float, float] | None) -> int:
+    """``transcripts show --timeline``: the shared projection over every placement of the timeline."""
+    from astrid.sdk.timeline.words import load_timeline_transcripts, project_words
+
+    project = need_project(parsed)
+    source_choice = [parsed.source] if parsed.source else None
+    transcripts = load_timeline_transcripts(parsed.client, project, tl.bundle, sources=source_choice)
+    rows = project_words(tl.bundle, transcripts, "parent", sources=source_choice)
+    media = parsed.media_id
+    if parsed.clip:
+        if not any(row["clip_id"] == parsed.clip for row in rows) and not any(
+                clip.id == parsed.clip for clip in tl.clips()):
+            raise VerbError(f"clip {parsed.clip!r} does not exist in timeline {parsed.timeline!r}")
+        rows = [row for row in rows if row["clip_id"] == parsed.clip]
+        clip_media = {row["media_id"] for row in rows if row.get("media_id")}
+        if media is None and len(clip_media) > 1:
+            raise VerbError(f"clip {parsed.clip!r} matches different media; provide MEDIA_ID to choose")
+        if media is None:
+            if not clip_media:
+                raise VerbError(f"clip {parsed.clip!r} has no managed media digest")
+            media = next(iter(clip_media))
+    if media is not None:
+        if not transcripts.get(media):
+            raise VerbError(f"no transcript for {media} ({parsed.source or 'any source'})")
+        rows = [row for row in rows if row.get("media_id") == media]
+    if source_range is not None:
+        rows = [row for row in rows if not (row["source_end"] <= source_range[0] or row["source_start"] >= source_range[1])]
+    if parsed.json:
+        print(json.dumps([{key: row.get(key) for key in (
+            "address", "word_id", "text", "media_id", "source", "version", "clip_id", "shot_id", "occurrence",
+            "timeline_start", "timeline_end", "source_start", "source_end")} for row in rows],
+            ensure_ascii=False, indent=2))
+    else:
+        for row in rows:
+            print(f"source {row['source_start']:.3f}–{row['source_end']:.3f}s  {row['text']}  "
+                  f"timeline {row['timeline_start']:.3f}–{row['timeline_end']:.3f}s [{row['clip_id']}]")
+    return 0
+
+
 @guard(2)
 def _cmd_transcripts_show(parsed: argparse.Namespace) -> int:
     from astrid.sdk.media_transcript import read_transcript
@@ -494,6 +533,9 @@ def _cmd_transcripts_show(parsed: argparse.Namespace) -> int:
         from astrid.sdk.timeline_checkout import Checkout
 
         tl = Checkout.open(need_project(parsed), parsed.timeline, client=parsed.client)
+        if isinstance(tl.bundle.get("placements"), list) and isinstance(tl.bundle.get("shots"), Mapping):
+            return _show_projected(parsed, tl, source_range)
+        # A bare working handle without a placement table: map each clip occurrence directly.
         from astrid.sdk.timeline.doc import _row_start
 
         # Checkout.clips() exposes one handle per placement but its legacy
