@@ -1083,7 +1083,7 @@ def _retire_host_locked(state: Mapping[str, Any], support: Path, *, foreground: 
         _consume_runtime_cleanup_receipt(state)
 
 
-def _stop_registered_host(state: Mapping[str, Any]) -> None:
+def _stop_registered_host(state: Mapping[str, Any], *, runtime_support: Path) -> None:
     """Retire a registered host under its lifecycle lock (any Astrid process may)."""
     try:
         lock_path = Path(str(state.get("support_root") or "")) / "generic-host.lock"

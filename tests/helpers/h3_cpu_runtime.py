@@ -1803,7 +1803,7 @@ class H3CpuRuntime:
                 state = self.original_host_state
                 if not isinstance(state, Mapping) or state.get("pid") != self.host_pid:
                     raise RuntimeError("H3 host registration is unavailable for cleanup")
-                host_bootstrap._stop_registered_host(state)
+                host_bootstrap._stop_registered_host(state, runtime_support=self.support_root)
         except BaseException as exc:
             cleanup_errors.append(exc)
         try:
