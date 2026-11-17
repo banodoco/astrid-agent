@@ -190,6 +190,31 @@ def build_context(
     return ctx
 
 
+def timeline_canvas(ctx: LayerContext) -> tuple[int, int]:
+    """The timeline's own canvas (theme_overrides.visual.canvas), else the motion model's 1920x1080."""
+    config = ctx.shared.get("config") if isinstance(ctx.shared.get("config"), Mapping) else {}
+    canvas = (((config.get("theme_overrides") or {}).get("visual") or {}).get("canvas") or {})
+    try:
+        return int(canvas.get("width") or model.CANVAS[0]), int(canvas.get("height") or model.CANVAS[1])
+    except (TypeError, ValueError, AttributeError):
+        return model.CANVAS
+
+
+def _what_line(ctx: LayerContext) -> str:
+    """One plain line: what this page shows."""
+    names = tuple(ctx.shared.get("layer_names") or ())
+    if names == ("heat",):
+        return "what you are looking at: where the picture moves over the span (a motion map on its middle frame)"
+    window = ctx.shared.get("window") or {}
+    preset = window.get("preset") if ctx.cut.get("window") else "cut"
+    if preset == "frame":
+        return "what you are looking at: one composed frame of the saved revision, as the film shows it"
+    if preset == "cut":
+        return ("what you are looking at: this cut frame by frame (denser after each entrance), "
+                "with what plays when and the checks it fails")
+    return f"what you are looking at: the {preset} window's frames in time order, with what plays when"
+
+
 def _summary_lines(ctx: LayerContext) -> list[str]:
     cut = ctx.cut
     layers = []
@@ -200,24 +225,35 @@ def _summary_lines(ctx: LayerContext) -> list[str]:
         enters = element.start - float(cut["start"])
         layers.append(element.label + (f" @+{enters:.2f}" if enters > 1 / ctx.fps else ""))
     lo, hi = float(cut["start"]), float(cut["end"])
+    where = "this window" if cut.get("window") else "this cut"
     if cut.get("window"):  # a window (--at, --range): the words spoken IN it, however short it is
         said = " ".join(w.text for w in ctx.words if w.end > lo + 1e-6 and w.start < max(hi, lo + 1 / ctx.fps) - 1e-6)
-        silent = "VO (nobody is speaking in this window)"
     else:
         said = " ".join(w.text for w in ctx.words if lo <= (w.start + w.end) / 2 < hi)
-        silent = "VO (none under this cut)"
+    # a VO clip under it with no words means the words are not stored, not that nobody speaks
+    voices = [e for e in ctx.elements if e.audio and e.track not in ("music", "sfx")
+              and e.end > lo + 1e-6 and e.start < max(hi, lo + 1 / ctx.fps) - 1e-6]
+    if voices:
+        names = ", ".join(dict.fromkeys(e.short_id for e in voices))
+        silent = f"VO: {names} plays in {where}; no words stored (timelines transcripts run)"
+    else:
+        silent = f"VO: no voice clip in {where}"
     picture = next((e.label for e in ctx.elements if e.id == cut.get("clip_id")), cut.get("clip_id") or "(no picture clip)")
     sequence = cut.get("sequence") or {}
     if sequence:
         picture = f"sequence {sequence.get('id')}, {sequence.get('steps')} steps (from {picture})"
     lines = [
+        _what_line(ctx),
         f"picture {picture}" + (f"  +  {' · '.join(layers)}" if layers else ""),
         f'VO "{said}"' if said else silent,
     ]
+    if ctx.shared.get("revision_short"):
+        lines.append(f"revision {ctx.shared['revision_short']}")
     if ctx.frame_size and ctx.frame_size[0]:
         w, h = ctx.frame_size
-        scale = model.CANVAS[0] / float(w)
-        lines.append(f"canvas {model.CANVAS[0]}×{model.CANVAS[1]} px, frames shown at {w}×{h}: one shown px = {scale:g} canvas px "
+        cw, ch = timeline_canvas(ctx)
+        scale = round(cw / float(w), 2)
+        lines.append(f"canvas {cw}×{ch} px, frames shown at {w}×{h}: one shown px = {scale:g} canvas px "
                      "(every position is in canvas px; one art px of a sprite = its scale in canvas px)")
     return lines
 

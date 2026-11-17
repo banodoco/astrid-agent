@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import textwrap
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from fractions import Fraction
 from pathlib import Path
@@ -1803,18 +1803,87 @@ def _static(
     return {'png': png_paths}
 
 
-def _audio_envelope(snapshot: Mapping, asset_files: Mapping[str, str] | None, start: float, end: float, bins: int):
-    """Decimated VO/music/sfx loudness from the timeline's own audio clips, or None without files."""
+def _audio_envelope(snapshot: Mapping, asset_files: Mapping[str, str] | None, start: float, end: float, bins: int,
+                    *, planned: Sequence[Mapping[str, Any]] = ()):
+    """Decimated VO/music/sfx loudness from the timeline's own audio clips, or None without files.
+
+    Lines are expected under every VO clip, every shot script and every shot plan with a line
+    (``planned``: the client's plan rows); silence elsewhere is intended and is not flagged."""
     if not asset_files:
         return None
     from .motion.audio import envelope
     from .motion.sheet import snapshot_elements
 
     _occurrences, elements = snapshot_elements(snapshot)
+    scripted = [(float(s['start']), float(s['end'])) for s in snapshot.get('scripts') or []
+                if isinstance(s, Mapping) and str(s.get('text') or '').strip()
+                and isinstance(s.get('start'), (int, float)) and isinstance(s.get('end'), (int, float))]
+    scripted += [(float(r['start']), float(r['end'])) for r in planned
+                 if isinstance(r, Mapping) and r.get('line') and isinstance(r.get('start'), (int, float))
+                 and isinstance(r.get('end'), (int, float))]
     try:
-        return envelope(elements, asset_files, start, end, bins=bins)
+        return envelope(elements, asset_files, start, end, bins=bins, scripted=scripted)
     except Exception:  # noqa: BLE001 - an unreadable audio file must not lose the page
         return None
+
+
+_REVISION_PREFIXES = ('authoring-parent-revision-', 'astrid.editor.timeline.', 'reigh.editor.timeline.', 'restore-')
+
+
+def short_revision_id(revision_id: Any) -> str | None:
+    """The 8-character handle people read and type (``08dee21c``); the same rule as timelines history."""
+    text = str(revision_id or '')
+    if not text:
+        return None
+    for prefix in _REVISION_PREFIXES:
+        if text.startswith(prefix):
+            return text[len(prefix):][:8] or text
+    return text[:8]
+
+
+def _revision_short(revision_label: Mapping[str, Any] | None, snapshot: Mapping[str, Any]) -> str | None:
+    """The drawn revision's short id: the certified one, else the one the capture was made for."""
+    label = revision_label if isinstance(revision_label, Mapping) else {}
+    metadata = snapshot.get('metadata') if isinstance(snapshot.get('metadata'), Mapping) else {}
+    capture = metadata.get('capture_authority') if isinstance(metadata.get('capture_authority'), Mapping) else {}
+    for value in (label.get('actual_revision_id'), metadata.get('requested_revision_id'),
+                  capture.get('parent_revision_id'), label.get('base_revision_id')):
+        if isinstance(value, str) and value:
+            short = short_revision_id(value)
+            return short if label.get('status') != 'candidate' else f'{short} + unsaved edits'
+    return None
+
+
+def _display_title(snapshot: Mapping[str, Any], options: Mapping[str, Any]) -> str:
+    """The timeline's name as people know it (``Rough cut C2``), never its internal id when a name is known."""
+    title = options.get('title')
+    if isinstance(title, str) and title.strip():
+        return title.strip()
+    return str(snapshot.get('timeline_name') or snapshot.get('timeline_id') or 'timeline')
+
+
+def _picture_cut_count(snapshot: Mapping[str, Any]) -> int | None:
+    try:
+        from astrid.core.timeline.cuts import occurrences_from_snapshot
+        from astrid.pack_api import picture_cuts
+        fps = float(Fraction(*snapshot['fps_rational']))
+        return len(picture_cuts(occurrences_from_snapshot(snapshot), fps=fps)) or None
+    except Exception:  # noqa: BLE001 - the header then counts the tiles
+        return None
+
+
+def provenance_findings(snapshot: Mapping[str, Any], revision_label: Mapping[str, Any] | None,
+                        render_selection: Any) -> list[str]:
+    """What the header leaves out, for the findings and the JSON: the full revision and the render source."""
+    label = revision_label if isinstance(revision_label, Mapping) else {}
+    text = str(label.get('label') or 'revision unavailable')
+    status = label.get('status')
+    if status == 'uncertified':
+        text += ('; uncertified means the frames were captured for this revision but the capture carries '
+                 'no Runtime proof of it (pin it with --revision-id to be sure)')
+    lines = [f'REVISION {text}']
+    lines.append(f"SOURCE  {snapshot.get('render_run_id')} · {render_selection} · timeline {snapshot.get('timeline_id')}")
+    return lines
 
 
 def build_filmstrip_pack(*, out_root: Path, video_path: Path | None = None, snapshot: dict, options: dict, frame_provider=None,
@@ -1958,11 +2027,13 @@ def build_filmstrip_pack(*, out_root: Path, video_path: Path | None = None, snap
         context.shared['rules'] = options.get('rules') or {}
         context.shared['highlight'] = options.get('highlight')
         context.shared['config'] = snapshot.get('config') or {}
-        sheet = compose_motion_sheet(context, options.get('layers') or None, out_root, timeline_label=timeline_label)
+        context.shared['revision_short'] = _revision_short(revision_label, snapshot)
+        sheet = compose_motion_sheet(context, options.get('layers') or None, out_root,
+                                     timeline_label=_display_title(snapshot, options))
         paths = {'png': sheet['png']}
         if sheet.get('preview'):
             paths['preview'] = sheet['preview']
-        index['motion_findings'] = sheet['findings']
+        index['motion_findings'] = sheet['findings'] + provenance_findings(snapshot, revision_label, render_selection)
         index['motion_layers'] = sheet['layers']
     elif options.get('view') == 'contact':
         from .contact_sheet import static_contact_png
@@ -1971,18 +2042,31 @@ def build_filmstrip_pack(*, out_root: Path, video_path: Path | None = None, snap
         contact_fps = float(Fraction(*snapshot['fps_rational']))
         overlay = _contact_overlay_for_layers(snapshot, options.get('layers') or (), contact_fps, options.get('highlight'), frame_provider=frame_provider)
         from .contact_sheet import contact_band_width, contact_silence_findings
-        audio = _audio_envelope(snapshot, asset_files, 0.0, duration, contact_band_width(columns))
+        plans = options.get('shot_plans') or {}
+        audio = _audio_envelope(snapshot, asset_files, 0.0, duration, contact_band_width(columns),
+                                planned=plans.get('rows') or ())
+        from .motion.audio import expected_line_spans
+        from .motion.sheet import snapshot_elements
+        try:
+            _occ, contact_elements = snapshot_elements(snapshot)
+            voice_spans = expected_line_spans(contact_elements)
+        except Exception:  # noqa: BLE001 - the words line falls back to "no words stored"
+            voice_spans = None
+        plan_labels = ({str(row['occurrence_id']): str(row['label']) for row in plans.get('rows') or ()
+                        if row.get('occurrence_id') and row.get('label')} if plans.get('labels') else None)
         paths = {'png': static_contact_png(
-            display_cards, out_root, columns=columns, timeline_name=timeline_label,
+            display_cards, out_root, columns=columns, timeline_name=_display_title(snapshot, options),
             render_run_id=snapshot['render_run_id'], render_selection=render_selection,
             occurrences=[o for o in snapshot.get('occurrences') or [] if isinstance(o, Mapping)],
             duration_seconds=duration, show_output='output' in components,
             thinned_from=(index.get('contact') or {}).get('thinned_from'), overlay=overlay, audio=audio,
             revision_label=revision_label,
             event_coverage=(index.get('coverage') or {}).get('event_moments'),
+            revision_short=_revision_short(revision_label, snapshot), cut_count=_picture_cut_count(snapshot),
+            voice_spans=voice_spans, plan_labels=plan_labels,
         )}
-        if audio is not None:
-            index['motion_findings'] = contact_silence_findings(audio)
+        index['motion_findings'] = (contact_silence_findings(audio) if audio is not None else []) + \
+            provenance_findings(snapshot, revision_label, render_selection)
     else:
         paths = _static(
             display_cards, out_root, columns, page_size, timeline_label, snapshot['render_run_id'],

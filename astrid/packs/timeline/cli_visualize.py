@@ -89,6 +89,9 @@ def _select_visualize_source(parsed: argparse.Namespace) -> dict[str, Any] | Non
     if getattr(parsed, "published", False) and revision_id:
         raise ValueError("--published cannot be combined with --revision-id")
     if revision_id:
+        revision_id = _full_revision_id(parsed, str(revision_id))
+        parsed.revision_id = revision_id
+        parsed._revision_explicit = True
         parsed._source_revision_id = revision_id
         return None
 
@@ -105,7 +108,25 @@ def _select_visualize_source(parsed: argparse.Namespace) -> dict[str, Any] | Non
         raise ValueError("could not pin the published timeline revision for visualization")
     parsed.revision_id = pinned
     parsed._source_revision_id = pinned
+    parsed._bundle = bundle
     return None
+
+
+def _full_revision_id(parsed: argparse.Namespace, revision_id: str) -> str:
+    """``--revision-id 08dee21c`` (the short id pages and history print) → the full id; full ids pass through."""
+    from astrid.sdk.timeline.revisions import _ID_PREFIXES
+
+    if (revision_id.startswith(_ID_PREFIXES) or len(revision_id) >= 40 or parsed.client is None
+            or not re.fullmatch(r"[0-9a-f]{6,39}", revision_id)):
+        return revision_id  # a full or named id: the Runtime resolves it
+    try:
+        from astrid.packs.timeline.cli_history import _store
+        from astrid.sdk.timeline.revisions import resolve_revision
+
+        ref = getattr(parsed, "timeline_slug", None) or getattr(parsed, "timeline_ref", None)
+        return resolve_revision(parsed.project, ref, revision_id, store=_store(parsed)) or revision_id
+    except Exception as exc:  # noqa: BLE001 - say what the short id could not match
+        raise ValueError(f"--revision-id {revision_id}: {exc}") from None
 
 
 def _changed_cuts_line(cuts: list[int], *, limit: int = 12) -> str:
@@ -429,12 +450,18 @@ def _visualization_summary(outputs: Mapping[str, Any], *, parsed: argparse.Names
     timing = outputs.get("timing") if isinstance(outputs.get("timing"), Mapping) else {}
     label = {"contact": "contact sheet", "motion": "motion sheet" if inputs.get("preset") == "cut" else
              f"{inputs.get('preset')} view", "filmstrip": "filmstrip"}.get(view, view)
+    clip_page = outputs.get("clip_page")
+    if isinstance(clip_page, Mapping) and clip_page.get("label"):
+        label = str(clip_page["label"])
     if primary:
         lines = [f"{label}: {primary}"]
     elif outputs.get("evidence_kind") == "declared_inputs":
         lines = [f"{label}: no picture produced (inputs mode is render-free; it lists declared inputs)"]
     else:
-        lines = [f"{label}: no picture produced (no PNG page was returned)"]
+        queued = timing.get("queued_s") if isinstance(timing, Mapping) else None
+        why = (f"; it waited {float(queued):.0f} s behind other Runtime work" if isinstance(queued, (int, float))
+               and queued >= 15 else "")
+        lines = [f"{label}: no picture produced (no PNG page was returned{why})"]
     for page in pages:
         if page != primary:
             lines.append(f"  also: {page}")
@@ -470,7 +497,7 @@ def _visualization_summary(outputs: Mapping[str, Any], *, parsed: argparse.Names
     window_info = outputs.get("window") if isinstance(outputs.get("window"), Mapping) else {}
     preset = inputs.get("preset")
     what = {
-        "contact": f"{tiles} tiles, one per picture cut (#N = cut number in timelines show)",
+        "contact": f"{tiles} tiles, one per picture cut (cut N = the cut number timelines show prints)",
         "motion": (f"cut {inputs.get('cut')}: {frames} frames, dense after each entrance" if preset == "cut" else
                    f"{preset} {float(window_info.get('start', 0)):.2f}–{float(window_info.get('end', 0)):.2f} s: "
                    f"{frames} frames on one page"
@@ -516,8 +543,9 @@ def _visualization_summary(outputs: Mapping[str, Any], *, parsed: argparse.Names
     timeline = str(inputs.get("timeline_slug") or "<timeline>")
     command = _cli()._astrid_cli_command()
     base = [*command, "timelines", "visualize", timeline, "--project", project]
-    if inputs.get("revision_id"):
-        base += ["--revision-id", str(inputs["revision_id"])]
+    if inputs.get("revision_id") and _revision_pinned_by_caller(parsed, inputs):
+        # only when the caller pinned one: the default already draws the published revision
+        base += ["--revision-id", _short_rev(inputs["revision_id"])]
     lint = [*command, "timelines", "lint", timeline, "--project", project]
     show = [*command, "timelines", "show", timeline, "--project", project]
     beats = ["--beats", str(parsed.beats)] if getattr(parsed, "beats", None) else []
@@ -544,6 +572,10 @@ def _visualization_summary(outputs: Mapping[str, Any], *, parsed: argparse.Names
             ("get a picture", composed_command),
             ("export declared inputs", input_command),
         ]
+    elif isinstance(outputs.get("clip_page"), Mapping) and getattr(parsed, "_clip", None):
+        from astrid.packs.timeline.cli_visualize_clip import next_commands
+
+        nexts = next_commands(base, parsed._clip, inputs, outputs["clip_page"])
     elif view == "motion" and window and inputs.get("preset") != "cut":
         nexts = _window_navigation(window, base)
     elif view == "motion":
@@ -551,6 +583,8 @@ def _visualization_summary(outputs: Mapping[str, Any], *, parsed: argparse.Names
         following = str(int(cut) + 1) if cut.isdigit() else "N"
         nexts = [
             ("next cut", base + ["--cut", following] + beats),
+            ("where the picture moves (heat map)", base + ["--cut", cut, "--layer", "heat"]),
+            ("a detail across this cut, source resolution", base + ["--cut", cut, "--region", "X,Y,W,H"]),
             ("lint the whole edit", lint + beats),
             ("whole film again", base + ["--preset", "overview"]),
         ]
@@ -569,6 +603,14 @@ def _visualization_summary(outputs: Mapping[str, Any], *, parsed: argparse.Names
     lines.extend(f"  {name:<{width}}  {shlex.join(argv)}" for name, argv in nexts)
     lines.append("(--json prints the full SDK envelope; --list-layers lists the views you can add with --layer)")
     return "\n".join(lines)
+
+
+def _revision_pinned_by_caller(parsed: Any, inputs: Mapping[str, Any]) -> bool:
+    """True when ``--revision-id`` was given (or no source pinning ran): the next commands must keep it."""
+    explicit = getattr(parsed, "_revision_explicit", None)
+    if explicit is not None:
+        return bool(explicit)
+    return not hasattr(parsed, "_source_revision_id")
 
 
 def _visualize_plan(parsed: argparse.Namespace, inputs: Mapping[str, Any]) -> int:
@@ -631,26 +673,38 @@ def _window_navigation(window: Mapping[str, Any], base: list[str]) -> list[tuple
 
     rows: list[tuple[str, list[str]]] = []
     start, end = float(window["start"]), float(window["end"])
-    if window.get("earlier"):
-        a, b = window["earlier"]
-        rows.append((f"earlier {a:.2f}–{b:.2f} s", view(preset, a, b)))
-    if window.get("later"):
-        a, b = window["later"]
-        rows.append((f"later {a:.2f}–{b:.2f} s", view(preset, a, b)))
-    if window.get("zoom_in"):
-        a, b = window["zoom_in"]
-        where = f"the busiest moment {window['busiest']:.2f} s" if window.get("busiest") is not None else "the middle"
-        rows.append((f"zoom in on {where}", view("motion" if b - a <= 3.0 else preset, a, b)))
-    if window.get("zoom_out") and preset != "frame":
-        a, b = window["zoom_out"]
-        rows.append(("zoom out", view("scan", a, b)))
+    if preset == "frame":
+        # one frame: step a frame at a time (a time window of one frame), never "zoom" (that reads as a picture zoom)
+        if window.get("earlier"):
+            a, _b = window["earlier"]
+            rows.append((f"previous frame ({a:.2f} s)", base + ["--at", f"{a:.2f}"]))
+        if window.get("later"):
+            a, _b = window["later"]
+            rows.append((f"next frame ({a:.2f} s)", base + ["--at", f"{a:.2f}"]))
+    else:
+        if window.get("earlier"):
+            a, b = window["earlier"]
+            rows.append((f"earlier {a:.2f}–{b:.2f} s", view(preset, a, b)))
+        if window.get("later"):
+            a, b = window["later"]
+            rows.append((f"later {a:.2f}–{b:.2f} s", view(preset, a, b)))
+        if window.get("zoom_in"):
+            a, b = window["zoom_in"]
+            where = (f"around the busiest moment {window['busiest']:.2f} s" if window.get("busiest") is not None
+                     else "around the middle")
+            rows.append((f"shorter time window {where}", view("motion" if b - a <= 3.0 else preset, a, b)))
+        if window.get("zoom_out"):
+            a, b = window["zoom_out"]
+            rows.append((f"longer time window {a:.2f}–{b:.2f} s", view("scan", a, b)))
     other = {"scan": "beat", "beat": "scan", "motion": "beat", "frame": "motion"}.get(preset, "scan")
     if other == "motion" and preset == "frame":
         rows.append(("this moment moving (motion, 3 s)", base + ["--preset", "motion", "--at", f"{start:.2f}"]))
     else:
         rows.append((f"same window as {other}", view(other, start, end)))
     if window.get("cut") is not None:
-        rows.append((f"the cut it is in (#{window['cut']})", base + ["--cut", str(window["cut"])]))
+        rows.append((f"the cut it is in (cut {window['cut']})", base + ["--cut", str(window["cut"])]))
+    if preset == "frame":
+        rows.append(("a detail at source resolution", base + ["--at", f"{start:.2f}", "--region", "X,Y,W,H"]))
     return rows
 
 
@@ -735,6 +789,15 @@ def cmd_visualize(parsed: argparse.Namespace) -> int:
         return 2
     if at_note:
         print(at_note)
+    from astrid.packs.timeline import cli_visualize_clip as clip_views
+
+    clip_request = None
+    if clip_views.wants_clip_view(parsed):
+        try:
+            clip_request = clip_views.prepare(parsed)
+        except (clip_views.ClipError, ValueError) as exc:
+            print(f"error validation_error: {exc}", file=sys.stderr)
+            return 2
     _resolve_view(parsed)
     human_outputs: Mapping[str, Any] | None = None
 
@@ -834,6 +897,25 @@ def cmd_visualize(parsed: argparse.Namespace) -> int:
         inputs["view"] = "filmstrip"
         if not getattr(parsed, "resolution", None) and not getattr(parsed, "size", None):
             inputs.pop("resolution", None)
+
+    region_request = None if clip_request is not None else _region_request(parsed)
+    if clip_request is not None:
+        clip_views.capture_inputs(parsed, inputs, _bundle_canvas(parsed))
+    if region_request is not None:
+        if isinstance(region_request, str):
+            print(f"error validation_error: {region_request}", file=sys.stderr)
+            return 2
+        if not getattr(parsed, "size", None) and not getattr(parsed, "resolution", None):
+            # source resolution: capture the frame at the canvas size, so one page px = one canvas px
+            inputs["resolution"] = "x".join(map(str, _bundle_canvas(parsed)))
+    if mode != "inputs" and inputs.get("view") != "diff":
+        title = _timeline_title(parsed, timeline_slug)
+        if title:
+            inputs["title"] = title
+        if inputs.get("view") == "contact":
+            plans = _contact_shot_plans(parsed, inputs, working, labels=bool(getattr(parsed, "shot_plans", False)))
+            if plans is not None:
+                inputs["shot_plans"] = plans
 
     validation_error = None
     revision_selectors = ("before_revision_id", "after_revision_id")
@@ -1055,8 +1137,37 @@ def cmd_visualize(parsed: argparse.Namespace) -> int:
     if getattr(parsed, "shot_plans", False) and human_outputs is not None:
         plan_rows = _visualized_plan_rows(parsed, inputs, working)
         human_outputs["shot_plans"] = plan_rows
+    region_page = None
+    if human_outputs is not None and region_request is not None:
+        try:
+            region_page = _draw_region_page(human_outputs, region_request, parsed=parsed, inputs=inputs)
+            human_outputs["region_page"] = region_page
+            human_outputs["primary_page"] = region_page["page"]
+            human_outputs.setdefault("findings", [])
+            human_outputs["findings"] = [region_page["finding"], *list(human_outputs["findings"] or [])]
+        except Exception as exc:  # noqa: BLE001 - the full frame stands; say why the crop is missing
+            human_outputs["findings"] = [f"REGION not drawn: {exc}", *list(human_outputs.get("findings") or [])]
+    if human_outputs is not None and clip_request is not None and result.ok:
+        human_outputs = dict(human_outputs)
+        try:
+            drawn = clip_views.draw(human_outputs, clip_request, parsed=parsed, inputs=inputs)
+        except (clip_views.ClipError, OSError, ValueError) as exc:
+            print(f"error validation_error: {exc}", file=sys.stderr)
+            return 2
+        human_outputs["clip_page"] = drawn
+        human_outputs["primary_page"] = drawn["page"]
+        human_outputs["pages"] = [*drawn["pages"], *[p for p in human_outputs.get("pages") or []
+                                                     if p not in drawn["pages"]]]
+        human_outputs["findings"] = [*drawn["findings"], *list(human_outputs.get("findings") or [])]
+    if human_outputs is not None:
+        stable = _stable_page(human_outputs, parsed=parsed, inputs=inputs)
+        if stable:
+            human_outputs["page"] = stable
     if parsed.json or human_outputs is None or not result.ok:
         return print_result(envelope, as_json=parsed.json)
+    queued_note = _queue_note(human_outputs)
+    if queued_note:
+        print(queued_note)
     print(_visualization_summary(human_outputs, parsed=parsed, inputs=inputs))
     if plan_rows is not None:
         print("\n".join(shot_plan_lines(plan_rows)))
@@ -1066,7 +1177,262 @@ def cmd_visualize(parsed: argparse.Namespace) -> int:
         if len(exported["frames"]) > 1:
             frame_dir = Path(exported["frames"][0]).parent
             print(f"  raw frames: {len(exported['frames'])} file(s) in {frame_dir}")
+    page = human_outputs.get("page") or human_outputs.get("primary_page")
+    if page:
+        print(f"page: {page}")  # always the last line: the picture to open
     return 0
+
+
+def _region_request(parsed: argparse.Namespace) -> Any:
+    """``--region X,Y,W,H`` / ``--zoom LAYER`` with ``--at``: the box (or layer) to draw at source resolution.
+
+    None when neither is given; an error string when they are given wrongly."""
+    region, zoom = getattr(parsed, "region", None), getattr(parsed, "zoom", None)
+    if not region and not zoom:
+        return None
+    if region and zoom:
+        return "choose --region or --zoom, not both"
+    if getattr(parsed, "at", None) in (None, "") and getattr(parsed, "frame", None) is None:
+        return "--region/--zoom need --at T (one frame to crop)"
+    if region:
+        from astrid.packs.rendering.actions.timeline_visualize.fast_lane import FastLaneError, parse_region
+
+        try:
+            box = parse_region(region)
+        except FastLaneError as exc:
+            return str(exc)
+        return {"region": box, "label": f"region {region}"}
+    return {"zoom": str(zoom), "label": f"zoom {zoom}"}
+
+
+def _bundle_canvas(parsed: argparse.Namespace) -> tuple[int, int]:
+    """The timeline's canvas (the source resolution of a composed frame); 1920x1080 when unknown."""
+    bundle = getattr(parsed, "_bundle", None)
+    if not isinstance(bundle, Mapping):
+        try:
+            opened = parsed.client.timelines.open_bundle(
+                parsed.project, getattr(parsed, "timeline_slug", None) or getattr(parsed, "timeline_ref", None),
+                **({"revision_id": parsed.revision_id} if getattr(parsed, "revision_id", None) else {}))
+            bundle = opened.data.get("bundle") if getattr(opened, "ok", False) else None
+            parsed._bundle = bundle
+        except Exception:  # noqa: BLE001
+            bundle = None
+    parent = bundle.get("parent") if isinstance(bundle, Mapping) else None
+    config = parent.get("config") if isinstance(parent, Mapping) else None
+    canvas = (((config or {}).get("theme_overrides") or {}).get("visual") or {}).get("canvas") or {}
+    try:
+        return int(canvas.get("width") or 1920), int(canvas.get("height") or 1080)
+    except (TypeError, ValueError, AttributeError):
+        return 1920, 1080
+
+
+def _timeline_title(parsed: argparse.Namespace, ref: Any) -> str | None:
+    """The timeline's display name (``Rough cut C2``) for page headers; None when the Runtime does not say."""
+    resolver = getattr(getattr(parsed.client, "timelines", None), "resolve_scope", None)
+    if not callable(resolver):
+        return None
+    try:
+        scoped = resolver(parsed.project, ref)
+    except Exception:  # noqa: BLE001 - the page then shows the id
+        return None
+    data = getattr(scoped, "data", None)
+    if not getattr(scoped, "ok", False) or not isinstance(data, Mapping):
+        return None
+    name = data.get("name") or data.get("display_name") or data.get("slug")
+    return str(name) if isinstance(name, str) and name.strip() else None
+
+
+def _contact_shot_plans(parsed: argparse.Namespace, inputs: Mapping[str, Any], working: Mapping[str, Any] | None,
+                        *, labels: bool) -> dict[str, Any] | None:
+    """The overview's plan rows: where a plan has a line (silence there is flagged) and, with ``--shot-plans``,
+    each shot's ``methods · status · takes`` label drawn on its tiles."""
+    from astrid.sdk.shot_plan import plan_rows
+
+    try:
+        if working is not None:
+            from astrid.sdk.timeline_checkout import Checkout
+
+            bundle = Checkout.load(working["draft"]).bundle
+        else:
+            bundle = getattr(parsed, "_bundle", None)
+            if not isinstance(bundle, Mapping):
+                revision = inputs.get("revision_id") or getattr(parsed, "_source_revision_id", None)
+                opened = parsed.client.timelines.open_bundle(
+                    parsed.project, inputs.get("timeline_slug"), **({"revision_id": revision} if revision else {}))
+                bundle = opened.data.get("bundle") if getattr(opened, "ok", False) else None
+        if not isinstance(bundle, Mapping):
+            return None
+        rows = plan_rows(bundle)
+    except Exception:  # noqa: BLE001 - the overview stands without plans
+        return None
+    out = []
+    for row in rows:
+        plan = row.get("plan") or {}
+        line = bool(row.get("voiceover_script")) or bool(str((plan or {}).get("line") or "").strip())
+        out.append({"occurrence_id": str(row.get("occurrence_id") or ""), "start": float(row["start"]),
+                    "end": float(row["end"]), "label": tile_plan_label(plan) if labels else "", "line": line})
+    if not out:
+        return None
+    return {"labels": labels, "rows": out}
+
+
+def tile_plan_label(plan: Mapping[str, Any] | None) -> str:
+    """What fits on a tile: ``LM+R · planned · 2 takes`` (the line itself stays in the text rows)."""
+    from astrid.sdk.shot_plan import plan_problem
+
+    if not plan:
+        return "no plan"
+    if plan_problem(plan) is not None:
+        return "invalid plan"
+    parts = ["+".join(plan.get("method") or []) or "no method", str(plan.get("status") or "no status")]
+    takes = plan.get("takes") or []
+    if takes:
+        parts.append(f"{len(takes)} take{'s' if len(takes) != 1 else ''}")
+    return " · ".join(parts)
+
+
+def _frame_image(outputs: Mapping[str, Any]) -> tuple[Path, Path, dict[str, Any]]:
+    """The captured frame of an ``--at`` view: (pack dir, frame image, frame-index card)."""
+    pages = [str(p) for p in outputs.get("pages") or [] if p] or [str(outputs.get("primary_page") or "")]
+    root = Path(pages[0]).parent
+    index = json.loads((root / "frame-index.json").read_text(encoding="utf-8"))
+    cards = [c for c in index.get("cards") or [] if isinstance(c, Mapping) and c.get("image")]
+    if not cards:
+        raise ValueError("the view captured no frame to crop")
+    return root, root / str(cards[0]["image"]), dict(cards[0])
+
+
+def _draw_region_page(outputs: Mapping[str, Any], request: Mapping[str, Any], *, parsed: argparse.Namespace,
+                      inputs: Mapping[str, Any]) -> dict[str, Any]:
+    """Crop the captured frame at source resolution (the ``timelines check --zoom/--region`` crop) onto a page."""
+    from PIL import Image, ImageDraw
+
+    from astrid.packs.rendering.actions.timeline_visualize.fast_lane import _zoom_tile, zoom_region, zoom_scale
+    from astrid.packs.rendering.actions.timeline_visualize.layers.base import PALETTE, draw_text
+
+    root, frame_path, card = _frame_image(outputs)
+    snapshot = json.loads((root / "render-snapshot.json").read_text(encoding="utf-8"))
+    config = snapshot.get("config") if isinstance(snapshot.get("config"), Mapping) else {}
+    canvas_raw = (((config.get("theme_overrides") or {}).get("visual") or {}).get("canvas") or {})
+    canvas = (int(canvas_raw.get("width") or 1920), int(canvas_raw.get("height") or 1080))
+    t = float(card.get("time_seconds") or 0.0)
+    if request.get("region"):
+        box = tuple(request["region"])
+    else:
+        from fractions import Fraction
+
+        fps = float(Fraction(*snapshot.get("fps_rational") or [30, 1]))
+        box = zoom_region((snapshot,), str(request["zoom"]), t, fps, canvas)
+        if box is None:
+            raise ValueError(f"{request['zoom']} is not on screen at {t:.2f} s (try --region X,Y,W,H)")
+    x0, y0, x1, y1 = (max(0, box[0]), max(0, box[1]), min(canvas[0], box[2]), min(canvas[1], box[3]))
+    if x1 <= x0 or y1 <= y0:
+        raise ValueError(f"the region {box} lies outside the {canvas[0]}x{canvas[1]} canvas")
+    with Image.open(frame_path) as image:
+        frame = image.convert("RGB")
+    sx, sy = frame.size[0] / canvas[0], frame.size[1] / canvas[1]
+    crop_box = (round(x0 * sx), round(y0 * sy), round(x1 * sx), round(y1 * sy))
+    source_px = "source resolution" if abs(sx - 1) < 1e-6 else f"frame captured at {frame.size[0]}x{frame.size[1]}"
+    crop_path = root / f"region-{t:.2f}-{x0}-{y0}-{x1 - x0}x{y1 - y0}.png"
+    frame.crop(crop_box).save(crop_path)
+    scale = zoom_scale((x1 - x0, y1 - y0), width=1880, height=1040)
+    tile = _zoom_tile(crop_path, scale)
+    title = str(inputs.get("title") or inputs.get("timeline_slug") or "timeline")
+    what = request.get("label") or "region"
+    head = f"{title} · {t:.2f} s · {what}"
+    sub = (f"canvas px {x0},{y0} to {x1},{y1} ({x1 - x0}x{y1 - y0}) · {source_px} · "
+           + ("shown 1:1" if scale == 1 else f"shown at {scale:g}x"))
+    thumb_w = 384
+    thumb = frame.resize((thumb_w, round(thumb_w * frame.size[1] / frame.size[0])), Image.LANCZOS)
+    tdraw = ImageDraw.Draw(thumb)
+    k = thumb_w / frame.size[0]
+    tdraw.rectangle((crop_box[0] * k, crop_box[1] * k, crop_box[2] * k, crop_box[3] * k), outline="#facc15", width=2)
+    width = max(tile.size[0] + 20, thumb_w + 20, 900)
+    height = 16 + 28 + 22 + 10 + max(tile.size[1], 0) + 14 + thumb.size[1] + 30
+    page = Image.new("RGB", (width, height), PALETTE["bg"])
+    draw = ImageDraw.Draw(page)
+    draw_text(draw, (10, 10), head, 22, "white")
+    draw_text(draw, (10, 42), sub, 15, PALETTE["muted"])
+    page.paste(tile, (10, 70))
+    y = 70 + tile.size[1] + 14
+    draw_text(draw, (10, y), "where it is in the frame:", 14, PALETTE["muted"])
+    page.paste(thumb, (10, y + 20))
+    out = root / f"view-region-{t:.2f}-{x0}-{y0}-{x1 - x0}x{y1 - y0}.png"
+    page.save(out)
+    finding = f"REGION {t:.2f}s {what}: canvas {x0},{y0}–{x1},{y1} ({x1 - x0}x{y1 - y0} px) at {source_px}"
+    return {"page": str(out), "crop": str(crop_path), "box": [x0, y0, x1, y1], "finding": finding}
+
+
+def _slug(text: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", str(text).lower()).strip("-")
+    return slug[:60] or "timeline"
+
+
+def _stable_name(inputs: Mapping[str, Any], outputs: Mapping[str, Any]) -> str:
+    """``overview``, ``cut-08``, ``frame-14.00s``, ``frame-14.00s-region-700-300-600x300``, ``scan-8.00-20.00s``."""
+    view = str(inputs.get("view") or "filmstrip")
+    preset = str(inputs.get("preset") or "")
+    window = outputs.get("window") if isinstance(outputs.get("window"), Mapping) else {}
+    if view == "contact":
+        name = "overview" + (f"-cuts-{str(inputs['cuts']).replace(',', '-')}" if inputs.get("cuts") else "")
+    elif view == "motion" and preset == "cut":
+        cut = str(inputs.get("cut") or "")
+        name = f"cut-{int(cut):02d}" if cut.isdigit() else f"cut-{_slug(cut)}"
+    elif view == "motion" and preset == "frame":
+        at = window.get("start", inputs.get("at"))
+        try:
+            name = f"frame-{float(at):.2f}s"
+        except (TypeError, ValueError):
+            name = f"frame-{_slug(str(at))}"
+    elif view == "motion":
+        name = f"{preset or 'window'}-{float(window.get('start', 0)):.2f}-{float(window.get('end', 0)):.2f}s"
+    else:
+        name = view
+    if view == "motion" and inputs.get("layers"):
+        name += "-" + "-".join(_slug(str(layer)) for layer in inputs["layers"])[:40]
+    clip = outputs.get("clip_page")
+    if isinstance(clip, Mapping) and clip.get("suffix"):
+        page = Path(str(clip.get("page") or ""))
+        kind = page.stem.split("-")[2] if page.stem.startswith("view-clip-") else "clip"
+        return f"{kind}-{clip['suffix']}"
+    region = outputs.get("region_page")
+    if isinstance(region, Mapping) and region.get("box"):
+        x0, y0, x1, y1 = region["box"]
+        name += f"-region-{x0}-{y0}-{x1 - x0}x{y1 - y0}"
+    return name
+
+
+def _stable_page(outputs: Mapping[str, Any], *, parsed: argparse.Namespace, inputs: Mapping[str, Any]) -> str | None:
+    """Copy the page to ``<visualize cache>/<project>/pages/<timeline>/<view>.png``: a path a person can find
+    again (named by timeline, view and time), next to the hash folder that stays the cache."""
+    import shutil
+
+    primary = outputs.get("primary_page") or next(iter(outputs.get("pages") or []), None)
+    if not primary or not Path(str(primary)).is_file():
+        return None
+    try:
+        root = Path(str(primary)).parent.parent  # <base>/<project>/<digest>/page.png
+        timeline = _slug(str(inputs.get("title") or inputs.get("timeline_slug") or "timeline"))
+        if getattr(parsed, "_revision_explicit", False) and inputs.get("revision_id"):
+            timeline += f"@{_short_rev(inputs['revision_id'])}"
+        if getattr(parsed, "draft", None):
+            timeline += f"@draft-{_slug(parsed.draft)}"
+        target = root / "pages" / timeline / (_stable_name(inputs, outputs) + Path(str(primary)).suffix)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(str(primary), target)
+        return str(target)
+    except OSError:
+        return None
+
+
+def _queue_note(outputs: Mapping[str, Any]) -> str | None:
+    """Say plainly when the view waited behind other Runtime work (and that nothing is lost by waiting)."""
+    timing = outputs.get("timing") if isinstance(outputs.get("timing"), Mapping) else {}
+    queued = timing.get("queued_s")
+    if isinstance(queued, (int, float)) and queued >= 15:
+        return (f"waited {queued:.0f} s for the Runtime: another task (a render, a capture) held the frame "
+                "capture first")
+    return None
 
 
 def _visualized_plan_rows(parsed: argparse.Namespace, inputs: Mapping[str, Any],

@@ -3549,6 +3549,9 @@
             "--after-revision-id": {
               "required": false
             },
+            "--against": {
+              "required": false
+            },
             "--asset": {
               "required": false
             },
@@ -3571,6 +3574,9 @@
               "choices": [
                 "published"
               ],
+              "required": false
+            },
+            "--compare-media": {
               "required": false
             },
             "--context": {
@@ -3636,6 +3642,9 @@
             "--list-layers": {
               "required": false
             },
+            "--mask": {
+              "required": false
+            },
             "--mode": {
               "choices": [
                 "auto",
@@ -3690,6 +3699,9 @@
               "required": false
             },
             "--range": {
+              "required": false
+            },
+            "--region": {
               "required": false
             },
             "--render-every": {
@@ -3748,6 +3760,9 @@
               "required": false
             },
             "--window": {
+              "required": false
+            },
+            "--zoom": {
               "required": false
             }
           },
