@@ -224,6 +224,16 @@ def test_existing_overrun_does_not_block_an_unrelated_edit_and_is_reported():
     assert "length" not in " ".join(report.blocking)
 
 
+def test_existing_overrun_survives_a_ripple_edit():
+    """Moving the shot (an earlier shot trimmed, inserted or removed) moves both ends of the overrun in film time."""
+    head = overrunning_head()
+    edited = copy.deepcopy(head)
+    edited["placements"][0]["placement"]["start_ms"] = 1000
+    report = check(edited)
+    assert length_blocking(report) == []
+    assert any(line.startswith(PREEXISTING + "length") for line in report.problems)
+
+
 @pytest.mark.parametrize("touch", ["longer", "new-overrun"])
 def test_introduced_or_touched_overrun_still_blocks(touch):
     head = overrunning_head()

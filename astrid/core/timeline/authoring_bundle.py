@@ -710,6 +710,7 @@ def _assert_internal_edit_supported(
     base: Mapping[str, Any], candidate: Mapping[str, Any], *, path: str,
     source_assets: Mapping[str, Mapping[str, Any]] | None = None,
     preserve_legacy_missing: bool = False,
+    copied_clips: Mapping[str, Any] | None = None,
 ) -> set[str]:
     """Admit authored timeline edits while validating media selectors.
 
@@ -745,7 +746,12 @@ def _assert_internal_edit_supported(
             continue  # Text/effect/placeholder clips may intentionally have no media.
         base_clip = base_by_id.get(clip_id)
         changed_media_id: str | None
-        if base_clip is None:
+        if base_clip is None and copied_clips is not None and copied_clips.get(clip_id) == candidate_clip \
+                and _missing_registry_asset(candidate_clip, candidate_for_media):
+            # Copied as it is from an authenticated source closure that already named a missing asset:
+            # not a new declaration, so not judged as one.
+            changed_media_id = None
+        elif base_clip is None:
             changed_media_id = _clip_selected_media(
                 candidate_clip, candidate_for_media, f"{path}.clips[{index}]"
             )
@@ -1134,6 +1140,7 @@ def compile_authoring_candidate(candidate: Mapping[str, Any]) -> CandidateCompil
             path=f"shots[{authoring_shot_id}].internal_timeline",
             source_assets=source_assets,
             preserve_legacy_missing=preserve_legacy_missing,
+            copied_clips=(source_mapping.get("_copy_source_clips") or {}).get(authoring_shot_id),
         )
         base_shot_media = _shot_media_set(base_shot, f"shots[{authoring_shot_id}].base_payload")
         base_internal_media = _internal_media_set(

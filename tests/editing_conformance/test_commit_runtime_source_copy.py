@@ -596,3 +596,25 @@ def test_duplicate_copies_a_head_that_already_fails_newer_rules(saved_source):
     assert [row['id'] for row in copied['internal_timeline_revisions'][0]['payload']['clips']] == ['ok', 'over', 'ghost']
     assert result['new_head']
     assert any('already had problems' in note for note in result['notes'])
+
+
+def test_a_duplicate_of_a_valid_source_passes_the_full_validator_with_the_copy_flag_off(saved_source):
+    """The copy transform is skipped by ``authenticated_copy``; this pins that its output stays fully valid."""
+    from astrid.sdk.timeline.commit import bundle_from_document
+    from astrid.sdk.timeline.validation import validate_final_candidate
+    from astrid.sdk.timeline_duplicate import duplicate_timeline
+    from tests.sdk.test_timeline_restructure import flat_film
+
+    source = flat_film()
+    source['parent']['clips'] = []
+    source['parent']['registry'] = {}
+    internal = source['shots']['film']['internal_timeline']
+    internal['registry'] = {'assets': {'picture': {'type': 'image', 'media_id': 'picture'}}}
+    internal['clips'] = [{'id': 'picture-clip', 'clipType': 'image', 'track': 'plate', 'asset': 'picture',
+                          'at': 0, 'hold': 2}]
+    client, project, document, bodies = saved_source(source)
+    duplicate_timeline(project, 't', slug='copy', client=client)
+    copied = bundle_from_document(document('copy'))
+    empty = copy.deepcopy(copied)
+    empty['placements'], empty['shots'] = [], {}
+    validate_final_candidate(copied, baseline=empty)
