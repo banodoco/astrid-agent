@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import platform as _stdlib_platform
 import re
 import shutil
 import stat
@@ -444,7 +443,7 @@ def _check_lifecycle_pin(manifest: dict, agent: Path) -> None:
 
 
 def _npm_rules_allow(rules, value: str) -> bool:
-    """npm's os/cpu rule: a list of names, or negations written with a leading '!'."""
+    """npm's os/cpu/libc rule: a list of names, or negations written with a leading '!'."""
     if not rules:
         return True
     blocked = {rule[1:] for rule in rules if rule.startswith("!")}
@@ -452,32 +451,118 @@ def _npm_rules_allow(rules, value: str) -> bool:
     return value not in blocked and (not allowed or value in allowed)
 
 
-def _remotion_tree_gaps(remotion: Path) -> list[str]:
-    """Lock packages for this platform whose package.json is missing on disk.
+def _npm_target() -> tuple[str, str, str | None] | None:
+    """This host as npm's (os, cpu, libc), from the installer's own platform map.
 
-    npm ci can exit 0 and leave package folders empty, and it tolerates failed
-    optional packages silently, so the lock itself is the only reference. Only
-    required packages and platform binaries (optional with an os or cpu rule
-    that matches) count; an unconstrained optional package may be skipped by npm.
-    The check is one stat per package. An unreadable lock counts as a gap.
+    None when the host is not a platform the installer supports; the check then
+    makes no claim rather than failing an install that cannot have reached it.
+    """
+    try:
+        system, _, cpu = platform_target().partition("-")
+    except ValueError:
+        return None
+    os_name = {"macos": "darwin", "linux": "linux", "windows": "win32"}[system]
+    libc = None
+    if os_name == "linux":
+        musl = any(True for root in ("/lib", "/usr/lib") for _ in Path(root).glob("ld-musl-*"))
+        libc = "musl" if musl else "glibc"
+    return os_name, cpu, libc
+
+
+def _declared_entry(data: dict) -> str | None:
+    """The file Node loads for the package's root import, when the manifest declares one."""
+    exports = data.get("exports")
+    if isinstance(exports, dict) and "." in exports:
+        exports = exports["."]
+    if isinstance(exports, dict):
+        exports = next((exports[key] for key in ("import", "require", "default")
+                        if isinstance(exports.get(key), str)), None)
+    if isinstance(exports, str):
+        return exports
+    main = data.get("main")
+    return main if isinstance(main, str) else None
+
+
+def _package_complete(folder: Path, meta: dict) -> bool:
+    """The installed package is the one the lock names and its declared entry exists."""
+    try:
+        data = json.loads((folder / "package.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    if isinstance(meta.get("version"), str) and data.get("version") != meta["version"]:
+        return False
+    entry = _declared_entry(data)
+    if not entry or "*" in entry or folder.name.startswith("@types/") or folder.parent.name == "@types":
+        # No declared root file, a pattern npm resolves itself, or declarations only:
+        # @types packages name a runtime file that their tarball never ships.
+        return True
+    target = folder / entry
+    return any(candidate.is_file() for candidate in (target, target.with_name(target.name + ".js"),
+                                                    target / "index.js"))
+
+
+def _patch_gaps(remotion: Path) -> list[str]:
+    """Reviewed postinstall patches whose postimage is not on disk (the postinstall never ran)."""
+    gaps = []
+    for manifest_path in sorted((remotion / "patches").glob("*.json")):
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            package = manifest["package"]
+            folder = remotion / "node_modules" / package
+            metadata = json.loads((folder / "package.json").read_text(encoding="utf-8"))
+            if metadata.get("version") != manifest["version"]:
+                gaps.append(f"{package} (patch target)")
+                continue
+            for entry in manifest["files"]:
+                target = folder / entry["path"]
+                if not target.is_file() or hashlib.sha256(target.read_bytes()).hexdigest() != entry["after_sha256"]:
+                    gaps.append(f"{package}/{entry['path']} (postinstall patch)")
+        except (OSError, ValueError, KeyError, TypeError):
+            gaps.append(f"{manifest_path.name} (patch manifest)")
+    return gaps
+
+
+def _remotion_tree_gaps(remotion: Path, target: tuple[str, str, str | None] | None = None) -> list[str]:
+    """What the lock promises for this platform but the tree does not hold, by package name.
+
+    npm ci can exit 0 and leave package folders empty, tolerates failed optional
+    packages silently, and does not run postinstall or link binaries when it
+    fails part-way. The lock is the reference: every package that applies to
+    this platform (os, cpu, libc) must be installed at its locked version with
+    its declared entry file; links, workspace entries and other platforms are
+    skipped; unconstrained optional packages are skipped because npm may drop
+    them. The reviewed postinstall patches and the .bin links are checked too.
+    An unreadable lock counts as a gap.
     """
     try:
         packages = json.loads((remotion / "package-lock.json").read_text(encoding="utf-8")).get("packages", {})
     except (OSError, ValueError, AttributeError):
         return ["package-lock.json"]
-    machine = _stdlib_platform.machine().lower()
-    cpu = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64", "arm64": "arm64"}.get(machine, machine)
+    host = target if target is not None else _npm_target()
+    if host is None:
+        return []
+    os_name, cpu, libc = host
+    modules = remotion / "node_modules"
     gaps = []
+    needs_bin = False
     for key, meta in packages.items():
         if not key.startswith("node_modules/") or not isinstance(meta, dict) or meta.get("link"):
             continue
-        if meta.get("optional") and not (meta.get("os") or meta.get("cpu")):
-            continue  # npm may skip an optional package nothing on this platform needs
-        if not (_npm_rules_allow(meta.get("os"), sys.platform)
-                and _npm_rules_allow(meta.get("cpu"), cpu)):
+        if meta.get("optional") and not (meta.get("os") or meta.get("cpu") or meta.get("libc")):
+            continue
+        if not (_npm_rules_allow(meta.get("os"), os_name)
+                and _npm_rules_allow(meta.get("cpu"), cpu)
+                and (os_name != "linux" or libc is None or _npm_rules_allow(meta.get("libc"), libc))):
             continue  # npm never installs a package for another platform
-        if not (remotion / key / "package.json").is_file():
-            gaps.append(key.split("node_modules/")[-1])
+        name = key[len("node_modules/"):]
+        if not _package_complete(remotion / key, meta):
+            gaps.append(name)
+        needs_bin = needs_bin or bool(meta.get("bin"))
+    if needs_bin and not (modules / ".bin").is_dir():
+        gaps.append(".bin links")
+    gaps.extend(_patch_gaps(remotion))
     return gaps
 
 
@@ -545,6 +630,8 @@ class Backend:
         lock_hash = hashlib.sha256((remotion / "package-lock.json").read_bytes()).hexdigest()
         modules = remotion / "node_modules"
         marker = modules / ".astrid-package-lock.sha256"
+        # Each run states its own renderer result; a rolled-back run never leaves one behind.
+        self._record_renderer(True)
         reusable = (modules.is_dir() and marker.is_file()
                     and marker.read_text(encoding="ascii").strip() == lock_hash)
         if not (reusable and not _remotion_tree_gaps(remotion)):
@@ -559,12 +646,12 @@ class Backend:
                          cwd=remotion, extra_env=env)
             except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
                 self.say(f"Rendering unavailable: Remotion npm ci failed ({self._command_failure(exc)}). Details are in the installer log at {self.log}; retry the install.")
-                self.outcomes = {**(getattr(self, "outcomes", None) or {}), "renderer": {"ok": False}}
+                self._record_renderer(False, "tree")
                 return False
             gaps = _remotion_tree_gaps(remotion)
             if gaps:
-                self.say(f"Rendering unavailable: npm ci finished but {len(gaps)} renderer package(s) are missing, first {', '.join(gaps[:3])}. Details are in the installer log at {self.log}; retry the install.")
-                self.outcomes = {**(getattr(self, "outcomes", None) or {}), "renderer": {"ok": False}}
+                self.say(f"Rendering unavailable: npm ci finished but {len(gaps)} renderer package(s) are incomplete, first {', '.join(gaps[:3])}. Details are in the installer log at {self.log}; retry the install.")
+                self._record_renderer(False, "tree")
                 return False
             marker.write_text(lock_hash + "\n", encoding="ascii")
         # Renders never download: fetch Remotion's browser now, once per Remotion
@@ -574,8 +661,13 @@ class Backend:
                      cwd=remotion, extra_env=env)
         except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
             self.say(f"Rendering unavailable: Remotion browser setup failed ({self._command_failure(exc)}). Check network access and retry the install.")
-            self.outcomes = {**(getattr(self, "outcomes", None) or {}), "renderer": {"ok": False}}
+            self._record_renderer(False, "browser")
         return True
+
+    def _record_renderer(self, ok: bool, reason: str | None = None) -> None:
+        """The renderer result for this run's receipt; the receipt reads it after the run."""
+        renderer = {"ok": ok} if ok else {"ok": False, "reason": reason or "tree"}
+        self.outcomes = {**(getattr(self, "outcomes", None) or {}), "renderer": renderer}
 
     @staticmethod
     def _command_failure(exc: Exception) -> str:

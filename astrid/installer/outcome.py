@@ -71,6 +71,10 @@ WARNINGS: dict[str, dict[str, Any]] = {
         "phrase": "frame looks and renders are unavailable",
         "next": lambda: f"Next: repair the renderer by running the install line again (it rebuilds the missing packages): {_install_line()}",
     },
+    "renderer-browser-missing": {
+        "phrase": "timelines visualize and renders are unavailable",
+        "next": lambda: f"Next: fetch Remotion's browser by running the install line again: {_install_line()}",
+    },
 }
 
 
@@ -327,7 +331,7 @@ def receipt_warnings(outcomes: dict | None) -> tuple[str, ...]:
     if isinstance(skills, dict) and not skills.get("ok"):
         warnings.append("skills-not-refreshed")
     if isinstance(renderer, dict) and not renderer.get("ok"):
-        warnings.append("renderer-incomplete")
+        warnings.append("renderer-browser-missing" if renderer.get("reason") == "browser" else "renderer-incomplete")
     return tuple(warnings)
 
 
