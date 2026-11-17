@@ -192,13 +192,17 @@ edges it measured, so pass an explicit `--box` instead. For video, five frames
 spread across the clip are sampled and the smallest bars win, so one dark frame
 (a fade or a black card) does not widen the crop. Run `--dry-run` first to read
 the box and output size. `--bar-threshold` only applies to `--remove-bars`; with
-`--box` it is ignored and the command warns.
+`--box` it is ignored and the command warns. Detection keeps JPEG ringing and
+faint film grain inside a band, but a dark textured edge is not a bar. If
+`--remove-bars` finds no bars, nothing is imported and the command says so; pass
+`--allow-no-bars` to import an uncropped copy on purpose (the dry run reports
+`bars_found: false`).
 
 `--box X,Y,W,H` uses source pixels after EXIF orientation is applied, which is
 the picture a viewer sees. Images come out as lossless PNG with the ICC profile
 kept; EXIF is not carried over. CMYK and other modes PNG cannot store are
-converted to RGB. Animated images are refused: export one still frame and crop
-that. Unreadable files fail as validation errors.
+converted to RGB. Multi-picture JPEGs (MPO) crop their first frame. Animated and multi-page
+files are refused: export one still frame and crop that. Unreadable files fail as validation errors.
 
 Video is re-encoded at the same fps; the crop is pixel-exact, including odd x
 and y offsets. Audio is copied when its codec fits in MP4 (AAC, MP3, AC-3,
