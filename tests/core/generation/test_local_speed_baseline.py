@@ -95,7 +95,7 @@ def test_one_extra_deterministic_operation_is_a_regression(metric):
 def test_latency_tolerance_is_explicit_and_speedups_are_allowed():
     reference = baseline()
     candidate = copy.deepcopy(reference)
-    candidate["callers"]["resident_sdk"]["overhead_seconds"]["median"] = 20 * 1.5 + 3
+    candidate["callers"]["resident_sdk"]["overhead_seconds"]["median"] = 20 * 1.15
     assert compare_baseline(candidate, reference) == []
     candidate["callers"]["resident_sdk"]["overhead_seconds"]["median"] += 0.001
     assert compare_baseline(candidate, reference)[0]["metric"] == "overhead_seconds.median"
@@ -122,9 +122,9 @@ def test_native_flushes_are_gated_with_the_background_allowance():
     assert reference["callers"]["resident_sdk"]["native_flush_coverage"] == "observed"
     candidate = copy.deepcopy(reference)
     maximum = candidate["callers"]["resident_sdk"]["counter_maxima"]
-    maximum["native.completed_flushes"] = 25
+    maximum["native.completed_flushes"] = 10
     assert compare_baseline(candidate, reference) == []
-    maximum["native.completed_flushes"] = 26
+    maximum["native.completed_flushes"] = 11
     assert compare_baseline(candidate, reference)[0]["metric"] == "native.completed_flushes"
 
 

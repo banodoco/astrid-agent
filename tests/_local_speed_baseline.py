@@ -12,15 +12,22 @@ import statistics
 from collections import Counter
 
 SCHEMA = "astrid.local-speed-baseline.v2"
-# Fixed before the repeated measurements. Hosted-runner scheduling and antivirus
-# vary, so latency uses an upper regression bound; a speed-up is welcome.
+# LS-2.2: fix the policy before measuring. A faster candidate is welcome; a
+# slower one does not receive an absolute allowance as the product improves.
 TOLERANCE = {
-    "median_relative": 0.50,
-    "median_seconds": 3.0,
-    "slowest_relative": 1.00,
-    "slowest_seconds": 5.0,
-    "background_relative": 0.50,
-    "background_count": 10,
+    "median_relative": 0.15,
+    "median_seconds": 0.0,
+    "slowest_relative": 0.15,
+    "slowest_seconds": 0.0,
+    "background_relative": 0.0,
+    "background_count": 0,
+}
+# The original references keep their measured bytes and acquisition policy.
+# Recognizing that provenance never selects it as the comparison policy.
+LEGACY_TOLERANCE = {
+    "median_relative": 0.50, "median_seconds": 3.0,
+    "slowest_relative": 1.00, "slowest_seconds": 5.0,
+    "background_relative": 0.50, "background_count": 10,
 }
 CALLERS = ("resident_sdk", "fresh_python_cli")
 
@@ -106,12 +113,12 @@ def make_baseline(latency, counters, *, system, sources):
 def compare_baseline(actual, reference):
     """Return every regression. Extra starts/compiles/emissions/hashes fail.
 
-    Sleep attempts, Runtime COMMIT statements and native flushes include existing
-    background activity. Their allowance is distinct from deterministic counters.
+    Every observed counter is an upper bound. Background work is reported
+    separately by the observer; it is not a reason to forgive extra work.
     """
     if reference.get("schema") != SCHEMA or actual["system"] != reference.get("system"):
         raise ValueError("baseline schema/system mismatch")
-    if reference.get("tolerance") != TOLERANCE:
+    if reference.get("tolerance") not in (TOLERANCE, LEGACY_TOLERANCE):
         raise ValueError("baseline tolerance differs from the checked policy")
     if actual["fixture"] != reference.get("fixture"):
         raise ValueError("baseline fixture mismatch")
@@ -148,17 +155,15 @@ def compare_baseline(actual, reference):
                 )
         old, new = prior["counter_maxima"], current["counter_maxima"]
         for name in sorted(set(old) | set(new)):
+            if name not in new:
+                failures.append({
+                    "caller": caller, "metric": name, "actual": None,
+                    "limit": old[name], "reference": old[name],
+                    "reason": "previously observed counter disappeared",
+                })
+                continue
             expected, value = old.get(name, 0), new.get(name, 0)
             limit = expected
-            if name in {
-                "python.sleep_attempt",
-                "runtime_commit_statements",
-                "native.completed_flushes",
-            }:
-                limit = (
-                    math.ceil(expected * (1 + TOLERANCE["background_relative"]))
-                    + TOLERANCE["background_count"]
-                )
             if value > limit:
                 failures.append(
                     {
