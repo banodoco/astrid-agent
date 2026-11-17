@@ -402,6 +402,14 @@ def _acquire_lock(handle: Any, lock: Path) -> None:
         "Wait for that process to finish (the lock frees when it exits); if it is stuck, stop it and save again.")
 
 
+def _error_text(error: Any) -> str:
+    """A Runtime failure as people read it: its message, then its code."""
+    message, code = getattr(error, "message", None), getattr(error, "code", None)
+    if isinstance(message, str) and message:
+        return f"{message} ({code})" if isinstance(code, str) and code and code not in message else message
+    return str(error)
+
+
 def draft_path(project_id: str, timeline_id: str, name: str = "main") -> Path:
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", name) or "main"
     return drafts_root() / str(project_id) / str(timeline_id) / f"{safe}.json"
@@ -420,7 +428,7 @@ def resolve_ids(project: str, timeline: str, *, client: Any = None) -> tuple[str
                   for parameter in signature(reader).parameters.values())
         shown = reader(project, timeline, **({"_raw_projection": True} if raw else {}))
         if not shown.ok or not isinstance(shown.data, Mapping):
-            raise TimelineEditError(f"could not open timeline {timeline!r} in project {project!r}: {shown.error}")
+            raise TimelineEditError(f"could not open timeline {timeline!r} in project {project!r}: {_error_text(shown.error)}")
         native = shown.data.get("native_inspection") or {}
         return str(native.get("project_id")), str(native.get("timeline_id")), str(shown.data["summary"]["head_revision_id"])
 
@@ -463,7 +471,7 @@ def fetch_bundle(project: str, timeline: str, *, revision_id: str | None = None,
         options = {"publication_id": publication_id} if publication_id is not None else {}
         opened = c.timelines.open_bundle(project, timeline, revision_id=revision_id, **options)
         if not opened.ok or not isinstance(opened.data, Mapping):
-            raise TimelineEditError(f"could not open {timeline!r} in {project!r}: {opened.error}")
+            raise TimelineEditError(f"could not open {timeline!r} in {project!r}: {_error_text(opened.error)}")
         bundle = copy.deepcopy(dict(opened.data["bundle"]))
         if revision_id is None and publication_id is None:
             # A restored revision can belong to several publications. Only
@@ -471,7 +479,7 @@ def fetch_bundle(project: str, timeline: str, *, revision_id: str | None = None,
             project_id, timeline_id = bundle["project_id"], bundle["timeline_id"]
             page = c.timelines.history(project_id, timeline_id, cursor=None, limit=1)
             if not page.ok:
-                raise TimelineEditError(f"could not pin checkout publication: {page.error}")
+                raise TimelineEditError(f"could not pin checkout publication: {_error_text(page.error)}")
             head = page.data.get("head") if isinstance(page.data, Mapping) else None
             if (not isinstance(head, Mapping)
                     or not isinstance(head.get("revision_id"), str) or not head["revision_id"]
@@ -484,7 +492,7 @@ def fetch_bundle(project: str, timeline: str, *, revision_id: str | None = None,
                 publication_id=head["publication_id"],
             )
             if not hydrated.ok or not isinstance(hydrated.data, Mapping):
-                raise TimelineEditError(f"could not hydrate checkout publication: {hydrated.error}")
+                raise TimelineEditError(f"could not hydrate checkout publication: {_error_text(hydrated.error)}")
             bundle = copy.deepcopy(dict(hydrated.data["bundle"]))
             bundle["base_parent"]["publication_id"] = head["publication_id"]
         pin = bundle.get("base_parent", {})
@@ -492,7 +500,7 @@ def fetch_bundle(project: str, timeline: str, *, revision_id: str | None = None,
             hydrated = c.timelines.open_bundle(project, timeline, revision_id=pin["revision_id"],
                                                publication_id=pin["publication_id"])
             if not hydrated.ok or not isinstance(hydrated.data, Mapping):
-                raise TimelineEditError(f"could not hydrate original checkout publication: {hydrated.error}")
+                raise TimelineEditError(f"could not hydrate original checkout publication: {_error_text(hydrated.error)}")
             bundle = copy.deepcopy(dict(hydrated.data["bundle"]))
             bundle["base_parent"]["publication_id"] = pin["publication_id"]
         return bundle
