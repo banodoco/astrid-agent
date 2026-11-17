@@ -76,11 +76,13 @@ def trace_strace(directory: Path) -> dict:
                 relations.append({"parent": tid, "child": int(fork[1]),
                                   "thread": "CLONE_THREAD" in process_text, "at_ns": at})
             flush = re.match(r"(fsync|fdatasync)\(", text)
+            descriptor = re.match(r"(?:fsync|fdatasync)\((\d+)(?:<([^>]+)>)?", text)
+            fd, path = (int(descriptor[1]), descriptor[2]) if descriptor else (None, None)
             resumed = re.match(r"<\.\.\. (fsync|fdatasync) resumed>", text)
             if flush and "<unfinished ...>" in text:
                 if pending is not None:
                     gaps.append(f"overlapping flush in thread {tid}")
-                pending = (flush[1], at)
+                pending = (flush[1], at, fd, path)
                 continue
             if not flush and not resumed:
                 continue
@@ -88,7 +90,7 @@ def trace_strace(directory: Path) -> dict:
                 if pending is None or pending[0] != resumed[1]:
                     gaps.append(f"unmatched resumed flush in thread {tid}")
                     continue
-                operation, started = pending
+                operation, started, fd, path = pending
                 pending = None
             else:
                 operation, started = flush[1], at
@@ -98,7 +100,8 @@ def trace_strace(directory: Path) -> dict:
                 continue
             records.append({"tid": tid, "start_ns": started,
                             "end_ns": started + seconds_ns(completed[2]),
-                            "operation": operation, "success": int(completed[1]) == 0})
+                            "operation": operation, "success": int(completed[1]) == 0,
+                            "fd": fd, "path": path})
         if pending_process is not None:
             gaps.append(f"unfinished process start in thread {tid}")
         if pending is not None:
@@ -292,4 +295,50 @@ def count_interval(trace: dict, interval: dict) -> dict:
             "observed_failed_flushes": len(events) - len(successful),
             "by_operation": dict(Counter(row["operation"] for row in successful)),
             "by_process": dict(Counter(str(row["pid"]) for row in successful)),
+            "events": events,
             "coverage_gaps": list(trace["gaps"])}
+
+
+def attribute_writes(native: dict, observation: dict) -> dict:
+    """Attach native facts to observed calls; an unexplained sync stays unknown.
+
+    WAL-file syncs within commit() are not assumed to be exactly one commit
+    sync: SQLite can also checkpoint/reuse WAL there. Preserve both quantities.
+    """
+    database = observation["sqlite"]["database"]
+    spans = observation["write_spans"]
+    counts = Counter({name: 0 for name in (
+        "sqlite_wal_during_commit", "sqlite_wal_outside_commit", "sqlite_checkpoint_database",
+        "runtime_publication", "vibecomfy_evidence", "caller_delivery", "runtime_background",
+        "runtime_other", "other_application", "platform_write_through",
+    )})
+    unknown, attributed = [], []
+    for event in native.get("events", []):
+        if not event["success"]:
+            unknown.append({**event, "reason": "failed native write"})
+            continue
+        matches = [span for span in spans if span["pid"] == event["pid"]
+                   and span["tid"] == event["tid"]
+                   # strace -ttt timestamps are rounded to microseconds.
+                   and span["epoch_start_ns"] - 1000 <= event["start_ns"]
+                   and event["end_ns"] <= span["epoch_end_ns"] + 1000]
+        app = [span for span in matches if span["kind"] == "application_sync" and span["success"]]
+        if len(app) == 1:
+            category = app[0]["origin"]
+            route = app[0].get("route")
+        elif event.get("path") == database + "-wal":
+            commits = [span for span in matches if span["kind"] == "runtime_outer_commit_success"]
+            category = "sqlite_wal_during_commit" if commits else "sqlite_wal_outside_commit"
+            route = commits[0].get("route") if len(commits) == 1 else None
+        elif event.get("path") == database:
+            category, route = "sqlite_checkpoint_database", None
+        else:
+            unknown.append({**event, "reason": "native write has no observed attribution"})
+            continue
+        counts[category] += 1
+        attributed.append({**event, "category": category, "route": route})
+    complete = (native.get("native_flushes") is not None and not native.get("coverage_gaps")
+                and not unknown and sum(counts.values()) == native["native_flushes"])
+    return {"status": "PASS" if complete else "NO-RESULT", "counts": dict(sorted(counts.items())),
+            "unattributed": unknown, "events": attributed,
+            "wal_scope": "WAL-file syncs are distinct from successful outer commits; checkpoint and WAL reuse within commit are not inferred away"}

@@ -21,6 +21,7 @@ from PIL import Image
 
 from astrid.core.generation.delivery import deliver_generation
 from tests._local_speed_capture import ProcessReportCapture
+from tests._local_speed_runtime import RuntimeObserver
 from tests._local_speed_process import (
     MAX_REPORT_BYTES,
     PREFIX,
@@ -56,6 +57,8 @@ class AttachedMeter:
         self.observer = None
         self.hashes_before = None
         self.parent_report = None
+        self.runtime = None
+        self.sqlite_before = self.sqlite_after = None
 
     def request(self, method, path, start, end):
         with self.lock:
@@ -71,6 +74,7 @@ class AttachedMeter:
 
     def begin(self):
         if self.observer is not None:
+            self.sqlite_before = self.runtime.sqlite_mode()
             self.hashes_before = self.observer.snapshot()
         self.wall_start_ns = time.time_ns()
         self.start_ns = time.monotonic_ns()
@@ -82,8 +86,7 @@ class AttachedMeter:
         self.reply = self.reply_ns / 1e9
         if self.observer is not None:
             self.parent_report = self.observer.snapshot(self.start_ns, self.reply_ns)
-            self.parent_report["output_hash_streams"] -= self.hashes_before["output_hash_streams"]
-            self.parent_report["output_hash_bytes"] -= self.hashes_before["output_hash_bytes"]
+            self.sqlite_after = self.runtime.sqlite_mode()
 
     def call(self, facade, controls, workflow, destination):
         self.begin()
@@ -114,6 +117,9 @@ class AttachedMeter:
         ]
         return {
             "schema": "astrid.local-speed-observation.v1",
+            "gate_version": 3,
+            "harness_settings": {"host_poll_seconds": "product_default", "machine_poll_seconds": "product_default",
+                                 "sdk_poll_seconds": "product_default"},
             "caller": "resident_sdk",
             "caller_seconds": self.reply - self.start,
             "instrumented": self.observer is not None,
@@ -137,7 +143,7 @@ class AttachedMeter:
             if self.observer is not None
             else None,
             "coverage": {
-                "http": "stand-in socket only; Runtime and other HTTP paths unobserved",
+                "http": "stand-in socket and exact Runtime dispatch, method and normalized path",
                 "process_starts": "see process_observations in counter runs; no monkeypatches in latency runs",
                 "sleeps_and_polls": "Python counters only in observation runs; native trace remains separate",
                 "compiles_and_emissions": None,
@@ -195,6 +201,7 @@ def test_attached_caller_observation(
 
         if instrumented:
             daemon.service.store.conn.set_trace_callback(trace)
+            meter.runtime = RuntimeObserver(daemon, meter.observer).install()
 
     def call(facade, controls, tmp):
         if caller == "resident_sdk":
@@ -255,6 +262,7 @@ def test_attached_caller_observation(
         request_observer=meter.request,
         timeline_observer=meter.comfy_timeline,
         runtime_observer=observe_runtime,
+        product_defaults=True,
     ) as (client, project_id, provider, result):
         if caller == "resident_sdk":
             assert result.ok, json.dumps(result.to_dict(), default=str)[:4000]
@@ -314,8 +322,9 @@ def test_attached_caller_observation(
             children = [
                 row
                 for row in children
-                if row.get("start_ns", -1) >= meter.start_ns
-                and row.get("start_ns", 2**64) <= meter.reply_ns
+                if (meter.start_ns <= row.get("start_ns", -1) <= meter.reply_ns)
+                or row.get("interval") == {"monotonic_start_ns": meter.start_ns,
+                                            "monotonic_reply_ns": meter.reply_ns}
             ]
             rows = [meter.parent_report, *children]
             starts = [
@@ -333,18 +342,27 @@ def test_attached_caller_observation(
                     "missing process reports: " + ",".join(map(str, sorted(expected - observed)))
                 )
             for row in children:
-                if row.get("end_ns", 2**64) > meter.reply_ns:
+                if row.get("end_ns", 2**64) > meter.reply_ns and row.get("interval") != {
+                    "monotonic_start_ns": meter.start_ns, "monotonic_reply_ns": meter.reply_ns,
+                }:
                     gaps.append("child observation extends past reply")
             for row in rows:
                 gaps.extend(row.get("coverage_gaps", []))
             report["process_observations"] = rows
-            report["process_start_counts"] = dict(Counter(item["child_role"] for item in starts))
+            start_counts = Counter(item["child_role"] for item in starts)
+            report["process_start_counts"] = {role: start_counts[role]
+                for role in {"pack_worker", "cli", "host", "runtime", "external"}}
             report["runtime_process_model"] = (
                 "Runtime and host are test-process threads, not hidden child processes"
             )
             report["python_counts"] = dict(
                 sum((Counter(row.get("counts", {})) for row in rows), Counter())
             )
+            report["wait_coverage"] = sorted(set.intersection(*(set(row.get("wait_coverage", [])) for row in rows)))
+            report["runtime_http_paths"] = meter.runtime.report(meter.start_ns, meter.reply_ns)
+            report["sqlite"] = {"before": meter.sqlite_before, "after": meter.sqlite_after,
+                                "database": meter.runtime.database}
+            report["write_spans"] = [dict(span, pid=row["pid"]) for row in rows for span in row.get("write_spans", [])]
             report["output_hash_streams"] = sum(row.get("output_hash_streams", 0) for row in rows)
             report["output_hash_bytes"] = sum(row.get("output_hash_bytes", 0) for row in rows)
             report["native_flushes"] = None

@@ -9,6 +9,12 @@ on:
       - "runtime.lock.json"
       - "tests/conftest.py"
       - "tests/integrations/runpod_slot_pod.py"
+      - "tests/integrations/**"
+      - "tests/helpers/**"
+      - "tests/lanes.py"
+      - "tests/runpod_guard.py"
+      - "tests/process_groups.py"
+      - "pyproject.toml"
       - "tests/_local_speed_*.py"
       - "tests/local_speed_*.py"
       - "tests/local_speed_native.wprp"
@@ -25,7 +31,8 @@ jobs:
   calibrate:
     name: Standing attached meter (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 70
+    # Two complete products on the same runner; per-test/measurement limits stay.
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -46,6 +53,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
@@ -67,7 +75,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ runner.os == 'Windows' && '3.11.9' || '3.11.18' }}
       - name: Verify exact dependency source bytes
         shell: python
         run: |
@@ -90,9 +98,9 @@ jobs:
       - name: Install unchanged CPU test dependencies
         shell: bash
         run: |
-          python -m pip install -e '.[dev]'
+          python -m pip install -c tests/fixtures/local-speed-baselines/dev-constraints.txt -e '.[dev]'
           python -m pip install --no-deps -e ./runtime -e ./runtime/packages/python -e ./runpod-lifecycle-checkout
-          python -m pip install -e ./vibecomfy-checkout
+          python -m pip install -c tests/fixtures/local-speed-baselines/dev-constraints.txt -e ./vibecomfy-checkout
       - name: Install Linux syscall observer
         if: ${{ runner.os == 'Linux' }}
         run: sudo apt-get update && sudo apt-get install -y strace
@@ -107,12 +115,18 @@ jobs:
           tests/core/generation/test_local_speed_report_capture.py
           tests/core/generation/test_local_speed_runtime_support.py
           tests/core/generation/test_local_speed_schema_encoding.py
+          tests/core/generation/test_local_speed_gate.py
+          tests/core/generation/test_local_speed_waits.py
+          tests/core/generation/test_local_speed_write_attribution.py
+          tests/core/generation/test_local_speed_resident_observer.py
           --junitxml=native-reader.xml
       - name: Prove private Runtime directory creation and unsafe-directory refusal
         run: >-
           python -m pytest -q -rA -m integration
           tests/core/generation/test_local_speed_runtime_support.py
           --junitxml=runtime-support.xml
+      - name: Reproduce old gate blind spots against the new gate
+        run: python -m tests.local_speed_gate_probes --output local-speed-gate-probes.json
       - name: Calibrate actual filesystem and SQLite writes
         run: python -m tests.local_speed_native_run --output plan55-native-proof
       # Owner D12 (dev #765) approves this exact retry after the fixture correction.
@@ -121,19 +135,16 @@ jobs:
       # strict capture remains available with --native all and keeps failures.
       # The standing meter records Python force requests and COMMIT statements
       # separately; neither is represented as an OS flush count.
-      - name: Run repeated SDK and CLI baseline separately from counters
+      - name: Compare exact base and candidate on the same runner
+        env:
+          METER_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         shell: python
         run: |
-          import pathlib, platform, subprocess, sys
+          import os, subprocess, sys
           command = [
-              sys.executable, "-m", "tests.local_speed_meter_run",
-              "--output", "plan55-meter-proof", "--timeout", "1800",
-              "--samples", "5", "--counter-samples", "2",
+              sys.executable, "-m", "tests.local_speed_paired_run",
+              "--output", "plan55-meter-proof", "--base", os.environ["METER_BASE_SHA"],
           ]
-          reference = pathlib.Path("tests/fixtures/local-speed-baselines") / (platform.system().lower() + ".json")
-          if not reference.is_file():
-              raise SystemExit("Missing standing reference: " + str(reference))
-          command += ["--baseline", str(reference)]
           subprocess.run(command, check=True)
       - name: Preserve exact source identity and proof manifests
         if: ${{ always() }}
@@ -159,5 +170,6 @@ jobs:
             plan55-meter-proof
             native-reader.xml
             runtime-support.xml
+            local-speed-gate-probes.json
           include-hidden-files: true
           retention-days: 14

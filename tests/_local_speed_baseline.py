@@ -68,6 +68,31 @@ def counter_values(row):
     values["runtime_commit_statements"] = row["runtime_main_connection_commit_statements"]
     if row.get("native_flushes") is not None:
         values["native.completed_flushes"] = row["native_flushes"]
+    if row.get("gate_version") == 3:
+        required_waits = {"event_wait", "condition_wait", "asyncio_sleep", "selector_wait"}
+        if set(row.get("wait_coverage", [])) != required_waits:
+            raise ValueError("wait counter coverage is incomplete")
+        for name in sorted(required_waits):
+            values["python." + name + "_attempt"] = counts.get(name + "_attempt", 0)
+        for name in ("runtime_outer_commit_attempt", "runtime_outer_commit_success", "platform_write_through_success"):
+            values["python." + name] = counts.get(name, 0)
+        if counts.get("runtime_outer_commit_error", 0) or counts.get("platform_write_through_error", 0):
+            raise ValueError("a commit or platform forced write failed")
+        values.update({"runtime_http." + path: count for path, count in row["runtime_http_paths"].items()})
+        for span in row["write_spans"]:
+            if span["kind"] == "application_sync":
+                if not span["success"]:
+                    raise ValueError("an attributed application write failed")
+                key = "application_write." + span["origin"]
+                values[key] = values.get(key, 0) + 1
+        modes = row["sqlite"]
+        if modes["before"] != modes["after"]:
+            raise ValueError("effective SQLite mode changed during the job")
+        if row.get("native_flushes") is not None:
+            attribution = row.get("native_attribution", {})
+            if attribution.get("status") != "PASS":
+                raise ValueError("native forced-write attribution is incomplete")
+            values.update({"native." + name: value for name, value in attribution["counts"].items()})
     if any(type(v) is not int or v < 0 for v in values.values()):
         raise ValueError("counter values must be observed nonnegative integers")
     return dict(sorted(values.items()))
@@ -84,6 +109,13 @@ def make_baseline(latency, counters, *, system, sources):
         "native_windows_flushes": "unqualified; LS-13 owns the native trace",
         "budget_certified": False,
     }
+    if any(row.get("gate_version") == 3 for row in latency + counters):
+        if any(row.get("gate_version") != 3 for row in latency + counters):
+            raise ValueError("mixed meter versions cannot produce a reference")
+        settings = {tuple(sorted(row["harness_settings"].items())) for row in latency + counters}
+        if len(settings) != 1:
+            raise ValueError("harness settings differ between samples")
+        baseline["measurement"] = {"gate_version": 3, "harness_settings": dict(settings.pop())}
     for caller in CALLERS:
         timings = [row for row in latency if row["caller"] == caller]
         counter_rows = [row for row in counters if row["caller"] == caller]
@@ -107,10 +139,15 @@ def make_baseline(latency, counters, *, system, sources):
                 key: max(row.get(key, 0) for row in observed) for key in sorted(names)
             },
         }
+        if "measurement" in baseline:
+            modes = [row["sqlite"]["before"] for row in counter_rows]
+            if any(mode != modes[0] for mode in modes):
+                raise ValueError("effective SQLite modes differ between counter samples")
+            baseline["callers"][caller]["sqlite_mode"] = modes[0]
     return baseline
 
 
-def compare_baseline(actual, reference):
+def compare_baseline(actual, reference, *, coverage_reference=None):
     """Return every regression. Extra starts/compiles/emissions/hashes fail.
 
     Every observed counter is an upper bound. Background work is reported
@@ -122,6 +159,8 @@ def compare_baseline(actual, reference):
         raise ValueError("baseline tolerance differs from the checked policy")
     if actual["fixture"] != reference.get("fixture"):
         raise ValueError("baseline fixture mismatch")
+    if "measurement" in reference and actual.get("measurement") != reference["measurement"]:
+        raise ValueError("baseline measurement coverage/settings mismatch")
     if set(reference.get("callers", {})) != set(CALLERS):
         raise ValueError("baseline must name both callers")
     for dependency in ("runtime", "vibecomfy", "lifecycle"):
@@ -136,6 +175,8 @@ def compare_baseline(actual, reference):
             raise ValueError("fewer counter samples than the recorded baseline")
         if current["native_flush_coverage"] != prior["native_flush_coverage"]:
             raise ValueError("baseline native coverage mismatch")
+        if "sqlite_mode" in prior and current.get("sqlite_mode") != prior["sqlite_mode"]:
+            raise ValueError("baseline effective SQLite mode mismatch")
         for statistic in ("median", "slowest"):
             expected = prior["overhead_seconds"][statistic]
             limit = (
@@ -163,6 +204,10 @@ def compare_baseline(actual, reference):
                 })
                 continue
             expected, value = old.get(name, 0), new.get(name, 0)
+            if name not in old and coverage_reference is not None:
+                expected = coverage_reference["callers"][caller]["counter_maxima"].get(name, 0)
+            if type(value) is not int or value < 0:
+                raise ValueError("candidate counter is not an observed nonnegative integer")
             limit = expected
             if value > limit:
                 failures.append(
@@ -175,3 +220,13 @@ def compare_baseline(actual, reference):
                     }
                 )
     return failures
+
+
+def approve_reference(actual, old_reference, *, coverage_reference=None):
+    """The caller must supply the prior reference, never the proposed replacement."""
+    failures = compare_baseline(actual, old_reference, coverage_reference=coverage_reference)
+    if failures:
+        raise ValueError("regressed candidate cannot replace the prior reference")
+    if coverage_reference is not None and compare_baseline(actual, coverage_reference):
+        raise ValueError("candidate failed its contemporaneous reference")
+    return actual

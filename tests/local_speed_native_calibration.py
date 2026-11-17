@@ -33,6 +33,30 @@ def main():
     connection.commit()
     assert connection.execute("SELECT value FROM proof").fetchall() == [("stored",)]
     connection.close()
+    # Separate product-mode calibration, retaining the original DELETE/FULL
+    # proof above. These settings affect only this throwaway calibration DB.
+    wal_path = args.output / "wal-calibration.sqlite"
+    wal = sqlite3.connect(wal_path)
+    wal.execute("PRAGMA journal_mode=WAL")
+    wal.execute("PRAGMA synchronous=FULL")
+    wal.execute("CREATE TABLE proof(value TEXT NOT NULL)")
+    wal.commit()
+    modes = {name: wal.execute("PRAGMA " + name).fetchone()[0]
+             for name in ("journal_mode", "synchronous", "wal_autocheckpoint")}
+    wal_interval = {"pid": os.getpid(), "epoch_start_ns": time.time_ns()}
+    wal.execute("INSERT INTO proof VALUES ('committed')")
+    wal.commit()
+    checkpoint_start = time.time_ns()
+    checkpoint = wal.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+    wal_interval["epoch_reply_ns"] = time.time_ns()
+    assert modes["journal_mode"] == "wal" and modes["synchronous"] == 2
+    assert checkpoint[0] == 0
+    assert wal.execute("SELECT value FROM proof").fetchall() == [("committed",)]
+    wal.close()
+    (args.output / "wal-calibration.json").write_text(json.dumps({
+        "interval": wal_interval, "database": str(wal_path), "sqlite": modes,
+        "checkpoint_start_ns": checkpoint_start, "checkpoint": checkpoint,
+    }, indent=2) + "\n")
     interval["epoch_reply_ns"] = time.time_ns()
     os.fsync = original_fsync
     assert len(python_sync_calls) == 1

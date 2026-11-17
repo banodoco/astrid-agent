@@ -7,19 +7,24 @@ is widened. Telemetry contains counts and process identities, never argv/env.
 from __future__ import annotations
 
 from collections import Counter
+import asyncio
+import base64
 import json
 import os
 from pathlib import Path
 import subprocess
+import selectors
 import sys
 import threading
 import time
+import zlib
 from typing import Any
 
 PREFIX = "PLAN55_PROCESS_OBSERVATION "
 MARKER = "# PLAN55_OBSERVER_INSTALLED_AFTER_ADMISSION"
 MAX_EVENTS = 100000
 MAX_REPORT_BYTES = 16384
+WAIT_KINDS = ("event_wait", "condition_wait", "asyncio_sleep", "selector_wait")
 PACK_MODULE = "astrid.packs.vibecomfy.actions.run.run"
 _UNSEEN = object()
 
@@ -106,8 +111,9 @@ def instrument_argv(argv: Any, hash_source: str, observer_source: str,
         "import types as _p55types\n"
         "_p55module=_p55types.ModuleType('_plan55_observer')\n"
         "sys.modules['_plan55_observer']=_p55module\n"
-        f"_p55hash_source={hash_source!r}\n"
-        f"_p55observer_source={observer_source!r}\n"
+        "import base64 as _p55b64,zlib as _p55zlib\n"
+        f"_p55hash_source=_p55zlib.decompress(_p55b64.b85decode({base64.b85encode(zlib.compress(hash_source.encode())).decode()!r})).decode()\n"
+        f"_p55observer_source=_p55zlib.decompress(_p55b64.b85decode({base64.b85encode(zlib.compress(observer_source.encode())).decode()!r})).decode()\n"
         "exec(compile(_p55hash_source,'<plan55-hashes>','exec'),_p55module.__dict__)\n"
         "exec(compile(_p55observer_source,'<plan55-process>','exec'),_p55module.__dict__)\n"
         f"_p55meter=_p55module.ProcessObserver({targets!r},{role!r},"
@@ -137,13 +143,108 @@ class ProcessObserver:
         self.sleep_function = time.sleep
         self.fsync_function = getattr(os, "fsync", None)
         self.fdatasync_function = getattr(os, "fdatasync", None)
+        self.wait_state = threading.local()
+        self.context = threading.local()
+        self.runtime_connection = None
+        self.commit_starts = {}
 
     def event(self, kind: str, **fields) -> None:
         with self.lock:
             if len(self.events) >= MAX_EVENTS:
                 self.gaps.add("Python observation event limit exceeded")
                 return
-            self.events.append({"at_ns": time.monotonic_ns(), "kind": kind, **fields})
+            self.events.append({"at_ns": time.monotonic_ns(), "kind": kind,
+                                "tid": threading.get_native_id(), **fields})
+
+    def _install_waits(self):
+        owner = self
+
+        def wrap(function, kind):
+            def wait(*args, **kwargs):
+                # Event.wait enters Condition.wait; count the public wait once.
+                nested = getattr(owner.wait_state, "depth", 0)
+                owner.wait_state.depth = nested + 1
+                if not nested:
+                    owner.event(kind + "_attempt")
+                try:
+                    result = function(*args, **kwargs)
+                except BaseException:
+                    if not nested:
+                        owner.event(kind + "_error")
+                    raise
+                else:
+                    if not nested:
+                        owner.event(kind + "_success")
+                    return result
+                finally:
+                    owner.wait_state.depth = nested
+            return wait
+
+        self.patches.setattr(threading.Event, "wait", wrap(threading.Event.wait, "event_wait"))
+        self.patches.setattr(threading.Condition, "wait", wrap(threading.Condition.wait, "condition_wait"))
+        # Patch each distinct implementation, never an inherited alias twice.
+        for cls in {value for value in vars(selectors).values() if isinstance(value, type)}:
+            if issubclass(cls, selectors.BaseSelector) and "select" in cls.__dict__:
+                if cls is not selectors.BaseSelector:
+                    self.patches.setattr(cls, "select", wrap(cls.select, "selector_wait"))
+        original_sleep = asyncio.sleep
+
+        async def async_sleep(*args, **kwargs):
+            # No thread-local depth survives an await: unrelated tasks share it.
+            owner.event("asyncio_sleep_attempt")
+            try:
+                result = await original_sleep(*args, **kwargs)
+            except BaseException:
+                owner.event("asyncio_sleep_error")
+                raise
+            else:
+                owner.event("asyncio_sleep_success")
+                return result
+        self.patches.setattr(asyncio, "sleep", async_sleep)
+
+    @staticmethod
+    def _write_origin(frame):
+        """Classify observed stack ancestry, never assume unmatched is background."""
+        names = []
+        while frame is not None:
+            filename = frame.f_code.co_filename.replace("\\", "/")
+            names.append((filename, frame.f_code.co_name))
+            frame = frame.f_back
+        if any("/runtime_protocol/" in f and n in {
+            "_stage_outputs", "_begin_cas_publication_journal", "_copy_open_file_at",
+            "_publish_staged_outputs", "_discard_staged_outputs", "_remove_publication_journal_at",
+        } for f, n in names):
+            return "runtime_publication"
+        if any("/vibecomfy/" in f for f, _ in names):
+            return "vibecomfy_evidence"
+        if any("/astrid/core/generation/delivery.py" in f for f, _ in names):
+            return "caller_delivery"
+        if any("/runtime_protocol/" in f and any(word in n for word in ("heartbeat", "maintenance", "reclaim")) for f, n in names):
+            return "runtime_background"
+        if any("/runtime_protocol/" in f for f, _ in names):
+            return "runtime_other"
+        return "other_application"
+
+    def _install_writes(self):
+        owner = self
+        for name in ("fsync", "fdatasync"):
+            original = getattr(os, name, None)
+            if original is None:
+                continue
+
+            def sync(fd, _original=original, _name=name):
+                origin = owner._write_origin(sys._getframe(1))
+                started = time.time_ns()
+                success = False
+                try:
+                    result = _original(fd)
+                    success = True
+                    return result
+                finally:
+                    owner.event("application_sync", operation=_name, origin=origin,
+                                route=getattr(owner.context, "route", None),
+                                epoch_start_ns=started, epoch_end_ns=time.time_ns(), success=success)
+            self.patches.setattr(os, name, sync)
 
     def profile(self, frame, event, arg) -> None:
         # Reject unrelated Python calls before caching/formatting code metadata.
@@ -175,6 +276,18 @@ class ProcessObserver:
                     "fdatasync" if arg is self.fdatasync_function else None)
             if kind is not None:
                 self.event(kind + {"c_call": "_attempt", "c_return": "_success", "c_exception": "_error"}[event])
+            elif (self.runtime_connection is not None and
+                  getattr(arg, "__self__", None) is self.runtime_connection and
+                  getattr(arg, "__name__", None) == "commit"):
+                tid = threading.get_native_id()
+                if event == "c_call" and self.runtime_connection.in_transaction:
+                    self.commit_starts[tid] = time.time_ns()
+                    self.event("runtime_outer_commit_attempt")
+                elif event in ("c_return", "c_exception") and tid in self.commit_starts:
+                    started = self.commit_starts.pop(tid)
+                    self.event("runtime_outer_commit_" + ("success" if event == "c_return" else "error"),
+                               epoch_start_ns=started, epoch_end_ns=time.time_ns(),
+                               route=getattr(self.context, "route", None))
         if self.chain_profiles:
             previous = self.previous_profile if threading.get_ident() == self.start_thread else self.previous_thread_profile
             if previous is not None:
@@ -205,6 +318,8 @@ class ProcessObserver:
             return result
 
         self.patches.setattr(subprocess.Popen, "__init__", spawn)
+        self._install_waits()
+        self._install_writes()
         threading.setprofile(self.profile)
         sys.setprofile(self.profile)
 
@@ -216,11 +331,17 @@ class ProcessObserver:
                     and (until_ns is None or row["at_ns"] <= until_ns)]
             counts = Counter(row["kind"] for row in rows)
             processes = [row for row in rows if row["kind"] == "process_start"]
-            hashes = self.hashes.snapshot()
+            hashes = self.hashes.snapshot(since_ns, until_ns)
             return {
                 "schema": "astrid.local-speed-process.v1", "pid": os.getpid(),
                 "role": self.role, "start_ns": self.started, "end_ns": time.monotonic_ns(),
+                "interval": {"monotonic_start_ns": since_ns, "monotonic_reply_ns": until_ns},
                 "counts": dict(sorted(counts.items())), "process_starts": processes,
+                "wait_coverage": list(WAIT_KINDS),
+                "write_spans": [row for row in rows if row["kind"] in {
+                    "application_sync", "runtime_outer_commit_success", "runtime_outer_commit_error",
+                    "platform_write_through_success", "platform_write_through_error",
+                }],
                 "output_hash_streams": hashes.completed_streams,
                 "output_hash_bytes": hashes.bytes_hashed,
                 "coverage_gaps": sorted(self.gaps | set(hashes.coverage_gaps)),
@@ -237,6 +358,10 @@ class ProcessObserver:
             report = self.snapshot()
         finally:
             self.stop()
+        # Keep the existing bounded pipe message. Raw per-sync spans are very
+        # repetitive; lossless compression preserves attribution and its limit.
+        spans = report.pop("write_spans", [])
+        report["write_spans_zlib"] = base64.b85encode(zlib.compress(json.dumps(spans).encode())).decode()
         raw = (PREFIX + json.dumps(report, sort_keys=True) + "\n").encode()
         if len(raw) > MAX_REPORT_BYTES:
             raw = (PREFIX + json.dumps({"schema": "astrid.local-speed-process.v1", "pid": os.getpid(),
@@ -265,10 +390,16 @@ def read_reports(texts: list[str]) -> tuple[list[dict], list[str]]:
                 row = json.loads(line[len(PREFIX):])
                 if row.get("schema") != "astrid.local-speed-process.v1":
                     raise ValueError("wrong schema")
+                if "write_spans_zlib" in row:
+                    decoder = zlib.decompressobj()
+                    raw = decoder.decompress(base64.b85decode(row.pop("write_spans_zlib")), 8_000_000)
+                    if not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
+                        raise ValueError("invalid or oversized write attribution")
+                    row["write_spans"] = json.loads(raw)
                 key = (row["pid"], row.get("start_ns"))
                 if key in found and found[key] != row:
                     gaps.append("conflicting process report")
                 found[key] = row
-            except (ValueError, KeyError, TypeError):
+            except (ValueError, KeyError, TypeError, zlib.error):
                 gaps.append("malformed or truncated process report")
     return list(found.values()), gaps

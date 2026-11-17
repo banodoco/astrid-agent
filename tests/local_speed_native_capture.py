@@ -51,7 +51,7 @@ def capture(output: Path, command: list[str], timeout: int) -> dict:
             # Filter in the kernel: printing a selected set alone still stops
             # on every syscall and can dominate the threaded SDK/Runtime harness.
             # The selected operations, per-PID logs and reader checks are unchanged.
-            traced = [tracer, "-ff", "--seccomp-bpf", "-ttt", "-T", "-e", "trace=process,fsync,fdatasync",
+            traced = [tracer, "-ff", "--seccomp-bpf", "-ttt", "-T", "-yy", "-e", "trace=process,fsync,fdatasync",
                       "-o", str(output / "trace"), "--", *command]
             meta["trace_command"] = traced
             meta["proof_exit"] = run_bounded(traced, log=output / "proof.log", timeout=timeout)
