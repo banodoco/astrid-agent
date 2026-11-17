@@ -336,7 +336,6 @@ def _validate_clip_list(
     bound: Fraction | None = None,
     baseline: Mapping[str, Any] | None = None,
     baseline_bound: Fraction | None = None,
-
 ) -> dict[str, Mapping[str, Any]]:
     if not isinstance(registry, Mapping):
         _fail(f"{path.rsplit('.', 1)[0]}.registry", "must be an object")
