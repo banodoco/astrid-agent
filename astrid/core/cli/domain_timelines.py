@@ -108,12 +108,13 @@ _working_cmd_lint = _provided('_working_cmd_lint')
 _working_cmd_rename = _provided('_working_cmd_rename')
 _working_cmd_restructure = _provided('_working_cmd_restructure')
 _working_cmd_transcripts_import = _provided('_working_cmd_transcripts_import')
+_working_cmd_transcripts_refresh = _provided('_working_cmd_transcripts_refresh')
 _working_cmd_transcripts_run = _provided('_working_cmd_transcripts_run')
 _working_cmd_transcripts_show = _provided('_working_cmd_transcripts_show')
 _working_cmd_transcripts_sync = _provided('_working_cmd_transcripts_sync')
 _working_cmd_words = _provided('_working_cmd_words')
 
-_HANDLER_NAMES = frozenset({'_as_timeline_verb', '_cmd_apply', '_cmd_archive', '_cmd_assets', '_cmd_check', '_cmd_checkout', '_cmd_commit', '_cmd_create', '_cmd_diff', '_cmd_edit', '_cmd_elements', '_cmd_export', '_cmd_history', '_cmd_import', '_cmd_inspect', '_cmd_list', '_cmd_place_element', '_cmd_recover', '_cmd_redo', '_cmd_render', '_cmd_replace_parent_media', '_cmd_script', '_cmd_show', '_cmd_status', '_cmd_undo', '_cmd_update_element', '_cmd_visualize', '_find_run_find', '_guarded', '_log_run_log', '_pending_cmd_drop', '_pending_cmd_list', '_pending_cmd_retry', '_pending_cmd_show', '_pending_run', '_with_steps', '_working_cmd_discard', '_working_cmd_duplicate', '_working_cmd_lines', '_working_cmd_lint', '_working_cmd_rename', '_working_cmd_restructure', '_working_cmd_transcripts_import', '_working_cmd_transcripts_run', '_working_cmd_transcripts_show', '_working_cmd_transcripts_sync', '_working_cmd_words'})
+_HANDLER_NAMES = frozenset({'_as_timeline_verb', '_cmd_apply', '_cmd_archive', '_cmd_assets', '_cmd_check', '_cmd_checkout', '_cmd_commit', '_cmd_create', '_cmd_diff', '_cmd_edit', '_cmd_elements', '_cmd_export', '_cmd_history', '_cmd_import', '_cmd_inspect', '_cmd_list', '_cmd_place_element', '_cmd_recover', '_cmd_redo', '_cmd_render', '_cmd_replace_parent_media', '_cmd_script', '_cmd_show', '_cmd_status', '_cmd_undo', '_cmd_update_element', '_cmd_visualize', '_find_run_find', '_guarded', '_log_run_log', '_pending_cmd_drop', '_pending_cmd_list', '_pending_cmd_retry', '_pending_cmd_show', '_pending_run', '_with_steps', '_working_cmd_discard', '_working_cmd_duplicate', '_working_cmd_lines', '_working_cmd_lint', '_working_cmd_rename', '_working_cmd_restructure', '_working_cmd_transcripts_import', '_working_cmd_transcripts_refresh', '_working_cmd_transcripts_run', '_working_cmd_transcripts_show', '_working_cmd_transcripts_sync', '_working_cmd_words'})
 
 
 def _add_idempotency_key(subparser: argparse.ArgumentParser) -> None:
@@ -1457,6 +1458,18 @@ def _working_configure_transcripts_sync(subparser: argparse.ArgumentParser) -> N
     subparser.set_defaults(handler=_working_cmd_transcripts_sync)
 
 
+def _working_configure_transcripts_refresh(subparser: argparse.ArgumentParser) -> None:
+    subparser.add_argument("ref", help="Timeline UUID, ULID, or slug.")
+    _add_project_arg(subparser, required=True)
+    subparser.add_argument("--shot", default=None, help="Only this shot's child timeline (its shot id).")
+    subparser.add_argument("--run-missing", action="store_true",
+                           help="Transcribe each missing media, one at a time, with the same path as transcripts run (GPU work).")
+    subparser.add_argument("--placement", default=None, help="Where --run-missing runs (required with it, e.g. runpod).")
+    subparser.add_argument("--dry-run", action="store_true",
+                           help="Print the report and what --run-missing would run; write nothing.")
+    subparser.set_defaults(handler=_working_cmd_transcripts_refresh)
+
+
 def _working_configure_transcripts_show(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("media_id", nargs="?", help="Project-managed sha256 media id (omit when selecting --clip).")
     _add_project_arg(subparser, required=True)
@@ -1644,7 +1657,10 @@ def build_parser(client: Any) -> argparse.ArgumentParser:
                         configure=_working_configure_transcripts_show),
             CommandSpec("run", help="Transcribe a whole project media file and store its words.",
                         configure=_working_configure_transcripts_run),
-            CommandSpec("sync", help="Backfill narration transcript documents from published VO clips.",
+            CommandSpec("refresh", help="Status of each media's transcript; run the missing ones (--run-missing --placement P); "
+                                        "record the chosen documents; report stale anchors and split words.",
+                        configure=_working_configure_transcripts_refresh),
+            CommandSpec("sync", help="Backfill narration transcript documents from published VO clips (refresh replaces it).",
                         configure=_working_configure_transcripts_sync),
             CommandSpec("import", help="Attach a complete words file to a source media id.",
                         configure=_working_configure_transcripts_import),),

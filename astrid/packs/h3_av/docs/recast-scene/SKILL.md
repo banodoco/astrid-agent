@@ -38,7 +38,7 @@ Output: an **approved low-fidelity cut** (a timeline revision) and the **final s
 With `astrid timelines visualize` on that timeline, not on an exported file:
 - `--preset overview`: one tile per cut. Name each: who is on screen, real footage or still, whose mouth is visible.
 - `--cut N` and `--range` around each speaking shot: does the mouth move? What is in reflections, backgrounds, hands?
-- Words under the picture: transcribe the temporary voice (`astrid timelines transcripts run`), then look with the word tiles, so each line has a time.
+- Words under the picture: refresh the transcripts of the temporary voice (`astrid timelines transcripts refresh <timeline> --project P --dry-run`, then `--run-missing --placement runpod`), then look with the word tiles, so each line has a time.
 - Region zoom on details that will change (lenses, mouth). If the tool cannot show what you need, that is a tool gap: fix it or file it. Do not fall back to outside tools.
 
 Output: the **sequence map**, a table with one row per cut: time, picture, who is visible, line and words with times, source (footage, still, generated).
@@ -69,7 +69,7 @@ Output: the **shot list**, the sequence map plus a method column, inputs (masks,
 
 - Reference: the speaker's real voice, a clean clip of their real lines with its transcript.
 - Generate the whole script as one continuous performance (voice-clone entry in `astrid generate`).
-- Transcribe it (timed words), replace the temporary voice on the timeline, and re-time the cuts to the words. Look again (Stage 1 views).
+- Refresh the transcripts (`astrid timelines transcripts refresh <timeline> --project P --run-missing --placement runpod`, after a `--dry-run`), so the new voice has timed words; replace the temporary voice on the timeline, and re-time the cuts to the words (the refresh report lists any cut that splits a word). Look again (Stage 1 views).
 - Owner listens. This is the gate before any picture generation.
 
 Fallback, if lip sync to a fixed voice does not work in H3: generate each on-camera line with its own voice by continuation, which is proven. Then use that voice as the reference for the off-camera lines.

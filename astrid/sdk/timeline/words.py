@@ -25,6 +25,7 @@ from astrid.sdk.timeline._common import AUDIO_KINDS, PARENT_SHOT
 from astrid.sdk.timeline.doc import _read_words, _row_start
 
 TTS_SOURCE = "astrid.tts"
+PARENT_LABEL = "parent"
 PINNED_MODEL = "large-v3-turbo.pt"
 _EPS = 1e-9
 
@@ -160,8 +161,8 @@ def project_words(bundle: Mapping[str, Any], transcripts: Mapping[str, Mapping[s
     ``transcripts`` maps media id -> source id -> ``{"document_id", "version", "content"}``.
     A word is kept when ``from <= t < to`` for its clip; its timeline time is
     ``owner_start + clip.at + (t - from) / speed``. Rows are sorted by timeline time and
-    carry an ``address`` (``<line>:<k>`` where the clip has a line segment id, else
-    ``<clip>:<k>``) plus the stored ``word_id``, media, source, document version, clip,
+    carry an ``address`` (``<line>:<k>``: the clip's line id, or its own id, and the word's
+    index in that line) plus the stored ``word_id``, media, source, document version, clip,
     occurrence, shot, timeline time and source time.
     """
     order = tuple(sources) if sources is not None else default_source_order()
@@ -207,11 +208,11 @@ def project_words(bundle: Mapping[str, Any], transcripts: Mapping[str, Mapping[s
     rows.sort(key=lambda row: (row["timeline_start"], row["segment"], row["clip_id"], row["source_start"]))
     counters: dict[str, int] = {}
     for row in rows:
-        segment = row["segment"] or row["clip_id"]
+        segment = row["segment"]  # the clip's line id, or its own id when it has none (the address timelines words uses)
         k = counters.get(segment, 0)
         counters[segment] = k + 1
         row["index"] = k
-        row["address"] = f"{segment}:{k}" if row["segment"] else (row["word_id"] or f"{row['clip_id']}:{k}")
+        row["address"] = f"{segment}:{k}"
     return rows
 
 

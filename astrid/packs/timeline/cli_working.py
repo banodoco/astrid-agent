@@ -456,10 +456,112 @@ def _cmd_transcripts_run(parsed: argparse.Namespace) -> int:
     return 0
 
 
+def _configure_transcripts_refresh(subparser: argparse.ArgumentParser) -> None:
+    from astrid.core.cli.domain_timelines import _add_project_arg
+
+    subparser.add_argument("ref", help="Timeline UUID, ULID, or slug.")
+    _add_project_arg(subparser, required=True)
+    subparser.add_argument("--shot", default=None, help="Only this shot's child timeline (its shot id).")
+    subparser.add_argument("--run-missing", action="store_true",
+                           help="Transcribe each missing media, one at a time, with the same path as transcripts run (GPU work).")
+    subparser.add_argument("--placement", default=None,
+                           help="Where --run-missing runs (required with it, e.g. runpod).")
+    subparser.add_argument("--dry-run", action="store_true",
+                           help="Print the report and what --run-missing would run; write nothing.")
+    subparser.set_defaults(handler=_cmd_transcripts_refresh)
+
+
+@guard(2)
+def _cmd_transcripts_refresh(parsed: argparse.Namespace) -> int:
+    """Status of every audio media (parent and child timelines), missing transcripts run on request,
+    the chosen documents recorded in transcriptReferences, and what a refresh cannot fix by itself."""
+    from astrid.sdk.timeline import words as W
+    from astrid.sdk.timeline_checkout import Checkout
+    from astrid.sdk.timeline_transcript_refresh import (
+        REFERENCES_SCHEMA as W_REFERENCES_SCHEMA,
+        cut_words,
+        inventory,
+        stale_anchors,
+        with_reference,
+    )
+
+    project = need_project(parsed)
+    if parsed.run_missing and not parsed.placement:
+        raise VerbError("--run-missing runs transcription on a GPU: name where with --placement (e.g. --placement runpod)", 2)
+    if parsed.placement and not parsed.run_missing:
+        print("note: --placement applies only with --run-missing")
+    draft, _existed = working_copy(parsed, create=False)
+    tl = draft if draft is not None else Checkout.open(project, parsed.ref, client=parsed.client)
+    if parsed.shot is not None and str(parsed.shot) not in (tl.bundle.get("shots") or {}):
+        raise VerbError(f"no shot {parsed.shot!r} in timeline {parsed.ref!r}", 2)
+    transcripts = W.load_timeline_transcripts(parsed.client, project, tl.bundle)
+    rows = inventory(tl.bundle, transcripts, shot=parsed.shot)
+    print(f"{len(rows)} audio media in {parsed.ref}" + (f" (shot {parsed.shot})" if parsed.shot else "") + ":")
+    for row in rows:
+        where = ", ".join(row["holders"])
+        detail = f"document v{row['version']}" if row["version"] is not None else "no document"
+        print(f"  {row['media_id']}  {row['status']:<28}  {detail}  "
+              f"[{', '.join(row['clips'])}]  in {where}" + ("  (pinned)" if row["pinned"] else ""))
+    missing = [row for row in rows if row["status"] == "missing"]
+    if parsed.run_missing:
+        for row in missing:
+            command = ["timelines", "transcripts", "run", row["media_id"], "--project", project,
+                       "--placement", parsed.placement]
+            if parsed.dry_run:
+                print(f"  would run: astrid {' '.join(command)}")
+                continue
+            ns = argparse.Namespace(client=parsed.client, project=project, media_id=row["media_id"],
+                                    placement=parsed.placement, engine=None, execution=None, align=None,
+                                    consent=[], recovery_path=None, replace=False, expected_version=None)
+            status = _cmd_transcripts_run(ns)
+            print(f"  ran {row['media_id']}: {'ok' if status == 0 else f'failed (exit {status})'}")
+        if not parsed.dry_run:
+            transcripts = W.load_timeline_transcripts(parsed.client, project, tl.bundle)
+            rows = inventory(tl.bundle, transcripts, shot=parsed.shot)
+            missing = [row for row in rows if row["status"] == "missing"]
+    elif missing:
+        print(f"  {len(missing)} missing: --run-missing --placement P runs them (GPU work)")
+    stale = stale_anchors(tl.bundle, transcripts)
+    for item in stale:
+        print(f"anchor {item['clip_id']}.{item['field']}: {item['reason']} "
+              f"(pinned v{item['pinned_version']}, now {item['current_version'] if item['current_version'] is not None else 'absent'})")
+    for cut in cut_words(tl.bundle, transcripts, shot=parsed.shot):
+        span = f"{cut['word_start']:.3f}–{cut['word_end']:.3f}s"
+        print(f"cut {cut['edge']} at {cut['point']:.3f}s splits \"{cut['text']}\" ({span}) "
+              f"in clip {cut['clip_id']} [{cut['holder']}]")
+    if parsed.dry_run:
+        print("dry run: nothing recorded")
+        return 0
+    recorded = 0
+    working = None
+    for row in rows:
+        if row["status"] == "missing" or row["version"] is None:
+            continue
+        media_docs = transcripts.get(row["media_id"]) or {}
+        chosen = W.choose_document(media_docs, W.transcript_references(tl.bundle), W.default_source_order())
+        if chosen is None or row["pinned"]:
+            continue  # nothing stored, or the choice is already recorded
+        if working is None:
+            working, _existed = working_copy(parsed, create=True)
+        ids = {doc.get("document_id") for doc in media_docs.values() if doc.get("document_id")}
+        bundle_config = working.bundle.setdefault("parent", {}).setdefault("config", {}).setdefault("bundle", {})
+        refs = bundle_config.setdefault("transcriptReferences", {"schema": W_REFERENCES_SCHEMA})
+        refs["schema"] = W_REFERENCES_SCHEMA
+        refs["associations"] = with_reference(working.bundle, ids, chosen[1]["document_id"])
+        recorded += 1
+    if working is not None and recorded:
+        working.save(quiet=True)
+        print(f"recorded {recorded} transcript choice(s) in transcriptReferences (working copy; publish to keep)")
+    return 0
+
+
 @guard(2)
 def _cmd_transcripts_sync(parsed: argparse.Namespace) -> int:
     from astrid.sdk.timeline_checkout import Checkout
     from astrid.sdk.timeline_transcripts import sync_narration_transcripts
+
+    print("note: `timelines transcripts refresh` replaces sync (it also shows what is missing); sync still works",
+          file=sys.stderr)
 
     tl = Checkout.open(need_project(parsed), parsed.ref, client=parsed.client)
     report = sync_narration_transcripts(tl, parsed.client, str(tl.bundle["project_id"]), dry_run=parsed.dry_run)
