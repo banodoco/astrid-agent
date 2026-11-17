@@ -181,6 +181,48 @@
           "positionals": [],
           "verbs": {}
         },
+        "mask": {
+          "flags": {
+            "--box": {
+              "required": false
+            },
+            "--ellipse": {
+              "required": false
+            },
+            "--grow": {
+              "required": false
+            },
+            "--invert": {
+              "required": false
+            },
+            "--json": {
+              "required": false
+            },
+            "--mask": {
+              "required": false
+            },
+            "--name": {
+              "required": false
+            },
+            "--preview-on": {
+              "required": false
+            },
+            "--project": {
+              "required": true
+            },
+            "--range": {
+              "required": false
+            },
+            "--samples": {
+              "required": false
+            },
+            "--size": {
+              "required": false
+            }
+          },
+          "positionals": [],
+          "verbs": {}
+        },
         "open": {
           "flags": {
             "--cache-root": {

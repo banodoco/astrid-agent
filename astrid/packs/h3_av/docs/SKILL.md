@@ -397,3 +397,21 @@ that canvas and time range; H3 does not transform source-coordinate masks.
 The packaged continuation bundles are historical source captures; use the H3
 compiler to emit the selected LoRA and settings into a request-specific bundle.
 V1 edits default to the selected LoRA’s eight steps; explicit steps still win.
+
+### Make a mask
+
+For the Matrix close-up (shot 02c), make a binary 1024×576 lens mask and
+preview it over the shot:
+
+```bash
+astrid media mask --project P --name "02c lenses" \
+  --ellipse 282,121,119,99 --ellipse 622,114,132,96 --grow 8 \
+  --preview-on SHOT_MEDIA_ID
+```
+
+Open the contact sheet printed on the last line. It shows the mask over the
+same center crop H3 uses by default. Put the full mask media ID in
+`edit[].mask.asset`. To read the saved recipe, run
+`astrid media mask --project P --mask MASK_MEDIA_ID`. Add `--preview-on` to
+check that mask again. A moving subject needs a tracked video mask. H3
+accepts one in the same field, and `media mask` currently makes still masks.
