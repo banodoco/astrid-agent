@@ -20,7 +20,10 @@ _logger = logging.getLogger(__name__)
 _KIND_SPEC: dict[str, dict[str, Any]] = {
     'image': {'noun': 'an image', 'dimension_key': 'size'},
     'video': {'noun': 'a video', 'dimension_key': 'resolution', 'prompt_only_guard': True},
-    'audio': {'noun': 'audio', 'dimension_key': 'resolution', 'audio_modes': ('music', 'tts', 'sfx')},
+    # transcribe takes an audio input (--audio-ref) and yields a transcript, not sound; it is listed apart
+    # from audio_modes, which keeps the sound-generating modes' table contract.
+    'audio': {'noun': 'audio', 'dimension_key': 'resolution', 'audio_modes': ('music', 'tts', 'sfx'),
+              'extra_modes': ('transcribe',)},
 }
 
 
@@ -210,8 +213,9 @@ def _parser(contextual: dict[str, Any] | None = None) -> _GenerationParser:
         command.add_argument("--model", action=_Once, help="Generation catalog entry ID (legacy selector).")
         command.add_argument("--entry", action=_Once, help="Generation entry ID; use --help to inspect its declared inputs.")
         command.add_argument("--inputs-json", action=_Once, metavar="FILE", help="Read declared entry inputs from a JSON object.")
-        command.add_argument("--mode", action=_Once, choices=spec.get('audio_modes'),
-                             required='audio_modes' in spec, help=("Audio mode: music, tts, or sfx." if 'audio_modes' in spec
+        command.add_argument("--mode", action=_Once,
+                             choices=(spec.get('audio_modes', ()) + spec.get('extra_modes', ())) or None,
+                             required='audio_modes' in spec, help=("Audio mode: music, tts, or sfx. Use transcribe with --audio-ref FILE for word timings." if 'audio_modes' in spec
                              else "Generation mode; inferred from the supplied inputs by default."))
         command.add_argument("--execution", action=_Once, help="Catalog execution backend, when explicitly selected.")
         command.add_argument(
@@ -224,6 +228,8 @@ def _parser(contextual: dict[str, Any] | None = None) -> _GenerationParser:
         command.add_argument("--edit", "--image-ref", dest="image_ref", action=_Once, help="Reference image for an edit or image-to-video request.")
         if modality in {'video', 'audio'}:
             command.add_argument('--video-ref', action=_Once, metavar='FILE', help='Reference video for video generation or Foley sound effects.')
+        if modality == 'audio':
+            command.add_argument('--audio-ref', action=_Once, metavar='FILE', help='Audio or video file to transcribe (--mode transcribe).')
         command.add_argument("--width", action=_Once, type=int)
         command.add_argument("--height", action=_Once, type=int)
         command.add_argument("--steps", action=_Once, type=int)
@@ -346,7 +352,7 @@ def _parser(contextual: dict[str, Any] | None = None) -> _GenerationParser:
 def _values(parsed):
     from astrid.core.generation.entries import merge_input_values
     common = {name: getattr(parsed, name, None) for name in (
-        'prompt', 'negative_prompt', 'image_ref', 'video_ref', 'width', 'height', 'seed',
+        'prompt', 'negative_prompt', 'image_ref', 'video_ref', 'audio_ref', 'width', 'height', 'seed',
         'frames', 'fps', 'steps', 'guidance_scale')}
     common = {name: value for name, value in common.items() if value is not None}
     named = getattr(parsed, 'named_prompt', None)
@@ -716,6 +722,8 @@ def _main(argv: list[str]) -> int:
         kwargs[_KIND_SPEC[parsed.modality]['dimension_key']] = f"{parsed.width}x{parsed.height}"
     from .delivery import admitted_project, open_url_for
     admitted = None
+    transcription_run = None
+    transcribing = parsed.modality == 'audio' and kwargs.get('mode') == 'transcribe'
     try:
         generate = getattr(_generate_facade(), parsed.modality)
         from astrid.sdk.generation import _prompt_only_video
@@ -745,6 +753,8 @@ def _main(argv: list[str]) -> int:
                 if not parsed.no_wait:
                     from .delivery import deliver_generation
                     result = deliver_generation(result, client=client, out=parsed.out, project=parsed.project)
+                    if transcribing:
+                        transcription_run = _transcription_run_id(client, result)
                 else:
                     admitted = admitted_project(
                         result.to_dict() if hasattr(result, 'to_dict') else result,
@@ -768,6 +778,9 @@ def _main(argv: list[str]) -> int:
     if admitted and isinstance(payload, dict):
         # An admitted generation names its project's link; the App shows the output there once it finishes.
         payload = {**payload, 'open_url': open_url_for(admitted)}
+    if transcription_run and isinstance(payload, dict):
+        # The same run id timelines transcripts import --from-run takes.
+        payload = {**payload, 'run_id': transcription_run}
     if parsed.json or parsed.dry_run or not isinstance(payload, dict):
         print(json.dumps(payload, indent=2, sort_keys=True))
     elif parsed.no_wait:
@@ -779,7 +792,22 @@ def _main(argv: list[str]) -> int:
             print(path)
         if payload.get("run_dir"):
             print(f"run: {payload['run_dir']}")
+        if payload.get('run_id'):
+            print(f"transcription run: {payload['run_id']}")
+            print(f"import: astrid timelines transcripts import <media-id> --from-run {payload['run_id']}")
     return 0
+
+
+def _transcription_run_id(client, result):
+    """The Runtime run a transcription names, found by the same helper timelines transcripts run uses."""
+    from astrid.sdk.transcript_run import transcription_run_id
+
+    payload = result.to_dict() if hasattr(result, 'to_dict') else result
+    try:
+        return transcription_run_id(client, payload)
+    except ValueError as exc:
+        print(f'warning: {exc}; import it later with timelines transcripts import --from-run', file=sys.stderr)
+        return None
 
 
 def _failure_command(parsed) -> int:
