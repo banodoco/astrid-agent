@@ -655,7 +655,7 @@ class WorkspaceClient:
         self._wait_connections: dict[Any, threading.Event] = {}
         self._wait_closed = False
 
-    def cancel_waits(self) -> None:
+    def _cancel_waits(self) -> None:
         """End this client's read subscriptions without cancelling any task."""
         with self._wait_lock:
             self._wait_closed = True
@@ -1323,7 +1323,18 @@ class WorkspaceClient:
         status, response_headers, body = self._request("HEAD", f"/v1/objects/{_path_part(object_id)}", headers=headers, expected=(200, 206))
         return ByteResponse(body, status, response_headers)
 
-    def admit_task(self, *, capability_id: str, capability_digest: str, input_object_ids: list[str], idempotency_key: str, schema_version: str = "1", settlement_effect: Mapping[str, Any] | None = None, project_id: str | None = None, spec: Mapping[str, Any] | None = None, generation_intent: Mapping[str, Any] | None = None, storage_estimate: Mapping[str, int] | None = None, required_facts: Mapping[str, Any] | None = None, execution_request: Mapping[str, Any] | None = None, child_delegation: Mapping[str, Any] | None = None) -> MutationResult:
+    def admit_task(self, *, capability_id: str | None = None, capability_digest: str | None = None, input_object_ids: list[str] | None = None, idempotency_key: str, schema_version: str = "1", settlement_effect: Mapping[str, Any] | None = None, project_id: str | None = None, spec: Mapping[str, Any] | None = None, generation_intent: Mapping[str, Any] | None = None, storage_estimate: Mapping[str, int] | None = None, required_facts: Mapping[str, Any] | None = None, execution_request: Mapping[str, Any] | None = None, child_delegation: Mapping[str, Any] | None = None, thin_request: Mapping[str, Any] | None = None) -> MutationResult:
+        if thin_request is not None:
+            if schema_version != "1" or any(value is not None for value in (
+                capability_id, capability_digest, input_object_ids, settlement_effect, spec,
+                generation_intent, storage_estimate, required_facts, execution_request, child_delegation,
+            )):
+                raise ValueError("thin_request cannot be combined with resolved admission fields")
+            payload = {"thin_request": dict(thin_request), "project": project_id}
+            return self._mutation_json(self._request("POST", "/v1/tasks", body=json.dumps(payload).encode(),
+                headers={"Content-Type": "application/json", "Idempotency-Key": idempotency_key}, expected=(200, 201))[2])
+        if capability_id is None or capability_digest is None or input_object_ids is None:
+            raise TypeError("resolved admission requires capability_id, capability_digest and input_object_ids")
         payload: dict[str, Any] = {"capability_id": capability_id, "capability_digest": capability_digest, "schema_version": schema_version, "input_object_ids": input_object_ids}
         if settlement_effect is not None:
             payload["settlement_effect"] = settlement_effect
@@ -1359,11 +1370,6 @@ class WorkspaceClient:
         if target is not None: payload["target"] = dict(target)
         if cursor is not None: payload["cursor"] = cursor
         return self._wait_request("/v1/tasks/wait-for-work", payload)
-
-    def admit_thin_task(self, thin_request: Mapping[str, Any], *, idempotency_key: str, project: str | None = None) -> MutationResult:
-        payload = {"thin_request": dict(thin_request), "project": project}
-        return self._mutation_json(self._request("POST", "/v1/tasks", body=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json", "Idempotency-Key": idempotency_key}, expected=(200, 201))[2])
 
     def list_project_tasks(self, project_id: str, *, cursor: str | None = None, limit: int = 50, kind: Literal["root_generation"] | None = None, order: Literal["admitted_desc"] | None = None) -> tuple[list[Task], str | None]:
         query = f"?limit={int(limit)}" + (f"&cursor={_path_part(cursor)}" if cursor else "")
