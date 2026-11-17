@@ -2347,9 +2347,9 @@ class RemoteTasks(_RemoteFamily):
     def list(self, project_id, *, cursor=None, limit=50):
         return self._typed("list_project_tasks", project_id, cursor=cursor, limit=limit)
     def show(self, task_id): return self._typed("get_task", task_id)
-    def supports_wait(self):
+    def supports_wait(self, *, refresh=False):
         supported = getattr(self._client, "supports_task_waits", None)
-        return bool(callable(supported) and supported())
+        return bool(callable(supported) and (supported(refresh=True) if refresh else supported()))
     def wait(self, task_id, *, cursor=None, timeout_seconds=25.0):
         return self._typed("wait_for_task", task_id, cursor=cursor, timeout_seconds=timeout_seconds)
     def list_managed_outputs(self, task_id):

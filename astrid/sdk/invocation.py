@@ -3462,6 +3462,32 @@ def _wait_for_kernel_task_loop(
     started = last_heartbeat = time.monotonic()
     effective_timeout = float(timeout_seconds)
     deadline = started + effective_timeout
+    reconnect_attempts = 0
+
+    def reconnect_wait(error):
+        """Repair a failed read subscription, never the admitted command.
+
+        Fault-path backoff is bounded separately from the no-poll warm path.
+        Keep the last cursor: a fresh authenticated snapshot repairs missed
+        notifications or a changed Runtime instance without another create.
+        """
+        nonlocal reconnect_attempts
+        code = error.get("code") if isinstance(error, Mapping) else getattr(error, "code", None)
+        if not event_wait or code not in {"transport_error", "transport_timeout"}:
+            return False
+        while reconnect_attempts < 3:
+            delay = .05 * 2 ** reconnect_attempts
+            if deadline is not None and time.monotonic() + delay >= deadline:
+                return False
+            reconnect_attempts += 1
+            time.sleep(delay)
+            try:
+                return bool(supports_wait(refresh=True))
+            except Exception as exc:
+                if getattr(exc, "code", None) not in {"transport_error", "transport_timeout"}:
+                    return False
+        return False
+
     previous = None
     queued_diagnostic_emitted = False
     while True:
@@ -3472,6 +3498,8 @@ def _wait_for_kernel_task_loop(
             else:
                 observed = show(task_id)
         except Exception as exc:
+            if reconnect_wait(exc):
+                continue
             return {
                 "ok": False,
                 "run_id": run_id,
@@ -3489,6 +3517,8 @@ def _wait_for_kernel_task_loop(
             error = getattr(observed, "error", None)
             if hasattr(error, "as_dict"):
                 error = error.as_dict()
+            if reconnect_wait(error):
+                continue
             return {
                 "ok": False,
                 "run_id": run_id,
@@ -3510,6 +3540,7 @@ def _wait_for_kernel_task_loop(
             data = wait_snapshot.get("task")
             if not isinstance(data, Mapping) or not isinstance(wait_cursor, str):
                 raise CapabilityInvocationError("Runtime task wait returned an invalid snapshot")
+            reconnect_attempts = 0
         task = dict(data)
         if owner_tick is not None:
             owner_tick(task)

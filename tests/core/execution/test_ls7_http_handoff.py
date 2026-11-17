@@ -17,12 +17,13 @@ from astrid.core.execution.generic_host import GenericPackHost, RuntimeProtocolC
 from astrid.sdk import invocation
 from astrid.sdk.remote import RemoteTasks
 from astrid.sdk.workspace_client import WorkspaceClient
-from astrid_runtime_client import WorkspaceClient as GeneratedClient
+from astrid_runtime_client import ApiError, WorkspaceClient as GeneratedClient
 from tests.test_generic_host import _write_manifest
 from tests.test_generic_host_result_json import _success_boundary
 
 
-def test_registered_thin_request_wakes_host_and_sdk_without_extra_commit(tmp_path, monkeypatch, real_runtime):
+@pytest.mark.parametrize("lose_result_response", [False, True])
+def test_registered_thin_request_wakes_host_and_sdk_without_extra_commit(tmp_path, monkeypatch, real_runtime, lose_result_response):
     path = _write_manifest(tmp_path / "pack")
     definition = json.loads(path.read_text())
     ports = [{"name": "mode", "type": "string", "required": True, "aliases": ["text"]},
@@ -84,11 +85,33 @@ def test_registered_thin_request_wakes_host_and_sdk_without_extra_commit(tmp_pat
 
         def forbidden(*args, **kwargs):
             pytest.fail("negotiated caller/worker success path polled or slept")
-        monkeypatch.setattr(generic_host.time, "sleep", forbidden)
+        reconnect_delays = []
+        def record_sleep(seconds):
+            if not lose_result_response:
+                forbidden()
+            reconnect_delays.append(seconds)
+        monkeypatch.setattr(generic_host.time, "sleep", record_sleep)
         caller = GeneratedClient(daemon.endpoint, daemon.token)
         thin = {"format": "runtime.resolution/v1", "entry_id": "echo", "values": {"text": "precise"}}
         admitted = caller.admit_thin_task(thin, idempotency_key="http-thin-once")
-        tasks = RemoteTasks(WorkspaceClient(daemon.endpoint, daemon.token))
+        facade = WorkspaceClient(daemon.endpoint, daemon.token)
+        tasks = RemoteTasks(facade)
+        handshakes = []
+        handshake = facade._generated.handshake
+        def record_handshake(*args, **kwargs):
+            handshakes.append(args)
+            return handshake(*args, **kwargs)
+        monkeypatch.setattr(facade._generated, "handshake", record_handshake)
+        if lose_result_response:
+            wait_for_task = facade._generated.wait_for_task
+            delivered = []
+            def lose_once(*args, **kwargs):
+                snapshot = wait_for_task(*args, **kwargs)
+                if not delivered:
+                    delivered.append(snapshot)
+                    raise ApiError(0, "transport_error", "fixture lost a completed read response")
+                return snapshot
+            monkeypatch.setattr(facade._generated, "wait_for_task", lose_once)
         monkeypatch.setattr(tasks, "show", forbidden)
         monkeypatch.setattr(tasks, "list_managed_outputs", forbidden)
         result, ok, attempt = invocation._wait_for_kernel_task_loop(
@@ -99,6 +122,8 @@ def test_registered_thin_request_wakes_host_and_sdk_without_extra_commit(tmp_pat
         assert not thread.is_alive() and outcome and isinstance(outcome[0], list), outcome
         assert ok and attempt and result["ok"], result
         assert counts == {"claim": 1, "heartbeat": 0}
+        assert len(handshakes) == (2 if lose_result_response else 1)
+        assert reconnect_delays == ([.05] if lose_result_response else [])
         assert sum(sql == "COMMIT" for sql in statements) == 3
         assert len(result["managed_outputs"]) == 1
         task = daemon.service.store.get_task(admitted["task_id"])["task"]

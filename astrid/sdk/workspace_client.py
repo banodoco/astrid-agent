@@ -1059,11 +1059,11 @@ class WorkspaceClient:
     def get_task(self, task_id: str) -> Any:
         return self._call_generated("get_task", task_id)
 
-    def supports_task_waits(self) -> bool:
+    def supports_task_waits(self, *, refresh: bool = False) -> bool:
         if not callable(getattr(self._generated, "wait_for_task", None)):
             return False
         handshake = self._last_handshake
-        if handshake is None:
+        if handshake is None or refresh:
             handshake = self.handshake("astrid-task-wait", "1", [])
         capabilities = handshake.get("capabilities", ()) if isinstance(handshake, Mapping) else getattr(handshake, "capabilities", ())
         return "task_waits.v1" in capabilities
