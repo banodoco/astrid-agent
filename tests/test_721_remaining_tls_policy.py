@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import io
 import sys
@@ -101,6 +102,28 @@ def test_artifact_acquisition_default_opener_uses_shared_trust(monkeypatch, tmp_
 
     assert size == len(payload) and part.read_bytes() == payload
     assert seen == [("https://artifacts.example.test/model", context)]
+
+
+def test_artifact_acquisition_preserves_an_injected_context_manager(tmp_path):
+    payload = b"caller-owned transport"
+    closed = []
+
+    @contextlib.contextmanager
+    def open_request(request):
+        assert request.full_url == "https://artifacts.example.test/model"
+        with io.BytesIO(payload) as response:
+            yield response
+        closed.append(True)
+
+    part = tmp_path / "artifact.part"
+
+    size = acquire._download(
+        SimpleNamespace(artifact_id="fixture"), "https://artifacts.example.test/model",
+        part, 0, urlopen=open_request,
+    )
+
+    assert size == len(payload) and part.read_bytes() == payload
+    assert closed == [True]
 
 
 def test_default_model_range_download_uses_one_shared_context_and_checks_hash(monkeypatch, tmp_path):
