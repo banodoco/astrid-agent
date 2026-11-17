@@ -125,12 +125,16 @@ def test_fresh_claim_has_no_initial_or_final_renewal_and_keeps_progress(event_ca
     assert case.runtime.heartbeats == []
     assert len(case.runtime.settlements) == 1
     assert case.runtime.settlements[0][2]["progress"] == {"phase": "complete", "percent": 100}
-    assert case.events["waits"] and max(case.events["waits"]) > 20
+    # Lead rework: reserve about half of the acknowledged 30-second lease
+    # for renewal, while a completed fast job still sends no heartbeat.
+    assert case.events["waits"] and 10 < max(case.events["waits"]) <= 15
 
 
 def test_long_attempt_renews_on_acknowledged_expiry_even_if_read_claims_later_time(event_case, monkeypatch):
     case = event_case
-    case.task["task"]["lease_expires_at"] = (datetime.now(timezone.utc) + timedelta(seconds=5.25)).isoformat()
+    # A short acknowledged lease makes its halfway renewal observable within
+    # the existing one-second bound; the later task read grants no extension.
+    case.task["task"]["lease_expires_at"] = (datetime.now(timezone.utc) + timedelta(seconds=.8)).isoformat()
     case.events["observed_expiry"] = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
     entered, release = threading.Event(), threading.Event()
     execute = case.host._run_command_definition
