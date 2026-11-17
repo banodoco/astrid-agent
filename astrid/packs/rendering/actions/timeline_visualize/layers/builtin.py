@@ -213,10 +213,14 @@ def render_sync(ctx: LayerContext) -> LayerResult:
                 music = audio.level_db("music", lo, hi)
                 under = f"music under it at {music:.0f} dBFS" if music > -60 else "and no music: dead air"
                 findings.append(f"AUDIO  no VO {ctx.rel(lo)}…{ctx.rel(hi)} ({hi - lo:.2f} s); {under}")
+        flagged = audio.missing_lines(minimum=0.3)
         for begin, finish in audio.dead_air():
             lo, hi = max(begin, start), min(finish, end)
             if hi - lo >= 0.3:
-                findings.append(f"AUDIO  dead air {ctx.rel(lo)}…{ctx.rel(hi)} ({hi - lo:.2f} s): no VO, music or sfx")
+                expected = any(a < hi and lo < b for a, b in flagged)
+                findings.append(f"AUDIO  dead air {ctx.rel(lo)}…{ctx.rel(hi)} ({hi - lo:.2f} s): no VO, music or sfx"
+                                + ("" if expected or getattr(audio, "expected", None) is None
+                                   else " (no line placed or planned here: intended silence?)"))
         findings.extend(f"AUDIO  {note}" for note in audio.notes[:2])
     return LayerResult(image, findings[:12], "sync")
 
