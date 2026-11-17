@@ -1069,6 +1069,9 @@ def _visualize_add_visualize_flags(subparser: argparse.ArgumentParser) -> None:
                            help="Resolve the view, window, frame count and page layout without capturing (about a second).")
     subparser.add_argument("--list-layers", dest="list_layers", action="store_true",
                            help="List the registered visualize layers (built-in and pack-contributed) and exit.")
+    subparser.add_argument("--shot-plans", dest="shot_plans", action="store_true", default=False,
+                           help="Label each shot with its plan (metadata.plan): method codes, status, takes and "
+                                "line, under the picture's summary (see timelines shots plan).")
     subparser.add_argument("--no-rules", dest="no_rules", action="store_true",
                            help="motion view: ignore astrid-lint.toml.")
     subparser.add_argument("--render-every", dest="render_every", type=float, default=None,

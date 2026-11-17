@@ -99,6 +99,41 @@
       "flags": {},
       "positionals": [],
       "verbs": {
+        "crop": {
+          "flags": {
+            "--allow-no-bars": {
+              "required": false
+            },
+            "--bar-threshold": {
+              "required": false
+            },
+            "--box": {
+              "required": false
+            },
+            "--dry-run": {
+              "required": false
+            },
+            "--even": {
+              "required": false
+            },
+            "--idempotency-key": {
+              "required": false
+            },
+            "--json": {
+              "required": false
+            },
+            "--project": {
+              "required": true
+            },
+            "--remove-bars": {
+              "required": false
+            }
+          },
+          "positionals": [
+            "ref"
+          ],
+          "verbs": {}
+        },
         "import": {
           "flags": {
             "--idempotency-key": {
@@ -2946,6 +2981,88 @@
               "positionals": [],
               "verbs": {}
             },
+            "plan": {
+              "flags": {},
+              "positionals": [],
+              "verbs": {
+                "list": {
+                  "flags": {
+                    "--json": {
+                      "required": false
+                    },
+                    "--project": {
+                      "required": true
+                    },
+                    "--revision-id": {
+                      "required": false
+                    },
+                    "--timeline": {
+                      "required": true
+                    }
+                  },
+                  "positionals": [],
+                  "verbs": {}
+                },
+                "set": {
+                  "flags": {
+                    "--add-take": {
+                      "required": false
+                    },
+                    "--idempotency-key": {
+                      "required": false
+                    },
+                    "--json": {
+                      "required": false
+                    },
+                    "--json-file": {
+                      "required": false
+                    },
+                    "--message": {
+                      "required": false
+                    },
+                    "--project": {
+                      "required": true
+                    },
+                    "--replace": {
+                      "required": false
+                    },
+                    "--set": {
+                      "required": false
+                    },
+                    "--timeline": {
+                      "required": true
+                    },
+                    "--unset": {
+                      "required": false
+                    }
+                  },
+                  "positionals": [
+                    "shot"
+                  ],
+                  "verbs": {}
+                },
+                "show": {
+                  "flags": {
+                    "--json": {
+                      "required": false
+                    },
+                    "--project": {
+                      "required": true
+                    },
+                    "--revision-id": {
+                      "required": false
+                    },
+                    "--timeline": {
+                      "required": true
+                    }
+                  },
+                  "positionals": [
+                    "shot"
+                  ],
+                  "verbs": {}
+                }
+              }
+            },
             "remove": {
               "flags": {
                 "--idempotency-key": {
@@ -3591,6 +3708,9 @@
               "required": false
             },
             "--shot": {
+              "required": false
+            },
+            "--shot-plans": {
               "required": false
             },
             "--show": {

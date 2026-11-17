@@ -1,6 +1,6 @@
 api: 1
 summary: Whole-media word transcription through the pinned ComfyUI workflow.
-example: astrid generate audio --entry transcription --mode transcribe --audio-ref MEDIA
+example: astrid generate audio --mode transcribe --audio-ref FILE
 effects: none
 ready_root: ../../workflows
 entries:
@@ -14,3 +14,6 @@ entries:
     binds:
       audio_ref: audio_ref
     defaults: {}
+    # The one default for audio transcribe: a request that names no entry resolves here.
+    default_for:
+      - {kind: audio, mode: transcribe, priority: 100}

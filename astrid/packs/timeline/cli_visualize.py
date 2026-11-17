@@ -1051,9 +1051,15 @@ def cmd_visualize(parsed: argparse.Namespace) -> int:
                         "export_dir": export_dir,
                     },
                 )), as_json=parsed.json)
+    plan_rows = None
+    if getattr(parsed, "shot_plans", False) and human_outputs is not None:
+        plan_rows = _visualized_plan_rows(parsed, inputs, working)
+        human_outputs["shot_plans"] = plan_rows
     if parsed.json or human_outputs is None or not result.ok:
         return print_result(envelope, as_json=parsed.json)
     print(_visualization_summary(human_outputs, parsed=parsed, inputs=inputs))
+    if plan_rows is not None:
+        print("\n".join(shot_plan_lines(plan_rows)))
     if human_outputs.get("exported"):
         exported = human_outputs["exported"]
         print(f"export directory: {exported['dir']}")
@@ -1061,6 +1067,38 @@ def cmd_visualize(parsed: argparse.Namespace) -> int:
             frame_dir = Path(exported["frames"][0]).parent
             print(f"  raw frames: {len(exported['frames'])} file(s) in {frame_dir}")
     return 0
+
+
+def _visualized_plan_rows(parsed: argparse.Namespace, inputs: Mapping[str, Any],
+                          working: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """The shot plans of the revision (or working copy) that was drawn, one row per placement, in time order."""
+    from astrid.sdk.shot_plan import plan_label, plan_rows
+
+    if working is not None:
+        from astrid.sdk.timeline_checkout import Checkout
+
+        bundle = Checkout.load(working["draft"]).bundle
+    else:
+        revision = inputs.get("revision_id") or getattr(parsed, "_source_revision_id", None)
+        opened = parsed.client.timelines.open_bundle(
+            parsed.project, inputs.get("timeline_slug"), **({"revision_id": revision} if revision else {}))
+        if not getattr(opened, "ok", False) or not isinstance(getattr(opened, "data", None), Mapping):
+            return [{"error": f"shot plans unavailable: {getattr(opened, 'error', opened)}"}]
+        bundle = opened.data["bundle"]
+    return [{**row, "label": plan_label(row["plan"])} for row in plan_rows(bundle)]
+
+
+def shot_plan_lines(rows: list[Mapping[str, Any]]) -> list[str]:
+    """``shot plans:`` then one line per shot placement: time, name, methods · status · takes · line."""
+    if rows and "error" in rows[0]:
+        return [str(rows[0]["error"])]
+    lines = [f"shot plans ({sum(1 for r in rows if r.get('plan'))} of {len(rows)} placed shots planned):"]
+    for row in rows:
+        lines.append(f"  {float(row['start']):6.2f}–{float(row['end']):.2f}s  {row['name']}  {row['label']}"
+                     + ("  (shared shot)" if row.get("shared") else ""))
+    if not rows:
+        lines.append("  (no shots on this timeline)")
+    return lines
 
 
 def _head_revision(parsed: argparse.Namespace) -> str | None:
