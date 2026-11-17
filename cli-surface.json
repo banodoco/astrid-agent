@@ -99,6 +99,38 @@
       "flags": {},
       "positionals": [],
       "verbs": {
+        "crop": {
+          "flags": {
+            "--bar-threshold": {
+              "required": false
+            },
+            "--box": {
+              "required": false
+            },
+            "--dry-run": {
+              "required": false
+            },
+            "--even": {
+              "required": false
+            },
+            "--idempotency-key": {
+              "required": false
+            },
+            "--json": {
+              "required": false
+            },
+            "--project": {
+              "required": true
+            },
+            "--remove-bars": {
+              "required": false
+            }
+          },
+          "positionals": [
+            "ref"
+          ],
+          "verbs": {}
+        },
         "import": {
           "flags": {
             "--idempotency-key": {
