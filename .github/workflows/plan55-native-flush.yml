@@ -11,6 +11,7 @@ on:
       - "tests/local_speed_native.wprp"
       - "tests/core/generation/test_local_speed_*.py"
       - "tests/integrations/test_local_speed_meter.py"
+      - "tests/fixtures/local-speed-baselines/**"
       - ".github/workflows/plan55-native-flush.yml"
 permissions:
   contents: read
@@ -121,8 +122,22 @@ jobs:
       # strict capture remains available with --native all and keeps failures.
       # The standing meter records Python force requests and COMMIT statements
       # separately; neither is represented as an OS flush count.
-      - name: Record repeated SDK and CLI baseline separately from counters
-        run: python -m tests.local_speed_meter_run --output plan55-meter-proof --timeout 1800 --samples 5 --counter-samples 2
+      - name: Run repeated SDK and CLI baseline separately from counters
+        shell: python
+        run: |
+          import pathlib, platform, subprocess, sys
+          command = [
+              sys.executable, "-m", "tests.local_speed_meter_run",
+              "--output", "plan55-meter-proof", "--timeout", "1800",
+              "--samples", "5", "--counter-samples", "2",
+          ]
+          if platform.system() == "Windows":
+              reference = pathlib.Path("tests/fixtures/local-speed-baselines/windows.json")
+              if not reference.is_file():
+                  raise SystemExit("Missing standing Windows reference")
+              command += ["--baseline", str(reference)]
+          # Linux acquisition remains explicit until its complete counter run passes.
+          subprocess.run(command, check=True)
       - name: Preserve exact source identity and proof manifests
         if: ${{ always() }}
         shell: python
