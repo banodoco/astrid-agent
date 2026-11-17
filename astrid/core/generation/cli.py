@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import logging
 import sys
@@ -20,10 +21,11 @@ _logger = logging.getLogger(__name__)
 _KIND_SPEC: dict[str, dict[str, Any]] = {
     'image': {'noun': 'an image', 'dimension_key': 'size'},
     'video': {'noun': 'a video', 'dimension_key': 'resolution', 'prompt_only_guard': True},
-    # transcribe takes an audio input (--audio-ref) and yields a transcript, not sound; it is listed apart
-    # from audio_modes, which keeps the sound-generating modes' table contract.
+    # audio_modes: the sound-generating modes (music, tts, sfx); the table contract tests pin this tuple.
+    # transcribe_modes: modes that take --audio-ref and yield a transcript, not sound. Kept under its own
+    # key so audio_modes stays unchanged; the --mode choices are audio_modes plus transcribe_modes.
     'audio': {'noun': 'audio', 'dimension_key': 'resolution', 'audio_modes': ('music', 'tts', 'sfx'),
-              'extra_modes': ('transcribe',)},
+              'transcribe_modes': ('transcribe',)},
 }
 
 
@@ -214,7 +216,7 @@ def _parser(contextual: dict[str, Any] | None = None) -> _GenerationParser:
         command.add_argument("--entry", action=_Once, help="Generation entry ID; use --help to inspect its declared inputs.")
         command.add_argument("--inputs-json", action=_Once, metavar="FILE", help="Read declared entry inputs from a JSON object.")
         command.add_argument("--mode", action=_Once,
-                             choices=(spec.get('audio_modes', ()) + spec.get('extra_modes', ())) or None,
+                             choices=(spec.get('audio_modes', ()) + spec.get('transcribe_modes', ())) or None,
                              required='audio_modes' in spec, help=("Audio mode: music, tts, or sfx. Use transcribe with --audio-ref FILE for word timings." if 'audio_modes' in spec
                              else "Generation mode; inferred from the supplied inputs by default."))
         command.add_argument("--execution", action=_Once, help="Catalog execution backend, when explicitly selected.")
@@ -229,7 +231,8 @@ def _parser(contextual: dict[str, Any] | None = None) -> _GenerationParser:
         if modality in {'video', 'audio'}:
             command.add_argument('--video-ref', action=_Once, metavar='FILE', help='Reference video for video generation or Foley sound effects.')
         if modality == 'audio':
-            command.add_argument('--audio-ref', action=_Once, metavar='FILE', help='Audio or video file to transcribe (--mode transcribe).')
+            command.add_argument('--audio-ref', action=_Once, metavar='FILE_OR_MEDIA',
+                                 help='Audio or video to transcribe (--mode transcribe): a local file, or a project media id or digest (needs --project).')
         command.add_argument("--width", action=_Once, type=int)
         command.add_argument("--height", action=_Once, type=int)
         command.add_argument("--steps", action=_Once, type=int)
@@ -571,6 +574,35 @@ def _job_command(argv: list[str]) -> int:
 
 def _main(argv: list[str]) -> int:
     """Parse one request and call its existing public SDK method exactly once."""
+    # A media id given as --audio-ref is written to a file that must outlive generation.
+    with contextlib.ExitStack() as stack:
+        return _main_request(argv, stack)
+
+
+def _media_ref_file(parsed, ref: str, stack) -> tuple[str, str]:
+    """Write a project media id or digest to a file for generation, as timelines transcripts run does.
+
+    Returns ``(path, digest)``. The file lives until ``stack`` closes.
+    """
+    import hashlib
+    import tempfile
+    from astrid.sdk.media_handles import resolve_media_handle
+
+    if not parsed.project:
+        raise ValueError(f"--audio-ref {ref!r} is not a file; a media id needs --project")
+    with _open_client() as client:
+        descriptor, _ = resolve_media_handle(client, parsed.project, ref)
+        digest = descriptor["digest"]
+        raw = client.media.read_bytes(digest)
+    if "sha256:" + hashlib.sha256(raw).hexdigest() != digest:
+        raise ValueError("media bytes do not match their digest")
+    workdir = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="astrid-audio-ref-")))
+    path = workdir / Path(str(descriptor.get("filename") or "media.bin")).name
+    path.write_bytes(raw)
+    return str(path), digest
+
+
+def _main_request(argv: list[str], stack) -> int:
     if '--job' in argv:
         return _job_command(argv)
     parser = _parser(_context_description(argv))
@@ -677,6 +709,13 @@ def _main(argv: list[str]) -> int:
         values = _values(parsed)
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
+    media_id = None
+    audio_ref = values.get('audio_ref')
+    if parsed.modality == 'audio' and audio_ref is not None and not Path(str(audio_ref)).expanduser().is_file():
+        try:
+            values['audio_ref'], media_id = _media_ref_file(parsed, str(audio_ref), stack)
+        except Exception as exc:  # noqa: BLE001 - a bad media reference is a usage error, whatever the Runtime said
+            parser.error(f"--audio-ref {audio_ref!r} is neither a file nor a readable project media id: {exc}")
     description = None
     if parsed.inputs_json:
         if not (parsed.entry or parsed.model):
@@ -779,8 +818,8 @@ def _main(argv: list[str]) -> int:
         # An admitted generation names its project's link; the App shows the output there once it finishes.
         payload = {**payload, 'open_url': open_url_for(admitted)}
     if transcription_run and isinstance(payload, dict):
-        # The same run id timelines transcripts import --from-run takes.
-        payload = {**payload, 'run_id': transcription_run}
+        # The same run id timelines transcripts import --from-run takes, with the media it transcribed.
+        payload = {**payload, 'run_id': transcription_run, **({'media_id': media_id} if media_id else {})}
     if parsed.json or parsed.dry_run or not isinstance(payload, dict):
         print(json.dumps(payload, indent=2, sort_keys=True))
     elif parsed.no_wait:
@@ -794,7 +833,8 @@ def _main(argv: list[str]) -> int:
             print(f"run: {payload['run_dir']}")
         if payload.get('run_id'):
             print(f"transcription run: {payload['run_id']}")
-            print(f"import: astrid timelines transcripts import <media-id> --from-run {payload['run_id']}")
+            media = payload.get('media_id') or '<media-id>'
+            print(f"import: astrid timelines transcripts import {media} --project <project> --from-run {payload['run_id']}")
     return 0
 
 

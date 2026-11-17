@@ -29,9 +29,12 @@ the `transcription` entry, which is the default for audio transcribe, so
 `transcripts run` does:
 
 ```sh
-"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate audio --mode transcribe --audio-ref <file>
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate audio --mode transcribe --audio-ref <media-id> --project <project>
 "${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" timelines transcripts import <media-id> --project <project> --from-run <run-id>
 ```
+
+`--audio-ref` takes a project media id (or digest), as above, or a local file
+without `--project`. The printed import line names the media id.
 
 Importing the same media again from the same source compares the content. An
 identical result reports `unchanged`. A different result is refused, and the
