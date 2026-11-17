@@ -62,30 +62,6 @@ def _duplicate_key(project: str, source: str, slug: str) -> str:
     return "timeline-duplicate-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
-def _blocking_lines(report: Any) -> list[str]:
-    """What makes a check report invalid: its blocking lines and a failed structural validation."""
-    return [*report.blocking, *(line for line in report.problems if line.startswith("invalid:"))]
-
-
-def _introduced_problems(copy_report: Any, source_report: Any) -> list[str]:
-    """Blocking problems of the copy that the source did not already have (numbers and ids aside)."""
-    from collections import Counter
-
-    from astrid.sdk.timeline.check import _lint_key
-
-    # The source's own overruns are reported, not blocking, because its base is itself.
-    carried = [line.removeprefix(PREEXISTING) for line in source_report.problems if line.startswith(PREEXISTING)]
-    seen = Counter(_lint_key(line) for line in [*_blocking_lines(source_report), *carried])
-    introduced = []
-    for line in _blocking_lines(copy_report):
-        key = _lint_key(line)
-        if seen[key] > 0:
-            seen[key] -= 1
-        else:
-            introduced.append(line)
-    return introduced
-
-
 def _commit_bundle(project: str, timeline: str, desired: Mapping[str, Any], *, label: str,
                    client: Any, idempotency_key: str) -> dict[str, Any]:
     """Submit the authenticated copy through the normal durable command session."""
@@ -421,14 +397,11 @@ def _duplicate(client: Any, project: str, source: str | Mapping[str, Any] | Path
                         for r in stored_source["placements"]}
         if len(copy_shots) != len(source_shots):
             raise TimelineEditError(f"the copy would be stored with {len(copy_shots)} distinct shots, its source stores {len(source_shots)}")
-        report = dst._check_core()
-        introduced = _introduced_problems(report, source_report)
-        if introduced:
-            raise TimelineEditError("the copy is invalid: " + "; ".join(introduced))
+        # The copy is Runtime-authenticated content, judged by nothing here: only the source's own state is reported.
         carried = [line for line in source_report.problems if line.startswith(PREEXISTING)]
         if carried or not source_report.valid:
             dst.notes.append("the source head already had problems, copied as they are: "
-                             + "; ".join([*_blocking_lines(source_report), *carried][:3]))
+                             + "; ".join(source_report.problems[:3]))
         from astrid.sdk.timeline.native_timeline_duplicate import copy_command
 
         bundle["_duplicate_command"] = copy_command(

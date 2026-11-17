@@ -10,7 +10,7 @@ from astrid.sdk import timeline_intent as intent
 
 from ._command_state import State, equal
 from ._common import AUDIO_KINDS, TIME_RE, TimelineEditError, _length_seconds, _r
-from .capture import move_intent, number, occurrence_start, rate
+from .capture import move_intent, number, occurrence_origin, occurrence_start, rate
 from .checkout import Checkout
 from .commands import execute
 from .model import Clip, _is_formula_or_moment
@@ -330,7 +330,7 @@ class AttachedClip(Clip):
     @property
     def start(self):
         state = State(self._tl.bundle)
-        return self.at + (0 if self.shot_id == 'parent' else occurrence_start(state.occurrence(self.shot_id)))
+        return self.at + (0 if self.shot_id == 'parent' else occurrence_origin(state.occurrence(self.shot_id)))
 
     @property
     def is_audio(self):

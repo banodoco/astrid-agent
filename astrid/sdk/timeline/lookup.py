@@ -467,15 +467,28 @@ class _LookupMixin:
             config["tracks"] = tracks
         return tracks
 
-    def _shot_start(self, shot_id: str) -> float:
+    def _shot_offset(self, shot_id: str) -> float:
+        """The occurrence's window origin into its shot (source_offset, seconds; the one rule)."""
         if shot_id == PARENT_SHOT:
             return 0.0
-        return _row_start(self._row(shot_id)) / 1000.0
+        from astrid.core.timeline.occurrence_window import source_offset_ms
+
+        try:
+            return source_offset_ms(self._row(shot_id).get("source_offset")) / 1000.0
+        except ValueError as exc:
+            raise TimelineEditError(str(exc)) from exc
+
+    def _shot_start(self, shot_id: str) -> float:
+        """Timeline time of shot-local zero: the window start less the origin, so tau sits at start - offset + tau."""
+        if shot_id == PARENT_SHOT:
+            return 0.0
+        return _row_start(self._row(shot_id)) / 1000.0 - self._shot_offset(shot_id)
 
     def _shot_length(self, shot_id: str) -> float:
+        """Shot-local end of the visible window (offset + duration); the render stops there."""
         if shot_id == PARENT_SHOT:
             return float("inf")  # the parent has no shot edge to cut a clip off at
-        return _num(self._row(shot_id).get("duration_ms")) / 1000.0
+        return _num(self._row(shot_id).get("duration_ms")) / 1000.0 + self._shot_offset(shot_id)
 
     def _shot_id(self, shot: Any) -> str:
         ids = self._shot_ids()

@@ -24,6 +24,10 @@ from astrid.sdk.timeline.units import (
 from astrid.sdk.timeline_checkout import Checkout
 
 
+# Declarations the timing kernel refuses outright; older timelines carry them as authored data.
+UNSUPPORTED_DECLARATIONS = ("sequence", "sequence_fit", "formulas", "orphan", "gap_after_s")
+
+
 def unsupported_declaration(declarations: Mapping[str, Any], name: str) -> bool:
     """Whether the kernel refuses this declaration. ``formulas`` that only derive ``params.*`` values
     (what ``Clip.set`` writes) never move a clip, so they are not timing declarations."""
@@ -516,7 +520,7 @@ def evaluate(bundle, sources, bindings, policy, legacy_declarations=()):
         if clip.get("at_ms") is not None or clip.get("duration_ms") is not None:
             raise TimingCompileError("clip millisecond timing needs an explicit authoring adapter")
         declarations = intent._app(clip)
-        for key in ("sequence", "sequence_fit", "formulas", "orphan", "gap_after_s"):
+        for key in UNSUPPORTED_DECLARATIONS:
             if unsupported_declaration(declarations, key):
                 raise TimingCompileError(f"unsupported timing declaration {owner}.{key}")
         if declarations.get("until_film_end") is not None:

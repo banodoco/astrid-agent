@@ -11,17 +11,19 @@ the same signature; every other finding is *introduced* and still blocks.
 from __future__ import annotations
 
 from collections.abc import Hashable, Mapping
-from typing import Any
+from typing import Any, TypeVar
+
+K = TypeVar("K", bound=Hashable)
 
 PREEXISTING = "existing, not blocking: "
 
 
 def split_findings(
-    found: Mapping[Hashable, Any], baseline: Mapping[Hashable, Any] | None,
-) -> tuple[list[Hashable], list[Hashable]]:
+    found: Mapping[K, Any], baseline: Mapping[K, Any] | None,
+) -> tuple[list[K], list[K]]:
     """Return ``(introduced, preexisting)`` keys of ``found``, in order."""
-    introduced: list[Hashable] = []
-    preexisting: list[Hashable] = []
+    introduced: list[K] = []
+    preexisting: list[K] = []
     for key, signature in found.items():
         if baseline is not None and key in baseline and baseline[key] == signature:
             preexisting.append(key)

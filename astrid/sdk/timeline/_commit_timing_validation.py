@@ -10,7 +10,8 @@ from astrid.core.timeline import moments
 from astrid.core.timeline.authoring_bundle import compile_authoring_candidate
 from astrid.core.timeline.shot_composition_projection import _placement_speed
 from astrid.sdk import timeline_intent as intent
-from astrid.sdk.timeline._timing_evaluators import _fps, _maps, _ReadLookup, unsupported_declaration
+from astrid.sdk.timeline._timing_evaluators import (
+    UNSUPPORTED_DECLARATIONS, _fps, _maps, _ReadLookup, unsupported_declaration)
 from astrid.sdk.timeline._preexisting import split_findings
 from astrid.sdk.timeline.compiler import TimingCompileError, TimingInputs, compile_timing
 from astrid.sdk.timeline.native_word_anchor import binding, legacy_binding
@@ -396,9 +397,9 @@ def _map_components(bundle: Mapping[str, Any]) -> list[set[tuple[Any, ...]]]:
     sources = bundle.get("source_mapping", {}).get("pinned_documents", [])
     for key, clip in rows.items():
         declarations = intent._app(clip)
-        if any(unsupported_declaration(declarations, field) for field in (
-                "sequence", "sequence_fit", "formulas", "orphan", "gap_after_s")) or declarations.get(
-                "until_film_end") is not None:
+        if unsupported_declaration(declarations, "formulas") or any(
+                declarations.get(field) is not None for field in (
+                    "sequence", "sequence_fit", "orphan", "gap_after_s", "until_film_end")):
             # The kernel cannot bound these inputs. Keep their dependency
             # selection conservative instead of interpreting another grammar.
             connect(rows)
@@ -481,10 +482,6 @@ def _retain_legacy_map_components(
     return retained
 
 
-# Declarations the timing kernel refuses outright (``_timing_evaluators``). Older timelines carry them
-# as authored data the kernel never evaluated (formulas only derive cached params).
-UNSUPPORTED_DECLARATIONS = ("sequence", "sequence_fit", "formulas", "orphan", "gap_after_s")
-
 
 def _unsupported_findings(bundle: Mapping[str, Any]) -> dict[tuple[Any, ...], str]:
     """Each refused declaration, keyed by clip and declaration, signed by its value and its clip.
@@ -513,9 +510,8 @@ def _drop_preexisting_unsupported(
     """
     if baseline is None:
         return
-    introduced, preexisting = split_findings(
+    _, preexisting = split_findings(
         _unsupported_findings(candidate), _unsupported_findings(baseline))
-    del introduced
     if not preexisting:
         return
     mirrors = projection["parent"].get("config", {}).get("clips")
