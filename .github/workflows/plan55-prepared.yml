@@ -56,6 +56,8 @@ jobs:
       - name: Install test dependencies
         id: install
         run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
           python -m pip install -e '.[dev]'
           python -m pip install --no-deps -e ./runtime-checkout -e ./runtime-checkout/packages/python
           python -m pip install -e ./vibecomfy-checkout
