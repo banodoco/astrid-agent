@@ -22,6 +22,15 @@ def renewal_delay(expiry, margin=5.0):
         return 0.0
 
 
+def renewal_margin(expiry):
+    """Reserve half the acknowledged lease for a stalled renewal request.
+
+    Freeze this at claim/heartbeat acknowledgement, never from an observation
+    or on each loop iteration: neither may keep moving the renewal deadline.
+    """
+    return max(0.05, renewal_delay(expiry, margin=0.0) / 2)
+
+
 def settlement_progress(value):
     """Keep a valid final checkpoint; invalid producer progress cannot fail work.
 

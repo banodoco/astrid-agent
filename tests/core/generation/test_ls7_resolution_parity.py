@@ -1,8 +1,11 @@
-"""RS1.10: registered data uses the full path's input and request contracts.
+"""RS1.10 format-level parity for the registered data descriptor format.
 
-No installed catalogue is presumed expressible as data. These admitted pack
-entries exercise every supported scalar type, default/alias/seed rule, named
-placement and typed refusal; native inputs and executable entries fall back.
+These synthetic entries exercise every supported scalar type, default/alias/
+seed rule, named placement and typed refusal. They reconstruct input/request
+preparation from the shared helpers; they do not invoke the Agent's complete
+preparation or prove parity for real catalogue entries and admitted records.
+RS1.10 remains open for that LS-10 comparison. Native inputs and executable
+entries continue to use the full path.
 """
 from __future__ import annotations
 

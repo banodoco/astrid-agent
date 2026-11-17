@@ -61,7 +61,7 @@ from runtime_protocol.errors import ConflictError
 from runtime_protocol.storage import free_disk_floor_bytes
 
 from astrid.core.execution.pipe_io import PipeReader, PipeWriter, close_pipe_workers
-from astrid.core.execution.task_waits import AttemptWait, renewal_delay, settlement_progress
+from astrid.core.execution.task_waits import AttemptWait, renewal_delay, renewal_margin, settlement_progress
 from astrid.core.execution.platform_helpers import (
     PROCESS_CONTROL_SUPPORT_ENV,
     configure_process_control,
@@ -555,6 +555,11 @@ _DEFAULT_EXECUTION_POLICY = ExecutionGuardPolicy()
 _LEASE_POLL_SECONDS = _DEFAULT_EXECUTION_POLICY.authority_window_seconds / 60
 _TERMINAL_RECONCILE_POLL_SECONDS = 0.25
 _TERMINAL_RECOVERY_MAX_ATTEMPTS = 5
+
+
+def _ready_empty_claim_delay(count: int) -> float:
+    """Bound ready/claim disagreement retries to 50–250 ms, only on failure."""
+    return min(0.25, 0.05 * (2 ** min(max(0, count - 1), 3)))
 
 
 class HostCancelled(HostError):
@@ -11741,13 +11746,13 @@ class GenericPackHost:
         stop, abort = threading.Event(), threading.Event()
         completion_lock = threading.RLock()
         event_lease = self._uses_task_waits() and callable(getattr(self.client, "new_task_observer", None))
-        lease_margin = max(0.05, min(5.0, self.execution_policy.authority_window_seconds / 60))
         task_wait = AttemptWait(self.client, str(data["id"])) if event_lease else None
         terminal: dict[str, Any] = {
             "task": dict(data), "attempt_id": exact_attempt, "lifetime": lifetime,
             "pump_stop": stop, "cancel_signal": abort, "stage": "admission",
             "completion_lock": completion_lock,
             "acknowledged_lease_expiry": data.get("lease_expires_at"),
+            "lease_renewal_margin": renewal_margin(data.get("lease_expires_at")),
             "wake_observer": task_wait.wake if task_wait is not None else lambda: None,
             "lease_diagnostic": {
                 "schema_version": 1,
@@ -12001,7 +12006,7 @@ class GenericPackHost:
                 if (stop.is_set() or terminal.get("recorded") or terminal.get("forced")
                         or (lifetime.expired() and not terminal.get("publication_pending"))):
                     return
-                if event_lease and renewal_delay(terminal["acknowledged_lease_expiry"], lease_margin) > 0:
+                if event_lease and renewal_delay(terminal["acknowledged_lease_expiry"], terminal["lease_renewal_margin"]) > 0:
                     return
                 changed = token != terminal.get("renewed_progress")
                 if terminal.get("renewal_inflight") or not (changed or liveness):
@@ -12051,6 +12056,7 @@ class GenericPackHost:
                         return
                     terminal["renewed_progress"] = token
                     terminal["acknowledged_lease_expiry"] = expiry
+                    terminal["lease_renewal_margin"] = renewal_margin(expiry)
                     if "progress" in kwargs:
                         terminal["sent_progress"] = token[1]
                     diagnostic = dict(terminal["lease_diagnostic"])
@@ -12128,7 +12134,7 @@ class GenericPackHost:
                 next_poll = time.monotonic() + poll_seconds
                 try:
                     if event_lease:
-                        delay = min(25.0, renewal_delay(terminal["acknowledged_lease_expiry"], lease_margin))
+                        delay = min(25.0, renewal_delay(terminal["acknowledged_lease_expiry"], terminal["lease_renewal_margin"]))
                         if lifetime.deadline() is not None and not terminal.get("reconcile_cancel"):
                             delay = min(delay, max(0.0, lifetime.deadline() - time.monotonic()))
                         observed = task_wait.wait(cursor=wait_cursor, timeout_seconds=delay)
@@ -14268,15 +14274,18 @@ class GenericPackHost:
     def claim_once(self) -> Mapping[str, Any] | None:
         """Run one claim cycle while publishing host-side quiescence counters."""
         thread_id = threading.get_ident()
+        work_ready = getattr(self, "_work_ready_observed", False)
+        self._work_ready_observed = False
         try:
             with self._handoff_condition:
                 if self._handoff_claim_gate_closed or not self._handoff_observation_known:
                     return None
-            return self._claim_once_impl(thread_id)
+            return self._claim_once_impl(thread_id, work_ready=work_ready)
         finally:
+            self._work_ready_observed = False
             self._handoff_leave_attempt(thread_id)
 
-    def _claim_once_impl(self, handoff_thread_id: int) -> Mapping[str, Any] | None:
+    def _claim_once_impl(self, handoff_thread_id: int, *, work_ready: bool = False) -> Mapping[str, Any] | None:
         """Claim and execute one queued task through the generated boundary."""
         if self._shutdown.is_set():
             return None
@@ -14302,7 +14311,10 @@ class GenericPackHost:
         if not capability_ids:
             return None
         claim_target = _configured_claim_target()
-        ready = self._wait_for_ready_work(0, capability_ids=capability_ids)
+        # Consume an outer-loop observation once. It is only a capability
+        # hint; preflight, the hand-off gate and the atomic claim still check
+        # authority. Standalone/once callers make their own observation.
+        ready = True if work_ready else self._wait_for_ready_work(0, capability_ids=capability_ids)
         if ready is False:
             return None
         if ready is True:
@@ -14357,6 +14369,7 @@ class GenericPackHost:
 
     def _wait_for_ready_work(self, timeout_seconds: float, *, capability_ids=None):
         """Observe eligibility outside claim/attempt custody; recheck at claim."""
+        self._work_ready_observed = False
         if not self._uses_task_waits():
             return None
         if self._shutdown.is_set():
@@ -14382,7 +14395,8 @@ class GenericPackHost:
             if not isinstance(hints, list) or any(cap not in capability_ids for cap in hints):
                 raise HostError("malformed eligible-work capability hint")
             self._wait_capability_ids = hints
-            return result.get("available") is True
+            self._work_ready_observed = result.get("available") is True
+            return self._work_ready_observed
         except Exception:
             if self._shutdown.is_set():
                 return False
@@ -14883,6 +14897,7 @@ class GenericPackHost:
             return self._run_claim_slots(poll_seconds=poll_seconds, max_tasks=max_tasks)
         results: list[Mapping[str, Any]] = []
         consecutive_claim_failures = 0
+        consecutive_empty_claims = 0
         pack_ack_at = 0.0
         while not self._shutdown.is_set() and (max_tasks is None or len(results) < max_tasks):
             # Idle point: no claim is in flight. Attempt the pack-refresh ack here, before
@@ -14902,6 +14917,7 @@ class GenericPackHost:
                 if not once and self._uses_task_waits():
                     maintenance = min(self._registration_refresh_deadline, pack_ack_at)
                     if not self._wait_for_ready_work(min(25.0, max(0.0, maintenance - time.monotonic()))):
+                        consecutive_empty_claims = 0
                         continue
                 result = self.claim_once()
             except Exception as exc:
@@ -14931,6 +14947,7 @@ class GenericPackHost:
                 continue
             consecutive_claim_failures = 0
             if result is not None:
+                consecutive_empty_claims = 0
                 results.append(result)
                 if once:
                     break
@@ -14939,7 +14956,13 @@ class GenericPackHost:
                 break
             if self._shutdown.is_set():
                 break
-            if not self._uses_task_waits():
+            if self._uses_task_waits():
+                consecutive_empty_claims += 1
+                # Ready-but-empty backoff: a hand-off gate or an intervening
+                # commit can disagree with the read-only availability hint.
+                # Successful claims never take this bounded retry wait.
+                self._shutdown.wait(_ready_empty_claim_delay(consecutive_empty_claims))
+            else:
                 self._shutdown.wait(max(0.0, float(poll_seconds)))
         return results
 
@@ -15054,6 +15077,7 @@ class GenericPackHost:
         active: dict[int, threading.Thread] = {}
         results: list[Mapping[str, Any]] = []
         failures: dict[int, int] = {}
+        empty_claims: dict[int, int] = {}
         retry_at: dict[int, float] = {}
         refresh_retry_at = 0.0
         refresh_failures = 0
@@ -15062,13 +15086,14 @@ class GenericPackHost:
         poll_delay = max(0.01, float(poll_seconds))
 
         def serve(index: int) -> None:
+            available = None
             try:
                 available = slots[index]._wait_for_ready_work(25.0) if event_wait else None
                 result = slots[index].claim_once() if available is not False else None
             except BaseException as exc:
-                completed.put((index, None, exc))
+                completed.put((index, None, exc, available))
             else:
-                completed.put((index, result, None))
+                completed.put((index, result, None, available))
             finally:
                 self._claim_loop_wake.set()
 
@@ -15092,10 +15117,11 @@ class GenericPackHost:
                 now = time.monotonic()
                 self._observe_machines(now)
                 while not completed.empty():
-                    index, result, exc = completed.get()
+                    index, result, exc, available = completed.get()
                     active.pop(index).join()
                     slot = slots[index]
                     if exc is not None:
+                        empty_claims[index] = 0
                         if not isinstance(exc, Exception):
                             raise exc
                         failures[index] = failures.get(index, 0) + 1
@@ -15105,7 +15131,14 @@ class GenericPackHost:
                         failures[index] = 0
                         if result is not None:
                             results.append(result)
-                        retry_at[index] = now if event_wait or result is not None else now + poll_delay
+                        if event_wait and available is True and result is None:
+                            empty_claims[index] = empty_claims.get(index, 0) + 1
+                            # The coordinator's existing Event.wait below
+                            # sleeps until this ready-but-empty retry deadline.
+                            retry_at[index] = now + _ready_empty_claim_delay(empty_claims[index])
+                        else:
+                            empty_claims[index] = 0
+                            retry_at[index] = now if event_wait or result is not None else now + poll_delay
                 if max_tasks is not None and len(results) >= max_tasks:
                     break
                 idle = not any(not slots[i]._waiting_for_work for i in active)

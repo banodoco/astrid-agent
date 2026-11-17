@@ -47,10 +47,18 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Read the pinned Runtime commit
+        id: runtime-pin
+        shell: python
+        run: |
+          import json, os, pathlib
+          commit = json.loads(pathlib.Path("runtime.lock.json").read_text())["source_commit"]
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print("commit=" + commit, file=output)
       - uses: actions/checkout@v4
         with:
           repository: banodoco/astrid-runtime
-          ref: 6855dfa8df65cf8ae4c002b57134d6505493c17c
+          ref: ${{ steps.runtime-pin.outputs.commit }}
           path: runtime
           persist-credentials: false
       - uses: actions/checkout@v4

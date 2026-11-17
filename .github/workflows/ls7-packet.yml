@@ -43,7 +43,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: banodoco/astrid-runtime
-          ref: 0d0bdfe4bda0b94b79756e6ae0b7e7908a218c96
+          ref: ac2d29dce0a12e00fac7e4593623401c11ff0dae
           path: runtime
           persist-credentials: false
       - uses: actions/setup-python@v5
@@ -68,6 +68,7 @@ jobs:
           if [ '${{ matrix.suite }}' = packet ]; then
             python -m pytest --import-mode=importlib -q -rA --junitxml=proof/results.xml \
               agent/tests/core/execution/test_ls7_task_waits.py \
+              agent/tests/core/execution/test_ls7_rework.py \
               agent/tests/core/execution/test_ls7_http_handoff.py \
               agent/tests/core/generation/test_ls7_resolution_parity.py \
               agent/tests/sdk/test_ls7_invocation_wait.py 2>&1 | tee proof/tests.log
