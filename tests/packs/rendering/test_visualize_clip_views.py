@@ -131,3 +131,35 @@ def test_heat_layer_draws_a_motion_map_with_a_finding(tmp_path, monkeypatch):
     assert any(line.startswith("HEAT") for line in outputs["findings"])
     with Image.open(outputs["pages"][0]) as page:
         assert page.size[1] > 300  # the map itself, not an empty sheet
+
+
+def test_a_real_seam_at_full_canvas_is_a_seam_not_a_change_away_from_the_mask():
+    size = (1920, 1080)
+    source = Image.new("RGB", size, (60, 50, 40))
+    ImageDraw.Draw(source).rectangle((0, 0, 1919, 300), fill=(90, 80, 70))
+    mask = Image.new("L", size, 0)
+    ImageDraw.Draw(mask).ellipse((810, 390, 1110, 690), fill=255)  # a 300 px mask
+    spill = Image.new("L", size, 0)
+    ImageDraw.Draw(spill).ellipse((800, 380, 1120, 700), fill=255)  # the edit runs 10 px past it
+    take = Image.composite(Image.new("RGB", size, (0, 200, 0)), source, spill)
+    box = (700, 280, 1220, 800)  # cropped to the mask's area, still at canvas scale
+    numbers = cv.difference(source.crop(box), take.crop(box), mask.crop(box))
+    verdicts = dict(cv.compare_verdicts([numbers], masked=True))
+    assert "MATCH" in verdicts and "DIFFERS" not in verdicts
+    assert "SEAM" in verdicts
+
+
+def test_a_square_mask_is_fitted_like_a_cover_clip_not_stretched():
+    square = Image.new("L", (1000, 1000), 0)
+    ImageDraw.Draw(square).ellipse((300, 300, 700, 700), fill=255)  # a circle in the middle
+    mask = cv.load_mask(square, (1920, 1080))
+    x0, y0, x1, y1 = mask.getbbox()
+    assert abs((x1 - x0) - (y1 - y0)) <= 2  # still a circle (stretching would make it 1.78x wide)
+    assert abs((x0 + x1) / 2 - 960) <= 2 and abs((y0 + y1) / 2 - 540) <= 2
+    assert set(np.unique(np.asarray(mask))) <= {0, 255}
+
+
+def test_drift_precision_is_stated_for_wide_regions():
+    assert cv.drift_precision((600, 300)) == 1.0
+    assert cv.drift_precision((1280, 450)) == 2.0
+    assert cv.worst_moment([(0, 0), (5, 5), (8, 0)]) == 2  # Euclidean, like the verdict (L1 would pick 1)

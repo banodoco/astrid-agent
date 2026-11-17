@@ -210,3 +210,31 @@ def test_shot_uses_its_planned_span_mask_and_latest_take():
     parsed._bundle = bundle
     with pytest.raises(clip.ClipError, match="no shot"):
         clip.prepare(parsed)
+
+
+def test_against_a_video_source_reads_the_clip_under_each_moment():
+    row = {"object_id": "sha256:" + "a" * 64, "media_type": "video/mp4"}
+    snapshot = {"registry": {"assets": {"o:pic1": {"media_id": row["object_id"]}, "o:pic2": {"media_id": row["object_id"]}}},
+                "clips": [{"kind": "visual", "clipType": "media", "asset": "o:pic1", "at": 10.0, "duration": 2.0,
+                           "from": 80.0, "speed": 0.5},
+                          {"kind": "visual", "clipType": "media", "asset": "o:pic2", "at": 12.0, "duration": 2.0,
+                           "from": 40.0, "speed": 2.0}]}
+    seconds, mapped = clip.source_seconds(snapshot, row, [10.0, 11.0, 12.5, 13.0], 10.0)
+    assert mapped == 4 and seconds == [80.0, 80.5, 41.0, 42.0]
+    other = {"object_id": "sha256:" + "b" * 64, "media_type": "video/mp4"}
+    assert clip.source_seconds(snapshot, other, [10.0, 11.0], 10.0) == ([0.0, 1.0], 0)
+
+
+def test_a_smaller_capture_is_brought_to_canvas_px(tmp_path):
+    outputs = _captured(tmp_path)
+    root = Path(outputs["pages"][0]).parent
+    for png in (root / "frames").glob("*.png"):  # as if captured with --size at half the canvas
+        with Image.open(png) as image:
+            small = image.resize((CANVAS[0] // 2, CANVAS[1] // 2))
+        small.save(png)
+    client, _ids = _client()
+    parsed = _parsed(client, cut="3", region="60,20,200,140")
+    drawn = clip.draw(outputs, clip.prepare(parsed), parsed=parsed, inputs={"cut": "3"})
+    assert any(line.startswith("SCALE") for line in drawn["findings"])
+    drift = next(line for line in drawn["findings"] if line.startswith("DRIFT"))
+    assert "36 px right" in drift or "34 px right" in drift or "38 px right" in drift  # canvas px, not capture px

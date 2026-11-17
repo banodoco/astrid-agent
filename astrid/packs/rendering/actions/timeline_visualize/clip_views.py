@@ -143,13 +143,19 @@ def where_words(box: tuple[int, int, int, int] | None, size: tuple[int, int]) ->
 # ---------------------------------------------------------------- masks
 
 def load_mask(image: Image.Image, size: tuple[int, int]) -> Image.Image:
-    """An image mask (white = edited) at ``size`` as a hard 0/255 ``L`` image; alpha counts when present."""
+    """An image mask (white = edited) at ``size`` as a hard 0/255 ``L`` image; alpha counts when present.
+
+    Fitted the way a ``cover`` clip is (scaled to fill, centred, overflow cropped), never stretched, then
+    thresholded; a mask already at the canvas aspect is simply scaled."""
     if image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info):
         rgba = image.convert("RGBA")
         luma = ImageChops.multiply(rgba.convert("L"), rgba.getchannel("A"))
     else:
         luma = image.convert("L")
-    return luma.resize(size, Image.NEAREST).point(lambda v: 255 if v > 127 else 0)
+    from PIL import ImageOps
+
+    fitted = luma if luma.size == tuple(size) else ImageOps.fit(luma, tuple(size), Image.BILINEAR)
+    return fitted.point(lambda v: 255 if v > 127 else 0)
 
 
 def _grow(on: np.ndarray, radius: int) -> np.ndarray:
@@ -265,10 +271,16 @@ def _best_shift(reference: np.ndarray, moving: np.ndarray, weights: np.ndarray, 
     return best
 
 
+def drift_precision(size: tuple[int, int]) -> float:
+    """The px resolution of :func:`region_drift` for a crop of ``size`` (the fine pass works at <= 640 px)."""
+    return max(1.0, max(size) / 640.0)
+
+
 def region_drift(crops: Sequence[Image.Image], *, search_px: float = 60.0,
                  weight: Image.Image | None = None) -> list[tuple[float, float]]:
     """How far each crop's content sits from the first crop's (crop px), by matching edges: a coarse search
-    over every shift within ``search_px``, then a fine one at up to 640 px wide (about 1-2 px precision).
+    over every shift within ``search_px``, then a fine one at up to 640 px wide (precision:
+    :func:`drift_precision`, 1 px for crops up to 640 px, coarser for wider ones).
 
     ``weight`` (an ``L`` image at the crop's size, e.g. the band around a mask's edge) says what to follow."""
     if not crops:
@@ -293,12 +305,17 @@ def region_drift(crops: Sequence[Image.Image], *, search_px: float = 60.0,
     return out
 
 
+def worst_moment(drift: Sequence[tuple[float, float]]) -> int:
+    """The index of the largest move (Euclidean: the same measure the verdict reports)."""
+    return int(np.argmax([float(np.hypot(dx, dy)) for dx, dy in drift])) if drift else 0
+
+
 def drift_verdict(drift: Sequence[tuple[float, float]], times: Sequence[float]) -> tuple[str, str, float]:
     """(level, sentence, max px): HOLDS / TIGHT / MOVES for a fixed box or mask over these moments."""
     if not drift:
         return "UNKNOWN", "no frames to measure", 0.0
     sizes = [float(np.hypot(dx, dy)) for dx, dy in drift]
-    worst = int(np.argmax(sizes))
+    worst = worst_moment(drift)
     most = sizes[worst]
     at = f" (most at {times[worst]:.2f} s)" if times else ""
     dx, dy = drift[worst]
@@ -388,66 +405,69 @@ def locator(frame: Image.Image, box: tuple[int, int, int, int], canvas: tuple[in
     return thumb
 
 
+def _crop_at_canvas(frame: Image.Image, box: tuple[int, int, int, int], canvas: tuple[int, int]) -> Image.Image:
+    """``box`` (canvas px) out of a frame captured at any size, returned at canvas scale."""
+    x0, y0, x1, y1 = box
+    k = frame.size[0] / canvas[0]
+    crop = frame.convert("RGB").crop((round(x0 * k), round(y0 * k), round(x1 * k), round(y1 * k)))
+    return crop if crop.size == (x1 - x0, y1 - y0) else crop.resize((x1 - x0, y1 - y0), Image.LANCZOS)
+
+
 def region_strip_page(*, title: str, what: str, sub: Sequence[str], frames: Sequence[Image.Image],
                       times: Sequence[float], box: tuple[int, int, int, int], canvas: tuple[int, int],
                       mask: Image.Image | None = None, verdicts: Sequence[tuple[str, str]] = (),
                       drift: Sequence[tuple[float, float]] = (), heat: Image.Image | None = None,
-                      max_width: int = 2200) -> Image.Image:
-    """The region at each moment, side by side at source resolution (smaller only when they do not fit),
-    the mask edge (cyan) at the same canvas place on each, so drift reads against a fixed line; then the
-    region's motion map and where it sits in the frame."""
+                      max_width: int = 1900) -> Image.Image:
+    """Verdicts, then the region's motion map (mask edge in cyan) beside where the box sits in the frame,
+    then the region at each moment in one row, the mask edge at the same canvas place on each so drift reads
+    against a fixed line."""
     from .layers.base import PALETTE, draw_text
 
     x0, y0, x1, y1 = box
+    w, h = x1 - x0, y1 - y0
     crops = []
     for frame in frames:
-        k = frame.size[0] / canvas[0]
-        crop = frame.convert("RGB").crop((round(x0 * k), round(y0 * k), round(x1 * k), round(y1 * k)))
-        if crop.size != (x1 - x0, y1 - y0):
-            crop = crop.resize((x1 - x0, y1 - y0), Image.LANCZOS)
+        crop = _crop_at_canvas(frame, box, canvas)
         if mask is not None:
             crop = draw_outline(crop, mask.crop(box), width=2)
         crops.append(crop)
-    w = x1 - x0
-    # source resolution when at least two fit side by side; a wide region is reduced to two per row
-    shown = crops if 2 * (w + 10) + 24 <= max_width or len(crops) < 2 else [
-        _fit(c, (max_width - 24) // 2 - 10) for c in crops]
-    tw, th = shown[0].size if shown else (w, y1 - y0)
-    columns = max(1, min(len(shown), (max_width - 24) // (tw + 10)))
-    scale_note = "1:1 (one px = one canvas px)" if tw == w else f"shown at {tw / w:.2f}x"
-    rows = (len(shown) + columns - 1) // columns
-    side = heat is not None
-    heat_tile = _fit(heat, min(tw, 900), th) if side else None
+    gap = 10
+    tile_w = min(w, (max_width - 24 - gap * max(0, len(crops) - 1)) // max(1, len(crops)))
+    shown = [_fit(c, tile_w) for c in crops]
+    th = shown[0].size[1] if shown else 0
+    scale_note = "1:1" if tile_w == w else f"shown at {tile_w / w:.2f}x"
     loc = locator(frames[len(frames) // 2], box, canvas, mask=mask) if frames else None
-    width = max(24 + columns * (tw + 10), 900)
-    header_h = 66 + 19 * (len(sub) + 1) + 28 * len(verdicts) + 16
-    body = rows * (th + 30) + 20
-    tail = max((heat_tile.size[1] + 60) if heat_tile else 0, (loc.size[1] + 40) if loc else 0)
-    page, draw = _page(width, header_h + body + tail + 20)
-    y = _header(draw, title, what, [*sub, f"each picture: canvas px {x0},{y0}–{x1},{y1} ({w}x{y1 - y0}), "
-                                          f"{scale_note}"], verdicts, width)
-    for i, crop in enumerate(shown):
-        col, row = i % columns, i // columns
-        x, yy = 12 + col * (tw + 10), y + row * (th + 30)
-        label = f"{times[i]:.2f} s" if i < len(times) else ""
-        if i < len(drift) and i:
-            dx, dy = drift[i]
-            moved = _direction(dx, dy)
-            label += "   steady" if moved == "steady" else f"   moved {moved}"
-        draw_text(draw, (x, yy), label, 13, PALETTE["ink"])
-        page.paste(crop, (x, yy + 18))
-    y += body
+    heat_w = min(w, max_width - 24 - ((loc.size[0] + 24) if loc else 0), 1100)
+    heat_tile = _fit(heat, heat_w) if heat is not None else None
+    width = max(24 + len(shown) * (tile_w + gap), 24 + (heat_tile.size[0] if heat_tile else 0)
+                + ((loc.size[0] + 24) if loc else 0), 900)
+    header_h = 66 + 19 * len(sub) + 28 * len(verdicts) + 16
+    top_h = max((heat_tile.size[1] + 82) if heat_tile else 0, (loc.size[1] + 24) if loc else 0)
+    page, draw = _page(width, header_h + top_h + 24 + th + 40)
+    y = _header(draw, title, what, sub, verdicts, width)
     x = 12
     if heat_tile is not None:
-        draw_text(draw, (x, y), "where it moves over the span (colour = how often each spot changes)", 13,
-                  PALETTE["muted"])
+        draw_text(draw, (x, y), "where it moves over the span" + (" (cyan = mask edge)" if mask is not None else ""),
+                  14, PALETTE["ink"])
         page.paste(heat_tile, (x, y + 20))
         draw_heat_legend(draw, (x, y + 26 + heat_tile.size[1]), width=min(260, heat_tile.size[0]))
         x += heat_tile.size[0] + 24
     if loc is not None:
-        draw_text(draw, (x, y), "where the box is in the frame" + (" (cyan = mask)" if mask is not None else ""),
-                  13, PALETTE["muted"])
+        draw_text(draw, (x, y), "where the box is in the frame", 13, PALETTE["muted"])
         page.paste(loc, (x, y + 20))
+    y += top_h
+    draw_text(draw, (12, y), f"the region at {len(shown)} moments ({scale_note}; the cyan line stays put, the "
+                             "picture may not)" if mask is not None else
+              f"the region at {len(shown)} moments ({scale_note})", 14, PALETTE["ink"])
+    y += 22
+    for i, crop in enumerate(shown):
+        x = 12 + i * (tile_w + gap)
+        label = f"{times[i]:.2f} s" if i < len(times) else ""
+        if i < len(drift) and i:
+            moved = _direction(*drift[i])
+            label += "  steady" if moved == "steady" else f"  moved {moved}"
+        draw_text(draw, (x, y), label, 12, PALETTE["muted"])
+        page.paste(crop, (x, y + 16))
     return page
 
 
@@ -495,15 +515,18 @@ class Difference:
 
 
 def difference(source: Image.Image, take: Image.Image, mask: Image.Image | None, *, band_px: int = 12,
-               canvas: tuple[int, int] | None = None) -> Difference:
-    """How the take differs from the source (both at the same size): numbers and a heat picture of it."""
+               px_per_canvas_px: float = 1.0) -> Difference:
+    """How the take differs from the source (both at the same size): numbers and a heat picture of it.
+
+    ``band_px`` is the seam band either side of the mask edge in canvas px; ``px_per_canvas_px`` says how
+    many of ``source``'s px make one canvas px (1 for a frame or crop at canvas scale)."""
     take = take.convert("RGB").resize(source.size, Image.LANCZOS) if take.size != source.size else take.convert("RGB")
     a = np.asarray(source.convert("RGB"), dtype=np.int16)
     b = np.asarray(take, dtype=np.int16)
     diff = np.abs(a - b).max(axis=2).astype(np.float32)
     if mask is not None:
         fitted = mask.resize(source.size, Image.NEAREST)
-        radius = max(1, round(band_px * source.size[0] / ((canvas or source.size)[0])))
+        radius = max(1, round(band_px * px_per_canvas_px))
         inside = np.asarray(fitted, dtype=np.uint8) > 127
         grown, shrunk = _grow(inside, radius), _shrink(inside, radius)
         seam_ring = grown & ~shrunk
@@ -552,28 +575,43 @@ def compare_verdicts(rows: Iterable[Difference], *, masked: bool) -> list[tuple[
 
 def compare_page(*, title: str, what: str, sub: Sequence[str], rows: Sequence[tuple[float, Image.Image, Image.Image,
                  Difference]], verdicts: Sequence[tuple[str, str]], labels: tuple[str, str] = ("source", "take"),
-                 column_width: int = 620) -> Image.Image:
-    """Rows of moments: source | take | where they differ (colour = how much; cyan = mask edge)."""
+                 max_width: int = 1900) -> Image.Image:
+    """Verdicts; then where take and source differ at every moment, in one row (colour = how much, cyan =
+    mask edge); then the evidence: source and take side by side per moment, smaller."""
     from .layers.base import PALETTE, draw_text
 
-    tiles = [(t, _fit(s, column_width), _fit(k, column_width), _fit(d.picture, column_width), d)
-             for t, s, k, d in rows]
-    th = max((tile[1].size[1] for tile in tiles), default=0)
-    width = 12 + 3 * (column_width + 12)
+    n = max(1, len(rows))
+    gap = 10
+    diff_w = min(rows[0][1].size[0] if rows else 600, (max_width - 24 - gap * (n - 1)) // n)
+    diffs = [_fit(d.picture, diff_w) for _t, _s, _k, d in rows]
+    dh = diffs[0].size[1] if diffs else 0
+    pair_w = min(diff_w, 460)
+    pairs = [(_fit(src, pair_w), _fit(take, pair_w)) for _t, src, take, _d in rows]
+    ph = pairs[0][0].size[1] if pairs else 0
+    per_row = max(1, (max_width - 24) // (2 * pair_w + 3 * gap + 20))
+    width = max(24 + n * (diff_w + gap), 24 + per_row * (2 * pair_w + 3 * gap + 20), 900)
     header_h = 66 + 19 * len(sub) + 28 * len(verdicts) + 16
-    page, draw = _page(width, header_h + 30 + len(tiles) * (th + 40) + 30)
+    evidence_rows = (n + per_row - 1) // per_row
+    page, draw = _page(width, header_h + 24 + dh + 40 + 24 + evidence_rows * (ph + 30) + 20)
     y = _header(draw, title, what, sub, verdicts, width)
-    for i, heading in enumerate((labels[0], labels[1], "where they differ (violet = slightly … yellow = very)")):
-        draw_text(draw, (12 + i * (column_width + 12), y), heading, 15, PALETTE["ink"])
-    y += 26
-    for t, source, take, diff, numbers in tiles:
-        note = (f"{t:.2f} s · away from the mask {numbers.outside:.1f} · at its edge {numbers.seam:.1f} · inside "
-                f"{numbers.inside:.1f} (mean /255)" if numbers.outside or numbers.seam else
-                f"{t:.2f} s · mean difference {numbers.inside:.1f}/255")
-        draw_text(draw, (12, y), note, 13, PALETTE["muted"])
-        for i, tile in enumerate((source, take, diff)):
-            page.paste(tile, (12 + i * (column_width + 12), y + 18))
-        y += th + 40
+    draw_text(draw, (12, y), "where the take differs from the source (violet = slightly … yellow = very; "
+                             "cyan = mask edge)", 14, PALETTE["ink"])
+    y += 22
+    for i, ((t, _s, _k, numbers), tile) in enumerate(zip(rows, diffs)):
+        x = 12 + i * (diff_w + gap)
+        note = (f"{t:.2f} s · away {numbers.outside:.1f} · edge {numbers.seam:.1f} · inside {numbers.inside:.1f}"
+                if numbers.outside or numbers.seam else f"{t:.2f} s · mean {numbers.inside:.1f}/255")
+        draw_text(draw, (x, y), note, 12, PALETTE["muted"])
+        page.paste(tile, (x, y + 16))
+    y += dh + 40
+    draw_text(draw, (12, y), f"the evidence: {labels[0]} | {labels[1]}", 14, PALETTE["ink"])
+    y += 22
+    for i, ((t, *_rest), (src, take)) in enumerate(zip(rows, pairs)):
+        col, row = i % per_row, i // per_row
+        x, yy = 12 + col * (2 * pair_w + 3 * gap + 20), y + row * (ph + 30)
+        draw_text(draw, (x, yy), f"{t:.2f} s", 12, PALETTE["muted"])
+        page.paste(src, (x, yy + 16))
+        page.paste(take, (x + pair_w + gap, yy + 16))
     return page
 
 

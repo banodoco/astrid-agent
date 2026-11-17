@@ -20,7 +20,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-STRIP_MOMENTS = 8
+STRIP_MOMENTS = 4
 COMPARE_MOMENTS = 4
 SHORT_DIGEST = re.compile(r"(?:sha256:)?([0-9a-f]{6,63})")
 
@@ -309,8 +309,11 @@ def draw(outputs: Mapping[str, Any], request: Mapping[str, Any], *, parsed: argp
     if request.get("mask"):
         mask_row = resolve_media(parsed, str(request["mask"]))
         path = media_file(parsed, mask_row, root.parent / "media")
-        mask_img = cv.load_mask(media_frames(path, mask_row, [0.0], canvas)[0] if is_video(mask_row)
-                                else Image.open(path), canvas)
+        if is_video(mask_row):
+            mask_img = cv.load_mask(media_frames(path, mask_row, [0.0], canvas)[0], canvas)
+        else:
+            with Image.open(path) as opened:
+                mask_img = cv.load_mask(opened, canvas)
         if mask_img.getbbox() is None:
             raise ClipError(f"the mask {_short(mask_row)} is all black: nothing is marked as edited (white = edited)")
     box = None
@@ -345,10 +348,19 @@ def draw(outputs: Mapping[str, Any], request: Mapping[str, Any], *, parsed: argp
         if box[2] <= box[0] or box[3] <= box[1]:
             raise ClipError(f"the region lies outside the {canvas[0]}x{canvas[1]} canvas")
     images = cv.as_images(p for _t, p in inside)
+    captured_size = images[0].size
+    if captured_size != canvas:
+        # --size/--resolution captured smaller (or larger): bring every picture to canvas px, so boxes, masks,
+        # drift and differences are all in canvas px (and say the detail is limited by the capture)
+        images = [image.resize(canvas, Image.LANCZOS) for image in images]
+        findings.append(f"SCALE  frames were captured at {captured_size[0]}x{captured_size[1]} and scaled to the "
+                        f"{canvas[0]}x{canvas[1]} canvas; drop --size/--resolution for source resolution")
     times = [t for t, _p in inside]
     freq, steps = cv.change_map(images)
-    mask_note = (f"mask {_short(mask_row)} from {request['mask_from']} (cyan line = its edge; white in the mask = "
-                 "edited)") if mask_row else None
+    mask_note = None
+    if mask_row:
+        findings.append(f"MASKID {_short(mask_row)} {mask_row.get('filename') or ''} from {request['mask_from']} "
+                        "(white = edited; drawn as the cyan line)")
     page_stem = _stem(cut, start, end, box, mask_row, request)
     primary = None
     # 1) the take against its source
@@ -360,13 +372,13 @@ def draw(outputs: Mapping[str, Any], request: Mapping[str, Any], *, parsed: argp
     # 2) the region (or the mask's box) across the span
     if box is not None and (len(inside) > 1 or not request.get("take")):
         chosen = pick(list(zip(times, images)), STRIP_MOMENTS)
-        crops = [img.crop(_scaled(box, img.size, canvas)) for _t, img in chosen]
+        crops = [img.crop(box) for _t, img in chosen]  # images are at canvas scale: drift is in canvas px
         weight = cv.edge_band(mask_img, 16).crop(box) if mask_img is not None else None
         drift = cv.region_drift(crops, weight=weight) if len(crops) > 1 else []
         verdicts = []
         if drift:
             level, sentence, _most = cv.drift_verdict(drift, [t for t, _i in chosen])
-            worst_t = chosen[max(range(len(drift)), key=lambda i: abs(drift[i][0]) + abs(drift[i][1]))][0]
+            worst_t = chosen[cv.worst_moment(drift)][0]
             verdicts.append((level, sentence))
             findings.append(f"DRIFT  {level} {sentence}")
         if mask_img is not None:
@@ -377,19 +389,19 @@ def draw(outputs: Mapping[str, Any], request: Mapping[str, Any], *, parsed: argp
                             f"outside it, {fit.edge_in:.0%} just inside")
         fx0, fy0, fx1, fy1 = _scaled(box, (freq.shape[1], freq.shape[0]), canvas)
         region_freq = freq[fy0:max(fy1, fy0 + 1), fx0:max(fx1, fx0 + 1)]
-        heat = cv.heat_overlay(images[len(images) // 2].crop(_scaled(box, images[0].size, canvas)), region_freq) \
+        heat = cv.heat_overlay(images[len(images) // 2].crop(box), region_freq) \
             if steps else None
         if heat is not None and mask_img is not None:
             heat = cv.draw_outline(heat, mask_img.crop(box), width=2)
         label = (f"region {region_name}" if region_name else f"zoom {request['zoom']}" if request.get("zoom")
                  else "the mask's area")
-        what = (f"{label} at {len(chosen)} moments across the span, side by side; the cyan line is the mask, "
-                "fixed in place, so anything that slides off it is drift" if mask_img is not None else
-                f"{label} at {len(chosen)} moments across the span, side by side, to see whether it moves")
+        what = ("will a fixed mask hold here? where the picture moves, then the region at moments across the span "
+                "against the mask's fixed edge" if mask_img is not None else
+                f"does {label} move across the span? where it moves, then the region at moments across the span")
         follows = "the mask's edge" if mask_img is not None else "the picture in the box"
-        sub = ([mask_note] if mask_note else []) + [
-            f"{len(inside)} frames captured over {end - start:.2f} s; 'moved' = how far {follows} sits from the "
-            "first moment (edge matching, about 1-2 px)"]
+        precision = cv.drift_precision((box[2] - box[0], box[3] - box[1]))
+        sub = [f"'moved' = how far {follows} sits from the first moment, in canvas px "
+               f"(edge matching, to about {precision:.0f} px)"]
         page = cv.region_strip_page(title=f"{title} · {where} · {label}", what=what, sub=sub,
                                     frames=[i for _t, i in chosen], times=[t for t, _i in chosen], box=box,
                                     canvas=canvas, mask=mask_img, verdicts=verdicts, drift=drift, heat=heat)
@@ -409,9 +421,7 @@ def draw(outputs: Mapping[str, Any], request: Mapping[str, Any], *, parsed: argp
             title=f"{title} · {where} · where it moves",
             what=("the middle frame, greyed, coloured where pixels change over the span"
                   + (" (cyan = mask edge)" if mask_img is not None else "")),
-            sub=[f"{len(inside)} frames over {end - start:.2f} s; grey = still, violet = changes now and then, "
-                 "yellow = changes every frame"]
-                + ([mask_note] if mask_note else []),
+            sub=[f"{len(inside)} frames over {end - start:.2f} s"],
             base=base, freq=freq, mask=mask_img, verdicts=verdicts, box=box, canvas=canvas)
         path = root / f"view-clip-heat-{page_stem}.png"
         page.save(path)
@@ -424,6 +434,22 @@ def draw(outputs: Mapping[str, Any], request: Mapping[str, Any], *, parsed: argp
     label = {"compare": "take vs source", "region": "region over time", "heat": "motion map"}.get(kind, "clip view")
     return {"page": primary, "pages": pages, "findings": findings, "box": list(box) if box else None,
             "suffix": page_stem, "label": label, "worst_t": worst_t if worst_t is not None else times[len(times) // 2]}
+
+
+def source_seconds(snapshot: Mapping[str, Any], source_row: Mapping[str, Any], moments: Sequence[float],
+                   start: float) -> tuple[list[float], int]:
+    """The second of ``source_row`` to read for each timeline moment, and how many moments were mapped through
+    the picture clip under them (the clip's ``from`` + time into the clip x ``speed``); others use t - start."""
+    source_id = str(source_row.get("object_id") or "")
+    out, mapped = [], 0
+    for t in moments:
+        clip = picture_clip(snapshot, t)
+        if clip and clip.get("media_id") == source_id and is_video(source_row):
+            out.append(float(clip.get("from") or 0.0) + (t - float(clip.get("at") or 0.0)) * float(clip.get("speed") or 1.0))
+            mapped += 1
+        else:
+            out.append(t - start)
+    return out, mapped
 
 
 def _fit_verdicts(fit: Any, canvas: tuple[int, int]) -> list[tuple[str, str]]:
@@ -460,16 +486,11 @@ def _compare(parsed, request, *, root, inside, images, snapshot, canvas, box, ma
     else:
         source_row = resolve_media(parsed, against)
         source_path = media_file(parsed, source_row, root.parent / "media")
-        clip = picture_clip(snapshot, moments[len(moments) // 2])
-        source_id = str(source_row.get("object_id") or "")
-        if clip and clip.get("media_id") == source_id and is_video(source_row):
-            speed, offset = float(clip.get("speed") or 1.0), float(clip.get("from") or 0.0)
-            seconds = [offset + (t - float(clip["at"])) * speed for t in moments]
-            mapping = (f"source = the cut's picture media at its own time ({offset:.2f} s + timeline offset x "
-                       f"{speed:.2f}); take second 0 = {start:.2f} s")
-        else:
-            seconds = [t - start for t in moments]
-            mapping = f"take and source both from their second 0 = {start:.2f} s on the timeline"
+        seconds, mapped = source_seconds(snapshot, source_row, moments, start)
+        mapping = ("source read at the clip's own source time under each moment" if mapped == len(moments) else
+                   f"source read at its own time where it is the picture clip ({mapped} of {len(moments)} moments), "
+                   "else from its second 0" if mapped else
+                   f"take and source both from their second 0 = {start:.2f} s on the timeline")
         source_imgs = media_frames(source_path, source_row, seconds, canvas)
         source_label = f"source {_short(source_row)} {source_row.get('filename') or ''}".strip()
     rows = []
@@ -478,17 +499,16 @@ def _compare(parsed, request, *, root, inside, images, snapshot, canvas, box, ma
         if box is not None:
             source, take = source.crop(box), take.crop(box)
             crop_mask = mask.crop(box) if mask is not None else None
-        rows.append((t, source, take, cv.difference(source, take, crop_mask, canvas=canvas)))
+        rows.append((t, source, take, cv.difference(source, take, crop_mask)))  # canvas scale: 1 px = 1 canvas px
     verdicts = cv.compare_verdicts([r[3] for r in rows], masked=mask is not None)
     for level, sentence in verdicts:
         findings.append(f"COMPARE {level} {sentence}")
-    sub = [f"{source_label} | take {_short(take_row)} {take_row.get('filename') or ''} (from {request['take_from']})",
-           mapping + (f" · cropped to canvas px {box[0]},{box[1]}–{box[2]},{box[3]} at source resolution"
-                      if box else "")]
-    if mask_note:
-        sub.append(mask_note)
+    findings.append(f"TAKE   {_short(take_row)} {take_row.get('filename') or ''} (from {request['take_from']}) vs "
+                    f"{source_label}; {mapping}; take second 0 = {start:.2f} s"
+                    + (f"; cropped to canvas px {box[0]},{box[1]}–{box[2]},{box[3]}" if box else ""))
+    sub = [f"{source_label} vs take {_short(take_row)}; {mapping}"]
     page = cv.compare_page(title=f"{title} · {where} · take vs source", sub=sub, rows=rows, verdicts=verdicts,
-                           what="the source, the take and where they differ, at the same moments, one row each",
+                           what="does the take change only what it should? where it differs first, then the evidence",
                            labels=(source_label, f"take {_short(take_row)}"))
     path = root / f"view-clip-compare-{stem}.png"
     page.save(path)
