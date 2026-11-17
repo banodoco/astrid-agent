@@ -13969,6 +13969,16 @@ class GenericPackHost:
                 self._write_task_result(_terminal)
             except Exception as exc:
                 cleanup_errors.append(f"terminal result: {exc}")
+            if ((retain_attempt or self.attempt_root is not None)
+                    and not cleanup_errors and not retain_for_unresolved_scope
+                    and not _terminal.get("retain_spool")):
+                # Keeping the receipt/output evidence does not keep relocated
+                # VibeComfy scratch. Unresolved writers/publication keep both.
+                from astrid.core.generation.vibecomfy_runtime_root import remove_windows_runtime_root
+                try:
+                    remove_windows_runtime_root(root / "outputs")
+                except OSError as exc:
+                    cleanup_errors.append(f"short runtime folder: {exc}")
             # An unverified session release may still own a writer: fail this
             # task and keep its attempt below; the host keeps accepting work.
             if retain_attempt:

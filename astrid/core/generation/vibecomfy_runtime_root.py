@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import shutil
+import stat
 import sys
 from pathlib import Path, PurePath
 from typing import overload
@@ -41,8 +42,16 @@ def remove_windows_runtime_root(destination: Path) -> None:
     """Delete the short Windows runtime folder of one attempt; nothing to do elsewhere."""
     if sys.platform != "win32":
         return
+    root = Path(vibecomfy_runtime_root(destination))
     try:
-        shutil.rmtree(vibecomfy_runtime_root(destination))
+        # A replaced short-root parent must not redirect recursive deletion.
+        # Junctions are reparse points on Windows, not necessarily symlinks.
+        for path in (root.parent, root):
+            metadata = path.lstat()
+            if (stat.S_ISLNK(metadata.st_mode)
+                    or getattr(metadata, "st_file_attributes", 0) & 0x400):
+                raise OSError(f"refusing linked VibeComfy runtime folder: {path}")
+        shutil.rmtree(root)
     except FileNotFoundError:
         pass
 
