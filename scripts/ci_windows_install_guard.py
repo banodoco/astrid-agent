@@ -203,6 +203,30 @@ def generation_smoke(comfy, command):
         windows.save("generation-timing.json", timing)
 
 
+def os_trust_smoke():
+    """Outbound HTTPS verifies against the Windows certificate store, on a real handshake.
+
+    Antivirus and proxy roots live in that store; the installed build's own client must use it.
+    """
+    installed = windows.version()
+    env = {key: value for key, value in os.environ.items() if key not in {"PYTHONPATH", "PYTHONHOME"}}
+    env.update(installed["env"])
+    trust = subprocess.run(
+        [installed["python"], "-I", "-c",
+         "import ssl\n"
+         "from astrid.core.util.http import os_trust_ssl_context, trusted_httpx_client\n"
+         "context = os_trust_ssl_context()\n"
+         "assert context.verify_mode == ssl.CERT_REQUIRED and context.check_hostname\n"
+         "assert type(context).__module__.startswith('astrid.installer._tls_truststore'), type(context)\n"
+         "with trusted_httpx_client(timeout=30) as client:\n"
+         "    print(client.head('https://huggingface.co/').status_code)\n"],
+        cwd=windows.EVIDENCE, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=120)
+    (windows.EVIDENCE / "command-os-trust.log").write_text(trust.stdout + trust.stderr, encoding="utf-8")
+    if trust.returncode:
+        raise RuntimeError(f"OS trust store check failed (exit {trust.returncode}): {(trust.stdout + trust.stderr)[-2000:]}")
+
+
 def command_smoke():
     """Run only the installed candidate; the checkout supplies an HTTP fixture."""
     installed = windows.version()
@@ -283,6 +307,7 @@ def main():
     elif args.step == "install":
         install()
     else:
+        os_trust_smoke()
         command_smoke()
 
 

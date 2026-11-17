@@ -10,7 +10,10 @@ import sys
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
+from astrid.core.util.http import os_trust_ssl_context
 from astrid.packs.generation.actions.generate_image_openai.run import (
     DEFAULT_MODEL,
     _die,
@@ -142,7 +145,7 @@ def _call_image_edit_api(
         method="POST",
     )
     try:
-        with urlopen(request, timeout=timeout) as response:
+        with urlopen(request, timeout=timeout, context=os_trust_ssl_context()) as response:
             return json.loads(response.read().decode("utf-8"))
     except HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")

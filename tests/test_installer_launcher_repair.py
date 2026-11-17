@@ -354,7 +354,12 @@ def test_verification_rejects_pack_host_without_ready_file_with_service_evidence
     (logs / "service-pack-host.log").write_text("startup failed: missing adapter\nrestart scheduled\n")
     monkeypatch.setattr(backend_module.platform, "log_dir", lambda: logs)
     monkeypatch.setattr(backend_module.urllib.request, "build_opener", lambda *_: Opener())
-    monkeypatch.setattr(backend_module.time, "sleep", lambda _: None)
+    clock = [0.0]
+    monkeypatch.setattr(backend_module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(backend_module.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    declaration = tmp_path / "services.json"
+    write_json(declaration, {"services": [{"name": "pack-host", "ready": {"timeout_seconds": 1}}]})
+    write_json(version.profile, {"service_declaration": str(declaration)})
     backend = Backend(root, tmp_path / "install.log", Path(sys.executable))
     backend.runtime = lambda *_args, **_kwargs: status
 

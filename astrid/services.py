@@ -190,3 +190,11 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def managed_runtime_lifecycle(*, action: str, source_checkout: Path, data_root: Path,
+                              wait: bool = False) -> dict | None:
+    """Route a managed Runtime launch through its installation owner."""
+    from astrid.installer.runtime_lifecycle import managed_runtime_lifecycle as lifecycle
+
+    return lifecycle(action=action, source_checkout=source_checkout, data_root=data_root, wait=wait)

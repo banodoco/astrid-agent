@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -233,6 +234,8 @@ def require_workflow_assets(workflow: Any, observed: dict[str, Any], entry: str 
 
 DOWNLOAD_MARGIN_BYTES = 1 << 30  # free space kept beyond the files: 1 GiB
 MODEL_EXTENSIONS = ('.safetensors', '.ckpt', '.pt', '.pth', '.bin', '.gguf')  # what ComfyUI loads as models
+_PROGRESS_STEP = 256 << 20  # bytes between progress lines
+_PROGRESS_SECONDS = 15
 _LOOPBACK = frozenset({'127.0.0.1', '::1', 'localhost'})
 
 
@@ -302,7 +305,10 @@ def _local_models(paths) -> frozenset[str]:
 
 
 def _download_gaps(client, entry_id: str, mode: str):
-    """Missing role files of the entry on the attached server, each with its server folder."""
+    """Missing role files of the entry on the attached server, each with its server folder.
+
+    Also returns the roles the server already lists (`present`): they are part of the plan's digest.
+    """
     from astrid.core.model_catalog.registry import ModelRegistry
 
     from .backends.comfy_target import _COMFY_MODEL_FOLDERS, _resolve_roles
@@ -334,16 +340,40 @@ def _download_gaps(client, entry_id: str, mode: str):
         gaps.append({'role': role, 'key': key, 'names': list(declaration.names),
                      'folder': canonical_folder(folders.get(key) if key else None, key),
                      'served': _served_models(info, declaration), 'local': _local_models(paths)})
-    return gaps, spec, info
+    present = []
+    for role, name in _resolved.items():
+        declaration = spec.model_roles[role]
+        key = _COMFY_MODEL_FOLDERS.get((declaration.node_class, declaration.input))
+        present.append({'role': role, 'key': key, 'name': name,
+                        'folder': canonical_folder(folders.get(key) if key else None, key)})
+    return gaps, present, spec, info
+
+
+def _source_url(model) -> tuple[str | None, str]:
+    """The URL to fetch a declared model from, or None with the reason no verified source is usable."""
+    from .model_downloader import _validate_model
+
+    if model is None:
+        return None, 'no verified source is declared'
+    try:
+        url = model.url or _validate_model(model)[1]
+    except Exception:  # noqa: BLE001 - an unusable declaration grants nothing
+        return None, 'its declared source is not usable'
+    if not _token_safe_source(url):
+        return None, 'its source is not https://huggingface.co/, so Astrid will not fetch it'
+    return url, ''
 
 
 def plan_attached_model_download(client, entry_id: str, mode: str, *, sources=None) -> dict[str, Any]:
-    """Read-only: what would be downloaded where. Writes nothing and asks the server only for reads."""
+    """Read-only: what would be downloaded where. Writes nothing and asks the server only for reads.
+
+    `files` are still missing; `present` are already listed by the server with a verified source. The
+    digest covers both (name, URL, SHA-256, size, folder), so a partly finished run keeps the same digest.
+    """
     from urllib.parse import urlsplit
 
-    gaps, _spec, _info = _download_gaps(client, entry_id, mode)
+    gaps, present, _spec, _info = _download_gaps(client, entry_id, mode)
     sources = _default_sources(entry_id) if sources is None else sources
-    from .model_downloader import _validate_model
 
     files, manual = [], []
     for gap in gaps:
@@ -355,21 +385,22 @@ def plan_attached_model_download(client, entry_id: str, mode: str, *, sources=No
         model = next((sources[f"{gap['key']}/{name}"] for name in gap['names']
                       if gap['key'] and f"{gap['key']}/{name}" in sources
                       and '/' not in name and '\\' not in name), None)
-        reason, url = 'no verified source is declared', None
-        if model is not None:
-            try:
-                url = model.url or _validate_model(model)[1]
-            except Exception:  # noqa: BLE001 - an unusable declaration grants nothing
-                reason = 'its declared source is not usable'
-            else:
-                if not _token_safe_source(url):
-                    reason, url = 'its source is not https://huggingface.co/, so Astrid will not fetch it', None
+        url, reason = _source_url(model)
         if url is None or not gap['folder']:
             manual.append({'role': gap['role'], 'file': ' or '.join(gap['names']), 'folder': gap['folder'],
-                           'reason': reason})
+                           'reason': reason or 'no verified source is declared'})
         else:
             files.append({'role': gap['role'], 'file': model.destination.rsplit('/', 1)[-1], 'folder': gap['folder'],
                           'url': url, 'bytes': model.bytes, 'sha256': model.sha256})
+    present_files = []
+    for row in present:
+        if not row['key'] or not row['folder'] or '/' in row['name'] or '\\' in row['name']:
+            continue
+        model = sources.get(f"{row['key']}/{row['name']}")
+        url, _reason = _source_url(model)
+        if url is not None:
+            present_files.append({'role': row['role'], 'file': row['name'], 'folder': row['folder'],
+                                  'url': url, 'bytes': model.bytes, 'sha256': model.sha256})
     host = urlsplit(client.target.url).hostname
     if host not in _LOOPBACK:
         raise AttachedDownloadRefused('not_same_machine', 'This ComfyUI is not on this computer, so nothing is '
@@ -395,9 +426,12 @@ def plan_attached_model_download(client, entry_id: str, mode: str, *, sources=No
         space = shutil.disk_usage(group[0]['folder']).free
         free = space if free is None else min(free, space)
         enough = enough and space >= sum(f['bytes'] for f in group) + DOWNLOAD_MARGIN_BYTES
-    body = {'entry': entry_id, 'mode': mode, 'target': client.target.url, 'files': files, 'manual': manual}
+    wanted = sorted(({key: f[key] for key in ('file', 'folder', 'url', 'bytes', 'sha256')}
+                     for f in [*files, *present_files]), key=lambda f: (f['folder'], f['file']))
+    body = {'entry': entry_id, 'mode': mode, 'target': client.target.url, 'wanted': wanted, 'manual': manual}
     digest = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
-    return {**body, 'total_bytes': total, 'margin_bytes': DOWNLOAD_MARGIN_BYTES, 'free_bytes': free,
+    return {'entry': entry_id, 'mode': mode, 'target': client.target.url, 'files': files, 'present': present_files,
+            'manual': manual, 'total_bytes': total, 'margin_bytes': DOWNLOAD_MARGIN_BYTES, 'free_bytes': free,
             'space_ok': enough, 'plan_sha256': digest}
 
 
@@ -407,6 +441,8 @@ def render_attached_download_plan(plan: dict[str, Any]) -> str:
     lines = [f"Missing models for {plan['entry']}/{plan['mode']} on your ComfyUI at {plan['target']}:"]
     for f in plan['files']:
         lines.append(f"  {f['file']}  {_size(f['bytes'])}  -> {f['folder']}  (from {f['url']}, SHA-256 {f['sha256']})")
+    for p in plan['present']:
+        lines.append(f"  {p['file']}  already on your ComfyUI in {p['folder']}; not downloaded again")
     for m in plan['manual']:
         lines.append(f"  {m['file']}: {m.get('reason', 'no verified source is declared')}; put {m['file']} in "
                      f"{m['folder'] or 'the models folder for ' + str(m['role'])} yourself.")
@@ -465,12 +501,38 @@ def _publish(staged: Path, final: Path, *, hard_links: bool) -> None:
         raise
 
 
-def _fetch_into_folder(item: dict[str, Any], http_client) -> None:
-    """One verified file via VibeComfy fetch, staged under a temp name in the same folder, then renamed."""
+def _say(line: str) -> None:
+    """Progress goes to stderr, so `--json` keeps stdout to the result alone."""
+    print(line, file=sys.stderr, flush=True)
+
+
+def _progress(name: str, total: int):
+    """A callback for fetch_verified: a line every 256 MiB, or every 15 seconds while bytes keep arriving."""
+    state = {'shown': 0, 'at': time.monotonic()}
+
+    def report(done: int) -> None:
+        now = time.monotonic()
+        if done - state['shown'] >= _PROGRESS_STEP or (done > state['shown'] and now - state['at'] >= _PROGRESS_SECONDS):
+            state['shown'], state['at'] = done, now
+            _say(f'  {name}: {_size(done)} of {_size(total)}')
+    return report
+
+
+def _fetch_into_folder(item: dict[str, Any], http_client, *, progress=None) -> int:
+    """One verified file via VibeComfy fetch, staged under a temp name in the same folder, then renamed.
+
+    An interrupted transfer keeps its bytes in a `.<file>.astrid-resume` part, so the next run resumes it.
+    Returns the byte offset this transfer resumed from.
+    """
     from vibecomfy import fetch
+
+    from .asset_alignment import fetch_verified
 
     folder = Path(item['folder']).resolve(strict=True)
     root, final = folder.parent, folder / item['file']
+    part = folder / f".{item['file']}.astrid-resume"
+    if part.is_symlink() or (part.exists() and (not part.is_file() or part.stat().st_nlink != 1)):
+        raise AttachedDownloadRefused('unsafe_partial', f'{part} is not a plain partial download; it is left untouched.')
     # A unique staging name claimed exclusively (O_EXCL), so a file the person already has is never touched. The
     # empty claim is kept: fetch.download only reuses a non-empty destination and otherwise replaces it with its own
     # temp file, so the name stays this call's own until it is removed below.
@@ -486,7 +548,8 @@ def _fetch_into_folder(item: dict[str, Any], http_client) -> None:
         raise
     kept = [d for d in (receipt.parent, receipt.parent.parent) if d.exists()]
     try:
-        fetch.download(entry, root=root, client=http_client, quiet=True)
+        resumed = fetch_verified(entry, staged, root=root, part=part, label=item['file'], client=http_client,
+                                 progress=progress)
         _publish(staged, final, hard_links=item.get('hard_links', True))
     finally:
         staged.unlink(missing_ok=True)
@@ -497,6 +560,59 @@ def _fetch_into_folder(item: dict[str, Any], http_client) -> None:
                     directory.rmdir()
                 except OSError:
                     pass
+    return resumed
+
+
+def _stopped(plan: dict[str, Any], done: list[dict[str, Any]], failed: dict[str, Any], exc: Exception) -> AttachedDownloadRefused:
+    """Say truthfully what this run finished and what it did not, so the same digest can be confirmed again."""
+    from astrid.core.contracts.errors import TLS_VERIFICATION_CODE, _tls_verification_failure
+
+    code = exc.code if isinstance(exc, AttachedDownloadRefused) else 'download_failed'
+    if _tls_verification_failure(exc) is not None:
+        code = TLS_VERIFICATION_CODE
+        exc = RuntimeError('the secure connection could not be verified, most likely because a program on this '
+                           'computer (antivirus or a company proxy) is inspecting HTTPS')
+    finished = ', '.join(d['file'] for d in done) or 'none (no file was published)'
+    rest = ', '.join(f['file'] for f in plan['files'][plan['files'].index(failed) + 1:]) or 'none'
+    part = Path(failed['folder']) / f".{failed['file']}.astrid-resume"
+    kept = ' Its partial download is kept, so the next run resumes it.' if part.exists() else ''
+    return AttachedDownloadRefused(code, f"Stopped at {failed['file']}: {exc}.{kept} Finished in this run: {finished}. "
+        f"Not downloaded: {rest}. Run the same command again to fetch only what is missing.")
+
+
+def _verify_confirmed_present(item: dict[str, Any]) -> dict[str, Any]:
+    """Verify one file ComfyUI lists against its digest-bound local declaration."""
+    path = Path(item['folder']) / item['file']
+    if not path.is_file():
+        if path.is_symlink() and not path.exists():
+            raise AttachedDownloadRefused('present_file_missing',
+                f"{item['file']} is listed by ComfyUI but is missing from {path}; no files were downloaded.")
+        if not os.path.lexists(path):
+            raise AttachedDownloadRefused('present_file_missing',
+                f"{item['file']} is listed by ComfyUI but is missing from {path}; no files were downloaded.")
+        raise AttachedDownloadRefused('present_file_unreadable',
+            f"{item['file']} is listed by ComfyUI but is not a regular file at {path}; no files were downloaded.")
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        with path.open('rb') as stream:
+            while block := stream.read(8 << 20):
+                size += len(block)
+                digest.update(block)
+    except FileNotFoundError as exc:
+        raise AttachedDownloadRefused('present_file_missing',
+            f"{item['file']} is listed by ComfyUI but is missing from {path}; no files were downloaded.") from exc
+    except OSError as exc:
+        raise AttachedDownloadRefused('present_file_unreadable',
+            f"{item['file']} is listed by ComfyUI but could not be verified at {path}: {exc}; "
+            "no files were downloaded.") from exc
+    actual_sha = digest.hexdigest()
+    if size != item['bytes'] or actual_sha != item['sha256']:
+        raise AttachedDownloadRefused('present_file_mismatch',
+            f"{item['file']} is listed by ComfyUI but does not match the confirmed file at {path} "
+            f"(expected {item['bytes']} bytes and SHA-256 {item['sha256']}; found {size} bytes and "
+            f"SHA-256 {actual_sha}); no files were downloaded.")
+    return {'file': item['file'], 'folder': item['folder'], 'bytes': size, 'sha256': actual_sha}
 
 
 def apply_attached_model_download(client, entry_id: str, mode: str, *, plan_sha256, sources=None,
@@ -509,7 +625,12 @@ def apply_attached_model_download(client, entry_id: str, mode: str, *, plan_sha2
     if plan['plan_sha256'] != plan_sha256:
         raise AttachedDownloadRefused('plan_changed', 'The plan changed since it was shown (files, sources or folders); '
                                       'review the new plan and confirm it. Nothing was written.')
+    verified_present = [_verify_confirmed_present(item) for item in plan['present']]
     if not plan['files']:
+        if verified_present and not plan['manual']:
+            return {'downloaded': [], 'present': [item['file'] for item in verified_present],
+                    'done': verified_present, 'total_bytes': 0, 'restarted': False,
+                    'next_step': 'All requested model files are present and verified. Nothing needed downloading.'}
         raise AttachedDownloadRefused('nothing_to_download', 'Nothing in the plan can be downloaded.')
     if not plan['space_ok']:
         raise AttachedDownloadRefused('insufficient_space',
@@ -521,9 +642,17 @@ def apply_attached_model_download(client, entry_id: str, mode: str, *, plan_sha2
                                           'overwritten. Nothing was written.')
     done = []
     for f in plan['files']:
-        _fetch_into_folder(f, http_client)
-        done.append({'file': f['file'], 'folder': f['folder'], 'bytes': f['bytes']})
-    return {'downloaded': done, 'total_bytes': plan['total_bytes'], 'restarted': False,
+        _say(f"Downloading {f['file']} ({_size(f['bytes'])}) -> {f['folder']}")
+        try:
+            resumed = _fetch_into_folder(f, http_client, progress=_progress(f['file'], f['bytes']))
+        except Exception as exc:  # noqa: BLE001 - every failure is reported with what finished before it
+            raise _stopped(plan, done, f, exc) from exc
+        done.append({'file': f['file'], 'folder': f['folder'], 'bytes': f['bytes'], 'resumed_from_bytes': resumed})
+        suffix = f', resumed from {_size(resumed)}' if resumed else ''
+        _say(f"Downloaded {f['file']} ({_size(f['bytes'])}{suffix})")
+    return {'downloaded': done, 'present': [p['file'] for p in verified_present],
+            'done': [*verified_present, *done], 'total_bytes': plan['total_bytes'],
+            'restarted': False,
             'next_step': 'No restart needed: ComfyUI re-reads a model folder when its modification time changes, so '
                          'the new files appear on its next /object_info request (refresh the node definitions in an '
                          'open ComfyUI page, or reload it).'}

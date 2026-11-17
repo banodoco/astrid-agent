@@ -4,7 +4,8 @@ Baseline policy:
 - Ruff keeps its total gate, holding R13's 2,117 below the R12 seed's 2,128. By owner decision on 12 Nov, mypy is gated per (file, code) only, seeded from R12 `0e1543e0`; missing pairs have a zero limit and reductions print a ratchet-down hint.
 - Per (file, code), only Ruff F821/BLE001 and mypy name-defined/attr-defined/call-arg increases block; other increases are reported.
 - The shared comparison is `scripts/reshape/count_baseline.py`. `import_cycles.json` is checked by `scripts/reshape/import_cycles.py`.
-- The baselines can only shrink: commit the lower number in the same change that removed the findings.
+- A finding count above its baseline is a regression. Lower counts pass and print an improvement; refresh the
+  baseline once per merged batch on the plan branch, not in an individual task pull request.
 
 Regeneration commands (after fixing or deleting code):
 

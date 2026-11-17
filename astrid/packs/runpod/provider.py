@@ -11,6 +11,7 @@ from runtime_protocol.platform import fsync_directory
 
 from astrid.core.generation.engine_contracts import PlacementRefused
 from astrid.core.generation.machine_provider import MachineRecord
+from astrid.core.util.http import os_trust_ssl_context
 
 from .provider_urls import PODS_URL
 
@@ -568,6 +569,7 @@ class RunPodMachineProvider:
         response = provider_call(self.api_key, httpx.get,
             f"{PODS_URL}/{quote(machine_id, safe='')}",
             headers={"Authorization": f"Bearer {self.api_key}"}, timeout=30,
+            verify=os_trust_ssl_context(),
         )
         if response.status_code == 404:
             return None
@@ -588,7 +590,7 @@ class RunPodMachineProvider:
         def fetch(params):
             response = provider_call(self.api_key, httpx.get, PODS_URL,
                                      headers={"Authorization": f"Bearer {self.api_key}"},
-                                     timeout=30, params=params)
+                                     timeout=30, params=params, verify=os_trust_ssl_context())
             response.raise_for_status()
             return response.json()
 
