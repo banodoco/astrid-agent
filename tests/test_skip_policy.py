@@ -8,6 +8,7 @@ hide a test. tests/lanes.py is the one place that may build a skip.
 from __future__ import annotations
 
 import ast
+from collections import Counter
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -22,6 +23,67 @@ HIDDEN = {
     "unittest.skip", "unittest.skipIf", "unittest.skipUnless", "unittest.SkipTest", "unittest.case.SkipTest",
 }
 HIDDEN_METHODS = {"skipTest"}
+
+# Owner-approved Plan 39 D10 snapshot, captured at 1148df0e. This frozen
+# original set is independent of the live ceiling below; changing it requires
+# another owner decision. Line numbers are deliberately not gate identities.
+FROZEN_D10_GATES = frozenset({
+    ("tests/core/execution/test_host_cleanup_ack_barrier.py",
+     "test_native_exec_changes_token_without_changing_process_lifetime", "pytest.mark.skipif"),
+    ("tests/core/generation/test_model_verification_record.py",
+     "test_non_utf8_filename_hashes_then_reuses", "pytest.skip"),
+    ("tests/core/generation/test_release_python.py", "<module>", "pytest.mark.skipif"),
+    ("tests/core/generation/test_release_python.py",
+     "test_real_recipe_bootstrap_reaches_managed_cpython_3_12_10", "pytest.mark.skipif"),
+    ("tests/core/pack/test_git_environment.py", "test_planted_ssh_in_working_directory_never_runs", "pytest.skip"),
+    ("tests/core/pack/test_git_environment.py",
+     "test_git_source_uses_recorded_install_path_when_service_path_lacks_git", "pytest.skip"),
+    ("tests/core/pack/test_identity.py",
+     "test_digest_rejects_symlink_even_when_named_as_excluded_directory", "pytest.skip"),
+    ("tests/scripts/test_pod_bootstrap.py",
+     "test_setup_runtime_with_real_runtime_creates_workspace_once", "pytest.mark.skipif"),
+    ("tests/scripts/test_pod_session.py", "video", "pytest.skip"),
+    ("tests/test_installed_wheel_smoke.py", "test_fresh_wheel_cli", "pytest.skip"),
+    ("tests/test_installer_pinokio_activation.py",
+     "test_update_candidate_and_rollback_activate_under_retained_custody", "pytest.mark.skipif"),
+    ("tests/test_installer_r0_entry.py", "test_captures_match_real_r0_evidence", "pytest.skip"),
+    ("tests/test_installer_r0_stop.py", "test_symlink_lock_refused_and_left_intact", "pytest.skip"),
+    ("tests/test_journey_diagnostic_checkpoint.py",
+     "test_census_rejects_enumeration_failure_and_symlink", "pytest.skip"),
+    ("tests/test_journey_diagnostic_checkpoint.py",
+     "test_real_r0_realm_checkpoint_when_runtime_checkout_available", "pytest.skip"),
+    ("tests/test_journey_windows_acl_capture.py", "test_candidate_selection_missing_multiple_and_alias", "pytest.skip"),
+})
+
+# AT5 removes each gate and its entry from this live ceiling together. Keep
+# this literal separate from the frozen snapshot so additions and swaps fail.
+D10_GATE_CEILING = frozenset({
+    ("tests/core/execution/test_host_cleanup_ack_barrier.py",
+     "test_native_exec_changes_token_without_changing_process_lifetime", "pytest.mark.skipif"),
+    ("tests/core/generation/test_model_verification_record.py",
+     "test_non_utf8_filename_hashes_then_reuses", "pytest.skip"),
+    ("tests/core/generation/test_release_python.py", "<module>", "pytest.mark.skipif"),
+    ("tests/core/generation/test_release_python.py",
+     "test_real_recipe_bootstrap_reaches_managed_cpython_3_12_10", "pytest.mark.skipif"),
+    ("tests/core/pack/test_git_environment.py", "test_planted_ssh_in_working_directory_never_runs", "pytest.skip"),
+    ("tests/core/pack/test_git_environment.py",
+     "test_git_source_uses_recorded_install_path_when_service_path_lacks_git", "pytest.skip"),
+    ("tests/core/pack/test_identity.py",
+     "test_digest_rejects_symlink_even_when_named_as_excluded_directory", "pytest.skip"),
+    ("tests/scripts/test_pod_bootstrap.py",
+     "test_setup_runtime_with_real_runtime_creates_workspace_once", "pytest.mark.skipif"),
+    ("tests/scripts/test_pod_session.py", "video", "pytest.skip"),
+    ("tests/test_installed_wheel_smoke.py", "test_fresh_wheel_cli", "pytest.skip"),
+    ("tests/test_installer_pinokio_activation.py",
+     "test_update_candidate_and_rollback_activate_under_retained_custody", "pytest.mark.skipif"),
+    ("tests/test_installer_r0_entry.py", "test_captures_match_real_r0_evidence", "pytest.skip"),
+    ("tests/test_installer_r0_stop.py", "test_symlink_lock_refused_and_left_intact", "pytest.skip"),
+    ("tests/test_journey_diagnostic_checkpoint.py",
+     "test_census_rejects_enumeration_failure_and_symlink", "pytest.skip"),
+    ("tests/test_journey_diagnostic_checkpoint.py",
+     "test_real_r0_realm_checkpoint_when_runtime_checkout_available", "pytest.skip"),
+    ("tests/test_journey_windows_acl_capture.py", "test_candidate_selection_missing_multiple_and_alias", "pytest.skip"),
+})
 
 
 def hidden_gates(source: str) -> list[tuple[int, str]]:
@@ -50,6 +112,31 @@ def hidden_gates(source: str) -> list[tuple[int, str]]:
         elif isinstance(node, ast.Name) and imported.get(node.id) in HIDDEN:
             found.append((node.lineno, imported[node.id]))
     return sorted(set(found))
+
+
+def gate_identities(path: str, source: str) -> list[tuple[str, str, str]]:
+    """Give detected gates a path/function/API key that survives line shifts."""
+    gates = hidden_gates(source)
+    if not gates:
+        return []
+    functions: list[tuple[int, int, str]] = []
+
+    def visit(node: ast.AST, prefix: str = "") -> None:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            qualname = prefix + node.name
+            first = min([node.lineno, *(decorator.lineno for decorator in node.decorator_list)])
+            functions.append((first, node.end_lineno or node.lineno, qualname))
+            prefix = qualname + ".<locals>."
+        elif isinstance(node, ast.ClassDef):
+            prefix += node.name + "."
+        for child in ast.iter_child_nodes(node):
+            visit(child, prefix)
+
+    visit(ast.parse(source))
+    return [
+        (path, next((name for first, last, name in reversed(functions) if first <= line <= last), "<module>"), api)
+        for line, api in gates
+    ]
 
 
 @pytest.mark.parametrize("source", [
@@ -133,36 +220,108 @@ def test_xfail_registry_rejects_more_than_ten_entries() -> None:
 
 
 def test_no_test_file_skips_by_hand() -> None:
-    # Owner-approved Plan 39 D10 ceiling, captured at 1148df0e. This list
-    # may only shrink: AT5 removes each gate and its entry together.
-    ceiling = {
-        "tests/core/execution/test_host_cleanup_ack_barrier.py:16 pytest.mark.skipif",
-        "tests/core/generation/test_model_verification_record.py:590 pytest.skip",
-        "tests/core/generation/test_release_python.py:58 pytest.mark.skipif",
-        "tests/core/generation/test_release_python.py:498 pytest.mark.skipif",
-        "tests/core/pack/test_git_environment.py:289 pytest.skip",
-        "tests/core/pack/test_git_environment.py:369 pytest.skip",
-        "tests/core/pack/test_identity.py:56 pytest.skip",
-        "tests/scripts/test_pod_bootstrap.py:115 pytest.mark.skipif",
-        "tests/scripts/test_pod_session.py:41 pytest.skip",
-        "tests/test_installed_wheel_smoke.py:25 pytest.skip",
-        "tests/test_installer_pinokio_activation.py:175 pytest.mark.skipif",
-        "tests/test_installer_r0_entry.py:618 pytest.skip",
-        "tests/test_installer_r0_stop.py:237 pytest.skip",
-        "tests/test_journey_diagnostic_checkpoint.py:242 pytest.skip",
-        "tests/test_journey_diagnostic_checkpoint.py:273 pytest.skip",
-        "tests/test_journey_windows_acl_capture.py:28 pytest.skip",
-    }
+    assert len(FROZEN_D10_GATES) == 16, "the original owner-approved D10 snapshot must remain frozen"
+    outside_frozen = sorted(D10_GATE_CEILING - FROZEN_D10_GATES)
+    assert not outside_frozen, f"D10 ceiling entries outside the frozen D10 set: {outside_frozen}"
     offenders = []
     for root in (REPO / "tests", *sorted((REPO / "tools").glob("*/tests"))):
         for path in sorted(root.rglob("*.py")):
             relative = path.relative_to(REPO).as_posix()
             if relative == REGISTRY or ".venv" in path.parts or "node_modules" in path.parts:
                 continue
-            offenders += [f"{relative}:{line} {name}" for line, name in hidden_gates(path.read_text(encoding="utf-8"))]
-    new_gates = sorted(set(offenders) - ceiling)
-    stale_entries = sorted(ceiling - set(offenders))
-    assert not new_gates and not stale_entries, (
+            offenders += gate_identities(relative, path.read_text(encoding="utf-8"))
+    new_gates = sorted(set(offenders) - D10_GATE_CEILING)
+    stale_entries = sorted(D10_GATE_CEILING - set(offenders))
+    # Stable identities must not let another call reuse an existing entry.
+    duplicate_gates = sorted(gate for gate, count in Counter(offenders).items() if count > 1)
+    assert not new_gates and not stale_entries and not duplicate_gates, (
         f"direct gates outside the D10 ceiling (use a lane from tests/lanes.py): {new_gates}; "
-        f"stale D10 ceiling entries (remove with the AT5 gate fix): {stale_entries}"
+        f"stale D10 ceiling entries (remove with the AT5 gate fix): {stale_entries}; "
+        f"multiple gates sharing one D10 identity: {duplicate_gates}"
     )
+
+
+@pytest.fixture
+def d10_repository(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A disposable scan root with one real frozen identity, never a live gate edit."""
+    entry = (
+        "tests/core/pack/test_identity.py",
+        "test_digest_rejects_symlink_even_when_named_as_excluded_directory",
+        "pytest.skip",
+    )
+    assert entry in FROZEN_D10_GATES
+    site = tmp_path / entry[0]
+    site.parent.mkdir(parents=True)
+    site.write_text(f"import pytest\ndef {entry[1]}():\n    pytest.skip('existing gate')\n", encoding="utf-8")
+    monkeypatch.setitem(globals(), "REPO", tmp_path)
+    monkeypatch.setitem(globals(), "D10_GATE_CEILING", frozenset({entry}))
+    return site
+
+
+def _plant_new_gate() -> tuple[str, str, str]:
+    path = "tests/test_d10_planted_gate.py"
+    (REPO / path).write_text("import pytest\ndef test_new():\n    pytest.skip('new gate')\n", encoding="utf-8")
+    return path, "test_new", "pytest.skip"
+
+
+def test_d10_rejects_new_gate_even_when_added_to_live_ceiling(d10_repository: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    new_entry = _plant_new_gate()
+    monkeypatch.setitem(globals(), "D10_GATE_CEILING", D10_GATE_CEILING | {new_entry})
+
+    with pytest.raises(AssertionError, match="entries outside the frozen D10 set"):
+        test_no_test_file_skips_by_hand()
+
+
+def test_d10_rejects_swapping_a_gate_and_its_entry(d10_repository: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    d10_repository.write_text("# The old gate was removed.\n", encoding="utf-8")
+    new_entry = _plant_new_gate()
+    monkeypatch.setitem(globals(), "D10_GATE_CEILING", frozenset({new_entry}))
+
+    with pytest.raises(AssertionError, match="entries outside the frozen D10 set"):
+        test_no_test_file_skips_by_hand()
+
+
+def test_d10_ignores_comment_and_blank_line_shifts(d10_repository: Path) -> None:
+    d10_repository.write_text("# Harmless comment.\n\n\n" + d10_repository.read_text(encoding="utf-8"), encoding="utf-8")
+
+    test_no_test_file_skips_by_hand()
+
+
+def test_d10_rejects_an_unlisted_new_gate(d10_repository: Path) -> None:
+    _plant_new_gate()
+
+    with pytest.raises(AssertionError, match="direct gates outside the D10 ceiling.*test_d10_planted_gate"):
+        test_no_test_file_skips_by_hand()
+
+
+def test_d10_rejects_a_removed_gate_left_in_the_ceiling(d10_repository: Path) -> None:
+    d10_repository.write_text("# The gate was removed without retiring its entry.\n", encoding="utf-8")
+
+    with pytest.raises(AssertionError, match="stale D10 ceiling entries.*test_digest_rejects_symlink"):
+        test_no_test_file_skips_by_hand()
+
+
+def test_d10_allows_a_gate_and_its_entry_to_retire_together(d10_repository: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    d10_repository.write_text("# AT5 removed this gate.\n", encoding="utf-8")
+    monkeypatch.setitem(globals(), "D10_GATE_CEILING", frozenset())
+
+    test_no_test_file_skips_by_hand()
+
+
+def test_d10_rejects_an_extra_gate_with_the_same_identity(d10_repository: Path) -> None:
+    with d10_repository.open("a", encoding="utf-8") as stream:
+        stream.write("    pytest.skip('another gate in the same function')\n")
+
+    with pytest.raises(AssertionError, match="multiple gates sharing one D10 identity.*test_digest_rejects_symlink"):
+        test_no_test_file_skips_by_hand()
+
+
+@pytest.mark.parametrize(("source", "function", "api"), [
+    ("import pytest\npytest.skip('x')\n", "<module>", "pytest.skip"),
+    ("import pytest\n@pytest.mark.skipif(True, reason='x')\ndef test(): pass\n", "test", "pytest.mark.skipif"),
+    ("import pytest\nclass T:\n    def test(self):\n        pytest.skip('x')\n", "T.test", "pytest.skip"),
+    ("import pytest\ndef outer():\n    def inner():\n        pytest.skip('x')\n", "outer.<locals>.inner", "pytest.skip"),
+    ("import pytest\nasync def test():\n    pytest.skip('x')\n", "test", "pytest.skip"),
+], ids=["module", "decorator", "method", "nested", "async"])
+def test_gate_identity_uses_enclosing_function_qualname(source: str, function: str, api: str) -> None:
+    assert gate_identities("tests/test_example.py", source) == [("tests/test_example.py", function, api)]
