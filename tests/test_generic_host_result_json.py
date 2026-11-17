@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -68,14 +69,19 @@ def _success_boundary(case, monkeypatch, *, payload=None, manifest_extras=None):
     monkeypatch.setattr(case.host, "_run_command_definition", execute)
 
 
-def test_materialize_phase_is_published_before_blocking_preparation(host_case, monkeypatch):
+def test_stalled_materialize_reports_phase_without_waiting_for_heartbeat(host_case, monkeypatch):
+    from astrid.core.execution.stall_diagnostics import TaskStallDiagnostics
+
     case = host_case
     _success_boundary(case, monkeypatch)
     monkeypatch.setattr(generic_host, "_LEASE_POLL_SECONDS", 0.001)
+    diagnostics = TaskStallDiagnostics(timeout=0.02, timer=lambda *a, **k: None, cancel=lambda: None)
+    monkeypatch.setattr(generic_host, "process_stall_diagnostics", lambda: diagnostics)
     original_heartbeat = case.runtime.heartbeat
     heartbeat_count = 0
     heartbeat_lock = threading.Lock()
     prior_heartbeat_entered, release_prior_heartbeat = threading.Event(), threading.Event()
+    phase_reported = threading.Event()
 
     def heartbeat(task_id, lease_token, **kwargs):
         nonlocal heartbeat_count
@@ -87,6 +93,8 @@ def test_materialize_phase_is_published_before_blocking_preparation(host_case, m
             if not release_prior_heartbeat.wait(3):
                 raise TimeoutError("test did not release in-flight heartbeat")
         original_heartbeat(task_id, lease_token, **kwargs)
+        if kwargs.get("progress", {}).get("phase") == "materialize_inputs":
+            phase_reported.set()
         return SimpleNamespace(
             task_id=task_id, lease_id=lease_token, attempt_id=kwargs["attempt_id"],
             fence=kwargs["fence"], runtime_epoch=1,
@@ -96,12 +104,9 @@ def test_materialize_phase_is_published_before_blocking_preparation(host_case, m
     monkeypatch.setattr(case.runtime, "heartbeat", heartbeat)
     original_materialize = case.host._materialize_inputs
     entered, release = threading.Event(), threading.Event()
-    result = []
-    errors = []
 
     def block_before_materialize(*args, **kwargs):
         entered.set()
-        assert ("task-result", {"phase": "materialize_inputs"}) in case.runtime.heartbeat_progress
         if not release.wait(3):
             raise TimeoutError("test did not release materialization")
         return original_materialize(*args, **kwargs)
@@ -112,26 +117,21 @@ def test_materialize_phase_is_published_before_blocking_preparation(host_case, m
         lambda _path, delta: (delta != 1 or prior_heartbeat_entered.wait(2)),
     )
 
-    def run():
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        result = workers.submit(case.host.run_task, case.task, lease_token="lease-result")
         try:
-            result.append(case.host.run_task(case.task, lease_token="lease-result"))
-        except BaseException as exc:
-            errors.append(exc)
-
-    worker = threading.Thread(target=run)
-    worker.start()
-    try:
-        assert prior_heartbeat_entered.wait(2)
-        assert not entered.wait(0.05)
-    finally:
-        release_prior_heartbeat.set()
-        assert entered.wait(2)
-        release.set()
-        worker.join(5)
-
-    assert not worker.is_alive()
-    assert not errors
-    assert result[0]["task"]["status"] == "completed"
+            assert prior_heartbeat_entered.wait(2)
+            # A diagnostic phase must never hold execution behind lease transport.
+            assert entered.wait(1)
+            assert not phase_reported.is_set()
+            release_prior_heartbeat.set()
+            assert phase_reported.wait(2)
+            assert ("task-result", {"phase": "materialize_inputs"}) in case.runtime.heartbeat_progress
+        finally:
+            release_prior_heartbeat.set()
+            release.set()
+        assert result.result(timeout=5)["task"]["status"] == "completed"
+    assert diagnostics._tasks == {}
 
 
 def _read_result(case, status, *, root=None):

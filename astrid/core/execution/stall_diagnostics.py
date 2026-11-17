@@ -131,6 +131,12 @@ class TaskStallDiagnostics:
                 current.last_change = now
             self._arm()
 
+    def stalled(self, task_key: str) -> bool:
+        """Observe the no-progress interval without changing or rearming it."""
+        with self._lock:
+            current = self._tasks.get(task_key)
+            return current is not None and self._clock() >= current.last_change + self.timeout
+
     def end(self, task_key: str) -> None:
         """Remove a task and hand the native timer to the next deadline."""
         with self._lock:

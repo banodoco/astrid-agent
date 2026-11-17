@@ -332,3 +332,19 @@ worker.join(1)
     assert contents.count("Timeout (") == 1
     assert "stall_marker_worker" in contents
     assert "hold_gil_in_native_call" in contents
+
+
+def test_stall_status_observation_preserves_timer_and_clears_on_progress():
+    clock, timers = Clock(), TimerSpy()
+    diagnostics = _diagnostics(clock, timers)
+    assert not diagnostics.stalled("missing")
+    diagnostics.begin("task", "materialize_inputs")
+    assert not diagnostics.stalled("task")
+    clock.advance(10)
+    assert diagnostics.stalled("task")
+    assert diagnostics.stalled("task")
+    assert len(timers.arms) == 1 and timers.cancels == 0
+    diagnostics.update("task", "execution")
+    assert not diagnostics.stalled("task")
+    diagnostics.end("task")
+    assert not diagnostics.stalled("task")
