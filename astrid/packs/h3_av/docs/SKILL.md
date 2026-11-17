@@ -5,6 +5,8 @@ description: Request-driven MiniMax H3 audiovisual transformations with explicit
 
 # H3 audiovisual transformations
 
+To plan a whole scene (replacing characters, re-voicing dialogue, choosing a method for each shot), start with [Recast and re-voice a scene](recast-scene/SKILL.md).
+
 H3 inference currently runs only on RunPod workers. Select a RunPod worker
 execution request, worker qualification receipt, or prepared worker selection.
 The parent orchestrator runs locally; there is no local H3 inference route on
