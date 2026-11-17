@@ -19,6 +19,7 @@ from referencing.exceptions import Unresolvable
 from astrid.core.timeline.authoring_bundle import AuthoringBundleError
 from astrid.core.timeline.parent_registry import ParentRegistryError, effective_parent_registry
 from astrid.sdk.timeline._command_state import equal
+from astrid.sdk.timeline._preexisting import warning
 from astrid.sdk.timeline.compiler import TimingCompileError
 from astrid.sdk.timeline.units import _time_fraction
 
@@ -336,6 +337,7 @@ def _validate_clip_list(
     bound: Fraction | None = None,
     baseline: Mapping[str, Any] | None = None,
     baseline_bound: Fraction | None = None,
+    warnings: list[str] | None = None,
 ) -> dict[str, Mapping[str, Any]]:
     if not isinstance(registry, Mapping):
         _fail(f"{path.rsplit('.', 1)[0]}.registry", "must be an object")
@@ -367,6 +369,8 @@ def _validate_clip_list(
             if asset_key not in assets or not isinstance(assets[asset_key], Mapping):
                 if (_same_fields(clip, prior, ("asset", "asset_id"))
                         and asset_key not in before_assets):
+                    if warnings is not None:
+                        warnings.append(warning(f"{clip_path}.asset names unknown asset {asset_key!r}"))
                     continue
                 _fail(f"{clip_path}.asset", f"unknown asset {asset_key!r}")
             if (_same_fields(clip, prior, ("asset", "asset_id", "from", "to", "hold", "duration", "speed"))
@@ -657,8 +661,15 @@ def validate_final_candidate(
     source_bundles: Sequence[Mapping[str, Any]] = (),
     restoration_records: Sequence[Mapping[str, Any]] = (),
     inverse_records: Sequence[Mapping[str, Any]] = (),
-) -> None:
+    authenticated_copy: bool = False,
+) -> list[str]:
     """Validate one complete candidate without changing it.
+
+    Returns the problems the baseline already had on entities this change did not
+    touch (reported, never blocking); anything the change introduces or touches raises.
+    ``authenticated_copy`` is for ``timeline.duplicate`` alone: its content is the
+    Runtime-authenticated source closure, copied as it is, so nothing authored is
+    re-judged by rules the source may already fail. Only its shape is checked.
 
     ``baseline`` distinguishes newly authored declarations from unchanged
     legacy declarations that must survive a round trip.  ``schema_inputs``
@@ -675,6 +686,13 @@ def validate_final_candidate(
         json.dumps(candidate, allow_nan=False)
     except (TypeError, ValueError) as exc:
         _fail("candidate", f"must be finite JSON: {exc}")
+    warnings: list[str] = []
+    if authenticated_copy:
+        shots_in_copy = candidate.get("shots")
+        for row in candidate.get("placements") or []:
+            if not isinstance(shots_in_copy, Mapping) or row.get("shot_id") not in shots_in_copy:
+                _fail(f"candidate.placements[{row.get('occurrence_id')!r}].shot_id", "references a missing shot")
+        return warnings
     _validate_fps(candidate, baseline, restoration_records, inverse_records)
     parent_value: Any = candidate.get("parent")
     if not isinstance(parent_value, Mapping):
@@ -708,6 +726,7 @@ def validate_final_candidate(
         baseline={"clips": _parent_clips(baseline_parent),
                   "tracks": baseline_parent.get("config", {}).get("tracks", []),
                   "registry": effective_parent_registry(baseline_parent)} if baseline_parent else None,
+        warnings=warnings,
     )
     mirror = config.get("clips")
     if isinstance(mirror, list) and isinstance(parent.get("clips"), list) and not equal(mirror, parent["clips"]):
@@ -753,7 +772,7 @@ def validate_final_candidate(
         child_clips = _validate_clip_list(
             child_config.get("clips", []), path=f"candidate.shots[{shot_id!r}].internal_timeline.clips",
             tracks=child_tracks, registry=child_config.get("registry", {}), bound=bound,
-            baseline=baseline_internal, baseline_bound=previous_bound,
+            baseline=baseline_internal, baseline_bound=previous_bound, warnings=warnings,
         )
         before_child = _identity_rows(baseline_internal.get("clips", []), "baseline.clips", "id") if isinstance(baseline_internal, Mapping) and isinstance(baseline_internal.get("clips"), list) else {}
         for clip_id, clip in child_clips.items():
@@ -782,16 +801,18 @@ def validate_final_candidate(
     from astrid.sdk.timeline._commit_timing_validation import validate_candidate_timing
 
     try:
+        view = _timing_parent_view(candidate)
+        before = _timing_parent_view(baseline) if baseline else None
         if source_bundles:
-            validate_candidate_timing(_timing_parent_view(candidate),
-                                      baseline=_timing_parent_view(baseline) if baseline else None,
-                                      source_bundles=[_timing_parent_view(source) for source in source_bundles],
-                                      restoration_records=restoration_records)
+            found = validate_candidate_timing(
+                view, baseline=before, restoration_records=restoration_records,
+                source_bundles=[_timing_parent_view(source) for source in source_bundles])
         else:
-            validate_candidate_timing(_timing_parent_view(candidate),
-                                      baseline=_timing_parent_view(baseline) if baseline else None)
+            found = validate_candidate_timing(view, baseline=before)
+        warnings += found or []
     except (TimingCompileError, KeyError, TypeError, ValueError) as exc:
         _fail("candidate.timing", str(exc))
+    return warnings
 
 
 __all__ = ["FinalCandidateError", "validate_final_candidate"]

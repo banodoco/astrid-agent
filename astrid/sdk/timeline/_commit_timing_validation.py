@@ -11,6 +11,7 @@ from astrid.core.timeline.authoring_bundle import compile_authoring_candidate
 from astrid.core.timeline.shot_composition_projection import _placement_speed
 from astrid.sdk import timeline_intent as intent
 from astrid.sdk.timeline._timing_evaluators import _fps, _maps, _ReadLookup
+from astrid.sdk.timeline._preexisting import split_findings, warning
 from astrid.sdk.timeline.compiler import TimingCompileError, TimingInputs, compile_timing
 from astrid.sdk.timeline.native_word_anchor import binding, legacy_binding
 from astrid.sdk.timeline.units import _time_fraction
@@ -479,12 +480,68 @@ def _retain_legacy_map_components(
     return retained
 
 
+# Declarations the timing kernel refuses outright (``_timing_evaluators``). Older timelines carry them
+# as authored data the kernel never evaluated (formulas only derive cached params).
+UNSUPPORTED_DECLARATIONS = ("sequence", "sequence_fit", "formulas", "orphan", "gap_after_s")
+
+
+def _unsupported_findings(bundle: Mapping[str, Any]) -> dict[tuple[Any, ...], str]:
+    """Each refused declaration, keyed by clip and declaration, signed by its value and its clip.
+
+    ``params`` is left out of the signature: a formula's cached result lives there and is
+    recalculated by every resolve, while the declaration and the clip's timing are what the
+    kernel refuses and what an edit to that clip would change.
+    """
+    found: dict[tuple[Any, ...], str] = {}
+    for key, clip in _legacy_rows(bundle):
+        declarations = intent._app(clip)
+        for name in UNSUPPORTED_DECLARATIONS:
+            if declarations.get(name):
+                row = {field: value for field, value in clip.items() if field != "params"}
+                found[(*key, name)] = json.dumps([declarations[name], row], sort_keys=True, default=str)
+    return found
+
+
+def _drop_preexisting_unsupported(
+    projection: dict[str, Any], candidate: Mapping[str, Any], baseline: Mapping[str, Any] | None,
+) -> list[str]:
+    """Take declarations the baseline already carried, on clips this change did not touch, out of
+    the detached compiler view so every other timing rule still runs. Authored JSON stays intact.
+
+    A declaration that is new or edited, or on a clip that was touched, is left in place and refused.
+    Returns one warning per declaration retained.
+    """
+    if baseline is None:
+        return []
+    introduced, preexisting = split_findings(
+        _unsupported_findings(candidate), _unsupported_findings(baseline))
+    del introduced
+    if not preexisting:
+        return []
+    mirrors = projection["parent"].get("config", {}).get("clips")
+    views = [dict(_legacy_rows(projection))]
+    if isinstance(mirrors, list):
+        views.append({("parent", "", row.get("id")): row for row in mirrors if isinstance(row, dict)})
+    warnings = []
+    for *owner, name in preexisting:
+        for view in views:
+            clip = view.get(tuple(owner))
+            app = clip.get("app") if isinstance(clip, dict) else None
+            if isinstance(app, dict):
+                app.pop(name, None)
+                if isinstance(app.get("astrid"), dict):
+                    app["astrid"].pop(name, None)
+        warnings.append(warning(f"{owner[2]} carries a {name} timing declaration that was already there; "
+                                "it is kept as authored and not re-validated"))
+    return warnings
+
+
 def validate_candidate_timing(
     candidate: Mapping[str, Any], *, baseline: Mapping[str, Any] | None = None,
     _allow_physical_context_fallback: bool = True,
     source_bundles: Sequence[Mapping[str, Any]] = (),
     restoration_records: Sequence[Mapping[str, Any]] = (),
-) -> None:
+) -> list[str]:
     """Compile a detached validation view, leaving authored JSON and pins intact.
 
     The canonical compiler guards changes to occurrence source maps. As in
@@ -496,6 +553,7 @@ def validate_candidate_timing(
     """
     publication = compile_authoring_candidate(candidate).publication
     projection = copy.deepcopy(dict(candidate))
+    warnings = _drop_preexisting_unsupported(projection, candidate, baseline)
     exemptions = _legacy_exemptions(candidate, baseline)
     restored = _restored_legacy_exemptions(candidate, source_bundles, restoration_records)
     exemptions.update(restored)
@@ -635,3 +693,4 @@ def validate_candidate_timing(
                 _allow_physical_context_fallback=False,
                 source_bundles=source_bundles,
             )
+    return warnings

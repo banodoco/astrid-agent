@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from astrid.core.timeline.astrid_ns import migrate_bundle
+from astrid.sdk.timeline._preexisting import PREEXISTING
 from astrid.sdk.timeline_checkout import Checkout, TimelineEditError
 from astrid.sdk.timeline_editing import add_authoring_shot
 from astrid.sdk.timeline_restructure import STRUCTURE_KEY, flatten
@@ -59,6 +60,30 @@ def _duplicate_key(project: str, source: str, slug: str) -> str:
     """Return the stable operation key used by the friendly duplicate facade."""
     identity = json.dumps([project, source, slug], ensure_ascii=False, separators=(",", ":"))
     return "timeline-duplicate-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def _blocking_lines(report: Any) -> list[str]:
+    """What makes a check report invalid: its blocking lines and a failed structural validation."""
+    return [*report.blocking, *(line for line in report.problems if line.startswith("invalid:"))]
+
+
+def _introduced_problems(copy_report: Any, source_report: Any) -> list[str]:
+    """Blocking problems of the copy that the source did not already have (numbers and ids aside)."""
+    from collections import Counter
+
+    from astrid.sdk.timeline.check import _lint_key
+
+    # The source's own overruns are reported, not blocking, because its base is itself.
+    carried = [line.removeprefix(PREEXISTING) for line in source_report.problems if line.startswith(PREEXISTING)]
+    seen = Counter(_lint_key(line) for line in [*_blocking_lines(source_report), *carried])
+    introduced = []
+    for line in _blocking_lines(copy_report):
+        key = _lint_key(line)
+        if seen[key] > 0:
+            seen[key] -= 1
+        else:
+            introduced.append(line)
+    return introduced
 
 
 def _commit_bundle(project: str, timeline: str, desired: Mapping[str, Any], *, label: str,
@@ -347,10 +372,9 @@ def _duplicate(client: Any, project: str, source: str | Mapping[str, Any] | Path
                 "shots": len(prepared["publication"].get("shot_revisions", [])),
                 "old_head": None, "notes": []}
     src = Checkout.open(project, str(source), revision_id=revision_id, client=client)
-    report = src._check_core()  # refuse an invalid head before creating anything
-    if not report.valid:
-        raise TimelineEditError(f"not duplicating {source}: its head is not valid ("
-                                + "; ".join((report.blocking or report.problems or ["invalid"])[:3]) + "); nothing was created")
+    # A duplicate copies the head as it is: what the source already fails is carried over and reported, never
+    # re-judged. Only a problem the copy has and the source does not refuses it (checked below).
+    source_report = src._check_core()
     operation_key = idempotency_key or ("dup-" + uuid.uuid4().hex)
     create_key = f"{operation_key}-destination"
     copy_key = f"{operation_key}-copy"
@@ -388,8 +412,13 @@ def _duplicate(client: Any, project: str, source: str | Mapping[str, Any] | Path
         if len(copy_shots) != len(source_shots):
             raise TimelineEditError(f"the copy would be stored with {len(copy_shots)} distinct shots, its source stores {len(source_shots)}")
         report = dst._check_core()
-        if not report.valid:
-            raise TimelineEditError("the copy is invalid: " + "; ".join(report.problems or [str(report)]))
+        introduced = _introduced_problems(report, source_report)
+        if introduced:
+            raise TimelineEditError("the copy is invalid: " + "; ".join(introduced))
+        carried = [line for line in source_report.problems if line.startswith(PREEXISTING)]
+        if carried or not source_report.valid:
+            dst.notes.append("the source head already had problems, copied as they are: "
+                             + "; ".join([*_blocking_lines(source_report), *carried][:3]))
         from astrid.sdk.timeline.native_timeline_duplicate import copy_command
 
         bundle["_duplicate_command"] = copy_command(

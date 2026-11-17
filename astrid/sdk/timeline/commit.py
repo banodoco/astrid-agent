@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import logging
 import re
 from collections.abc import Mapping
 
@@ -21,6 +22,7 @@ from astrid.core.timeline.authoring_bundle import (
     preview_authoring_candidate,
 )
 
+_LOG = logging.getLogger(__name__)
 PROVIDER_VERSION = "astrid-v1"
 COMPILER_VERSION = "authoring-bundle-1"
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -1407,8 +1409,11 @@ class RuntimeCommitService:
                     validation_bundle = bundle_from_document(document_from_bundle(plan.bundle))
                     validation_bundle['source_mapping']['pinned_documents'] = copy.deepcopy(
                         plan.bundle['source_mapping'].get('pinned_documents', []))
-                validate_final_candidate(
+                warnings = validate_final_candidate(
                     validation_bundle,
+                    # A source copy is Runtime-authenticated content; it is checked for shape only.
+                    authenticated_copy=bool(plan.records) and all(
+                        record['command']['op'] == 'timeline.duplicate' for record in plan.records),
                     baseline=(closures[restored_from['revision_id']] if restored_from is not None
                               else bundle if current == base else head_bundle),
                     schema_inputs=schema_inputs,
@@ -1417,6 +1422,8 @@ class RuntimeCommitService:
                     restoration_records=plan.records if inverse_records or restore else (),
                     inverse_records=inverse_records,
                 )
+                for line in warnings or ():
+                    _LOG.warning("timeline %s: %s", validation_bundle.get('timeline_id', ''), line)
                 document = document_from_bundle(plan.bundle, source_bundles=inverse_sources,
                                                 inverse_records=inverse_records)
                 from ._commit_preview import capture_sequential_execution, prepared_records

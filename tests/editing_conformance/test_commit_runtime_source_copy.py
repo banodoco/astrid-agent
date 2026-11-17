@@ -571,3 +571,28 @@ def test_source_copy_known_refusal_archives_actual_destination(saved_source):
     assert archived[0][1]['data']['head_revision_id'] == destinations[0]['parent_revision']['revision_id']
     assert destinations[0]['parent_revision']['payload']['occurrences'] == []
     assert document('t') == original
+
+
+def test_duplicate_copies_a_head_that_already_fails_newer_rules(saved_source):
+    """A long-lived head with a formulas declaration, a clip past its shot's end and a clip naming an unknown
+    asset is copied as it is: the copy is judged against its source, not against the rules the source fails."""
+    from astrid.sdk.timeline_duplicate import duplicate_timeline
+    from tests.sdk.test_timeline_restructure import flat_film
+
+    source = flat_film()
+    source['parent']['clips'] = []
+    source['parent']['registry'] = {}
+    internal = source['shots']['film']['internal_timeline']
+    internal['registry'] = {'assets': {'picture': {'type': 'image', 'media_id': 'picture'}}}
+    internal['clips'] = [
+        {'id': 'ok', 'clipType': 'image', 'track': 'plate', 'asset': 'picture', 'at': 0, 'hold': 2,
+         'app': {'astrid': {'formulas': {'params.at': {'as': 'clip_frame', 'moment': 'word:line-1:first'}}}}},
+        {'id': 'over', 'clipType': 'image', 'track': 'plate', 'asset': 'picture', 'at': 11.5, 'hold': 2},
+        {'id': 'ghost', 'clipType': 'image', 'track': 'plate', 'asset': 'no-such-asset', 'at': 4, 'hold': 1},
+    ]
+    client, project, document, bodies = saved_source(source)
+    result = duplicate_timeline(project, 't', slug='copy', client=client)
+    copied = document('copy')
+    assert [row['id'] for row in copied['internal_timeline_revisions'][0]['payload']['clips']] == ['ok', 'over', 'ghost']
+    assert result['new_head']
+    assert any('already had problems' in note for note in result['notes'])
