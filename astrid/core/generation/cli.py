@@ -483,6 +483,15 @@ def _workflow_command(parsed: argparse.Namespace) -> int:
                                code='input_rejected', details={'field': 'replace'})
     if parsed.no_run and not parsed.as_entry:
         raise ValueError('--no-run requires --as-entry')
+    from astrid.core.generation.placement import is_runpod_placement
+    if is_runpod_placement(parsed.placement) and not parsed.dry_run and not parsed.no_run:
+        # Same order as entries: the local dry run (with its preflight) before a claimed machine
+        # is required, and before --as-entry writes anything.
+        _generate_facade().workflow(workflow=path, placement=parsed.placement, mode=parsed.mode,
+            inputs=values, dry_run=True, client=None, project=parsed.project, out=parsed.out,
+            **_controls(parsed))
+        from astrid.sdk.generation import _require_claimed_machine
+        _require_claimed_machine(parsed.placement)
     if parsed.as_entry and parsed.dry_run:
         # Preview only: validate the inputs the entry would declare, write nothing, run nothing.
         description, _ = entries.resolve_workflow_inputs(path, values, mode=parsed.mode, **_workflow_comfy_url(parsed))
@@ -691,10 +700,6 @@ def _main_request(argv: list[str], stack) -> int:
             parser.error(str(exc))
         print(json.dumps(description, indent=2, sort_keys=True) if parsed.json else _entry_help(description))
         return 0
-    if (is_runpod_placement(parsed.placement) and not parsed.dry_run
-            and not getattr(parsed, 'no_run', False)):
-        from astrid.sdk.generation import _require_claimed_machine
-        _require_claimed_machine(parsed.placement)
     if parsed.modality == "workflow":
         return _workflow_command(parsed)
     if parsed.model and parsed.entry and parsed.model != parsed.entry:
@@ -759,6 +764,14 @@ def _main_request(argv: list[str], stack) -> int:
         kwargs.pop("width")
         kwargs.pop("height")
         kwargs[_KIND_SPEC[parsed.modality]['dimension_key']] = f"{parsed.width}x{parsed.height}"
+    if (is_runpod_placement(parsed.placement) and not parsed.dry_run
+            and not getattr(parsed, 'no_run', False)):
+        from astrid.sdk.generation import _require_claimed_machine, offline_request_preflight
+        if parsed.entry or parsed.model:
+            # An explicit entry is refused locally, with the invocation preflight a submission runs,
+            # before a claimed machine is required. No facade or Runtime is touched on the way.
+            offline_request_preflight(parsed.entry or parsed.model, mode=kwargs.get('mode'), inputs=values)
+        _require_claimed_machine(parsed.placement)
     from .delivery import admitted_project, open_url_for
     admitted = None
     transcription_run = None

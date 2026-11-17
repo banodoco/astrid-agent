@@ -327,6 +327,78 @@ def _runpod_job_preferences(preferences, datacenter):
 
 
 _NO_MACHINE = 'no machine: run `astrid machines claim`'
+LOCAL_REFUSAL_SCOPE = ('refused locally before submission; nothing was sent to a machine; '
+                       'any claimed machine is unaffected')
+
+
+def _offline_invocation_preflight(workflow: Any, *, plan: Mapping[str, Any] | None,
+                                  assets: Mapping[str, Any], comfy_url: str | None,
+                                  lineage: Any, source_video: bool) -> None:
+    """Run the same invocation preflight a live submission runs, offline, on the emitted bundle.
+
+    Every dry run calls this so a request the live path would refuse is refused before a
+    machine is required, claimed, or paid for. Refusals name their scope: they happened
+    locally and nothing was sent anywhere.
+    """
+    from tempfile import TemporaryDirectory
+
+    from vibecomfy.workflow_bundle import emit_bundle
+
+    from astrid.packs.vibecomfy.asset_manifest import build_asset_manifest, resolve_inputs
+    from astrid.packs.vibecomfy.invocation_preflight import (
+        InvocationPreflightError,
+        preflight_invocation,
+    )
+
+    # Mirror the live submission: run inputs come from the staged asset manifest, and a
+    # workflow without managed assets compiles with none (its bindings are already sealed).
+    sent = {name: value for name, value in (dict((plan or {}).get('bindings') or {})).items()
+            if name not in assets}
+    run_inputs: dict[str, Any] = {}
+    source_path = None
+    source_digest = None
+    if assets:
+        manifest = build_asset_manifest(assets, lineage=lineage)
+        run_inputs = resolve_inputs(manifest, sent)
+        record = next((row for row in manifest['assets'] if row.get('binding') == 'source_video'), None)
+        if record is not None and source_video:
+            source_path = assets['source_video']
+            source_digest = 'sha256:' + str(record['sha256'])
+    prompt = run_inputs.get('prompt')
+    expected_prompt = prompt if isinstance(prompt, str) and prompt.strip() else None
+    with TemporaryDirectory(prefix='astrid-dry-preflight-') as scratch:
+        capsule = Path(scratch) / 'workflow.py'
+        emit_bundle(workflow, capsule, {'operation': 'authored'})
+        try:
+            preflight_invocation(
+                capsule, run_inputs=run_inputs, comfy_url=comfy_url or '',
+                expected_prompt=expected_prompt, source_video_path=source_path,
+                expected_source_digest=source_digest, phase='dry-run')
+        except InvocationPreflightError as exc:
+            from astrid.core.generation.preflight import generation_error
+            raise generation_error(ValueError(f'{exc}. {LOCAL_REFUSAL_SCOPE}.'),
+                                   code='input_rejected') from exc
+
+
+def offline_request_preflight(entry_id: str, *, mode: str | None, inputs: Mapping[str, Any]) -> None:
+    """Refuse an explicit entry request locally, without a facade, Runtime or machine.
+
+    Compiles the named shipped entry for these inputs and runs the invocation preflight a
+    submission would run. Auto-selected requests have no single entry to compile, and H3's
+    prepared source exists only on the live path; neither is checked here.
+    """
+    from astrid.core.generation import entries as workflow_entries
+
+    row = workflow_entries.find_entry(entry_id)
+    if row is None or row.get('action') or entry_id == 'h3':
+        return
+    chosen_mode = mode or (row.get('modes') or [None])[0]
+    values = dict(inputs or {})
+    workflow, plan, assets = workflow_entries.prepare(
+        workflow_entries.bundle_path(row), target_client=None, mode=chosen_mode,
+        binds=row.get('binds'), defaults=row.get('defaults'), values=values)
+    _offline_invocation_preflight(workflow, plan=plan, assets=assets or {}, comfy_url=None,
+                                  lineage=None, source_video=True)
 
 
 def _require_claimed_machine(kind, machine=None):
@@ -1529,6 +1601,15 @@ class GenerationFacade:
                         raise CapabilityValidationError("media_handles is reserved for resolved H3 media lineage")
                     context["media_handles"] = lineage
                     kwargs["idempotency_context"] = context
+            if not kwargs.get("dry_run") and kwargs.get("placement") is not None:
+                from astrid.core.generation import placement as placements
+                resolved = placements.validate_placement(placements.resolve_placement(
+                    placements.request_from_selector(kwargs["placement"]),
+                    client=kwargs.get("client"), repo=kwargs.get("project_root")))
+                if resolved.kind not in placements.BUILTIN_KINDS:
+                    # A remote request is refused locally, with the same dry-run preflight,
+                    # before the claimed-machine requirement below can apply.
+                    self._generate_on_target_impl(_job_dirs=job_dirs, **{**kwargs, "dry_run": True})
             return self._generate_on_target_impl(_job_dirs=job_dirs, **kwargs)
         finally:
             for directory in job_dirs:
@@ -1946,6 +2027,17 @@ class GenerationFacade:
                     from astrid.core.generation.managed_preparation import configured_models_root
                     manifest = {**manifest, 'models_root': configured_models_root()}
                 readiness['entry']['requirements'] = manifest
+            # Every dry run runs the invocation preflight that precedes a paid submission.
+            # H3 measures its prepared source on the live path; an offline dry run cannot
+            # reproduce that source, so H3 skips only the source-AV measurement here.
+            h3_lineage = None
+            if entry_id == 'h3' and plan and isinstance(plan.get('build_plan'), Mapping):
+                from astrid.packs.h3_av.shared.stages import source_asset_lineage
+                h3_lineage = source_asset_lineage(plan['build_plan'])
+            _offline_invocation_preflight(
+                workflow, plan=plan, assets=assets or {},
+                comfy_url=(target_client.target.url if placement.kind == 'attached' and target_client is not None else None),
+                lineage=h3_lineage, source_video=entry_id != 'h3')
             readiness['entry'].update(preview)
             if align == 'trust':
                 readiness['alignment'] = {'mode': 'trust', 'verified': False}

@@ -437,13 +437,19 @@ def _cmd_transcripts_run(parsed: argparse.Namespace) -> int:
         path.write_bytes(raw)
         options = {name: getattr(parsed, name) for name in ("placement", "engine", "execution", "align", "recovery_path")
                    if getattr(parsed, name, None) is not None}
+        dry_run = bool(getattr(parsed, "dry_run", False))
         result = generate.audio(entry="transcription", mode="transcribe", audio_ref=str(path),
-                                project=project, client=parsed.client, consent=tuple(parsed.consent), **options)
+                                project=project, client=parsed.client, consent=tuple(parsed.consent),
+                                dry_run=dry_run, **options)
     if getattr(result, "ok", True) is False:
         raise ValueError(f"transcription failed: {getattr(result, 'error', None)}")
     from astrid.sdk.transcript_run import transcription_run_id
 
     value = result.to_dict() if hasattr(result, "to_dict") else result
+    if dry_run:
+        # Staged input, compile and the invocation preflight ran; nothing was admitted or imported.
+        print(json.dumps(value, indent=2, sort_keys=True, default=str))
+        return 0
     run_id = transcription_run_id(parsed.client, value)
     status = import_transcription_run(parsed.client, project, digest, run_id,
                                       replace=parsed.replace, expected_version=parsed.expected_version)

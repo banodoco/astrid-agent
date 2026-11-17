@@ -1519,6 +1519,8 @@ def _working_configure_transcripts_run(subparser: argparse.ArgumentParser) -> No
     subparser.add_argument("--recovery-path")
     subparser.add_argument("--replace", action="store_true")
     subparser.add_argument("--expected-version", type=int)
+    subparser.add_argument("--dry-run", action="store_true",
+                           help="Stage input, compile and run the invocation preflight, then stop before admission.")
     subparser.set_defaults(handler=_working_cmd_transcripts_run)
 
 
