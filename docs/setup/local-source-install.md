@@ -162,3 +162,18 @@ the package is missing, run the installer line with `--update` in a terminal
 outside chat. Repair keeps the installed program code, so repair alone will not
 add a missing package. The agent must not install VibeComfy or restart Astrid
 from inside a chat; a service restart ends the chat and can leave Astrid down.
+
+## Running RunPod jobs from a source checkout
+
+An installed copy pins what a rented GPU fetches from its installed release
+manifest. A source checkout has no manifest, so say so explicitly: set
+`ASTRID_RUNPOD_SOURCE_MODE=checkout` (or pass `--sources checkout` to
+`astrid machines claim` and `astrid generate`). Astrid then derives the same
+pins from the checkout: Agent from `HEAD` and the branch's remote URL, Runtime
+from `runtime.lock.json`, runpod-lifecycle and VibeComfy from
+`astrid/packs/runpod/pins.json`. The rented machine fetches each by exact SHA,
+so the checkout must have no uncommitted changes in tracked files and `HEAD`
+must be pushed; otherwise Astrid refuses before any claim or spend and names
+the fix. `astrid generate ... --placement runpod --dry-run --json` shows the
+derived pins and where each came from under `runpod_sources`. See the
+[RunPod skill](../../astrid/packs/runpod/docs/SKILL.md#running-runpod-jobs-from-a-source-checkout).

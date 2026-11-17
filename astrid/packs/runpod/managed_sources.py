@@ -100,6 +100,159 @@ def pin_mismatch_message(name: str, manifest_pin: dict, canonical: dict) -> str:
             f"revision {_show_sha(canonical.get('revision'))}.{canonical_version} {_REMEDY}")
 
 
+SOURCE_MODE_ENV = "ASTRID_RUNPOD_SOURCE_MODE"
+SOURCE_MODES = ("installed", "checkout")
+_SHA = re.compile(r"[0-9a-f]{40}")
+_RUNTIME_REPOSITORY = "https://github.com/banodoco/astrid-runtime"
+
+
+def source_mode() -> str:
+    """``installed`` (default) or ``checkout``; chosen only by ASTRID_RUNPOD_SOURCE_MODE or `--sources`."""
+    value = os.environ.get(SOURCE_MODE_ENV, "").strip().lower() or "installed"
+    if value not in SOURCE_MODES:
+        raise ManagedSourcesError(
+            f"{SOURCE_MODE_ENV}={value!r} is not a RunPod source mode; use one of: {', '.join(SOURCE_MODES)}")
+    return value
+
+
+def select_source_mode(value: str | None) -> None:
+    """Apply an explicit `--sources` choice for this process (the visible form of the env var)."""
+    if value:
+        os.environ[SOURCE_MODE_ENV] = value
+
+
+def _refusal(problem: str, fix: str) -> ManagedSourcesError:
+    return ManagedSourcesError(f"RunPod source mode 'checkout' refused: {problem}. {fix}")
+
+
+def _scp_to_https(url: str) -> str:
+    """git@host:o/r.git and ssh://git@host/o/r.git name the same repository the worker fetches over https."""
+    match = re.fullmatch(r"(?:ssh://)?git@([A-Za-z0-9.-]+)[:/](.+)", url)
+    return f"https://{match.group(1)}/{match.group(2)}" if match else url
+
+
+def _checkout_remote(root: Path) -> tuple[str, str]:
+    name = "origin"
+    try:
+        branch = _git(root, "symbolic-ref", "--quiet", "--short", "HEAD")
+        configured = _git(root, "config", "--get", f"branch.{branch}.remote")
+        if configured and configured != ".":
+            name = configured
+    except ManagedSourcesError:
+        pass  # detached HEAD or no upstream: origin
+    try:
+        url = _git(root, "config", "--get", f"remote.{name}.url")
+    except ManagedSourcesError:
+        url = ""
+    if not url:
+        raise _refusal(f"the checkout has no remote named {name!r}, so the worker has nowhere to fetch it from",
+                       f"Add one with `git remote add {name} https://github.com/<owner>/astrid-agent.git`, "
+                       "push, and retry")
+    return name, _scp_to_https(url)
+
+
+def _head_is_on_remote(root: Path, head: str, name: str, url: str) -> bool:
+    try:
+        listing = _git(root, "ls-remote", url)
+    except ManagedSourcesError as exc:
+        raise _refusal(f"cannot reach remote {name!r} ({url}) to confirm HEAD {head[:12]} is pushed ({exc})",
+                       "Check the network and the remote URL, then retry") from exc
+    tips = [line.split("\t")[0] for line in listing.splitlines() if "\t" in line]
+    if head in tips:
+        return True
+    for tip in dict.fromkeys(tips):
+        try:
+            _git(root, "cat-file", "-e", f"{tip}^{{commit}}")
+            _git(root, "merge-base", "--is-ancestor", head, tip)
+            return True
+        except ManagedSourcesError:
+            continue  # tip not present locally, or HEAD is not behind it
+    return False
+
+
+def derive_checkout_manifest(root: Path | None = None) -> tuple[dict, dict[str, str]]:
+    """Derive, in memory, the release manifest an installer would write for this source checkout.
+
+    Returns ``(manifest, provenance)``. The manifest has the installed schema and goes through the
+    same validation in ``_pins``; provenance says where each pin came from. Refuses, before any claim
+    or spend, whenever the rented machine could not fetch exactly the code this checkout runs.
+    """
+    from astrid.core.generation.canonical_pins import CANONICAL_PINS_PATH, canonical_pin
+    root = Path(root) if root is not None else AGENT_ROOT
+    if not (root / ".git").exists():
+        raise _refusal(f"{root} is not a git checkout",
+                       f"Run from a source checkout, or unset {SOURCE_MODE_ENV} to use the installed release manifest")
+    dirty = _git(root, "diff-index", "--name-only", "HEAD", "--")  # tracked files, staged or not
+    if dirty:
+        files = dirty.splitlines()
+        shown = ", ".join(files[:5]) + (f" and {len(files) - 5} more" if len(files) > 5 else "")
+        raise _refusal(f"tracked files have uncommitted changes ({shown}); the worker fetches commits, "
+                       "not your working tree", "Commit and push them (or `git stash`), then retry")
+    head = _git(root, "rev-parse", "HEAD")
+    if not _SHA.fullmatch(head):
+        raise _refusal("HEAD is not a commit", "Check out a branch with at least one commit")
+    name, url = _checkout_remote(root)
+    if not _head_is_on_remote(root, head, name, url):
+        raise _refusal(f"HEAD {head[:12]} is not on remote {name!r} ({url}); the rented machine could not fetch it",
+                       f"Run `git push {name} HEAD` (or push your branch), then retry")
+    lock_path = root / "runtime.lock.json"  # the checkout's own pin file, never a packaged fallback
+    try:
+        runtime_sha = json.loads(Path(lock_path).read_bytes())["source_commit"]
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise _refusal(f"the Runtime pin cannot be read from {lock_path} (source_commit)",
+                       "Restore runtime.lock.json from the commit you are testing") from exc
+    if not isinstance(runtime_sha, str) or not _SHA.fullmatch(runtime_sha):
+        raise _refusal(f"{lock_path} source_commit is not a 40-hex commit", "Restore runtime.lock.json")
+    pins = {}
+    for source in ("lifecycle", "vibecomfy"):
+        try:
+            pin = canonical_pin(source)
+            if not _SHA.fullmatch(str(pin["revision"])) or not pin["repository"]:
+                raise ValueError(source)
+        except Exception as exc:  # noqa: BLE001 - any unreadable or malformed pin is the same refusal
+            raise _refusal(f"the {source} pin cannot be determined from {CANONICAL_PINS_PATH}",
+                           "Restore that file from the commit you are testing") from exc
+        pins[source] = pin
+    lifecycle, vibecomfy = pins["lifecycle"], pins["vibecomfy"]
+    manifest = {
+        "agent": {"repo": url, "sha": head},
+        "runtime": {"repo": _RUNTIME_REPOSITORY, "sha": runtime_sha},
+        "lifecycle": {"repo": lifecycle["repository"], "sha": lifecycle["revision"],
+                      **({"version": lifecycle["version"]} if "version" in lifecycle else {})},
+        "vibecomfy": {"repo": vibecomfy["repository"], "sha": vibecomfy["revision"]},
+    }
+    provenance = {
+        "agent": f"HEAD of the checkout at {root}, confirmed on remote {name!r}",
+        "runtime": f"source_commit in {lock_path}",
+        "lifecycle": CANONICAL_PINS_PATH,
+        "vibecomfy": CANONICAL_PINS_PATH,
+    }
+    return manifest, provenance
+
+
+def checkout_source_report() -> dict:
+    """What a worker would fetch in checkout mode, and where each pin came from (for dry runs)."""
+    manifest, provenance = derive_checkout_manifest()
+    pins = {}
+    for name in ("agent", "runtime", "lifecycle", "vibecomfy"):
+        entry = manifest[name]
+        pins[name] = {"repository": entry["repo"], "revision": entry["sha"], "from": provenance[name],
+                      **({"version": entry["version"]} if "version" in entry else {})}
+    return {"mode": "checkout", "pins": pins}
+
+
+def preflight_source_mode() -> dict | None:
+    """Refuse before any claim or spend when checkout mode is selected but its pins cannot be served.
+
+    Returns the pin report in checkout mode, ``None`` in installed mode (which is unchanged).
+    """
+    if source_mode() != "checkout":
+        return None
+    report = checkout_source_report()
+    _pins()  # the same validation the preparation will run
+    return report
+
+
 def _pins() -> dict[str, tuple[str, str]]:
     """Map each remote_placement.SOURCE_DIRS name to (repository, commit)."""
     from astrid.core.generation import engine_recipe
@@ -109,30 +262,37 @@ def _pins() -> dict[str, tuple[str, str]]:
     runtime_commit = json.loads(runtime_lock_path(AGENT_ROOT).read_bytes())["source_commit"]
     vibe = next(s for s in engine_recipe.load_recipe("comfyui", "linux-x86_64-cu130").sources
                 if s.name == "vibecomfy").pin
-    manifest_path = _installed_manifest_path()
-    try:
-        manifest = json.loads(manifest_path.read_bytes())
-    except (OSError, ValueError) as exc:
-        raise ManagedSourcesError(
-            f"RunPod needs the installed release manifest at {manifest_path} to pin its bootstrap sources") from exc
+    if source_mode() == "checkout":
+        manifest, _ = derive_checkout_manifest()
+        manifest_path = None
+        label = "checkout-derived release manifest"
+    else:
+        manifest_path = _installed_manifest_path()
+        label = f"installed release manifest at {manifest_path}"
+        try:
+            manifest = json.loads(manifest_path.read_bytes())
+        except (OSError, ValueError) as exc:
+            raise ManagedSourcesError(
+                f"RunPod needs the installed release manifest at {manifest_path} to pin its bootstrap sources") from exc
     if not isinstance(manifest, dict):
-        raise ManagedSourcesError(f"the installed release manifest at {manifest_path} is not a JSON object")
+        raise ManagedSourcesError(f"the {label} is not a JSON object")
     try:
         agent, runtime = manifest["agent"], manifest["runtime"]
         runtime_sha = runtime["sha"]
     except (KeyError, TypeError) as exc:
         raise ManagedSourcesError(
-            f"RunPod needs the installed release manifest at {manifest_path} to name the agent and runtime pins") from exc
+            f"RunPod needs the {label} to name the agent and runtime pins") from exc
     lifecycle = manifest.get("lifecycle")
     if lifecycle is None:
         raise ManagedSourcesError(
-            f"the installed release manifest at {manifest_path} has no lifecycle pin; RunPod needs one that matches "
+            f"the {label} has no lifecycle pin; RunPod needs one that matches "
             f"this Agent. {_REMEDY}")
     if not isinstance(lifecycle, dict):
         raise ManagedSourcesError(
-            f"the installed release manifest's lifecycle pin is not an object. {_REMEDY}")
+            f"the {'installed release manifest' if manifest_path else label}'s lifecycle pin is not an object. {_REMEDY}")
     if runtime_sha != runtime_commit:
-        raise ManagedSourcesError("installed manifest runtime pin differs from runtime.lock.json")
+        raise ManagedSourcesError(
+            f"{'installed manifest' if manifest_path else label} runtime pin differs from runtime.lock.json")
     # The lifecycle and VibeComfy pods run are the Agent's canonical pins; a manifest that names
     # a different lifecycle or VibeComfy would split what is installed locally from what ships.
     canonical = canonical_pin("lifecycle")

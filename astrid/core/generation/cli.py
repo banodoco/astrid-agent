@@ -65,6 +65,11 @@ def _no_generation_target(target: str, *, repo=None, client=None) -> bool:
         return False
 
 
+_SOURCES_HELP = ("RunPod bootstrap sources: installed (default) pins from the installed release manifest; "
+                 "checkout derives the pins from this source checkout (clean, pushed HEAD) and shows them in --dry-run. "
+                 "Same as ASTRID_RUNPOD_SOURCE_MODE.")
+
+
 class _Once(argparse.Action):
     """Reject repeated convenience flags instead of silently keeping the last."""
 
@@ -227,6 +232,7 @@ def _parser(contextual: dict[str, Any] | None = None) -> _GenerationParser:
         command.add_argument("--project", help="Project ID or slug; otherwise use the selected project.")
         command.add_argument("--out", help="Caller-local output file or directory (default: ./outputs/<task-id>/).")
         command.add_argument("--dry-run", action="store_true", help="Show the generation plan without running it.")
+        command.add_argument("--sources", action=_Once, choices=("installed", "checkout"), help=_SOURCES_HELP)
         command.add_argument("--edit", "--image-ref", dest="image_ref", action=_Once, help="Reference image for an edit or image-to-video request.")
         if modality in {'video', 'audio'}:
             command.add_argument('--video-ref', action=_Once, metavar='FILE', help='Reference video for video generation or Foley sound effects.')
@@ -284,6 +290,7 @@ def _parser(contextual: dict[str, Any] | None = None) -> _GenerationParser:
     command.add_argument("--steps", action=_Once, type=int)
     command.add_argument("--cfg", '--guidance-scale', dest="guidance_scale", action=_Once, type=float)
     command.add_argument("--dry-run", action="store_true")
+    command.add_argument("--sources", action=_Once, choices=("installed", "checkout"), help=_SOURCES_HELP)
     command.add_argument("--json", action="store_true")
     _common_options(command)
     command = sub.add_parser('align', help='Inspect locked managed assets; apply with explicit user_env consent.')
@@ -540,6 +547,8 @@ def _workflow_command(parsed: argparse.Namespace) -> int:
         raise generation_error(getattr(result, 'error', None) or ValueError('Workflow generation failed.'),
                                task_id=getattr(result, 'kernel_task_id', None))
     payload = result.to_dict() if hasattr(result, "to_dict") else result
+    if getattr(parsed, 'runpod_sources', None) is not None and parsed.dry_run and isinstance(payload, dict):
+        payload = {**payload, 'runpod_sources': parsed.runpod_sources}
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
 
@@ -691,6 +700,15 @@ def _main_request(argv: list[str], stack) -> int:
             parser.error(str(exc))
         print(json.dumps(description, indent=2, sort_keys=True) if parsed.json else _entry_help(description))
         return 0
+    runpod_sources = None
+    if is_runpod_placement(parsed.placement):
+        # An explicit, visible choice; refused here, before any claim or spend, when the pins cannot be served.
+        from astrid.packs.runpod import managed_sources
+        try:
+            managed_sources.select_source_mode(getattr(parsed, 'sources', None))
+            runpod_sources = parsed.runpod_sources = managed_sources.preflight_source_mode()
+        except managed_sources.ManagedSourcesError as exc:
+            parser.error(str(exc))
     if (is_runpod_placement(parsed.placement) and not parsed.dry_run
             and not getattr(parsed, 'no_run', False)):
         from astrid.sdk.generation import _require_claimed_machine
@@ -820,6 +838,8 @@ def _main_request(argv: list[str], stack) -> int:
     if transcription_run and isinstance(payload, dict):
         # The same run id timelines transcripts import --from-run takes, with the media it transcribed.
         payload = {**payload, 'run_id': transcription_run, **({'media_id': media_id} if media_id else {})}
+    if runpod_sources is not None and parsed.dry_run and isinstance(payload, dict):
+        payload = {**payload, 'runpod_sources': runpod_sources}
     if parsed.json or parsed.dry_run or not isinstance(payload, dict):
         print(json.dumps(payload, indent=2, sort_keys=True))
     elif parsed.no_wait:

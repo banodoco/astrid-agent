@@ -256,10 +256,39 @@ staying loaded.
 
 ### Runtime and storage
 
-RunPod generation needs an installed Astrid layout. Pinned Runtime,
-VibeComfy and other worker sources come from the installed release manifest
-and are cached at `<data-root>/runpod/sources`; a developer checkout or ambient
-`PYTHONPATH` is not a worker installation. The default placement remains
+RunPod generation needs an installed Astrid layout, or an explicit source
+checkout (below). Pinned Runtime, VibeComfy and other worker sources come from
+the installed release manifest and are cached at `<data-root>/runpod/sources`;
+an ambient `PYTHONPATH` is not a worker installation.
+
+### Running RunPod jobs from a source checkout
+
+To run Astrid from the code you are editing and still rent a GPU, select
+checkout mode explicitly. It is never silent, and an installed copy keeps using
+its installed manifest.
+
+```sh
+export ASTRID_RUNPOD_SOURCE_MODE=checkout      # or --sources checkout on
+astrid machines claim --sources checkout --gpu "RTX 4090" --max-usd 3 --consent paid
+astrid generate image --entry ENTRY --placement runpod --sources checkout --dry-run --json
+```
+
+The worker must run exactly the code your client runs, so Astrid derives the
+same pins an installed manifest carries, in memory, from the checkout:
+
+- Agent: the checkout's `HEAD` commit and its remote URL (the branch's remote,
+  else `origin`).
+- Runtime: `source_commit` in the checkout's `runtime.lock.json`.
+- runpod-lifecycle and VibeComfy: `astrid/packs/runpod/pins.json`.
+
+The rented machine fetches each by exact SHA. Astrid therefore refuses, before
+any claim or spend, when tracked files have uncommitted changes (commit and
+push, or stash), when `HEAD` is not on the remote (`git push <remote> HEAD`;
+checked live with `git ls-remote`), when the remote is unreachable, or when a
+pin cannot be read. `--dry-run` prints `runpod_sources`: each pin's repository,
+revision and the file it came from. Export the variable in the environment that
+starts the Astrid host as well, because the host re-derives and re-checks the
+pins when it prepares the machine. The default placement remains
 `auto`; saving RunPod preferences does not replace a configured human
 ComfyUI target.
 

@@ -749,6 +749,10 @@ def _parser() -> argparse.ArgumentParser:
     capacity.add_argument("--capacity-timeout", metavar="DURATION", help="Stop waiting for stock after this duration; default: the claim's --for retention.")
     capacity.add_argument("--no-wait-for-capacity", action="store_true", help="Make one capacity observation and at most one create attempt.")
     acquire.add_argument("--consent", action="append", choices=("paid",), default=[], help="Approve the displayed paid claim policy without prompting.")
+    acquire.add_argument("--sources", choices=("installed", "checkout"),
+                         help="RunPod bootstrap sources: installed (default) uses the installed release manifest; "
+                              "checkout derives the pins from this source checkout and refuses before any spend "
+                              "when HEAD is dirty, unpushed or a pin is missing. Same as ASTRID_RUNPOD_SOURCE_MODE.")
     acquire.add_argument("--json", action="store_true", dest="claim_json")
     return parser
 
@@ -770,6 +774,15 @@ def main(argv: Sequence[str] | None = None, *, release: Callable[[], Any] | None
                      until_release=parsed.until_release, max_usd=parsed.max_usd,
                      as_json=as_json or parsed.keep_json, keep=keep)
     if parsed.command == "claim":
+        from astrid.packs.runpod import managed_sources
+        try:
+            managed_sources.select_source_mode(parsed.sources)
+            sources = managed_sources.preflight_source_mode()
+        except managed_sources.ManagedSourcesError as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}) if (as_json or parsed.claim_json) else str(exc))
+            return 2
+        if sources is not None:
+            print("RunPod worker sources (checkout mode): " + json.dumps(sources["pins"], sort_keys=True), file=sys.stderr)
         return _claim(gpu_types=parsed.gpu_types, datacenter=parsed.datacenter, max_usd=parsed.max_usd,
                       max_hourly_usd=parsed.max_hourly_usd, for_duration=parsed.claim_for,
                       capacity_timeout=parsed.capacity_timeout, wait_for_capacity=not parsed.no_wait_for_capacity,
