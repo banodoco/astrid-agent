@@ -90,6 +90,11 @@ def contact_reasons(reasons: Mapping[int, set], *, mode: str, limit: int = CONTA
     return {frame: selected[frame] for frame in frames}, thinned_from
 
 
+def _tile_caption(card: Mapping[str, Any]) -> str:
+    """The tile's words line; a tile with no words says so plainly (never a bare dash)."""
+    return _tile_words(card) or 'no words stored'
+
+
 def _tile_words(card: Mapping[str, Any]) -> str:
     """First words of the VO under this tile's cut (or at its frame), from the best timing available."""
     cut = card.get('cut') if isinstance(card.get('cut'), Mapping) else None
@@ -170,7 +175,7 @@ def static_contact_png(cards, out_root: Path, *, columns: int, timeline_name: st
             time_text = f"{card.get('time_label', '')} · f{card.get('frame', '')}"
         label = _png_shot_label(card)
         name_text = label if _png_text_width(measure, label, name_font) <= tile_w - 8 else _png_ellipsis(measure, label, name_font, tile_w - 8)
-        words = _tile_words(card) or '—'
+        words = _tile_caption(card)
         word_lines, excerpt = _png_bounded_lines(measure, words, words_font, tile_w - 8, 2)
         if excerpt:
             word_lines[-1] = _png_ellipsis(measure, word_lines[-1], words_font, tile_w - 8)

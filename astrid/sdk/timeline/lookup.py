@@ -203,26 +203,36 @@ class _LookupMixin:
         return Selection(self._word_list(), kind="word", tl=self)
 
     def _word_list(self) -> list[Word]:
-        found: list[tuple[float, float, str, str, str, int, str]] = []
-        for sid in [*self._shot_ids(), PARENT_SHOT]:
-            start = self._shot_start(sid)
-            clips = self._parent_clips() if sid == PARENT_SHOT else self._internal(sid)["clips"]
-            for clip in clips:
-                if not self._is_audio(sid, clip):
-                    continue
-                segment = intent.line(clip) or str(clip.get("id") or "")
-                for i, entry in enumerate(_read_words({"words": intent.words(clip)}, relative=True)):
-                    s, e, t = entry
-                    at = start + _num(clip.get("at"))
-                    found.append((at + s, at + e, t, segment, str(clip.get("id")), i, sid))
-        found.sort(key=lambda row: (row[0], row[3], row[5]))
-        counters: dict[str, int] = {}
-        words = []
-        for s, e, t, segment, clip_id, _i, sid in found:
-            k = counters.get(segment, 0)
-            counters[segment] = k + 1
-            words.append(Word(f"{segment}:{k}", t, _r(s), _r(e), segment, k, clip_id, sid))
-        return words
+        """Every spoken word in parent time, through the shared projection (stored transcripts first,
+        clip-local words for media that has none)."""
+        from astrid.sdk.timeline.words import as_words, project_words
+
+        return as_words(project_words(self.bundle, self._stored_transcripts(), "parent"))
+
+    def _stored_transcripts(self) -> dict[str, dict[str, dict[str, Any]]]:
+        """Stored media transcripts for this timeline's audio media, read once per media set.
+
+        A detached checkout (no client) reads none and projects clip-local words only. A failed
+        read is noted and falls back the same way, so a timeline view never breaks on the store.
+        """
+        from astrid.sdk.timeline.words import load_timeline_transcripts, timeline_media_ids
+
+        client, project = getattr(self, "_scene_client", None), getattr(self, "_scene_project", None)
+        if client is None or not project:
+            return {}
+        key = (project, str(self.bundle.get("project_id") or ""), tuple(timeline_media_ids(self.bundle)))
+        cache = getattr(self, "_transcript_cache", None)
+        if cache is not None and cache[0] == key:
+            return cache[1]
+        issues: list[str] = []
+        try:
+            loaded = load_timeline_transcripts(client, project, self.bundle, issues=issues)
+        except Exception as exc:  # noqa: BLE001 - a read failure must not hide the clip-local words
+            self.notes.append(f"stored transcripts unavailable ({exc}); showing clip-local words")
+            loaded = {}
+        self.notes.extend(issues)  # a pin that cannot be loaded is said, not silently dropped
+        self._transcript_cache = (key, loaded)
+        return loaded
 
     def word(self, query: str, *, n: int | None = None, after: Any = None, near: Any = None) -> Word:
         """A word by text (``"viral"``, a phrase ``"Hugging Face"``) or id (``"n20b:20"``).

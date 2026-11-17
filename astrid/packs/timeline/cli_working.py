@@ -452,15 +452,176 @@ def _cmd_transcripts_run(parsed: argparse.Namespace) -> int:
 
 
 @guard(2)
+def _cmd_transcripts_refresh(parsed: argparse.Namespace) -> int:
+    """Status of every audio media (parent and child timelines), missing transcripts run on request,
+    an explicit transcript choice recorded in transcriptReferences, and what a refresh cannot fix."""
+    from astrid.sdk.timeline import words as W
+    from astrid.sdk.timeline_checkout import Checkout
+    from astrid.sdk.timeline_transcript_refresh import (
+        REFERENCES_SCHEMA as W_REFERENCES_SCHEMA,
+        cut_words,
+        inventory,
+        stale_anchors,
+        with_reference,
+    )
+
+    project = need_project(parsed)
+    if parsed.run_missing and not parsed.placement:
+        raise VerbError("--run-missing runs transcription on a GPU: name where with --placement (e.g. --placement runpod)", 2)
+    if parsed.use_source and parsed.use_document:
+        raise VerbError("choose one of --use-source and --use-document", 2)
+    if parsed.placement and not parsed.run_missing:
+        print("note: --placement applies only with --run-missing")
+    draft, _existed = working_copy(parsed, create=False)
+    tl = draft if draft is not None else Checkout.open(project, parsed.ref, client=parsed.client)
+    if parsed.shot is not None and str(parsed.shot) not in (tl.bundle.get("shots") or {}):
+        raise VerbError(f"no shot {parsed.shot!r} in timeline {parsed.ref!r}", 2)
+    # --use-source S may name a source outside the default order: load it too.
+    load_sources = list(dict.fromkeys([*W.default_source_order(), *([parsed.use_source] if parsed.use_source else [])]))
+    issues: list[str] = []
+    transcripts = W.load_timeline_transcripts(parsed.client, project, tl.bundle, sources=load_sources, issues=issues)
+    rows = inventory(tl.bundle, transcripts, shot=parsed.shot)
+    print(f"{len(rows)} audio media in {parsed.ref}" + (f" (shot {parsed.shot})" if parsed.shot else "") + ":")
+    for row in rows:
+        where = ", ".join(row["holders"])
+        detail = f"document v{row['version']}" if row["version"] is not None else "no document"
+        print(f"  {row['media_id']}  {row['status']:<28}  {detail}  "
+              f"[{', '.join(row['clips'])}]  in {where}" + ("  (pinned)" if row["pinned"] else ""))
+    missing = [row for row in rows if row["status"] == "missing"]
+    if parsed.run_missing:
+        for row in missing:
+            command = ["timelines", "transcripts", "run", row["media_id"], "--project", project,
+                       "--placement", parsed.placement]
+            if parsed.dry_run:
+                print(f"  would run: astrid {' '.join(command)}")
+                continue
+            ns = argparse.Namespace(client=parsed.client, project=project, media_id=row["media_id"],
+                                    placement=parsed.placement, engine=None, execution=None, align=None,
+                                    consent=[], recovery_path=None, replace=False, expected_version=None)
+            status = _cmd_transcripts_run(ns)
+            print(f"  ran {row['media_id']}: {'ok' if status == 0 else f'failed (exit {status})'}")
+        if not parsed.dry_run and missing:
+            issues = []
+            transcripts = W.load_timeline_transcripts(parsed.client, project, tl.bundle,
+                                                      sources=load_sources, issues=issues)
+            rows = inventory(tl.bundle, transcripts, shot=parsed.shot)
+    elif missing:
+        print(f"  {len(missing)} missing: --run-missing --placement P runs them (GPU work)")
+    for note in W.pin_notes(tl.bundle, transcripts):
+        print(f"pin: {note}")
+    for issue in issues:
+        print(f"pin problem: {issue}", file=sys.stderr)
+    for item in stale_anchors(tl.bundle, transcripts):
+        print(f"anchor {item['clip_id']}.{item['field']}: {item['reason']} "
+              f"(pinned v{item['pinned_version']}, now {item['current_version'] if item['current_version'] is not None else 'absent'})")
+    for cut in cut_words(tl.bundle, transcripts, shot=parsed.shot):
+        span = f"{cut['word_start']:.3f}–{cut['word_end']:.3f}s"
+        print(f"cut {cut['edge']} at {cut['point']:.3f}s splits \"{cut['text']}\" ({span}) "
+              f"in clip {cut['clip_id']} [{cut['holder']}]")
+    # Only an explicit choice is recorded; the default pick is never turned into a permanent pin.
+    choice_source, choice_document = parsed.use_source, parsed.use_document
+    if choice_source is None and choice_document is None:
+        print("no transcript choice recorded (pass --use-source S or --use-document D to pin one)")
+        return 0
+    planned = []
+    for row in rows:
+        if row["status"] == "missing" and choice_source is not None:
+            continue
+        docs = transcripts.get(row["media_id"]) or {}
+        target = None
+        if choice_source is not None:
+            target = docs.get(choice_source)
+        else:
+            target = next((doc for doc in docs.values() if doc.get("document_id") == choice_document), None)
+        if target is None:
+            if choice_source is not None:
+                print(f"  {row['media_id']}: nothing recorded (no stored {choice_source} transcript for this media)")
+            continue
+        if target.get("document_id") in W.transcript_references(tl.bundle):
+            continue  # already pinned to this document
+        planned.append((row["media_id"], docs, target))
+    if parsed.dry_run:
+        for media, docs, target in planned:
+            source = next(name for name, doc in docs.items() if doc is target)
+            print(f"  would record: {media} -> {source} ({target['document_id']})")
+        print("dry run: nothing recorded")
+        return 0
+    if not planned:
+        print("nothing to record: the chosen transcripts are already pinned")
+        return 0
+    working, _existed = working_copy(parsed, create=True)
+    for media, docs, target in planned:
+        source = next(name for name, doc in docs.items() if doc is target)
+        media_ids = {doc.get("document_id") for doc in docs.values() if doc.get("document_id")}
+        bundle_config = working.bundle.setdefault("parent", {}).setdefault("config", {}).setdefault("bundle", {})
+        refs = bundle_config.setdefault("transcriptReferences", {"schema": W_REFERENCES_SCHEMA})
+        refs["schema"] = W_REFERENCES_SCHEMA
+        refs["associations"] = with_reference(working.bundle, media, media_ids, target["document_id"], source)
+        print(f"recorded {media} -> {source} in transcriptReferences")
+    working.save(quiet=True)
+    print("recorded in the working copy (publish to keep it)")
+    return 0
+
+
+@guard(2)
 def _cmd_transcripts_sync(parsed: argparse.Namespace) -> int:
     from astrid.sdk.timeline_checkout import Checkout
     from astrid.sdk.timeline_transcripts import sync_narration_transcripts
+
+    print("note: `timelines transcripts refresh` replaces sync (it also shows what is missing); sync still works",
+          file=sys.stderr)
 
     tl = Checkout.open(need_project(parsed), parsed.ref, client=parsed.client)
     report = sync_narration_transcripts(tl, parsed.client, str(tl.bundle["project_id"]), dry_run=parsed.dry_run)
     print(f"{'dry run: ' if parsed.dry_run else ''}{len(report)} narration transcript item(s)")
     for item in report:
         print(f"  {item['status']}: {item['label']}" + (f" ({item['reason']})" if item.get("reason") else ""))
+    return 0
+
+
+def _show_projected(parsed: argparse.Namespace, tl: Any, source_range: tuple[float, float] | None) -> int:
+    """``transcripts show --timeline``: the shared projection over every placement of the timeline."""
+    from astrid.sdk.timeline.words import default_source_order, load_timeline_transcripts, project_words
+
+    project = need_project(parsed)
+    # Default: the Whisper transcript (what this command has always shown), and a transcriptReferences
+    # pin wins for its media. An explicit --source S shows S and ignores pins.
+    source_choice = [parsed.source] if parsed.source else [default_source_order()[0]]
+    issues: list[str] = []
+    transcripts = load_timeline_transcripts(parsed.client, project, tl.bundle, sources=source_choice,
+                                            any_media=True, issues=issues)
+    for issue in issues:
+        print(f"pin problem: {issue}", file=sys.stderr)
+    rows = project_words(tl.bundle, transcripts, "parent", sources=source_choice, media="any",
+                         references=set() if parsed.source else None)
+    media = parsed.media_id
+    if parsed.clip:
+        if not any(row["clip_id"] == parsed.clip for row in rows) and not any(
+                clip.id == parsed.clip for clip in tl.clips()):
+            raise VerbError(f"clip {parsed.clip!r} does not exist in timeline {parsed.timeline!r}")
+        rows = [row for row in rows if row["clip_id"] == parsed.clip]
+        clip_media = {row["media_id"] for row in rows if row.get("media_id")}
+        if media is None and len(clip_media) > 1:
+            raise VerbError(f"clip {parsed.clip!r} matches different media; provide MEDIA_ID to choose")
+        if media is None:
+            if not clip_media:
+                raise VerbError(f"clip {parsed.clip!r} has no managed media digest")
+            media = next(iter(clip_media))
+    if media is not None:
+        if not transcripts.get(media):
+            raise VerbError(f"no transcript for {media} ({parsed.source or 'any source'})")
+        rows = [row for row in rows if row.get("media_id") == media]
+    if source_range is not None:
+        rows = [row for row in rows if not (row["source_end"] <= source_range[0] or row["source_start"] >= source_range[1])]
+    if parsed.json:
+        print(json.dumps([{key: row.get(key) for key in (
+            "address", "word_id", "text", "media_id", "source", "version", "clip_id", "shot_id", "occurrence",
+            "timeline_start", "timeline_end", "source_start", "source_end")} for row in rows],
+            ensure_ascii=False, indent=2))
+    else:
+        for row in rows:
+            print(f"source {row['source_start']:.3f}–{row['source_end']:.3f}s  {row['text']}  "
+                  f"timeline {row['timeline_start']:.3f}–{row['timeline_end']:.3f}s [{row['clip_id']}]")
     return 0
 
 
@@ -489,6 +650,9 @@ def _cmd_transcripts_show(parsed: argparse.Namespace) -> int:
         from astrid.sdk.timeline_checkout import Checkout
 
         tl = Checkout.open(need_project(parsed), parsed.timeline, client=parsed.client)
+        if isinstance(tl.bundle.get("placements"), list) and isinstance(tl.bundle.get("shots"), Mapping):
+            return _show_projected(parsed, tl, source_range)
+        # A bare working handle without a placement table: map each clip occurrence directly.
         from astrid.sdk.timeline.doc import _row_start
 
         # Checkout.clips() exposes one handle per placement but its legacy
