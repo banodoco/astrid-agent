@@ -97,12 +97,15 @@ Also open: mouth and lenses in one pass (two masks, one run, cheaper) or two pas
 - Each pass: a dry run that is the real path stopped before the GPU; one waiting claim with a spend cap and deadline; submit; read back; release.
 - Reference images with black letterbox bars baked into the pixels are cleaned before generation: `astrid media crop <media> --project P --remove-bars` (dry run first, see [media crop](../../../_core/docs/SKILL.md#crop-still-images-and-video)); use the cleaned item as the reference, never the barred original.
 - Check every take with `visualize` (region zoom on the changed area, a strip across the shot) and with timed words for speech. The owner judges look, voice and lip sync.
+- LC takes: record the new performance's range with the take (`"range": [3.25, 6.5]`, seconds into the take's media). Place the take with that range as the clip's `from`/`to`, so the shot shows only the new line. Keep the lead-in (`"lead_in": "keep"`) only when the real line before it belongs in the cut. Review the lead-in with `--compare-media take`; it should match the source. To hand someone a file of just the new line, run with `output.clip_lead_in: true` or `astrid media trim <take media> --project P --range 3.25,6.5`.
 - Plan: read the shot's inputs from its plan (`timelines shots plan show <shot> --project P --timeline T`: references, masks, voice slice), never from memory or another file. Set `status=in_progress` when the pass starts. After read-back, append the take and mark it ready: `timelines shots plan set <shot> --project P --timeline T --add-take '{"generation": "<run id>", "media": "<media id>", "note": "..."}' --set status=take_ready`.
 - When the owner approves a take, run `timelines shots plan set <shot> --project P --timeline T --set status=approved` (and say in a take's `note` which take was approved, if there are several).
 
 ## Stage 6 - Assemble and review
 
 Place the takes on the timeline, look across every cut boundary (`--preset motion` around each cut), check that words and mouths agree, and render only when asked.
+
+LC takes go in with their `range` (see Stage 5): the clip's `from`/`to` is the new line, so the lead-in does not play twice. Keep the lead-in only when the real line before it belongs in the cut.
 
 Plan: before assembling, `timelines shots plan list --project P --timeline T`: `unplanned`, `invalid` and `not_approved` must all be empty (K shots need no approval). Any shot left is named there; finish or re-plan it first. The final overview with `--shot-plans` shows every shot approved.
 

@@ -9,6 +9,7 @@ arrives as one ``EngineFacts`` object: the engine passes it to a hook that decla
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable, Mapping
 
@@ -27,6 +28,8 @@ class EngineFacts:
     measure_source_av: Callable[[Any], Mapping[str, Any]]
     astrid_error: Callable[[Exception], Any]
     run_logs: ModuleType
+    probe_media: Callable[[Any], Any]
+    clip_media: Callable[..., Mapping[str, Any]]
 
 
 def comfyui_facts() -> EngineFacts:
@@ -77,6 +80,18 @@ def comfyui_facts() -> EngineFacts:
         from astrid.core.contracts.errors import coerce_astrid_error
         return coerce_astrid_error(error)
 
+    def probe_media(path: Any) -> Any:
+        from astrid.core.media import ffprobe_metadata_strict
+        return ffprobe_metadata_strict(path)
+
+    def clip_media(src: Any, dst: Any, *, start: float, end: float, probe: Any) -> Mapping[str, Any]:
+        """Frame-exact clip of ``[start, end)``; the same code as ``astrid media trim``."""
+        from astrid.core.media_trim import clip_file, trim_plan
+        plan = trim_plan(probe, start, end)
+        clip_file(Path(src), Path(dst), start=start, end=end, fps=plan["fps"],
+                  sample_rate=probe.audio_sample_rate, has_audio=probe.audio_codec is not None)
+        return plan["bounds"]
+
     return EngineFacts(comfy_commit, locked_models, bind_model_root, build_asset_manifest, read_archive,
                        write_json_atomic, assert_no_unresolved_placeholders, measure_source_av, astrid_error,
-                       run_logs)
+                       run_logs, probe_media, clip_media)

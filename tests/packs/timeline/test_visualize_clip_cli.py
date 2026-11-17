@@ -212,6 +212,41 @@ def test_shot_uses_its_planned_span_mask_and_latest_take():
         clip.prepare(parsed)
 
 
+def test_lc_take_range_limits_the_compare_to_its_lead_in():
+    from astrid.sdk.shot_plan import PLAN_KEY
+
+    client, ids = _client(t=(_frame(100), "image/png"))
+    plan = {"version": 1, "method": ["LC"], "status": "take_ready",
+            "takes": [{"generation": "run-1", "media": ids["t"], "range": [3.25, 6.5]}]}
+    bundle = {"shots": {"s1": {"payload": {"metadata": {"name": "02c Blue pill", PLAN_KEY: plan}}}},
+              "placements": [{"shot_id": "s1", "occurrence_id": "o1", "placement": {"start_ms": 12167},
+                              "duration_ms": 4290}]}
+    parsed = _parsed(client, shot="02c", compare_media="take")
+    parsed._bundle = bundle
+    request = clip.prepare(parsed)
+    assert request["lead_in_end"] == 3.25
+
+    # Not an LC shot: the same range does not narrow the compare.
+    plan["method"] = ["M"]
+    parsed = _parsed(client, shot="02c", compare_media="take")
+    parsed._bundle = bundle
+    assert clip.prepare(parsed)["lead_in_end"] is None
+
+
+def test_lc_compare_uses_only_the_lead_in_and_says_so(tmp_path):
+    outputs = _captured(tmp_path, moving=False)
+    client, ids = _client(t=(_frame(100), "image/png"), s=(_frame(100), "image/png"))
+    parsed = _parsed(client, cut="3", compare_media=ids["t"], against=ids["s"])
+    request = clip.prepare(parsed)
+    request["lead_in_end"] = 0.5
+    drawn = clip.draw(outputs, request, parsed=parsed, inputs={"cut": "3"})
+    assert any(line.startswith("LEAD-IN compared only take 0-0.50 s") for line in drawn["findings"])
+    assert any(line.startswith("COMPARE ") for line in drawn["findings"])
+    request["lead_in_end"] = 0.0
+    with pytest.raises(clip.ClipError, match="lead-in is 0.00 s"):
+        clip.draw(outputs, request, parsed=parsed, inputs={"cut": "3"})
+
+
 def test_against_a_video_source_reads_the_clip_under_each_moment():
     row = {"object_id": "sha256:" + "a" * 64, "media_type": "video/mp4"}
     snapshot = {"registry": {"assets": {"o:pic1": {"media_id": row["object_id"]}, "o:pic2": {"media_id": row["object_id"]}}},

@@ -10,7 +10,7 @@ from copy import deepcopy
 from fractions import Fraction
 from typing import Any, Mapping
 
-from .request import H3Request, H3RequestError, _nonblank, _number, _object, _unknown
+from .request import H3Request, H3RequestError, _nonblank, _number, _object, _unknown, lead_in_mode
 
 FPS = Fraction(24, 1)
 SAMPLE_RATE = 48000
@@ -350,7 +350,7 @@ def _validate_character_swap_media(settings: Mapping[str, Any], media: list[dict
 
 
 def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] | None = None) -> H3Request:
-    _unknown(raw, {"version", "prompt", "duration", "media", "settings", "continuation"}, "request")
+    _unknown(raw, {"version", "prompt", "duration", "media", "settings", "continuation", "output"}, "request")
     if raw.get("version") != 2: raise H3RequestError("version must be 2")
     prompt = _nonblank(raw.get("prompt"), "prompt")
     media_raw = raw.get("media")
@@ -469,7 +469,18 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
     _ticks(duration_fraction, FPS, "duration")
     settings = _settings(raw.get("settings", {}))
     _validate_character_swap_media(settings, occurrences, continuation)
+    output: dict[str, Any] = {}
+    if "output" in raw:
+        output_raw = _object(raw["output"], "output") or {}
+        if not continuation: raise H3RequestError("output is valid only for a continuation")
+        _unknown(output_raw, {"lead_in", "clip_lead_in"}, "output")
+        if "lead_in" in output_raw:
+            output["lead_in"] = lead_in_mode(output_raw["lead_in"], "output.lead_in")
+        if "clip_lead_in" in output_raw:
+            if type(output_raw["clip_lead_in"]) is not bool: raise H3RequestError("output.clip_lead_in must be boolean")
+            if output_raw["clip_lead_in"]: output["clip_lead_in"] = True
     value = {"version": 2, "prompt": prompt, "duration": duration, "media": occurrences, "settings": settings, "continuation": continuation, "profile": PROFILE, "output_count": 1, "model_tags": {item["occurrence_id"]: item["model_tag"] for item in occurrences if "model_tag" in item}}
+    if output: value["output"] = output
     encoded = json.dumps(json_times(value), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
     return H3Request(value=value, digest=hashlib.sha256(encoded).hexdigest())
 

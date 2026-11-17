@@ -225,4 +225,29 @@ def after_outputs(job_dir, inputs, files, outputs, *, engine=None):
     verification = verify_candidate(preparation=preparation, composition=composition, source=source,
                                     candidate=composition["candidate"]["path"])
     facts.write_json_atomic(work / "verify.json", verification)
-    return [composition["candidate"]["path"], *outputs[1:]]
+    extra = _continuation_take(work, state, composition, facts)
+    return [composition["candidate"]["path"], *outputs[1:], *extra]
+
+
+def _continuation_take(work, state, composition, facts) -> list[str]:
+    """For a continuation with ``output.clip_lead_in``: write a frame-exact clip of the take's range.
+
+    Runs after verification, on the full take, which stays whole. The clip is an
+    extra output; the range comes from ``take.take_range`` (drop or keep).
+    """
+    take = _shared("take")
+    request = state["request_object"].value
+    if not take.is_continuation(request) or not take.clip_requested(request):
+        return []
+    candidate = Path(composition["candidate"]["path"])
+    probe = facts.probe_media(candidate)
+    mode = take.lead_in_of(request)
+    span = take.take_range(composition, lead_in=mode, media_duration=getattr(probe, "duration_seconds", None))
+    clip = work / "take-clip.mp4"
+    bounds = take.clip_take(facts, candidate, clip, start=span[0], end=span[1], probe=probe)
+    take.write_take_report(work, {"lead_in": mode, "range": span, "full_take": str(candidate),
+                                  "clip": {"path": str(clip), **bounds}})
+    facts.run_logs.declare(work.parent, facts.run_logs.LogDecl("h3.take", "run", str(Path("h3") / "take.json")))
+    return [str(clip)]
+
+

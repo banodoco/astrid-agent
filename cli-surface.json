@@ -1257,6 +1257,29 @@
             }
           }
         },
+        "trim": {
+          "flags": {
+            "--dry-run": {
+              "required": false
+            },
+            "--idempotency-key": {
+              "required": false
+            },
+            "--json": {
+              "required": false
+            },
+            "--project": {
+              "required": true
+            },
+            "--range": {
+              "required": true
+            }
+          },
+          "positionals": [
+            "ref"
+          ],
+          "verbs": {}
+        },
         "verify": {
           "flags": {
             "--idempotency-key": {

@@ -5,11 +5,14 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["version", "prompt", "media", "settings"],
+  "if": {"not": {"properties": {"continuation": {"const": true}}, "required": ["continuation"]}},
+  "then": {"not": {"required": ["output"]}},
   "properties": {
     "version": {"const": 2},
     "prompt": {"type": "string", "minLength": 1},
     "duration": {"type": ["number", "string"], "exclusiveMinimum": 0},
     "continuation": {"type": "boolean"},
+    "output": {"type": "object", "additionalProperties": false, "properties": {"lead_in": {"enum": ["drop", "keep"]}, "clip_lead_in": {"type": "boolean"}}},
     "settings": {"$ref": "#/$defs/settings"},
     "media": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/media"}}
   },

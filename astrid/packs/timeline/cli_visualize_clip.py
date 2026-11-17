@@ -68,17 +68,21 @@ def prepare(parsed: argparse.Namespace) -> dict[str, Any]:
         if masks:
             mask, mask_from = str(masks[0]), f"the shot plan's inputs.masks ({shot_row.get('name')})"
     take, take_from = getattr(parsed, "compare_media", None), "--compare-media"
+    lead_in_end = None
     if take in ("take", "latest-take"):
         takes = [t for t in plan.get("takes") or [] if isinstance(t, Mapping) and t.get("media")]
         if not takes:
             raise ClipError("--compare-media take: the shot plan lists no take with a media id "
                             "(give the take's media id instead)")
         take, take_from = str(takes[-1]["media"]), f"the shot plan's latest take ({shot_row.get('name')})"
+        if "LC" in (plan.get("method") or []) and isinstance(takes[-1].get("range"), list):
+            # An LC take's file starts with the real lead-in; only that part is the source's own picture.
+            lead_in_end = float(takes[-1]["range"][0])
     for ref in (mask, take, against if against != "cut" else None):
         if ref:
             resolve_media(parsed, str(ref))  # fail now, before any capture, when an id does not resolve
     request = {"region": region, "zoom": zoom, "mask": mask, "mask_from": mask_from, "take": take,
-               "take_from": take_from, "against": against or "cut", "shot": shot_row}
+               "take_from": take_from, "against": against or "cut", "shot": shot_row, "lead_in_end": lead_in_end}
     parsed._clip = request
     return request
 
@@ -475,7 +479,15 @@ def _compare(parsed, request, *, root, inside, images, snapshot, canvas, box, ma
     take_row = resolve_media(parsed, str(request["take"]))
     take_path = media_file(parsed, take_row, root.parent / "media")
     start = inside[0][0]
-    chosen_idx = [inside.index(item) for item in pick(inside, COMPARE_MOMENTS)]
+    lead_in_end = request.get("lead_in_end")
+    frames = inside
+    if lead_in_end is not None:
+        # Only the lead-in [0, range start) of the take is the source's picture; the new line follows it.
+        frames = [item for item in inside if item[0] - start < lead_in_end - 1e-6]
+        if not frames:
+            raise ClipError(f"the take's lead-in is {lead_in_end:.2f} s long, shorter than the span's first "
+                            "sample; widen the span (--range) to include the lead-in")
+    chosen_idx = [inside.index(item) for item in pick(frames, COMPARE_MOMENTS)]
     moments = [inside[i][0] for i in chosen_idx]
     take_imgs = media_frames(take_path, take_row, [t - start for t in moments], canvas)
     against = str(request.get("against") or "cut")
@@ -500,6 +512,9 @@ def _compare(parsed, request, *, root, inside, images, snapshot, canvas, box, ma
             source, take = source.crop(box), take.crop(box)
             crop_mask = mask.crop(box) if mask is not None else None
         rows.append((t, source, take, cv.difference(source, take, crop_mask)))  # canvas scale: 1 px = 1 canvas px
+    if lead_in_end is not None:
+        findings.append(f"LEAD-IN compared only take 0-{lead_in_end:.2f} s (the real lead-in before the new line); "
+                        "the new line is not compared against the source")
     verdicts = cv.compare_verdicts([r[3] for r in rows], masked=mask is not None)
     for level, sentence in verdicts:
         findings.append(f"COMPARE {level} {sentence}")

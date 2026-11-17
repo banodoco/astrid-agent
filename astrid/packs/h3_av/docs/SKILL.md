@@ -318,6 +318,21 @@ generated suffix is explicit. For continuation plus a spatial mask, provide a
 suffix baseline or an explicit policy; the compiler never silently freezes the
 last frame.
 
+**Lead-in.** A continuation's file starts with the source frames it continued
+from (the lead-in), then the new performance. The file is always stored whole,
+so the lead-in can be verified and compared against the source. `output.lead_in`
+says what the take uses: `"drop"` (default) reports `take.range` as the generated
+span only; `"keep"` reports the whole file. The stored file is never rewritten,
+and the range becomes the clip's `from`/`to` when the take is placed. The join
+falls on an exact frame. To hand someone a separate file of just the new line,
+set `output.clip_lead_in: true` (default `false`): after verification passes, a
+frame-exact clip of `take.range` is written as a second output (the full take is
+still verified as a whole). Any existing take can be clipped the same way with
+`astrid media trim <media> --project P --range START,END`, which imports the clip
+as new media linked to the take by `derived_from`. `output.lead_in` and
+`output.clip_lead_in` are valid only for `operation: continue` (v1) or
+`continuation: true` (v2).
+
 ## Workflow choice
 
 - Use this H3 extension workflow when pose/camera can vary within the declared
