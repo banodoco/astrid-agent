@@ -68,7 +68,7 @@ def prepare(parsed: argparse.Namespace) -> dict[str, Any]:
         if masks:
             mask, mask_from = str(masks[0]), f"the shot plan's inputs.masks ({shot_row.get('name')})"
     take, take_from = getattr(parsed, "compare_media", None), "--compare-media"
-    lead_in_end = None
+    lead_in_end, keeps_lead_in = None, False
     if take in ("take", "latest-take"):
         takes = [t for t in plan.get("takes") or [] if isinstance(t, Mapping) and t.get("media")]
         if not takes:
@@ -77,12 +77,16 @@ def prepare(parsed: argparse.Namespace) -> dict[str, Any]:
         take, take_from = str(takes[-1]["media"]), f"the shot plan's latest take ({shot_row.get('name')})"
         if "LC" in (plan.get("method") or []) and isinstance(takes[-1].get("range"), list):
             # An LC take's file starts with the real lead-in; only that part is the source's own picture.
-            lead_in_end = float(takes[-1]["range"][0])
+            if float(takes[-1]["range"][0]) > 0:
+                lead_in_end = float(takes[-1]["range"][0])
+            else:
+                keeps_lead_in = True  # a keep take starts at 0: the whole file is the take
     for ref in (mask, take, against if against != "cut" else None):
         if ref:
             resolve_media(parsed, str(ref))  # fail now, before any capture, when an id does not resolve
     request = {"region": region, "zoom": zoom, "mask": mask, "mask_from": mask_from, "take": take,
-               "take_from": take_from, "against": against or "cut", "shot": shot_row, "lead_in_end": lead_in_end}
+               "take_from": take_from, "against": against or "cut", "shot": shot_row, "lead_in_end": lead_in_end,
+               "keeps_lead_in": keeps_lead_in}
     parsed._clip = request
     return request
 
@@ -512,6 +516,9 @@ def _compare(parsed, request, *, root, inside, images, snapshot, canvas, box, ma
             source, take = source.crop(box), take.crop(box)
             crop_mask = mask.crop(box) if mask is not None else None
         rows.append((t, source, take, cv.difference(source, take, crop_mask)))  # canvas scale: 1 px = 1 canvas px
+    if request.get("keeps_lead_in"):
+        findings.append("LEAD-IN this take keeps its lead-in (its range starts at 0), so there is no separate "
+                        "lead-in to compare; the whole take is compared against the source")
     if lead_in_end is not None:
         findings.append(f"LEAD-IN compared only take 0-{lead_in_end:.2f} s (the real lead-in before the new line); "
                         "the new line is not compared against the source")

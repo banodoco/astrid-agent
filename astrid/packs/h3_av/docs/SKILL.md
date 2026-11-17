@@ -327,7 +327,13 @@ and the range becomes the clip's `from`/`to` when the take is placed. The join
 falls on an exact frame. To hand someone a separate file of just the new line,
 set `output.clip_lead_in: true` (default `false`): after verification passes, a
 frame-exact clip of `take.range` is written as a second output (the full take is
-still verified as a whole). Any existing take can be clipped the same way with
+still verified as a whole). Every continuation writes `h3/take.json` with the
+`lead_in` mode and the `range` (for `keep`, the whole file up to its last video
+frame), clip or not. The range and the clip are reported, not required: if the
+range cannot be derived (for example more than one generated span), a bound is
+off the frame grid, or ffmpeg fails, the error is recorded in `take.json`, the
+full take stays the result and the job does not fail. Writing `"lead_in": "drop"`
+is the same request as leaving it out. Any existing take can be clipped the same way with
 `astrid media trim <media> --project P --range START,END`, which imports the clip
 as new media linked to the take by `derived_from`. `output.lead_in` and
 `output.clip_lead_in` are valid only for `operation: continue` (v1) or

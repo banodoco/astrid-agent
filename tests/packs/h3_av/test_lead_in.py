@@ -177,3 +177,105 @@ def test_keep_clips_the_whole_file(tmp_path, monkeypatch) -> None:
     hooks.after_outputs(str(job), {}, {}, [str(source)])
     report = json.loads((job / "h3" / "take.json").read_text())
     assert report["range"] == [0.0, 8.0] and report["clip"]["frames"] == 192
+
+
+# -- review fixes: always report, never fail a verified job, keep end, digests ----
+
+
+def _run_hook(tmp_path, monkeypatch, value, composition_video=((3.25, 6.5),)):
+    source = _source(tmp_path / "candidate.mkv")
+    job = tmp_path / "job"
+    job.mkdir()
+    hooks = _install_hook_fakes(monkeypatch, tmp_path, source, [], value)
+    compose = sys.modules["_h3_av_pack.shared.compose"]
+    compose.compose_candidate = lambda **kwargs: {**_manifest(composition_video),
+                                                  "candidate": {"path": str(source)}}
+    outputs = hooks.after_outputs(str(job), {}, {}, [str(source)])
+    report = json.loads((job / "h3" / "take.json").read_text())
+    return source, outputs, report
+
+
+@pytest.mark.parametrize("mode, expected", [("drop", [3.25, 6.5]), ("keep", [0.0, 8.0])])
+def test_take_json_is_written_for_every_continuation(tmp_path, monkeypatch, mode, expected) -> None:
+    value = normalize_request(_continue(lead_in=mode)).value
+    source, outputs, report = _run_hook(tmp_path, monkeypatch, value)
+    assert outputs == [str(source)]
+    assert report["range"] == expected and report["lead_in"] == mode
+    assert "clip" not in report and "error" not in report
+
+
+def test_no_take_json_for_a_non_continuation(tmp_path, monkeypatch) -> None:
+    value = normalize_request(_request(operation="edit", output={"duration": 8})).value
+    source = _source(tmp_path / "candidate.mkv")
+    job = tmp_path / "job"
+    job.mkdir()
+    hooks = _install_hook_fakes(monkeypatch, tmp_path, source, [], value)
+    assert hooks.after_outputs(str(job), {}, {}, [str(source)]) == [str(source)]
+    assert not (job / "h3" / "take.json").exists()
+
+
+def test_two_generated_spans_are_recorded_not_fatal(tmp_path, monkeypatch) -> None:
+    value = normalize_request(_continue(clip_lead_in=True)).value
+    source, outputs, report = _run_hook(tmp_path, monkeypatch, value, ((0.0, 1.0), (2.0, 3.0)))
+    assert outputs == [str(source)]
+    assert "TakeError" in report["error"] and "exactly one" in report["error"]
+    assert "range" not in report and "clip" not in report
+
+
+def test_off_frame_bound_is_recorded_not_fatal(tmp_path, monkeypatch) -> None:
+    value = normalize_request(_continue(clip_lead_in=True)).value
+    source, outputs, report = _run_hook(tmp_path, monkeypatch, value, ((3.25, 6.51),))
+    assert outputs == [str(source)]
+    assert "frame boundary" in report["error"] and "clip" not in report
+    assert not (tmp_path / "job" / "h3" / "take-clip.mp4").exists()
+
+
+def test_ffmpeg_failure_is_recorded_not_fatal(tmp_path, monkeypatch) -> None:
+    import astrid.core.media_trim as media_trim
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("ffmpeg failed to trim: boom")
+
+    monkeypatch.setattr(media_trim, "clip_file", boom)
+    value = normalize_request(_continue(clip_lead_in=True)).value
+    source, outputs, report = _run_hook(tmp_path, monkeypatch, value)
+    assert outputs == [str(source)]
+    assert "boom" in report["error"] and report["lead_in"] == "drop"
+
+
+def test_keep_ends_at_the_last_video_frame_not_the_container(tmp_path, monkeypatch) -> None:
+    from types import SimpleNamespace
+    audio_long = SimpleNamespace(frames=192, fps_rational=(24, 1), duration_seconds=8.04)
+    assert take.video_duration(audio_long) == 8.0
+    assert take.video_duration(SimpleNamespace(frames=None, fps_rational=(24, 1), duration_seconds=8.04)) == 8.04
+    value = normalize_request(_continue(lead_in="keep", clip_lead_in=True)).value
+    source = _source(tmp_path / "candidate.mkv")
+    job = tmp_path / "job"
+    job.mkdir()
+    hooks = _install_hook_fakes(monkeypatch, tmp_path, source, [], value)
+    facts = comfyui_facts()
+    real = facts.probe_media
+
+    def probe(path):
+        found = real(path)
+        found.frames, found.duration_seconds = 192, 8.04
+        return found
+
+    engine = importlib.import_module("_h3_av_pack.shared.engine_facts")
+    engine.install(type(facts)(**{**facts.__dict__, "probe_media": probe}) if hasattr(facts, "__dict__")
+                   else facts)
+    hooks.after_outputs(str(job), {}, {}, [str(source)])
+    report = json.loads((job / "h3" / "take.json").read_text())
+    assert report["range"] == [0.0, 8.0] and "error" not in report
+
+
+def test_explicit_drop_keeps_the_digest_of_the_default() -> None:
+    plain = normalize_request(_continue())
+    explicit = normalize_request(_continue(lead_in="drop"))
+    assert explicit.digest == plain.digest and explicit.value == plain.value
+    assert normalize_request(_continue(lead_in="drop", clip_lead_in=False)).digest == plain.digest
+    assert normalize_request(_continue(lead_in="keep")).digest != plain.digest
+    plain2, explicit2 = normalize_v2(_v2()), normalize_v2(_v2(output={"lead_in": "drop"}))
+    assert explicit2.digest == plain2.digest and "output" not in explicit2.value
+    with pytest.raises(H3RequestError, match="one of"):
+        normalize_request(_continue(lead_in="nope"))

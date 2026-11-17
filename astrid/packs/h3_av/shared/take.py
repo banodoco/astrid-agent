@@ -46,6 +46,18 @@ def clip_requested(request_value: Mapping[str, Any]) -> bool:
     return bool((request_value.get("output") or {}).get("clip_lead_in", False))
 
 
+def video_duration(probe: Any) -> float | None:
+    """Seconds of the video stream (frames / fps) when known, else the container duration.
+
+    Audio can run past the last video frame, which would put ``keep``'s end off
+    the frame grid; the video stream's own length is the honest end.
+    """
+    frames, rate = getattr(probe, "frames", None), getattr(probe, "fps_rational", None)
+    if frames and rate and rate[0] and rate[1]:
+        return frames * rate[1] / rate[0]
+    return getattr(probe, "duration_seconds", None)
+
+
 def take_range(composition: Mapping[str, Any], *, lead_in: str, media_duration: float | None) -> list[float]:
     """``[start, end]`` seconds into the take's media.
 
@@ -81,4 +93,4 @@ def write_take_report(out_dir: Path, report: Mapping[str, Any]) -> Path:
 
 
 __all__ = ["TakeError", "clip_requested", "clip_take", "is_continuation", "lead_in_of", "take_range",
-           "write_take_report"]
+           "video_duration", "write_take_report"]

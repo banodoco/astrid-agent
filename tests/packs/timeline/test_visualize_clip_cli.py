@@ -233,6 +233,27 @@ def test_lc_take_range_limits_the_compare_to_its_lead_in():
     assert clip.prepare(parsed)["lead_in_end"] is None
 
 
+def test_keep_take_compares_the_whole_take_and_says_it_keeps_its_lead_in(tmp_path):
+    from astrid.sdk.shot_plan import PLAN_KEY
+
+    client, ids = _client(t=(_frame(100), "image/png"))
+    plan = {"version": 1, "method": ["LC"], "status": "take_ready",
+            "takes": [{"generation": "run-1", "media": ids["t"], "range": [0, 8.0]}]}
+    bundle = {"shots": {"s1": {"payload": {"metadata": {"name": "02c Blue pill", PLAN_KEY: plan}}}},
+              "placements": [{"shot_id": "s1", "occurrence_id": "o1", "placement": {"start_ms": 12167},
+                              "duration_ms": 4290}]}
+    parsed = _parsed(client, shot="02c", compare_media="take")
+    parsed._bundle = bundle
+    request = clip.prepare(parsed)
+    assert request["lead_in_end"] is None and request["keeps_lead_in"] is True
+    outputs = _captured(tmp_path, moving=False)
+    parsed = _parsed(client, cut="3", compare_media=ids["t"], against=None)
+    drawn = clip.draw(outputs, request, parsed=parsed, inputs={"cut": "3"})
+    assert any("keeps its lead-in" in line and "no separate lead-in" in line for line in drawn["findings"])
+    assert not any("widen the span" in line for line in drawn["findings"])
+    assert any(line.startswith("COMPARE ") for line in drawn["findings"])
+
+
 def test_lc_compare_uses_only_the_lead_in_and_says_so(tmp_path):
     outputs = _captured(tmp_path, moving=False)
     client, ids = _client(t=(_frame(100), "image/png"), s=(_frame(100), "image/png"))

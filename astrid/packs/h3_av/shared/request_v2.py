@@ -10,7 +10,7 @@ from copy import deepcopy
 from fractions import Fraction
 from typing import Any, Mapping
 
-from .request import H3Request, H3RequestError, _nonblank, _number, _object, _unknown, lead_in_mode
+from .request import H3Request, H3RequestError, _nonblank, _number, _object, _unknown, lead_in_mode, DEFAULT_LEAD_IN
 
 FPS = Fraction(24, 1)
 SAMPLE_RATE = 48000
@@ -475,7 +475,9 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
         if not continuation: raise H3RequestError("output is valid only for a continuation")
         _unknown(output_raw, {"lead_in", "clip_lead_in"}, "output")
         if "lead_in" in output_raw:
-            output["lead_in"] = lead_in_mode(output_raw["lead_in"], "output.lead_in")
+            # The default is not digested: an explicit "drop" is the same request as none.
+            if lead_in_mode(output_raw["lead_in"], "output.lead_in") != DEFAULT_LEAD_IN:
+                output["lead_in"] = output_raw["lead_in"]
         if "clip_lead_in" in output_raw:
             if type(output_raw["clip_lead_in"]) is not bool: raise H3RequestError("output.clip_lead_in must be boolean")
             if output_raw["clip_lead_in"]: output["clip_lead_in"] = True

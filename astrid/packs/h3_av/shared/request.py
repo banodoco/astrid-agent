@@ -247,7 +247,9 @@ def _normalize_v1(raw: Mapping[str, Any]) -> H3Request:
     if "lead_in" in output_raw:
         if operation != "continue":
             raise H3RequestError("output.lead_in is valid only for operation continue")
-        output["lead_in"] = lead_in_mode(output_raw["lead_in"], "output.lead_in")
+        # The default is not digested: an explicit "drop" is the same request as none.
+        if lead_in_mode(output_raw["lead_in"], "output.lead_in") != DEFAULT_LEAD_IN:
+            output["lead_in"] = output_raw["lead_in"]
     if "clip_lead_in" in output_raw:
         if operation != "continue":
             raise H3RequestError("output.clip_lead_in is valid only for operation continue")
