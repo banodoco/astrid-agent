@@ -391,7 +391,8 @@ def _duplicate(client: Any, project: str, source: str | Mapping[str, Any] | Path
         carried = [line for line in source_report.problems if line.startswith(PREEXISTING)]
         if carried or not source_report.valid:
             dst.notes.append("the source head already had problems, copied as they are: "
-                             + "; ".join(source_report.problems[:3]))
+                             + "; ".join([line for line in source_report.problems
+                                      if line in source_report.blocking or line.startswith(("invalid:", PREEXISTING))][:3]))
         from astrid.sdk.timeline.native_timeline_duplicate import copy_command
 
         bundle["_duplicate_command"] = copy_command(
