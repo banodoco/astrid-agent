@@ -202,7 +202,7 @@ new head and capture a fresh command.
   placement evidence without rendering. The default/`--mode auto` route uses a
   matching render when available and otherwise captures bounded composed frames
   through the canonical Remotion route; use it to check your visual edits
-  ([how to look](how-to-look.md)). Use `--mode inputs` for render-free evidence; a frozen candidate JSON is not a visual preview.
+  ([timeline-visualize](../../../timeline/docs/visualize/SKILL.md)). Use `--mode inputs` for render-free evidence; a frozen candidate JSON is not a visual preview.
 - **Empty or wrong project list:** check the launcher/runtime selection before
   creating a new project or importing data.
 - **Stale head:** inspect the new head and capture a fresh native command. Do

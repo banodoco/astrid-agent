@@ -11,10 +11,13 @@ Astrid commands here run through the launcher; its path on each OS is in the [as
 
 Skills this one leans on, by stage:
 - Script and low-fidelity cut: [timeline](../../../timeline/docs/SKILL.md), [narrated timelines](../../../timeline/docs/narrated/SKILL.md), [creative work](../../../_core/docs/creative-work/SKILL.md).
-- Mapping the cut: [how to look](../../../timeline/docs/references/how-to-look.md) (`timelines visualize`), [shots](../../../timeline/docs/shots/SKILL.md), [transcripts](../../../timeline/docs/transcripts/SKILL.md).
+- Mapping the cut: [timeline-visualize](../../../timeline/docs/visualize/SKILL.md) and [timeline-visualize-advanced](../../../timeline/docs/visualize-advanced/SKILL.md) (`timelines visualize`), [timeline-show](../../../timeline/docs/show/SKILL.md), [shots](../../../timeline/docs/shots/SKILL.md), [transcripts](../../../timeline/docs/transcripts/SKILL.md).
+- The per-shot plan: [shot plans](../../../timeline/docs/shots/SKILL.md#shot-plans) (`timelines shots plan set/show/list`, `visualize --shot-plans`).
 - Methods and requests: [H3](../SKILL.md) ([workflow choice](../SKILL.md#workflow-choice), [mask semantics](../SKILL.md#mask-semantics), [request shape](../SKILL.md#request-shape), [validation and approval](../SKILL.md#validation-and-approval)).
 - Running on a GPU: [RunPod generation machines](../../../runpod/docs/SKILL.md#runpod-generation-machines).
 - Approval and assembly: [review](../../../timeline/docs/review/SKILL.md), [series](../../../timeline/docs/series/SKILL.md), [rendering](../../../rendering/docs/SKILL.md).
+
+Each shot's plan lives on the shot itself, as `metadata.plan` on the timeline, and is read and written only with the [shot plan commands](../../../timeline/docs/shots/SKILL.md#shot-plans). Stages 2-6 below say what each one writes there and reads from there; the plan is the shot list, not a separate table or file.
 
 ## When to use it
 
@@ -38,10 +41,12 @@ Output: an **approved low-fidelity cut** (a timeline revision) and the **final s
 With `astrid timelines visualize` on that timeline, not on an exported file:
 - `--preset overview`: one tile per cut. Name each: who is on screen, real footage or still, whose mouth is visible.
 - `--cut N` and `--range` around each speaking shot: does the mouth move? What is in reflections, backgrounds, hands?
-- Words under the picture: transcribe the temporary voice (`astrid timelines transcripts run`), then look with the word tiles, so each line has a time.
+- Words under the picture: refresh the transcripts of the temporary voice (`astrid timelines transcripts refresh <timeline> --project P --dry-run`, then `--run-missing --placement runpod`), then look with the word tiles, so each line has a time.
 - Region zoom on details that will change (lenses, mouth). If the tool cannot show what you need, that is a tool gap: fix it or file it. Do not fall back to outside tools.
 
 Output: the **sequence map**, a table with one row per cut: time, picture, who is visible, line and words with times, source (footage, still, generated).
+
+Plan: once the approved cut is stored as shots, record what you saw on each shot: `timelines shots plan set <shot> --project P --timeline T --set on_screen=Morpheus --set line="You have two options."`. The line's text itself stays in the shot's `voiceover_script` binding; `line` is the label.
 
 ## Stage 3 - Shot list: pick a method for each shot
 
@@ -65,12 +70,15 @@ Rules of thumb:
 
 Output: the **shot list**, the sequence map plus a method column, inputs (masks, references, voice slice) and a check for each shot.
 
+Plan: for every shot, write `method`, `intent`, `check`, the fixed `inputs.references` (and `inputs.masks` once made) and `status=planned`, e.g. `timelines shots plan set <shot> --project P --timeline T --set method=LM,R --set inputs.references=<id>,<id> --set status=planned`. `K` shots get `method=K` too, so nothing is left unplanned. Check with `timelines shots plan list --project P --timeline T` (`unplanned` must be empty) and look with `timelines visualize T --project P --preset overview --shot-plans`.
+
 ## Stage 4 - The voice track
 
 - Reference: the speaker's real voice, a clean clip of their real lines with its transcript.
 - Generate the whole script as one continuous performance (voice-clone entry in `astrid generate`).
-- Transcribe it (timed words), replace the temporary voice on the timeline, and re-time the cuts to the words. Look again (Stage 1 views).
+- Refresh the transcripts (`astrid timelines transcripts refresh <timeline> --project P --run-missing --placement runpod`, after a `--dry-run`), so the new voice has timed words; replace the temporary voice on the timeline, and re-time the cuts to the words (the refresh report lists any cut that splits a word). Look again (Stage 1 views).
 - Owner listens. This is the gate before any picture generation.
+- Plan: once the voice track is approved, write each speaking shot's slice of it: `timelines shots plan set <shot> --project P --timeline T --set inputs.voice.media=<voice track media id> --set inputs.voice.range=START,END`. The range is seconds into that voice track media (from its timed words), not timeline time, and needs the media.
 
 Fallback, if lip sync to a fixed voice does not work in H3: generate each on-camera line with its own voice by continuation, which is proven. Then use that voice as the reference for the off-camera lines.
 
@@ -90,11 +98,16 @@ Also open: how the edges of the masked span join the real footage in sound and p
 
 - Order: the riskiest, most reused method first, on its best shot. One paid run proves a method; then repeat it across shots.
 - Each pass: a dry run that is the real path stopped before the GPU; one waiting claim with a spend cap and deadline; submit; read back; release.
+- Reference images with black letterbox bars baked into the pixels are cleaned before generation: `astrid media crop <media> --project P --remove-bars` (dry run first, see [media crop](../../../_core/docs/SKILL.md#crop-still-images-and-video)); use the cleaned item as the reference, never the barred original.
 - Check every take with `visualize` (region zoom on the changed area, a strip across the shot) and with timed words for speech. The owner judges look, voice and lip sync.
+- Plan: read the shot's inputs from its plan (`timelines shots plan show <shot> --project P --timeline T`: references, masks, voice slice), never from memory or another file. Set `status=in_progress` when the pass starts. After read-back, append the take and mark it ready: `timelines shots plan set <shot> --project P --timeline T --add-take '{"generation": "<run id>", "media": "<media id>", "note": "..."}' --set status=take_ready`.
+- When the owner approves a take, run `timelines shots plan set <shot> --project P --timeline T --set status=approved` (and say in a take's `note` which take was approved, if there are several).
 
 ## Stage 6 - Assemble and review
 
 Place the takes on the timeline, look across every cut boundary (`--preset motion` around each cut), check that words and mouths agree, and render only when asked.
+
+Plan: before assembling, `timelines shots plan list --project P --timeline T`: `unplanned`, `invalid` and `not_approved` must all be empty (K shots need no approval). Any shot left is named there; finish or re-plan it first. The final overview with `--shot-plans` shows every shot approved.
 
 ## Worked example: "Into the Minkhole" (Matrix pill scene)
 

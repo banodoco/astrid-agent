@@ -99,6 +99,41 @@
       "flags": {},
       "positionals": [],
       "verbs": {
+        "crop": {
+          "flags": {
+            "--allow-no-bars": {
+              "required": false
+            },
+            "--bar-threshold": {
+              "required": false
+            },
+            "--box": {
+              "required": false
+            },
+            "--dry-run": {
+              "required": false
+            },
+            "--even": {
+              "required": false
+            },
+            "--idempotency-key": {
+              "required": false
+            },
+            "--json": {
+              "required": false
+            },
+            "--project": {
+              "required": true
+            },
+            "--remove-bars": {
+              "required": false
+            }
+          },
+          "positionals": [
+            "ref"
+          ],
+          "verbs": {}
+        },
         "import": {
           "flags": {
             "--idempotency-key": {
@@ -1728,6 +1763,38 @@
       "flags": {},
       "positionals": [],
       "verbs": {
+        "appearance": {
+          "flags": {
+            "--clear": {
+              "required": false
+            },
+            "--clip": {
+              "required": false
+            },
+            "--dry-run": {
+              "required": false
+            },
+            "--idempotency-key": {
+              "required": false
+            },
+            "--json": {
+              "required": false
+            },
+            "--project": {
+              "required": true
+            },
+            "--set": {
+              "required": false
+            },
+            "--track": {
+              "required": false
+            }
+          },
+          "positionals": [
+            "ref"
+          ],
+          "verbs": {}
+        },
         "apply": {
           "flags": {
             "--draft": {
@@ -2914,6 +2981,88 @@
               "positionals": [],
               "verbs": {}
             },
+            "plan": {
+              "flags": {},
+              "positionals": [],
+              "verbs": {
+                "list": {
+                  "flags": {
+                    "--json": {
+                      "required": false
+                    },
+                    "--project": {
+                      "required": true
+                    },
+                    "--revision-id": {
+                      "required": false
+                    },
+                    "--timeline": {
+                      "required": true
+                    }
+                  },
+                  "positionals": [],
+                  "verbs": {}
+                },
+                "set": {
+                  "flags": {
+                    "--add-take": {
+                      "required": false
+                    },
+                    "--idempotency-key": {
+                      "required": false
+                    },
+                    "--json": {
+                      "required": false
+                    },
+                    "--json-file": {
+                      "required": false
+                    },
+                    "--message": {
+                      "required": false
+                    },
+                    "--project": {
+                      "required": true
+                    },
+                    "--replace": {
+                      "required": false
+                    },
+                    "--set": {
+                      "required": false
+                    },
+                    "--timeline": {
+                      "required": true
+                    },
+                    "--unset": {
+                      "required": false
+                    }
+                  },
+                  "positionals": [
+                    "shot"
+                  ],
+                  "verbs": {}
+                },
+                "show": {
+                  "flags": {
+                    "--json": {
+                      "required": false
+                    },
+                    "--project": {
+                      "required": true
+                    },
+                    "--revision-id": {
+                      "required": false
+                    },
+                    "--timeline": {
+                      "required": true
+                    }
+                  },
+                  "positionals": [
+                    "shot"
+                  ],
+                  "verbs": {}
+                }
+              }
+            },
             "remove": {
               "flags": {
                 "--idempotency-key": {
@@ -3171,6 +3320,137 @@
           "flags": {},
           "positionals": [],
           "verbs": {
+            "import": {
+              "flags": {
+                "--expected-version": {
+                  "required": false
+                },
+                "--from-run": {
+                  "required": false
+                },
+                "--project": {
+                  "required": true
+                },
+                "--replace": {
+                  "required": false
+                },
+                "--segment": {
+                  "required": false
+                },
+                "--source": {
+                  "required": false
+                },
+                "--text": {
+                  "required": false
+                }
+              },
+              "positionals": [
+                "media_id",
+                "file"
+              ],
+              "verbs": {}
+            },
+            "refresh": {
+              "flags": {
+                "--dry-run": {
+                  "required": false
+                },
+                "--placement": {
+                  "required": false
+                },
+                "--project": {
+                  "required": true
+                },
+                "--run-missing": {
+                  "required": false
+                },
+                "--shot": {
+                  "required": false
+                },
+                "--use-document": {
+                  "required": false
+                },
+                "--use-source": {
+                  "required": false
+                }
+              },
+              "positionals": [
+                "ref"
+              ],
+              "verbs": {}
+            },
+            "run": {
+              "flags": {
+                "--align": {
+                  "choices": [
+                    "align",
+                    "check",
+                    "trust"
+                  ],
+                  "required": false
+                },
+                "--consent": {
+                  "choices": [
+                    "user_env"
+                  ],
+                  "required": false
+                },
+                "--dry-run": {
+                  "required": false
+                },
+                "--engine": {
+                  "required": false
+                },
+                "--execution": {
+                  "required": false
+                },
+                "--expected-version": {
+                  "required": false
+                },
+                "--placement": {
+                  "required": false
+                },
+                "--project": {
+                  "required": true
+                },
+                "--recovery-path": {
+                  "required": false
+                },
+                "--replace": {
+                  "required": false
+                }
+              },
+              "positionals": [
+                "media_id"
+              ],
+              "verbs": {}
+            },
+            "show": {
+              "flags": {
+                "--clip": {
+                  "required": false
+                },
+                "--json": {
+                  "required": false
+                },
+                "--project": {
+                  "required": true
+                },
+                "--range": {
+                  "required": false
+                },
+                "--source": {
+                  "required": false
+                },
+                "--timeline": {
+                  "required": false
+                }
+              },
+              "positionals": [
+                "media_id"
+              ],
+              "verbs": {}
+            },
             "sync": {
               "flags": {
                 "--dry-run": {
@@ -3269,6 +3549,9 @@
             "--after-revision-id": {
               "required": false
             },
+            "--against": {
+              "required": false
+            },
             "--asset": {
               "required": false
             },
@@ -3291,6 +3574,9 @@
               "choices": [
                 "published"
               ],
+              "required": false
+            },
+            "--compare-media": {
               "required": false
             },
             "--context": {
@@ -3356,6 +3642,9 @@
             "--list-layers": {
               "required": false
             },
+            "--mask": {
+              "required": false
+            },
             "--mode": {
               "choices": [
                 "auto",
@@ -3412,6 +3701,9 @@
             "--range": {
               "required": false
             },
+            "--region": {
+              "required": false
+            },
             "--render-every": {
               "required": false
             },
@@ -3437,6 +3729,9 @@
               "required": false
             },
             "--shot": {
+              "required": false
+            },
+            "--shot-plans": {
               "required": false
             },
             "--show": {
@@ -3465,6 +3760,9 @@
               "required": false
             },
             "--window": {
+              "required": false
+            },
+            "--zoom": {
               "required": false
             }
           },

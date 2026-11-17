@@ -71,7 +71,7 @@ python3 -m astrid timelines visualize <timeline> --project <project> \
   --mode inputs --format md --format png --json
 ```
 
-Look at the film the way the question needs, one page each (pass a window and the view follows it; [how to look](how-to-look.md) says which):
+Look at the film the way the question needs, one page each (pass a window and the view follows it; [timeline-visualize](../../../timeline/docs/visualize/SKILL.md) says which):
 
 ```bash
 python3 -m astrid timelines visualize <timeline> --project <project>                          # overview: a tile per cut

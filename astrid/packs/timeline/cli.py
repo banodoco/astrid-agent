@@ -1924,8 +1924,36 @@ def _export_visualization(
     }
 
 
+def _installed_launcher_command() -> list[str] | None:
+    """The command a person types for an installed Astrid: ``astrid`` when the managed shim is on PATH,
+    else the install's own ``run-astrid`` launcher; None outside an installed copy."""
+    import os
+    import shutil
+
+    root = os.environ.get("ASTRID_INSTALL_PROGRAM_ROOT", "").strip()
+    if not root:
+        return None
+    launcher = Path(root) / ("run-astrid.cmd" if sys.platform == "win32" else "run-astrid")
+    on_path = shutil.which("astrid")
+    if on_path:
+        try:
+            from astrid.installer.launcher import owned_shim
+
+            if owned_shim(Path(on_path)):
+                return ["astrid"]
+        except Exception:  # noqa: BLE001 - fall back to the launcher path
+            pass
+    return [str(launcher)]
+
+
 def _astrid_cli_command() -> list[str]:
-    """Return the command prefix used to invoke this Astrid CLI process."""
+    """Return the command prefix used to invoke this Astrid CLI process.
+
+    An installed copy runs ``python -m astrid.omp_agent`` behind its launcher; the commands it prints use the
+    launcher (``astrid`` or ``…/run-astrid``) so they can be copied, never the internal module path."""
+    installed = _installed_launcher_command()
+    if installed:
+        return installed
     original = getattr(sys, "orig_argv", ())
     for index in range(len(original) - 1):
         if original[index] == "-m" and original[index + 1] == "astrid":
@@ -3447,6 +3475,7 @@ _core_timelines.provide_handlers({
     '_working_cmd_transcripts_import': _cli_working._cmd_transcripts_import,
     '_working_cmd_transcripts_run': _cli_working._cmd_transcripts_run,
     '_working_cmd_transcripts_show': _cli_working._cmd_transcripts_show,
+    '_working_cmd_transcripts_refresh': _cli_working._cmd_transcripts_refresh,
     '_working_cmd_transcripts_sync': _cli_working._cmd_transcripts_sync,
     '_working_cmd_words': _cli_working._cmd_words,
 })

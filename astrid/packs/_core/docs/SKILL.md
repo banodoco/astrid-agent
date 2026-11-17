@@ -172,6 +172,55 @@ The top-level families are `projects`, `timelines`, `media`, `tasks`, `runs`,
 mounts. Packs and capabilities are invoked through the SDK, not as extra
 gateway verbs.
 
+### Crop still images and video
+
+Use `media crop` when a source has black letterbox bars baked into its pixels,
+or when a reference needs a sub-rectangle. It creates a NEW managed media item
+and never changes the source:
+
+```bash
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" media crop SOURCE_MEDIA_ID --project <project> --remove-bars --dry-run --json
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" media crop SOURCE_MEDIA_ID --project <project> --remove-bars --json
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" media crop SOURCE_MEDIA_ID --project <project> --box 0,121,1672,698 --even --json
+```
+
+`--remove-bars` detects near-black bands on each edge (a pixel counts as black
+at or below `--bar-threshold`, default 16). A band is removed only when it is
+both dark and near-uniform, so a dark textured edge stays. Each edge may lose at
+most 25% of its dimension; a larger band is refused and the error prints the
+edges it measured, so pass an explicit `--box` instead. For video, five frames
+spread across the clip are sampled and the smallest bars win, so one dark frame
+(a fade or a black card) does not widen the crop. Run `--dry-run` first to read
+the box and output size. `--bar-threshold` only applies to `--remove-bars`; with
+`--box` it is ignored and the command warns. Detection keeps JPEG ringing and
+faint film grain inside a band, but a dark textured edge is not a bar. If
+`--remove-bars` finds no bars, nothing is imported and the command says so; pass
+`--allow-no-bars` to import an uncropped copy on purpose (the dry run reports
+`bars_found: false`).
+
+`--box X,Y,W,H` uses source pixels after EXIF orientation is applied, which is
+the picture a viewer sees. Images come out as lossless PNG with the ICC profile
+kept; EXIF is not carried over. CMYK and other modes PNG cannot store are
+converted to RGB. Multi-picture JPEGs (MPO) crop their first frame. Animated and multi-page
+files are refused: export one still frame and crop that. Unreadable files fail as validation errors.
+
+Video is re-encoded at the same fps; the crop is pixel-exact, including odd x
+and y offsets. Audio is copied when its codec fits in MP4 (AAC, MP3, AC-3,
+E-AC-3, ALAC). Otherwise it is re-encoded to AAC, the CLI prints a note, and the
+result's `audio` field says `reencode`. `--even` rounds width and height down to
+even values, which video encoders need.
+
+The new item is imported like `media import` and is linked to its source by a
+`derived_from` relation. The metadata records the source digest, the box, the
+bar detection, and the audio decision. The default idempotency key covers all of
+that metadata, so re-running the same command is a safe retry. Running `--box`
+with the rectangle an earlier `--remove-bars` run found reuses that provenance
+(`provenance_recorded: "existing"`) instead of failing.
+
+If the import succeeds but the relation cannot be written, the command fails.
+The error names the imported object id and the `--idempotency-key` to re-run
+with. The item exists without provenance until that re-run succeeds.
+
 ## Find and open work
 
 Use the runtime to discover work. Do not infer current state from checkout
@@ -218,7 +267,7 @@ the runtime:
 
 Use `timelines show`, `history`, `diff`, `visualize`, and `render` for
 timeline work. Look at your visual edits with `visualize` as often as helps
-([how to look](../../timeline/docs/references/how-to-look.md)); render only
+([timeline-visualize](../../timeline/docs/visualize/SKILL.md)); render only
 when the user asks, and point them to the editor link. Whole-document timeline saves are retired; edits are published
 through the detached authoring bundle. Read the [timeline skill](../../timeline/docs/SKILL.md)
 for editing. Read the [rendering skill](../../rendering/docs/SKILL.md) for
