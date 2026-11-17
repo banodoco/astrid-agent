@@ -107,10 +107,9 @@ def test_windows_explicit_users_ace_and_hardlink(tmp_path):
     assert parent_record['dacl_protected'] and leaf_record['dacl_protected']
     users = [ace for ace in leaf_record['aces'] if ace.get('trustee') == 'users']
     assert len(users) == 1 and users[0]['type'] == 0 and not users[0]['flags'] & 0x10
-    try:
-        os.link(leaf, parent / 'link')
-    except OSError:
-        pytest.skip('hard links unavailable')
+    # This native Windows proof requires a real hardlink. A failed precondition
+    # must fail the selected test rather than discard the identity assertions.
+    os.link(leaf, parent / 'link')
     linked = capture._query(parent / 'link')['identity']
     identity = capture._query(leaf)['identity']
     assert identity['volume'] == linked['volume'] and identity['file_id'] == linked['file_id']
