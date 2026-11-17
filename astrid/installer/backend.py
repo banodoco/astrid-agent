@@ -456,8 +456,10 @@ def _remotion_tree_gaps(remotion: Path) -> list[str]:
     """Lock packages for this platform whose package.json is missing on disk.
 
     npm ci can exit 0 and leave package folders empty, and it tolerates failed
-    optional packages silently, so the lock itself is the only reference. The
-    check is one stat per package. An unreadable lock counts as a gap.
+    optional packages silently, so the lock itself is the only reference. Only
+    required packages and platform binaries (optional with an os or cpu rule
+    that matches) count; an unconstrained optional package may be skipped by npm.
+    The check is one stat per package. An unreadable lock counts as a gap.
     """
     try:
         packages = json.loads((remotion / "package-lock.json").read_text(encoding="utf-8")).get("packages", {})
@@ -469,6 +471,8 @@ def _remotion_tree_gaps(remotion: Path) -> list[str]:
     for key, meta in packages.items():
         if not key.startswith("node_modules/") or not isinstance(meta, dict) or meta.get("link"):
             continue
+        if meta.get("optional") and not (meta.get("os") or meta.get("cpu")):
+            continue  # npm may skip an optional package nothing on this platform needs
         if not (_npm_rules_allow(meta.get("os"), sys.platform)
                 and _npm_rules_allow(meta.get("cpu"), cpu)):
             continue  # npm never installs a package for another platform

@@ -179,6 +179,7 @@ def test_tree_check_ignores_packages_for_other_platforms(tmp_path):
         "node_modules/react": {"version": "18.0.0"},
         "node_modules/@esbuild/other": {"version": "0.19.0", "os": [other], "optional": True},
         "node_modules/linked": {"link": True},
+        "node_modules/@emnapi/core": {"version": "1.11.3", "optional": True},
     })
     _fill(remotion, ["react"], with_manifest=True)
 
@@ -203,3 +204,22 @@ def test_missing_renderer_package_is_named_in_plain_words():
     message = _missing_renderer_package(stderr)
     assert "package react is missing" in message and "install line again" in message
     assert _missing_renderer_package("Error: something else") is None
+
+
+def test_failed_renderer_step_reaches_the_receipt_through_the_cli(tmp_path, capsys):
+    from types import SimpleNamespace
+
+    from astrid.installer.cli import _receipt_outcomes
+    from astrid.installer.outcome import receipt_warnings
+
+    agent = tmp_path / "source"
+    (agent / "remotion").mkdir(parents=True)
+    (agent / "remotion" / "package-lock.json").write_text(
+        json.dumps({"lockfileVersion": 3, "packages": {"node_modules/react": {"version": "18.0.0"}}}))
+    backend = Backend(tmp_path, tmp_path / "log", Path("uv"))
+    backend.run = lambda argv, *, cwd, extra_env: None  # npm exits 0 and writes nothing
+    backend.install_remotion_dependencies(agent, {"ASTRID_NODE_EXECUTABLE": "node"}, Path("npm-cli.js"))
+    installer = SimpleNamespace(outcomes={"skills": {"ok": True}}, backend=backend)
+
+    assert receipt_warnings(_receipt_outcomes(installer)) == ("renderer-incomplete",)
+    assert receipt_warnings(_receipt_outcomes(None)) == ()
