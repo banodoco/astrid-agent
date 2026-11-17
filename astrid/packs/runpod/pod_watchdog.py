@@ -39,7 +39,7 @@ if globals().get("__package__"):
 else:
     POD_URL_TEMPLATE = "__POD_URL_TEMPLATE__"
     POD_TERMINATE_METHOD = "__POD_TERMINATE_METHOD__"
-    _tls_namespace = {}
+    _tls_namespace: dict[str, Any] = {}
     exec("__TLS_POLICY_SOURCE__", _tls_namespace)
     os_trust_ssl_context = _tls_namespace["os_trust_ssl_context"]
 
