@@ -24,9 +24,10 @@ Shape (``version`` 1; every other key optional; unknown keys are refused)::
       "method": ["LM", "R"],                     # V LC LM R M E K (the recast skill's codes)
       "check": "mouth matches the voice track",  # what to look at when judging a take
       "inputs": {"references": ["sha256:…"],     # fixed reference media ids
-                 "voice": {"media": "sha256:…", "range": [5.0, 8.0]},  # slice of the voice track (s)
+                 "voice": {"media": "sha256:…", "range": [5.0, 8.0]},  # seconds into that voice media
                  "masks": ["sha256:…"]},
       "status": "planned",                       # planned | in_progress | take_ready | approved
+                                                 #   (take_ready/approved need a take, except a K shot)
       "takes": [{"generation": "run-…", "media": "sha256:…", "note": "…"}]
     }
 """
@@ -65,6 +66,10 @@ class ShotPlanError(ValueError):
     """A plan, patch, or shot reference that cannot be used, with a message saying why."""
 
 
+class _ShotGone(ShotPlanError):
+    """The shot left the timeline between reading it and committing its plan."""
+
+
 def _text(value: Any, where: str) -> str:
     if not isinstance(value, str):
         raise ShotPlanError(f"plan.{where} must be a string")
@@ -99,11 +104,16 @@ def validate_plan(plan: Any) -> dict[str, Any]:
         _texts(out["on_screen"], "on_screen")
     if "method" in out:
         methods = _texts(out["method"], "method")
+        if not methods:
+            raise ShotPlanError(f"plan.method must name at least one code ({' '.join(METHOD_CODES)}); "
+                                "unset it instead of leaving it empty")
         bad = [code for code in methods if code not in METHOD_CODES]
         if bad:
             raise ShotPlanError(f"plan.method has unknown code(s) {', '.join(bad)}; use {' '.join(METHOD_CODES)}")
         if len(set(methods)) != len(methods):
             raise ShotPlanError("plan.method lists a code twice")
+        if "K" in methods and len(methods) > 1:
+            raise ShotPlanError("plan.method K (keep) stands alone: a kept shot has no other method")
     if "status" in out and out["status"] not in STATUSES:
         raise ShotPlanError(f"plan.status must be one of {', '.join(STATUSES)}")
     if "inputs" in out:
@@ -126,7 +136,11 @@ def validate_plan(plan: Any) -> dict[str, Any]:
                 if (not isinstance(span, list) or len(span) != 2
                         or not all(isinstance(t, (int, float)) and not isinstance(t, bool) and math.isfinite(t)
                                    and t >= 0 for t in span) or span[1] <= span[0]):
-                    raise ShotPlanError("plan.inputs.voice.range must be [start, end] seconds with end > start >= 0")
+                    raise ShotPlanError("plan.inputs.voice.range must be [start, end] in seconds into "
+                                        "inputs.voice.media (not timeline time), with end > start >= 0")
+                if not voice.get("media"):
+                    raise ShotPlanError("plan.inputs.voice.range needs plan.inputs.voice.media: the range is "
+                                        "seconds into that voice media, not timeline time")
     if "takes" in out:
         takes = out["takes"]
         if not isinstance(takes, list):
@@ -140,7 +154,31 @@ def validate_plan(plan: Any) -> dict[str, Any]:
             for key in TAKE_FIELDS:
                 if key in take:
                     _text(take[key], f"takes[{index}].{key}")
+    if out.get("status") in ("take_ready", "approved") and not out.get("takes") and out.get("method") != ["K"]:
+        raise ShotPlanError(f"plan.status {out['status']} needs at least one take (--add-take); "
+                            "only a K (keep) shot is approved without one")
     return out
+
+
+def combine_patches(first: Mapping[str, Any] | None, second: Mapping[str, Any] | None) -> dict[str, Any]:
+    """*second* laid over *first* with the plan's merge rule (``inputs`` and ``inputs.voice`` key by key)."""
+    return _merged(dict(first or {}), second or {})
+
+
+def _merged(plan: dict[str, Any], patch: Mapping[str, Any]) -> dict[str, Any]:
+    plan = copy.deepcopy(plan)
+    for key, value in patch.items():
+        if key == "inputs" and isinstance(value, Mapping) and isinstance(plan.get("inputs"), Mapping):
+            inputs = dict(plan["inputs"])
+            for name, item in value.items():
+                if name == "voice" and isinstance(item, Mapping) and isinstance(inputs.get("voice"), Mapping):
+                    inputs["voice"] = {**inputs["voice"], **copy.deepcopy(dict(item))}
+                else:
+                    inputs[name] = copy.deepcopy(item)
+            plan["inputs"] = inputs
+        else:
+            plan[key] = copy.deepcopy(value)
+    return plan
 
 
 def merge_plan(current: Mapping[str, Any] | None, patch: Mapping[str, Any] | None = None, *,
@@ -153,18 +191,10 @@ def merge_plan(current: Mapping[str, Any] | None, patch: Mapping[str, Any] | Non
         raise ShotPlanError("plan patch must be a JSON object")
     if patch:
         _unknown(patch, FIELDS, "plan")
-    plan = {} if replace or not current else copy.deepcopy(dict(current))
-    for key, value in (patch or {}).items():
-        if key == "inputs" and isinstance(value, Mapping) and isinstance(plan.get("inputs"), Mapping):
-            inputs = dict(plan["inputs"])
-            for name, item in value.items():
-                if name == "voice" and isinstance(item, Mapping) and isinstance(inputs.get("voice"), Mapping):
-                    inputs["voice"] = {**inputs["voice"], **copy.deepcopy(dict(item))}
-                else:
-                    inputs[name] = copy.deepcopy(item)
-            plan["inputs"] = inputs
-        else:
-            plan[key] = copy.deepcopy(value)
+    stored_problem = None if replace else plan_problem(current)
+    if stored_problem is not None and not isinstance(current, Mapping):
+        raise ShotPlanError(f"the stored plan is invalid ({stored_problem}); write a whole plan with --replace")
+    plan = _merged({} if replace or not current else dict(current), patch or {})
     for path in unset:
         parts = str(path).split(".")
         if parts[0] not in FIELDS or parts[0] == "version":
@@ -181,7 +211,13 @@ def merge_plan(current: Mapping[str, Any] | None, patch: Mapping[str, Any] | Non
             plan.pop("inputs")
     if add_takes:
         plan["takes"] = list(plan.get("takes") or []) + [copy.deepcopy(dict(take)) for take in add_takes]
-    return validate_plan(plan)
+    try:
+        return validate_plan(plan)
+    except ShotPlanError as exc:
+        if stored_problem is not None:
+            raise ShotPlanError(f"{exc} (the stored plan was already invalid: {stored_problem}; "
+                                "write a whole plan with --replace)") from exc
+        raise
 
 
 def apply_assignments(assignments: Sequence[str]) -> dict[str, Any]:
@@ -212,12 +248,26 @@ def apply_assignments(assignments: Sequence[str]) -> dict[str, Any]:
     return patch
 
 
-def read_plan(shot: Mapping[str, Any]) -> dict[str, Any] | None:
-    """The plan stored on one bundle shot (``{"payload": …}``), or None."""
+def read_plan(shot: Mapping[str, Any]) -> Any:
+    """The plan stored on one bundle shot (``{"payload": …}``) exactly as stored, or None.
+
+    A stored value is returned even when it no longer validates (written by hand, or by an older
+    shape); :func:`plan_problem` says what is wrong with it."""
     payload = shot.get("payload") if isinstance(shot.get("payload"), Mapping) else {}
     metadata = payload.get("metadata") if isinstance(payload.get("metadata"), Mapping) else {}
     plan = metadata.get(PLAN_KEY)
-    return copy.deepcopy(dict(plan)) if isinstance(plan, Mapping) else None
+    return copy.deepcopy(plan if not isinstance(plan, Mapping) else dict(plan))
+
+
+def plan_problem(plan: Any) -> str | None:
+    """Why a stored plan is invalid, or None when it validates (or there is none)."""
+    if plan is None:
+        return None
+    try:
+        validate_plan(plan)
+    except ShotPlanError as exc:
+        return str(exc)
+    return None
 
 
 def _shot_name(shot_id: str, shot: Mapping[str, Any]) -> str:
@@ -259,13 +309,18 @@ def plan_rows(bundle: Mapping[str, Any]) -> list[dict[str, Any]]:
                      "shared": sid in seen,
                      "voiceover_script": any(b.get("kind") == "voiceover_script" for b in bindings
                                              if isinstance(b, Mapping)),
-                     "plan": read_plan(shot)})
+                     "plan": read_plan(shot), "invalid": plan_problem(read_plan(shot))})
         seen.add(sid)
     return rows
 
 
 def plan_label(plan: Mapping[str, Any] | None, *, words: int = 8) -> str:
     """``LM+R · planned · "You have two options."``; ``no plan`` when there is none."""
+    if plan is None:
+        return "no plan"
+    problem = plan_problem(plan)
+    if problem is not None:
+        return f"invalid plan ({problem}); fix with plan set --replace"
     if not plan:
         return "no plan"
     parts = ["+".join(plan.get("method") or []) or "no method", str(plan.get("status") or "no status")]
@@ -295,6 +350,17 @@ def _open(client: Any, project: str, timeline: str, revision_id: str | None = No
     return dict(opened.data["bundle"])
 
 
+def _drop_saved_edits(tl: Any, pending_id: str | None) -> list[str]:
+    """Drop the saved (pending) copy of a failed plan write from the session outbox; its id, if any."""
+    if tl is None or not pending_id:
+        return []
+    try:
+        tl.pending_drop(pending_id, reason="shot plan write: re-run plan set instead of retrying")
+    except Exception:  # noqa: BLE001 - best effort: the failure itself is what gets reported
+        return []
+    return [pending_id]
+
+
 def show_plan(client: Any, project: str, timeline: str, shot: str, *, revision_id: str | None = None):
     """``DomainResult`` with ``{shot_id, name, occurrences, voiceover_script, plan}`` for one shot."""
     from astrid.sdk.contracts import DomainResult
@@ -311,7 +377,7 @@ def show_plan(client: Any, project: str, timeline: str, shot: str, *, revision_i
         "occurrences": [{"occurrence_id": r["occurrence_id"], "start": r["start"], "end": r["end"]} for r in rows],
         "voiceover_script": any(r["voiceover_script"] for r in rows),
         "revision_id": (bundle.get("base_parent") or {}).get("revision_id"),
-        "plan": read_plan(shot_row)})
+        "plan": read_plan(shot_row), "invalid": plan_problem(read_plan(shot_row))})
 
 
 def list_plans(client: Any, project: str, timeline: str, *, revision_id: str | None = None):
@@ -327,10 +393,12 @@ def list_plans(client: Any, project: str, timeline: str, *, revision_id: str | N
     return DomainResult.success({
         "revision_id": (bundle.get("base_parent") or {}).get("revision_id"),
         "shots": rows,
-        "unplanned": [row["shot_id"] for row in unique if not row["plan"]],
+        "unplanned": [row["shot_id"] for row in unique if row["plan"] is None],
+        "invalid": [row["shot_id"] for row in unique if row["invalid"]],
         "not_approved": [row["shot_id"] for row in unique
-                         if row["plan"] and row["plan"].get("status") != "approved"
-                         and "K" not in (row["plan"].get("method") or [])],
+                         if row["plan"] is not None and not row["invalid"]
+                         and row["plan"].get("status") != "approved"
+                         and row["plan"].get("method") != ["K"]],
     })
 
 
@@ -358,6 +426,9 @@ def set_plan(client: Any, project: str, timeline: str, shot: str, *, patch: Mapp
     written: dict[str, Any] = {}
 
     def edit(t: Any) -> None:
+        if sid not in (t.bundle.get("shots") or {}):
+            raise _ShotGone(f"shot {sid} is no longer on timeline {timeline!r} (it changed while the plan "
+                            "was being written)")
         payload = t.bundle["shots"][sid].setdefault("payload", {})
         metadata = payload.get("metadata")
         if not isinstance(metadata, dict):
@@ -368,12 +439,30 @@ def set_plan(client: Any, project: str, timeline: str, shot: str, *, patch: Mapp
         written.update(plan)
 
     label = message or f"Plan shot {_shot_name(sid, bundle['shots'][sid])}"
+    from astrid.sdk.timeline.sync import CommitConflict
+
+    tl = None
     try:
         tl = Timeline.open(project, timeline, client=client, outbox_path=outbox_path)
         result = tl.commit(edit, label=label, key=idempotency_key)
-    except (ShotPlanError, TimelineEditError) as exc:
-        return _failure("validation_error" if isinstance(exc, ShotPlanError) else "commit_failed", str(exc),
-                        {"shot": sid})
+    except (ShotPlanError, TimelineEditError, KeyError) as exc:
+        # A plan write is recomputed from the head every time, so a saved retry of it is never
+        # wanted: drop it, and tell the user to run the same command again.
+        dropped = _drop_saved_edits(tl, getattr(exc, "pending_id", None))
+        again = "Nothing was committed; run the same `timelines shots plan set` command again."
+        if isinstance(exc, _ShotGone):
+            return _failure("conflict", f"{exc}. {again}", {"shot": sid, "dropped_saved_edits": dropped})
+        if isinstance(exc, ShotPlanError):
+            return _failure("validation_error", str(exc), {"shot": sid})
+        if isinstance(exc, CommitConflict):
+            return _failure("conflict", f"timeline {timeline!r} changed while the plan for shot {sid} was being "
+                            f"written. {again}", {"shot": sid, "dropped_saved_edits": dropped})
+        if isinstance(exc, KeyError):
+            return _failure("conflict", f"shot {sid} is no longer on timeline {timeline!r}. {again}",
+                            {"shot": sid, "dropped_saved_edits": dropped})
+        headline = getattr(exc, "headline", None) or str(exc)
+        return _failure("commit_failed", f"{str(headline).rstrip('.')}. {again}",
+                        {"shot": sid, "dropped_saved_edits": dropped})
     data = result.get("data") if isinstance(result, Mapping) else None
     revision = data.get("accepted_revision_id") if isinstance(data, Mapping) else None
     return DomainResult.success({"shot_id": sid, "revision_id": revision, "label": label,

@@ -70,7 +70,7 @@ Rules of thumb:
 
 Output: the **shot list**, the sequence map plus a method column, inputs (masks, references, voice slice) and a check for each shot.
 
-Plan: for every shot, write `method`, `intent`, `check`, the fixed `inputs.references` (and `inputs.masks` once made) and `status=planned`, e.g. `timelines shots plan set <shot> --project P --timeline T --set method=LM,R --set inputs.references=<id>,<id> --set status=planned`. `K` shots get `method=K` too, so nothing is left unplanned. Check with `timelines shots plan list` (`unplanned` must be empty) and look with `timelines visualize T --project P --preset overview --shot-plans`.
+Plan: for every shot, write `method`, `intent`, `check`, the fixed `inputs.references` (and `inputs.masks` once made) and `status=planned`, e.g. `timelines shots plan set <shot> --project P --timeline T --set method=LM,R --set inputs.references=<id>,<id> --set status=planned`. `K` shots get `method=K` too, so nothing is left unplanned. Check with `timelines shots plan list --project P --timeline T` (`unplanned` must be empty) and look with `timelines visualize T --project P --preset overview --shot-plans`.
 
 ## Stage 4 - The voice track
 
@@ -78,7 +78,7 @@ Plan: for every shot, write `method`, `intent`, `check`, the fixed `inputs.refer
 - Generate the whole script as one continuous performance (voice-clone entry in `astrid generate`).
 - Transcribe it (timed words), replace the temporary voice on the timeline, and re-time the cuts to the words. Look again (Stage 1 views).
 - Owner listens. This is the gate before any picture generation.
-- Plan: once the voice track is approved, write each speaking shot's slice of it: `--set inputs.voice.media=<voice track media id> --set inputs.voice.range=START,END` (seconds, from the timed words).
+- Plan: once the voice track is approved, write each speaking shot's slice of it: `timelines shots plan set <shot> --project P --timeline T --set inputs.voice.media=<voice track media id> --set inputs.voice.range=START,END`. The range is seconds into that voice track media (from its timed words), not timeline time, and needs the media.
 
 Fallback, if lip sync to a fixed voice does not work in H3: generate each on-camera line with its own voice by continuation, which is proven. Then use that voice as the reference for the off-camera lines.
 
@@ -96,14 +96,14 @@ Also open: mouth and lenses in one pass (two masks, one run, cheaper) or two pas
 - Order: the riskiest, most reused method first, on its best shot. One paid run proves a method; then repeat it across shots.
 - Each pass: a dry run that is the real path stopped before the GPU; one waiting claim with a spend cap and deadline; submit; read back; release.
 - Check every take with `visualize` (region zoom on the changed area, a strip across the shot) and with timed words for speech. The owner judges look, voice and lip sync.
-- Plan: read the shot's inputs from its plan (`timelines shots plan show <shot>`: references, masks, voice slice), never from memory or another file. Set `status=in_progress` when the pass starts. After read-back, append the take and mark it ready: `--add-take '{"generation": "<run id>", "media": "<media id>", "note": "..."}' --set status=take_ready`.
-- When the owner approves a take, set `--set status=approved` on that shot (and say in a take's `note` which take was approved, if there are several).
+- Plan: read the shot's inputs from its plan (`timelines shots plan show <shot> --project P --timeline T`: references, masks, voice slice), never from memory or another file. Set `status=in_progress` when the pass starts. After read-back, append the take and mark it ready: `timelines shots plan set <shot> --project P --timeline T --add-take '{"generation": "<run id>", "media": "<media id>", "note": "..."}' --set status=take_ready`.
+- When the owner approves a take, run `timelines shots plan set <shot> --project P --timeline T --set status=approved` (and say in a take's `note` which take was approved, if there are several).
 
 ## Stage 6 - Assemble and review
 
 Place the takes on the timeline, look across every cut boundary (`--preset motion` around each cut), check that words and mouths agree, and render only when asked.
 
-Plan: before assembling, `timelines shots plan list --project P --timeline T`: `unplanned` and `not_approved` must both be empty (K shots need no approval). Any shot left is named there; finish or re-plan it first. The final overview with `--shot-plans` shows every shot approved.
+Plan: before assembling, `timelines shots plan list --project P --timeline T`: `unplanned`, `invalid` and `not_approved` must all be empty (K shots need no approval). Any shot left is named there; finish or re-plan it first. The final overview with `--shot-plans` shows every shot approved.
 
 ## Worked example: "Into the Minkhole" (Matrix pill scene)
 

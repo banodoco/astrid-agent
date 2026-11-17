@@ -35,6 +35,8 @@ FULL = {
 def test_full_plan_validates_and_version_is_filled_in():
     assert validate_plan(FULL) == FULL
     assert validate_plan({"method": ["K"]}) == {"version": 1, "method": ["K"]}
+    # A kept shot is approved without a take.
+    assert validate_plan({"method": ["K"], "status": "approved"})["status"] == "approved"
 
 
 @pytest.mark.parametrize("plan,message", [
@@ -43,7 +45,12 @@ def test_full_plan_validates_and_version_is_filled_in():
     ({"method": ["V", "V"]}, "lists a code twice"),
     ({"status": "done"}, "plan.status must be one of planned, in_progress, take_ready, approved"),
     ({"version": 2}, "plan.version must be 1"),
-    ({"inputs": {"voice": {"media": "m", "range": [8, 5]}}}, "end > start"),
+    ({"inputs": {"voice": {"media": "m", "range": [8, 5]}}}, "seconds into inputs.voice.media (not timeline time)"),
+    ({"inputs": {"voice": {"range": [1, 2]}}}, "range needs plan.inputs.voice.media"),
+    ({"method": []}, "plan.method must name at least one code"),
+    ({"method": ["K", "R"]}, "K (keep) stands alone"),
+    ({"method": ["LM"], "status": "take_ready"}, "plan.status take_ready needs at least one take"),
+    ({"method": ["LM"], "status": "approved", "takes": []}, "plan.status approved needs at least one take"),
     ({"inputs": {"refs": []}}, "unknown key(s) under plan.inputs: refs"),
     ({"inputs": {"voice": {"clip": "x"}}}, "unknown key(s) under plan.inputs.voice: clip"),
     ({"takes": [{"note": "no media"}]}, "needs a generation or a media id"),
@@ -63,6 +70,10 @@ def test_merge_keeps_other_fields_merges_inputs_unsets_and_appends_takes():
                       "inputs": {"references": ["r1"], "voice": {"media": "v", "range": [1, 2]}}}
     assert merge_plan(merged, {"inputs": {"voice": {"range": [1, 3]}}})["inputs"]["voice"] == {"media": "v", "range": [1, 3]}
     assert "voice" not in merge_plan(merged, unset=["inputs.voice"])["inputs"]
+    from astrid.sdk.shot_plan import combine_patches
+    assert combine_patches({"inputs": {"voice": {"media": "v"}, "references": ["r"]}},
+                           {"inputs": {"voice": {"range": [1, 2]}}}) == {
+        "inputs": {"voice": {"media": "v", "range": [1, 2]}, "references": ["r"]}}
     taken = merge_plan(merged, {"status": "take_ready"}, add_takes=[{"generation": "g1"}])
     assert merge_plan(taken, add_takes=[{"media": "m2"}])["takes"] == [{"generation": "g1"}, {"media": "m2"}]
     assert merge_plan(merged, {"method": ["K"]}, replace=True) == {"version": 1, "method": ["K"]}
@@ -105,6 +116,35 @@ def test_rows_resolve_and_label_read_the_shot_payload_only():
     assert plan_label(None) == "no plan"
 
 
+def test_exact_id_wins_and_ambiguous_names_are_refused():
+    bundle = {"placements": [], "shots": {
+        "a": {"payload": {"name": "Same"}}, "b": {"payload": {"name": "Same"}},
+        "Same": {"payload": {"name": "Other"}}, "c": {"payload": {"name": "a"}}}}
+    assert resolve_shot(bundle, "Same") == "Same"      # an exact shot id beats a name
+    assert resolve_shot(bundle, "a") == "a"            # ... even when another shot is named "a"
+    bundle["shots"].pop("Same")
+    with pytest.raises(ShotPlanError, match="shot name 'Same' is ambiguous; use a shot id: a, b"):
+        resolve_shot(bundle, "Same")
+
+
+def test_malformed_stored_plan_is_reported_not_crashed_on():
+    from astrid.sdk.shot_plan import plan_problem
+    bundle = {"placements": [
+        {"occurrence_id": "o1", "shot_id": "s1", "placement": {"start_ms": 0}, "duration_ms": 1000},
+        {"occurrence_id": "o2", "shot_id": "s2", "placement": {"start_ms": 1000}, "duration_ms": 1000}],
+        "shots": {"s1": {"payload": {"metadata": {"plan": {"method": "LM", "status": 3}}}},
+                  "s2": {"payload": {"metadata": {"plan": "not an object"}}}}}
+    rows = plan_rows(bundle)
+    assert [bool(row["invalid"]) for row in rows] == [True, True]
+    assert all(plan_label(row["plan"]).startswith("invalid plan (") for row in rows)
+    assert plan_problem(rows[1]["plan"]) == "plan must be a JSON object"
+    with pytest.raises(ShotPlanError, match="stored plan is invalid.*--replace"):
+        merge_plan(rows[1]["plan"], {"method": ["K"]})
+    with pytest.raises(ShotPlanError, match="already invalid.*--replace"):
+        merge_plan(rows[0]["plan"], {"intent": "x"})
+    assert merge_plan(rows[1]["plan"], {"method": ["K"]}, replace=True) == {"version": 1, "method": ["K"]}
+
+
 # -- set / merge / show / list on a real Runtime commit path -----------------------
 
 
@@ -143,9 +183,14 @@ def test_cli_sets_merges_shows_and_lists_plans_through_timeline_revisions(restru
                                    "method": ["LM", "R"], "status": "planned",
                                    "inputs": {"references": ["sha256:" + "a" * 64]}}
 
-    # Stage 4 then 5: the voice slice, then a take; earlier fields stay.
-    assert _run(parser, ["plan", "set", "film", *base, "--set", "inputs.voice.media=sha256:" + "b" * 64,
-                         "--set", "inputs.voice.range=5,8"], capsys)[0] == 0
+    # Stage 4 then 5: the voice slice, then a take; earlier fields stay. A --json-file voice media
+    # and a --set range combine (inputs.voice merges key by key).
+    voice_file = tmp_path / "voice.json"
+    voice_file.write_text(json.dumps({"inputs": {"voice": {"media": "sha256:" + "b" * 64}}}), encoding="utf-8")
+    code, out = _run(parser, ["plan", "set", "film", *base, "--json-file", str(voice_file),
+                              "--set", "inputs.voice.range=5,8"], capsys)
+    assert code == 0, out
+    assert out["data"]["plan"]["inputs"]["voice"] == {"media": "sha256:" + "b" * 64, "range": [5.0, 8.0]}
     code, out = _run(parser, ["plan", "set", "occ-film", *base, "--set", "status=take_ready",
                               "--add-take", '{"generation": "run-1", "note": "first"}'], capsys)
     assert code == 0
@@ -285,3 +330,69 @@ def test_shot_plan_survives_astrid_export_and_import(tmp_path, real_runtime, cap
     assert len(rows) == 1 and rows[0]["name"] == "Morpheus MS"
     assert rows[0]["plan"] == plan
     assert target_bundle["shots"][rows[0]["shot_id"]]["payload"]["metadata"] == source_metadata
+
+
+def _other_writer(env, value):
+    """Commit an unrelated parent change as a second writer would."""
+    head = env.service.get_project_timeline(env.project, "t")
+    current = bundle_from_document_(env)["parent"].get("opaque")
+    command = {"schema_version": 1, "op": "doc.patch", "version": "1", "select": None, "args": {"changes": [
+        {"op": "set", "ref": "parent", "path": ["opaque"], "before": {"state": "present", "value": current},
+         "value": {"writer": value}}]}}
+    body = {"api_version": 1, "project_id": env.project, "timeline_id": "t",
+            "base_revision_id": head["head_revision_id"], "base_publication_id": head["head_publication_id"],
+            "commands": [command], "label": f"other {value}", "merge": "fields", "reads": [],
+            "steps": [{"id": "other", "label": f"other {value}", "intent": "", "tags": [], "command_ordinals": [0],
+                       "patch": command["args"]["changes"]}]}
+    env.send(env.project, "t", body, idempotency_key=f"other-writer-{value}")
+
+
+def bundle_from_document_(env):
+    from astrid.sdk.timeline.commit import bundle_from_document
+    return bundle_from_document(env.document())
+
+
+def test_conflict_is_reported_as_conflict_and_leaves_no_saved_edit(restructure_runtime, tmp_path, monkeypatch):
+    from astrid.sdk import shot_plan
+    from astrid.sdk.timeline import Timeline
+
+    env = restructure_runtime
+    outbox = tmp_path / "outbox.json"
+    original_merge = shot_plan.merge_plan
+    calls = {"n": 0}
+
+    def racing_merge(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] > 1:  # inside every commit attempt: someone else commits first
+            _other_writer(env, calls["n"])
+        return original_merge(*args, **kwargs)
+
+    monkeypatch.setattr(shot_plan, "merge_plan", racing_merge)
+    result = shot_plan.set_plan(env.client, env.project, "t", "film", patch={"method": ["V"]}, outbox_path=outbox)
+    assert not result.ok and result.error.code == "conflict", result.as_dict()
+    assert "run the same `timelines shots plan set` command again" in result.error.message
+    assert "tl.retry" not in result.error.message
+    assert result.error.details["dropped_saved_edits"]  # the saved retry copy was dropped, not left behind
+    assert shot_plan.read_plan(bundle_from_document_(env)["shots"]["film"]) is None
+    tl = Timeline.open(env.project, "t", client=env.client, outbox_path=outbox)
+    assert tl.pending_list() == []
+
+    # The same command, run again without a racing writer, lands.
+    monkeypatch.setattr(shot_plan, "merge_plan", original_merge)
+    again = shot_plan.set_plan(env.client, env.project, "t", "film", patch={"method": ["V"]}, outbox_path=outbox)
+    assert again.ok, again.as_dict()
+    assert shot_plan.read_plan(bundle_from_document_(env)["shots"]["film"])["method"] == ["V"]
+
+
+def test_shot_removed_between_open_and_commit_is_a_clear_failure(restructure_runtime, tmp_path, monkeypatch):
+    from astrid.sdk import shot_plan
+
+    env = restructure_runtime
+    original_open = shot_plan._open
+    monkeypatch.setattr(shot_plan, "_open", lambda *a, **k: {
+        **original_open(*a, **k), "shots": {**original_open(*a, **k)["shots"], "gone": {"payload": {"name": "Gone"}}}})
+    result = shot_plan.set_plan(env.client, env.project, "t", "gone", patch={"method": ["V"]},
+                                outbox_path=tmp_path / "outbox.json")
+    assert not result.ok and result.error.code == "conflict"
+    assert "shot gone is no longer on timeline 't'" in result.error.message
+    assert "run the same `timelines shots plan set` command again" in result.error.message

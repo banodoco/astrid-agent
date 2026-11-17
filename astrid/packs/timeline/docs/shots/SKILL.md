@@ -57,8 +57,7 @@ The repeated occurrence shares the stored shot, so edits to that shot appear in 
 A shot's plan (what it shows, how it will be made, its inputs, status and takes) lives in one place:
 the key `plan` in the shot's own metadata on the timeline (`payload.metadata.plan`). It is saved
 with every timeline revision (each write is a new revision; earlier revisions keep the earlier
-plan), it travels in `.astrid` exports and imports, and a duplicated timeline keeps it (while its
-text bindings are cleared, so re-bind the narration). Every skill
+plan) and it travels in `.astrid` exports and imports. Every skill
 and agent reads and writes plans **only through the commands below**, never by editing metadata
 by hand, so the shape stays checked and other metadata stays untouched.
 
@@ -78,29 +77,36 @@ The shape (`version` 1; every other key is optional; any other key is refused):
 }
 ```
 
-- `method`: the recast method codes `V LC LM R M E K` (see the [recast skill](../../../h3_av/docs/recast-scene/SKILL.md#stage-3---shot-list-pick-a-method-for-each-shot)).
-- `status`: `planned`, `in_progress`, `take_ready` or `approved`.
+- `method`: one or more of the recast method codes `V LC LM R M E K` (see the [recast skill](../../../h3_av/docs/recast-scene/SKILL.md#stage-3---shot-list-pick-a-method-for-each-shot)); `K` (keep) stands alone.
+- `status`: `planned`, `in_progress`, `take_ready` or `approved`. `take_ready` and `approved` need at
+  least one take, except for a `K` shot, which is approved without one.
 - `line` is a label for planning. The narration itself is the shot's `voiceover_script` text
   (`timelines shots text set --kind voiceover_script`); address it by shot and kind, never by binding id.
-- `inputs.voice.range` is the shot's slice of the voice track, in seconds.
+- `inputs.voice.range` is `[start, end]` in **seconds into the voice media `inputs.voice.media`**
+  (the voice track file), not timeline time. A range needs its `media`.
 
-Write, read, list and see:
+Commands run through the launcher; its path on each OS is in the
+[astrid-setup skill's Launcher paths](../../../setup/docs/SKILL.md#launcher-paths), and the block
+shows the Linux path. Write, read, list and see:
 
 ```bash
-python3 -m astrid timelines shots plan set <shot> --project <project> --timeline <timeline> --set method=LM,R --set status=planned
-python3 -m astrid timelines shots plan set <shot> --project <project> --timeline <timeline> --json-file plan.json
-python3 -m astrid timelines shots plan set <shot> --project <project> --timeline <timeline> --set inputs.voice.media=<media id> --set inputs.voice.range=5,8
-python3 -m astrid timelines shots plan set <shot> --project <project> --timeline <timeline> --add-take '{"generation": "<run id>", "media": "<media id>"}' --set status=take_ready
-python3 -m astrid timelines shots plan show <shot> --project <project> --timeline <timeline>
-python3 -m astrid timelines shots plan list --project <project> --timeline <timeline>
-python3 -m astrid timelines visualize <timeline> --project <project> --preset overview --shot-plans
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" timelines shots plan set <shot> --project <project> --timeline <timeline> --set method=LM,R --set status=planned
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" timelines shots plan set <shot> --project <project> --timeline <timeline> --json-file plan.json
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" timelines shots plan set <shot> --project <project> --timeline <timeline> --set inputs.voice.media=<media id> --set inputs.voice.range=5,8
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" timelines shots plan set <shot> --project <project> --timeline <timeline> --add-take '{"generation": "<run id>", "media": "<media id>"}' --set status=take_ready
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" timelines shots plan show <shot> --project <project> --timeline <timeline>
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" timelines shots plan list --project <project> --timeline <timeline>
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" timelines visualize <timeline> --project <project> --preset overview --shot-plans
 ```
 
-`<shot>` is a shot id, an occurrence id or the exact shot name. `set` merges: the fields you give
+`<shot>` is a shot id, an occurrence id or the exact shot name; an exact shot id always wins over a
+name, and a name two shots share is refused (use the id). `set` merges: the fields you give
 replace those fields (`inputs` and `inputs.voice` merge key by key), `--add-take` appends,
 `--unset inputs.voice` removes a field, `--replace` starts from an empty plan. A bad plan is refused
-with the reason before anything is written. `show` and `list` take `--revision-id` to read a saved
+with the reason before anything is written. If the timeline changes while the plan is being written,
+`set` fails with `conflict` and keeps nothing: run the same command again. `show` and `list` take `--revision-id` to read a saved
 revision. `list` also names the shots with no plan (`unplanned`) and the planned shots not yet
-`approved` (`not_approved`; `K` shots need no approval). `visualize --shot-plans` prints one line per
+`approved` (`not_approved`; `K` shots need no approval). A stored plan that no longer validates is
+listed under `invalid` and shown as `invalid plan (...)`; rewrite it whole with `--replace`. `visualize --shot-plans` prints one line per
 placed shot under the picture's summary: its time, name, method codes, status, takes and line. From
 Python, the same calls are `astrid.sdk.shot_plan.set_plan`, `show_plan` and `list_plans`.

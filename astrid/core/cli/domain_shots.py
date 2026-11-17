@@ -179,10 +179,8 @@ def _cmd_plan_set(parsed: argparse.Namespace) -> int:
             if not isinstance(loaded, dict):
                 raise shot_plan.ShotPlanError("--json-file must hold a JSON object")
             patch.update(loaded)
-        assigned = shot_plan.apply_assignments(parsed.assignments or [])
-        if "inputs" in assigned and isinstance(patch.get("inputs"), dict):
-            assigned["inputs"] = {**patch["inputs"], **assigned["inputs"]}
-        patch.update(assigned)
+        # --set lays over --json-file with the plan's own merge rule (inputs.voice key by key).
+        patch = shot_plan.combine_patches(patch, shot_plan.apply_assignments(parsed.assignments or []))
         takes = list(parsed.add_take or [])
     except (OSError, UnicodeError, json.JSONDecodeError, shot_plan.ShotPlanError) as exc:
         return _plan_failure(str(exc), parsed)

@@ -7,7 +7,7 @@ description: Request-driven MiniMax H3 audiovisual transformations with explicit
 
 To plan a whole scene (replacing characters, re-voicing dialogue, choosing a method for each shot), start with [Recast and re-voice a scene](recast-scene/SKILL.md).
 
-An H3 request made for a planned shot records its generation in that shot's `plan.takes` (`timelines shots plan set <shot> --add-take '{"generation": "<run id>", "media": "<media id>"}'`; see [shot plans](../../timeline/docs/shots/SKILL.md#shot-plans)).
+An H3 request made for a planned shot records its generation in that shot's `plan.takes` (`timelines shots plan set <shot> --project <project> --timeline <timeline> --add-take '{"generation": "<run id>", "media": "<media id>"}'`; see [shot plans](../../timeline/docs/shots/SKILL.md#shot-plans)).
 
 H3 inference currently runs only on RunPod workers. Select a RunPod worker
 execution request, worker qualification receipt, or prepared worker selection.
