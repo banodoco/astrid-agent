@@ -346,9 +346,11 @@ def _failure(code: str, message: str, details: Mapping[str, Any] | None = None):
 
 
 def _open(client: Any, project: str, timeline: str, revision_id: str | None = None) -> dict[str, Any]:
+    from astrid.sdk.timeline.store import _error_text
+
     opened = client.timelines.open_bundle(project, timeline, **({"revision_id": revision_id} if revision_id else {}))
     if not opened.ok or not isinstance(opened.data, Mapping):
-        raise ShotPlanError(f"could not open timeline {timeline!r} in {project!r}: {opened.error}")
+        raise ShotPlanError(f"could not open timeline {timeline!r} in {project!r}: {_error_text(opened.error)}")
     return dict(opened.data["bundle"])
 
 
