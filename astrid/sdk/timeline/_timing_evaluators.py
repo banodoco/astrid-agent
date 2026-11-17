@@ -1,9 +1,11 @@
 """Main Moment/cut evaluators over captured inputs; no mutable Checkout execution."""
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import replace
 from fractions import Fraction
 from types import MappingProxyType, SimpleNamespace
+from typing import Any
 
 from astrid.core.timeline import moments as mo
 from astrid.core.timeline.authoring_bundle import _digest
@@ -19,6 +21,15 @@ from astrid.sdk.timeline.units import (
     source_to_timeline_time,
 )
 from astrid.sdk.timeline_checkout import Checkout
+
+
+def unsupported_declaration(declarations: Mapping[str, Any], name: str) -> bool:
+    """Whether the kernel refuses this declaration. ``formulas`` that only derive ``params.*`` values
+    (what ``Clip.set`` writes) never move a clip, so they are not timing declarations."""
+    value = declarations.get(name)
+    if name == "formulas" and isinstance(value, Mapping):
+        return any(not str(path).startswith("params.") for path in value)
+    return bool(value)
 
 
 def _timing_number(value):
@@ -499,7 +510,7 @@ def evaluate(bundle, sources, bindings, policy, legacy_declarations=()):
             raise TimingCompileError("clip millisecond timing needs an explicit authoring adapter")
         declarations = intent._app(clip)
         for key in ("sequence", "sequence_fit", "formulas", "orphan", "gap_after_s"):
-            if declarations.get(key):
+            if unsupported_declaration(declarations, key):
                 raise TimingCompileError(f"unsupported timing declaration {owner}.{key}")
         if declarations.get("until_film_end") is not None:
             raise TimingCompileError("unsupported until_film_end timing basis")
