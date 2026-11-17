@@ -213,12 +213,13 @@ class _GuardedSocket:
         self._closing = None
 
     async def recv(self):
-        import aiohttp
+        from websockets.exceptions import ConnectionClosed
+
         try:
-            message = await self.socket.receive()
-            if message.type in {aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY}:
-                return message.data
-            raise ConnectionError("Comfy websocket disconnected")
+            return await self.socket.recv()
+        except ConnectionClosed as exc:
+            await self.close()
+            raise ConnectionError("Comfy websocket disconnected") from exc
         except BaseException:
             await self.close()
             raise
@@ -298,8 +299,19 @@ class ComfyTargetSession:
         return await asyncio.wrap_future(self.submit(coroutine))
 
     async def _connect(self):
-        import aiohttp
+        # VibeComfy already requires websockets>=12. Its protocol client neither
+        # discovers proxies nor imports aiohttp's platform.system probe, which
+        # can spawn cmd/ver inside the guarded Windows worker.
+        from websockets.exceptions import InvalidStatusCode
+        from websockets.legacy.client import WebSocketClientProtocol, connect
         from vibecomfy.runtime.transport import ComfyTransport
+
+        class GuardedProtocol(WebSocketClientProtocol):
+            async def read_http_response(self):
+                status, headers = await super().read_http_response()
+                if 300 <= status < 400:
+                    raise ValueError("comfy target websocket redirected unexpectedly")
+                return status, headers
 
         self.sequence += 1
         generation = self.generation = TargetGeneration(self.sequence)
@@ -312,20 +324,15 @@ class ComfyTargetSession:
             if (parsed.scheme != "ws" or parsed.netloc != expected.netloc or parsed.path != "/ws"
                     or parsed.fragment or set(query) != {"clientId"} or len(query["clientId"]) != 1):
                 raise ValueError("held Comfy websocket escaped its selected origin")
-            trace = aiohttp.TraceConfig()
-
-            async def no_redirect(*_args):
-                raise ValueError("comfy target websocket redirected unexpectedly")
-
-            trace.on_request_redirect.append(no_redirect)
-            owner = aiohttp.ClientSession(trust_env=False, trace_configs=[trace],
-                                          timeout=aiohttp.ClientTimeout(total=HTTP_TRANSFER_SECONDS))
+            socket = None
             try:
                 with generation.guard():
                     pass
-                socket = await owner.ws_connect(url, proxy=None, max_msg_size=1024 * 1024,
-                                                timeout=aiohttp.ClientWSTimeout(ws_close=1), heartbeat=None)
-                wrapped = _GuardedSocket(owner, socket, generation)
+                socket = await connect(
+                    url, create_protocol=GuardedProtocol, open_timeout=HTTP_TRANSFER_SECONDS,
+                    close_timeout=1, ping_interval=None, max_size=1024 * 1024,
+                    max_queue=1, compression=None)
+                wrapped = _GuardedSocket(socket, socket, generation)
                 self._sockets.append(wrapped)
 
                 def retired():
@@ -337,7 +344,8 @@ class ComfyTargetSession:
                     pass
                 return wrapped
             except BaseException:
-                await owner.close()
+                if socket is not None:
+                    await socket.close()
                 raise
 
         transport = self.transport = ComfyTransport(
@@ -346,8 +354,8 @@ class ComfyTargetSession:
         self._transports.append(transport)
         try:
             await transport._connect()
-        except aiohttp.WSServerHandshakeError as exc:
-            if exc.status not in {200, 404, 405, 501}:
+        except InvalidStatusCode as exc:
+            if exc.status_code not in {200, 404, 405, 501}:
                 raise
             self.fallback_reason = "Comfy websocket unsupported"
         except BaseException:

@@ -439,3 +439,44 @@ def test_retired_socket_owner_is_closed_before_session_returns():
         assert socket.owner.closed
         assert socket.socket.closed
         assert not owner._thread.is_alive()
+
+
+def test_cold_socket_import_does_not_launch_platform_probe(tmp_path):
+    """Windows platform.system may run cmd/ver; a guarded worker cannot."""
+    script = textwrap.dedent("""
+        import asyncio, platform, subprocess, sys
+        from astrid.core.execution.network_policy import install, NetworkPolicyError
+        from astrid.core.generation.backends.comfy_held import ComfyTargetSession
+        from astrid.core.generation.backends.comfy_target import ComfyTarget
+        from astrid.core.generation.backends.vibecomfy_local_server import TargetRuntimeClient
+
+        def native_platform_probe():
+            return subprocess.check_output(["cmd", "/c", "ver"], text=True)
+
+        platform.system = native_platform_probe
+        install({"network": True, "allowed_destinations": [sys.argv[1]]}, sys.argv[2])
+        with ComfyTargetSession(ComfyTarget(sys.argv[1], "attached")) as owner:
+            runtime = TargetRuntimeClient(owner.client())
+            async def run():
+                from vibecomfy.runtime.session import SessionConfig, _wait_for_server_history
+                prompt = (await runtime._post_prompt({}))["prompt_id"]
+                history = await _wait_for_server_history(
+                    runtime.server_url, prompt, config=SessionConfig(), client=runtime)
+                assert history[prompt]["outputs"]
+                await runtime.release_attempt()
+            asyncio.run(run())
+        try:
+            native_platform_probe()
+        except NetworkPolicyError:
+            pass
+        else:
+            raise AssertionError("native descendant guard was bypassed")
+        print("guarded-cold-transport-completed")
+    """)
+    with ComfyPeer() as peer:
+        result = subprocess.run(
+            [sys.executable, "-c", script, peer.url, str(tmp_path / "network.json")],
+            capture_output=True, text=True, timeout=10, check=False)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "guarded-cold-transport-completed" in result.stdout
+        assert peer.counts()["POST /prompt"] == peer.counts()["GET /ws"] == 1
