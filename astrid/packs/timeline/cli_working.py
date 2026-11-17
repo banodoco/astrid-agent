@@ -441,15 +441,10 @@ def _cmd_transcripts_run(parsed: argparse.Namespace) -> int:
                                 project=project, client=parsed.client, consent=tuple(parsed.consent), **options)
     if getattr(result, "ok", True) is False:
         raise ValueError(f"transcription failed: {getattr(result, 'error', None)}")
+    from astrid.sdk.transcript_run import transcription_run_id
+
     value = result.to_dict() if hasattr(result, "to_dict") else result
-    run_id = value.get("kernel_run_id") or value.get("run_id") if isinstance(value, Mapping) else None
-    if not run_id and isinstance(value, Mapping) and value.get("task_id"):
-        task_result = parsed.client.tasks.show(value["task_id"])
-        if not task_result.ok or not isinstance(task_result.data, Mapping):
-            raise ValueError("cannot read transcription task to locate its run")
-        run_id = task_result.data.get("run_id")
-    if not run_id:
-        raise ValueError("transcription result has no run id")
+    run_id = transcription_run_id(parsed.client, value)
     status = import_transcription_run(parsed.client, project, digest, run_id,
                                       replace=parsed.replace, expected_version=parsed.expected_version)
     print(f"{status} transcript for {digest} from run {run_id}")

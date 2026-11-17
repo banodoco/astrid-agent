@@ -95,7 +95,8 @@ def test_persistence_is_idempotent_and_replacement_uses_expected_version():
     changed = ("b", [{"value": "b", "start": 0, "end": 1}],
                [{"value": "b", "start": 0.1, "end": 0.9}])
     assert import_whisper_transcript(target, "slug", MEDIA, source, original, media_duration=2) == "created"
-    assert import_whisper_transcript(target, "slug", MEDIA, source, changed, media_duration=2) == "unchanged"
+    with pytest.raises(ValueError, match="differs"):
+        import_whisper_transcript(target, "slug", MEDIA, source, changed, media_duration=2)
     assert not any(call[0] == "update" for call in docs.calls)
     with pytest.raises(ValueError, match="expected version"):
         import_whisper_transcript(target, "slug", MEDIA, source, changed, media_duration=2,

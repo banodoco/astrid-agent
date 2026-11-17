@@ -23,6 +23,27 @@ transcription workflow and stores the timed words against that media:
 "${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" timelines transcripts run <media-id> --project <project>
 ```
 
+The same transcription can be run directly with the generation command. It uses
+the `transcription` entry, which is the default for audio transcribe, so
+`--entry` is optional. Its result is a Runtime run that imports exactly as
+`transcripts run` does:
+
+```sh
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate audio --mode transcribe --audio-ref <media-id> --project <project>
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" timelines transcripts import <media-id> --project <project> --from-run <run-id>
+```
+
+`--audio-ref` takes a project media id (or digest), as above, or a local file
+without `--project`. The printed import line names the media id.
+
+Importing the same media again from the same source compares the content. An
+identical result reports `unchanged`. A different result is refused, and the
+refusal names the replacement. Replace only with that version:
+
+```sh
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" timelines transcripts import <media-id> --project <project> --from-run <run-id> --replace --expected-version <N>
+```
+
 Read all words for a media item:
 
 ```sh

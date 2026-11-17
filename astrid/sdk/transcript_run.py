@@ -95,6 +95,22 @@ def _admitted_workflow_digest(client: Any, task: Mapping[str, Any], spec: Mappin
         return _workflow_content_digest(Path(tmp) / 'workflow.py')
 
 
+def transcription_run_id(client: Any, value: Any) -> str:
+    """The Runtime run a transcription generation result names; the one place every caller reads it."""
+    run_id = None
+    if isinstance(value, Mapping):
+        run_id = value.get("kernel_run_id") or value.get("run_id")
+        task_id = value.get("task_id") or value.get("kernel_task_id")
+        if not run_id and task_id:
+            task_result = client.tasks.show(task_id)
+            if not task_result.ok or not isinstance(task_result.data, Mapping):
+                raise ValueError("cannot read transcription task to locate its run")
+            run_id = task_result.data.get("run_id")
+    if not run_id:
+        raise ValueError("transcription result has no run id")
+    return run_id
+
+
 def import_transcription_run(client: Any, project: str, media_id: str, run_id: str, *,
                              replace: bool = False, expected_version: int | None = None) -> str:
     from astrid.packs.vibecomfy.asset_manifest import read_archive_bytes

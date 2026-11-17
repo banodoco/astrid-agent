@@ -157,9 +157,12 @@ def import_whisper_transcript(
         row = current.data
         if not isinstance(row, Mapping) or row.get("kind") != "media.transcript":
             raise ValueError("existing transcript document response is invalid")
-        if not replace:
-            return "unchanged"
         version = row.get("version")
+        if not replace:
+            if row.get("content") == json.loads(json.dumps(content, allow_nan=False)):
+                return "unchanged"
+            raise ValueError(f"stored transcript for {media_id} from {source_id} differs from this result; "
+                             f"use --replace --expected-version {version} to replace it")
         if type(expected_version) is not int or expected_version < 1 or expected_version != version:
             raise ValueError(f"expected version {expected_version} does not match current version {version}")
         mutation = client.documents.update(document_id, content=content,
