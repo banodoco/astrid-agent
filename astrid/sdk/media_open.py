@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from .contracts import DomainResult, ErrorObject
+from .media_ids import MediaIdError, media_id_text, resolve_project_media
 from .pagination import paged_rows
 from .workspace_client import WorkspaceClientError
 
@@ -90,18 +91,10 @@ def _find_project_object(client: Any, project: str, object_id: str) -> tuple[Map
     rows = _project_objects(client, project)
     if rows is None:
         return None, _failure("unavailable", "Runtime project media listing is unavailable", project=str(project))
-    normalized = object_id.removeprefix("sha256:")
-    match = next(
-        (
-            row for row in rows
-            if str(row.get("object_id") or "").removeprefix("sha256:") == normalized
-            or str(row.get("digest") or "").removeprefix("sha256:") == normalized
-        ),
-        None,
-    )
-    if match is None:
-        return None, _failure("not_found", "media object is not in the selected project", project=str(project), object_id=object_id)
-    return match, None
+    try:
+        return resolve_project_media(rows, project, object_id), None
+    except MediaIdError as exc:
+        return None, _failure(exc.code, exc.message, project=str(project), object_id=object_id)
 
 
 def _preview(data: bytes, *, media_type: str, limit: int) -> dict[str, Any] | None:
@@ -312,7 +305,7 @@ def open_reference(
         metadata, failure = _find_project_object(client, str(project), object_id)
         if failure:
             return failure
-        data, failure = _read_bytes(client, object_id)
+        data, failure = _read_bytes(client, str(metadata.get("object_id") or object_id))
         if failure:
             return failure
         assert data is not None
@@ -379,7 +372,7 @@ def open_reference(
             "name": _safe_filename(metadata.get("filename"), fallback=object_id.replace(":", "-")),
             "size_bytes": expected_size,
             "scope": {"project": str(project), "read_only": True},
-            "content_identity": metadata.get("digest") or metadata.get("object_id") or object_id,
+            "content_identity": media_id_text(metadata.get("digest") or metadata.get("object_id") or object_id),
             "availability": "oversize",
             "preview": None,
             "local_path": None,
