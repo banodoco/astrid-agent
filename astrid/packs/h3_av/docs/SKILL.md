@@ -305,7 +305,9 @@ they combine in one request:
 
 - **Masks** are the `mask` of a video `edit` entry: a mask asset (static image;
   white is editable), or `{"rectangle": [x, y, width, height]}` in 1024x576 pixel
-  coordinates. Polygon masks are not supported on the edit route. Several static
+  coordinates. An image mask must be exactly 1024x576 (the prepared frame, after
+  the source's `fill` crop) and strictly binary (0 and 255), so build any margin
+  into the shape rather than feathering it. Polygon masks are not supported on the edit route. Several static
   masks in one request merge into one union mask. Per-frame mask video cannot be
   merged.
 - **Reference images** are `role: reference`, `modality: image` media, linked
