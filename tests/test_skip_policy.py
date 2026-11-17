@@ -133,6 +133,26 @@ def test_xfail_registry_rejects_more_than_ten_entries() -> None:
 
 
 def test_no_test_file_skips_by_hand() -> None:
+    # Owner-approved Plan 39 D10 ceiling, captured at 1148df0e. This list
+    # may only shrink: AT5 removes each gate and its entry together.
+    ceiling = {
+        "tests/core/execution/test_host_cleanup_ack_barrier.py:16 pytest.mark.skipif",
+        "tests/core/generation/test_model_verification_record.py:590 pytest.skip",
+        "tests/core/generation/test_release_python.py:58 pytest.mark.skipif",
+        "tests/core/generation/test_release_python.py:498 pytest.mark.skipif",
+        "tests/core/pack/test_git_environment.py:289 pytest.skip",
+        "tests/core/pack/test_git_environment.py:369 pytest.skip",
+        "tests/core/pack/test_identity.py:56 pytest.skip",
+        "tests/scripts/test_pod_bootstrap.py:115 pytest.mark.skipif",
+        "tests/scripts/test_pod_session.py:41 pytest.skip",
+        "tests/test_installed_wheel_smoke.py:25 pytest.skip",
+        "tests/test_installer_pinokio_activation.py:175 pytest.mark.skipif",
+        "tests/test_installer_r0_entry.py:618 pytest.skip",
+        "tests/test_installer_r0_stop.py:237 pytest.skip",
+        "tests/test_journey_diagnostic_checkpoint.py:242 pytest.skip",
+        "tests/test_journey_diagnostic_checkpoint.py:273 pytest.skip",
+        "tests/test_journey_windows_acl_capture.py:28 pytest.skip",
+    }
     offenders = []
     for root in (REPO / "tests", *sorted((REPO / "tools").glob("*/tests"))):
         for path in sorted(root.rglob("*.py")):
@@ -140,4 +160,9 @@ def test_no_test_file_skips_by_hand() -> None:
             if relative == REGISTRY or ".venv" in path.parts or "node_modules" in path.parts:
                 continue
             offenders += [f"{relative}:{line} {name}" for line, name in hidden_gates(path.read_text(encoding="utf-8"))]
-    assert not offenders, "mark the test with a lane from tests/lanes.py instead of skipping by hand: " + ", ".join(offenders)
+    new_gates = sorted(set(offenders) - ceiling)
+    stale_entries = sorted(ceiling - set(offenders))
+    assert not new_gates and not stale_entries, (
+        f"direct gates outside the D10 ceiling (use a lane from tests/lanes.py): {new_gates}; "
+        f"stale D10 ceiling entries (remove with the AT5 gate fix): {stale_entries}"
+    )
