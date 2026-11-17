@@ -5,6 +5,9 @@ from __future__ import annotations
 import io
 import json
 import math
+import http.client
+import socket
+import threading
 import re
 import urllib.error
 import urllib.request
@@ -17,8 +20,8 @@ from .timeline_commit_types import CommitAcceptedMutation, CommitPreviewResponse
 
 PROTOCOL = "workspace.v1"
 _UNSET = object()
-SCHEMA_DIGEST = "sha256:9628bb5fd6e1dbbec392dd39f2e01031622dcf52d7ccff7cd1f0ad10743dcb1c"
-OPERATIONS = ('health', 'handshake', 'getRealm', 'doctor', 'createBackup', 'restoreBackup', 'exportRealm', 'tombstoneRealm', 'recoverRealm', 'purgeRealm', 'listProjects', 'createProject', 'getProject', 'updateProject', 'currentProject', 'selectProject', 'getPreferences', 'updatePreferences', 'getUserAppState', 'updateUserAppState', 'listDocuments', 'createDocument', 'getDocument', 'updateDocument', 'listProjectObjects', 'ingestProjectObject', 'importProjectMedia', 'getProjectMediaImport', 'listProjectTasks', 'listManagedOutputs', 'getManagedOutput', 'adoptManagedOutput', 'getProjectObjectLocation', 'exportManagedOutput', 'updateManagedOutputLifecycle', 'listProjectRuns', 'createTimeline', 'listTimelines', 'getProjectTimeline', 'renameTimeline', 'importTimeline', 'inspectTimeline', 'createTimelineView', 'commitTimeline', 'listTimelineCommits', 'getProjectMediaSelection', 'getProjectVerifiedMedia', 'getProjectVerifiedDocumentObject', 'getProjectVerifiedDocument', 'listProjectParentCompositionRevisions', 'publishParentComposition', 'replaceParentCompositionMedia', 'getProjectParentCompositionRevision', 'restoreProjectParentCompositionRevision', 'createTimelineDocument', 'getProjectShotRevision', 'getProjectTimelineRevision', 'listTimelineHistory', 'replaceTimelineClip', 'diffTimeline', 'archiveTimeline', 'recoverTimeline', 'getShot', 'createProjectShot', 'listProjectShots', 'getProjectShot', 'updateProjectShot', 'archiveProjectShot', 'recoverProjectShot', 'addShotItem', 'removeShotItem', 'promoteProjectShotCandidate', 'reorderShotItems', 'listProjectShotTextBindings', 'setProjectShotTextBinding', 'getProjectShotTextBinding', 'setProjectShotTextBindingById', 'rebindProjectShotTextBinding', 'createProjectReference', 'listProjectReferences', 'getProjectReference', 'updateProjectReference', 'archiveProjectReference', 'recoverProjectReference', 'associateReference', 'setPrimaryReference', 'linkReferences', 'getReference', 'listMediaRelations', 'createMediaRelation', 'getSourceFrameThumbnail', 'ensureSourceFrameThumbnail', 'ingestObject', 'getObject', 'headObject', 'admitTask', 'claimTask', 'claimDelegatedChild', 'admitDelegatedTask', 'getTask', 'cancelTask', 'retryTask', 'recoverTaskPlacement', 'recordRemoteActivation', 'controlRemoteCredential', 'revokeRemoteActivation', 'getRun', 'cancelRun', 'retryRun', 'listRunEvents', 'listEvents', 'registerExecutor', 'getExecutor', 'getTaskSettlement', 'abandonTask', 'getLocalWorkerGeneration', 'startLocalWorker', 'relinquishLocalWorker', 'listCapabilities', 'registerCapability', 'listGenerations', 'createGeneration', 'getGeneration', 'listVariants', 'createVariant', 'markGenerationVariantsViewed', 'getVariant', 'attachVariantThumbnail', 'markVariantViewed', 'settleAttempt', 'publishRecoverableSnapshot', 'issueChildAuthority', 'prepareReboot', 'checkpointAttempt', 'publishTimelineRender', 'failAttempt', 'heartbeatAttempt', 'requestReboot', 'resumeAttempt')
+SCHEMA_DIGEST = "sha256:e5a3c475c7c38b63ab363eed5298b39c6021d0c229525041d330adfcf31ff102"
+OPERATIONS = ('health', 'handshake', 'getRealm', 'doctor', 'createBackup', 'restoreBackup', 'exportRealm', 'tombstoneRealm', 'recoverRealm', 'purgeRealm', 'listProjects', 'createProject', 'getProject', 'updateProject', 'currentProject', 'selectProject', 'getPreferences', 'updatePreferences', 'getUserAppState', 'updateUserAppState', 'listDocuments', 'createDocument', 'getDocument', 'updateDocument', 'listProjectObjects', 'ingestProjectObject', 'importProjectMedia', 'getProjectMediaImport', 'listProjectTasks', 'listManagedOutputs', 'getManagedOutput', 'adoptManagedOutput', 'getProjectObjectLocation', 'exportManagedOutput', 'updateManagedOutputLifecycle', 'listProjectRuns', 'createTimeline', 'listTimelines', 'getProjectTimeline', 'renameTimeline', 'importTimeline', 'inspectTimeline', 'createTimelineView', 'commitTimeline', 'listTimelineCommits', 'getProjectMediaSelection', 'getProjectVerifiedMedia', 'getProjectVerifiedDocumentObject', 'getProjectVerifiedDocument', 'listProjectParentCompositionRevisions', 'publishParentComposition', 'replaceParentCompositionMedia', 'getProjectParentCompositionRevision', 'restoreProjectParentCompositionRevision', 'createTimelineDocument', 'getProjectShotRevision', 'getProjectTimelineRevision', 'listTimelineHistory', 'replaceTimelineClip', 'diffTimeline', 'archiveTimeline', 'recoverTimeline', 'getShot', 'createProjectShot', 'listProjectShots', 'getProjectShot', 'updateProjectShot', 'archiveProjectShot', 'recoverProjectShot', 'addShotItem', 'removeShotItem', 'promoteProjectShotCandidate', 'reorderShotItems', 'listProjectShotTextBindings', 'setProjectShotTextBinding', 'getProjectShotTextBinding', 'setProjectShotTextBindingById', 'rebindProjectShotTextBinding', 'createProjectReference', 'listProjectReferences', 'getProjectReference', 'updateProjectReference', 'archiveProjectReference', 'recoverProjectReference', 'associateReference', 'setPrimaryReference', 'linkReferences', 'getReference', 'listMediaRelations', 'createMediaRelation', 'getSourceFrameThumbnail', 'ensureSourceFrameThumbnail', 'ingestObject', 'getObject', 'headObject', 'admitTask', 'waitForWork', 'waitForTask', 'claimTask', 'claimDelegatedChild', 'admitDelegatedTask', 'getTask', 'cancelTask', 'retryTask', 'recoverTaskPlacement', 'recordRemoteActivation', 'controlRemoteCredential', 'revokeRemoteActivation', 'getRun', 'cancelRun', 'retryRun', 'listRunEvents', 'listEvents', 'registerExecutor', 'getExecutor', 'getTaskSettlement', 'abandonTask', 'getLocalWorkerGeneration', 'startLocalWorker', 'relinquishLocalWorker', 'listCapabilities', 'registerCapability', 'listGenerations', 'createGeneration', 'getGeneration', 'listVariants', 'createVariant', 'markGenerationVariantsViewed', 'getVariant', 'attachVariantThumbnail', 'markVariantViewed', 'settleAttempt', 'publishRecoverableSnapshot', 'issueChildAuthority', 'prepareReboot', 'checkpointAttempt', 'publishTimelineRender', 'failAttempt', 'heartbeatAttempt', 'requestReboot', 'resumeAttempt')
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
@@ -648,6 +651,60 @@ class WorkspaceClient:
         if not math.isfinite(self.timeout) or self.timeout <= 0:
             raise ValueError("timeout must be finite and positive")
         self.handshake_info: Handshake | None = None
+        self._wait_lock = threading.Lock()
+        self._wait_connections: dict[Any, threading.Event] = {}
+        self._wait_closed = False
+
+    def cancel_waits(self) -> None:
+        """End this client's read subscriptions without cancelling any task."""
+        with self._wait_lock:
+            self._wait_closed = True
+            pending = tuple(self._wait_connections.items())
+            for _, cancelled in pending:
+                cancelled.set()
+        for connection, _ in pending:
+            try:
+                if connection.sock is not None:
+                    connection.sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            connection.close()
+
+    def _wait_request(self, path: str, payload: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Keep a cancellable loopback read connection for one bounded wait."""
+        data = json.dumps(dict(payload)).encode()
+        if self._transport is not None:
+            return self._json(self._request("POST", path, body=data, headers={"Content-Type": "application/json"})[2])
+        url = self.base_url + path
+        _require_loopback(url)
+        parsed = urllib.parse.urlsplit(url)
+        connection_type = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+        connection = connection_type(parsed.hostname, parsed.port, timeout=self.timeout)
+        cancelled = threading.Event()
+        with self._wait_lock:
+            if self._wait_closed:
+                raise ApiError(0, "wait_cancelled", "Runtime read subscription was closed")
+            self._wait_connections[connection] = cancelled
+        headers = {"Content-Type": "application/json", "Accept": "application/json", "X-Request-ID": f"request-{uuid.uuid4().hex}"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        try:
+            connection.connect()
+            if cancelled.is_set():
+                raise ApiError(0, "wait_cancelled", "Runtime read subscription was closed")
+            connection.request("POST", parsed.path + ("?" + parsed.query if parsed.query else ""), body=data, headers=headers)
+            response = connection.getresponse()
+            body = response.read()
+            if response.status != 200:
+                raise _decode_error(response.status, body, request_id=headers["X-Request-ID"])
+            return self._json(body)
+        except (OSError, http.client.HTTPException) as exc:
+            code = "wait_cancelled" if cancelled.is_set() else "transport_timeout" if isinstance(exc, TimeoutError) else "transport_error"
+            raise ApiError(0, code, "Runtime read subscription ended", request_id=headers["X-Request-ID"]) from exc
+        finally:
+            connection.close()
+            with self._wait_lock:
+                self._wait_connections.pop(connection, None)
 
     def _request(self, method: str, path: str, *, body: bytes | BinaryIO | None = None, headers: Mapping[str, str] | None = None, expected: tuple[int, ...] = (200,), response_reader: Callable[[Any], bytes] | None = None) -> tuple[int, Mapping[str, str], bytes]:
         request_headers = {"Accept": "application/json", **dict(headers or {})}
@@ -1283,6 +1340,30 @@ class WorkspaceClient:
     def get_task(self, task_id: str) -> Task:
         _, _, body = self._request("GET", f"/v1/tasks/{_path_part(task_id)}")
         return Task.from_json(self._json(body))
+
+    def wait_for_task(self, task_id: str, *, cursor: str | None = None, timeout_seconds: float = 25.0) -> Mapping[str, Any]:
+        """Read a coherent task/result snapshot, waiting after a scoped cursor.
+
+        Expiry is a transport bound, not an instruction to submit or claim.
+        The caller retains the cursor and recovers from durable state on a
+        reconnect. The default fits the existing 30-second HTTP deadline.
+        """
+        payload: dict[str, Any] = {"timeout_seconds": min(timeout_seconds, max(0.0, self.timeout - 1.0))}
+        if cursor is not None: payload["cursor"] = cursor
+        return self._wait_request(f"/v1/tasks/{_path_part(task_id)}/wait", payload)
+
+    def wait_for_work(self, *, executor_id: str, capability_ids: list[str], runtime_epoch: int, target: Mapping[str, Any] | None = None, cursor: str | None = None, timeout_seconds: float = 25.0) -> Mapping[str, Any]:
+        """Read-only eligibility wait; a wake grants no claim or lease."""
+        payload: dict[str, Any] = {"executor_id": executor_id, "capability_ids": capability_ids, "runtime_epoch": runtime_epoch,
+                                   "timeout_seconds": min(timeout_seconds, max(0.0, self.timeout - 1.0))}
+        if target is not None: payload["target"] = dict(target)
+        if cursor is not None: payload["cursor"] = cursor
+        return self._wait_request("/v1/tasks/wait-for-work", payload)
+
+    def admit_thin_task(self, thin_request: Mapping[str, Any], *, idempotency_key: str, project: str | None = None) -> MutationResult:
+        payload = {"thin_request": dict(thin_request), "project": project}
+        return self._mutation_json(self._request("POST", "/v1/tasks", body=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json", "Idempotency-Key": idempotency_key}, expected=(200, 201))[2])
 
     def list_project_tasks(self, project_id: str, *, cursor: str | None = None, limit: int = 50, kind: Literal["root_generation"] | None = None, order: Literal["admitted_desc"] | None = None) -> tuple[list[Task], str | None]:
         query = f"?limit={int(limit)}" + (f"&cursor={_path_part(cursor)}" if cursor else "")
