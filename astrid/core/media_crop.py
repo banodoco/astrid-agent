@@ -6,16 +6,26 @@ result through the same ``import_file`` path as ``astrid media import``, and
 records provenance as a ``derived_from`` relation from the new media to the
 source media. The source item is never modified.
 
-Detection is deliberately simple and reported: a row (or column) is a bar
-when at most ``_BAR_MAX_BRIGHT_FRACTION`` of its pixels have a max channel
-value above the reported threshold. Bars are the contiguous bar rows/columns
-at each edge. Nothing is written to the project during ``dry_run``.
+Bar detection (``--remove-bars``) is deliberately simple and reported. An edge
+row (or column) is a bar only when both hold:
+
+- at most ``_BAR_MAX_BRIGHT_FRACTION`` of its pixels have a max channel value
+  above the threshold (it is dark), and
+- its values are near-uniform: standard deviation at most ``_BAR_MAX_STD``
+  (a dark but textured edge is therefore kept).
+
+Each edge may remove at most ``_BAR_MAX_EDGE_FRACTION`` of its dimension. A
+larger band is refused with the edges that were measured, so the caller can
+pass an explicit ``--box``. Video samples several frames across the clip and
+keeps the smallest bar per edge, so one dark frame cannot widen the crop.
+Nothing is written to the project during ``dry_run``.
 """
 
 from __future__ import annotations
 
 import hashlib
 import io
+import json
 import shutil
 import subprocess
 import tempfile
@@ -33,9 +43,31 @@ DEFAULT_BAR_THRESHOLD = 16
 _BAR_MAX_BRIGHT_FRACTION = 0.005
 """A bar row/column may contain at most 0.5% pixels above the threshold."""
 
+_BAR_MAX_STD = 1.5
+"""A bar row/column is near-uniform: its value standard deviation is at most this."""
+
+_BAR_MAX_EDGE_FRACTION = 0.25
+"""One edge may remove at most this fraction of its dimension."""
+
+_VIDEO_SAMPLE_FRACTIONS = (0.1, 0.3, 0.5, 0.7, 0.9)
+"""Fractions of the clip duration sampled for bar detection."""
+
+_EDGES = ("top", "bottom", "left", "right")
 _IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"})
+_VIDEO_SUFFIXES = frozenset({".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi"})
 _VIDEO_PREFIX = "video/"
 _IMAGE_PREFIX = "image/"
+
+_PNG_MODES = frozenset({"1", "L", "LA", "P", "RGB", "RGBA", "I", "I;16"})
+"""Modes PNG can store; anything else is converted explicitly."""
+
+_AUDIO_COPY_CODECS = frozenset({"aac", "mp3", "ac3", "eac3", "alac"})
+"""Audio codecs that can be stream-copied into an MP4 container."""
+
+_DERIVATION_FIELDS = ("operation", "source_object_id", "source_digest", "box", "even")
+"""Metadata fields that identify a derivation (bar and audio detail excluded)."""
+
+_MAX_RELATION_PAGES = 100
 
 
 @dataclass(frozen=True)
@@ -63,7 +95,7 @@ class Box:
 
 
 def parse_box(text: str) -> Box:
-    """Parse ``X,Y,W,H`` (source pixels)."""
+    """Parse ``X,Y,W,H`` (source pixels, after EXIF orientation for images)."""
     parts = [part.strip() for part in str(text).split(",")]
     if len(parts) != 4:
         raise ValueError("box must be X,Y,W,H in source pixels")
@@ -88,30 +120,63 @@ class BarDetection:
         }
 
 
-def detect_bars(rgb: Any, *, threshold: int = DEFAULT_BAR_THRESHOLD) -> BarDetection:
-    """Detect near-black letterbox/pillarbox bars on each edge of an RGB array.
-
-    ``rgb`` is an ``(H, W, 3)`` uint8 array. Raises ``ValueError`` when the
-    bars would leave no picture.
-    """
-    import numpy as np
-
+def _check_threshold(threshold: int) -> None:
     if not 0 <= threshold <= 255:
         raise ValueError("bar threshold must be 0..255")
-    height, width = rgb.shape[:2]
-    bright = np.asarray(rgb).max(axis=2) > threshold
-    row_is_bar = bright.mean(axis=1) <= _BAR_MAX_BRIGHT_FRACTION
-    col_is_bar = bright.mean(axis=0) <= _BAR_MAX_BRIGHT_FRACTION
 
-    top = _leading_true(row_is_bar)
-    bottom = _leading_true(row_is_bar[::-1])
-    left = _leading_true(col_is_bar)
-    right = _leading_true(col_is_bar[::-1])
-    if top + bottom >= height or left + right >= width:
+
+def _edge_measure(rgb: Any, threshold: int) -> dict[str, int]:
+    """Raw leading bar size per edge, before the per-edge cap is applied."""
+    import numpy as np
+
+    pixels = np.asarray(rgb, dtype=np.uint8)
+    bright = pixels.max(axis=2) > threshold
+    values = pixels.astype(np.float32)
+    row_is_bar = (bright.mean(axis=1) <= _BAR_MAX_BRIGHT_FRACTION) & (
+        values.std(axis=(1, 2)) <= _BAR_MAX_STD
+    )
+    col_is_bar = (bright.mean(axis=0) <= _BAR_MAX_BRIGHT_FRACTION) & (
+        values.std(axis=(0, 2)) <= _BAR_MAX_STD
+    )
+    return {
+        "top": _leading_true(row_is_bar),
+        "bottom": _leading_true(row_is_bar[::-1]),
+        "left": _leading_true(col_is_bar),
+        "right": _leading_true(col_is_bar[::-1]),
+    }
+
+
+def _box_from_edges(edges: dict[str, int], width: int, height: int, threshold: int) -> BarDetection:
+    found = ", ".join(f"{name}={edges[name]}" for name in _EDGES)
+    percent = int(_BAR_MAX_EDGE_FRACTION * 100)
+    for name in _EDGES:
+        dimension = height if name in ("top", "bottom") else width
+        if edges[name] > int(dimension * _BAR_MAX_EDGE_FRACTION):
+            raise ValueError(
+                f"detected bars ({found} px in a {width}x{height} frame) exceed "
+                f"{percent}% of the frame on {name}; refusing to crop automatically. "
+                "Inspect with --dry-run and pass an explicit --box X,Y,W,H instead"
+            )
+    if edges["top"] + edges["bottom"] >= height or edges["left"] + edges["right"] >= width:
         raise ValueError("detected bars cover the whole frame; nothing would remain")
-    box = Box(left, top, width - left - right, height - top - bottom)
-    edges = {"top": top, "bottom": bottom, "left": left, "right": right}
-    return BarDetection(box=box, threshold=threshold, edges=edges)
+    box = Box(
+        edges["left"],
+        edges["top"],
+        width - edges["left"] - edges["right"],
+        height - edges["top"] - edges["bottom"],
+    )
+    return BarDetection(box=box, threshold=threshold, edges=dict(edges))
+
+
+def detect_bars(rgb: Any, *, threshold: int = DEFAULT_BAR_THRESHOLD) -> BarDetection:
+    """Detect near-black, near-uniform letterbox/pillarbox bars on each edge.
+
+    ``rgb`` is an ``(H, W, 3)`` uint8 array. Raises ``ValueError`` when a band
+    exceeds ``_BAR_MAX_EDGE_FRACTION`` or the bars would leave no picture.
+    """
+    _check_threshold(threshold)
+    height, width = rgb.shape[:2]
+    return _box_from_edges(_edge_measure(rgb, threshold), width, height, threshold)
 
 
 def _leading_true(flags: Any) -> int:
@@ -123,49 +188,92 @@ def _leading_true(flags: Any) -> int:
     return count
 
 
+def _open_still(data: bytes) -> tuple[Any, bytes | None]:
+    """Open still-image bytes as an oriented, PNG-writable image.
+
+    EXIF orientation is applied, so boxes address the picture a viewer sees.
+    The ICC profile is returned for re-embedding. Modes PNG cannot store
+    (CMYK, YCbCr, LAB, ...) are converted explicitly. Animated files are refused.
+    """
+    from PIL import Image, ImageOps
+
+    try:
+        with Image.open(io.BytesIO(data)) as raw:
+            frames = getattr(raw, "n_frames", 1)
+            if frames > 1:
+                raise ValueError(
+                    f"animated image ({frames} frames) is not supported; "
+                    "export one still frame and crop that instead"
+                )
+            icc = raw.info.get("icc_profile")
+            image = ImageOps.exif_transpose(raw)
+            image.load()
+    except (OSError, SyntaxError, Image.DecompressionBombError) as exc:
+        raise ValueError(f"not a readable still image: {exc}") from exc
+    if image.mode not in _PNG_MODES:
+        image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
+    return image, icc
+
+
 def _load_rgb(data: bytes) -> Any:
     import numpy as np
-    from PIL import Image
 
-    with Image.open(io.BytesIO(data)) as image:
-        return np.asarray(image.convert("RGB"), dtype=np.uint8).copy()
+    image, _ = _open_still(data)
+    return np.asarray(image.convert("RGB"), dtype=np.uint8).copy()
 
 
 def crop_image_bytes(data: bytes, box: Box) -> bytes:
-    """Crop still-image bytes and return lossless PNG bytes."""
-    from PIL import Image
+    """Crop still-image bytes and return lossless PNG bytes.
 
-    with Image.open(io.BytesIO(data)) as image:
-        box.check_within(*image.size)
-        cropped = image.crop((box.x, box.y, box.x + box.w, box.y + box.h))
-        out = io.BytesIO()
-        cropped.save(out, format="PNG")
+    The ICC profile is kept. EXIF is not carried over, so the orientation tag
+    is gone and the pixels are already upright.
+    """
+    image, icc = _open_still(data)
+    box.check_within(*image.size)
+    cropped = image.crop((box.x, box.y, box.x + box.w, box.y + box.h))
+    out = io.BytesIO()
+    options: dict[str, Any] = {"icc_profile": icc} if icc else {}
+    cropped.save(out, format="PNG", **options)
     return out.getvalue()
 
 
 def image_size(data: bytes) -> tuple[int, int]:
-    from PIL import Image
+    image, _ = _open_still(data)
+    return image.size
 
-    with Image.open(io.BytesIO(data)) as image:
-        return image.size
+
+def _audio_plan(codec: str | None) -> dict[str, Any]:
+    if codec is None:
+        return {"action": "none"}
+    if codec in _AUDIO_COPY_CODECS:
+        return {"action": "copy", "codec": codec}
+    return {"action": "reencode", "codec": codec, "output_codec": "aac"}
 
 
 def ffmpeg_crop_args(
-    src: Path, dst: Path, box: Box, *, fps_rational: tuple[int, int] | None
+    src: Path, dst: Path, box: Box, *, fps_rational: tuple[int, int] | None, audio_action: str = "copy"
 ) -> list[str]:
-    """Build the ffmpeg command: re-encode video at the same fps, copy audio."""
+    """Build the ffmpeg command: re-encode video at the same fps, keep audio.
+
+    ``exact=1`` makes the crop start at the requested x/y. Without it ffmpeg
+    rounds odd offsets down to the chroma grid and the first row is wrong.
+    """
     args = [
         "ffmpeg", "-nostdin", "-v", "error", "-y",
         "-i", str(src),
         "-map", "0:v:0", "-map", "0:a?",
-        "-vf", f"crop={box.w}:{box.h}:{box.x}:{box.y}",
+        "-vf", f"crop={box.w}:{box.h}:{box.x}:{box.y}:exact=1",
     ]
     if fps_rational is not None:
         args += ["-r", f"{fps_rational[0]}/{fps_rational[1]}"]
+    if audio_action == "reencode":
+        audio = ["-c:a", "aac", "-b:a", "192k"]
+    else:
+        audio = ["-c:a", "copy"]
     args += [
         "-c:v", "libx264", "-preset", "medium", "-crf", "16",
         "-pix_fmt", "yuv420p",
-        "-c:a", "copy",
+        *audio,
         "-movflags", "+faststart",
         str(dst),
     ]
@@ -190,7 +298,7 @@ def _kind_for(media_type: str, filename: str) -> str | None:
     suffix = Path(filename or "").suffix.lower()
     if suffix in _IMAGE_SUFFIXES:
         return "image"
-    if suffix in {".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi"}:
+    if suffix in _VIDEO_SUFFIXES:
         return "video"
     return None
 
@@ -242,8 +350,8 @@ def crop_media(
     try:
         if kind == "image":
             width, height = image_size(data)
-            rgb = _load_rgb(data) if remove_bars else None
-            plan = _plan(box, remove_bars, bar_threshold, width, height, rgb)
+            detection = detect_bars(_load_rgb(data), threshold=bar_threshold) if remove_bars else None
+            plan = _plan(box, detection, width, height)
             crop_dims = plan["box"].even() if even else plan["box"]
             crop_dims.check_within(width, height)
             if crop_dims.w <= 0 or crop_dims.h <= 0:
@@ -254,8 +362,7 @@ def crop_media(
             return _write_and_import(
                 client, project=project, source=source, source_object_id=source_object_id,
                 source_digest=source_digest, filename=filename, plan=plan, crop=crop_dims,
-                kind=kind, even=even, payload=payload, suffix=".png",
-                idempotency_key=idempotency_key, dry_run=dry_run,
+                kind=kind, even=even, payload=payload, suffix=".png", idempotency_key=idempotency_key,
             )
         return _crop_video(
             client, data=data, project=project, source=source, source_object_id=source_object_id,
@@ -269,18 +376,18 @@ def crop_media(
         return _failure("unavailable", str(exc), idempotency_key or "")
 
 
-def _plan(box: str | None, remove_bars: bool, threshold: int, width: int, height: int, rgb: Any) -> dict[str, Any]:
-    if remove_bars:
-        if rgb is None:
-            raise ValueError("bar detection needs pixels")
-        detection = detect_bars(rgb, threshold=threshold)
-        return {"box": detection.box, "bars": detection.as_dict()}
+def _plan(box: str | None, detection: BarDetection | None, width: int, height: int) -> dict[str, Any]:
+    if detection is not None:
+        return {"box": detection.box, "bars": detection.as_dict(), "audio": None}
     parsed = parse_box(str(box))
     parsed.check_within(width, height)
-    return {"box": parsed, "bars": None}
+    return {"box": parsed, "bars": None, "audio": None}
 
 
-def _result(source: dict[str, Any], plan: dict[str, Any], crop: Box, kind: str, *, dry_run: bool, media: Any = None, provenance: Any = None) -> DomainResult[Any]:
+def _result(
+    source: dict[str, Any], plan: dict[str, Any], crop: Box, kind: str, *, dry_run: bool,
+    media: Any = None, provenance: Any = None, provenance_recorded: str | None = None,
+) -> DomainResult[Any]:
     data: dict[str, Any] = {
         "dry_run": dry_run,
         "kind": kind,
@@ -289,19 +396,50 @@ def _result(source: dict[str, Any], plan: dict[str, Any], crop: Box, kind: str, 
         "output": {"width": crop.w, "height": crop.h},
         "detected": plan["bars"],
     }
+    if plan.get("audio") is not None:
+        data["audio"] = plan["audio"]
     if media is not None:
         data["media"] = media
     if provenance is not None:
         data["provenance"] = provenance
+    if provenance_recorded is not None:
+        data["provenance_recorded"] = provenance_recorded
     return DomainResult.success(data, idempotency_key="")
+
+
+def _provenance_metadata(
+    source_digest: str, source_object_id: str, crop: Box, even: bool, plan: dict[str, Any]
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "operation": "crop",
+        "source_digest": source_digest,
+        "source_object_id": source_object_id,
+        "box": crop.as_dict(),
+        "even": even,
+        "bars": plan["bars"],
+    }
+    if plan.get("audio") is not None:
+        metadata["audio"] = plan["audio"]
+    return metadata
+
+
+def _default_key(project: str, metadata: dict[str, Any]) -> str:
+    """Idempotency key over the project and the FULL relate metadata.
+
+    Two runs that differ in any recorded detail (bars, audio, box, even) get
+    different keys, so a replay can never return a result for other metadata.
+    """
+    raw = json.dumps({"project": project, "metadata": metadata}, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
 
 def _write_and_import(
     client: Any, *, project: str, source: dict[str, Any], source_object_id: str,
     source_digest: str, filename: str, plan: dict[str, Any], crop: Box, kind: str,
-    even: bool, payload: bytes, suffix: str, idempotency_key: str | None, dry_run: bool,
+    even: bool, payload: bytes, suffix: str, idempotency_key: str | None,
 ) -> DomainResult[Any]:
-    key = idempotency_key or _default_key(source_digest, crop, even)
+    metadata = _provenance_metadata(source_digest, source_object_id, crop, even, plan)
+    key = idempotency_key or _default_key(project, metadata)
     with tempfile.TemporaryDirectory(prefix="astrid-crop-") as tmp:
         out_path = Path(tmp) / f"{Path(filename).stem}-crop{suffix}"
         out_path.write_bytes(payload)
@@ -310,28 +448,19 @@ def _write_and_import(
             return imported
         return _record_provenance(
             client, project=project, source=source, source_object_id=source_object_id,
-            source_digest=source_digest, plan=plan, crop=crop, kind=kind, even=even,
-            imported=imported, key=key,
+            metadata=metadata, plan=plan, crop=crop, kind=kind, imported=imported, key=key,
         )
 
 
 def _record_provenance(
     client: Any, *, project: str, source: dict[str, Any], source_object_id: str,
-    source_digest: str, plan: dict[str, Any], crop: Box, kind: str, even: bool,
+    metadata: dict[str, Any], plan: dict[str, Any], crop: Box, kind: str,
     imported: DomainResult[Any], key: str,
 ) -> DomainResult[Any]:
     media = dict(imported.data) if isinstance(imported.data, dict) else {"result": imported.data}
     new_object_id = media.get("object_id")
     if not isinstance(new_object_id, str):
         return _failure("protocol_error", "imported crop has no object_id", key, media=media)
-    metadata = {
-        "operation": "crop",
-        "source_digest": source_digest,
-        "source_object_id": source_object_id,
-        "box": crop.as_dict(),
-        "even": even,
-        "bars": plan["bars"],
-    }
     related = client.media.relate(
         project,
         from_object_id=new_object_id,
@@ -340,20 +469,72 @@ def _record_provenance(
         metadata=metadata,
         idempotency_key=key,
     )
-    if not related.ok:
-        error = related.error
-        return _failure(
-            error.code if error is not None else "protocol_error",
-            "crop was imported but its provenance could not be recorded",
-            key,
-            imported_object_id=new_object_id,
-        )
-    return _result(source, plan, crop, kind, dry_run=False, media=media, provenance=metadata)
+    if related.ok:
+        return _result(source, plan, crop, kind, dry_run=False, media=media, provenance=metadata, provenance_recorded="new")
+    if _identical_relation_exists(client, project, new_object_id, source_object_id, metadata):
+        return _result(source, plan, crop, kind, dry_run=False, media=media, provenance=metadata, provenance_recorded="existing")
+    error = related.error
+    code = error.code if error is not None else "protocol_error"
+    reason = error.message if error is not None else "no error detail"
+    return _failure(
+        code,
+        (
+            f"crop was imported as {new_object_id} but its provenance could not be recorded, "
+            "so the item was imported without provenance. Re-run the same command with "
+            f"--idempotency-key {key} to record it. Reason: {reason}"
+        ),
+        key,
+        imported_object_id=new_object_id,
+        idempotency_key=key,
+    )
 
 
-def _default_key(source_digest: str, crop: Box, even: bool) -> str:
-    raw = f"crop|{source_digest}|{crop.x},{crop.y},{crop.w},{crop.h}|even={even}"
-    return hashlib.sha256(raw.encode()).hexdigest()[:32]
+def _identical_relation_exists(
+    client: Any, project: str, from_object_id: str, to_object_id: str, metadata: dict[str, Any]
+) -> bool:
+    """True when the project already holds this same derivation as derived_from."""
+    cursor: str | None = None
+    for _ in range(_MAX_RELATION_PAGES):
+        page = client.media.list_relations(project, cursor=cursor, limit=200)
+        if not page.ok or not isinstance(page.data, dict):
+            return False
+        for row in page.data.get("items") or []:
+            if (
+                row.get("from_object_id") == from_object_id
+                and row.get("to_object_id") == to_object_id
+                and row.get("kind") == "derived_from"
+            ):
+                existing = row.get("metadata") or {}
+                if all(existing.get(name) == metadata.get(name) for name in _DERIVATION_FIELDS):
+                    return True
+        cursor = page.data.get("next_cursor")
+        if not cursor:
+            return False
+    return False
+
+
+def _detect_video_bars(
+    src: Path, duration: float, width: int, height: int, threshold: int, workdir: Path,
+) -> BarDetection:
+    """Sample frames across the clip and keep the smallest bar on each edge."""
+    _check_threshold(threshold)
+    stamps = [duration * fraction for fraction in _VIDEO_SAMPLE_FRACTIONS] if duration > 0 else [0.0]
+    smallest: dict[str, int] | None = None
+    for index, stamp in enumerate(stamps):
+        frame = workdir / f"frame-{index}.png"
+        _run_ffmpeg([
+            "ffmpeg", "-nostdin", "-v", "error", "-y",
+            "-ss", f"{stamp:.3f}", "-i", str(src),
+            "-frames:v", "1", str(frame),
+        ])
+        edges = _edge_measure(_load_rgb(frame.read_bytes()), threshold)
+        if smallest is None:
+            smallest = edges
+        else:
+            smallest = {name: min(smallest[name], edges[name]) for name in _EDGES}
+    if smallest is None:
+        raise ValueError("no frames could be sampled for bar detection")
+    return _box_from_edges(smallest, width, height, threshold)
 
 
 def _crop_video(
@@ -363,24 +544,19 @@ def _crop_video(
 ) -> DomainResult[Any]:
     suffix = Path(filename).suffix.lower() or ".mp4"
     with tempfile.TemporaryDirectory(prefix="astrid-crop-") as tmp:
-        src = Path(tmp) / f"source{suffix}"
+        workdir = Path(tmp)
+        src = workdir / f"source{suffix}"
         src.write_bytes(data)
         probe = ffprobe_metadata_strict(src)
         if probe.width is None or probe.height is None:
             raise ValueError("ffprobe found no video dimensions")
         width, height = probe.width, probe.height
-        plan: dict[str, Any]
-        if remove_bars:
-            frame = Path(tmp) / "frame.png"
-            duration = probe.duration_seconds or 0.0
-            _run_ffmpeg([
-                "ffmpeg", "-nostdin", "-v", "error", "-y",
-                "-ss", f"{duration / 2:.3f}", "-i", str(src),
-                "-frames:v", "1", str(frame),
-            ])
-            plan = _plan(None, True, bar_threshold, width, height, _load_rgb(frame.read_bytes()))
-        else:
-            plan = _plan(box, False, bar_threshold, width, height, None)
+        detection = (
+            _detect_video_bars(src, probe.duration_seconds or 0.0, width, height, bar_threshold, workdir)
+            if remove_bars else None
+        )
+        plan = _plan(box, detection, width, height)
+        plan["audio"] = _audio_plan(probe.audio_codec)
         crop = plan["box"].even() if even else plan["box"]
         crop.check_within(width, height)
         if crop.w <= 0 or crop.h <= 0:
@@ -391,8 +567,10 @@ def _crop_video(
             )
         if dry_run:
             return _result(source, plan, crop, "video", dry_run=True)
-        out = Path(tmp) / f"{Path(filename).stem}-crop.mp4"
-        _run_ffmpeg(ffmpeg_crop_args(src, out, crop, fps_rational=probe.fps_rational))
+        out = workdir / f"{Path(filename).stem}-crop.mp4"
+        _run_ffmpeg(ffmpeg_crop_args(
+            src, out, crop, fps_rational=probe.fps_rational, audio_action=plan["audio"]["action"],
+        ))
         if not out.exists() or out.stat().st_size == 0:
             raise RuntimeError("ffmpeg completed without producing a video")
         payload = out.read_bytes()
@@ -400,5 +578,5 @@ def _crop_video(
             client, project=project, source=source, source_object_id=source_object_id,
             source_digest=source_digest, filename=filename, plan=plan, crop=crop,
             kind="video", even=even, payload=payload, suffix=".mp4",
-            idempotency_key=idempotency_key, dry_run=dry_run,
+            idempotency_key=idempotency_key,
         )

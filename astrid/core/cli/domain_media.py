@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -236,20 +237,33 @@ def _cmd_relate(parsed: argparse.Namespace) -> int:
 
 
 def _cmd_crop(parsed: argparse.Namespace) -> int:
-    from astrid.core.media_crop import crop_media
+    from astrid.core.media_crop import DEFAULT_BAR_THRESHOLD, crop_media
 
+    if parsed.box is not None and parsed.bar_threshold is not None:
+        print(
+            "warning: --bar-threshold is ignored with --box (it only applies to --remove-bars)",
+            file=sys.stderr,
+        )
     result = crop_media(
         parsed.client,
         project=parsed.project,
         ref=parsed.ref,
         box=parsed.box,
         remove_bars=parsed.remove_bars,
-        bar_threshold=parsed.bar_threshold,
+        bar_threshold=DEFAULT_BAR_THRESHOLD if parsed.bar_threshold is None else parsed.bar_threshold,
         even=parsed.even,
         dry_run=parsed.dry_run,
         idempotency_key=parsed.idempotency_key,
     )
-    return print_result(result, as_json=parsed.json)
+    code = print_result(result, as_json=parsed.json)
+    audio = result.data.get("audio") if result.ok and isinstance(result.data, dict) else None
+    if not parsed.json and isinstance(audio, dict) and audio.get("action") == "reencode":
+        print(
+            f"note: source audio codec {audio.get('codec')} cannot be copied into mp4; "
+            "audio was re-encoded to AAC",
+            file=sys.stderr,
+        )
+    return code
 
 
 def _cmd_thumbnail_backfill(parsed: argparse.Namespace) -> int:
@@ -438,10 +452,10 @@ def _configure_crop(subparser: argparse.ArgumentParser) -> None:
         "--bar-threshold",
         dest="bar_threshold",
         type=int,
-        default=DEFAULT_BAR_THRESHOLD,
+        default=None,
         metavar="0..255",
         help="Max channel value still counted as black for --remove-bars "
-        f"(default: {DEFAULT_BAR_THRESHOLD}).",
+        f"(default: {DEFAULT_BAR_THRESHOLD}; ignored with --box).",
     )
     subparser.add_argument(
         "--even",
