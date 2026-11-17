@@ -43,7 +43,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: banodoco/astrid-runtime
-          ref: 2f78ead473a4b39fc1bb5d0012b93be66861808d
+          ref: 0d0bdfe4bda0b94b79756e6ae0b7e7908a218c96
           path: runtime
           persist-credentials: false
       - uses: actions/setup-python@v5
