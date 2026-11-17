@@ -15,9 +15,10 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+from astrid.core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISION as VIBE
+
 BEFORE = "2f085af3e8d5dfd15dc6ef8a064055335cbcf09a"
 METER = "19103ea6acbc030b3379e840ccc03491e47f1a0e"
-VIBE = "7fde33e2523281f840121b93a8a865a7f5d847de"
 SCOPED_FILES = (
     "tests/helpers/ls5_comfy_peer.py",
     "tests/_ls5_meter_observer.py",
@@ -123,6 +124,8 @@ def main():
         git(root, "diff", "--exit-code")
         git(root, "diff", "--cached", "--exit-code")
         check_shared_meter(root)
+        before_pin = json.loads(git(root, "show", BEFORE + ":astrid/packs/vibecomfy/pins.json"))
+        assert before_pin["sources"]["vibecomfy"]["revision"] == VIBE
         record["after"] = identity(root)
         record["before"] = compose_before(root, before_root, record["after"]["commit"])
         git(before_root, "archive", "--format=zip", "--output=" + str(output / "before-source.zip"), "HEAD")
