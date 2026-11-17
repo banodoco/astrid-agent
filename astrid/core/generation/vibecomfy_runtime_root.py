@@ -54,6 +54,11 @@ def remove_windows_runtime_root(destination: Path) -> None:
         shutil.rmtree(root)
     except FileNotFoundError:
         pass
+    try:
+        root.lstat()
+    except FileNotFoundError:
+        return
+    raise OSError(f"VibeComfy runtime cleanup was not verified: {root}")
 
 
 __all__ = ["RUNTIME_DIR_NAME", "remove_windows_runtime_root", "vibecomfy_runtime_root"]

@@ -174,3 +174,17 @@ def test_linked_short_root_parent_cannot_redirect_cleanup(tmp_path, windows_runt
             short.parent.rmdir()
         else:
             short.parent.unlink()
+
+
+@pytest.mark.parametrize("disposition", ["missing-child", "no-op"])
+def test_short_runtime_cleanup_verifies_absence(tmp_path, monkeypatch, windows_runtime_paths, disposition):
+    root, short = _attempt(tmp_path / "data")
+
+    def incomplete(_path):
+        if disposition == "missing-child":
+            raise FileNotFoundError("a nested entry disappeared")
+
+    monkeypatch.setattr(runtime_roots.shutil, "rmtree", incomplete)
+    with pytest.raises(OSError, match="cleanup was not verified"):
+        runtime_roots.remove_windows_runtime_root(root / "outputs")
+    assert short.exists()
