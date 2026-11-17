@@ -19,6 +19,7 @@ on:
       - "tests/ls5_meter_run.py"
       - "tests/ls5_meter_compare.py"
       - "tests/ls5_rework_proof.py"
+      - "tests/ls5_windows_baseline.py"
       - "tests/_ls5_meter_observer.py"
       - ".github/workflows/plan55-ls5.yml"
 permissions:
@@ -222,6 +223,7 @@ jobs:
           python -m pip install --no-deps -e ./runtime -e ./runtime/packages/python -e ./lifecycle
           python -m pip install -e ./vibe
       - name: Prove real held websocket, custody, and review fixes on Windows
+        id: transport
         env:
           PYTHONSAFEPATH: "1"
           PYTHONPATH: ${{ github.workspace }}/vibe
@@ -230,6 +232,11 @@ jobs:
           set -o pipefail
           python -m pytest -q -rA tests/core/generation/backends/test_comfy_target.py tests/core/generation/backends/test_comfy_held_transport.py tests/core/generation/backends/test_comfy_held_rework.py --junitxml=plan55-ls5-windows-proof/agent-transport.xml 2>&1 | tee plan55-ls5-windows-proof/agent-transport.log
           rc=${PIPESTATUS[0]}; echo "$rc" > plan55-ls5-windows-proof/agent-transport.exit; exit "$rc"
+      - name: Retain exact-base outcomes for unchanged Windows target cases
+        if: ${{ always() && steps.transport.outcome != 'skipped' }}
+        shell: bash
+        run: |
+          python -m tests.ls5_windows_baseline --output plan55-ls5-windows-proof
       - name: Preserve Windows result manifest
         if: ${{ always() }}
         shell: python
