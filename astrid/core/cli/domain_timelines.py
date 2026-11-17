@@ -1073,10 +1073,25 @@ def _visualize_add_visualize_flags(subparser: argparse.ArgumentParser) -> None:
                            help="Label each shot with its plan (metadata.plan): method codes, status, takes and "
                                 "line, under the picture's summary (see timelines shots plan).")
     subparser.add_argument("--region", default=None, metavar="X,Y,W,H",
-                           help="With --at: also draw this canvas-px rectangle of the frame at source resolution "
-                                "(e.g. the lenses, a mouth); the frame is captured at the canvas size.")
+                           help="Draw this canvas-px rectangle at source resolution (e.g. the lenses, a mouth): "
+                                "with --at one frame; with --cut/--range/--shot the region at moments across the "
+                                "span and how far it drifts. Names: mask (the mask's area), top, bottom, left, "
+                                "right, centre, top-left, top-right, bottom-left, bottom-right.")
     subparser.add_argument("--zoom", default=None, metavar="LAYER",
-                           help="With --at: like --region, around this layer's box at that moment (c08.app).")
+                           help="Like --region, around this layer's box at that moment (c08.app).")
+    subparser.add_argument("--mask", default=None, metavar="MEDIA",
+                           help="An image mask (white = edited; a media id, short id or ref:name): its edge over "
+                                "the pictures and how much of the span's motion falls inside it, so a fixed "
+                                "mask's fit is plain. With --shot, the shot plan's inputs.masks is used when "
+                                "--mask is not given.")
+    subparser.add_argument("--compare-media", dest="compare_media", default=None, metavar="MEDIA",
+                           help="A take (any media item, on the timeline or not) beside its source at the same "
+                                "moments, with where they differ; cropped by --region, judged against --mask. "
+                                "'take' = the --shot plan's latest take.")
+    subparser.add_argument("--against", default=None, metavar="cut|MEDIA",
+                           help="With --compare-media: what to compare the take with: the composed cut "
+                                "(default) or a source media id (the cut's own picture media is read at the "
+                                "clip's source time).")
     subparser.add_argument("--no-rules", dest="no_rules", action="store_true",
                            help="motion view: ignore astrid-lint.toml.")
     subparser.add_argument("--render-every", dest="render_every", type=float, default=None,

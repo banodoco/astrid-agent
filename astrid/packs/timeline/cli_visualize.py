@@ -450,6 +450,9 @@ def _visualization_summary(outputs: Mapping[str, Any], *, parsed: argparse.Names
     timing = outputs.get("timing") if isinstance(outputs.get("timing"), Mapping) else {}
     label = {"contact": "contact sheet", "motion": "motion sheet" if inputs.get("preset") == "cut" else
              f"{inputs.get('preset')} view", "filmstrip": "filmstrip"}.get(view, view)
+    clip_page = outputs.get("clip_page")
+    if isinstance(clip_page, Mapping) and clip_page.get("label"):
+        label = str(clip_page["label"])
     if primary:
         lines = [f"{label}: {primary}"]
     elif outputs.get("evidence_kind") == "declared_inputs":
@@ -569,6 +572,10 @@ def _visualization_summary(outputs: Mapping[str, Any], *, parsed: argparse.Names
             ("get a picture", composed_command),
             ("export declared inputs", input_command),
         ]
+    elif isinstance(outputs.get("clip_page"), Mapping) and getattr(parsed, "_clip", None):
+        from astrid.packs.timeline.cli_visualize_clip import next_commands
+
+        nexts = next_commands(base, parsed._clip, inputs, outputs["clip_page"])
     elif view == "motion" and window and inputs.get("preset") != "cut":
         nexts = _window_navigation(window, base)
     elif view == "motion":
@@ -576,6 +583,8 @@ def _visualization_summary(outputs: Mapping[str, Any], *, parsed: argparse.Names
         following = str(int(cut) + 1) if cut.isdigit() else "N"
         nexts = [
             ("next cut", base + ["--cut", following] + beats),
+            ("where the picture moves (heat map)", base + ["--cut", cut, "--layer", "heat"]),
+            ("a detail across this cut, source resolution", base + ["--cut", cut, "--region", "X,Y,W,H"]),
             ("lint the whole edit", lint + beats),
             ("whole film again", base + ["--preset", "overview"]),
         ]
@@ -780,6 +789,15 @@ def cmd_visualize(parsed: argparse.Namespace) -> int:
         return 2
     if at_note:
         print(at_note)
+    from astrid.packs.timeline import cli_visualize_clip as clip_views
+
+    clip_request = None
+    if clip_views.wants_clip_view(parsed):
+        try:
+            clip_request = clip_views.prepare(parsed)
+        except (clip_views.ClipError, ValueError) as exc:
+            print(f"error validation_error: {exc}", file=sys.stderr)
+            return 2
     _resolve_view(parsed)
     human_outputs: Mapping[str, Any] | None = None
 
@@ -880,7 +898,9 @@ def cmd_visualize(parsed: argparse.Namespace) -> int:
         if not getattr(parsed, "resolution", None) and not getattr(parsed, "size", None):
             inputs.pop("resolution", None)
 
-    region_request = _region_request(parsed)
+    region_request = None if clip_request is not None else _region_request(parsed)
+    if clip_request is not None:
+        clip_views.capture_inputs(parsed, inputs, _bundle_canvas(parsed))
     if region_request is not None:
         if isinstance(region_request, str):
             print(f"error validation_error: {region_request}", file=sys.stderr)
@@ -1127,6 +1147,18 @@ def cmd_visualize(parsed: argparse.Namespace) -> int:
             human_outputs["findings"] = [region_page["finding"], *list(human_outputs["findings"] or [])]
         except Exception as exc:  # noqa: BLE001 - the full frame stands; say why the crop is missing
             human_outputs["findings"] = [f"REGION not drawn: {exc}", *list(human_outputs.get("findings") or [])]
+    if human_outputs is not None and clip_request is not None and result.ok:
+        human_outputs = dict(human_outputs)
+        try:
+            drawn = clip_views.draw(human_outputs, clip_request, parsed=parsed, inputs=inputs)
+        except (clip_views.ClipError, OSError, ValueError) as exc:
+            print(f"error validation_error: {exc}", file=sys.stderr)
+            return 2
+        human_outputs["clip_page"] = drawn
+        human_outputs["primary_page"] = drawn["page"]
+        human_outputs["pages"] = [*drawn["pages"], *[p for p in human_outputs.get("pages") or []
+                                                     if p not in drawn["pages"]]]
+        human_outputs["findings"] = [*drawn["findings"], *list(human_outputs.get("findings") or [])]
     if human_outputs is not None:
         stable = _stable_page(human_outputs, parsed=parsed, inputs=inputs)
         if stable:
@@ -1356,6 +1388,13 @@ def _stable_name(inputs: Mapping[str, Any], outputs: Mapping[str, Any]) -> str:
         name = f"{preset or 'window'}-{float(window.get('start', 0)):.2f}-{float(window.get('end', 0)):.2f}s"
     else:
         name = view
+    if view == "motion" and inputs.get("layers"):
+        name += "-" + "-".join(_slug(str(layer)) for layer in inputs["layers"])[:40]
+    clip = outputs.get("clip_page")
+    if isinstance(clip, Mapping) and clip.get("suffix"):
+        page = Path(str(clip.get("page") or ""))
+        kind = page.stem.split("-")[2] if page.stem.startswith("view-clip-") else "clip"
+        return f"{kind}-{clip['suffix']}"
     region = outputs.get("region_page")
     if isinstance(region, Mapping) and region.get("box"):
         x0, y0, x1, y1 = region["box"]

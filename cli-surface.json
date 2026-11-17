@@ -3549,6 +3549,9 @@
             "--after-revision-id": {
               "required": false
             },
+            "--against": {
+              "required": false
+            },
             "--asset": {
               "required": false
             },
@@ -3571,6 +3574,9 @@
               "choices": [
                 "published"
               ],
+              "required": false
+            },
+            "--compare-media": {
               "required": false
             },
             "--context": {
@@ -3634,6 +3640,9 @@
               "required": false
             },
             "--list-layers": {
+              "required": false
+            },
+            "--mask": {
               "required": false
             },
             "--mode": {
