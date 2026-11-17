@@ -332,7 +332,7 @@ class _RemoteFamily:
         self._client = client
 
     def _typed(self, operation: str, *args: Any, key: str | None = None, **kwargs: Any) -> DomainResult[Any]:
-        reads = {"get_project", "list_projects", "current_project", "list_timelines", "list_timeline_history", "list_timeline_commits", "diff_timeline", "inspect_timeline", "get_shot", "list_project_shots", "get_reference", "list_project_references", "get_object", "head_object", "list_project_objects", "list_media_relations", "get_task", "list_project_tasks", "list_managed_outputs", "get_managed_output", "get_run", "list_project_runs", "list_events", "list_run_events", "list_generations", "get_generation", "list_variants", "get_document", "list_documents", "get_preferences", "list_project_shot_text_bindings", "get_project_shot_text_binding", "get_project_shot_revision", "get_project_timeline_revision", "get_project_parent_composition_revision", "get_source_frame_thumbnail"}
+        reads = {"get_project", "list_projects", "current_project", "list_timelines", "list_timeline_history", "list_timeline_commits", "diff_timeline", "inspect_timeline", "get_shot", "list_project_shots", "get_reference", "list_project_references", "get_object", "head_object", "list_project_objects", "list_media_relations", "get_task", "wait_for_task", "list_project_tasks", "list_managed_outputs", "get_managed_output", "get_run", "list_project_runs", "list_events", "list_run_events", "list_generations", "get_generation", "list_variants", "get_document", "list_documents", "get_preferences", "list_project_shot_text_bindings", "get_project_shot_text_binding", "get_project_shot_revision", "get_project_timeline_revision", "get_project_parent_composition_revision", "get_source_frame_thumbnail"}
         if key is None and operation not in reads:
             key = uuid.uuid4().hex
         try:
@@ -386,6 +386,7 @@ class _RemoteFamily:
             elif operation == "get_managed_output": value = self._client.get_managed_output(*args, **kwargs)
             elif operation == "get_run": value = self._client.get_run(*args, **kwargs)
             elif operation == "get_task": value = self._client.get_task(*args, **kwargs)
+            elif operation == "wait_for_task": value = self._client.wait_for_task(*args, **kwargs)
             elif operation == "inspect_timeline": value = self._client.inspect_timeline(*args, **kwargs)
             elif operation == "create_timeline_view":
                 assert key is not None
@@ -2346,6 +2347,11 @@ class RemoteTasks(_RemoteFamily):
     def list(self, project_id, *, cursor=None, limit=50):
         return self._typed("list_project_tasks", project_id, cursor=cursor, limit=limit)
     def show(self, task_id): return self._typed("get_task", task_id)
+    def supports_wait(self):
+        supported = getattr(self._client, "supports_task_waits", None)
+        return bool(callable(supported) and supported())
+    def wait(self, task_id, *, cursor=None, timeout_seconds=25.0):
+        return self._typed("wait_for_task", task_id, cursor=cursor, timeout_seconds=timeout_seconds)
     def list_managed_outputs(self, task_id):
         """Read Runtime-owned managed outputs for one admitted task."""
         return self._typed("list_managed_outputs", task_id)

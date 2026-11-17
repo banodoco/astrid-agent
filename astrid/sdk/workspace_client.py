@@ -254,7 +254,7 @@ class WorkspaceClient:
                 "get_preferences", "update_preferences", "get_user_app_state", "update_user_app_state",
                 "import_project_media", "get_project_media_import",
                 "list_project_objects", "get_project_object_location", "create_media_relation", "list_media_relations",
-                "get_object", "head_object", "admit_task", "get_task", "list_project_tasks",
+                "get_object", "head_object", "admit_task", "get_task", "wait_for_task", "list_project_tasks",
                 "cancel_task", "retry_task", "cancel_run", "retry_run", "get_run",
                 "list_project_runs", "list_run_events", "list_managed_outputs",
                 "list_events",  # Includes the from_=latest polling cursor.
@@ -1058,6 +1058,18 @@ class WorkspaceClient:
 
     def get_task(self, task_id: str) -> Any:
         return self._call_generated("get_task", task_id)
+
+    def supports_task_waits(self) -> bool:
+        if not callable(getattr(self._generated, "wait_for_task", None)):
+            return False
+        handshake = self._last_handshake
+        if handshake is None:
+            handshake = self.handshake("astrid-task-wait", "1", [])
+        capabilities = handshake.get("capabilities", ()) if isinstance(handshake, Mapping) else getattr(handshake, "capabilities", ())
+        return "task_waits.v1" in capabilities
+
+    def wait_for_task(self, task_id: str, *, cursor: str | None = None, timeout_seconds: float = 25.0) -> Any:
+        return self._call_generated("wait_for_task", task_id, cursor=cursor, timeout_seconds=timeout_seconds)
 
     def get_executor(self, executor_id: str) -> Any:
         """Read the exact Runtime executor registration and readiness witness."""
