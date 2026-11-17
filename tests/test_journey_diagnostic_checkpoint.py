@@ -301,7 +301,7 @@ def test_real_r0_realm_checkpoint_when_runtime_checkout_available(tmp_path, monk
         store.close()
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="requires native Windows byte-range locks")
+@pytest.mark.windows_native
 def test_native_windows_locked_owner_file_is_not_read(tmp_path):
     import ctypes
     import msvcrt
