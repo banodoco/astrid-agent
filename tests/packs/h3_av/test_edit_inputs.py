@@ -208,6 +208,28 @@ def test_replacement_clip_shorter_than_its_range_is_refused(tmp_path):
         compile_preparation(_prepared(raw, tmp_path, voice_seconds=4.0), out_dir=tmp_path / "out")
 
 
+@pytest.mark.parametrize("ffprobe_available", [True, False])
+def test_unreadable_replacement_audio_requires_ffprobe_to_be_absent(tmp_path, monkeypatch, ffprobe_available):
+    from astrid.packs.h3_av.shared import compose
+
+    real_which = shutil.which
+
+    def which(command):
+        if command == "ffprobe":
+            return "/usr/bin/ffprobe" if ffprobe_available else None
+        return real_which(command)
+
+    monkeypatch.setattr(shutil, "which", which)
+    monkeypatch.setattr(compose, "_probe", lambda path: None)
+    prepared = _prepared(MOUTH, tmp_path)
+    if ffprobe_available:
+        with pytest.raises(CompilationError, match="ffprobe could not read replacement audio 'voice-clip'"):
+            compile_preparation(prepared, out_dir=tmp_path / "out")
+    else:
+        manifest = compile_preparation(prepared, out_dir=tmp_path / "out")
+        assert manifest["capabilities"]["replacement_audio"]["length_check"] == "request_range_only"
+
+
 def test_audio_reference_must_be_used_by_an_audio_edit(tmp_path):
     raw = copy.deepcopy(MOUTH)
     raw["media"][0]["edit"] = raw["media"][0]["edit"][:1]
@@ -348,8 +370,9 @@ def test_existing_requests_compile_byte_identically_to_baseline(name, raw, tmp_p
     if name == "watermark":
         assert changed == []  # no references: manifest is byte-identical too
         return
-    # A reference-bearing request may differ only in compilation.json, by the
-    # additive capacity key and the digest that is computed over the manifest.
+    # The orchestrator authorized existing reference-bearing requests to advertise
+    # the two image-reference slots. Only compilation.json may change, through
+    # the added capacity key and the digest computed over the manifest.
     assert changed == ["compilation.json"]
     compiled = json.loads((root / "out" / "compilation.json").read_text())
     assert compiled["capabilities"].pop("reference_capacity") == 2

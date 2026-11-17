@@ -305,8 +305,8 @@ they combine in one request:
 
 - **Masks** are the `mask` of a video `edit` entry: a mask asset (static image;
   white is editable), or `{"rectangle": [x, y, width, height]}` in 1024x576 pixel
-  coordinates. An image mask must be exactly 1024x576 (the prepared frame, after
-  the source's `fill` crop) and strictly binary (0 and 255), so build any margin
+  coordinates. An image mask must match the 1024x576 working frame whatever the
+  source fit, and be strictly binary (0 and 255), so build any margin
   into the shape rather than feathering it. Polygon masks are not supported on the edit route. Several static
   masks in one request merge into one union mask. Per-frame mask video cannot be
   merged.
@@ -331,8 +331,8 @@ other modality fails admission.
 Regions in one request share one `during`, one `strength`, one `seed` and one
 reference set, because the graph has one mask input and one reference set. So:
 
-- Regions whose `guides` differ are refused with "use two passes"; the references
-  condition the whole clip in one pass.
+- Regions whose `guides` differ are refused with "regions with different references
+  need two passes; references condition the whole clip in one pass".
 - Regions with different `during` intervals are refused.
 - Lenses and mouth with the same reference can share one pass, but the lens
   reference then also conditions the mouth region. For lenses plus mouth, prefer
@@ -342,8 +342,9 @@ reference set, because the graph has one mask input and one reference set. So:
 
 The compiled manifest reports `reference_capacity`, `replacement_audio` (the
 clip range, the interval, `audio_strength: 0`, and `length_check`: `ffprobe` when
-the clip could be measured, which also checks it is long enough for its range,
-else `request_range_only`), `audio_binding` and `mask_binding`. Status:
+the clip is verified to cover its range, or `request_range_only` when ffprobe is
+unavailable), `audio_binding` and `mask_binding`. If ffprobe is installed and
+cannot read the clip, compilation refuses it. Status:
 compile-verified on CPU only; no GPU run yet.
 
 Lens region replace with one reference image:

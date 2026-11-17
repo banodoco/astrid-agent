@@ -466,7 +466,7 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
             span = edit["resolved"]["range"][1] - edit["resolved"]["range"][0]
             length = replacement["resolved_range"][1] - replacement["resolved_range"][0]
             if span != length:
-                raise H3RequestError(f"replacement audio length must match the edited span: {guides[0]!r} is {length} samples at {SAMPLE_RATE} Hz, the audio edit covers {span}")
+                raise H3RequestError(f"replacement audio length must match the edited span: {guides[0]!r} is {length} samples at {SAMPLE_RATE} Hz, the audio edit covers {span} samples")
     if duration_fraction is None:
         ends: list[Fraction] = []
         for item in occurrences:

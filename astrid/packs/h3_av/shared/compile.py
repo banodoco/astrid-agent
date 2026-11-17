@@ -624,7 +624,7 @@ def _compile_native_masked_edit(
             raise CompilationError(f"native masked edit replacement audio {replacement.replacement_asset!r} is missing from preparation")
         bindings["replacement_audio"] = assets[replacement.replacement_asset]
         # The clip range is trimmed in the graph; its length must equal the audio
-        # interval. The clip's own length is checked when ffprobe can read it.
+        # interval. Only an unavailable ffprobe permits a range-only check.
         from .compose import CompositionError, _audio_coverage, _probe
 
         span = float(replacement.during[1] - replacement.during[0])
@@ -635,6 +635,10 @@ def _compile_native_masked_edit(
                 "and the lengths must match"
             )
         if _probe(assets[replacement.replacement_asset]) is None:
+            if shutil.which("ffprobe") is not None:
+                raise CompilationError(
+                    f"ffprobe could not read replacement audio {replacement.replacement_asset!r}"
+                )
             replacement_length_check = "request_range_only"
         else:
             try:
