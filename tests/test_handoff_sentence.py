@@ -4,6 +4,8 @@ import importlib.util
 import re
 from pathlib import Path
 
+import pytest
+
 from astrid.installer.outcome import Outcome
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,3 +56,33 @@ def test_the_sentence_text_is_held_in_one_agent_code_place():
             for path in (ROOT / folder).rglob("*.py")
             if SENTENCE in path.read_text(encoding="utf-8")]
     assert hits == ["astrid/installer/outcome.py"], hits
+
+
+@pytest.mark.parametrize(
+    ("platform", "expected_command"),
+    [("linux", "./run-astrid generate scan"),
+     ("win32", ".\\run-astrid.cmd generate scan")],
+)
+def test_skills_off_closes_with_a_runnable_launcher_scan_hint(
+        monkeypatch, platform, expected_command):
+    import astrid.installer.outcome as outcome
+
+    monkeypatch.setattr(outcome.sys, "platform", platform)
+    from astrid.installer.outcome import SCAN_HINT
+
+    on_path = Outcome("updated", 12, None, 12, skills=False).headline()
+    assert on_path == ["Astrid installed: Release 12.", SCAN_HINT]
+    assert "astrid generate scan" in SCAN_HINT and SENTENCE not in on_path
+    launcher = Outcome("updated", 12, None, 12, skills=False, command=False).headline()
+    assert launcher[1] == (
+        f"Next: run `{expected_command}` in Astrid's install folder to find your ComfyUI."
+    )
+    assert SENTENCE not in launcher
+
+
+def test_installed_line_names_the_build_when_the_manifest_named_it():
+    assert Outcome("updated", 12, None, 12, build="4ae35ed0").headline()[0] == (
+        "Astrid installed: Release 12 (build 4ae35ed0).")
+    assert Outcome("updated", 11, 11, 12, build="4ae35ed0").headline()[0] == (
+        "Astrid updated: Release 11 → Release 12 (build 4ae35ed0).")
+    assert Outcome("updated", 12, None, 12).headline()[0] == "Astrid installed: Release 12."

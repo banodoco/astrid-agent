@@ -902,4 +902,5 @@ class Installer:
 
 def new_version_id(manifest: dict) -> str:
     # A retry gets a fresh directory; incomplete/locked versions are never reused.
-    return version_id(f"{manifest['agent']['sha'][:8]}-{manifest['runtime']['sha'][:8]}-{uuid.uuid4().hex[:8]}")
+    # Source SHAs remain authoritative in manifest.json, not in the directory name.
+    return version_id(uuid.uuid4().hex[:12])

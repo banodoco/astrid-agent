@@ -347,7 +347,8 @@ def launch_admission(version: Version, data: Path, *, custody: bool = False, exp
 def command(version: Version, data: Path, *, windows: bool = False, log: Path | None = None,
             env_file: Path | None = None, extra_args: list[str] | None = None,
             lock_fd: int | None = None, custody_fd: int | None = None,
-            expected_lock: Path | None = None, home: Path | None = None) -> list[str]:
+            expected_lock: Path | None = None, home: Path | None = None,
+            _legacy_runtime_tail: bool = False) -> list[str]:
     version = Version(version.root, version.python, version.profile,
                       dict(sorted(version.env.items())), version.release, version.managed_by)
     python = version.python.with_name("pythonw.exe") if windows else version.python
@@ -387,7 +388,16 @@ def command(version: Version, data: Path, *, windows: bool = False, log: Path | 
                    "or any(not isinstance(value,str) for value in settings.values())):\n"
                    "    raise ValueError('Invalid Astrid service-env.json; use the documented string settings.')\n"
                    "os.environ.update(settings)\n")
-    script += f"from astrid_runtime.cli import main\nsys.exit(main({arguments!r}))"
+    script += "from astrid_runtime.cli import main\n"
+    if _legacy_runtime_tail:
+        script += f"sys.exit(main({arguments!r}))"
+    else:
+        # Retained older Runtime versions do not know the new composition
+        # argument. Use it when available; older releases keep their own gate.
+        script += ("import inspect\n"
+                   f"_args={arguments!r}\n"
+                   f"_context={{'profile': {str(version.profile)!r}, 'data_root': {str(data)!r}}}\n"
+                   "sys.exit(main(_args, managed_launch=_context) if 'managed_launch' in inspect.signature(main).parameters else main(_args))")
     return [str(python), "-X", "utf8", "-I", "-c", script]
 
 
@@ -699,9 +709,18 @@ class Service:
         if len(states) != 1 or len(pids) > 1 or len(paths) != 1 or len(programs) != 1:
             raise ValueError("The launchd service identity is malformed.")
         state = states[0].strip()
-        if state not in {"running", "not running"}:
+        if state not in {"running", "not running", "spawn scheduled"}:
             raise ValueError("The launchd service state is unknown; refusing to stop it.")
         pid = int(pids[0]) if pids else None
+        if state == "spawn scheduled":
+            # launchd retries a KeepAlive service after its process exited.
+            # Treat the pending invocation as stopped only with unambiguous
+            # top-level zero-active evidence and no PID. C1 holds the Runtime
+            # owner fence while the callback rechecks and boots the job out.
+            counts = re.findall(r"^" + re.escape(opening_indent) + r"active count[ \t]*=[ \t]*([^\r\n]*)$",
+                                metadata, re.MULTILINE)
+            if [count.strip() for count in counts] != ["0"] or pid is not None:
+                raise ValueError("The scheduled launchd service is not proven inactive; refusing to stop it.")
         if pid is not None and pid <= 0:
             raise ValueError("The launchd service PID is malformed.")
         # launchctl prints raw argv lines, including a multiline final script.
@@ -824,7 +843,7 @@ class Service:
             if expected_identity is not None and identity != expected_identity:
                 raise ValueError("The loaded launchd service changed during Runtime stop.")
             if require_stopped:
-                if state != "not running" or pid is not None:
+                if state not in {"not running", "spawn scheduled"} or pid is not None:
                     raise ValueError("The launchd service did not remain stopped after Runtime exit.")
             elif state == "running":
                 if owner_pid is None or pid != owner_pid:
@@ -855,6 +874,10 @@ class Service:
                     argv = command(candidate, data, windows=True, log=self.log, env_file=env_file,
                                    expected_lock=self.activation_lock_path, home=home)
                     allowed.append([{"Execute": argv[0], "Arguments": subprocess.list2cmdline(argv[1:])}])
+                    old_argv = command(candidate, data, windows=True, log=self.log, env_file=env_file,
+                                       expected_lock=self.activation_lock_path, home=home,
+                                       _legacy_runtime_tail=True)
+                    allowed.append([{"Execute": old_argv[0], "Arguments": subprocess.list2cmdline(old_argv[1:])}])
         if actions not in allowed:
             raise ValueError("The scheduled task does not match the selected installation.")
         return None
@@ -892,6 +915,14 @@ class Service:
             for env_file in (None, self.env_file):
                 prior = command(retained, data, windows=windows, log=self.log, env_file=env_file,
                                 expected_lock=self.activation_lock_path)
+                old_prior = command(retained, data, windows=windows, log=self.log, env_file=env_file,
+                                    expected_lock=self.activation_lock_path, _legacy_runtime_tail=True)
+                if action == encode(old_prior):
+                    return True
+                if windows and action == encode(command(retained, data, windows=True, log=self.log,
+                                                         env_file=env_file, expected_lock=self.activation_lock_path,
+                                                         home=self.home, _legacy_runtime_tail=True)):
+                    return True
                 if windows and action == encode(command(retained, data, windows=True, log=self.log,
                                                          env_file=env_file, expected_lock=self.activation_lock_path,
                                                          home=self.home)):
@@ -920,7 +951,13 @@ class Service:
                                     current_prelude = globals().get("_EMBEDDED_LAUNCH_PRELUDE") or _launch_prelude_source()
                                     original_d2 = [*previous[:-1], previous[-1].replace(
                                         current_prelude, d2_prelude, 1)]
-                                    if action in (encode(previous), encode(original_d2)):
+                                    old_previous = command(retained, data, windows=windows, log=self.log,
+                                                           env_file=env_file, expected_lock=previous_lock,
+                                                           _legacy_runtime_tail=True)
+                                    old_d2 = [*old_previous[:-1], old_previous[-1].replace(
+                                        current_prelude, d2_prelude, 1)]
+                                    if action in (encode(previous), encode(original_d2),
+                                                  encode(old_previous), encode(old_d2)):
                                         return True
                         except (AttributeError, StopIteration, SyntaxError, TypeError, ValueError, OSError):
                             pass
@@ -938,12 +975,13 @@ class Service:
                 new_call = (f"launch_admission(Version.load({retained.document()!r}),"
                             f"Path({str(data)!r}),custody=False,expected_lock=Path("
                             f"{str(absolute(command_lock))!r}))")
-                old_script = prior[-1].replace(current_prelude, legacy_prelude, 1).replace(new_call, old_call, 1)
-                if action == encode([*prior[:-1], old_script]):
+                old_script = old_prior[-1].replace(current_prelude, legacy_prelude, 1).replace(new_call, old_call, 1)
+                next_script = prior[-1].replace(current_prelude, legacy_prelude, 1).replace(new_call, old_call, 1)
+                if action in (encode([*old_prior[:-1], old_script]), encode([*prior[:-1], next_script])):
                     return True
                 # This is the exact historical wrapper suffix, obtained from
                 # the sole command builder rather than a second argv builder.
-                body = prior[-1][prior[-1].index("os.environ.update("):]
+                body = old_prior[-1][old_prior[-1].index("os.environ.update("):]
                 environment, suffix = body.split("\n", 1)
                 # Historical dictionaries preserve insertion order in the
                 # action text, whereas version.json sorts their keys. Compare
@@ -960,7 +998,7 @@ class Service:
                         environment = lines[2]
                 header = "import json,os,sys\nfrom pathlib import Path\n" + environment + "\n"
                 legacy = header + "os.environ.pop('ASTRID_INSTALLER_OPERATION_ID',None)\n" + suffix
-                if action in (encode([*prior[:-1], legacy]), encode(prior)):
+                if action in (encode([*old_prior[:-1], legacy]), encode(prior), encode(old_prior)):
                     return True
                 if not windows and env_file is None:
                     arguments = ["run", "--profile", "astrid", "--data-root", str(data),
@@ -1001,7 +1039,7 @@ class Service:
                         "else: os.environ.pop('ASTRID_INSTALLER_OPERATION_ID',None)\n"
                     )
                     legacy = header + binding + suffix
-                    if action == encode([*prior[:-1], legacy]):
+                    if action == encode([*old_prior[:-1], legacy]):
                         return True
         return False
 

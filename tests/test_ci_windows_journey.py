@@ -282,8 +282,8 @@ def sdk_invocation(argv, task_id="task-1"):
 
 def test_journey_runs_for_main_release_windows_branches_and_main_pull_requests():
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    assert 'branches: [main, release-1, "windows/**"]' in workflow
-    assert "pull_request:\n    branches: [main]" in workflow
+    assert 'branches: [main, release-1, "windows/**", "release/*/main"]' in workflow
+    assert 'pull_request:\n    branches: [main, "release/*/main"]' in workflow
     assert "name: Windows task host journey (${{ matrix.installer-shell }})" in workflow
     assert "exploratory" not in workflow
 
@@ -291,8 +291,8 @@ def test_journey_runs_for_main_release_windows_branches_and_main_pull_requests()
 def test_journey_runs_for_main_windows_branches_and_main_pull_requests():
     # Retain Timeline's harness guard with the approved Release-1 branch added.
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    assert 'branches: [main, release-1, "windows/**"]' in workflow
-    assert "pull_request:\n    branches: [main]" in workflow
+    assert 'branches: [main, release-1, "windows/**", "release/*/main"]' in workflow
+    assert 'pull_request:\n    branches: [main, "release/*/main"]' in workflow
     assert "name: Windows task host journey (${{ matrix.installer-shell }})" in workflow
     assert "exploratory" not in workflow
 

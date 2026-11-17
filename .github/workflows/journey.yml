@@ -85,8 +85,13 @@ on:
   workflow_dispatch:
     inputs:
       candidate:
-        description: Frozen candidate JSON; hosted results are evidence, never a publish action
-        required: true
+        description: Frozen candidate JSON; hosted results are evidence, never a publish action. Leave empty to resolve the candidate from the App's manifest on `branch` (as the automatic push/schedule path does)
+        required: false
+        type: string
+      branch:
+        description: Branch followed in the App (manifest) and the Pinokio fallback when candidate is empty, e.g. release/14/main. Ignored when candidate is supplied.
+        required: false
+        default: int/r1
         type: string
       old_launcher_ref:
         description: Full SHA for the approved pre-self-pull Pinokio backend action (direct rows only; not used by pinokio-* rows)
@@ -210,19 +215,21 @@ jobs:
           ref: ${{ github.workflow_sha }}
           path: driver
           persist-credentials: false
-      - name: Check out latest App int/r1 manifest for automatic runs
-        if: github.event_name == 'push' || github.event_name == 'schedule'
+      - name: Check out latest App manifest of the followed branch for automatic runs
+        if: github.event_name == 'push' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.candidate == '')
         uses: actions/checkout@v4
         with:
           repository: banodoco/astrid-app
-          ref: int/r1
+          ref: ${{ inputs.branch || (github.event_name == 'push' && github.ref_name) || 'int/r1' }}
           path: automatic-app
           fetch-depth: 1
           persist-credentials: false
       - id: automatic_candidate
         name: Resolve the checked-out App manifest tuple for automatic runs
-        if: github.event_name == 'push' || github.event_name == 'schedule'
+        if: github.event_name == 'push' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.candidate == '')
         shell: bash
+        env:
+          FOLLOWED_BRANCH: ${{ inputs.branch || (github.event_name == 'push' && github.ref_name) || 'int/r1' }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -245,9 +252,15 @@ jobs:
               pinokio_ref = subprocess.check_output(
                   [
                       "git", "ls-remote", "https://github.com/banodoco/astrid-pinokio.git",
-                      "refs/heads/int/r1",
+                      "refs/heads/" + os.environ["FOLLOWED_BRANCH"],
                   ], text=True,
-              ).split()[0]
+              ).split()
+              if not pinokio_ref:
+                  raise SystemExit(
+                      "astrid-pinokio has no branch " + os.environ["FOLLOWED_BRANCH"]
+                      + " and the App manifest pins no pinokio sha"
+                  )
+              pinokio_ref = pinokio_ref[0]
           candidate = {
               "app": app_ref,
               "agent": (manifest.get("agent") or {}).get("sha"),
@@ -267,6 +280,7 @@ jobs:
               print("agent=" + candidate["agent"], file=output)
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
               summary.write("## Automatic App manifest resolution\n\n")
+              summary.write(f"- Followed branch: {os.environ['FOLLOWED_BRANCH']}\n")
               summary.write(f"- App: {candidate['app']}\n")
               summary.write(f"- Agent: {candidate['agent']}\n")
               summary.write(f"- Runtime: {candidate['runtime']}\n")
@@ -280,7 +294,7 @@ jobs:
           DRIVER_AGENT_REF: ${{ github.workflow_sha }}
           WORKFLOW_REPOSITORY: ${{ github.repository }}
           # The pinned default is for automatic push/schedule runs only; a dispatched or called direct row must name it.
-          OLD_LAUNCHER_REF: ${{ inputs.old_launcher_ref || ((github.event_name == 'push' || github.event_name == 'schedule') && 'bbba620e3d89eeff8021417f365e6ea584203105') || '' }}
+          OLD_LAUNCHER_REF: ${{ inputs.old_launcher_ref || ((github.event_name == 'push' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.candidate == '')) && 'bbba620e3d89eeff8021417f365e6ea584203105') || '' }}
           STOPPED_PATH_AGENT_REF: ${{ inputs.stopped_path_agent_ref || steps.automatic_candidate.outputs.agent }}
           M4_4A_EXECUTOR_CONFIGS: ${{ inputs.m4_4a_executor_configs || '{"linux":{},"macos":{},"windows":{}}' }}
           DIAGNOSTIC_KEEP_GOING: ${{ inputs.diagnostic_keep_going || false }}

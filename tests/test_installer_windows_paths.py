@@ -62,18 +62,75 @@ def test_windows_source_moves_every_file_and_preserves_tree_digest(tmp_path, mon
     _archive(payload, {prefix + "/" + name: content for name, content in files.items()}, kind)
     monkeypatch.setattr(tools, "download", lambda _url, target, **_kw: target.write_bytes(payload.read_bytes()))
     expected = tmp_path / "expected"
-    for name, content in files.items():
-        path = expected / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(content)
 
     tools.source("vibecomfy", "b" * 40, destination, platform_name="win32")
 
+    installed_files = ({name: content for name, content in files.items()
+                        if not name.startswith("docs/")} if prefix == VIBE else files)
     assert {p.relative_to(destination).as_posix(): p.read_bytes()
-            for p in destination.rglob("*") if p.is_file()} == files
+            for p in destination.rglob("*") if p.is_file()} == installed_files
+    for name, content in installed_files.items():
+        path = expected / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
     assert tools.source_tree_sha256(destination) == tools.source_tree_sha256(expected)
     assert not destination.with_name("v.u").exists()
     assert not destination.with_name("v.u.download").exists()
+
+
+@pytest.mark.parametrize("platform_name", ["win32", "linux"])
+def test_vibecomfy_remote_source_filters_before_windows_budget_and_keeps_runtime_asset(
+        tmp_path, monkeypatch, platform_name):
+    destination = tmp_path.parent / f"vibecomfy-source-{platform_name}" / "v"
+    payload = tmp_path / "source.archive"
+    excluded_long_path = "docs/guide/" + "d" * 100 + "/" + "f" * 100
+    files = {
+        "vibecomfy/__init__.py": b"runtime package",
+        "pyproject.toml": b"build metadata",
+        "docs/templates/strict_ready_exceptions.json": b"required wheel input",
+        "docs/guide.md": b"user documentation",
+        "examples/demo.py": b"example",
+        excluded_long_path: b"long docs path",
+    }
+    _archive(payload, {VIBE + "/" + name: content for name, content in files.items()}, "tar")
+    monkeypatch.setattr(tools, "download", lambda _url, target, **_kw: target.write_bytes(payload.read_bytes()))
+
+    tools.source("vibecomfy", "b" * 40, destination, platform_name=platform_name)
+
+    actual = {path.relative_to(destination).as_posix(): path.read_bytes()
+              for path in destination.rglob("*") if path.is_file()}
+    assert actual == {name: content for name, content in files.items()
+                      if name.startswith("vibecomfy/") or name == "pyproject.toml"
+                      or name == "docs/templates/strict_ready_exceptions.json"}
+    assert not destination.with_name("v.u").exists()
+
+
+def test_vibecomfy_remote_source_rejects_unsafe_excluded_docs_before_writes(tmp_path, monkeypatch):
+    destination = tmp_path / "installed"
+    payload = tmp_path / "source.archive"
+    _archive(payload, {VIBE + "/vibecomfy/__init__.py": b"package",
+                       VIBE + "/docs/../escape": b"unsafe"}, "tar")
+    monkeypatch.setattr(tools, "download", lambda _url, target, **_kw: target.write_bytes(payload.read_bytes()))
+
+    with pytest.raises(ValueError, match="Unsafe archive entry"):
+        tools.source("vibecomfy", "b" * 40, destination, platform_name="win32")
+
+    assert not destination.exists()
+
+
+def test_vibecomfy_remote_source_rejects_special_excluded_docs_before_writes(tmp_path, monkeypatch):
+    destination = tmp_path / "installed"
+    payload = tmp_path / "source.archive"
+    with tarfile.open(payload, "w:gz") as bundle:
+        member = tarfile.TarInfo(VIBE + "/docs/device")
+        member.type = tarfile.FIFOTYPE
+        bundle.addfile(member)
+    monkeypatch.setattr(tools, "download", lambda _url, target, **_kw: target.write_bytes(payload.read_bytes()))
+
+    with pytest.raises(ValueError, match="special entry"):
+        tools.source("vibecomfy", "b" * 40, destination, platform_name="win32")
+
+    assert not destination.exists()
 
 
 @pytest.mark.parametrize("kind", ["tar", "zip"])
