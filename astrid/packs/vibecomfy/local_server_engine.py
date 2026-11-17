@@ -225,6 +225,58 @@ def _approve_live(bundle: Any, bindings: dict[str, Any], provider: Any) -> Any:
         raise
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class PreparedLocalWorkflow:
+    """Held by the admitted pack session; callers only supply its handle/values.
+
+    LS-15 owns retention and invalidation with source/transport generations.
+    This adapter is explicit so ordinary per-job workers do not accidentally
+    cache executable builders or establish a second session owner.
+    """
+
+    session: Any
+    handle: str
+    source_revision: str
+    provider: Any
+
+    def require_current(self, bundle: Any, *, context: Any, url: str) -> None:
+        from vibecomfy.prepared import PreparedWorkflowContext, PreparedWorkflowUnavailable
+
+        if (type(context) is not PreparedWorkflowContext or
+                bundle.revision_id != self.source_revision or
+                context.target_identity != url or context != self.session.context):
+            raise PreparedWorkflowUnavailable("prepared workflow source or target generation changed")
+        self.session.require_target(url)
+
+    def fill(self, bundle: Any, bindings: dict[str, Any], *, context: Any,
+             url: str, attempt_id: str) -> tuple[Any, Any]:
+        self.require_current(bundle, context=context, url=url)
+        return self.session.fill(self.handle, bindings, attempt_id=attempt_id, context=context)
+
+
+def prepare_local_workflow(bundle: Any, bindings: dict[str, Any], provider: Any, *,
+                           context: Any, executable_hooks: bool) -> PreparedLocalWorkflow | None:
+    """Freeze one admitted source, or preserve the full path for a builder.
+
+    The session owner must supply the admitted capability/source/settings and
+    live target generation; this function never derives authority from a job
+    document. Declared build/after-output hooks always retain per-job work.
+    """
+    if executable_hooks:
+        return None
+    from vibecomfy.prepared import PreparedWorkflowSession, PreparedWorkflowUnavailable
+
+    bundle.require_canonical_authority("prepared attached target execution")
+    _capture_live_schemas(bundle, provider)
+    session = PreparedWorkflowSession(context)
+    try:
+        handle = session.prepare(bundle, inputs=bindings, schema_provider=provider)
+    except PreparedWorkflowUnavailable:
+        session.invalidate()
+        return None
+    return PreparedLocalWorkflow(session, handle, bundle.revision_id, provider)
+
+
 def _capture_live_schemas(bundle: Any, provider: Any) -> None:
     for node in bundle.workflow.nodes.values():
         schema = provider.get_schema(node.class_type)
@@ -401,6 +453,8 @@ def run_local_server(
     resolved: Any, destination: Path, *, comfy_url: str, comfy_output_dir: str,
     task_identity: str, attempt_identity: str | None, run_inputs: Mapping[str, Any] | None,
     workflow_conversion_object_info_sha256: str | None = None,
+    prepared_workflow: PreparedLocalWorkflow | None = None,
+    prepared_context: Any = None,
 ) -> ProductionRunResult:
     from vibecomfy.runtime.run import run_sync
     from vibecomfy.runtime.session import SessionConfig
@@ -422,6 +476,8 @@ def run_local_server(
     if attempt_identity is not None:
         validate_identity(attempt_identity)
     bundle = _canonical_bundle_value(resolved)
+    if prepared_workflow is not None:
+        prepared_workflow.require_current(bundle, context=prepared_context, url=url)
     values = _workflow_comfy_configuration(bundle)
     values.update({
         "runtime_root": str(vibecomfy_runtime_root(destination)),
@@ -442,13 +498,18 @@ def run_local_server(
     client = ComfyTargetClient(ComfyTarget(url, "attached"))
     custody = _trust_from_environment(bundle)
     from astrid.core.generation.target_inventory import declared_rows
-    provider = _live_preflight(bundle, run_inputs, url, destination, client=client, target_custody=custody,
-                               prepared_models=declared_rows(bundle.workflow) if prepared is not None else None)
-    # Unknown connected classes may not survive a canonical rewrite. Report
-    # live dependency gaps before deriving the attempt's private save prefixes.
-    bundle = local_server_bundle(
-        bundle, destination, output_identity=attempt_identity or task_identity, run_inputs=run_inputs,
-    )
+    if prepared_workflow is None:
+        provider = _live_preflight(bundle, run_inputs, url, destination, client=client, target_custody=custody,
+                                   prepared_models=declared_rows(bundle.workflow) if prepared is not None else None)
+        # Unknown connected classes may not survive a canonical rewrite.
+        # Report dependency gaps before deriving private save prefixes.
+        bundle = local_server_bundle(
+            bundle, destination, output_identity=attempt_identity or task_identity, run_inputs=run_inputs,
+        )
+    else:
+        if prepared_context is None:
+            raise ProductionEngineError("prepared workflow requires the current admitted context")
+        provider = prepared_workflow.provider
     bindings = dict(run_inputs or {})
     output_ids = {str(output.node_id) for output in bundle.workflow.outputs}
     original_prefixes = {}
@@ -456,7 +517,8 @@ def run_local_server(
         spec = bundle.workflow.inputs[name]
         if str(spec.node_id) in output_ids and spec.field == "filename_prefix":
             original_prefixes[name] = value
-            bindings[name] = spec.value
+            if prepared_workflow is None:
+                bindings[name] = spec.value
     for name, value in bindings.items():
         spec = bundle.workflow.inputs[name]
         media = str(getattr(spec, "media_semantics", "") or "").lower()
@@ -471,7 +533,13 @@ def run_local_server(
                     url, source, task_id=task_identity, kind=media,
                     expected_sha256=_staged_digest(destination, str(value)),
                 )
-    record = _approve_live(bundle, bindings, provider)
+    if prepared_workflow is None:
+        record = _approve_live(bundle, bindings, provider)
+    else:
+        record, bundle = prepared_workflow.fill(
+            bundle, bindings, context=prepared_context, url=url,
+            attempt_id=attempt_identity or task_identity,
+        )
 
     from astrid.core.generation.target_inventory import POD_STOP
     pod_stop = POD_STOP.get()
