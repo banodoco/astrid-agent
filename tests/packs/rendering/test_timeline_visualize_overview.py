@@ -337,3 +337,10 @@ def test_cli_adds_queue_time_and_prints_one_timing_line(capsys):
     assert cli._visualization_timing({}, 1000.0)['queued_s'] is None
     cli._print_visualization_timing(None, 1000.0)
     assert 'executor timing unavailable' in capsys.readouterr().out
+
+
+def test_contact_tile_without_words_says_no_words_stored():
+    from astrid.packs.rendering.actions.timeline_visualize.contact_sheet import _tile_caption
+
+    assert _tile_caption({'cut': {'start': 0, 'end': 1}}) == 'no words stored'
+    assert _tile_caption({'cut': {'say': 'Hello there friend'}}) == 'Hello there friend'
