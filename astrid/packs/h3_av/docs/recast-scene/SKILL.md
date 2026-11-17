@@ -11,7 +11,7 @@ Astrid commands here run through the launcher; its path on each OS is in the [as
 
 Skills this one leans on, by stage:
 - Script and low-fidelity cut: [timeline](../../../timeline/docs/SKILL.md), [narrated timelines](../../../timeline/docs/narrated/SKILL.md), [creative work](../../../_core/docs/creative-work/SKILL.md).
-- Mapping the cut: [how to look](../../../timeline/docs/references/how-to-look.md) (`timelines visualize`), [shots](../../../timeline/docs/shots/SKILL.md), [transcripts](../../../timeline/docs/transcripts/SKILL.md).
+- Mapping the cut: [timeline-visualize](../../../timeline/docs/visualize/SKILL.md) and [timeline-visualize-advanced](../../../timeline/docs/visualize-advanced/SKILL.md) (`timelines visualize`), [timeline-show](../../../timeline/docs/show/SKILL.md), [shots](../../../timeline/docs/shots/SKILL.md), [transcripts](../../../timeline/docs/transcripts/SKILL.md).
 - The per-shot plan: [shot plans](../../../timeline/docs/shots/SKILL.md#shot-plans) (`timelines shots plan set/show/list`, `visualize --shot-plans`).
 - Methods and requests: [H3](../SKILL.md) ([workflow choice](../SKILL.md#workflow-choice), [mask semantics](../SKILL.md#mask-semantics), [request shape](../SKILL.md#request-shape), [validation and approval](../SKILL.md#validation-and-approval)).
 - Running on a GPU: [RunPod generation machines](../../../runpod/docs/SKILL.md#runpod-generation-machines).
