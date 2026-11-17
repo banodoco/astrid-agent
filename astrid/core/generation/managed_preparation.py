@@ -28,7 +28,8 @@ from .engine_local_endpoint import DEFAULT_ENGINE
 SCHEMA = "astrid.managed-engine-preparation.v1"
 _ENGINE_STOP_TIMEOUT_SECONDS = 30.0
 _PREPARATION_CONTEXT = ContextVar("astrid_managed_engine_preparation", default=None)
-_NATIVE_STEPS = frozenset({"runtime_inspect", "nodes_restore", "pip_bootstrap", "fetch", "prepare", "doctor"})
+_NATIVE_STEPS = frozenset({"runtime_inspect", "nodes_restore", "pip_bootstrap", "fetch", "prepare", "doctor",
+                           "node_probe"})
 # A preparation can outlive its Python call when a POST may still be accepted
 # and cleanup cannot prove that its command drained. Keep the actual lock owner
 # alive for this process lifetime; dropping the wrapper must not close the fd.
@@ -100,7 +101,8 @@ def native_failure_diagnostic(step: str, stdout: str, stderr: str) -> tuple[str,
     step = step if step in _NATIVE_STEPS else "unknown"
     reason = {"runtime_inspect": "runtime_inspection_failed", "nodes_restore": "node_restore_failed",
               "pip_bootstrap": "pip_bootstrap_failed", "fetch": "model_fetch_failed",
-              "prepare": "native_preparation_failed", "doctor": "workflow_diagnosis_failed"}.get(step, "command_failed")
+              "prepare": "native_preparation_failed", "doctor": "workflow_diagnosis_failed",
+              "node_probe": "node_probe_failed"}.get(step, "command_failed")
     # VibeComfy doctor emits its diagnostic on stdout and returns 1. Only
     # recognize complete fixed headings, never its paths, errors or suggestions.
     if step == "doctor":
@@ -862,6 +864,53 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
                         error.add_note(f"see `astrid tasks logs {self.task}` (storage.inventory).")
                 raise
 
+    def _owned_classes_used(self):
+        """VibeComfy-owned node classes the admitted workflow uses (those linked into custom_nodes)."""
+        from .worker_node_set import owned_node_classes
+        admitted = getattr(self, "_alignment_verification", ())
+        if not admitted:
+            return []
+        used = {node.class_type for node in admitted[0].runtime_nodes().values()}
+        return sorted(used & owned_node_classes())
+
+    def _probe_missing(self, classes):
+        from astrid.packs.vibecomfy.native_preparation import native_owned_node_probe_program
+        request = {"endpoint": f"http://127.0.0.1:{self.recipe.start.port}", "classes": list(classes),
+                   "request_timeout": min(20.0, max(0.001, self.deadline - time.monotonic()))}
+        result = self._native(native_owned_node_probe_program(), json.dumps(request), step="node_probe")
+        missing = json.loads(result.stdout)["missing"]
+        return [name for name in missing if isinstance(name, str) and name in classes]
+
+    def _ensure_owned_nodes(self, runner, start_action):
+        """Make the engine that diagnoses and runs the workflow actually have its owned nodes.
+
+        Nodes restore links VibeComfy's own ComfyUI node package into custom_nodes, but
+        ComfyUI only reads custom_nodes when it starts.  A warm engine that predates the
+        link (for example one left by an earlier job on the same worker) is reused as-is
+        and never loads it, so the diagnosis fails with an unresolved class.  Probe the
+        engine's own schema; restart a reused engine once if it lacks a class the workflow
+        uses, and refuse plainly if it still does.
+        """
+        from .engine_contracts import IntegrityError
+        needed = self._owned_classes_used()
+        if not needed:
+            return start_action
+        missing = self._probe_missing(needed)
+        if missing and start_action == "skipped":
+            self._preparing_engine = True
+            self._stop_preparing_engine()
+            runner.step_id = "doctor-restart"
+            start_action, _ = self._start_engine(runner)
+            self._preparing_engine = True
+            runner.step_id = "doctor-restart-health"
+            self._time_engine(runner.check_health)
+            missing = self._probe_missing(needed)
+        if missing:
+            raise IntegrityError(
+                "managed engine does not load VibeComfy node class(es) " + ", ".join(missing)
+                + " that the workflow uses, even after a fresh start; its custom_nodes link did not load")
+        return start_action
+
     def _doctor(self, argv):
         from astrid.packs.vibecomfy.native_preparation import native_doctor_program
 
@@ -881,6 +930,7 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
                 self._preparing_engine = True
             runner.step_id = "doctor-health"
             self._time_engine(runner.check_health)
+            start_action = self._ensure_owned_nodes(runner, start_action)
             expected = runner.health.object_info_sha256
             request = {"argv": argv, "endpoint": f"http://127.0.0.1:{self.recipe.start.port}",
                        "expected_schema_sha256": expected,

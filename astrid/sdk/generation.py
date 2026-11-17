@@ -333,8 +333,12 @@ LOCAL_REFUSAL_SCOPE = ('refused locally before submission; nothing was sent to a
 
 def _offline_invocation_preflight(workflow: Any, *, plan: Mapping[str, Any] | None,
                                   assets: Mapping[str, Any], comfy_url: str | None,
-                                  lineage: Any, source_video: bool) -> None:
+                                  lineage: Any, source_video: bool, worker_nodes: bool = False) -> None:
     """Run the same invocation preflight a live submission runs, offline, on the emitted bundle.
+
+    ``worker_nodes`` also requires every class the compiled workflow uses to be one the
+    managed worker is provisioned with (recipe packs, the workflow's declared packs, and
+    VibeComfy's own node package), so a class the paid worker lacks is refused here.
 
     Every dry run calls this so a request the live path would refuse is refused before a
     machine is required, claimed, or paid for. Refusals name their scope: they happened
@@ -366,6 +370,12 @@ def _offline_invocation_preflight(workflow: Any, *, plan: Mapping[str, Any] | No
             source_digest = 'sha256:' + str(record['sha256'])
     prompt = run_inputs.get('prompt')
     expected_prompt = prompt if isinstance(prompt, str) and prompt.strip() else None
+    node_set = None
+    if worker_nodes:
+        from astrid.core.generation import entries as workflow_entries
+        from astrid.core.generation.worker_node_set import managed_worker_node_set
+        declared = workflow_entries.engine_table()['comfyui'].workflow_requirements([workflow])
+        node_set = managed_worker_node_set((declared.get('extra') or {}).get('nodes', ()))
     with TemporaryDirectory(prefix='astrid-dry-preflight-') as scratch:
         capsule = Path(scratch) / 'workflow.py'
         emit_bundle(workflow, capsule, {'operation': 'authored'})
@@ -373,7 +383,7 @@ def _offline_invocation_preflight(workflow: Any, *, plan: Mapping[str, Any] | No
             preflight_invocation(
                 capsule, run_inputs=run_inputs, comfy_url=comfy_url or '',
                 expected_prompt=expected_prompt, source_video_path=source_path,
-                expected_source_digest=source_digest, phase='dry-run')
+                expected_source_digest=source_digest, phase='dry-run', worker_nodes=node_set)
         except InvocationPreflightError as exc:
             from astrid.core.generation.preflight import generation_error
             raise generation_error(ValueError(f'{exc}. {LOCAL_REFUSAL_SCOPE}.'),
@@ -398,7 +408,7 @@ def offline_request_preflight(entry_id: str, *, mode: str | None, inputs: Mappin
         workflow_entries.bundle_path(row), target_client=None, mode=chosen_mode,
         binds=row.get('binds'), defaults=row.get('defaults'), values=values)
     _offline_invocation_preflight(workflow, plan=plan, assets=assets or {}, comfy_url=None,
-                                  lineage=None, source_video=True)
+                                  lineage=None, source_video=True, worker_nodes=True)
 
 
 def _require_claimed_machine(kind, machine=None):
@@ -2037,7 +2047,10 @@ class GenerationFacade:
             _offline_invocation_preflight(
                 workflow, plan=plan, assets=assets or {},
                 comfy_url=(target_client.target.url if placement.kind == 'attached' and target_client is not None else None),
-                lineage=h3_lineage, source_video=entry_id != 'h3')
+                lineage=h3_lineage, source_video=entry_id != 'h3',
+                # H3 is provisioned by its own release manifest (LanPaint and friends), not the
+                # managed recipe, so the recipe's node set is not its worker's node set.
+                worker_nodes=(is_managed_target or is_remote_target) and entry_id != 'h3')
             readiness['entry'].update(preview)
             if align == 'trust':
                 readiness['alignment'] = {'mode': 'trust', 'verified': False}

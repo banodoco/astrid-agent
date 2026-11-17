@@ -409,8 +409,15 @@ def preflight_invocation(
     expected_source_node: str | None = None,
     expected_source_field: str | None = None,
     phase: str = "submission",
+    worker_nodes: Any = None,
 ) -> dict[str, Any]:
-    """Validate one exact workflow invocation and return a bound receipt."""
+    """Validate one exact workflow invocation and return a bound receipt.
+
+    ``worker_nodes`` is the node set a managed worker is provisioned with
+    (``worker_node_set.WorkerNodeSet``).  When given, every class the compiled
+    workflow uses must be in it, so a class the paid worker would lack is refused
+    here, by name, instead of after a machine has been claimed.
+    """
     source = Path(workflow_path).expanduser().resolve(strict=True)
     bindings = dict(run_inputs or {})
     if not all(isinstance(key, str) and key.strip() for key in bindings):
@@ -474,6 +481,13 @@ def preflight_invocation(
     if not isinstance(api, Mapping):
         raise InvocationPreflightError("VIBECOMFY_API_COMPILE: projection is not an object")
     _assert_no_unresolved_placeholders(api)
+    if worker_nodes is not None:
+        from astrid.core.generation.worker_node_set import WorkerNodeMissing, workflow_class_types
+
+        try:
+            worker_nodes.require(workflow_class_types(api))
+        except WorkerNodeMissing as exc:
+            raise InvocationPreflightError(str(exc)) from exc
     if "source_video" in bindings:
         node = api.get(str(source_input.node_id))
         actual = node.get("inputs", {}).get(str(source_input.field)) if isinstance(node, Mapping) else None

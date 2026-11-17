@@ -220,3 +220,33 @@ def native_doctor_program():
                         (_plain, _json, _sha, _object_info_sha256, TargetSchemaProvider, run_native_doctor))
     return (header + sources + "\nimport sys\nraise SystemExit(run_native_doctor(**json.loads(sys.argv[1]), "
             "schema_provider_type=TargetSchemaProvider, schema_digest=_object_info_sha256))\n")
+
+
+_OWNED_NODE_PROBE = """\
+import json, sys, urllib.request
+from urllib.parse import urlsplit
+request = json.loads(sys.argv[1])
+parsed = urlsplit(request["endpoint"])
+if (parsed.scheme != "http" or parsed.hostname != "127.0.0.1" or parsed.port is None
+        or parsed.username is not None or parsed.password is not None
+        or parsed.path or parsed.query or parsed.fragment):
+    raise ValueError("managed node probe requires the owned loopback engine endpoint")
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+with opener.open(request["endpoint"] + "/object_info", timeout=request["request_timeout"]) as response:
+    body = response.read(16 * 1024 * 1024 + 1)
+if len(body) > 16 * 1024 * 1024:
+    raise ValueError("managed node probe target schema exceeds its bound")
+info = json.loads(body)
+if not isinstance(info, dict):
+    raise ValueError("managed node probe target schema is not an object")
+print(json.dumps({"missing": sorted(name for name in request["classes"] if name not in info)}))
+"""
+
+
+def native_owned_node_probe_program() -> str:
+    """Report which of the given classes the running engine's own /object_info lacks.
+
+    ComfyUI reads ``custom_nodes`` once, at start, so a link made after the engine
+    started is invisible to it.  The engine's own schema is the only honest answer.
+    """
+    return _OWNED_NODE_PROBE
