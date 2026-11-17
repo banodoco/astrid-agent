@@ -18,6 +18,8 @@ contract.
 Verbs (one SDK call each):
 
 - ``text list/show/set`` — read immutable shot text and edit it with expected-head protection;
+- ``plan set/show/list`` — the per-shot plan at ``payload.metadata.plan`` on a timeline's
+  shots (:mod:`astrid.sdk.shot_plan`): validated, merged, committed as a timeline revision;
 
 - ``list`` — ``client.shots.list(project)`` (sort_key, then id order);
 - ``show`` — ``client.shots.show(project, shot_id)`` (ordered items, media ids,
@@ -162,6 +164,80 @@ def _configure_text(subparser: argparse.ArgumentParser) -> None:
             _add_idempotency_key(command)
 
 
+def _plan_failure(message: str, parsed: argparse.Namespace) -> int:
+    from astrid.sdk.contracts import DomainResult, ErrorObject
+    return print_result(DomainResult.failure(ErrorObject("validation_error", message, {})), as_json=parsed.json)
+
+
+def _cmd_plan_set(parsed: argparse.Namespace) -> int:
+    from astrid.sdk import shot_plan
+
+    try:
+        patch: dict[str, Any] = {}
+        if parsed.json_file is not None:
+            loaded = json.loads(Path(parsed.json_file).read_text(encoding="utf-8"))
+            if not isinstance(loaded, dict):
+                raise shot_plan.ShotPlanError("--json-file must hold a JSON object")
+            patch.update(loaded)
+        assigned = shot_plan.apply_assignments(parsed.assignments or [])
+        if "inputs" in assigned and isinstance(patch.get("inputs"), dict):
+            assigned["inputs"] = {**patch["inputs"], **assigned["inputs"]}
+        patch.update(assigned)
+        takes = list(parsed.add_take or [])
+    except (OSError, UnicodeError, json.JSONDecodeError, shot_plan.ShotPlanError) as exc:
+        return _plan_failure(str(exc), parsed)
+    if not patch and not takes and not parsed.unset and not parsed.replace:
+        return _plan_failure("nothing to write: give --json-file, --set, --unset or --add-take", parsed)
+    return print_result(shot_plan.set_plan(
+        parsed.client, parsed.project, parsed.timeline, parsed.shot, patch=patch, replace=parsed.replace,
+        unset=parsed.unset or (), add_takes=takes, message=parsed.message,
+        idempotency_key=parsed.idempotency_key), as_json=parsed.json)
+
+
+def _cmd_plan_show(parsed: argparse.Namespace) -> int:
+    from astrid.sdk import shot_plan
+
+    return print_result(shot_plan.show_plan(parsed.client, parsed.project, parsed.timeline, parsed.shot,
+                                            revision_id=parsed.revision_id), as_json=parsed.json)
+
+
+def _cmd_plan_list(parsed: argparse.Namespace) -> int:
+    from astrid.sdk import shot_plan
+
+    return print_result(shot_plan.list_plans(parsed.client, parsed.project, parsed.timeline,
+                                             revision_id=parsed.revision_id), as_json=parsed.json)
+
+
+def _configure_plan(subparser: argparse.ArgumentParser) -> None:
+    children = subparser.add_subparsers(dest="plan_command", required=True)
+    for verb, handler in (("set", _cmd_plan_set), ("show", _cmd_plan_show), ("list", _cmd_plan_list)):
+        command = children.add_parser(verb)
+        _add_project_arg(command)
+        command.add_argument("--timeline", required=True, help="Timeline id or name whose shot(s) carry the plan.")
+        _add_json_flag(command)
+        command.set_defaults(handler=handler)
+        if verb != "list":
+            command.add_argument("shot", help="Shot id, occurrence id, or exact shot name on that timeline.")
+        if verb != "set":
+            command.add_argument("--revision-id", dest="revision_id", default=None,
+                                 help="Read a saved revision instead of the head.")
+            continue
+        command.add_argument("--json-file", dest="json_file", type=Path, default=None,
+                             help="A plan object (or part of one) to merge in.")
+        command.add_argument("--set", dest="assignments", action="append", default=None, metavar="PATH=VALUE",
+                             help="Set one field: method=LM,R  status=planned  line=...  intent=...  check=...  "
+                                  "on_screen=A,B  inputs.references=ID,ID  inputs.masks=ID  "
+                                  "inputs.voice.media=ID  inputs.voice.range=START,END (repeatable).")
+        command.add_argument("--unset", action="append", default=None, metavar="PATH",
+                             help="Remove one field (e.g. inputs.voice; repeatable).")
+        command.add_argument("--add-take", dest="add_take", action="append", type=_parse_json_object, default=None,
+                             metavar="JSON", help='Append a take: \'{"generation": "...", "media": "...", "note": "..."}\'.')
+        command.add_argument("--replace", action="store_true", default=False,
+                             help="Replace the whole plan instead of merging into it.")
+        command.add_argument("--message", default=None, help="Revision label (default: Plan shot <name>).")
+        _add_idempotency_key(command)
+
+
 def _cmd_show(parsed: argparse.Namespace) -> int:
     result = parsed.client.shots.show(parsed.project, parsed.shot)
     return print_result(result, as_json=parsed.json)
@@ -301,6 +377,8 @@ def _configure_reorder(subparser: argparse.ArgumentParser) -> None:
 
 COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("text", help="Read or update canonical shot narration, prompts, and transcripts.", configure=_configure_text),
+    CommandSpec("plan", help="Set, show, or list per-shot plans (metadata.plan) on a timeline's shots.",
+                configure=_configure_plan),
     CommandSpec(
         "list",
         help="List every shot in a project (sort_key, then id order).",
@@ -343,7 +421,7 @@ def build_parser(client: Any) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="astrid timelines shots",
         description=(
-            "Project-level reusable shots: text/list/create/show/add/remove/reorder "
+            "Project-level reusable shots: text/plan/list/create/show/add/remove/reorder "
             "(nested product family)."
         ),
     )
