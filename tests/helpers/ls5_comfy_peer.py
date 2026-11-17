@@ -10,7 +10,7 @@ from aiohttp import web
 
 
 class ComfyPeer:
-    def __init__(self, comfy=None, *, auto_complete=True, delay=0.025, keepalive_timeout=75):
+    def __init__(self, comfy=None, *, auto_complete=True, delay=0.025, keepalive_timeout=None):
         self.comfy = comfy
         self.auto_complete, self.delay = auto_complete, delay
         self.keepalive_timeout = keepalive_timeout
@@ -43,7 +43,8 @@ class ComfyPeer:
     async def _start(self):
         app = web.Application(client_max_size=1024 * 1024 * 16)
         app.router.add_route("*", "/{path:.*}", self._handle)
-        self.runner = web.AppRunner(app, keepalive_timeout=self.keepalive_timeout)
+        options = {} if self.keepalive_timeout is None else {"keepalive_timeout": self.keepalive_timeout}
+        self.runner = web.AppRunner(app, **options)
         await self.runner.setup()
         self.site = web.TCPSite(self.runner, "127.0.0.1", 0)
         await self.site.start()
