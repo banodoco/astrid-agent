@@ -17,7 +17,8 @@ from astrid.sdk.timeline_checkout import Checkout
 from tests.editing_conformance.test_commit_v2_validation import candidate
 
 SHOT = "chapter-shot"
-FORMULA = {"params.at": {"as": "clip_frame", "moment": "word:line-1:first"}}
+PARAM_FORMULA = {"as": "clip_frame", "moment": "word:line-1:first"}
+FORMULA = {"at": {"as": "clip_frame", "moment": "word:line-1:first"}}  # a path outside params: a timing input
 
 
 def child_clips(bundle):
@@ -44,11 +45,6 @@ def with_unknown_asset(bundle):
     return bundle
 
 
-def warnings_of(result):
-    assert result and all(line.startswith(PREEXISTING) for line in result)
-    return " ".join(result)
-
-
 def test_split_findings_keeps_only_unchanged_findings_on_the_baseline():
     found = {"a": 1, "b": 2, "c": 3}
     assert split_findings(found, {"a": 1, "b": 9}) == (["b", "c"], ["a"])
@@ -56,6 +52,19 @@ def test_split_findings_keeps_only_unchanged_findings_on_the_baseline():
 
 
 # --- rule: unsupported timing declaration (_timing_evaluators) ------------------------------------------------
+
+def test_params_formulas_written_by_the_sdk_are_not_timing_declarations():
+    """``Clip.set`` records a formula through ``set_formula`` on a ``params.*`` path: it derives a cached param."""
+    from astrid.sdk import timeline_intent as intent
+
+    value = candidate()
+    clip = child_clips(value)[0]
+    clip["params"] = {"values": [{"at": 3}]}
+    intent.set_formula(clip, "params.values[0].at", PARAM_FORMULA)
+    assert clip["app"]["astrid"]["formulas"]
+    validate_final_candidate(value)  # even a new one, with no baseline
+    validate_final_candidate(value, baseline=candidate())
+
 
 @pytest.mark.parametrize("declaration", ["formulas", "sequence", "sequence_fit", "orphan", "gap_after_s"])
 def test_existing_unsupported_declaration_does_not_block_an_unrelated_change(declaration):
@@ -68,8 +77,9 @@ def test_existing_unsupported_declaration_does_not_block_an_unrelated_change(dec
             clip["app"]["astrid"][declaration] = 1.5
     value = copy.deepcopy(baseline)
     unrelated_change(value)
-    result = validate_final_candidate(value, baseline=baseline)
-    assert declaration in warnings_of(result)
+    with pytest.raises(AuthoringBundleError, match="unsupported timing declaration"):
+        validate_final_candidate(value)  # new: refused
+    validate_final_candidate(value, baseline=baseline)
     assert value["shots"][SHOT] == baseline["shots"][SHOT]  # authored data is untouched
 
 
@@ -77,7 +87,7 @@ def test_formulas_cached_result_may_be_recalculated_without_a_new_refusal():
     baseline = with_formulas(candidate())
     value = copy.deepcopy(baseline)
     child_clips(value)[0]["params"] = {"values": [{"at": 4}]}
-    assert "formulas" in warnings_of(validate_final_candidate(value, baseline=baseline))
+    validate_final_candidate(value, baseline=baseline)
 
 
 def test_new_unsupported_declaration_is_refused():
@@ -95,7 +105,7 @@ def test_edited_or_touched_unsupported_declaration_is_refused(touch):
     value = copy.deepcopy(baseline)
     clip = child_clips(value)[0]
     if touch == "declaration":
-        clip["app"]["astrid"]["formulas"]["params.at"]["moment"] = "word:line-2:first"
+        clip["app"]["astrid"]["formulas"]["at"]["moment"] = "word:line-2:first"
     elif touch == "timing":
         clip["at"] = 2
     else:
@@ -142,7 +152,7 @@ def test_existing_unknown_asset_does_not_block_an_unrelated_change():
     baseline = with_unknown_asset(candidate())
     value = copy.deepcopy(baseline)
     unrelated_change(value)
-    assert "missing-asset" in warnings_of(validate_final_candidate(value, baseline=baseline))
+    validate_final_candidate(value, baseline=baseline)
 
 
 @pytest.mark.parametrize("change", ["new-clip", "other-missing-asset"])
@@ -225,3 +235,35 @@ def test_introduced_or_touched_overrun_still_blocks(touch):
         clips.append({"id": "second", "clipType": "am-sprite", "track": "sprite", "asset": "R",
                       "at": 11.9, "hold": 2.0, "params": {}})
     assert length_blocking(check(edited)), touch
+
+
+# --- the invariant ---------------------------------------------------------------------------------------------
+
+def _head_unsupported_declaration():
+    return with_formulas(candidate())
+
+
+def _head_unknown_asset():
+    return with_unknown_asset(candidate())
+
+
+def _head_mismatched_fps():
+    head = candidate()
+    head["shots"][SHOT]["internal_timeline"]["output"] = {"fps": 24}
+    return head
+
+
+HEADS = {"unsupported-declaration": _head_unsupported_declaration, "unknown-asset": _head_unknown_asset,
+         "mismatched-fps": _head_mismatched_fps}
+
+
+@pytest.mark.parametrize("name", sorted(HEADS))
+def test_invariant_every_long_lived_head_accepts_an_unrelated_commit_and_a_duplicate(name):
+    """A new validation rule that breaks this needs a migration or a baseline exemption."""
+    head = HEADS[name]()
+    edited = copy.deepcopy(head)
+    unrelated_change(edited)
+    validate_final_candidate(edited, baseline=head)
+    empty = copy.deepcopy(head)
+    empty["placements"], empty["shots"] = [], {}
+    validate_final_candidate(copy.deepcopy(head), baseline=empty, authenticated_copy=True)

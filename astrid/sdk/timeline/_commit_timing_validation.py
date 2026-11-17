@@ -10,8 +10,8 @@ from astrid.core.timeline import moments
 from astrid.core.timeline.authoring_bundle import compile_authoring_candidate
 from astrid.core.timeline.shot_composition_projection import _placement_speed
 from astrid.sdk import timeline_intent as intent
-from astrid.sdk.timeline._timing_evaluators import _fps, _maps, _ReadLookup
-from astrid.sdk.timeline._preexisting import split_findings, warning
+from astrid.sdk.timeline._timing_evaluators import _fps, _maps, _ReadLookup, unsupported_declaration
+from astrid.sdk.timeline._preexisting import split_findings
 from astrid.sdk.timeline.compiler import TimingCompileError, TimingInputs, compile_timing
 from astrid.sdk.timeline.native_word_anchor import binding, legacy_binding
 from astrid.sdk.timeline.units import _time_fraction
@@ -396,8 +396,9 @@ def _map_components(bundle: Mapping[str, Any]) -> list[set[tuple[Any, ...]]]:
     sources = bundle.get("source_mapping", {}).get("pinned_documents", [])
     for key, clip in rows.items():
         declarations = intent._app(clip)
-        if any(declarations.get(field) is not None for field in (
-                "sequence", "sequence_fit", "formulas", "orphan", "gap_after_s", "until_film_end")):
+        if any(unsupported_declaration(declarations, field) for field in (
+                "sequence", "sequence_fit", "formulas", "orphan", "gap_after_s")) or declarations.get(
+                "until_film_end") is not None:
             # The kernel cannot bound these inputs. Keep their dependency
             # selection conservative instead of interpreting another grammar.
             connect(rows)
@@ -496,7 +497,7 @@ def _unsupported_findings(bundle: Mapping[str, Any]) -> dict[tuple[Any, ...], st
     for key, clip in _legacy_rows(bundle):
         declarations = intent._app(clip)
         for name in UNSUPPORTED_DECLARATIONS:
-            if declarations.get(name):
+            if unsupported_declaration(declarations, name):
                 row = {field: value for field, value in clip.items() if field != "params"}
                 found[(*key, name)] = json.dumps([declarations[name], row], sort_keys=True, default=str)
     return found
@@ -504,25 +505,23 @@ def _unsupported_findings(bundle: Mapping[str, Any]) -> dict[tuple[Any, ...], st
 
 def _drop_preexisting_unsupported(
     projection: dict[str, Any], candidate: Mapping[str, Any], baseline: Mapping[str, Any] | None,
-) -> list[str]:
+) -> None:
     """Take declarations the baseline already carried, on clips this change did not touch, out of
     the detached compiler view so every other timing rule still runs. Authored JSON stays intact.
 
     A declaration that is new or edited, or on a clip that was touched, is left in place and refused.
-    Returns one warning per declaration retained.
     """
     if baseline is None:
-        return []
+        return
     introduced, preexisting = split_findings(
         _unsupported_findings(candidate), _unsupported_findings(baseline))
     del introduced
     if not preexisting:
-        return []
+        return
     mirrors = projection["parent"].get("config", {}).get("clips")
     views = [dict(_legacy_rows(projection))]
     if isinstance(mirrors, list):
         views.append({("parent", "", row.get("id")): row for row in mirrors if isinstance(row, dict)})
-    warnings = []
     for *owner, name in preexisting:
         for view in views:
             clip = view.get(tuple(owner))
@@ -531,9 +530,6 @@ def _drop_preexisting_unsupported(
                 app.pop(name, None)
                 if isinstance(app.get("astrid"), dict):
                     app["astrid"].pop(name, None)
-        warnings.append(warning(f"{owner[2]} carries a {name} timing declaration that was already there; "
-                                "it is kept as authored and not re-validated"))
-    return warnings
 
 
 def validate_candidate_timing(
@@ -541,7 +537,7 @@ def validate_candidate_timing(
     _allow_physical_context_fallback: bool = True,
     source_bundles: Sequence[Mapping[str, Any]] = (),
     restoration_records: Sequence[Mapping[str, Any]] = (),
-) -> list[str]:
+) -> None:
     """Compile a detached validation view, leaving authored JSON and pins intact.
 
     The canonical compiler guards changes to occurrence source maps. As in
@@ -553,7 +549,7 @@ def validate_candidate_timing(
     """
     publication = compile_authoring_candidate(candidate).publication
     projection = copy.deepcopy(dict(candidate))
-    warnings = _drop_preexisting_unsupported(projection, candidate, baseline)
+    _drop_preexisting_unsupported(projection, candidate, baseline)
     exemptions = _legacy_exemptions(candidate, baseline)
     restored = _restored_legacy_exemptions(candidate, source_bundles, restoration_records)
     exemptions.update(restored)
@@ -693,4 +689,3 @@ def validate_candidate_timing(
                 _allow_physical_context_fallback=False,
                 source_bundles=source_bundles,
             )
-    return warnings
