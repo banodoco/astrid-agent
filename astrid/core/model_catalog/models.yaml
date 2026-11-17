@@ -251,7 +251,7 @@ models:
         backends:
           local:
             template: edit/qwen_image_edit
-            template_hash: "sha256:8e7690a35d580bef3da5de0d3fa62ddb13dcf7a10fd9f0f0c56bf61713bb3e6b"
+            template_hash: "sha256:4aebdb1896ecc219fd3dcc4041615d9508cb3dc07ac8a03ccadc97e2f3910ad8"
             param_map: {prompt: prompt, seed: seed, image_ref: image}
           cloud:
             endpoint: fal-ai/qwen-image-edit
