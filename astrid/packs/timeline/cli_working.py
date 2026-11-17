@@ -388,33 +388,36 @@ def _configure_transcripts_sync(subparser: argparse.ArgumentParser) -> None:
 
 @guard(2)
 def _cmd_transcripts_import(parsed: argparse.Namespace) -> int:
+    from astrid.sdk.media_ids import media_id_text, resolve_media_id
     from astrid.sdk.media_transcript import import_transcript_words
 
     if bool(parsed.file) == bool(parsed.from_run):
         raise ValueError("provide exactly one words file or --from-run")
+    project = need_project(parsed)
+    media_id = resolve_media_id(parsed.client, project, parsed.media_id)
     if parsed.from_run:
         from astrid.sdk.transcript_run import import_transcription_run
-        status = import_transcription_run(parsed.client, need_project(parsed), parsed.media_id, parsed.from_run,
+        status = import_transcription_run(parsed.client, project, media_id, parsed.from_run,
                                           replace=parsed.replace, expected_version=parsed.expected_version)
-        print(f"{status} transcript for {parsed.media_id} from run {parsed.from_run}")
+        print(f"{status} transcript for {media_id} from run {parsed.from_run}")
         return 0
     payload = json.loads(parsed.file.expanduser().read_text(encoding="utf-8"))
     words = payload.get("words") if isinstance(payload, Mapping) else payload
     if not isinstance(words, list):
         raise ValueError("words file must be a list or an object containing a words list")
     if isinstance(payload, Mapping):
-        if payload.get("media_id", parsed.media_id) != parsed.media_id:
+        if media_id_text(payload.get("media_id", media_id)) != media_id:
             raise ValueError("words file media_id does not match the requested media id")
         if payload.get("source_id", parsed.source) != parsed.source:
             raise ValueError("words file source_id does not match the requested source id")
     segment_id = payload.get("segment_id", parsed.segment) if isinstance(payload, Mapping) else parsed.segment
     text = payload.get("text", parsed.text) if isinstance(payload, Mapping) else parsed.text
     status = import_transcript_words(
-        parsed.client, need_project(parsed), parsed.media_id, words,
+        parsed.client, project, media_id, words,
         segment_id=str(segment_id), text=text,
         source=parsed.source, replace=parsed.replace, expected_version=parsed.expected_version,
     )
-    print(f"{status} transcript for {parsed.media_id} ({parsed.source})")
+    print(f"{status} transcript for {media_id} ({parsed.source})")
     return 0
 
 
@@ -471,6 +474,8 @@ def _cmd_transcripts_refresh(parsed: argparse.Namespace) -> int:
         with_reference,
     )
 
+    from astrid.sdk.media_ids import media_id_text
+
     project = need_project(parsed)
     if parsed.run_missing and not parsed.placement:
         raise VerbError("--run-missing runs transcription on a GPU: name where with --placement (e.g. --placement runpod)", 2)
@@ -491,7 +496,7 @@ def _cmd_transcripts_refresh(parsed: argparse.Namespace) -> int:
     for row in rows:
         where = ", ".join(row["holders"])
         detail = f"document v{row['version']}" if row["version"] is not None else "no document"
-        print(f"  {row['media_id']}  {row['status']:<28}  {detail}  "
+        print(f"  {media_id_text(row['media_id'])}  {row['status']:<28}  {detail}  "
               f"[{', '.join(row['clips'])}]  in {where}" + ("  (pinned)" if row["pinned"] else ""))
     missing = [row for row in rows if row["status"] == "missing"]
     if parsed.run_missing:
@@ -505,7 +510,7 @@ def _cmd_transcripts_refresh(parsed: argparse.Namespace) -> int:
                                     placement=parsed.placement, engine=None, execution=None, align=None,
                                     consent=[], recovery_path=None, replace=False, expected_version=None)
             status = _cmd_transcripts_run(ns)
-            print(f"  ran {row['media_id']}: {'ok' if status == 0 else f'failed (exit {status})'}")
+            print(f"  ran {media_id_text(row['media_id'])}: {'ok' if status == 0 else f'failed (exit {status})'}")
         if not parsed.dry_run and missing:
             issues = []
             transcripts = W.load_timeline_transcripts(parsed.client, project, tl.bundle,
@@ -541,7 +546,7 @@ def _cmd_transcripts_refresh(parsed: argparse.Namespace) -> int:
             target = next((doc for doc in docs.values() if doc.get("document_id") == choice_document), None)
         if target is None:
             if choice_source is not None:
-                print(f"  {row['media_id']}: nothing recorded (no stored {choice_source} transcript for this media)")
+                print(f"  {media_id_text(row['media_id'])}: nothing recorded (no stored {choice_source} transcript for this media)")
             continue
         if target.get("document_id") in W.transcript_references(tl.bundle):
             continue  # already pinned to this document

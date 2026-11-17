@@ -20,6 +20,7 @@ from typing import Any
 
 from astrid.core.timeline.cuts import clip_duration
 from astrid.sdk import timeline_intent as intent
+from astrid.sdk.media_ids import canonical_digest
 from astrid.sdk.media_transcript import IMPORT_SOURCE, NARRATION_SOURCE, transcript_document_id
 from astrid.sdk.timeline._common import AUDIO_KINDS, PARENT_SHOT
 from astrid.sdk.timeline.doc import _read_words, _row_start
@@ -293,7 +294,10 @@ def load_timeline_transcripts(client: Any, project: str, bundle: Mapping[str, An
     for media, source in dict.fromkeys(wanted):
         if source in loaded.get(media, {}):
             continue
-        data = media_transcript.read_transcript(client, project, media, source)
+        digest = canonical_digest(media)
+        if digest is None:  # a registry id that is not a digest names no stored transcript
+            continue
+        data = media_transcript.read_transcript(client, project, digest, source)
         if not isinstance(data, Mapping) or not isinstance(data.get("content"), Mapping):
             continue
         document_id = data.get("document_id") or (

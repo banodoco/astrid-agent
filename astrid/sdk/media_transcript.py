@@ -8,6 +8,8 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from .media_ids import canonical_digest, resolve_media_id
+
 SCHEMA = "media.transcript/v1"
 NARRATION_SOURCE = "astrid.narration"
 IMPORT_SOURCE = "astrid.import"
@@ -42,7 +44,8 @@ def _document_pin(value: Any) -> dict[str, Any] | None:
 
 
 def transcript_document_id(project_id: str, media_id: str, source_id: str) -> str:
-    identity = [SCHEMA, project_id, media_id, source_id]
+    # The identity hashes the canonical media id, so a bare digest and its sha256: form address one transcript.
+    identity = [SCHEMA, project_id, canonical_digest(media_id) or media_id, source_id]
     canonical = json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
     return "transcript:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -83,6 +86,7 @@ def _project_id(client: Any, project: str) -> str:
 
 
 def read_transcript(client: Any, project: str, media_id: str, source: str) -> Mapping[str, Any] | None:
+    media_id = resolve_media_id(client, project, media_id)
     document, _pin = _read_transcript_result(client, project, media_id, source)
     return document
 
@@ -102,6 +106,7 @@ def _read_transcript_result(
 def write_transcript(client: Any, project: str, media_id: str, source: str,
                      content: Mapping[str, Any]) -> str:
     """Return created, updated, or unchanged; update with Runtime version CAS."""
+    media_id = resolve_media_id(client, project, media_id)
     status, _pin = _write_transcript_result(client, project, media_id, source, content)
     return status
 
@@ -118,7 +123,10 @@ def import_transcript_words(
     ``replace=True`` and its current version, and replacement replaces the
     entire transcript document (it does not merge a range).
     """
-    if not isinstance(media_id, str) or _DOCUMENT_DIGEST.fullmatch(media_id) is None:
+    if not isinstance(media_id, str):
+        raise ValueError("media id must be a sha256 digest")
+    media_id = resolve_media_id(client, project, media_id)
+    if _DOCUMENT_DIGEST.fullmatch(media_id) is None:
         raise ValueError("media id must be a sha256 digest")
     if not isinstance(source, str) or not source.strip():
         raise ValueError("source id must be non-empty")

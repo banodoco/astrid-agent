@@ -283,3 +283,68 @@ def test_cli_crop_requires_box_or_remove_bars() -> None:
         run_product_family("media", ["crop", "--project", "P", "M-src"], client=client)
     assert excinfo.value.code == 2
     assert client.media.calls == []
+
+
+# -- side bars: pillarbox pairs only ------------------------------------------
+
+
+def _pillar(width: int, height: int, *, left: int, right: int, seed: int = 11) -> np.ndarray:
+    rng = np.random.default_rng(seed)
+    arr = rng.integers(60, 256, size=(height, width, 3), dtype=np.uint8)
+    arr[:, :left] = 0
+    if right:
+        arr[:, width - right:] = 0
+    return arr
+
+
+def test_dark_wall_on_left_only_is_picture_not_a_pillarbox() -> None:
+    # 78 px of dark wall down the left edge of a real frame, nothing on the right.
+    rgb = _pillar(320, 200, left=78, right=0)
+    detection = detect_bars(rgb)
+    assert detection.edges == {"top": 0, "bottom": 0, "left": 0, "right": 0}
+    assert detection.box == Box(0, 0, 320, 200)
+
+
+def test_dark_wall_on_left_only_is_not_cropped_by_remove_bars_import() -> None:
+    data = _png(320, 200)
+    arr = np.asarray(Image.open(io.BytesIO(data)).convert("RGB")).copy()
+    arr[:, :78] = 0
+    out = io.BytesIO()
+    Image.fromarray(arr, "RGB").save(out, format="PNG")
+    client = _FakeClient({"M-src": _image_row("O-src", out.getvalue())})
+    result = crop_media(client, project="P", ref="M-src", remove_bars=True)
+    assert not result.ok and result.error.code == "validation_error"
+    assert "import_file" not in _verbs(client)
+
+
+def test_true_pillarbox_crops_both_sides() -> None:
+    rgb = _pillar(320, 200, left=60, right=60)
+    detection = detect_bars(rgb)
+    assert detection.edges == {"top": 0, "bottom": 0, "left": 60, "right": 60}
+    assert detection.box == Box(60, 0, 200, 200)
+
+
+def test_pillarbox_sides_within_tolerance_are_paired() -> None:
+    rgb = _pillar(320, 200, left=60, right=63)
+    detection = detect_bars(rgb)
+    assert detection.edges["left"] == 60 and detection.edges["right"] == 63
+
+
+def test_unequal_side_bands_beyond_tolerance_are_not_cropped() -> None:
+    rgb = _pillar(320, 200, left=60, right=70)
+    detection = detect_bars(rgb)
+    assert detection.edges["left"] == 0 and detection.edges["right"] == 0
+
+
+def test_top_and_bottom_keep_their_rule_with_side_pairing() -> None:
+    rgb = _pillar(320, 200, left=60, right=60)
+    rgb[:20] = 0
+    detection = detect_bars(rgb)
+    assert detection.edges == {"top": 20, "bottom": 0, "left": 60, "right": 60}
+
+
+def test_one_sided_wide_dark_band_does_not_trip_the_edge_cap() -> None:
+    # 40% of the width is dark on the left only: previously refused as a bar wider than 25%.
+    rgb = _pillar(320, 200, left=128, right=0)
+    detection = detect_bars(rgb)
+    assert detection.edges["left"] == 0
