@@ -580,6 +580,41 @@ def _stopped(plan: dict[str, Any], done: list[dict[str, Any]], failed: dict[str,
         f"Not downloaded: {rest}. Run the same command again to fetch only what is missing.")
 
 
+def _verify_confirmed_present(item: dict[str, Any]) -> dict[str, Any]:
+    """Verify one file ComfyUI lists against its digest-bound local declaration."""
+    path = Path(item['folder']) / item['file']
+    if not path.is_file():
+        if path.is_symlink() and not path.exists():
+            raise AttachedDownloadRefused('present_file_missing',
+                f"{item['file']} is listed by ComfyUI but is missing from {path}; no files were downloaded.")
+        if not os.path.lexists(path):
+            raise AttachedDownloadRefused('present_file_missing',
+                f"{item['file']} is listed by ComfyUI but is missing from {path}; no files were downloaded.")
+        raise AttachedDownloadRefused('present_file_unreadable',
+            f"{item['file']} is listed by ComfyUI but is not a regular file at {path}; no files were downloaded.")
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        with path.open('rb') as stream:
+            while block := stream.read(8 << 20):
+                size += len(block)
+                digest.update(block)
+    except FileNotFoundError as exc:
+        raise AttachedDownloadRefused('present_file_missing',
+            f"{item['file']} is listed by ComfyUI but is missing from {path}; no files were downloaded.") from exc
+    except OSError as exc:
+        raise AttachedDownloadRefused('present_file_unreadable',
+            f"{item['file']} is listed by ComfyUI but could not be verified at {path}: {exc}; "
+            "no files were downloaded.") from exc
+    actual_sha = digest.hexdigest()
+    if size != item['bytes'] or actual_sha != item['sha256']:
+        raise AttachedDownloadRefused('present_file_mismatch',
+            f"{item['file']} is listed by ComfyUI but does not match the confirmed file at {path} "
+            f"(expected {item['bytes']} bytes and SHA-256 {item['sha256']}; found {size} bytes and "
+            f"SHA-256 {actual_sha}); no files were downloaded.")
+    return {'file': item['file'], 'folder': item['folder'], 'bytes': size, 'sha256': actual_sha}
+
+
 def apply_attached_model_download(client, entry_id: str, mode: str, *, plan_sha256, sources=None,
                                   http_client=None) -> dict[str, Any]:
     """Download exactly the plan whose digest was confirmed; re-checks everything before the first write."""
@@ -590,7 +625,12 @@ def apply_attached_model_download(client, entry_id: str, mode: str, *, plan_sha2
     if plan['plan_sha256'] != plan_sha256:
         raise AttachedDownloadRefused('plan_changed', 'The plan changed since it was shown (files, sources or folders); '
                                       'review the new plan and confirm it. Nothing was written.')
+    verified_present = [_verify_confirmed_present(item) for item in plan['present']]
     if not plan['files']:
+        if verified_present and not plan['manual']:
+            return {'downloaded': [], 'present': [item['file'] for item in verified_present],
+                    'done': verified_present, 'total_bytes': 0, 'restarted': False,
+                    'next_step': 'All requested model files are present and verified. Nothing needed downloading.'}
         raise AttachedDownloadRefused('nothing_to_download', 'Nothing in the plan can be downloaded.')
     if not plan['space_ok']:
         raise AttachedDownloadRefused('insufficient_space',
@@ -610,7 +650,8 @@ def apply_attached_model_download(client, entry_id: str, mode: str, *, plan_sha2
         done.append({'file': f['file'], 'folder': f['folder'], 'bytes': f['bytes'], 'resumed_from_bytes': resumed})
         suffix = f', resumed from {_size(resumed)}' if resumed else ''
         _say(f"Downloaded {f['file']} ({_size(f['bytes'])}{suffix})")
-    return {'downloaded': done, 'present': [p['file'] for p in plan['present']], 'total_bytes': plan['total_bytes'],
+    return {'downloaded': done, 'present': [p['file'] for p in verified_present],
+            'done': [*verified_present, *done], 'total_bytes': plan['total_bytes'],
             'restarted': False,
             'next_step': 'No restart needed: ComfyUI re-reads a model folder when its modification time changes, so '
                          'the new files appear on its next /object_info request (refresh the node definitions in an '
