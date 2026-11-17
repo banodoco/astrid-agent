@@ -67,7 +67,15 @@ WARNINGS: dict[str, dict[str, Any]] = {
         "phrase": "another copy of Astrid is still running",
         "next": _repair_next,
     },
+    "renderer-incomplete": {
+        "phrase": "frame looks and renders are unavailable",
+        "next": lambda: f"Next: repair the renderer by running the install line again (it rebuilds the missing packages): {_install_line()}",
+    },
 }
+
+
+def _install_line() -> str:
+    return PUBLIC_INSTALL_LINE_WINDOWS if sys.platform == "win32" else PUBLIC_INSTALL_LINE
 
 
 def _next_line(name: str) -> str:
@@ -314,9 +322,13 @@ def _live(state) -> int | None:
 def receipt_warnings(outcomes: dict | None) -> tuple[str, ...]:
     """The warnings a settled run's own steps raised; they never change the exit code."""
     skills = (outcomes or {}).get("skills")
+    renderer = (outcomes or {}).get("renderer")
+    warnings = []
     if isinstance(skills, dict) and not skills.get("ok"):
-        return ("skills-not-refreshed",)
-    return ()
+        warnings.append("skills-not-refreshed")
+    if isinstance(renderer, dict) and not renderer.get("ok"):
+        warnings.append("renderer-incomplete")
+    return tuple(warnings)
 
 
 def _safe_refusal(failure: BaseException) -> bool:

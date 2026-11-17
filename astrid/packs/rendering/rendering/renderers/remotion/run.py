@@ -961,6 +961,23 @@ def _stderr_tail(stderr: str) -> str:
     return "\n".join(tail).strip()
 
 
+_MISSING_NODE_PACKAGE = re.compile(r"Cannot find (?:package|module) ['\"]?([^'\"\s]+)")
+
+
+def _missing_renderer_package(stderr: str) -> str | None:
+    """Plain words for a Node "Cannot find package" in the Remotion tree, or None."""
+    match = _MISSING_NODE_PACKAGE.search(stderr or "")
+    if match is None:
+        return None
+    parts = match.group(1).replace("\\", "/").split("node_modules/")[-1].split("/")
+    name = "/".join(parts[:2]) if parts[0].startswith("@") else parts[0]
+    line = ("& ([scriptblock]::Create((irm https://astrid.haus/install.ps1)))"
+            if sys.platform == "win32" else "curl -fsSL https://astrid.haus/install | sh")
+    return (f"Remotion's renderer is incomplete: package {name} is missing from its node_modules, "
+            f"so renders and timeline frame looks are unavailable. Repair it by running the install "
+            f"line again: {line}")
+
+
 def _require_free_space(path: Path, min_free_gb: float | None) -> None:
     if min_free_gb is None or min_free_gb <= 0:
         return
@@ -1368,6 +1385,9 @@ def _execute_remotion_locked(
                 (diagnostic_root / f'render-{diagnostic_label}-stdout.log').write_text(diagnostic_stdout or "")
                 (diagnostic_root / f'render-{diagnostic_label}-stderr.log').write_text(completed.stderr)
             if completed.returncode != 0:
+                missing = _missing_renderer_package(completed.stderr)
+                if missing:
+                    raise RuntimeError(missing)
                 stderr_tail = _stderr_tail(completed.stderr)
                 message = f"Remotion render failed with exit code {completed.returncode}"
                 if stderr_tail:

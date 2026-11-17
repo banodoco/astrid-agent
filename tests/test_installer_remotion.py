@@ -1,6 +1,8 @@
 """The shared installer preserves Remotion's frozen dependency contract."""
 
 import hashlib
+import json
+import sys
 import subprocess
 from pathlib import Path
 from unittest.mock import Mock
@@ -91,3 +93,113 @@ def test_remotion_failed_install_says_rendering_is_unavailable_and_where_the_log
     out = capsys.readouterr().out
     assert "Rendering unavailable" in out
     assert str(log) in out
+
+
+def _lock_with(tmp_path, packages: dict) -> tuple[Path, Path]:
+    agent = tmp_path / "source"
+    remotion = agent / "remotion"
+    remotion.mkdir(parents=True)
+    lockfile = remotion / "package-lock.json"
+    lockfile.write_text(json.dumps({"lockfileVersion": 3, "packages": {"": {}, **packages}}))
+    return agent, remotion
+
+
+def _fill(remotion: Path, names, *, with_manifest: bool) -> None:
+    for name in names:
+        folder = remotion / "node_modules" / name
+        folder.mkdir(parents=True, exist_ok=True)
+        if with_manifest:
+            (folder / "package.json").write_text("{}")
+
+
+def test_npm_exit_zero_with_empty_tree_never_publishes_marker(tmp_path, capsys):
+    agent, remotion = _lock_with(tmp_path, {
+        "node_modules/react": {"version": "18.0.0"},
+        "node_modules/esbuild": {"version": "0.19.0"},
+    })
+    log = tmp_path / "install.log"
+    backend = Backend(tmp_path, log, Path("uv"))
+
+    # Fake npm: exits 0 but leaves empty package folders, as after TLS failures.
+    def run(argv, *, cwd, extra_env):
+        _fill(cwd, ["react", "esbuild"], with_manifest=False)
+
+    backend.run = run
+    assert backend.install_remotion_dependencies(
+        agent, {"ASTRID_NODE_EXECUTABLE": "node"}, Path("npm-cli.js")) is False
+    assert not (remotion / "node_modules/.astrid-package-lock.sha256").exists()
+    out = capsys.readouterr().out
+    assert "Rendering unavailable" in out and "react" in out and str(log) in out
+    assert backend.outcomes == {"renderer": {"ok": False}}
+
+
+def test_stale_marker_over_empty_tree_runs_npm_ci_again(tmp_path):
+    agent, remotion = _lock_with(tmp_path, {"node_modules/react": {"version": "18.0.0"}})
+    lock_hash = hashlib.sha256((remotion / "package-lock.json").read_bytes()).hexdigest()
+    _fill(remotion, ["react"], with_manifest=False)  # an earlier run left this empty
+    (remotion / "node_modules/.astrid-package-lock.sha256").write_text(lock_hash + "\n")
+    backend = Backend(tmp_path, tmp_path / "log", Path("uv"))
+    calls = []
+
+    def run(argv, *, cwd, extra_env):
+        calls.append(argv)
+        if "ci" in argv:
+            _fill(cwd, ["react"], with_manifest=True)
+
+    backend.run = run
+    assert backend.install_remotion_dependencies(
+        agent, {"ASTRID_NODE_EXECUTABLE": "node"}, Path("npm-cli.js")) is True
+    assert any("ci" in argv for argv in calls)
+    assert (remotion / "node_modules/react/package.json").is_file()
+    assert (remotion / "node_modules/.astrid-package-lock.sha256").read_text() == lock_hash + "\n"
+
+
+def test_complete_tree_with_matching_marker_is_reused(tmp_path):
+    agent, remotion = _lock_with(tmp_path, {
+        "node_modules/react": {"version": "18.0.0"},
+        "node_modules/@remotion/cli": {"version": "4.0.0"},
+    })
+    lock_hash = hashlib.sha256((remotion / "package-lock.json").read_bytes()).hexdigest()
+    _fill(remotion, ["react", "@remotion/cli"], with_manifest=True)
+    (remotion / "node_modules/.astrid-package-lock.sha256").write_text(lock_hash + "\n")
+    backend = Backend(tmp_path, tmp_path / "log", Path("uv"))
+    calls = []
+    backend.run = lambda argv, *, cwd, extra_env: calls.append(argv)
+
+    assert backend.install_remotion_dependencies(
+        agent, {"ASTRID_NODE_EXECUTABLE": "node"}, Path("npm-cli.js")) is True
+    assert calls == [["node", remotion / "scripts" / "fetch-shared-browser.mjs"]]
+
+
+def test_tree_check_ignores_packages_for_other_platforms(tmp_path):
+    from astrid.installer.backend import _remotion_tree_gaps
+
+    other = "win32" if sys.platform != "win32" else "linux"
+    _agent, remotion = _lock_with(tmp_path, {
+        "node_modules/react": {"version": "18.0.0"},
+        "node_modules/@esbuild/other": {"version": "0.19.0", "os": [other], "optional": True},
+        "node_modules/linked": {"link": True},
+    })
+    _fill(remotion, ["react"], with_manifest=True)
+
+    assert _remotion_tree_gaps(remotion) == []
+
+
+def test_renderer_warning_reaches_the_success_headline():
+    from astrid.installer.outcome import Outcome, receipt_warnings
+
+    assert receipt_warnings({"renderer": {"ok": False}}) == ("renderer-incomplete",)
+    assert receipt_warnings({"renderer": {"ok": True}}) == ()
+    headline = Outcome("repaired", 12, warnings=receipt_warnings({"renderer": {"ok": False}})).headline()
+    assert headline[0] == "Astrid is installed and running (Release 12), but frame looks and renders are unavailable."
+    assert "install line again" in headline[1]
+
+
+def test_missing_renderer_package_is_named_in_plain_words():
+    from astrid.packs.rendering.rendering.renderers.remotion.run import _missing_renderer_package
+
+    stderr = ("node:internal/modules/esm/resolve:1\n"
+              "Error [ERR_MODULE_NOT_FOUND]: Cannot find package '/x/remotion/node_modules/react/index.js' imported from /x/a.mjs")
+    message = _missing_renderer_package(stderr)
+    assert "package react is missing" in message and "install line again" in message
+    assert _missing_renderer_package("Error: something else") is None

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import platform as _stdlib_platform
 import re
 import shutil
 import stat
@@ -442,6 +443,40 @@ def _check_lifecycle_pin(manifest: dict, agent: Path) -> None:
             f"revision {_public_pin(expected[1])} version {_public_version(expected[2])}. {_PIN_REMEDY}")
 
 
+def _npm_rules_allow(rules, value: str) -> bool:
+    """npm's os/cpu rule: a list of names, or negations written with a leading '!'."""
+    if not rules:
+        return True
+    blocked = {rule[1:] for rule in rules if rule.startswith("!")}
+    allowed = {rule for rule in rules if not rule.startswith("!")}
+    return value not in blocked and (not allowed or value in allowed)
+
+
+def _remotion_tree_gaps(remotion: Path) -> list[str]:
+    """Lock packages for this platform whose package.json is missing on disk.
+
+    npm ci can exit 0 and leave package folders empty, and it tolerates failed
+    optional packages silently, so the lock itself is the only reference. The
+    check is one stat per package. An unreadable lock counts as a gap.
+    """
+    try:
+        packages = json.loads((remotion / "package-lock.json").read_text(encoding="utf-8")).get("packages", {})
+    except (OSError, ValueError, AttributeError):
+        return ["package-lock.json"]
+    machine = _stdlib_platform.machine().lower()
+    cpu = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64", "arm64": "arm64"}.get(machine, machine)
+    gaps = []
+    for key, meta in packages.items():
+        if not key.startswith("node_modules/") or not isinstance(meta, dict) or meta.get("link"):
+            continue
+        if not (_npm_rules_allow(meta.get("os"), sys.platform)
+                and _npm_rules_allow(meta.get("cpu"), cpu)):
+            continue  # npm never installs a package for another platform
+        if not (remotion / key / "package.json").is_file():
+            gaps.append(key.split("node_modules/")[-1])
+    return gaps
+
+
 class Backend:
     def __init__(self, root: Path, log: Path, uv: Path, *, say=print,
                  process_control: str | None = None, managed_by: str | None = None):
@@ -501,13 +536,18 @@ class Backend:
             getattr(self, "say", print)(text.rstrip("\n"))
 
     def install_remotion_dependencies(self, agent: Path, env: dict[str, str], npm: Path) -> bool:
-        """Install the renderer's frozen dependencies, reusing an identical lock."""
+        """Install the renderer's frozen dependencies, reusing an identical and complete tree."""
         remotion = agent / "remotion"
         lock_hash = hashlib.sha256((remotion / "package-lock.json").read_bytes()).hexdigest()
         modules = remotion / "node_modules"
         marker = modules / ".astrid-package-lock.sha256"
-        if not (modules.is_dir() and marker.is_file()
-                and marker.read_text(encoding="ascii").strip() == lock_hash):
+        reusable = (modules.is_dir() and marker.is_file()
+                    and marker.read_text(encoding="ascii").strip() == lock_hash)
+        if not (reusable and not _remotion_tree_gaps(remotion)):
+            # npm can exit 0 with package folders left empty (for example after a
+            # TLS failure on every tarball). Drop the marker first so an interrupted
+            # or incomplete run is never reused as complete.
+            marker.unlink(missing_ok=True)
             # Node's official archives expose npm through this JavaScript entrypoint
             # on every OS; neither shell shims nor an ambient npm are required.
             try:
@@ -515,6 +555,12 @@ class Backend:
                          cwd=remotion, extra_env=env)
             except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
                 self.say(f"Rendering unavailable: Remotion npm ci failed ({self._command_failure(exc)}). Details are in the installer log at {self.log}; retry the install.")
+                self.outcomes = {**(getattr(self, "outcomes", None) or {}), "renderer": {"ok": False}}
+                return False
+            gaps = _remotion_tree_gaps(remotion)
+            if gaps:
+                self.say(f"Rendering unavailable: npm ci finished but {len(gaps)} renderer package(s) are missing, first {', '.join(gaps[:3])}. Details are in the installer log at {self.log}; retry the install.")
+                self.outcomes = {**(getattr(self, "outcomes", None) or {}), "renderer": {"ok": False}}
                 return False
             marker.write_text(lock_hash + "\n", encoding="ascii")
         # Renders never download: fetch Remotion's browser now, once per Remotion
@@ -524,6 +570,7 @@ class Backend:
                      cwd=remotion, extra_env=env)
         except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
             self.say(f"Rendering unavailable: Remotion browser setup failed ({self._command_failure(exc)}). Check network access and retry the install.")
+            self.outcomes = {**(getattr(self, "outcomes", None) or {}), "renderer": {"ok": False}}
         return True
 
     @staticmethod
