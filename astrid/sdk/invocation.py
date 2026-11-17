@@ -3560,6 +3560,8 @@ def _wait_for_kernel_task_loop(
             if queued_diagnostic_due or reason in {"waiting_for_worker", "waiting_for_gpu"}:
                 holders, unavailable = _queued_task_holders(task, include_registered=queued_diagnostic_due)
                 if queued_diagnostic_due or holders:
+                    if state in {"queued", "waiting"}:
+                        line += "; waiting behind other Runtime work (it starts when that finishes)"
                     line += "; current executor occupancy: " + (
                         ", ".join(holders) if holders else str(unavailable)
                     )
@@ -3679,7 +3681,12 @@ def _wait_for_kernel_task_loop(
                 "task": task,
                 "error": {
                     "code": "task_wait_timeout",
-                    "message": "render task did not reach a terminal state before the wait timeout",
+                    "message": (
+                        f"task {task_id} was still queued behind other Runtime work when the wait ran out; "
+                        f"it has not run yet, so no frames exist. Follow it with: astrid tasks follow {task_id}"
+                        if state in {"queued", "waiting"} else
+                        "render task did not reach a terminal state before the wait timeout"
+                    ),
                     "details": {
                         "state": state or "unknown",
                         "timeout_seconds": effective_timeout,
