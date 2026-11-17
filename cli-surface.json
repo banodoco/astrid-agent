@@ -99,6 +99,38 @@
       "flags": {},
       "positionals": [],
       "verbs": {
+        "crop": {
+          "flags": {
+            "--bar-threshold": {
+              "required": false
+            },
+            "--box": {
+              "required": false
+            },
+            "--dry-run": {
+              "required": false
+            },
+            "--even": {
+              "required": false
+            },
+            "--idempotency-key": {
+              "required": false
+            },
+            "--json": {
+              "required": false
+            },
+            "--project": {
+              "required": true
+            },
+            "--remove-bars": {
+              "required": false
+            }
+          },
+          "positionals": [
+            "ref"
+          ],
+          "verbs": {}
+        },
         "import": {
           "flags": {
             "--idempotency-key": {
@@ -1728,6 +1760,38 @@
       "flags": {},
       "positionals": [],
       "verbs": {
+        "appearance": {
+          "flags": {
+            "--clear": {
+              "required": false
+            },
+            "--clip": {
+              "required": false
+            },
+            "--dry-run": {
+              "required": false
+            },
+            "--idempotency-key": {
+              "required": false
+            },
+            "--json": {
+              "required": false
+            },
+            "--project": {
+              "required": true
+            },
+            "--set": {
+              "required": false
+            },
+            "--track": {
+              "required": false
+            }
+          },
+          "positionals": [
+            "ref"
+          ],
+          "verbs": {}
+        },
         "apply": {
           "flags": {
             "--draft": {
@@ -3171,6 +3235,105 @@
           "flags": {},
           "positionals": [],
           "verbs": {
+            "import": {
+              "flags": {
+                "--expected-version": {
+                  "required": false
+                },
+                "--from-run": {
+                  "required": false
+                },
+                "--project": {
+                  "required": true
+                },
+                "--replace": {
+                  "required": false
+                },
+                "--segment": {
+                  "required": false
+                },
+                "--source": {
+                  "required": false
+                },
+                "--text": {
+                  "required": false
+                }
+              },
+              "positionals": [
+                "media_id",
+                "file"
+              ],
+              "verbs": {}
+            },
+            "run": {
+              "flags": {
+                "--align": {
+                  "choices": [
+                    "align",
+                    "check",
+                    "trust"
+                  ],
+                  "required": false
+                },
+                "--consent": {
+                  "choices": [
+                    "user_env"
+                  ],
+                  "required": false
+                },
+                "--engine": {
+                  "required": false
+                },
+                "--execution": {
+                  "required": false
+                },
+                "--expected-version": {
+                  "required": false
+                },
+                "--placement": {
+                  "required": false
+                },
+                "--project": {
+                  "required": true
+                },
+                "--recovery-path": {
+                  "required": false
+                },
+                "--replace": {
+                  "required": false
+                }
+              },
+              "positionals": [
+                "media_id"
+              ],
+              "verbs": {}
+            },
+            "show": {
+              "flags": {
+                "--clip": {
+                  "required": false
+                },
+                "--json": {
+                  "required": false
+                },
+                "--project": {
+                  "required": true
+                },
+                "--range": {
+                  "required": false
+                },
+                "--source": {
+                  "required": false
+                },
+                "--timeline": {
+                  "required": false
+                }
+              },
+              "positionals": [
+                "media_id"
+              ],
+              "verbs": {}
+            },
             "sync": {
               "flags": {
                 "--dry-run": {

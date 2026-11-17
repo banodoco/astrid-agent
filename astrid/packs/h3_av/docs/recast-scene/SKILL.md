@@ -87,6 +87,7 @@ Also open: mouth and lenses in one pass (two masks, one run, cheaper) or two pas
 
 - Order: the riskiest, most reused method first, on its best shot. One paid run proves a method; then repeat it across shots.
 - Each pass: a dry run that is the real path stopped before the GPU; one waiting claim with a spend cap and deadline; submit; read back; release.
+- Reference images with black letterbox bars baked into the pixels are cleaned before generation: `astrid media crop <media> --project P --remove-bars` (dry run first, see [media crop](../../../_core/docs/SKILL.md#crop-still-images-and-video)); use the cleaned item as the reference, never the barred original.
 - Check every take with `visualize` (region zoom on the changed area, a strip across the shot) and with timed words for speech. The owner judges look, voice and lip sync.
 
 ## Stage 6 - Assemble and review

@@ -172,6 +172,27 @@ The top-level families are `projects`, `timelines`, `media`, `tasks`, `runs`,
 mounts. Packs and capabilities are invoked through the SDK, not as extra
 gateway verbs.
 
+### Crop still images and video
+
+Use `media crop` when a source has black letterbox bars baked into its pixels,
+or when a reference needs a sub-rectangle. It creates a NEW managed media item
+and never changes the source:
+
+```bash
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" media crop SOURCE_MEDIA_ID --project <project> --remove-bars --dry-run --json
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" media crop SOURCE_MEDIA_ID --project <project> --remove-bars --json
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" media crop SOURCE_MEDIA_ID --project <project> --box 0,121,1672,698 --even --json
+```
+
+`--remove-bars` finds near-black uniform bands on any edge (a pixel counts as
+black at or below `--bar-threshold`, default 16) and prints the box it found.
+Run `--dry-run` first to read the box and output size. `--box X,Y,W,H` uses
+source pixels. Images come out as lossless PNG; video is re-encoded at the same
+fps with audio copied. `--even` rounds width and height down to even values,
+which video encoders need. The new item is imported like `media import` and is
+linked to its source by a `derived_from` relation whose metadata records the
+source digest, the box, and any detected bars.
+
 ## Find and open work
 
 Use the runtime to discover work. Do not infer current state from checkout

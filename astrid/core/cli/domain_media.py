@@ -50,6 +50,7 @@ from typing import Any, Sequence
 
 from astrid.core.cli.domain_output import print_result
 from astrid.core.cli.registration import CommandSpec, register_product_commands
+from astrid.core.media_crop import DEFAULT_BAR_THRESHOLD
 
 __all__ = ["COMMANDS", "build_parser"]
 
@@ -234,6 +235,23 @@ def _cmd_relate(parsed: argparse.Namespace) -> int:
     return print_result(result, as_json=parsed.json)
 
 
+def _cmd_crop(parsed: argparse.Namespace) -> int:
+    from astrid.core.media_crop import crop_media
+
+    result = crop_media(
+        parsed.client,
+        project=parsed.project,
+        ref=parsed.ref,
+        box=parsed.box,
+        remove_bars=parsed.remove_bars,
+        bar_threshold=parsed.bar_threshold,
+        even=parsed.even,
+        dry_run=parsed.dry_run,
+        idempotency_key=parsed.idempotency_key,
+    )
+    return print_result(result, as_json=parsed.json)
+
+
 def _cmd_thumbnail_backfill(parsed: argparse.Namespace) -> int:
     result = parsed.client.media.backfill_thumbnails(
         parsed.project,
@@ -395,6 +413,54 @@ def _configure_relate(subparser: argparse.ArgumentParser) -> None:
     subparser.set_defaults(handler=_cmd_relate)
 
 
+def _configure_crop(subparser: argparse.ArgumentParser) -> None:
+    subparser.description = (
+        "Crop one managed still image or video into a NEW media item. The source "
+        "is untouched; the result is imported like 'media import' and linked to "
+        "the source by a derived_from relation carrying the exact box."
+    )
+    _add_project_arg(subparser)
+    subparser.add_argument("ref", help="Exact project-scoped source media id.")
+    mode = subparser.add_mutually_exclusive_group(required=True)
+    mode.add_argument(
+        "--box",
+        default=None,
+        help="Crop rectangle X,Y,W,H in source pixels.",
+    )
+    mode.add_argument(
+        "--remove-bars",
+        dest="remove_bars",
+        action="store_true",
+        default=False,
+        help="Detect near-black uniform bands on any edge and crop them away.",
+    )
+    subparser.add_argument(
+        "--bar-threshold",
+        dest="bar_threshold",
+        type=int,
+        default=DEFAULT_BAR_THRESHOLD,
+        metavar="0..255",
+        help="Max channel value still counted as black for --remove-bars "
+        f"(default: {DEFAULT_BAR_THRESHOLD}).",
+    )
+    subparser.add_argument(
+        "--even",
+        action="store_true",
+        default=False,
+        help="Round width and height down to even values (video encoders).",
+    )
+    subparser.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        default=False,
+        help="Print the box and output size; import nothing.",
+    )
+    _add_idempotency_key(subparser)
+    _add_json_flag(subparser)
+    subparser.set_defaults(handler=_cmd_crop)
+
+
 def _configure_thumbnails(subparser: argparse.ArgumentParser) -> None:
     nested = subparser.add_subparsers(dest="thumbnail_command", required=True)
     backfill = nested.add_parser(
@@ -477,6 +543,12 @@ COMMANDS: tuple[CommandSpec, ...] = (
         help="Materialize one media relation edge "
         "(frozen five kinds; constraints delegated to the service).",
         configure=_configure_relate,
+    ),
+    CommandSpec(
+        "crop",
+        help="Crop one still image or video into a new media item "
+        "(--box X,Y,W,H or --remove-bars; source untouched).",
+        configure=_configure_crop,
     ),
     CommandSpec(
         "thumbnails",
