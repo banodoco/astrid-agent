@@ -101,6 +101,9 @@
       "verbs": {
         "crop": {
           "flags": {
+            "--allow-no-bars": {
+              "required": false
+            },
             "--bar-threshold": {
               "required": false
             },
