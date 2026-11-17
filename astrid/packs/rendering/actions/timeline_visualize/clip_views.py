@@ -585,10 +585,10 @@ def compare_page(*, title: str, what: str, sub: Sequence[str], rows: Sequence[tu
     diff_w = min(rows[0][1].size[0] if rows else 600, (max_width - 24 - gap * (n - 1)) // n)
     diffs = [_fit(d.picture, diff_w) for _t, _s, _k, d in rows]
     dh = diffs[0].size[1] if diffs else 0
-    pair_w = min(diff_w, 460)
+    per_row = 2 if n > 1 else 1  # two moments (four pictures) per evidence row
+    pair_w = min(diff_w, (max_width - 24 - per_row * (3 * gap + 20)) // (2 * per_row))
     pairs = [(_fit(src, pair_w), _fit(take, pair_w)) for _t, src, take, _d in rows]
     ph = pairs[0][0].size[1] if pairs else 0
-    per_row = max(1, (max_width - 24) // (2 * pair_w + 3 * gap + 20))
     width = max(24 + n * (diff_w + gap), 24 + per_row * (2 * pair_w + 3 * gap + 20), 900)
     header_h = 66 + 19 * len(sub) + 28 * len(verdicts) + 16
     evidence_rows = (n + per_row - 1) // per_row
