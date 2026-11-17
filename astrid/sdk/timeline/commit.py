@@ -1022,6 +1022,51 @@ def _check_reservations(port, plan, current, rejected, base):
          accepted_base=current, requested_base=base)
 
 
+def reader_problem(service, document):
+    """Why render and visualize could not open this exact closure, or ``None``.
+
+    The closure goes through the readers' shared parent-composition projection
+    and render's normalization, then the readers' own strict timeline and
+    registry schemas.
+    """
+    from astrid.core.timeline.reader_projection import ReaderProjectionError, check_reader_projection
+    from astrid.packs.rendering.actions.render.managed_timeline import (
+        ManagedRenderValidationError,
+        _render_compatible_projection,
+    )
+
+    try:
+        # Appearance normalization (the Node placement package) only resolves
+        # canvas geometry; skipping it keeps this check free of a subprocess.
+        projected = service.project_capture(document, normalize_appearance=False)
+        config, registry = _render_compatible_projection(projected["config"], projected["registry"])
+        check_reader_projection(config, registry)
+    except (ReaderProjectionError, ManagedRenderValidationError) as exc:
+        return str(exc)
+    except Exception as exc:  # noqa: BLE001 - the readers run this same projection
+        return f"render and visualize cannot project the result: {exc}"
+    return None
+
+
+def _check_readers(service, document, baseline_document, base, current):
+    """Refuse a commit that turns a timeline the readers can open into one they cannot.
+
+    A timeline that is already unreadable may still be edited (for example,
+    undone back to a readable revision); the gate never makes it worse.
+    """
+    from runtime_protocol.timeline_commit import CommitRejected
+
+    problem = reader_problem(service, document)
+    if problem is None or reader_problem(service, baseline_document) is not None:
+        return
+    raise CommitRejected(_failure(
+        "unreadable_result",
+        f"Refused: after this edit {problem}. Nothing was committed.",
+        base, current, invalid=True, status="invalid",
+        hint="Select clip media through a registry asset (clip.asset), then commit again",
+        suggested_command="timelines visualize"))
+
+
 class RuntimeCommitService:
     provider_id = "astrid-v1"
     interface_version = 1
@@ -1037,8 +1082,12 @@ class RuntimeCommitService:
             "preview": preview_authoring_candidate(candidate),
         })
 
-    def project_capture(self, document, *, authoring_preview=None):
-        """Pure optional capture admission; Runtime supplies a verified closure."""
+    def project_capture(self, document, *, authoring_preview=None, normalize_appearance=True):
+        """Pure optional capture admission; Runtime supplies a verified closure.
+
+        ``normalize_appearance=False`` skips the Node placement package, which
+        only resolves canvas geometry; the commit-time reader check uses it.
+        """
         from astrid.core.timeline.shot_composition_projection import (
             project_runtime_parent_composition,
         )
@@ -1134,7 +1183,10 @@ class RuntimeCommitService:
         # Capture admission and SDK capture must project the same normalized
         # copies of the verified immutable closure.
         from ._appearance import normalize_revision_closure
-        parent, internals, placement_findings = normalize_revision_closure(parent, internals)
+        if normalize_appearance:
+            parent, internals, placement_findings = normalize_revision_closure(parent, internals)
+        else:
+            placement_findings = []
         if marker is not None:
             marker['placement_migrations'] = placement_findings
         projected = project_runtime_parent_composition(
@@ -1426,6 +1478,10 @@ class RuntimeCommitService:
                 )
                 document = document_from_bundle(plan.bundle, source_bundles=inverse_sources,
                                                 inverse_records=inverse_records)
+                # What a commit accepts, every reader must be able to open.
+                reader_baseline = (bundle if current == base else head_bundle)
+                _check_readers(self, document, reader_baseline["source_mapping"]["_runtime_document"],
+                               base, current)
                 from ._commit_preview import capture_sequential_execution, prepared_records
 
                 records = prepared_records(plan, undo_of=undo_of,

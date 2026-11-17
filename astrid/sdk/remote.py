@@ -1613,12 +1613,27 @@ class RemoteTimelines(_RemoteFamily, _RemoteTimelineRevisionMixin):
                         break
                 if asset_key is not None:
                     break
+            if asset_key is None and re.fullmatch(r"sha256:[0-9a-fA-F]{64}", normalized):
+                # Readers select media only through a registry asset; never
+                # leave a bare media_id on the clip. Register the digest in
+                # this shot's own registry and point the clip at it.
+                if not isinstance(internal, dict):
+                    return DomainResult.failure(ErrorObject("validation_error", "target internal timeline cannot hold a registry asset", {"occurrence_id": occurrence_id}), idempotency_key=key)
+                registry = internal.setdefault("registry", {})
+                assets = registry.setdefault("assets", {}) if isinstance(registry, dict) else None
+                if not isinstance(assets, dict):
+                    return DomainResult.failure(ErrorObject("validation_error", "target internal timeline registry is not an object", {"occurrence_id": occurrence_id}), idempotency_key=key)
+                digest = normalized.lower()
+                seed = "media-" + digest.removeprefix("sha256:")[:16]
+                asset_key, suffix = seed, 1
+                while asset_key in assets:
+                    suffix += 1
+                    asset_key = f"{seed}-{suffix}"
+                assets[asset_key] = {"media_id": digest, "content_sha256": digest.removeprefix("sha256:")}
             for field in ("asset", "asset_id", "media_id", "object_id"):
                 clip.pop(field, None)
             if asset_key is not None:
                 clip["asset"] = asset_key
-            elif re.fullmatch(r"sha256:[0-9a-fA-F]{64}", normalized):
-                clip["media_id"] = normalized.lower()
             else:
                 return DomainResult.failure(ErrorObject("validation_error", "replacement media must be an admitted project-owned digest or registry asset", {"source_object_id": source}), idempotency_key=key)
 
