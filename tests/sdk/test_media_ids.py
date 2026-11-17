@@ -344,3 +344,79 @@ def test_references_entry_with_a_hex_reference_name_resolves_to_the_reference() 
     )
     assert values["image_ref"]["digest"] == D1
     assert links and links[0]["reference_id"] == "ref-1"
+
+
+# -- relate without a kind is refused locally; registry sources and transcript loads ---------
+
+
+def test_media_relate_without_a_kind_is_refused_before_any_call() -> None:
+    transport = _Transport()
+    media = _media(transport)
+    from_cli = media.relate("demo", relations=[{"from_media_id": D1, "to_media_id": D3}])
+    assert not from_cli.ok and from_cli.error.code == "validation_error"
+    assert "kind" in from_cli.error.message
+    keyword = media.relate("demo", from_object_id=D1, to_object_id=D3, kind=None)
+    assert not keyword.ok and keyword.error.code == "validation_error"
+    assert transport.relations == []
+
+
+def _timeline_stub():
+    from astrid.sdk.timeline.edits import _EditMixin
+
+    class _Stub(_EditMixin):
+        def __init__(self) -> None:
+            self.bundle = {"project_id": "P"}
+            self.regs: dict[str, dict] = {"s1": {}}
+
+        def _registry(self, sid):
+            return self.regs[sid]
+
+        def _shot_ids(self):
+            return ["s1"]
+
+    return _Stub()
+
+
+def test_registry_source_is_the_canonical_digest_not_the_typed_prefix(monkeypatch) -> None:
+    from astrid.sdk.timeline import store
+
+    monkeypatch.setattr(store, "resolve_handle_entry", lambda project, handle, client=None: {
+        "key": "still", "media_id": D1, "content_sha256": D1, "type": "image/png"})
+    stub = _timeline_stub()
+    key = stub._register_asset("s1", D1[7:15])  # an 8-character prefix typed by the user
+    assert stub.regs["s1"][key]["source"] == D1
+    assert stub.regs["s1"][key]["media_id"] == D1
+
+
+def test_registry_source_keeps_a_handle_as_typed(monkeypatch) -> None:
+    from astrid.sdk.timeline import store
+
+    monkeypatch.setattr(store, "resolve_handle_entry", lambda project, handle, client=None: {
+        "key": "presenter", "media_id": D1, "content_sha256": D1, "type": "image/png"})
+    stub = _timeline_stub()
+    key = stub._register_asset("s1", "ref:Presenter")
+    assert stub.regs["s1"][key]["source"] == "ref:Presenter"
+
+
+def test_transcript_load_skips_non_digest_registry_ids_and_never_lists_media(monkeypatch) -> None:
+    from astrid.sdk import media_transcript
+    from astrid.sdk.timeline import words
+
+    class _NoListing:
+        class media:  # noqa: N801 - mirrors the client attribute
+            @staticmethod
+            def show(project, ref):
+                raise AssertionError(f"media listing must not run for a full digest or a skipped id: {ref}")
+
+    calls: list[tuple[str, str]] = []
+
+    def fake_read(client, project, media_id, source):
+        calls.append((media_id, source))
+        return {"content": {"segments": []}, "version": 1, "document_id": "doc-1"}
+
+    monkeypatch.setattr(words, "timeline_media_ids", lambda bundle, any_media=False: ["clip-a", D1[7:]])
+    monkeypatch.setattr(media_transcript, "read_transcript", fake_read)
+    loaded = words.load_timeline_transcripts(_NoListing(), "demo", {}, sources=["src-a"])
+    assert calls == [(D1, "src-a")]           # the bare digest is read as its canonical digest, once
+    assert loaded[D1[7:]]["src-a"]["document_id"] == "doc-1"  # stored under the id the timeline names
+    assert "clip-a" not in loaded

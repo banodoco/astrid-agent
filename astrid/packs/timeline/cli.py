@@ -3376,7 +3376,8 @@ def _cmd_assets(parsed: argparse.Namespace) -> int:
         return 0
     for row in rows:
         media = row["media"]
-        # Registry rows store the digest bare; every printed media id is the canonical sha256: form.
+        # Registry rows are canonical when resolve_handle_entry wrote them; some writers and older timelines
+        # keep the bare digest. Every printed media id is the canonical sha256: form.
         digest = media_id_text(media.get("content_sha256") or media.get("media_id") or "unknown")
         kind = str(media.get("type") or "unknown")
         size = media.get("size_bytes", media.get("size"))

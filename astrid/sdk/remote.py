@@ -1978,6 +1978,8 @@ class RemoteMedia(_RemoteFamily):
             if not isinstance(relations, (list, tuple)) or len(relations) != 1 or not isinstance(relations[0], Mapping):
                 return DomainResult.failure(ErrorObject("validation_error", "media relate takes exactly one relation per call", {"project": str(project)}))
             relation = dict(relations[0])
+            if not relation.get("kind"):
+                return DomainResult.failure(ErrorObject("validation_error", "media relate needs a relation kind (--kind)", {"project": str(project)}))
             return self.relate(
                 project,
                 from_object_id=relation.get("from_media_id"),
@@ -1987,6 +1989,8 @@ class RemoteMedia(_RemoteFamily):
                 idempotency_key=idempotency_key,
                 ordinal=relation.get("ordinal"),
             )
+        if not kind:
+            return DomainResult.failure(ErrorObject("validation_error", "media relate needs a relation kind (--kind)", {"project": str(project)}))
         resolved = {}
         for side, value in (("from", from_object_id), ("to", to_object_id)):
             shown = self.show(project, value)
