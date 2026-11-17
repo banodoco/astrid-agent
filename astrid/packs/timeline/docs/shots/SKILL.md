@@ -79,7 +79,7 @@ The shape (`version` 1; every other key is optional; any other key is refused):
 
 - `method`: one or more of the recast method codes `V LC LM R M E K` (see the [recast skill](../../../h3_av/docs/recast-scene/SKILL.md#stage-3---shot-list-pick-a-method-for-each-shot)); `K` (keep) stands alone.
 - `status`: `planned`, `in_progress`, `take_ready` or `approved`. `take_ready` and `approved` need at
-  least one take, except for a `K` shot, which is approved without one.
+  least one take; the one exception is a `K` shot, which is `approved` without one.
 - `line` is a label for planning. The narration itself is the shot's `voiceover_script` text
   (`timelines shots text set --kind voiceover_script`); address it by shot and kind, never by binding id.
 - `inputs.voice.range` is `[start, end]` in **seconds into the voice media `inputs.voice.media`**
@@ -104,7 +104,9 @@ name, and a name two shots share is refused (use the id). `set` merges: the fiel
 replace those fields (`inputs` and `inputs.voice` merge key by key), `--add-take` appends,
 `--unset inputs.voice` removes a field, `--replace` starts from an empty plan. A bad plan is refused
 with the reason before anything is written. If the timeline changes while the plan is being written,
-`set` fails with `conflict` and keeps nothing: run the same command again. `show` and `list` take `--revision-id` to read a saved
+`set` fails with `conflict` and keeps nothing: run the same command again. If it fails with
+`outcome_unknown`, the write may or may not have landed: re-run the same command with the
+`--idempotency-key` the message names to confirm. `show` and `list` take `--revision-id` to read a saved
 revision. `list` also names the shots with no plan (`unplanned`) and the planned shots not yet
 `approved` (`not_approved`; `K` shots need no approval). A stored plan that no longer validates is
 listed under `invalid` and shown as `invalid plan (...)`; rewrite it whole with `--replace`. `visualize --shot-plans` prints one line per

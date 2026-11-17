@@ -36,6 +36,7 @@ from __future__ import annotations
 import copy
 import json
 import math
+import uuid
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -154,7 +155,8 @@ def validate_plan(plan: Any) -> dict[str, Any]:
             for key in TAKE_FIELDS:
                 if key in take:
                     _text(take[key], f"takes[{index}].{key}")
-    if out.get("status") in ("take_ready", "approved") and not out.get("takes") and out.get("method") != ["K"]:
+    if (out.get("status") in ("take_ready", "approved") and not out.get("takes")
+            and not (out["status"] == "approved" and out.get("method") == ["K"])):
         raise ShotPlanError(f"plan.status {out['status']} needs at least one take (--add-take); "
                             "only a K (keep) shot is approved without one")
     return out
@@ -439,13 +441,21 @@ def set_plan(client: Any, project: str, timeline: str, shot: str, *, patch: Mapp
         written.update(plan)
 
     label = message or f"Plan shot {_shot_name(sid, bundle['shots'][sid])}"
-    from astrid.sdk.timeline.sync import CommitConflict
+    from astrid.sdk.timeline.sync import CommitConflict, CommitOutcomeUnknown
 
+    # A key is always sent, so a write whose outcome is unknown can be confirmed by re-running it.
+    key = idempotency_key or f"shot-plan-{uuid.uuid4().hex}"
     tl = None
     try:
         tl = Timeline.open(project, timeline, client=client, outbox_path=outbox_path)
-        result = tl.commit(edit, label=label, key=idempotency_key)
-    except (ShotPlanError, TimelineEditError, KeyError) as exc:
+        result = tl.commit(edit, label=label, key=key)
+    except CommitOutcomeUnknown as exc:
+        # The request was sent: it may have landed. Keep its record so the same key reconciles it.
+        return _failure("outcome_unknown", (
+            f"the plan write for shot {sid} was sent but its outcome is unknown: it may or may not have landed. "
+            f"Re-run the same `timelines shots plan set` command with `--idempotency-key {key}` to confirm."),
+            {"shot": sid, "idempotency_key": key, "cause": str(exc)})
+    except (ShotPlanError, TimelineEditError) as exc:
         # A plan write is recomputed from the head every time, so a saved retry of it is never
         # wanted: drop it, and tell the user to run the same command again.
         dropped = _drop_saved_edits(tl, getattr(exc, "pending_id", None))
@@ -457,13 +467,10 @@ def set_plan(client: Any, project: str, timeline: str, shot: str, *, patch: Mapp
         if isinstance(exc, CommitConflict):
             return _failure("conflict", f"timeline {timeline!r} changed while the plan for shot {sid} was being "
                             f"written. {again}", {"shot": sid, "dropped_saved_edits": dropped})
-        if isinstance(exc, KeyError):
-            return _failure("conflict", f"shot {sid} is no longer on timeline {timeline!r}. {again}",
-                            {"shot": sid, "dropped_saved_edits": dropped})
         headline = getattr(exc, "headline", None) or str(exc)
         return _failure("commit_failed", f"{str(headline).rstrip('.')}. {again}",
                         {"shot": sid, "dropped_saved_edits": dropped})
     data = result.get("data") if isinstance(result, Mapping) else None
     revision = data.get("accepted_revision_id") if isinstance(data, Mapping) else None
     return DomainResult.success({"shot_id": sid, "revision_id": revision, "label": label,
-                                 "plan": json.loads(json.dumps(written))})
+                                 "idempotency_key": key, "plan": json.loads(json.dumps(written))})

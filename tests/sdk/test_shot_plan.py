@@ -51,6 +51,7 @@ def test_full_plan_validates_and_version_is_filled_in():
     ({"method": ["K", "R"]}, "K (keep) stands alone"),
     ({"method": ["LM"], "status": "take_ready"}, "plan.status take_ready needs at least one take"),
     ({"method": ["LM"], "status": "approved", "takes": []}, "plan.status approved needs at least one take"),
+    ({"method": ["K"], "status": "take_ready"}, "plan.status take_ready needs at least one take"),
     ({"inputs": {"refs": []}}, "unknown key(s) under plan.inputs: refs"),
     ({"inputs": {"voice": {"clip": "x"}}}, "unknown key(s) under plan.inputs.voice: clip"),
     ({"takes": [{"note": "no media"}]}, "needs a generation or a media id"),
@@ -396,3 +397,51 @@ def test_shot_removed_between_open_and_commit_is_a_clear_failure(restructure_run
     assert not result.ok and result.error.code == "conflict"
     assert "shot gone is no longer on timeline 't'" in result.error.message
     assert "run the same `timelines shots plan set` command again" in result.error.message
+
+
+def test_outcome_unknown_is_not_reported_as_nothing_committed(monkeypatch):
+    from astrid.sdk import shot_plan
+    from astrid.sdk.timeline import Timeline
+    from astrid.sdk.timeline.sync import CommitOutcomeUnknown
+
+    bundle = {"base_parent": {"revision_id": "r1"}, "placements": [
+        {"occurrence_id": "o1", "shot_id": "s1", "placement": {"start_ms": 0}, "duration_ms": 1000}],
+        "shots": {"s1": {"payload": {"name": "One"}}}}
+    client = SimpleNamespace(timelines=SimpleNamespace(
+        open_bundle=lambda *a, **k: DomainResult.success({"bundle": bundle})))
+    seen = {}
+
+    class Session:
+        def commit(self, fn, *, label, key):
+            seen["key"] = key
+            raise CommitOutcomeUnknown(ConnectionError("connection reset"), key=key)
+
+    monkeypatch.setattr(Timeline, "open", classmethod(lambda cls, *a, **k: Session()))
+    result = shot_plan.set_plan(client, "p", "t", "s1", patch={"method": ["V"]}, idempotency_key="plan-key-1")
+    assert not result.ok and result.error.code == "outcome_unknown"
+    assert "may or may not have landed" in result.error.message
+    assert "--idempotency-key plan-key-1" in result.error.message
+    assert "Nothing was committed" not in result.error.message
+    assert seen["key"] == "plan-key-1"
+
+    # Without a caller key one is generated, sent, and named so the user can confirm with it.
+    result = shot_plan.set_plan(client, "p", "t", "s1", patch={"method": ["V"]})
+    assert seen["key"].startswith("shot-plan-") and f"--idempotency-key {seen['key']}" in result.error.message
+    assert result.error.details["idempotency_key"] == seen["key"]
+
+
+def test_unexpected_key_error_is_not_reported_as_conflict(monkeypatch):
+    from astrid.sdk import shot_plan
+    from astrid.sdk.timeline import Timeline
+
+    bundle = {"placements": [], "shots": {"s1": {"payload": {"name": "One"}}}}
+    client = SimpleNamespace(timelines=SimpleNamespace(
+        open_bundle=lambda *a, **k: DomainResult.success({"bundle": bundle})))
+
+    class Session:
+        def commit(self, fn, *, label, key):
+            raise KeyError("unrelated")
+
+    monkeypatch.setattr(Timeline, "open", classmethod(lambda cls, *a, **k: Session()))
+    with pytest.raises(KeyError, match="unrelated"):
+        shot_plan.set_plan(client, "p", "t", "s1", patch={"method": ["V"]})
