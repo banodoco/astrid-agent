@@ -200,12 +200,19 @@ def _summary_lines(ctx: LayerContext) -> list[str]:
         enters = element.start - float(cut["start"])
         layers.append(element.label + (f" @+{enters:.2f}" if enters > 1 / ctx.fps else ""))
     lo, hi = float(cut["start"]), float(cut["end"])
+    where = "this window" if cut.get("window") else "this cut"
     if cut.get("window"):  # a window (--at, --range): the words spoken IN it, however short it is
         said = " ".join(w.text for w in ctx.words if w.end > lo + 1e-6 and w.start < max(hi, lo + 1 / ctx.fps) - 1e-6)
-        silent = "VO (nobody is speaking in this window)"
     else:
         said = " ".join(w.text for w in ctx.words if lo <= (w.start + w.end) / 2 < hi)
-        silent = "VO (none under this cut)"
+    # a VO clip under it with no words means the words are not stored, not that nobody speaks
+    voices = [e for e in ctx.elements if e.audio and e.track not in ("music", "sfx")
+              and e.end > lo + 1e-6 and e.start < max(hi, lo + 1 / ctx.fps) - 1e-6]
+    if voices:
+        names = ", ".join(dict.fromkeys(e.short_id for e in voices))
+        silent = f"VO: {names} plays in {where}; no words stored (timelines transcripts run)"
+    else:
+        silent = f"VO: no voice clip in {where}"
     picture = next((e.label for e in ctx.elements if e.id == cut.get("clip_id")), cut.get("clip_id") or "(no picture clip)")
     sequence = cut.get("sequence") or {}
     if sequence:
@@ -214,6 +221,8 @@ def _summary_lines(ctx: LayerContext) -> list[str]:
         f"picture {picture}" + (f"  +  {' · '.join(layers)}" if layers else ""),
         f'VO "{said}"' if said else silent,
     ]
+    if ctx.shared.get("revision_short"):
+        lines.append(f"revision {ctx.shared['revision_short']}")
     if ctx.frame_size and ctx.frame_size[0]:
         w, h = ctx.frame_size
         scale = model.CANVAS[0] / float(w)
