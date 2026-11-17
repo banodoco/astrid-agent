@@ -85,6 +85,17 @@ def _own_or_mirror(holder: Mapping[str, Any], key: str) -> list[Any]:
     return list(chosen) if isinstance(chosen, list) else []
 
 
+def _is_silent(clip: Mapping[str, Any]) -> bool:
+    """A clip marked muted, or with volume 0 (top level or in its params): no speech is heard from it."""
+    params = clip.get("params") if isinstance(clip.get("params"), Mapping) else {}
+    if clip.get("muted") is True or params.get("muted") is True:
+        return True
+    for value in (clip.get("volume"), params.get("volume")):
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value == 0:
+            return True
+    return False
+
+
 def _holder_clips(holder: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return [c for c in _own_or_mirror(holder, "clips") if isinstance(c, Mapping)]
 
@@ -182,16 +193,28 @@ def project_words(bundle: Mapping[str, Any], transcripts: Mapping[str, Mapping[s
     """
     order = tuple(sources) if sources is not None else default_source_order()
     refs = transcript_references(bundle) if references is None else references
+    occurrences = _occurrences(bundle, scope)
+    # Linked A/V (a video clip and its audio clip on one media): the audio track carries the speech,
+    # so a non-audio clip of that media adds nothing in "any" mode.
+    audio_media = {_clip_media_id(occ["holder"], clip) for occ in occurrences
+                   for clip in _holder_clips(occ["holder"])
+                   if _track_is_audio(_holder_tracks(occ["holder"]), clip)}
     rows: list[dict[str, Any]] = []
-    for occ in _occurrences(bundle, scope):
+    for occ in occurrences:
         holder, owner, length = occ["holder"], occ["owner"], occ["length"]
         tracks = _holder_tracks(holder)
         for clip in _holder_clips(holder):
             clip_media = _clip_media_id(holder, clip)
-            if media == "audio" and not _track_is_audio(tracks, clip):
+            audio_track = _track_is_audio(tracks, clip)
+            if media == "audio" and not audio_track:
                 continue
-            if media == "any" and clip_media is None and not intent.words(clip):
-                continue
+            if media == "any":
+                if clip_media is None and not intent.words(clip):
+                    continue
+                if _is_silent(clip):
+                    continue  # muted or volume 0: nothing is heard from it
+                if not audio_track and clip_media in audio_media:
+                    continue  # its audio track is the one that carries the speech
             segment = intent.line(clip) or str(clip.get("id") or "")
             clip_at = max(0.0, float(clip.get("at") or 0))  # a clip never starts before its placement
             chosen = choose_document(transcripts.get(clip_media) or {}, refs, order) if clip_media else None

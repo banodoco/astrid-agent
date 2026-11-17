@@ -89,8 +89,9 @@ Trim, move, speed changes and repeated placements need no refresh: words are rea
 timeline as it stands. `transcripts sync` still works, but `refresh` replaces it.
 
 `transcripts show --timeline` reads the Whisper transcript by default (what it always showed); `--source S`
-shows source S instead. Clips with a managed media digest are included, video clips with embedded audio too.
-A pinned transcript wins for its media, whatever its source. A pin that cannot be loaded is reported on stderr.
+shows source S instead (and ignores pins). Clips with a managed media digest are included, video clips with embedded audio too.
+A pinned transcript wins for its media, whatever its source, unless `--source` is given: then that
+source wins and pins are ignored. A pin that cannot be loaded is reported on stderr.
 
 ## Choose a cut point
 

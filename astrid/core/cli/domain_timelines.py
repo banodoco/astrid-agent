@@ -1487,7 +1487,9 @@ def _working_configure_transcripts_refresh(subparser: argparse.ArgumentParser) -
 def _working_configure_transcripts_show(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("media_id", nargs="?", help="Project-managed sha256 media id (omit when selecting --clip).")
     _add_project_arg(subparser, required=True)
-    subparser.add_argument("--source", default=None, help="Transcript source id (default: the pinned Whisper workflow source).")
+    subparser.add_argument("--source", default=None,
+                           help="Transcript source id to show. Default: the pinned Whisper workflow source, and a "
+                                "transcriptReferences pin wins for its media. With --source, that source wins and pins are ignored.")
     subparser.add_argument("--range", dest="source_range", help="Source-media seconds as START..END.")
     subparser.add_argument("--timeline", help="Timeline UUID, ULID, or slug for occurrence mapping.")
     subparser.add_argument("--clip", help="Restrict mapping to this clip id (requires --timeline).")
@@ -1522,6 +1524,8 @@ def _working_configure_transcripts_run(subparser: argparse.ArgumentParser) -> No
     subparser.add_argument("--recovery-path")
     subparser.add_argument("--replace", action="store_true")
     subparser.add_argument("--expected-version", type=int)
+    subparser.add_argument("--dry-run", action="store_true",
+                           help="Stage input, compile and run the invocation preflight, then stop before admission.")
     subparser.set_defaults(handler=_working_cmd_transcripts_run)
 
 

@@ -360,3 +360,71 @@ def test_render_snapshot_freezes_speech_words_with_document_identity_and_says_wh
     _attach_speech_words(unreadable, None, "minkhole", config, registry)
     assert unreadable["speech_words"] is None
     assert "unavailable" in unreadable["metadata"]["speech_words_issues"][0]
+
+
+def test_linked_av_on_one_media_counts_its_speech_once_in_any_mode():
+    video = _shot_clip("v1", track="visual", src_from=0.0, to=4.0)
+    audio = _shot_clip("a1", track="vo", src_from=0.0, to=4.0)
+    bundle = _bundle(placements=[("s1", 0, 4000)], shots={"s1": (MEDIA, [video, audio])})
+    transcripts = {MEDIA: {IMPORT_SOURCE: _doc(MEDIA, WORDS)}}
+
+    rows = project_words(bundle, transcripts, "parent", media="any")
+
+    assert _texts(rows) == ["one", "two", "three", "four"]
+    assert {row["clip_id"] for row in rows} == {"a1"}
+
+
+def test_muted_or_silent_clip_with_a_stored_transcript_is_not_captioned():
+    muted = _shot_clip("v1", track="visual", src_from=0.0, to=4.0, muted=True)
+    silent = _shot_clip("v2", track="visual", src_from=0.0, to=4.0, volume=0)
+    bundle = _bundle(placements=[("s1", 0, 4000)], shots={"s1": (MEDIA, [muted, silent])})
+    transcripts = {MEDIA: {IMPORT_SOURCE: _doc(MEDIA, WORDS)}}
+
+    assert project_words(bundle, transcripts, "parent", media="any") == []
+
+
+def test_caption_status_names_a_stored_transcript_only_when_one_supplies_the_words():
+    from astrid.packs.rendering.actions.timeline_visualize.filmstrip_cards import _word_status
+
+    assert _word_status([{"timing_basis": "stored_word"}]) == "word-aligned VO (stored transcript)"
+    assert _word_status([{"timing_basis": "vo_word"}]) == "word-aligned VO (app.words)"
+
+
+def test_show_timeline_explicit_source_beats_a_pin_and_the_pin_wins_without_it(monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    from astrid.packs.timeline import cli_working
+    from astrid.sdk import media_transcript
+    from astrid.sdk.timeline.words import default_source_order
+    from astrid.sdk.timeline_checkout import Checkout
+
+    whisper = default_source_order()[0]
+    bundle = _bundle(placements=[("s1", 0, 4000)],
+                     shots={"s1": (MEDIA, [_shot_clip("c1", src_from=0.0, to=4.0)])})
+    bundle["project_id"] = PROJECT
+    bundle["parent"]["config"] = {"bundle": {"transcriptReferences": {
+        "schema": "media.transcript.references/v1",
+        "associations": [{"documentId": transcript_document_id(PROJECT, MEDIA, IMPORT_SOURCE),
+                          "mediaId": MEDIA, "sourceId": IMPORT_SOURCE}]}}}
+    timeline = Checkout(bundle)
+    monkeypatch.setattr(Checkout, "open", classmethod(lambda cls, project, ref, client: timeline))
+
+    def read(client, project, media, source):
+        if source == whisper:
+            return {"content": _doc(MEDIA, WORDS, source=whisper)["content"]}
+        if source == IMPORT_SOURCE:
+            return {"content": _doc(MEDIA, [(0.0, 1.0, "pinned")], source=IMPORT_SOURCE)["content"]}
+        return None
+
+    monkeypatch.setattr(media_transcript, "read_transcript", read)
+    args = SimpleNamespace(client=object(), project="p", media_id=None, source=None, source_range=None,
+                           clip="c1", timeline="cut", json=False)
+
+    assert cli_working._cmd_transcripts_show(args) == 0
+    out = capsys.readouterr().out
+    assert "pinned" in out and "one" not in out
+
+    args.source = whisper
+    assert cli_working._cmd_transcripts_show(args) == 0
+    out = capsys.readouterr().out
+    assert "one" in out and "pinned" not in out

@@ -437,13 +437,19 @@ def _cmd_transcripts_run(parsed: argparse.Namespace) -> int:
         path.write_bytes(raw)
         options = {name: getattr(parsed, name) for name in ("placement", "engine", "execution", "align", "recovery_path")
                    if getattr(parsed, name, None) is not None}
+        dry_run = bool(getattr(parsed, "dry_run", False))
         result = generate.audio(entry="transcription", mode="transcribe", audio_ref=str(path),
-                                project=project, client=parsed.client, consent=tuple(parsed.consent), **options)
+                                project=project, client=parsed.client, consent=tuple(parsed.consent),
+                                dry_run=dry_run, **options)
     if getattr(result, "ok", True) is False:
         raise ValueError(f"transcription failed: {getattr(result, 'error', None)}")
     from astrid.sdk.transcript_run import transcription_run_id
 
     value = result.to_dict() if hasattr(result, "to_dict") else result
+    if dry_run:
+        # Staged input, compile and the invocation preflight ran; nothing was admitted or imported.
+        print(json.dumps(value, indent=2, sort_keys=True, default=str))
+        return 0
     run_id = transcription_run_id(parsed.client, value)
     status = import_transcription_run(parsed.client, project, digest, run_id,
                                       replace=parsed.replace, expected_version=parsed.expected_version)
@@ -584,15 +590,16 @@ def _show_projected(parsed: argparse.Namespace, tl: Any, source_range: tuple[flo
     from astrid.sdk.timeline.words import default_source_order, load_timeline_transcripts, project_words
 
     project = need_project(parsed)
-    # Default: the Whisper transcript (what this command has always shown). --source S shows S instead.
-    # A transcriptReferences pin still wins for its media, whatever its source.
+    # Default: the Whisper transcript (what this command has always shown), and a transcriptReferences
+    # pin wins for its media. An explicit --source S shows S and ignores pins.
     source_choice = [parsed.source] if parsed.source else [default_source_order()[0]]
     issues: list[str] = []
     transcripts = load_timeline_transcripts(parsed.client, project, tl.bundle, sources=source_choice,
                                             any_media=True, issues=issues)
     for issue in issues:
         print(f"pin problem: {issue}", file=sys.stderr)
-    rows = project_words(tl.bundle, transcripts, "parent", sources=source_choice, media="any")
+    rows = project_words(tl.bundle, transcripts, "parent", sources=source_choice, media="any",
+                         references=set() if parsed.source else None)
     media = parsed.media_id
     if parsed.clip:
         if not any(row["clip_id"] == parsed.clip for row in rows) and not any(

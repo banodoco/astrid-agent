@@ -2701,8 +2701,10 @@ def _kernel_invoke(
                     strict=True,
                 )
             except Exception as exc:  # noqa: BLE001 - admission validation boundary
+                from .generation import LOCAL_REFUSAL_SCOPE
+
                 raise CapabilityValidationError(
-                    f"VibeComfy invocation preflight failed: {exc}"
+                    f"VibeComfy invocation preflight failed: {exc}. {LOCAL_REFUSAL_SCOPE}."
                 ) from exc
     if str(capability.id) in {"generation.generate_image_codex", "generation.generate_image_openai"}:
         # Bounded host profiles consume typed params as their single input
