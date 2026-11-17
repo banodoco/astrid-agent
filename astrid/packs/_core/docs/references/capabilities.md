@@ -23,7 +23,9 @@
 | `rendering.timeline_prepare_import` | Validate and prepare timeline import data without Runtime writes. |
 | `rendering.timeline_storyboard` | Build a static visual storyboard of image inputs associated with timeline shots. |
 | `rendering.timeline_visualize` | Private backend for composed timeline visualization. |
+| `runpod.claim` | Claim a machine with fresh paid consent. |
 | `runpod.exec` | Execute a script on an existing RunPod pod and download artifacts. |
+| `runpod.keep` | Keep the exact rented machine with fresh paid consent. |
 | `runpod.ls` | List the retained owner's current RunPod lease, if any. |
 | `runpod.provision` | Not for generation. Provision a RunPod GPU pod and emit a pod handle for later exec/teardown. |
 | `runpod.pull` | Pull artifacts from an existing RunPod pod into local storage. |
@@ -37,14 +39,14 @@
 | `training.pool_merge` | Update a candidate clip pool with available generative effect entries. |
 | `training.search_loras` | Search Hugging Face Hub for LoRAs associated with a base model. |
 | `training.training_run` | Run a generic LoRA training job from a prepared dataset manifest. |
-| `vibecomfy.character_animation` | Bounded Wan 2.2 Animate character animation with ordered CAS inputs. |
+| `vibecomfy.character_animation` | Unavailable: vibecomfy.character_animation is unavailable because this generation route has not been qualified. Fix: use a qualified generation route; retry this route after it is qualified. Bounded Wan 2.2 Animate character animation with ordered CAS inputs. |
 | `vibecomfy.edit` | Create an immutable canonical successor through a typed edit or explicit capture. |
 | `vibecomfy.import` | Import a ComfyUI workflow into VibeComfy's canonical editable bundle. |
 | `vibecomfy.inspect` | Render a ComfyUI workflow as readable Python-like VibeComfy IR. |
 | `vibecomfy.run` | Run a VibeComfy / ComfyUI workflow and settle its artifact inventory. |
 | `vibecomfy.validate` | Validate workflow structure offline; runtime checks belong to vibecomfy.run. |
 | `vibecomfy.video_enhance` | Bounded VibeComfy video upscale with source-FPS/audio preservation. |
-| `wan2gp.generate_video` | Host-mediated native Wan2GP video generation. |
+| `wan2gp.generate_video` | Unavailable: wan2gp.generate_video is unavailable because this generation route has not been qualified. Fix: use a qualified generation route; retry this route after it is qualified. Host-mediated native Wan2GP video generation. |
 | `wan2gp.validate_settings` | Compile and validate Wan2GP settings (no engine execution). |
 
 ### Orchestrators
@@ -63,8 +65,22 @@
 | `animations/slide-left` | Slide left entrance animation. |
 | `animations/slide-up` | Slide up exit animation. |
 | `animations/type-on` | Typewriter-style text reveal animation. |
+| `effects/animated-media-transform` | Animate one managed image or video through editable position, size and opacity keyframes. |
 | `effects/audio-reactive-colour` | Fill the frame with colours selected by frozen integer-frame markers. |
+| `effects/end-codex-transform` | Reference images connect into timeline images and transform them. |
+| `effects/end-mid-combined` | One continuous codex-then-minimax insert over a single plate. |
+| `effects/end-minimax-animate` | Timeline images lift out below while their videos load and play above. |
+| `effects/end-spanning-layer` | Flexible amber workflow timeline with real moving output and keyframe references. |
+| `effects/ending-carousel` | Image carousel insert that flies cards through, picks one, and lays them onto a timeline. |
+| `effects/event-card` | DOM-to-canvas Remotion effect for post-processed cards. |
+| `effects/frame-overlay` | Full-frame tight amber border overlay. |
+| `effects/model-trends` | Animated stacked-area chart of model-family share-of-conversation, driven by Remotion frame. |
+| `effects/neon-orbit-card` | DOM-to-canvas Remotion effect for post-processed cards. |
+| `effects/scrolling-guide` | Transparent orange and cream scrolling guide for the video-making workflow. |
+| `effects/sliding-media` | Full-screen media clip with slide-in/out motion. |
 | `effects/text-card` | Default text card effect for captions and titles. |
+| `effects/vibe-comfy-asset-overlay` | Asset-driven Vibe Comfy overlay with procedural noodle. |
+| `effects/vibe-comfy-bumper` | Procedural Remotion bumper for Vibe Comfy. |
 | `transitions/cross-fade` | Cross fade transition. |
 | `transitions/fade` | Fade-through-black transition. |
 
