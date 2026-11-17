@@ -33,7 +33,7 @@ def os_trust_ssl_context(platform: str | None = None) -> ssl.SSLContext:
     if name in ("win32", "darwin"):
         from astrid.installer._tls_truststore import SSLContext
 
-        context = SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context: ssl.SSLContext = SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     else:
         context = ssl.create_default_context()
     try:
