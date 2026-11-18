@@ -300,6 +300,8 @@ overrides: {steps: 8, seed: 42}
 
 ## Edit inputs: reference images and replacement audio
 
+For generated speech in a v2 edit, put the literal spoken line in the top-level `prompt`.
+
 A v2 source-backed edit takes three independent parts. Each is optional, and
 they combine in one request:
 

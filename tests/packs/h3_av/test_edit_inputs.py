@@ -156,7 +156,8 @@ def test_invalid_replacement_audio_is_refused_at_request_validation(raw, message
 def test_audio_edit_without_guides_keeps_its_existing_path():
     # Dialogue-driven audio generation (no guides) is not a replacement span.
     raw = copy.deepcopy(MOUTH)
-    raw["media"][0]["edit"][1] = {"stream": "audio", "during": SPAN, "text": "A new line."}
+    raw["prompt"] = "The speaker says: A new line."
+    raw["media"][0]["edit"][1] = {"stream": "audio", "during": SPAN}
     raw["media"] = raw["media"][:1]
     normalize_request(raw)
 
@@ -425,3 +426,14 @@ def test_documented_edit_inputs_compile(index, tmp_path):
                 "request": request.value, "request_digest": request.digest, "assets": assets}
     manifest = compile_preparation(prepared, out_dir=tmp_path / "out")
     assert manifest["status"] == "compiled"
+
+@pytest.mark.parametrize("key", ["text", "dialogue", "latent_pin"])
+def test_unbound_v2_fields_are_refused(key):
+    raw = copy.deepcopy(MOUTH)
+    item = raw["media"][0]
+    if key == "latent_pin":
+        item[key] = True
+    else:
+        item["edit"][1][key] = "A literal line."
+    with pytest.raises(H3RequestError, match=rf"unsupported field.*{key}"):
+        normalize_request(raw)

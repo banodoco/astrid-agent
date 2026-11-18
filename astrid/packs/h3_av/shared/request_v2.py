@@ -38,7 +38,6 @@ _NATIVE_SCHEDULERS = frozenset({
 })
 _MODALITIES = {"image", "video", "audio"}
 _ROLES = {"timeline", "reference"}
-_PLACEHOLDER = re.compile(r"(?:\{\{?[^{}]+\}?\}|<[^>]+>|\b(?:TODO|FIXME|PLACEHOLDER)\b)", re.I)
 
 
 def _fraction(value: Any, path: str, *, minimum: Fraction = Fraction(0)) -> Fraction:
@@ -180,7 +179,7 @@ def _mask(value: Any, path: str, modalities: Mapping[str, str] | None) -> dict[s
             raise H3RequestError(f"{path} must reference an image/video mask")
         return {"asset": asset, "polarity": "black_preserve_white_edit"}
     item = _object(value, path) or {}
-    _unknown(item, {"asset", "full_frame", "rectangle", "polygon", "range", "polarity", "shape", "edge", "track", "threshold"}, path)
+    _unknown(item, {"asset", "full_frame", "rectangle", "polygon", "range", "polarity", "shape", "edge", "track"}, path)
     geometry = [key for key in ("full_frame", "rectangle", "polygon") if key in item]
     if "asset" in item and geometry:
         raise H3RequestError(f"{path} cannot combine an asset with geometry")
@@ -193,11 +192,6 @@ def _mask(value: Any, path: str, modalities: Mapping[str, str] | None) -> dict[s
             raise H3RequestError(f"{path}.asset must reference an image/video mask")
         result["asset"] = asset
         result["edge"] = _edge(item.get("edge", {}), f"{path}.edge")
-        if "threshold" in item:
-            threshold = item["threshold"]
-            if type(threshold) is not int or not 1 <= threshold <= 254:
-                raise H3RequestError(f"{path}.threshold must be an integer 1..254")
-            result["threshold"] = threshold
     elif item.get("full_frame") is True:
         result["full_frame"] = True
     elif "rectangle" in item:
@@ -212,8 +206,6 @@ def _mask(value: Any, path: str, modalities: Mapping[str, str] | None) -> dict[s
         result["polygon"] = [[_number(coord, f"{path}.polygon[{i}][{axis}]") for axis, coord in enumerate(point)] for i, point in enumerate(points)]
     if "edge" in item and "asset" not in item:
         raise H3RequestError(f"{path}.edge is allowed only with an asset mask")
-    if "threshold" in item and "asset" not in item:
-        raise H3RequestError(f"{path}.threshold is allowed only with an asset mask")
     if "track" in item:
         # Reserved for M4: accepted and stored, never acted on here.
         result["track"] = item["track"]
@@ -368,7 +360,7 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
     for index, raw_item in enumerate(media_raw):
         path = f"media[{index}]"
         item = _object(raw_item, path) or {}
-        _unknown(item, {"id", "asset", "role", "modality", "at", "range", "edit", "audio", "hard", "latent_pin"}, path)
+        _unknown(item, {"id", "asset", "role", "modality", "at", "range", "edit", "audio", "hard"}, path)
         role = item.get("role")
         if role not in _ROLES: raise H3RequestError(f"{path}.role must be timeline or reference")
         asset, inspected = _asset(item.get("asset"), f"{path}.asset", asset_modalities)
@@ -382,7 +374,7 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
         if modality is not None: occurrence["modality"] = modality
         else: occurrence["inspection"] = "deferred"
         if role == "reference":
-            if any(key in item for key in ("at", "edit", "hard", "latent_pin")): raise H3RequestError(f"{path} reference entries cannot contain placement or edit fields")
+            if any(key in item for key in ("at", "edit", "hard")): raise H3RequestError(f"{path} reference entries cannot contain placement or edit fields")
             if modality in {"image", "video", "audio"}:
                 reference_counts[modality] += 1
                 label = {"image": "Picture", "video": "Video", "audio": "Audio"}[modality]
@@ -411,7 +403,7 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
             for edit_index, raw_edit in enumerate(edits):
                 edit_path = f"{path}.edit[{edit_index}]"
                 edit = _object(raw_edit, edit_path) or {}
-                _unknown(edit, {"stream", "during", "mask", "guides", "text", "dialogue", "channels", "action", "keep", "strength", "seed"}, edit_path)
+                _unknown(edit, {"stream", "during", "mask", "guides", "channels", "action", "keep", "strength", "seed"}, edit_path)
                 stream = edit.get("stream")
                 if stream not in {"video", "audio"}: raise H3RequestError(f"{edit_path}.stream must be video or audio")
                 action = "preserve" if edit.get("keep") is True else edit.get("action", "generate")
@@ -422,10 +414,6 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
                 normalized: dict[str, Any] = {"stream": stream, "during": during, "resolved": {"unit": "frames" if stream == "video" else "samples", "range": resolved}, "action": action}
                 if stream == "video": normalized["mask"] = _mask(edit.get("mask", {"full_frame": True}), f"{edit_path}.mask", asset_modalities)
                 if stream == "audio": normalized["channels"] = edit.get("channels", "all")
-                if "text" in edit or "dialogue" in edit:
-                    text = _nonblank(edit.get("text", edit.get("dialogue")), f"{edit_path}.text")
-                    if _PLACEHOLDER.search(text): raise H3RequestError(f"{edit_path}.text must be literal dialogue; unresolved placeholder found")
-                    normalized["text"] = text
                 if "guides" in edit:
                     guides = edit["guides"] if isinstance(edit["guides"], list) else [edit["guides"]]
                     normalized["guides"] = [_nonblank(guide, f"{edit_path}.guides[{i}]") for i, guide in enumerate(guides)]

@@ -115,7 +115,6 @@ def _validate_mask_assets(request: H3Request, assets: list[dict[str, Any]]) -> N
             if path is None:
                 continue
             source = resolved.get(str(item["asset"])) if item.get("modality") == "video" else None
-            threshold = mask.get("threshold")
             start = round(float(edit["during"][0]) * 24)
             end = round(float(edit["during"][1]) * 24)
             try:
@@ -127,8 +126,6 @@ def _validate_mask_assets(request: H3Request, assets: list[dict[str, Any]]) -> N
                     iter_mask_frames(path, start_frame=0, count=total, width=width, height=height)
                 ):
                     values = set(frame)
-                    if threshold is not None:
-                        values = {255 if value >= threshold else 0 for value in values}
                     if not values <= {0, 255}:
                         raise PreparationError(
                             f"mask video {mask_id!r} frame {index} has values other than 0 and 255"
@@ -363,9 +360,8 @@ def _v2_mask_schedule(
                 record["area"] = dict(edit["mask"])
             else:
                 record["channels"] = edit.get("channels", "all")
-            for field in ("text", "guides"):
-                if field in edit:
-                    record[field] = edit[field]
+            if "guides" in edit:
+                record["guides"] = edit["guides"]
             changes[stream].append(record)
 
     schedule: dict[str, Any] = {

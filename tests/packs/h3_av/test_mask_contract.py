@@ -86,12 +86,13 @@ def test_edge_defaults_to_zero(tmp_path: Path) -> None:
 
 
 @pytest.mark.ffmpeg
-def test_threshold_binarizes_for_the_check(tmp_path: Path) -> None:
+def test_mask_threshold_is_refused(tmp_path: Path) -> None:
     mask = tmp_path / "m.mkv"
     _mask_video(mask, value=128)
     with pytest.raises(PreparationError, match="mouth-mask"):
         _prepare(tmp_path, mask)
-    _prepare(tmp_path, mask, mask_spec={"asset": "mouth-mask", "threshold": 100})
+    with pytest.raises(H3RequestError, match="unsupported field.*threshold"):
+        _prepare(tmp_path, mask, mask_spec={"asset": "mouth-mask", "threshold": 100})
 
 
 @pytest.mark.ffmpeg
