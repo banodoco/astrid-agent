@@ -49,11 +49,11 @@ doctor:
 	@echo "✓ doctor (deploy health gate)"
 
 ruff:
-	@$(PY) -m scripts.reshape.compare_ruff_baseline
+	@$(PY) -m scripts.reshape.identity_gate ruff
 	@echo "✓ ruff baseline (no lint regression)"
 
 mypy:
-	@$(PY) -m scripts.reshape.compare_mypy_baseline
+	@$(PY) -m scripts.reshape.identity_gate mypy
 	@echo "✓ mypy baseline (no type regression)"
 
 cycles:

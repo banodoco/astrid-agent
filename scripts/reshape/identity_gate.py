@@ -1,0 +1,201 @@
+"""Compare diagnostics with the PR merge base, without a mutable count allowance.
+
+The old count comparators remain available for debt reports. CI uses this gate:
+both trees are scanned by the same installed tool and unchanged configuration.
+Line numbers locate symbols but are not identities; duplicate findings count.
+"""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import collections
+import io
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import tokenize
+import tomllib
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any
+
+Identity = tuple[str, str, str, str]
+MYPY_ERROR = re.compile(r"^(.*?):(\d+):(?:(\d+):)? error: (.*?)\s+\[(.*?)\]$")
+SUPPRESSION = re.compile(r"\bnoqa\b|\btype\s*:\s*ignore\b|\bmypy\s*:", re.IGNORECASE)
+
+
+def git(root: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(root), *args], capture_output=True, text=True, check=False,
+    )
+    if result.returncode:
+        raise RuntimeError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
+    return result.stdout.strip()
+
+
+@contextmanager
+def base_checkout(root: Path, ref: str) -> Iterator[tuple[str, Path]]:
+    """Keep the base outside the candidate's lint tree; never install base code."""
+    revision = git(root, "merge-base", "HEAD", ref)
+    with tempfile.TemporaryDirectory(prefix="astrid-gate-base-") as directory:
+        checkout = Path(directory) / "source"
+        git(root, "worktree", "add", "--detach", str(checkout), revision)
+        try:
+            yield revision, checkout
+        finally:
+            git(root, "worktree", "remove", "--force", str(checkout))
+
+
+def symbol_ranges(source: str) -> list[tuple[int, int, str]]:
+    """Parse a file once, retaining the source spans of its qualified scopes."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    scopes: list[tuple[int, int, str]] = []
+
+    def visit(node: ast.AST, parents: tuple[str, ...]) -> None:
+        for child in ast.iter_child_nodes(node):
+            scope = parents
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                start = min([child.lineno, *[d.lineno for d in child.decorator_list]])
+                scope = (*parents, child.name)
+                scopes.append((start, child.end_lineno or child.lineno, ".".join(scope)))
+            visit(child, scope)
+
+    visit(tree, ())
+    return scopes
+
+
+def symbol_at(scopes: list[tuple[int, int, str]], line: int) -> str:
+    return max((name for start, end, name in scopes if start <= line <= end),
+               key=lambda name: len(name.split(".")), default="<module>")
+
+
+def identities(findings: list[dict[str, Any]], root: Path) -> collections.Counter[Identity]:
+    result: collections.Counter[Identity] = collections.Counter()
+    scopes: dict[str, list[tuple[int, int, str]]] = {}
+    for finding in findings:
+        path = Path(finding["path"])
+        if path.is_absolute():
+            try:
+                path = path.relative_to(root)
+            except ValueError as exc:
+                raise RuntimeError(f"tool reported a diagnostic outside the source tree: {path}") from exc
+        key = path.as_posix()
+        if key not in scopes:
+            scopes[key] = symbol_ranges((root / path).read_text(encoding="utf-8"))
+        message = " ".join(str(finding["message"]).replace(str(root) + os.sep, "").split())
+        result[(key, finding["code"], message, symbol_at(scopes[key], finding["line"]))] += 1
+    return result
+
+
+def diagnostics(tool: str, root: Path) -> list[dict[str, Any]]:
+    if tool == "ruff":
+        command = [sys.executable, "-m", "ruff", "check", ".", "--no-cache", "--output-format", "json"]
+    else:
+        command = [
+            sys.executable, "-m", "mypy", "astrid", "scripts/reshape",
+            "--hide-error-context", "--no-color-output", "--no-pretty", "--show-error-codes",
+            "--no-incremental", "--cache-dir", os.devnull,
+        ]
+    result = subprocess.run(command, cwd=root, capture_output=True, text=True, check=False)
+    if result.returncode not in (0, 1):
+        raise RuntimeError(f"{tool} failed to execute (exit {result.returncode}): {result.stdout}{result.stderr}")
+    if tool == "ruff":
+        rows = json.loads(result.stdout)
+        findings = [
+            {"path": row["filename"], "code": row["code"], "message": row["message"],
+             "line": row["location"]["row"]} for row in rows
+        ]
+    else:
+        findings = []
+        for line in (result.stdout + result.stderr).splitlines():
+            match = MYPY_ERROR.match(line)
+            if match:
+                findings.append({"path": match[1], "line": int(match[2]), "message": match[4], "code": match[5]})
+    if result.returncode == 1 and not findings:
+        raise RuntimeError(f"{tool} failed without diagnostics: {result.stdout}{result.stderr}")
+    return findings
+
+
+def suppression_identities(root: Path) -> collections.Counter[Identity]:
+    findings = []
+    for name in git(root, "ls-files", "--", "*.py").splitlines():
+        path = root / name
+        if not path.is_file():
+            continue
+        source = path.read_text(encoding="utf-8")
+        try:
+            for token in tokenize.generate_tokens(io.StringIO(source).readline):
+                if token.type == tokenize.COMMENT and SUPPRESSION.search(token.string):
+                    # The attached statement matters: moving an old directive
+                    # onto a different offending line must not buy an allowance.
+                    attached = token.line[:token.start[1]].strip()
+                    findings.append({"path": name, "code": "suppression",
+                                     "message": f"{attached} {token.string}", "line": token.start[0]})
+        except (tokenize.TokenError, IndentationError):
+            # Invalid syntax is a diagnostic in both lint/type scans, never an allowance.
+            continue
+    return identities(findings, root)
+
+
+def protected_changes(base: Path, candidate: Path) -> list[str]:
+    """A task PR cannot raise its own allowance or change what the tools inspect."""
+    errors = []
+    relative = Path("scripts/reshape/baselines")
+    paths = {p.relative_to(base) for p in (base / relative).rglob("*") if p.is_file()}
+    paths |= {p.relative_to(candidate) for p in (candidate / relative).rglob("*") if p.is_file()}
+    for path in sorted(paths):
+        before, after = base / path, candidate / path
+        if not before.is_file() or not after.is_file() or before.read_bytes() != after.read_bytes():
+            errors.append(f"baseline edited in task PR: {path.as_posix()}")
+    before_config = tomllib.loads((base / "pyproject.toml").read_text())["tool"]
+    after_config = tomllib.loads((candidate / "pyproject.toml").read_text())["tool"]
+    for tool in ("ruff", "mypy"):
+        if before_config.get(tool) != after_config.get(tool):
+            errors.append(f"protected tool.{tool} configuration changed in task PR")
+    before_pytest = before_config.get("pytest", {}).get("ini_options", {})
+    after_pytest = after_config.get("pytest", {}).get("ini_options", {})
+    for key in ("norecursedirs", "python_files", "python_classes", "python_functions", "testpaths", "addopts"):
+        if before_pytest.get(key) != after_pytest.get(key):
+            errors.append(f"protected pytest collection setting changed in task PR: {key}")
+    for identity, count in sorted((suppression_identities(candidate) - suppression_identities(base)).items()):
+        errors.append(f"new suppression ({count}): {' | '.join(identity)}")
+    return errors
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("tool", choices=("ruff", "mypy", "controls"))
+    parser.add_argument("--base-ref", default=os.environ.get("ASTRID_GATE_BASE"))
+    args = parser.parse_args(argv)
+    if not args.base_ref or re.fullmatch("0+", args.base_ref):
+        parser.error("--base-ref (or ASTRID_GATE_BASE) must name the trusted comparison base")
+    root = Path(git(Path.cwd(), "rev-parse", "--show-toplevel"))
+    try:
+        with base_checkout(root, args.base_ref) as (revision, base):
+            print(f"Identity gate: tool={args.tool} base={revision} candidate={git(root, 'rev-parse', 'HEAD')}")
+            errors = protected_changes(base, root)
+            if args.tool != "controls":
+                before = identities(diagnostics(args.tool, base), base)
+                after = identities(diagnostics(args.tool, root), root)
+                for identity, count in sorted((after - before).items()):
+                    errors.append(f"new {args.tool} finding ({count}): {' | '.join(identity)}")
+                print(f"{args.tool}: base={sum(before.values())} current={sum(after.values())} "
+                      f"new={sum((after - before).values())} resolved={sum((before - after).values())}")
+            for error in errors:
+                print(f"ERROR: {error}", file=sys.stderr)
+            return int(bool(errors))
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(f"Identity gate failed: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

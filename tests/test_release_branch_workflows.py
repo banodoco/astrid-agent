@@ -16,7 +16,7 @@ def load(name):
 
 def test_pull_requests_into_release_mains_run_only_the_cheap_ci_subset():
     wf = load("ci.yml")
-    assert wf["on"]["pull_request"] == {"branches": ["release/*/main"]}
+    assert wf["on"]["pull_request"] == {"branches": ["release/*/main", "release/14/plan-39"]}
     heavy = {"windows-native-and-installer", "darwin-native", "release"}
     for name, job in wf["jobs"].items():
         if name == "landing-reference":
@@ -50,6 +50,18 @@ def test_unit_aggregate_rejects_any_unsuccessful_dependency(checks, shards):
     assert result.returncode == (0 if checks == shards == "success" else 1), result.stdout + result.stderr
 
 
+def test_fast_checks_run_structure_and_every_gate_after_an_earlier_failure():
+    job = load("ci.yml")["jobs"]["checks"]
+    steps = {step.get("name"): step for step in job["steps"]}
+    assert steps["Structure baseline gate"]["run"] == "make structure"
+    for name in ("Structure baseline gate", "Baseline and suppression controls gate", "Ruff baseline gate",
+                 "Mypy baseline gate", "Import cycles gate", "Collection errors gate", "Gate regression probes"):
+        assert steps[name]["if"] == "${{ !cancelled() }}", name
+    assert steps["Install mypy stubs and the NumPy that mypy can parse"]["if"] == "${{ !cancelled() }}"
+    assert steps["Check out repository"]["with"]["fetch-depth"] == 0
+    assert "github.event.pull_request.base.sha" in job["env"]["ASTRID_GATE_BASE"]
+
+
 @pytest.mark.parametrize(
     "workflow,job_name,expected_commands",
     [("ci.yml", "unit-shard", 1), ("ci.yml", "darwin-native", 1),
@@ -57,7 +69,7 @@ def test_unit_aggregate_rejects_any_unsuccessful_dependency(checks, shards):
 )
 def test_named_pytest_jobs_retain_every_command_result(workflow, job_name, expected_commands):
     job = load(workflow)["jobs"][job_name]
-    pytest_steps = [step for step in job["steps"] if "python -m pytest" in step.get("run", "")]
+    pytest_steps = [step for step in job["steps"] if "python -m scripts.ci.run_pytest" in step.get("run", "")]
     commands = [step["run"] for step in pytest_steps]
     assert len(commands) == expected_commands
     destinations = [command.split("--junitxml=", 1)[1].split(".xml", 1)[0] + ".xml" for command in commands]
@@ -75,8 +87,11 @@ def test_named_pytest_jobs_retain_every_command_result(workflow, job_name, expec
     assert upload["with"]["if-no-files-found"] == "warn"
     summary = next(step for step in job["steps"] if step.get("name") == "Summarize test result XML")
     assert summary["if"] == "always()"
-    assert "no XML files; no test result available" in summary["run"]
-    assert "raise SystemExit(1)" in summary["run"] or "exit 1" in summary["run"]
+    assert "python -m scripts.ci.check_results" in summary["run"]
+    assert f"--expected {expected_commands}" in summary["run"]
+    assert "*.jsonl" in upload["with"]["path"]
+    assert "*.log" in upload["with"]["path"]
+    assert "*.json" in upload["with"]["path"]
 
 
 def test_landing_reference_job_runs_only_for_pull_requests_into_release_branches():
