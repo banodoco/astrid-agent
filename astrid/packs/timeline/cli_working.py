@@ -111,6 +111,9 @@ def _connected_outbox(parsed: argparse.Namespace, project_id: str, timeline_id: 
                 "key": flight.get("key") if isinstance(flight, Mapping) else None,
                 "command_count": count,
             }
+            if flight.get("kind") != "assembly-admission" and _is_dry_run_flight(flight):
+                # A preview cannot land; `timelines discard` clears it.
+                status["dry_run"] = True
         elif pending:
             status = {"status": "pending", "command_count": len(pending)}
         elif rejected:
@@ -132,6 +135,15 @@ def _connected_outbox(parsed: argparse.Namespace, project_id: str, timeline_id: 
         return outbox, status, scope
     except (AttributeError, OSError, ValueError, TypeError):
         return None, None, None
+
+
+def _is_dry_run_flight(flight) -> bool:
+    """True when the stored request body is a dry run (``"dry_run": true``)."""
+    try:
+        body = json.loads(flight["body"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return isinstance(body, dict) and body.get("dry_run") is True
 
 
 def _discard_recoverable_outbox(outbox, expected_scope, *, return_kept_count=False):
@@ -158,6 +170,19 @@ def _discard_recoverable_outbox(outbox, expected_scope, *, return_kept_count=Fal
             if not _valid_replay_flight(state, expected_scope, outbox):
                 return "invalid"
             kind = flight.get("kind") if isinstance(flight, Mapping) else None
+            if kind != "assembly-admission" and _is_dry_run_flight(flight):
+                # A preview cannot land: the Runtime keeps nothing for it, so
+                # there is no outcome to confirm. Clear it like unsent intent,
+                # keeping acknowledged keys and saved pending records.
+                from astrid.sdk.timeline.sync import _release_preview
+
+                _release_preview(state, flight)
+                state["pending"] = []
+                for key in ("commit_options", "evaluation", "rationale", "group_id",
+                            "media_input", "media_imports", "rejected"):
+                    state.pop(key, None)
+                outbox.write(state)
+                return ("cleared_preview", kept_count) if return_kept_count else "cleared_preview"
             # Assembly admission has no command prefix; its immutable body and key live in flight.
             if kind == "assembly-admission":
                 state["pending"] = []
@@ -968,11 +993,14 @@ def _cmd_discard(parsed: argparse.Namespace) -> int:
     invalid_outbox = discard_state == "invalid" or bool(
         session_status and session_status.get("status") == "invalid"
     )
-    cleared_session = discard_state == "cleared"
+    cleared_preview = discard_state == "cleared_preview"
+    cleared_session = discard_state in {"cleared", "cleared_preview"}
     tl, _ = working_copy(parsed, create=False)
     name = draft_name(parsed)
     if tl is None:
         print(f"no working copy \"{name}\" to discard")
+        if cleared_preview:
+            print("cleared an unanswered dry run: a preview commits nothing, so there was nothing to keep")
         if cleared_session:
             print("discarded recoverable connected-session commands")
         if retained_flight:
@@ -986,6 +1014,8 @@ def _cmd_discard(parsed: argparse.Namespace) -> int:
     dropped = len(tl.edits().get("changes") or [])
     tl.discard()
     print(f'discarded working copy "{name}" of {parsed.ref} ({clips_changed(dropped)}, dropped)')
+    if cleared_preview:
+        print("cleared an unanswered dry run: a preview commits nothing, so there was nothing to keep")
     if cleared_session:
         print("discarded recoverable connected-session commands")
     if retained_flight:
@@ -1070,7 +1100,8 @@ def _configure_restructure(subparser: argparse.ArgumentParser) -> None:
 def _configure_discard(subparser: argparse.ArgumentParser) -> None:
     subparser.description = (
         "Drop the working copy and recoverable unsent session intent. A request with an unknown commit outcome "
-        "is retained; discard does not undo a possibly accepted commit."
+        "is retained; discard does not undo a possibly accepted commit. An unanswered dry run is cleared, "
+        "since a preview commits nothing."
     )
     _timeline_args(subparser, project_required=False)
     subparser.set_defaults(handler=_cmd_discard)

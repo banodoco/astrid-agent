@@ -840,6 +840,13 @@ def project_runtime_parent_composition(
         "occurrences": copy.deepcopy(occurrences),
         "outputs": copy.deepcopy(outputs),
     }
+    # Readers select media only through ``clip.asset``. Translate the other
+    # authoring spellings here, once, so render, visualize and capture
+    # admission all read the same clips. A selector that cannot be resolved
+    # is left as written for the readers' strict check to report.
+    from .reader_projection import translate_media_selectors
+
+    config, registry = translate_media_selectors(config, registry, strict=False)
     closure = {
         "parent_revision": copy.deepcopy(dict(parent)),
         "shot_revisions": [copy.deepcopy(dict(row)) for row in shot_revisions],
