@@ -300,3 +300,43 @@ def test_zero_strength_does_not_shift_prepared_grant_binding(tmp_path):
     record = next(row for row in preparation["assets"] if row["asset"] == changes[0]["prepared_mask_asset"])
     with Image.open(record["path"]) as mask:
         assert mask.getpixel((512, 288)) == 255 and mask.getpixel((0, 0)) == 0
+
+
+@pytest.mark.parametrize("offset", [0, 1])
+def test_prepared_permission_verifies_each_source_offset(tmp_path, offset):
+    import subprocess
+    from astrid.packs.h3_av.shared.compile import compile_preparation
+    from astrid.packs.h3_av.shared.compose import compose_candidate
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from astrid.packs.h3_av.shared.verify import verify_candidate
+    from tests.packs.h3_av.test_moving_masks import _fixtures
+
+    _, generated = _fixtures(tmp_path)
+    source = tmp_path / f"source-{offset}.mkv"
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-f", "lavfi", "-i", "testsrc2=size=1024x576:rate=24:duration=2",
+                    "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=2",
+                    "-c:v", "ffv1", "-c:a", "pcm_s16le", str(source)], check=True, capture_output=True)
+    request = normalize_request({"version": 2, "prompt": "Edit the box", "duration": 1,
+        "media": [{"asset": "source", "role": "timeline", "modality": "video", "at": {"frame": 0},
+                   "range": [offset, offset + 1], "edit": [{"stream": "video", "during": [0, 1],
+                   "mask": {"rectangle": [128, 96, 128, 96]}}]}]})
+    preparation = prepare_request(request, asset_map={"source": str(source)})
+    compile_preparation(preparation, out_dir=tmp_path / "compiled")
+    composition = compose_candidate(preparation=preparation, generated=generated, source=source, out_dir=tmp_path / "composition")
+    evidence = verify_candidate(preparation=preparation, composition=composition, source=source)["preservation"]["spatial_complement"]
+    assert evidence[0]["protected_pixel_count_per_frame"] == 1024 * 576 - 128 * 96
+    assert evidence[0]["max_abs_channel_difference"] == 0
+
+
+def test_nonempty_grant_vanishing_on_target_grid_names_grant(tmp_path):
+    from astrid.packs.h3_av.shared.compile import _combined_strength_mask
+    from astrid.packs.h3_av.shared.errors import CompilationError
+
+    mask = Image.new("L", (32, 32), 0)
+    mask.putpixel((0, 0), 255)
+    path = tmp_path / "tiny.png"
+    mask.save(path)
+    with pytest.raises(CompilationError, match="mouth.*vanishes"):
+        _combined_strength_mask([(path, "image", (0, 1), 0.75, "mouth")], frames=1, destination=tmp_path, size=(32, 32))
