@@ -61,6 +61,10 @@ from runtime_protocol.errors import ConflictError
 from runtime_protocol.storage import free_disk_floor_bytes
 
 from astrid.core.execution.pipe_io import PipeReader, PipeWriter, close_pipe_workers
+from astrid.core.execution.resident_sessions import (
+    ResidentPackAdapter, declared_resident, open_resident_task, retire_changed_session,
+)
+from astrid.core.execution.task_waits import AttemptWait, renewal_delay, renewal_margin, settlement_progress
 from astrid.core.execution.platform_helpers import (
     PROCESS_CONTROL_SUPPORT_ENV,
     configure_process_control,
@@ -554,6 +558,11 @@ _DEFAULT_EXECUTION_POLICY = ExecutionGuardPolicy()
 _LEASE_POLL_SECONDS = _DEFAULT_EXECUTION_POLICY.authority_window_seconds / 60
 _TERMINAL_RECONCILE_POLL_SECONDS = 0.25
 _TERMINAL_RECOVERY_MAX_ATTEMPTS = 5
+
+
+def _ready_empty_claim_delay(count: int) -> float:
+    """Bound ready/claim disagreement retries to 50–250 ms, only on failure."""
+    return min(0.25, 0.05 * (2 ** min(max(0, count - 1), 3)))
 
 
 class HostCancelled(HostError):
@@ -1229,6 +1238,7 @@ class _ManagedWanChildAdapter:
 # release does to each; every other session is released when its task ends.
 _WARM_SESSION_ADAPTERS = {
     _ManagedWanChildAdapter: "child process ended",
+    ResidentPackAdapter: "resident pack process ended",
 }
 
 
@@ -5451,6 +5461,8 @@ class RuntimeProtocolClient:
         self._heartbeat_session = secrets_module.token_hex(8)
         self._heartbeat_sequence = 0
         self._heartbeat_lock = threading.RLock()
+        self._task_observers: set[Any] = set()
+        self._task_observer_lock = threading.Lock()
         # A Runtime child authority pins the exact current lease deadline.
         # Only issuance/admission and heartbeat share this lock; child polls
         # never hold it.
@@ -5567,7 +5579,7 @@ class RuntimeProtocolClient:
             )
         return expected
 
-    def register_executor(self, executor_id: str, *, capabilities: list[Mapping[str, Any]], max_concurrency: int, resource_keys: list[str], source_digest: str | None, dependency_digest: str | None = None, source_epoch: str | None = None, protocol_version: str = "workspace.v1", schema_digest: str | None = None, runtime_epoch: int | None = None, verified_facts: Mapping[str, Any] | None = None):
+    def register_executor(self, executor_id: str, *, capabilities: list[Mapping[str, Any]], max_concurrency: int, resource_keys: list[str], source_digest: str | None, dependency_digest: str | None = None, source_epoch: str | None = None, protocol_version: str = "workspace.v1", schema_digest: str | None = None, runtime_epoch: int | None = None, verified_facts: Mapping[str, Any] | None = None, resolution_descriptors: list[Mapping[str, Any]] | None = None):
         # Runtime schema identity is negotiated through health/compatibility;
         # source, dependency, and source-epoch identity remain part of the
         # executor registration admission envelope.  ``schema_digest`` is
@@ -5586,6 +5598,8 @@ class RuntimeProtocolClient:
         }
         if verified_facts is not None:
             payload["verified_facts"] = dict(verified_facts)
+        if resolution_descriptors is not None:
+            payload["resolution_descriptors"] = copy.deepcopy(resolution_descriptors)
         registration = self.generated.register_executor(
             payload,
             idempotency_key=(
@@ -5704,6 +5718,55 @@ class RuntimeProtocolClient:
             raw_epoch = claim.get("runtime_epoch") if isinstance(claim, Mapping) else getattr(claim, "runtime_epoch", None)
             self._attempt_runtime_epochs[attempt_id] = int(raw_epoch if raw_epoch is not None else claim_epoch)
         return claim
+
+    def supports_task_waits(self) -> bool:
+        if not callable(getattr(self.generated, "wait_for_work", None)):
+            return False
+        info = self.generated.handshake_info
+        if info is None:
+            if self.executor_id is None:
+                return False
+            self._authenticate_worker(str(self.executor_id))
+            info = self.generated.handshake_info
+        capabilities = info.get("capabilities", ()) if isinstance(info, Mapping) else getattr(info, "capabilities", ())
+        return "task_waits.v1" in capabilities
+
+    def supports_resolution_descriptors(self, executor_id: str) -> bool:
+        if not callable(getattr(self.generated, "wait_for_work", None)):
+            return False
+        if self.generated.handshake_info is None:
+            self._authenticate_worker(executor_id)
+        info = self.generated.handshake_info
+        capabilities = info.get("capabilities", ()) if isinstance(info, Mapping) else getattr(info, "capabilities", ())
+        return "task_resolution.v1" in capabilities
+
+    def wait_for_work(self, *, executor_id: str, capability_ids: list[str], timeout_seconds: float, target=None):
+        # A private serving-slot transport may not have claimed yet, and a
+        # retained idle cache may precede a Runtime restart. Read the live
+        # bootstrap epoch as claim_next does; attempt fences stay separate.
+        epoch = self._current_runtime_epoch()
+        return self.generated.wait_for_work(executor_id=executor_id, capability_ids=capability_ids,
+            runtime_epoch=epoch, target=target, timeout_seconds=timeout_seconds)
+
+    def new_task_observer(self):
+        observer = type(self.generated)(self.endpoint, self.credential, timeout=self.timeout)
+        with self._task_observer_lock:
+            self._task_observers.add(observer)
+        return observer
+
+    def close_task_observer(self, observer):
+        observer._cancel_waits()
+        with self._task_observer_lock:
+            self._task_observers.discard(observer)
+
+    def cancel_waits(self):
+        cancel = getattr(self.generated, "_cancel_waits", None)
+        if callable(cancel):
+            cancel()
+        with self._task_observer_lock:
+            observers = tuple(self._task_observers)
+        for observer in observers:
+            observer._cancel_waits()
 
     def claim_delegated_child(self, task_id: str, *, executor_id: str,
                               capability_ids: list[str], target: Mapping[str, Any],
@@ -5893,7 +5956,7 @@ class RuntimeProtocolClient:
     def child_output(self, association_id: str):
         return self.generated.get_managed_output(association_id)
 
-    def settle(self, task_id: str, lease_token: str, *, result: Mapping[str, Any], outputs: list[dict[str, Any]], effect: Mapping[str, Any] | None, attempt_id: str | None = None, fence: int | None = None, request_path: Path | None = None):
+    def settle(self, task_id: str, lease_token: str, *, result: Mapping[str, Any], outputs: list[dict[str, Any]], effect: Mapping[str, Any] | None, attempt_id: str | None = None, fence: int | None = None, request_path: Path | None = None, progress: Mapping[str, Any] | None = None):
         if not attempt_id or fence is None:
             raise HostError("generated settlement requires attempt_id and fence")
         epoch = self._attempt_runtime_epochs.get(str(attempt_id))
@@ -5908,6 +5971,8 @@ class RuntimeProtocolClient:
             "result": dict(result),
             "runtime_epoch": epoch,
         }
+        if progress is not None:
+            settlement["progress"] = dict(progress)
         idempotency_key = f"settle-{attempt_id}-{fence}"
         if request_path is not None:
             _persist_terminal_request(request_path, {
@@ -6826,6 +6891,8 @@ class GenericPackHost:
         self._renderer_setup_lock = threading.RLock()
         self._host_lifetime_processes: set[subprocess.Popen] = set()
         self._shutdown = threading.Event()
+        self._claim_loop_wake = threading.Event()
+        self._waiting_for_work = False
         # An unregistered host must retain the existing claim-loop failure
         # semantics. register() arms the first refresh after success.
         self._registration_refresh_deadline = float("inf")
@@ -7438,6 +7505,10 @@ class GenericPackHost:
         """Stop the host and every currently owned capability process."""
         with self.managed_tool_session._lock:
             self._shutdown.set()
+        self._claim_loop_wake.set()
+        cancel_waits = getattr(self.client, "cancel_waits", None)
+        if callable(cancel_waits):
+            cancel_waits()
         self.warm_holds.close()
         errors: list[BaseException] = []
         # Fence every serving slot before any session release can block or
@@ -7470,12 +7541,16 @@ class GenericPackHost:
                     errors.append(exc)
                     self._latch_cleanup_uncertainty(str(exc))
         adapter = self.managed_tool_session.current_adapter
-        if isinstance(adapter, _ManagedTaskAdapter):
+        if isinstance(adapter, (_ManagedTaskAdapter, ResidentPackAdapter)):
             # The current CPU attempt retains its admission token until its
             # own finally has stopped and verified the original command and
             # released its session. Closing MTS here would clear that token
             # while release still correctly rejects a live command census.
-            adapter.fence(reason="host_shutdown")
+            if isinstance(adapter, _ManagedTaskAdapter):
+                adapter.fence(reason="host_shutdown")
+            # Resident dispatch observes _shutdown through its existing job
+            # cancellation guard. Let its finalizer retain the token until
+            # native stop and cancellation are proved, then close the owner.
             owner = self._handoff_accounting_owner
             deadline = time.monotonic() + 5.0
             with owner._handoff_condition:
@@ -7644,6 +7719,9 @@ class GenericPackHost:
                         owner.credential_source, name, explicit=owner._credential_source_is_explicit),
                 )
                 owner._target_bindings_kind = kind
+                # A newly installed observer must join the coordinator's
+                # deadlines even while every serving slot is subscribed.
+                owner._claim_loop_wake.set()
             elif owner._target_bindings_kind != kind:
                 raise HostError("host already retains a different target provider")
             return owner._target_bindings
@@ -8505,6 +8583,15 @@ class GenericPackHost:
             "runtime_epoch": runtime_state.get("runtime_epoch"),
             "verified_facts": verified_facts,
         }
+        supports_resolution = getattr(self.client, "supports_resolution_descriptors", None)
+        if callable(supports_resolution) and supports_resolution(self.executor_id):
+            from astrid.core.generation.resolution_descriptor import registration_descriptors
+            descriptors, fallbacks = registration_descriptors(
+                (r for r in self.capabilities.values() if not _is_withdrawn(r)), registration_kwargs)
+            registration_kwargs["resolution_descriptors"] = descriptors
+            for fallback in fallbacks:
+                print(f"generic host: {fallback['capability_id']} uses full request preparation: {fallback['reason']}",
+                      file=sys.stderr, flush=True)
         try:
             # The runtime owns one durable transaction for the executor and
             # its complete capability descriptors.  Never pre-publish
@@ -9570,7 +9657,7 @@ class GenericPackHost:
         digest = hashlib.sha256(encoded_bytes).hexdigest()
         # Publish a new immutable spool object before atomically changing the
         # universal receipt, so a crash never invalidates its prior hash.
-        destination = output_root / "outputs" / f"managed-generation-result-{digest}.json"
+        destination = output_root / "outputs" / f"result-{digest}.json"
         if destination.is_symlink() or not destination.resolve().is_relative_to(output_root.resolve()):
             raise HostError("managed result manifest escapes output custody")
         if destination.exists() and destination.read_bytes() != encoded_bytes:
@@ -11091,6 +11178,7 @@ class GenericPackHost:
         storage_estimate: Mapping[str, int] | None = None,
         child_bridge: Any | None = None,
         captured_record: CapabilityRecord | None = None,
+        resident_token: AdmissionToken | None = None,
     ) -> Any:
         """Run one pack capability in a dedicated child process.
 
@@ -11131,6 +11219,17 @@ class GenericPackHost:
             _verify_action_admission(definition, admission or {})
         if admission is not None:
             _verify_admitted_source(admission)
+        if resident_token is not None:
+            adapter = self.managed_tool_session.adapter_for(resident_token)
+            if not isinstance(adapter, ResidentPackAdapter):
+                raise StaleAdmissionError("resident admission has another adapter")
+            return adapter.invoke(
+                resident_token, request=request, admission=admission or {}, attempt=attempt_path,
+                cancelled=cancelled,
+                storage_guard=lambda: _assert_live_storage_envelope(
+                    storage_estimate, attempt_path, attempt_path / "outputs",
+                    storage_floor_exempt=storage_floor_exempt),
+            )
         request_path = attempt_path / ".astrid-capability-request.json"
         result_path = attempt_path / ".astrid-capability-result.json"
         remotion_lease = None
@@ -11673,10 +11772,15 @@ class GenericPackHost:
         lifetime = _AttemptLifetime(self.execution_policy, time.monotonic(), None)
         stop, abort = threading.Event(), threading.Event()
         completion_lock = threading.RLock()
+        event_lease = self._uses_task_waits() and callable(getattr(self.client, "new_task_observer", None))
+        task_wait = AttemptWait(self.client, str(data["id"])) if event_lease else None
         terminal: dict[str, Any] = {
             "task": dict(data), "attempt_id": exact_attempt, "lifetime": lifetime,
             "pump_stop": stop, "cancel_signal": abort, "stage": "admission",
             "completion_lock": completion_lock,
+            "acknowledged_lease_expiry": data.get("lease_expires_at"),
+            "lease_renewal_margin": renewal_margin(data.get("lease_expires_at")),
+            "wake_observer": task_wait.wake if task_wait is not None else lambda: None,
             "lease_diagnostic": {
                 "schema_version": 1,
                 "category": "observing",
@@ -11695,6 +11799,10 @@ class GenericPackHost:
                     raise HostCancelled("attempt already terminated by its lifecycle guard")
                 if terminal.get("recorded"):
                     return terminal.get("completion")
+            if operation == self.client.settle and event_lease:
+                progress = settlement_progress(read_progress())
+                if progress is not None:
+                    kwargs["progress"] = progress
             if operation in (self.client.settle, self.client.fail):
                 # Freeze the call once: reconciliation must never rerun the
                 # producer or rebuild outputs from a changing spool.
@@ -11741,8 +11849,9 @@ class GenericPackHost:
                     kwargs["deadline"] = lifetime.deadline()
             return operation(*args, **kwargs)
 
-        def task_snapshot():
-            current = lease_call(self.client.task, str(data["id"]))
+        def task_snapshot(current=None):
+            if current is None:
+                current = lease_call(self.client.task, str(data["id"]))
             if isinstance(current, Mapping):
                 current = current.get("task", current)
             def value(name, default=None):
@@ -11924,6 +12033,8 @@ class GenericPackHost:
                 if (stop.is_set() or terminal.get("recorded") or terminal.get("forced")
                         or (lifetime.expired() and not terminal.get("publication_pending"))):
                     return
+                if event_lease and renewal_delay(terminal["acknowledged_lease_expiry"], terminal["lease_renewal_margin"]) > 0:
+                    return
                 changed = token != terminal.get("renewed_progress")
                 if terminal.get("renewal_inflight") or not (changed or liveness):
                     return
@@ -11971,6 +12082,8 @@ class GenericPackHost:
                             or (lifetime.expired() and not terminal.get("publication_pending"))):
                         return
                     terminal["renewed_progress"] = token
+                    terminal["acknowledged_lease_expiry"] = expiry
+                    terminal["lease_renewal_margin"] = renewal_margin(expiry)
                     if "progress" in kwargs:
                         terminal["sent_progress"] = token[1]
                     diagnostic = dict(terminal["lease_diagnostic"])
@@ -12027,7 +12140,8 @@ class GenericPackHost:
             poll_seconds = (_LEASE_POLL_SECONDS * self.execution_policy.authority_window_seconds
                             / _DEFAULT_EXECUTION_POLICY.authority_window_seconds)
             next_poll = time.monotonic() + poll_seconds
-            while not stop.wait(0.05):
+            wait_cursor = None
+            while (not stop.is_set() if event_lease else not stop.wait(0.05)):
                 if lifetime.expired():
                     if terminal.get("publication_pending"):
                         terminal["reconcile_cancel"] = True
@@ -12042,13 +12156,38 @@ class GenericPackHost:
                     else:
                         force_abort("cancelled")
                         return
-                if time.monotonic() < next_poll or self.client is None:
+                if not event_lease and (time.monotonic() < next_poll or self.client is None):
                     continue
                 next_poll = time.monotonic() + poll_seconds
                 try:
-                    current = task_snapshot()
+                    if event_lease:
+                        delay = min(25.0, renewal_delay(terminal["acknowledged_lease_expiry"], terminal["lease_renewal_margin"]))
+                        if lifetime.deadline() is not None and not terminal.get("reconcile_cancel"):
+                            delay = min(delay, max(0.0, lifetime.deadline() - time.monotonic()))
+                        observed = task_wait.wait(cursor=wait_cursor, timeout_seconds=delay)
+                        if observed is None or stop.is_set():
+                            continue
+                        if observed.get("reason") == "shutdown":
+                            if self._shutdown.is_set():
+                                continue
+                            raise HostError("Runtime task observation stopped")
+                        if not isinstance(observed.get("task"), Mapping) or not isinstance(observed.get("cursor"), str):
+                            raise HostError("malformed Runtime task observation")
+                        wait_cursor = observed["cursor"]
+                        current = task_snapshot(observed["task"])
+                        if lifetime.expired() and not terminal.get("publication_pending"):
+                            force_abort("timeout")
+                            return
+                    else:
+                        current = task_snapshot()
                 except BaseException as exc:
+                    if stop.is_set():
+                        return
                     if lease_transport_fault("task_read_exception", exc):
+                        if event_lease:
+                            # Only transport faults back off; successful reads
+                            # wait on committed state and the actual lease date.
+                            stop.wait(min(0.25, poll_seconds))
                         continue
                     force_abort("timeout" if lifetime.expired() else "lease_lost")
                     return
@@ -12105,6 +12244,8 @@ class GenericPackHost:
                     renew_progress(liveness=True, cycle_category=cycle_category, current=current)
                 except BaseException as exc:
                     if lease_transport_fault("heartbeat_exception", exc, current):
+                        if event_lease:
+                            stop.wait(min(0.25, poll_seconds))
                         continue
                     if terminal.get("publication_pending"):
                         # Settlement may have committed between the task read
@@ -12294,6 +12435,7 @@ class GenericPackHost:
             contract = _execution_contract(data, runtime_session_id=self.runtime_state.get("runtime_session_id"))
             terminal["execution_contract"] = contract
             lifetime.runtime_limit = (contract or {}).get("limits", {}).get("max_runtime_seconds")
+            terminal["wake_observer"]()
             # The lease observer continues while waiting for this host's
             # session. No second task may replace a live binding or overwrite
             # its request-specific idle policy during setup/collection.
@@ -12355,6 +12497,8 @@ class GenericPackHost:
                             reconcile_publication()
                         finally:
                             stop.set()
+                            if task_wait is not None:
+                                task_wait.close()
                             if pump_thread is not None:
                                 pump_thread.join(timeout=2)
                             if busy_published:
@@ -12371,6 +12515,8 @@ class GenericPackHost:
                     ready.wait()
                 else:
                     stop.set()
+                    if task_wait is not None:
+                        task_wait.close()
                     if pump_thread is not None and pump_thread.ident is not None:
                         pump_thread.join(timeout=2)
                     if busy_published:
@@ -12408,6 +12554,7 @@ class GenericPackHost:
         _terminal.update(task=task_data, attempt_id=attempt_id)
         if self._shutdown.is_set():
             raise HostCancelled("generic host is shutting down")
+        retire_changed_session(self)
         record = self.capabilities.get(capability_id)
         if record is None:
             self.discover()
@@ -12469,9 +12616,10 @@ class GenericPackHost:
         captured_pack_map = None
         verified_pack_relocations = {}
         execution_source_digest = None
+        pack_capture = _portable_pack_capture if declared_resident(record) else self._pack_capture
         try:
             selected_generation = _selected_pack_generation(record)
-            if self._pack_capture is _portable_pack_capture and selected_generation is not None:
+            if pack_capture is _portable_pack_capture and selected_generation is not None:
                 from astrid.core.pack.identity import pack_digest
 
                 source = selected_generation[2]
@@ -12481,7 +12629,7 @@ class GenericPackHost:
                 pack_id = selected_generation[0]
                 expected = selected.get(pack_id, {}).get("source_digest") or pack_digest(source)
                 selected_generation = _terminal["pack_captures"].enter_context(
-                    self._pack_capture(selected_generation, expected_digest=expected))
+                    pack_capture(selected_generation, expected_digest=expected))
                 snapshot = selected_generation[2]
                 relocated_roots = {path: snapshot / path.relative_to(source) for path in source_roots}
                 if _source_digest_for_roots(source_roots, captured_roots=relocated_roots) != run_source_digest:
@@ -12498,7 +12646,7 @@ class GenericPackHost:
                         }))
                         dependency_generation = _selected_pack_generation(dependency_record)
                         captured = _terminal["pack_captures"].enter_context(
-                            self._pack_capture(dependency_generation, expected_digest=selection["source_digest"]))
+                            pack_capture(dependency_generation, expected_digest=selection["source_digest"]))
                         dependency_snapshot = captured[2]
                     captured_pack_map[dependency] = {**selection, "root": str(dependency_snapshot)}
                     # Only successful digest-authenticated capture grants this
@@ -12512,7 +12660,7 @@ class GenericPackHost:
                 # original admission digest, including legacy root labels.
                 execution_source_digest = _source_digest_for_roots(
                     _admitted_source_roots(record.source_root, record.definition))
-            with (nullcontext() if captured_record is not None else self._pack_capture(selected_generation)):
+            with (nullcontext() if captured_record is not None else pack_capture(selected_generation)):
                 if captured_record is None:
                     run_source_digest = _run_source_digest(record)
                 # A delegated child carries the digest its parent bridge admitted.
@@ -12540,7 +12688,7 @@ class GenericPackHost:
                 if provenance is not None else None
             )
         except Exception as exc:
-            if (self._pack_capture is _portable_pack_capture
+            if (pack_capture is _portable_pack_capture
                     and record.definition.metadata.get("pack_root")
                     and not isinstance(exc, PackCaptureError)):
                 exc = PackCaptureError(f"selected pack snapshot capture refused: {exc}")
@@ -13342,7 +13490,14 @@ class GenericPackHost:
                     # workflow switch stays in the same owned session.
                     execution_identity=stable_session_identity,
                 )
-            if capability_id == "wan2gp.generate_video":
+            resident = open_resident_task(
+                self, record=record, task=task_data, admission=network_admission,
+                terminal=_terminal, binding=managed_binding,
+                private_runtime_context=private_runtime_context, machine_policy=machine_policy,
+            )
+            if resident is not None:
+                managed_capability, managed_binding, managed_adapter = resident
+            elif capability_id == "wan2gp.generate_video":
                 managed_binding = self.prepare_wan_session(**self._wan_session_context(task_data))
                 managed_adapter = self.managed_tool_session.current_adapter
                 managed_capability = CapabilityDescriptor(
@@ -13480,12 +13635,14 @@ class GenericPackHost:
                     # admitted definition is serialized for the child so a
                     # registry reload cannot silently select a different pack.
                     worker_admission = network_admission
+                    if isinstance(managed_adapter, ResidentPackAdapter):
+                        worker_admission = {**network_admission, "runtime_epoch": claim_epoch}
                     if private_runtime_context:
                         worker_admission = {key: value for key, value in network_admission.items()
                                             if key not in {"task_id", "attempt_id", "fence", "network_nonce", "allowed_routes"}}
                     worker_env, worker_secrets = self._child_environment(
                         record, root, admission=network_admission, network_broker=network_broker,
-                        allow_runtime_connection=not private_runtime_context)
+                        allow_runtime_connection=not private_runtime_context and not isinstance(managed_adapter, ResidentPackAdapter))
                     try:
                         result = self.invoke_capability(
                             capability_kind="executor",
@@ -13509,6 +13666,7 @@ class GenericPackHost:
                             network_broker_required=network_broker is not None,
                             storage_estimate=storage_estimate,
                             child_bridge=child_bridge,
+                            **({"resident_token": managed_token} if isinstance(managed_adapter, ResidentPackAdapter) else {}),
                             **({"captured_record": captured_record} if captured_record is not None else {}),
                         )
                     finally:
@@ -13525,6 +13683,7 @@ class GenericPackHost:
             _terminal["output_root"] = output_root
             _terminal["payload"] = getattr(result, "payload", {}) or {}
             lifetime.begin_collection(collection_limit)
+            _terminal["wake_observer"]()
             _terminal["stage"] = "collection"
             if child_bridge is not None:
                 child_bridge.finish()
@@ -13765,14 +13924,18 @@ class GenericPackHost:
             managed_envelope = self.managed_tool_session.settle(
                 managed_token,
                 result_evidence={
-                    "token_id": managed_token.token_id,
-                    "invocation_id": managed_token.invocation_id,
-                    "generation": managed_token.generation,
-                    "binding_identity": list(managed_token.binding_identity),
+                    **(dict(result.resident_evidence) if isinstance(managed_adapter, ResidentPackAdapter) else {
+                        "token_id": managed_token.token_id,
+                        "invocation_id": managed_token.invocation_id,
+                        "generation": managed_token.generation,
+                        "binding_identity": list(managed_token.binding_identity),
+                    }),
                     "outputs": outputs,
                 },
             )
             managed_settled = True
+            if isinstance(managed_adapter, ResidentPackAdapter):
+                managed_adapter.finish_admission(managed_token)
             payload["managed_tool_session"] = managed_envelope.to_dict()
             lifetime.assert_deadline()
             _terminal["stage"] = "settlement"
@@ -14154,15 +14317,18 @@ class GenericPackHost:
     def claim_once(self) -> Mapping[str, Any] | None:
         """Run one claim cycle while publishing host-side quiescence counters."""
         thread_id = threading.get_ident()
+        work_ready = getattr(self, "_work_ready_observed", False)
+        self._work_ready_observed = False
         try:
             with self._handoff_condition:
                 if self._handoff_claim_gate_closed or not self._handoff_observation_known:
                     return None
-            return self._claim_once_impl(thread_id)
+            return self._claim_once_impl(thread_id, work_ready=work_ready)
         finally:
+            self._work_ready_observed = False
             self._handoff_leave_attempt(thread_id)
 
-    def _claim_once_impl(self, handoff_thread_id: int) -> Mapping[str, Any] | None:
+    def _claim_once_impl(self, handoff_thread_id: int, *, work_ready: bool = False) -> Mapping[str, Any] | None:
         """Claim and execute one queued task through the generated boundary."""
         if self._shutdown.is_set():
             return None
@@ -14188,6 +14354,17 @@ class GenericPackHost:
         if not capability_ids:
             return None
         claim_target = _configured_claim_target()
+        # Consume an outer-loop observation once. It is only a capability
+        # hint; preflight, the hand-off gate and the atomic claim still check
+        # authority. Standalone/once callers make their own observation.
+        ready = True if work_ready else self._wait_for_ready_work(0, capability_ids=capability_ids)
+        if ready is False:
+            return None
+        if ready is True:
+            hints = getattr(self, "_wait_capability_ids", capability_ids)
+            capability_ids = [cap for cap in capability_ids if cap in hints]
+            if not capability_ids:
+                return None
         if not self._handoff_enter_claim_rpc():
             return None
         claim = None
@@ -14229,6 +14406,48 @@ class GenericPackHost:
             return None
         return self._execute_claimed_task(claim)
 
+    def _uses_task_waits(self) -> bool:
+        supported = getattr(self.client, "supports_task_waits", None)
+        return bool(callable(supported) and supported())
+
+    def _wait_for_ready_work(self, timeout_seconds: float, *, capability_ids=None):
+        """Observe eligibility outside claim/attempt custody; recheck at claim."""
+        self._work_ready_observed = False
+        if not self._uses_task_waits():
+            return None
+        if self._shutdown.is_set():
+            return False
+        if capability_ids is None:
+            if not self.capabilities:
+                self.discover()
+            capability_ids = sorted(r.id for r in self._preflight(full_remotion=False)
+                                    if r.ready and not _is_withdrawn(r))
+        # An empty list means all capabilities to Runtime, never no authority.
+        if not capability_ids:
+            self._shutdown.wait(max(0.0, timeout_seconds))
+            return False
+        self._waiting_for_work = True
+        wake = self._handoff_accounting_owner._claim_loop_wake
+        wake.set()
+        try:
+            result = self.client.wait_for_work(executor_id=self.executor_id, capability_ids=capability_ids,
+                target=_configured_claim_target(), timeout_seconds=max(0.0, min(25.0, timeout_seconds)))
+            if self._shutdown.is_set() or result.get("reason") == "shutdown":
+                return False
+            hints = result.get("capability_ids", capability_ids)
+            if not isinstance(hints, list) or any(cap not in capability_ids for cap in hints):
+                raise HostError("malformed eligible-work capability hint")
+            self._wait_capability_ids = hints
+            self._work_ready_observed = result.get("available") is True
+            return self._work_ready_observed
+        except Exception:
+            if self._shutdown.is_set():
+                return False
+            raise
+        finally:
+            self._waiting_for_work = False
+            wake.set()
+
     def _execute_claimed_task(self, claim: Any, *, delegated_child: bool = False) -> Mapping[str, Any] | None:
         """Validate and execute the canonical immutable claim handoff."""
         claim_data = dict(claim) if isinstance(claim, Mapping) else {
@@ -14249,6 +14468,7 @@ class GenericPackHost:
             "admitted_at": getattr(claim, "admitted_at", None),
             "created_at": getattr(claim, "created_at", None),
             "deadline_at": getattr(claim, "deadline_at", None),
+            "lease_expires_at": getattr(claim, "lease_expires_at", None),
         }
         if not claim_data.get("task_id"):
             raise HostError("generated claim operation returned no task_id")
@@ -14263,12 +14483,15 @@ class GenericPackHost:
             # provider preparation runs under this attempt's lease; a preparation
             # error must reach run_task's fenced failure path rather than escaping
             # claim_once and waiting for the lease to expire.
-            self.client.heartbeat(
-                task_id,
-                lease_id,
-                attempt_id=attempt_id,
-                fence=int(fence),
-            )
+            if not self._uses_task_waits() or renewal_delay(claim_data.get("lease_expires_at")) <= 0:
+                ack = self.client.heartbeat(
+                    task_id, lease_id, attempt_id=attempt_id, fence=int(fence),
+                )
+                # Only a matching acknowledgement extends the lease budget.
+                if isinstance(ack, Mapping) and all(ack.get(key) == expected for key, expected in (
+                        ("task_id", task_id), ("attempt_id", attempt_id), ("lease_id", lease_id),
+                        ("fence", int(fence)), ("runtime_epoch", claim_data.get("runtime_epoch")))):
+                    claim_data["lease_expires_at"] = ack.get("lease_expires_at")
             task = self._client_operation("task")(task_id)
             if isinstance(task, Mapping):
                 task_data = dict(task.get("task", task))
@@ -14337,7 +14560,7 @@ class GenericPackHost:
                 task_data["runtime_epoch"] = claim_data["runtime_epoch"]
             if claim_binding is not None:
                 task_data["execution_binding"] = claim_binding
-            for timestamp_key in ("queued_at", "admitted_at", "created_at", "deadline_at"):
+            for timestamp_key in ("queued_at", "admitted_at", "created_at", "deadline_at", "lease_expires_at"):
                 if claim_data.get(timestamp_key) is not None:
                     task_data[timestamp_key] = claim_data[timestamp_key]
             if claim_data.get("input_object_ids") is not None:
@@ -14717,6 +14940,7 @@ class GenericPackHost:
             return self._run_claim_slots(poll_seconds=poll_seconds, max_tasks=max_tasks)
         results: list[Mapping[str, Any]] = []
         consecutive_claim_failures = 0
+        consecutive_empty_claims = 0
         pack_ack_at = 0.0
         while not self._shutdown.is_set() and (max_tasks is None or len(results) < max_tasks):
             # Idle point: no claim is in flight. Attempt the pack-refresh ack here, before
@@ -14733,6 +14957,11 @@ class GenericPackHost:
             try:
                 if time.monotonic() >= self._registration_refresh_deadline:
                     self._renew_executor_registration()
+                if not once and self._uses_task_waits():
+                    maintenance = min(self._registration_refresh_deadline, pack_ack_at)
+                    if not self._wait_for_ready_work(min(25.0, max(0.0, maintenance - time.monotonic()))):
+                        consecutive_empty_claims = 0
+                        continue
                 result = self.claim_once()
             except Exception as exc:
                 # ``--once`` is a diagnostic/test surface and must preserve the
@@ -14761,6 +14990,7 @@ class GenericPackHost:
                 continue
             consecutive_claim_failures = 0
             if result is not None:
+                consecutive_empty_claims = 0
                 results.append(result)
                 if once:
                     break
@@ -14769,7 +14999,14 @@ class GenericPackHost:
                 break
             if self._shutdown.is_set():
                 break
-            self._shutdown.wait(max(0.0, float(poll_seconds)))
+            if self._uses_task_waits():
+                consecutive_empty_claims += 1
+                # Ready-but-empty backoff: a hand-off gate or an intervening
+                # commit can disagree with the read-only availability hint.
+                # Successful claims never take this bounded retry wait.
+                self._shutdown.wait(_ready_empty_claim_delay(consecutive_empty_claims))
+            else:
+                self._shutdown.wait(max(0.0, float(poll_seconds)))
         return results
 
     def run_delegated_child(self, task: Mapping[str, Any], *, parent: Mapping[str, Any],
@@ -14878,10 +15115,12 @@ class GenericPackHost:
             raise HostError("parallel serving requires attempt_base or ephemeral attempt roots")
         if not self._claim_loop_lock.acquire(blocking=False):
             raise HostError("generic host claim loop is already running")
+        event_wait = self._uses_task_waits()
         completed: queue.SimpleQueue = queue.SimpleQueue()
         active: dict[int, threading.Thread] = {}
         results: list[Mapping[str, Any]] = []
         failures: dict[int, int] = {}
+        empty_claims: dict[int, int] = {}
         retry_at: dict[int, float] = {}
         refresh_retry_at = 0.0
         refresh_failures = 0
@@ -14890,12 +15129,16 @@ class GenericPackHost:
         poll_delay = max(0.01, float(poll_seconds))
 
         def serve(index: int) -> None:
+            available = None
             try:
-                result = slots[index].claim_once()
+                available = slots[index]._wait_for_ready_work(25.0) if event_wait else None
+                result = slots[index].claim_once() if available is not False else None
             except BaseException as exc:
-                completed.put((index, None, exc))
+                completed.put((index, None, exc, available))
             else:
-                completed.put((index, result, None))
+                completed.put((index, result, None, available))
+            finally:
+                self._claim_loop_wake.set()
 
         def backoff(count: int) -> float:
             return min(30.0, max(0.05, float(poll_seconds)) * (2 ** min(count - 1, 10)))
@@ -14913,13 +15156,15 @@ class GenericPackHost:
             slots = tuple(self._new_claim_slot() for _ in range(count))
             self._claim_slots = slots
             while not self._shutdown.is_set():
+                self._claim_loop_wake.clear()
                 now = time.monotonic()
                 self._observe_machines(now)
                 while not completed.empty():
-                    index, result, exc = completed.get()
+                    index, result, exc, available = completed.get()
                     active.pop(index).join()
                     slot = slots[index]
                     if exc is not None:
+                        empty_claims[index] = 0
                         if not isinstance(exc, Exception):
                             raise exc
                         failures[index] = failures.get(index, 0) + 1
@@ -14929,10 +15174,18 @@ class GenericPackHost:
                         failures[index] = 0
                         if result is not None:
                             results.append(result)
-                        retry_at[index] = now if result is not None else now + poll_delay
+                        if event_wait and available is True and result is None:
+                            empty_claims[index] = empty_claims.get(index, 0) + 1
+                            # The coordinator's existing Event.wait below
+                            # sleeps until this ready-but-empty retry deadline.
+                            retry_at[index] = now + _ready_empty_claim_delay(empty_claims[index])
+                        else:
+                            empty_claims[index] = 0
+                            retry_at[index] = now if event_wait or result is not None else now + poll_delay
                 if max_tasks is not None and len(results) >= max_tasks:
                     break
-                if now >= pack_ack_at and not active:
+                idle = not any(not slots[i]._waiting_for_work for i in active)
+                if now >= pack_ack_at and idle:
                     try:
                         self.acknowledge_pack_refresh()
                     except Exception as exc:  # noqa: BLE001 - the outbox stays pending and is retried
@@ -14940,7 +15193,7 @@ class GenericPackHost:
                     pack_ack_at = time.monotonic() + self._pack_refresh_delay()
                 if now >= max(self._registration_refresh_deadline, refresh_retry_at):
                     try:
-                        self._renew_executor_registration(idle=not active)
+                        self._renew_executor_registration(idle=idle)
                     except Exception as exc:
                         refresh_failures += 1
                         report_failure(exc, refresh_failures)
@@ -14976,7 +15229,21 @@ class GenericPackHost:
                                                   name=f"astrid-claim-slot-{index}", daemon=True)
                         active[index] = worker
                         worker.start()
-                self._shutdown.wait(min(0.05, poll_delay))
+                if event_wait:
+                    deadlines = [max(self._registration_refresh_deadline, refresh_retry_at)]
+                    if idle:
+                        deadlines.append(pack_ack_at)
+                    deadlines.extend(value for index, value in retry_at.items() if index not in active and value > now)
+                    # No observer means no machine-maintenance deadline.
+                    # Its initial -inf timestamp otherwise turns every idle
+                    # Event.wait into wait(0), starving unrelated host work.
+                    if callable(getattr(self._target_bindings, "observe", None)):
+                        deadlines.append(self._machines_observed_at + float(os.environ.get("ASTRID_MACHINE_LIVENESS_SECONDS") or 60.0))
+                    next_wake = min(deadlines)
+                    self._claim_loop_wake.wait(
+                        None if next_wake == float("inf") else max(0.0, next_wake - time.monotonic()))
+                else:
+                    self._shutdown.wait(min(0.05, poll_delay))
             return results
         finally:
             # Shutdown fences each slot's bridge/session/process census, then

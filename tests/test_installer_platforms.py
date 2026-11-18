@@ -63,12 +63,13 @@ def test_bun_build_environment_scrubs_ambient_policy_but_keeps_explicit_cache_an
 
 
 def _runtime_argv(script):
-    # The service command is an inline `-c` launch script; its Runtime argv is the literal list it passes to main().
+    # The service command binds the Runtime argv before selecting the compatible main() signature.
     import ast
-    for node in ast.walk(ast.parse(script)):
-        if isinstance(node, ast.Call) and getattr(node.func, 'id', None) == 'main' and node.args:
-            return ast.literal_eval(node.args[0])
-    raise AssertionError('the launch script does not call main() with a Runtime argv')
+    tree = ast.parse(script)
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == '_args' for t in node.targets):
+            return ast.literal_eval(node.value)
+    raise AssertionError('the launch script does not bind Runtime argv')
 
 
 def _service_envelope(rendered, system):
@@ -578,10 +579,15 @@ def test_linux_backup_temporarily_starts_only_neutral_daemon_and_snapshots_stopp
         return {}
     backend.runtime = runtime
     backend.stop = lambda version, root: calls.append(('stop',))
+    def run(argv, **kwargs):
+        assert argv[:4] == [tmp_path / 'python', '-X', 'utf8', '-I']
+        assert 'bootstrap(' in argv[5] and 'door=' not in argv[5]
+        assert argv[6:] == [data, tmp_path / 'profile']
+        calls.append(('bootstrap',))
+    backend.run = run
     version = Version(program / 'versions/old', tmp_path / 'python', tmp_path / 'profile', {})
     result = backend.backup(version, data, {'realm_root': str(realm)})
-    assert [call[0] for call in calls] == ['up', 'backup', 'stop']
-    assert calls[0] == ('up', '--hosted-origin', 'off')
+    assert [call[0] for call in calls] == ['bootstrap', 'backup', 'stop']
     snapshot = Path(result['root']) / 'support'
     assert read_json(snapshot / 'runtime/catalog.json') == {'selected': 'one'}
     assert not (snapshot / 'runtime/realms').exists()
@@ -836,7 +842,7 @@ def test_service_log_capture_reports_bounded_tail_and_unavailable_states(tmp_pat
     assert module._last_service_log(log) == "Service log capture: read_error=PermissionError."
 
 
-@pytest.mark.parametrize("scenario", ["slow-ready", "crash", "failed", "hang"])
+@pytest.mark.parametrize("scenario", ["slow-ready", "recover-after-restart", "owner-changed", "crash", "failed", "hang"])
 def test_pack_host_verification_uses_declared_readiness_timeout(tmp_path, monkeypatch, scenario):
     from astrid.installer import backend as module
 
@@ -848,7 +854,7 @@ def test_pack_host_verification_uses_declared_readiness_timeout(tmp_path, monkey
     discovery = {"active_realm": "selected", "runtime_instance_id": "owned-instance",
                  "door_endpoint": endpoint, "identity": identity}
     write_json(data / "runtime" / "discovery.json", discovery)
-    timeout = 2 if scenario == "hang" else 300
+    timeout = 2 if scenario in {"hang", "crash"} else 300
     declaration = tmp_path / "services.json"
     write_json(declaration, {"services": [{"name": "pack-host", "ready": {
         "file": "generic-host.ready.json", "timeout_seconds": timeout}}]})
@@ -863,7 +869,7 @@ def test_pack_host_verification_uses_declared_readiness_timeout(tmp_path, monkey
     clock = Clock()
     if scenario == "slow-ready":
         host_states = [{"name": "pack-host", "state": "starting"}]
-    elif scenario == "crash":
+    elif scenario in {"crash", "recover-after-restart"}:
         host_states = [{"name": "pack-host", "state": "restarting", "restart_count": 1,
                         "last_exit": 1, "reason": "host exited"}]
     elif scenario == "failed":
@@ -882,12 +888,14 @@ def test_pack_host_verification_uses_declared_readiness_timeout(tmp_path, monkey
         def open(self, request, timeout):
             if request.full_url.endswith("/realm"):
                 return Response({"realm_id": "selected"})
-            if scenario == "slow-ready" and clock.now >= 100:
+            if ((scenario in {"slow-ready", "recover-after-restart"} and clock.now >= 100)
+                    or (scenario == "owner-changed" and clock.now >= 0.25)):
                 services = [{"name": "pack-host", "state": "running"}]
                 (data / "runtime" / "generic-host.ready.json").write_text("{}")
             else:
                 services = host_states
-            return Response({"status": "ok", "runtime_instance_id": "owned-instance",
+            instance = "different-instance" if scenario == "owner-changed" and clock.now >= 0.25 else "owned-instance"
+            return Response({"status": "ok", "runtime_instance_id": instance,
                              "identity": identity, "services": services})
 
     monkeypatch.setattr(module.urllib.request, "build_opener", lambda *_: Opener())
@@ -900,22 +908,27 @@ def test_pack_host_verification_uses_declared_readiness_timeout(tmp_path, monkey
     backend.runtime = lambda *_args, **_kwargs: {
         "discovery": {"runtime_instance_id": "owned-instance"}, "support": {"pid_alive": True}}
 
-    if scenario == "slow-ready":
+    if scenario in {"slow-ready", "recover-after-restart"}:
         backend.verify(version, data, "selected", timeout=90)
         assert clock.now >= 100
-    elif scenario in {"crash", "failed"}:
+    elif scenario == "owner-changed":
+        with pytest.raises(RuntimeError, match="Runtime changed while waiting"):
+            backend.verify(version, data, "selected", timeout=90)
+    elif scenario == "crash":
+        with pytest.raises(RuntimeError, match="task host didn't finish starting in time") as failure:
+            backend.verify(version, data, "selected", timeout=90)
+        assert clock.now >= timeout
+        assert "host startup detail" in str(failure.value)
+        assert "Service log capture:" in str(failure.value)
+        assert "truncated=False" in str(failure.value)
+        assert "reason=host exited" in str(failure.value) and "last_exit=1" in str(failure.value)
+    elif scenario == "failed":
         with pytest.raises(RuntimeError, match="An Astrid service stopped while starting") as failure:
             backend.verify(version, data, "selected", timeout=90)
-        if scenario == "crash":
-            assert "host startup detail" in str(failure.value)
-            assert "Service log capture:" in str(failure.value)
-            assert "truncated=False" in str(failure.value)
-            assert "reason=host exited" in str(failure.value) and "last_exit=1" in str(failure.value)
-        else:
-            assert "failed_service=chat" in str(failure.value)
-            assert f"log={tmp_path / 'service-chat.log'}" in str(failure.value)
-            assert "chat startup detail" in str(failure.value)
-            assert "host startup detail" not in str(failure.value)
+        assert "failed_service=chat" in str(failure.value)
+        assert f"log={tmp_path / 'service-chat.log'}" in str(failure.value)
+        assert "chat startup detail" in str(failure.value)
+        assert "host startup detail" not in str(failure.value)
     else:
         with pytest.raises(RuntimeError, match="task host didn't finish starting in time"):
             backend.verify(version, data, "selected", timeout=90)

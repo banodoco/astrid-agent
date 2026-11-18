@@ -1,0 +1,171 @@
+name: Plan 55 standing attached meter
+on:
+  pull_request:
+    branches: ["release/14/plan-55"]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - "astrid/**"
+      - "astrid_runtime_client/**"
+      - "runtime.lock.json"
+      - "tests/conftest.py"
+      - "tests/integrations/runpod_slot_pod.py"
+      - "tests/_local_speed_*.py"
+      - "tests/local_speed_*.py"
+      - "tests/local_speed_native.wprp"
+      - "tests/core/generation/test_local_speed_*.py"
+      - "tests/integrations/test_local_speed_meter.py"
+      - "tests/fixtures/local-speed-baselines/**"
+      - ".github/workflows/plan55-native-flush.yml"
+permissions:
+  contents: read
+concurrency:
+  group: plan55-native-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  calibrate:
+    name: Standing attached meter (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 70
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      ASTRID_CI_JOB: lanes-integration
+      ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/runtime
+      ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/vibecomfy-checkout
+      ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/runpod-lifecycle-checkout
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTEST_ADDOPTS: "-rA"
+      GIT_CONFIG_COUNT: "2"
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: "false"
+      GIT_CONFIG_KEY_1: core.eol
+      GIT_CONFIG_VALUE_1: lf
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Read the pinned Runtime commit
+        id: runtime-pin
+        shell: python
+        run: |
+          import json, os, pathlib
+          commit = json.loads(pathlib.Path("runtime.lock.json").read_text())["source_commit"]
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print("commit=" + commit, file=output)
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-runtime
+          ref: ${{ steps.runtime-pin.outputs.commit }}
+          path: runtime
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/VibeComfy
+          ref: dba38f8644c46f652376f2cd5112ea161e40f09b
+          path: vibecomfy-checkout
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/runpod-lifecycle
+          ref: 7f0b025e9391baac9f5c2fb7393617ea6fef0704
+          path: runpod-lifecycle-checkout
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Verify exact dependency source bytes
+        shell: python
+        run: |
+          import pathlib, subprocess
+          root = pathlib.Path("vibecomfy-checkout")
+          relative = "ready_templates/image/qwen_image_2_1_turbo.py"
+          expected = subprocess.check_output(["git", "show", "HEAD:" + relative], cwd=root)
+          if root.joinpath(relative).read_bytes() != expected:
+              raise SystemExit("VibeComfy worktree differs from exact Git bytes (including line endings)")
+      - name: Retain this exact task source for continuation
+        if: ${{ runner.os == 'Linux' }}
+        run: git archive --format=zip --output=plan55-task-source.zip HEAD
+      - name: Upload exact public task source
+        if: ${{ runner.os == 'Linux' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: plan55-task-source-${{ github.run_id }}-${{ github.run_attempt }}
+          path: plan55-task-source.zip
+          retention-days: 7
+      - name: Install unchanged CPU test dependencies
+        shell: bash
+        run: |
+          python -m pip install -e '.[dev]'
+          python -m pip install --no-deps -e ./runtime -e ./runtime/packages/python -e ./runpod-lifecycle-checkout
+          python -m pip install -e ./vibecomfy-checkout
+      - name: Install Linux syscall observer
+        if: ${{ runner.os == 'Linux' }}
+        run: sudo apt-get update && sudo apt-get install -y strace
+      - name: Check observation and collector oracles
+        run: >-
+          python -m pytest -q -rA
+          tests/core/generation/test_local_speed_native_reader.py
+          tests/core/generation/test_local_speed_process_observer.py
+          tests/core/generation/test_local_speed_hash_observer.py
+          tests/core/generation/test_local_speed_meter_collector.py
+          tests/core/generation/test_local_speed_baseline.py
+          tests/core/generation/test_local_speed_report_capture.py
+          tests/core/generation/test_local_speed_runtime_support.py
+          tests/core/generation/test_local_speed_schema_encoding.py
+          --junitxml=native-reader.xml
+      - name: Prove private Runtime directory creation and unsafe-directory refusal
+        run: >-
+          python -m pytest -q -rA -m integration
+          tests/core/generation/test_local_speed_runtime_support.py
+          --junitxml=runtime-support.xml
+      - name: Calibrate actual filesystem and SQLite writes
+        run: python -m tests.local_speed_native_run --output plan55-native-proof
+      # Owner D12 (dev #765) approves this exact retry after the fixture correction.
+      # No Runtime pin, ACL validation, privileges or production permissions change.
+      # R14-P55-02 assigns native Windows trace work to LS-13. Its original
+      # strict capture remains available with --native all and keeps failures.
+      # The standing meter records Python force requests and COMMIT statements
+      # separately; neither is represented as an OS flush count.
+      - name: Run repeated SDK and CLI baseline separately from counters
+        shell: python
+        run: |
+          import pathlib, platform, subprocess, sys
+          command = [
+              sys.executable, "-m", "tests.local_speed_meter_run",
+              "--output", "plan55-meter-proof", "--timeout", "1800",
+              "--samples", "5", "--counter-samples", "2",
+          ]
+          reference = pathlib.Path("tests/fixtures/local-speed-baselines") / (platform.system().lower() + ".json")
+          if not reference.is_file():
+              raise SystemExit("Missing standing reference: " + str(reference))
+          command += ["--baseline", str(reference)]
+          subprocess.run(command, check=True)
+      - name: Preserve exact source identity and proof manifests
+        if: ${{ always() }}
+        shell: python
+        run: |
+          import hashlib, json, pathlib, subprocess
+          root = pathlib.Path.cwd()
+          refs = {name: subprocess.check_output(["git", "-C", path, "rev-parse", "HEAD"], text=True).strip()
+                  for name, path in {"agent": ".", "runtime": "runtime", "vibecomfy": "vibecomfy-checkout", "lifecycle": "runpod-lifecycle-checkout"}.items()}
+          for name in ("plan55-native-proof", "plan55-meter-proof"):
+              out = root / name
+              out.mkdir(exist_ok=True)
+              (out / "sources.json").write_text(json.dumps(refs, indent=2) + "\n")
+              paths = [p for p in out.rglob("*") if p.is_file() and p.name != "SHA256SUMS"]
+              (out / "SHA256SUMS").write_text("".join(hashlib.sha256(p.read_bytes()).hexdigest() + "  " + p.relative_to(out).as_posix() + "\n" for p in sorted(paths)))
+      - name: Upload actual results and original failures
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: plan55-meter-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            plan55-native-proof
+            plan55-meter-proof
+            native-reader.xml
+            runtime-support.xml
+          include-hidden-files: true
+          retention-days: 14

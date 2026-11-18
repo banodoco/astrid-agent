@@ -43,6 +43,7 @@ from .core import (
 from .launcher import install_shim, owned_shim, remove_owned_command
 from .service import LABEL, Service, bootstrap_root, platform_target, venv_python
 from .support import reveal_bundle
+from .tls_fallback import open_with_tls_fallback
 from .tools import (
     asset_downloads,
     binary,
@@ -151,7 +152,7 @@ def _stage_pack_toolchain(folder: Path, agent: Path, env: dict[str, str], manife
 
     shared = spec["shared_modules"]
     request = urllib.request.Request(shared["url"], headers={"User-Agent": "astrid-installer"})
-    with urllib.request.build_opener(_HttpsRedirect()).open(request, timeout=120) as response:
+    with open_with_tls_fallback(request, timeout=120, handlers=(_HttpsRedirect(),)) as response:
         payload = response.read(1024 * 1024 + 1)
     if len(payload) > 1024 * 1024 or hashlib.sha256(payload).hexdigest() != shared["sha256"]:
         raise ValueError("Shared-module lock checksum mismatch.")
@@ -384,8 +385,10 @@ def _classify_services(services, ready_file: Path) -> tuple[str, dict | None, di
         return "crashed", pack_host, failed
     if pack_host and pack_host.get("state") == "running" and ready_file.is_file():
         return "ready", pack_host, None
-    if pack_host and (pack_host.get("restart_count", 0) > 0 or pack_host.get("last_exit") is not None):
-        return "crashed", pack_host, None
+    # A prior exit is historical evidence, not proof of terminal failure: the
+    # supervisor may be restarting or the replacement may still be warming.
+    # Only an explicit failed state is terminal; otherwise the declared
+    # readiness deadline bounds the retry period.
     return "starting", pack_host, None
 
 
@@ -1182,7 +1185,18 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 # The backup CLI uses authenticated RPC. Start only the neutral
                 # daemon (no foreground service supervisor and no browser door).
                 try:
-                    self.runtime(version, data, "up", "--hosted-origin", "off", profile=True)
+                    # The installer owns this bounded, doorless backup daemon.
+                    # Invoke the neutral bootstrap directly under installer
+                    # custody; public `up` routes managed installs to their
+                    # canonical service and must not be used for this job.
+                    script = ("from pathlib import Path; import sys; "
+                              "from astrid_runtime.bootstrap import BootstrapConfig, bootstrap; "
+                              "from astrid_runtime.paths import RuntimePaths; "
+                              "from astrid_runtime.runtime_boundary import LocalRuntimeBoundary; "
+                              "bootstrap(RuntimePaths.current(data_root=Path(sys.argv[1])), "
+                              "LocalRuntimeBoundary(), BootstrapConfig(source_manifest=Path(sys.argv[2])))")
+                    self.run([version.python, "-X", "utf8", "-I", "-c", script, data, version.profile],
+                             extra_env=dict(version.env))
                     self.runtime(version, data, "backup", "--destination", str(destination / "realm"))
                 finally:
                     self.stop(version, data)
@@ -1782,10 +1796,21 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 raise service_failure(crashed=False)
             try:
                 health = get("/api/runtime/v1/health")
-                services = health.get("services", [])
+                observed = read_json(data / "runtime" / "discovery.json")
             except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
                 time.sleep(0.25)
                 continue
+            # A different Runtime or workspace cannot inherit the first
+            # owner's successful identity check or its readiness marker.
+            if (not isinstance(health, dict) or health.get("status") != "ok"
+                    or health.get("runtime_instance_id") != discovery.get("runtime_instance_id")
+                    or observed.get("runtime_instance_id") != discovery.get("runtime_instance_id")
+                    or observed.get("active_realm") != realm_id
+                    or (managed_identity is not None and
+                        (not matches_managed_identity(health.get("identity"))
+                         or not matches_managed_identity(observed.get("identity"))))):
+                raise VerificationError("Astrid Runtime changed while waiting for service readiness.")
+            services = health.get("services", [])
             time.sleep(0.25)
             state, pack_host, failed = _classify_services(services, ready_file)
             if state == "crashed":
@@ -2064,8 +2089,10 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             }
             if error is None:
                 write_json(marker, {**current_marker, "command_shim": None, "command_path": None})
+            self.say("Connect this computer at https://astrid.haus/?connect=1")
             try:
-                webbrowser.open("https://astrid.haus/?connect=1")
+                if os.environ.get("ASTRID_NO_BROWSER") != "1" and sys.stdin is not None and sys.stdin.isatty():
+                    webbrowser.open("https://astrid.haus/?connect=1")
             except OSError:
                 pass
             return
@@ -2097,8 +2124,10 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         write_json(marker, {**current_marker,
                             "command_shim": str(shim) if shim else current_marker.get("command_shim"),
                             "command_path": effects.get("path_added") or previously_owned_path})
+        self.say("Connect this computer at https://astrid.haus/?connect=1")
         try:
-            webbrowser.open("https://astrid.haus/?connect=1")
+            if os.environ.get("ASTRID_NO_BROWSER") != "1" and sys.stdin is not None and sys.stdin.isatty():
+                webbrowser.open("https://astrid.haus/?connect=1")
         except OSError:
             pass  # The printed URL remains usable on headless computers.
         if hint:

@@ -215,6 +215,13 @@ def _request_object(raw: Mapping[str, Any], *, kind: str, capability_id: str) ->
 
 def run(payload_path: str | Path, *, captured=None) -> int:
     payload = json.loads(Path(payload_path).read_text(encoding="utf-8"))
+    result = run_payload(payload, captured=captured)
+    Path(str(payload["result_path"])).write_text(json.dumps(result, sort_keys=True), encoding="utf-8")
+    return 0 if result["ok"] else 1
+
+
+def run_payload(payload: Mapping[str, Any], *, captured=None) -> dict[str, Any]:
+    """Execute one admitted job; both worker lifetimes use these same checks."""
     if not isinstance(payload, Mapping):
         raise ValueError("capability worker payload must be an object")
     kind = str(payload.get("capability_kind") or "")
@@ -295,21 +302,13 @@ def run(payload_path: str | Path, *, captured=None) -> int:
             _captured_source=captured,
         )
 
-    result_path = Path(str(payload["result_path"]))
-    result_path.write_text(
-        json.dumps(
-            {
-                "ok": bool(getattr(result, "ok", False)),
-                "returncode": getattr(result, "returncode", None),
-                "outputs": _json_value(getattr(result, "outputs", {}) or {}),
-                "payload": _json_value(getattr(result, "payload", {}) or {}),
-                "error": _json_value(getattr(result, "error", None)),
-            },
-            sort_keys=True,
-        ),
-        encoding="utf-8",
-    )
-    return 0 if bool(getattr(result, "ok", False)) else 1
+    return {
+        "ok": bool(getattr(result, "ok", False)),
+        "returncode": getattr(result, "returncode", None),
+        "outputs": _json_value(getattr(result, "outputs", {}) or {}),
+        "payload": _json_value(getattr(result, "payload", {}) or {}),
+        "error": _json_value(getattr(result, "error", None)),
+    }
 
 
 if __name__ == "__main__":
@@ -318,6 +317,10 @@ if __name__ == "__main__":
         if len(sys.argv) >= 3 and sys.argv[1] == "--external-source-fd":
             captured = _read_captured_source(int(sys.argv[2]))
             del sys.argv[1:3]
+        if sys.argv[1:] == ["--resident-session"]:
+            from .resident_worker import serve
+
+            raise SystemExit(serve(captured=captured))
         if len(sys.argv) in {3, 5} and sys.argv[1] == "--pack-command":
             if len(sys.argv) == 5 and sys.argv[3] != "--child-bridge":
                 raise ValueError("invalid selected pack bridge controls")

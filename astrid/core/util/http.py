@@ -7,15 +7,21 @@ tests to avoid real HTTP calls.
 from __future__ import annotations
 
 import json
+import os
+import ssl
+import sys
 import time
 from base64 import b64encode
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from astrid.core.contracts.errors import AstridError
+
+if TYPE_CHECKING:
+    import httpx
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -30,6 +36,52 @@ FAL_QUEUE_URL = "https://queue.fal.run"
 # A transport receives a ``urllib.request.Request`` and returns
 # ``(status: int, body: bytes)``.
 Transport = Callable[[Request], tuple[int, bytes]]
+
+
+# ---------------------------------------------------------------------------
+# Trust policy
+# ---------------------------------------------------------------------------
+
+_USER_CA_ENV_VARS = ("SSL_CERT_FILE", "SSL_CERT_DIR")
+
+
+def os_trust_ssl_context(platform: str | None = None) -> ssl.SSLContext:
+    """Return a verifying TLS context that trusts what this computer trusts.
+
+    Antivirus and company proxies re-sign HTTPS with a root installed in the
+    OS store, which certifi (httpx's default bundle) does not contain.  On
+    Windows and macOS this uses the vendored truststore (OS store), the same
+    verifier the installer falls back to.  Elsewhere, and whenever the user set
+    ``SSL_CERT_FILE`` or ``SSL_CERT_DIR``, the stdlib default context is used so
+    their explicit choice wins.  Verification is always on, and the global
+    ``ssl`` module is never patched.
+    """
+    name = sys.platform if platform is None else platform
+    user_chose_store = any(os.environ.get(var) for var in _USER_CA_ENV_VARS)
+    if user_chose_store or name not in ("win32", "darwin"):
+        return ssl.create_default_context()
+    from astrid.installer._tls_truststore import SSLContext
+
+    return SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+
+
+def trusted_httpx_client(**kwargs: Any) -> httpx.Client:
+    """Return an ``httpx.Client`` that verifies with :func:`os_trust_ssl_context`.
+
+    ``verify`` is not caller-overridable: certificate verification stays on.
+    """
+    import httpx
+
+    kwargs["verify"] = os_trust_ssl_context()
+    return httpx.Client(**kwargs)
+
+
+def trusted_async_httpx_client(**kwargs: Any) -> httpx.AsyncClient:
+    """Async counterpart of :func:`trusted_httpx_client`."""
+    import httpx
+
+    kwargs["verify"] = os_trust_ssl_context()
+    return httpx.AsyncClient(**kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +174,11 @@ def _real_transport(request: Request) -> tuple[int, bytes]:
 
     Returns ``(status, body)``.  Raises ``URLError`` on connection failure.
     """
-    with urlopen(request, timeout=_extract_timeout(request)) as response:
+    with urlopen(
+        request,
+        timeout=_extract_timeout(request),
+        context=os_trust_ssl_context(),
+    ) as response:
         return response.status, _read_response_body(
             response,
             max_bytes=getattr(request, "max_response_bytes", None),

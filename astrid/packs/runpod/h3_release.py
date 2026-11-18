@@ -26,6 +26,7 @@ from runpod_lifecycle.rest import normalize_volume as normalize_rest_volume
 from runtime_protocol.deadline import bounded_operation
 
 from astrid.core.generation.engine_recipe import load_recipe, load_recipe_model_lock
+from astrid.core.util.http import trusted_httpx_client
 from astrid.packs.runpod import h3_release_bootstrap as bootstrap
 from astrid.packs.runpod import h3_release_remote as remote
 from astrid.packs.runpod.cuda_versions import DEFAULT_ALLOWED_CUDA_VERSIONS
@@ -324,7 +325,6 @@ class RunPodProvider:
     def __init__(self, key, *, min_cuda_version=None, cpu_api="rest", cpu_instance_id=None, cpu_only_gpu_build=False, transport="ssh"):
         import secrets
 
-        import httpx
         self.transport = transport
         self.https_token = secrets.token_urlsafe(32) if transport == "https" else None
         self._api_key = key
@@ -332,8 +332,8 @@ class RunPodProvider:
         self.cpu_api = cpu_api
         self.cpu_instance_id = cpu_instance_id
         self.cpu_only_gpu_build = cpu_only_gpu_build
-        self.http = httpx.Client(base_url=REST_BASE_URL, timeout=20,
-                                 headers={"Authorization": "Bearer " + key})
+        self.http = trusted_httpx_client(base_url=REST_BASE_URL, timeout=20,
+                                         headers={"Authorization": "Bearer " + key})
 
     def request(self, method, path, **kwargs):
         response = self.http.request(method, path, **kwargs)

@@ -19,6 +19,7 @@ import socket
 import subprocess
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Mapping, MutableMapping
 from urllib.parse import urlsplit
@@ -32,6 +33,7 @@ _POLICY: dict[str, Any] = {}
 _EVIDENCE: Path | None = None
 _EVIDENCE_KEY = ""
 _ADMISSION: dict[str, Any] = {}
+_RESIDENT_JOB = False
 
 
 class NetworkPolicyError(RuntimeError):
@@ -53,6 +55,13 @@ def _destinations(policy: Mapping[str, Any]) -> tuple[str, ...]:
 
 
 def _protocol_allowed(protocol: str) -> bool:
+    if _RESIDENT_JOB:
+        from .resident_sessions import ResidentProtocolError, current_job
+
+        try:
+            current_job()
+        except ResidentProtocolError:
+            return False  # Background or completed contexts cannot borrow the next job's routes.
     protocols = _POLICY.get("allowed_protocols", _POLICY.get("protocols"))
     if protocols is None:
         return _policy_bool(_POLICY, protocol, _policy_bool(_POLICY, "network", False))
@@ -519,6 +528,41 @@ def install_from_environment(*, strict: bool = False, broker_required: bool = Fa
     if strict:
         raise NetworkPolicyError("network policy startup admission is malformed")
     return False
+
+
+@contextmanager
+def resident_job_policy(policy: Mapping[str, Any] | None, evidence_path: Path,
+                        *, admission: Mapping[str, Any]):
+    """Bind the existing Python hook to one serial resident job, then revoke it.
+
+    Broker/native/delegation policies still use disposable workers. This adds
+    no network route and gives idle/background code no new-connect authority.
+    Child observations remain diagnostics; only the parent can publish results.
+    """
+    global _RESIDENT_JOB, _POLICY, _EVIDENCE, _ADMISSION
+    if _RESIDENT_JOB:
+        raise NetworkPolicyError("resident network context is already occupied")
+    selected = dict(policy or {"allowed_protocols": [], "allowed_destinations": []})
+    if selected.get("broker") or selected.get("proxy"):
+        raise NetworkPolicyError("brokered work requires a disposable worker")
+    install({"allowed_protocols": [], "allowed_destinations": []}, evidence_path)
+    with _LOCK:
+        _RESIDENT_JOB = True
+        _POLICY, _EVIDENCE, _ADMISSION = selected, Path(evidence_path), dict(admission)
+        _DNS_NAMES.clear()
+        _EVENTS.clear()
+    try:
+        yield
+    finally:
+        try:
+            _write_evidence()
+        finally:
+            with _LOCK:
+                _POLICY = {"allowed_protocols": [], "allowed_destinations": []}
+                _EVIDENCE, _ADMISSION = None, {}
+                _DNS_NAMES.clear()
+                _EVENTS.clear()
+                _RESIDENT_JOB = False
 
 
 __all__ = ["NetworkPolicyError", "install", "install_from_environment"]
