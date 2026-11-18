@@ -8,10 +8,6 @@ take *uses*:
 - ``"drop"`` (default): the take's range is the generated span only, taken from
   the composition manifest's ``changed_permissions.video`` (seconds into the file).
 - ``"keep"``: the take's range is the whole file.
-
-Nothing here re-encodes the stored file. ``clip_take`` writes a separate
-frame-exact copy of the range when ``output.clip_lead_in`` is set; the clip uses
-the same code as ``astrid media trim``.
 """
 from __future__ import annotations
 
@@ -39,11 +35,6 @@ def lead_in_of(request_value: Mapping[str, Any]) -> str:
     if mode not in LEAD_IN_MODES:
         raise H3RequestError(f"output.lead_in must be one of {list(LEAD_IN_MODES)}")
     return mode
-
-
-def clip_requested(request_value: Mapping[str, Any]) -> bool:
-    """True when the request asks for a clipped copy of the take's range."""
-    return bool((request_value.get("output") or {}).get("clip_lead_in", False))
 
 
 def video_duration(probe: Any) -> float | None:
@@ -81,16 +72,11 @@ def take_range(composition: Mapping[str, Any], *, lead_in: str, media_duration: 
     return [start, end]
 
 
-def clip_take(facts: Any, src: Path, dst: Path, *, start: float, end: float, probe: Any) -> dict[str, Any]:
-    """Write the frame-exact clip of ``[start, end)`` via the engine facts (same code as ``media trim``)."""
-    return dict(facts.clip_media(src, dst, start=start, end=end, probe=probe))
-
-
 def write_take_report(out_dir: Path, report: Mapping[str, Any]) -> Path:
     path = Path(out_dir) / "take.json"
     path.write_text(json.dumps(dict(report), indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
 
 
-__all__ = ["TakeError", "clip_requested", "clip_take", "is_continuation", "lead_in_of", "take_range",
+__all__ = ["TakeError", "is_continuation", "lead_in_of", "take_range",
            "video_duration", "write_take_report"]

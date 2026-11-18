@@ -300,6 +300,8 @@ overrides: {steps: 8, seed: 42}
 
 ## Edit inputs: reference images and replacement audio
 
+For generated speech in a v2 edit, put the literal spoken line in the top-level `prompt`.
+
 A v2 source-backed edit takes three independent parts. Each is optional, and
 they combine in one request:
 
@@ -428,26 +430,14 @@ generated suffix is explicit. For continuation plus a spatial mask, provide a
 suffix baseline or an explicit policy; the compiler never silently freezes the
 last frame.
 
-**Lead-in.** A continuation's file starts with the source frames it continued
-from (the lead-in), then the new performance. The file is always stored whole,
-so the lead-in can be verified and compared against the source. `output.lead_in`
-says what the take uses: `"drop"` (default) reports `take.range` as the generated
-span only; `"keep"` reports the whole file. The stored file is never rewritten,
-and the range becomes the clip's `from`/`to` when the take is placed. The join
-falls on an exact frame. To hand someone a separate file of just the new line,
-set `output.clip_lead_in: true` (default `false`): after verification passes, a
-frame-exact clip of `take.range` is written as a second output (the full take is
-still verified as a whole). Every continuation writes `h3/take.json` with the
-`lead_in` mode and the `range` (for `keep`, the whole file up to its last video
-frame), clip or not. The range and the clip are reported, not required: if the
-range cannot be derived (for example more than one generated span), a bound is
-off the frame grid, or ffmpeg fails, the error is recorded in `take.json`, the
-full take stays the result and the job does not fail. Writing `"lead_in": "drop"`
-is the same request as leaving it out. Any existing take can be clipped the same way with
-`astrid media trim <media> --project P --range START,END`, which imports the clip
-as new media linked to the take by `derived_from`. `output.lead_in` and
-`output.clip_lead_in` are valid only for `operation: continue` (v1) or
-`continuation: true` (v2).
+**Lead-in.** Run the continuation with the default `output.lead_in` of `"drop"`.
+The full take retains the source frames for verification. Read `range` from the
+take's `h3/take.json` and use its two values as `START,END` in
+`astrid media trim <take media id> --range START,END --project P` to import a
+clip of just the new performance. The same range supplies the clip's `from`/`to`
+when placing the take. Choose `"keep"` to use the whole take through its last
+video frame. If range derivation fails, the report records an `error` and the
+verified take remains available.
 
 ## Workflow choice
 

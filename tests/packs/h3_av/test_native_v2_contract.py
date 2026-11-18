@@ -32,7 +32,7 @@ def _case(branch: str) -> dict[str, object]:
     if branch == "source_free":
         media = [{"id": "look", "asset": "look.png", "role": "reference", "modality": "image"}]
     elif branch == "audio_only":
-        media = [{"id": "voice", "asset": "voice.wav", "role": "timeline", "modality": "audio", "at": {"frame": 0}, "edit": [{"stream": "audio", "during": [0, 1], "text": "A literal line."}]}]
+        media = [{"id": "voice", "asset": "voice.wav", "role": "timeline", "modality": "audio", "at": {"frame": 0}, "edit": [{"stream": "audio", "during": [0, 1]}]}]
     elif branch == "extension_context":
         media = [{"id": "source", "asset": "source.mp4", "role": "timeline", "modality": "video", "at": {"frame": 0}, "range": [0, 2]}]
     else:
@@ -461,7 +461,7 @@ def test_v2_full_timeline_audio_composes_with_independent_video_permissions(
                     "at": {"frame": 0},
                     "range": [0, "5/3"],
                     "edit": [
-                        {"stream": "audio", "during": [0, "8/3"], "text": "New soundtrack."}
+                        {"stream": "audio", "during": [0, "8/3"]}
                     ],
                 }
             ],
