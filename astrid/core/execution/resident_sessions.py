@@ -624,6 +624,9 @@ class ResidentPackAdapter:
         self._fenced.set()
         return {"ok": True, "reason": reason}
 
+    def _release_admissions(self, *, reason):
+        """Concurrent adapters reconcile attempt ownership after native drain."""
+
     def release(self, *, reason):
         from . import generic_host as core
 
@@ -644,6 +647,7 @@ class ResidentPackAdapter:
                             stream.close()
                 finally:
                     self._command_lock.release()
+            self._release_admissions(reason=reason)
             for resource in reversed(self.retained_resources):
                 resource.close()
             self.retained_resources.clear()

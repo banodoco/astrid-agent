@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import os
 import time
 from types import SimpleNamespace
@@ -14,7 +15,7 @@ from astrid.core.generation.managed_preparation import (
     preparation_scope,
     read_preparation,
 )
-from astrid.core.generation.retained_preparation import RetainedPreparation
+from astrid.core.generation.retained_preparation import RetainedPreparation, installation_generation
 from tests.core.generation import test_managed_preparation
 
 preparation = test_managed_preparation.preparation
@@ -157,3 +158,60 @@ def test_replaced_install_lock_and_unproved_prompt_drain_keep_custody(retained_i
     with pytest.raises(CustodyUnresolved):
         world.retained.close()
     assert not world.lock.released and id(job) in world.retained.jobs
+
+
+def test_io_and_unselected_models_do_not_replace_declared_model_verification(retained_install):
+    world = retained_install
+    for name in ("input", "output", "temp", "models"):
+        folder = world.root / "source" / name
+        folder.mkdir()
+        (folder / "unselected.bin").write_bytes(b"per-job or unselected model bytes")
+    assert world.retained.observe(world.job(2))
+    model_root = world.root / "source/models"
+    model = model_root / "selected.bin"
+    model.write_bytes(b"declared model bytes")
+    world.retained.report["manifest"].update(models_root=str(model_root), models=[{
+        "name": model.name, "subdir": "", "sha256": hashlib.sha256(model.read_bytes()).hexdigest(),
+        "size": model.stat().st_size,
+    }])
+    world.retained.generation, _ = installation_generation(world.job(3), world.retained.report)
+    assert world.retained.observe(world.job(4))
+    before = model.stat()
+    model.write_bytes(b"x" * before.st_size)
+    os.utime(model, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert not world.retained.observe(world.job(5))
+    assert not world.lock.released
+    world.retained.close()
+
+
+@pytest.mark.parametrize("native_absent", [True, False], ids=["drained", "unproved"])
+def test_generation_retirement_releases_installation_only_after_native_absence(retained_install, native_absent):
+    from astrid.packs.vibecomfy.resident import HostPreparationCache
+
+    world = retained_install
+    cache = HostPreparationCache(world.root / "cache", "scope", "compiler")
+    cache.managed = world.retained
+    cache.invalidate()
+    adapter = SimpleNamespace(has_jobs=False, retained_resources=[cache], vibecomfy_preparations={"scope": cache})
+    class Owner:
+        occupied = True
+        current_adapter = adapter
+        def release(self, *, reason):
+            assert not world.lock.released
+            if not native_absent:
+                raise CustodyUnresolved("native release unproved")
+            cache.close()
+            adapter.retained_resources.clear()
+            self.occupied = False
+    host = SimpleNamespace(managed_tool_session=Owner())
+    if native_absent:
+        cache.retire_managed(host, clear_catalogue=True)
+        assert world.lock.released and cache.root.exists() and not cache.invalidated
+        assert not host.managed_tool_session.occupied
+        cache.close()
+    else:
+        with pytest.raises(CustodyUnresolved, match="native release unproved"):
+            cache.retire_managed(host, clear_catalogue=True)
+        assert not world.lock.released and cache.invalidated and cache.root.exists()
+        assert adapter.retained_resources == [cache] and host.managed_tool_session.occupied
+        cache.close()

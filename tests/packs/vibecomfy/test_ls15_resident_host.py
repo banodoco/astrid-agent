@@ -12,7 +12,9 @@ from urllib.request import Request
 
 import pytest
 
-from astrid.core.execution.generic_host import GenericPackHost
+from astrid.core.execution.generic_host import GenericPackHost, HostError
+from astrid.core.execution.managed_tool_session import StaleAdmissionError
+from astrid.core.execution.resident_sessions import ResidentProtocolError
 from astrid.core.generation.backends.comfy_target import open_comfy_http
 from tests.helpers.ls5_comfy_peer import ComfyPeer
 from tests.packs.vibecomfy import test_local_server_run
@@ -148,7 +150,7 @@ def test_second_admitted_job_reuses_worker_template_and_target(resident_comfy, m
     host, runtime, peer, comfy = resident_comfy
     with counters.observe():
         first = run_job(resident_comfy, 1)
-        process = host.managed_tool_session.current_adapter.process
+        adapter = host.managed_tool_session.current_adapter
         before = peer.counts()
         cold = counters.snapshot()
         second = run_job(resident_comfy, 2)
@@ -160,7 +162,8 @@ def test_second_admitted_job_reuses_worker_template_and_target(resident_comfy, m
         assert warm[scope + "_counts"]["source_validation"] > 0
     assert warm["child_counts"]["per_job_authorization"] > 0
     assert warm["captures"] and all(row["files"] > 0 and row["bytes"] > 0 for row in warm["captures"])
-    assert host.managed_tool_session.current_adapter.process is process
+    assert host.managed_tool_session.current_adapter is adapter
+    process = adapter.process
     assert first[0]["process_id"] == second[0]["process_id"] == process.pid
     assert peer.counts()["GET /object_info"] == before["GET /object_info"]
     assert peer.counts()["GET /ws"] == before["GET /ws"] == 1
@@ -250,3 +253,60 @@ def test_concurrent_vibe_jobs_keep_inputs_outputs_and_cancellation_separate(resi
     if cancel_first:
         assert [row[0] for row in runtime.cancellations] == ["ls15-task-2"]
         assert not any(row[0] == "ls15-task-2" for row in runtime.settlements)
+
+
+def test_failed_resident_job_requires_fresh_preparation_for_the_next_admission(resident_comfy):
+    host, runtime, peer, comfy = resident_comfy
+    run_job(resident_comfy, 1)
+    process = host.managed_tool_session.current_adapter.process
+    peer.mode = "reject"
+    with pytest.raises(HostError):
+        run_job(resident_comfy, 2)
+    assert len(peer.posts) == 2, "a refused job must not replay its POST"
+    assert not any(row[0] == "ls15-task-2" for row in runtime.settlements)
+    before = peer.counts()
+    peer.mode = "normal"
+    run_job(resident_comfy, 3)
+    assert process.poll() is not None
+    assert host.managed_tool_session.current_adapter.process is not process
+    assert peer.counts()["GET /object_info"] > before["GET /object_info"]
+    assert peer.counts()["GET /ws"] > before["GET /ws"]
+    assert len(peer.posts) == 3
+
+
+def test_worker_crash_reconciles_both_owned_prompts_before_replacement(resident_comfy, tmp_path):
+    host, runtime, peer, comfy = resident_comfy
+    canonical_inputs(resident_comfy, tmp_path / "authored")
+    run_job(resident_comfy, 1)
+    process = host.managed_tool_session.current_adapter.process
+    peer.auto_complete = False
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(run_job, resident_comfy, index, values={"color": index}) for index in (2, 3)]
+        try:
+            wait_posts(peer, 3, futures)
+            deadline = time.monotonic() + 20
+            recorded = set()
+            while recorded != {2, 3} and time.monotonic() < deadline:
+                for index in (2, 3):
+                    pattern = f"**/ls15-task-{index}-ls15-attempt-{index}/outputs/.vibecomfy-runtime/out/runs/*/attempt.json"
+                    for path in host.attempt_base.glob(pattern):
+                        if json.loads(path.read_bytes()).get("queue_acceptance", {}).get("status") == "accepted":
+                            recorded.add(index)
+                time.sleep(0.01)
+            assert recorded == {2, 3}, "both accepted prompts must have durable private ownership before the kill"
+            process.kill()
+            for future in futures:
+                with pytest.raises((ResidentProtocolError, StaleAdmissionError)):
+                    future.result(timeout=25)
+            prompts = set(list(peer.pending)[1:])
+            assert set(peer.deleted) == prompts and not peer.interrupted
+            assert not any(row[0] in {"ls15-task-2", "ls15-task-3"} for row in runtime.settlements)
+            assert len(peer.posts) == 3, "crash reconciliation cannot replay a prompt"
+        finally:
+            peer.auto_complete = True
+            for prompt in tuple(peer.pending):
+                if prompt not in peer.history and prompt not in peer.deleted:
+                    peer.complete(prompt)
+    run_job(resident_comfy, 4)
+    assert host.managed_tool_session.current_adapter.process is not process
+    assert len(peer.posts) == 4

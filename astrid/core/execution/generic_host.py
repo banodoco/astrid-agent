@@ -14058,6 +14058,8 @@ class GenericPackHost:
         except BaseException as exc:
             if claim_failure_recorder is not None:
                 claim_failure_recorder(exc)
+            if resident_preparation is not None:
+                resident_preparation.invalidate()
             _terminal.setdefault("error", exc)
             if _terminal.get("disposition") == "authority_refused":
                 raise
@@ -14202,7 +14204,7 @@ class GenericPackHost:
                     # lifecycle token without revoking another live admission.
                     from .resident_sessions import token_identity
                     self.managed_tool_session.settle(managed_token, result_evidence=token_identity(managed_token))
-                    managed_adapter.finish_admission(managed_token)
+                    managed_adapter.finish_admission(managed_token, failed=True)
                     managed_settled = True
                 else:
                     try:

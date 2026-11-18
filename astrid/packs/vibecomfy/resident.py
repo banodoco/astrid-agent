@@ -111,6 +111,13 @@ class HostPreparationCache(CanonicalCatalogue):
         self.last_loaded = None
         self.managed = None
         self.compiler_generation = compiler_generation
+        self.invalidated = False
+        self._preserve_catalogue = False
+
+    def invalidate(self):
+        # A completed failure does not revoke another live job. The next
+        # admission must retire the quiescent incarnation and prepare afresh.
+        self.invalidated = True
 
     def assert_current(self):
         from .resident_source import compiler_content_identity
@@ -159,7 +166,8 @@ class HostPreparationCache(CanonicalCatalogue):
         if self.managed is not None:
             self.managed.close()
             self.managed = None
-        super().close()
+        if not self._preserve_catalogue:
+            super().close()
 
     def retire_managed(self, host, *, clear_catalogue):
         """Retire the existing owner before reacquiring its installation lock."""
@@ -169,15 +177,18 @@ class HostPreparationCache(CanonicalCatalogue):
             raise SessionCapacityError("managed generation replacement is pending active admissions")
         # Keep this request's immutable workflow capture reachable across the
         # owner replacement. Its old preparation cannot survive the release.
-        if self.managed is not None:
-            self.managed.close()
-            self.managed = None
-        resources = getattr(adapter, "retained_resources", [])
-        if self in resources:
-            resources.remove(self)
-            getattr(adapter, "vibecomfy_preparations", {}).pop(self.scope, None)
-        if host.managed_tool_session.active:
-            host.managed_tool_session.release(reason="managed_readiness_changed")
+        self._preserve_catalogue = True
+        try:
+            if host.managed_tool_session.occupied:
+                host.managed_tool_session.release(reason="managed_readiness_changed")
+            # The owning adapter normally closes this resource after native
+            # drain. An unattached cache still closes only after that release.
+            if self.managed is not None:
+                self.managed.close()
+                self.managed = None
+        finally:
+            self._preserve_catalogue = False
+        getattr(adapter, "vibecomfy_preparations", {}).pop(self.scope, None)
         self.prepared.clear()
         if clear_catalogue:
             for child in self.root.iterdir():
@@ -185,6 +196,7 @@ class HostPreparationCache(CanonicalCatalogue):
                     shutil.rmtree(child)
             self.loaded.clear()
             self.last_loaded = None
+        self.invalidated = False
 
     def observe_managed(self, host, preparation):
         adapter = host.managed_tool_session.current_adapter
@@ -211,6 +223,8 @@ def host_cache(host, record, task, inputs, *, align, entry):
     existing = caches.get(scope)
     if existing is not None and existing.scope == scope and host.managed_tool_session.active:
         adapter.assert_current()
+        if existing.invalidated:
+            existing.retire_managed(host, clear_catalogue=True)
         return existing
     if len(caches) >= _LIMIT:
         raise ValueError("resident preparation capacity exceeded")

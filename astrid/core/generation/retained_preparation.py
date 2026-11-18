@@ -83,8 +83,10 @@ def installation_generation(preparation, report):
     facts, read_bytes = [], 0
     for source in recipe.sources:
         folder = root / source.relative_path
-        # These are Comfy's per-job IO directories, not executable source.
-        excluded = frozenset({"/input", "/output", "/temp"}) if source.name == "comfyui" else frozenset()
+        # Match the source audit's non-code directories. Declared models keep
+        # their own user-selected verification policy below; scanning the
+        # whole model library here would bypass that policy on every job.
+        excluded = frozenset({"/input", "/output", "/temp", "/models"}) if source.name == "comfyui" else frozenset()
         value, size = _content_tree(folder, preparation.check, omitted=excluded)
         facts.append([str(folder), value])
         read_bytes += size

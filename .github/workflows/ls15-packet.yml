@@ -130,6 +130,8 @@ jobs:
             tests/core/execution/test_private_network_command.py \
             tests/test_generic_host_child_output.py \
             tests/packs/test_canonical_pack_v3.py tests/packs/test_pack_discovery_v3.py \
+            tests/core/pack/test_verified_relocations.py \
+            tests/core/generation/backends/test_comfy_held_transport.py tests/core/generation/backends/test_comfy_held_rework.py \
             tests/core/generation/test_managed_preparation.py \
             tests/sdk/test_ls6_default_materialization.py tests/sdk/test_ls6_materialization_regressions.py \
             2>&1 | tee ../proof/base.log
@@ -149,6 +151,8 @@ jobs:
             tests/core/execution/test_private_network_command.py \
             tests/test_generic_host_child_output.py \
             tests/packs/test_canonical_pack_v3.py tests/packs/test_pack_discovery_v3.py \
+            tests/core/pack/test_verified_relocations.py \
+            tests/core/generation/backends/test_comfy_held_transport.py tests/core/generation/backends/test_comfy_held_rework.py \
             tests/core/generation/test_managed_preparation.py \
             tests/sdk/test_ls6_default_materialization.py tests/sdk/test_ls6_materialization_regressions.py \
             2>&1 | tee ../proof/head.log
@@ -183,7 +187,7 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/head
           ASTRID_CI_JOB: lanes-integration
         run: |
-          python -m pytest --import-mode=importlib -m integration -rA --basetemp=../proof/packet-tmp \
+          python -m pytest --import-mode=importlib -m integration -rA -o tmp_path_retention_policy=all --basetemp=../proof/packet-tmp \
             --junitxml=../proof/packet-host.xml tests/packs/vibecomfy/test_ls15_resident_host.py \
             2>&1 | tee ../proof/packet-host.log
       - name: Unchanged Linux managed preparation on both sides
@@ -198,6 +202,16 @@ jobs:
               2>&1 | tee ../proof/$source-managed.log) || outcome=1
           done
           exit "$outcome"
+      - name: Unchanged Linux installation-lock contention on both sides
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && runner.os == 'Linux' }}
+        run: |
+          outcome=0
+          for source in base head; do
+            (cd "$source"; PYTHONPATH="$PWD" python -m pytest --import-mode=importlib -rA \
+              --junitxml=../proof/$source-contention.xml tests/core/generation/test_managed_preparation_contention.py \
+              2>&1 | tee ../proof/$source-contention.log) || outcome=1
+          done
+          exit "$outcome"
       - name: Linux managed generation reuse and custody proof
         if: ${{ !cancelled() && steps.install.outcome == 'success' && runner.os == 'Linux' }}
         working-directory: head
@@ -205,7 +219,7 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/head
           ASTRID_CI_JOB: lanes-integration
         run: |
-          python -m pytest --import-mode=importlib -m integration -rA --basetemp=../proof/managed-tmp \
+          python -m pytest --import-mode=importlib -m integration -rA -o tmp_path_retention_policy=all --basetemp=../proof/managed-tmp \
             --junitxml=../proof/packet-managed.xml tests/integrations/test_ls15_managed_resident.py \
             2>&1 | tee ../proof/packet-managed.log
       - uses: actions/upload-artifact@v4

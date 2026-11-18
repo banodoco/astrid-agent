@@ -152,7 +152,13 @@ class ConcurrentResidentAdapter(ResidentPackAdapter):
                                process_id=self.process.pid, stdout=payload["stdout"], stderr=payload["stderr"],
                                resident_evidence=MappingProxyType(identity))
 
-    def finish_admission(self, token):
+    def finish_admission(self, token, *, failed=False):
+        with self._jobs_lock:
+            if self._finished.get(token.token_id) != token_identity(token):
+                raise StaleAdmissionError("resident completion identity differs")
+            adapter = self._job_adapters.get(token.token_id)
+        if failed and adapter is not None and adapter.release(reason="resident_job_failed").get("ok") is not True:
+            raise ResidentProtocolError("resident job-owned cleanup is unproved")
         with self._jobs_lock:
             if self._finished.pop(token.token_id, None) != token_identity(token):
                 raise StaleAdmissionError("resident completion identity differs")
@@ -166,6 +172,17 @@ class ConcurrentResidentAdapter(ResidentPackAdapter):
             return {"ok": False, "reason": "job-owned cleanup is unproved"}
         self.finish_admission(token)
         return {"ok": True, "cancelled": True, "reason": reason}
+
+    def _release_admissions(self, *, reason):
+        # The base release proves worker absence before this hook, and keeps
+        # captures/readiness owned until every private journal is reconciled.
+        with self._jobs_lock:
+            adapters = tuple(self._job_adapters.items())
+        for token_id, adapter in adapters:
+            if adapter.release(reason=reason).get("ok") is not True:
+                raise ResidentProtocolError("resident prompt cleanup is unproved")
+            with self._jobs_lock:
+                self._job_adapters.pop(token_id, None)
 
     def release(self, *, reason):
         with self._release_lock:
