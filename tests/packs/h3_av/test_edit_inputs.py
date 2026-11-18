@@ -318,9 +318,9 @@ def test_preparation_reports_duration_warning(monkeypatch, frames, warned):
     monkeypatch.setattr(prepare, "_check_source_av_rates", lambda *_: None)
     monkeypatch.setattr(prepare, "_v2_mask_schedule", lambda *_args, **_kwargs: {"status": "ready"})
     warnings = prepare.prepare_request(req)["warnings"]
-    assert bool(warnings) is warned
-    if warned:
-        assert warnings[0]["limit"] == "job_duration_seconds"
+    duration_warnings = [row for row in warnings if row["limit"] == "job_duration_seconds"]
+    assert bool(duration_warnings) is warned
+    assert any(row["limit"] == "text_only_documented_use" and "outside the documented use" in row["message"] for row in warnings)
 
 
 def test_character_swap_requires_each_minimum_reference():
@@ -504,3 +504,23 @@ def test_exact_trim_totals_with_nonzero_starts(monkeypatch, tmp_path):
     assert len(prepare._admit_conditioning(_request(items(121)), records)) == 3
     with pytest.raises(prepare.PreparationError, match="per modality total"):
         prepare._admit_conditioning(_request(items(122)), records)
+
+
+def test_continuation_resource_estimate_uses_actual_raw_extension(monkeypatch):
+    from fractions import Fraction
+    from astrid.packs.h3_av.shared.timing import plan_continuation
+    timeline = {"occurrence_id": "source", "asset": "clip", "role": "timeline", "modality": "video", "resolved_range": [0, 120]}
+    request = H3Request({"version": 2, "media": [timeline], "continuation": True, "duration": 8}, "test")
+    monkeypatch.setattr(prepare, "_resolve_assets", lambda *_: [])
+    monkeypatch.setattr(prepare, "_validate_mask_assets", lambda *_: None)
+    monkeypatch.setattr(prepare, "_check_source_av_rates", lambda *_: None)
+    monkeypatch.setattr(prepare, "_v2_mask_schedule", lambda *_args, **_kwargs: {"status": "ready"})
+    result = prepare.prepare_request(request)
+    expected = plan_continuation(source_end=Fraction(5), output_duration=8)
+    assert result["resource_estimate"]["target_rows"] == expected.raw_extension_frames
+
+
+def test_unresolved_modalities_cannot_bypass_reference_limits():
+    items = [{"occurrence_id": f"unknown-{index}", "asset": f"asset-{index}", "role": "reference"} for index in range(13)]
+    with pytest.raises(prepare.PreparationError, match=r"unknown-0.*unresolved modality"):
+        prepare._admit_conditioning(_request(items), [])

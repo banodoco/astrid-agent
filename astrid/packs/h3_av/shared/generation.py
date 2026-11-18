@@ -3,9 +3,8 @@
 Node contract: ComfyUI 423cbd20511becb1f16122ab518e92e58bfa03d9,
 comfy_extras/nodes_minimax_h3.py, MiniMaxH3ReferenceToVideo.
 """
-from __future__ import annotations
-
 import hashlib
+from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
@@ -29,6 +28,7 @@ LIMITS = {
     # Current lowering limits. SR-3 owns shared seed/reference-set validation;
     # the regions-per-pass row is not enforced here.
     "character_swap_references": {"value": {"video": 1, "image": 1, "additional": "allowed but untested"}, "source": "Astrid lowering"},
+    "character_swap_mask_rectangle": {"value": "integer pixel coordinates", "source": "Astrid lowering"},
     "continuation_references": {"value": {"image": 2, "video": 0, "audio": 0}, "source": "Astrid lowering"},
     "regions_per_pass": {"value": {"seeds": 1, "reference_sets": 1}, "source": "Astrid lowering"},
 }
@@ -219,14 +219,64 @@ def generation_timing(duration: float) -> dict[str, Any]:
             "trim_tail_frames": raw - frames, "duration": frames / 24}
 
 
-def build_generation_workflow(*, references: list[str], prompt: str, frames: int,
-                              model: str, steps: int, seed: int,
-                              sampler: str = "res_multistep", guidance: float = 0.95,
-                              scheduler: str = "simple", video_references: list[dict[str, Any]] | None = None,
-                              audio_references: list[dict[str, Any]] | None = None,
-                              adapter_strength: float | None = None, turbo_enabled: bool = True,
-                              character_swap_sha256: str = CHARACTER_SWAP_SHA256,
-                              masked_edit: dict[str, Any] | None = None):
+@dataclass(frozen=True)
+class GenerationInputs:
+    canvas: Mapping[str, Any]
+    placed: tuple[Mapping[str, Any], ...]
+    grants: tuple[Mapping[str, Any], ...]
+    conditioning: tuple[Mapping[str, Any], ...]
+    prompt: str
+    model: Mapping[str, Any]
+    sampling: Mapping[str, Any]
+
+
+
+def generation_inputs_from_bindings(*, references: list[str], prompt: str, frames: int,
+                                    model: str, steps: int, seed: int,
+                                    sampler: str = "res_multistep", guidance: float = 0.95,
+                                    scheduler: str = "simple", video_references: list[dict[str, Any]] | None = None,
+                                    audio_references: list[dict[str, Any]] | None = None,
+                                    adapter_strength: float | None = None, turbo_enabled: bool = True,
+                                    character_swap_sha256: str = CHARACTER_SWAP_SHA256,
+                                    masked_edit: dict[str, Any] | None = None) -> GenerationInputs:
+    """Adapt the existing binding interface while callers migrate to resolved inputs."""
+    rows = []
+    for i, binding in enumerate(references):
+        rows.append({"occurrence": binding, "modality": "image", "trim": None,
+                     "input_binding": {"binding": binding, "port": f"ref_images.ref_image_{i}"}, "tag": f"<Picture {i + 1}>"})
+    audio_index = 0
+    for i, reference in enumerate(video_references or []):
+        binding = dict(reference)
+        binding.setdefault("binding", f"video_reference_{i}")
+        binding["port"] = f"ref_videos.ref_video_{i}"
+        if binding.get("audio", True):
+            audio_index += 1
+            binding["soundtrack"] = {"port": f"ref_video_audios.ref_video_audio_{i}", "tag": f"<Audio {audio_index}>"}
+        rows.append({"occurrence": binding["binding"], "modality": "video", "trim": None,
+                     "input_binding": binding, "tag": f"<Video {i + 1}>"})
+    for i, reference in enumerate(audio_references or []):
+        binding = dict(reference)
+        binding.setdefault("binding", f"audio_reference_{i}")
+        binding["port"] = f"ref_audios.ref_audio_{i}"
+        audio_index += 1
+        rows.append({"occurrence": binding["binding"], "modality": "audio", "trim": binding.get("resolved_range"),
+                     "input_binding": binding, "tag": f"<Audio {audio_index}>"})
+    return GenerationInputs(
+        canvas={"width": 1024, "height": 576, "frames": frames},
+        placed=({"occurrence": "legacy-source", "input_binding": masked_edit["source_binding"],
+                 "start_time": masked_edit["start_time"], "frame_count": masked_edit["frame_load_cap"]},) if masked_edit else (),
+        grants=({"stream": "video", "interval": [0, masked_edit["frame_load_cap"]],
+                 "source_occurrence": "legacy-source", "region_raster": {"input_binding": masked_edit["mask_binding"],
+                 "channel": masked_edit["mask_channel"], "kind": masked_edit.get("mask_kind", "image"),
+                 "sampler_strength": masked_edit.get("strength", 1)}, "strength": masked_edit.get("strength", 1),
+                 "seed": seed, "references": []},) if masked_edit else (), conditioning=tuple(rows),
+        prompt=prompt, model={"base": model, "adapter": ({"id": CHARACTER_SWAP_ID, "strength": adapter_strength,
+                              "sha256": character_swap_sha256} if adapter_strength is not None else None)},
+        sampling={"steps": steps, "seed": seed, "sampler": sampler, "guidance": guidance,
+                  "scheduler": scheduler, "turbo_enabled": turbo_enabled},
+    )
+
+def build_generation_workflow(inputs: GenerationInputs):
     """Build ordinary H3 nodes and one muxed sink, ready for canonical emission.
 
     ``masked_edit`` (keys ``source_binding``, ``start_time``, ``frame_load_cap``,
@@ -240,6 +290,30 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
     run bindings, not graph defaults; ordered slots bind Picture 1..N without
     implicit keyframe constraints.
     """
+    references = [row["input_binding"]["binding"] for row in inputs.conditioning if row["modality"] == "image"]
+    video_references = [dict(row["input_binding"]) for row in inputs.conditioning if row["modality"] == "video"]
+    audio_references = [dict(row["input_binding"]) for row in inputs.conditioning if row["modality"] == "audio"]
+    prompt = inputs.prompt
+    frames = inputs.canvas["frames"]
+    model = inputs.model["base"]
+    adapter = inputs.model.get("adapter")
+    adapter_strength = adapter["strength"] if adapter else None
+    character_swap_sha256 = adapter.get("sha256", CHARACTER_SWAP_SHA256) if adapter else CHARACTER_SWAP_SHA256
+    steps = inputs.sampling["steps"]
+    seed = inputs.sampling["seed"]
+    sampler = inputs.sampling.get("sampler", "res_multistep")
+    guidance = inputs.sampling.get("guidance", 0.95)
+    scheduler = inputs.sampling.get("scheduler", "simple")
+    turbo_enabled = inputs.sampling.get("turbo_enabled", True)
+    spatial = next((grant for grant in inputs.grants if grant.get("stream") == "video" and grant.get("source_occurrence") and isinstance(grant.get("region_raster"), Mapping) and grant["region_raster"].get("input_binding")), None)
+    masked_edit = None
+    if spatial:
+        source = next(item for item in inputs.placed if item.get("occurrence", item.get("occurrence_id")) == spatial["source_occurrence"])
+        raster = spatial["region_raster"]
+        masked_edit = {"source_binding": source["input_binding"], "start_time": source["start_time"],
+                       "frame_load_cap": source["frame_count"], "mask_binding": raster["input_binding"],
+                       "mask_channel": raster["channel"], "mask_kind": raster.get("sampler_kind", raster["kind"]),
+                       "strength": raster["sampler_strength"]}
     from vibecomfy.templates import ModelAsset, OutputSpec, ReadyMetadata, new_workflow, node
     from vibecomfy.nodes.core import (
         AudioConcat, BasicGuider, BasicScheduler, CLIPLoader, EmptyAudio, EmptyImage,
@@ -249,8 +323,8 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
     )
     from vibecomfy.nodes.videohelpersuite import VHS_LoadVideoFFmpeg, VHS_VideoCombine
 
-    if not (0 if masked_edit else 1) <= len(references) <= IMAGE_REFERENCE_CAPACITY:
-        raise ValueError("this adapter requires one to nine image references")
+    if not 0 <= len(references) <= IMAGE_REFERENCE_CAPACITY:
+        raise ValueError("this adapter supports at most nine image references")
     video_references = list(video_references or [])
     length = LIMITS["job_length_frames"]["value"]
     if frames < length["min"] or smallest_h3_run_at_least(frames) > length["max"]:
@@ -283,6 +357,9 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
             sha256=character_swap_sha256,
             hf_revision=CHARACTER_SWAP_REVISION,
         )
+    sources = facts().custom_node_sources()
+    motion = sources["ComfyUI-H3-Motion-Context-MultiRef"]
+    video_helper = sources["ComfyUI-VideoHelperSuite"]
     metadata = ReadyMetadata.build(
         capability="video", template_id="h3_av_reference_generation",
         models=model_assets,
@@ -295,14 +372,14 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
             },
             "custom_node_refs": [
                 {"slug": "ComfyUI-H3-Motion-Context-MultiRef", "source": "git",
-                 "url": "https://github.com/seitanism/ComfyUI-H3-Motion-Context-MultiRef.git",
-                 "commit": "361624fb406b63eb6694442eac6c895fc1533a70",
+                 "url": motion.repository,
+                 "commit": motion.revision,
                  "classes": ["MiniMaxH3AudioVAECompatibility"]
                             + (["H3V2VGranularFractionalDenoise"] if masked_edit else [])},
                 {"slug": "ComfyUI-VideoHelperSuite", "source": "git",
-                 "url": "https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git",
-                 "commit": "4ee72c065db22c9d96c2427954dc69e7b908444b",
-                 "classes": ["VHS_LoadVideoFFmpeg", "VHS_VideoCombine"]},
+                 "url": video_helper.repository,
+                 "commit": video_helper.revision,
+                 "classes": (["VHS_LoadVideoFFmpeg"] if video_references or masked_edit else []) + ["VHS_VideoCombine"]},
             ],
         },
     )

@@ -80,7 +80,7 @@ def _admit_conditioning(request: H3Request, assets: list[dict[str, Any]], warnin
     for item in refs:
         modality = item.get("modality")
         if modality not in counts:
-            continue
+            raise PreparationError(f"conditioning occurrence {item['occurrence_id']!r} has unresolved modality; declare image, video, or audio")
         counts[modality] += 1
         files += 1
         ordinal = counts[modality]
@@ -326,7 +326,7 @@ def _validate_mask_assets(request: H3Request, assets: list[dict[str, Any]]) -> N
                 for index, frame in enumerate(
                     iter_mask_frames(path, start_frame=0, count=total, width=width, height=height)
                 ):
-                    values = set(frame)
+                    values = set(frame[0::3])  # H3 consumes the red permission channel.
                     if threshold is not None:
                         values = {255 if value >= threshold else 0 for value in values}
                     if not values <= {0, 255}:
@@ -544,6 +544,10 @@ def _v2_mask_schedule(
                     baselines["audio"].append([start, end])
 
         for edit_index, edit in enumerate(item.get("edit", [])):
+            # A zero-strength generation grant keeps the source. Other active
+            # grants still contribute their own independent permissions.
+            if edit.get("action") == "generate" and edit.get("strength", 1) == 0:
+                continue
             stream = str(edit["stream"])
             start, end = map(float, edit["during"])
             if end > duration:
@@ -649,6 +653,8 @@ def prepare_request(
     if request.value.get("version") == 2:
         assets = _resolve_assets(request, asset_map)
         conditioning_measurements = _admit_conditioning(request, assets, warnings)
+        if branch_for(request) == "source_free" and not request.value["media"]:
+            warnings.append({"limit": "text_only_documented_use", "message": "Text-only generation is outside the documented use of the Ref2VA checkpoint."})
         adapter_id = (request.value.get("settings", {}).get("adapter") or {}).get("id")
         if branch_for(request) == "source_backed_v2v" and adapter_id != "character_swap_v1":
             for row in conditioning_measurements:
@@ -662,6 +668,17 @@ def prepare_request(
                 raise PreparationError(str(exc)) from exc
         else:
             target_timing = {"requested_frames": round(float(request.value["duration"]) * 24), "raw_frames": None}
+            if branch_for(request) == "extension_context":
+                from .timing import ContinuationTimingError, plan_continuation
+                timeline = next((item for item in request.value["media"] if item.get("role") == "timeline" and item.get("modality") == "video"), None)
+                selected = timeline.get("resolved_range") if timeline else None
+                if isinstance(selected, list) and len(selected) == 2:
+                    try:
+                        continuation = plan_continuation(source_end=Fraction(int(selected[1]) - int(selected[0]), 24), output_duration=request.value["duration"])
+                    except ContinuationTimingError:
+                        pass  # The continuation lowering reports its own unsupported timing.
+                    else:
+                        target_timing["raw_frames"] = continuation.raw_extension_frames
         unresolved = [record["asset"] for record in assets if record["status"] != "resolved"]
         timeline_audio_presence: dict[str, bool] = {}
         adapter = request.value.get("settings", {}).get("adapter")
