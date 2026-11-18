@@ -93,12 +93,13 @@ def test_base_window_budget_accepts_independent_base_repeat_without_changing_oth
         assert cadence["base_window_duration_ns"] == durations
         assert cadence["base_nonterminal_polls"] == [2, 3, 2, 3, 2]
         assert cadence["nominal_poll_limit"] == max(durations) // 1_000_000
-        assert metric["limit"] == max(4, cadence["nominal_poll_limit"])
-        assert metric["margin"] == metric["limit"] - 3
+        assert metric["policy"] == "observation_only" and "limit" not in metric
+        assert metric["margin"] == max(4, cadence["nominal_poll_limit"]) - 3
         assert item["metrics"][PER_POLL]["limit"] == 1
-        delta = metric["limit"] - 4
+        delta = max(4, cadence["nominal_poll_limit"]) - 4
         for name in PROPAGATED:
-            assert item["metrics"][name]["limit"] == 6 + delta
+            assert item["metrics"][name]["policy"] == "observation_only" and "limit" not in item["metrics"][name]
+            assert item["metrics"][name]["margin"] == 1 + delta
         for name, value in item["metrics"].items():
             if name not in {METRIC, *PROPAGATED}:
                 assert value["margin"] == (0 if value["group"] == "scoped_or_deterministic" else value["spread"])
@@ -158,9 +159,11 @@ def test_larger_range_bound_is_retained_and_candidate_windows_never_set_it():
     policy = calibration(base)
     for caller in CALLERS:
         assert policy["callers"][caller]["host_poll_cadence"]["nominal_poll_limit"] == 6
-        assert policy["callers"][caller]["metrics"][METRIC]["limit"] == 10
+        metric = policy["callers"][caller]["metrics"][METRIC]
+        assert metric["policy"] == "observation_only" and "limit" not in metric
+        assert metric["maximum"] + metric["margin"] == 10
     enlarged = copy.deepcopy(policy)
-    enlarged["callers"][CALLERS[0]]["metrics"][METRIC]["limit"] += 1
+    enlarged["callers"][CALLERS[0]]["metrics"][METRIC]["limit"] = 11
     with pytest.raises(ValueError, match="only from.*base"):
         compare_calibrated(base, base, enlarged)
 

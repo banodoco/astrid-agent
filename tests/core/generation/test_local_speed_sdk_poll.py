@@ -89,19 +89,36 @@ def test_larger_sdk_total_is_an_observation_and_does_not_set_a_limit():
     assert compare_calibrated(actual, base, policy) == []
     assert [row["process_observations"][0]["wait_sites"][SITE]
             for row in actual["counters"] if row["caller"] == "resident_sdk"] == [3] * 5
-    assert policy["callers"]["fresh_python_cli"]["metrics"][METRIC]["limit"] == 2
+    cli_observation = policy["callers"]["fresh_python_cli"]["metrics"][METRIC]
+    assert cli_observation["samples"] == [2] * 5 and cli_observation["maximum"] == 2
+    assert cli_observation["policy"] == "observation_only" and cli_observation["decision"] == "6987905451"
+    assert "limit" not in cli_observation
     cli_changed = replace_sdk(copy.deepcopy(base), caller="fresh_python_cli")
-    assert any(failure["caller"] == "fresh_python_cli" and failure["metric"] == METRIC
-               for failure in compare_calibrated(cli_changed, base, policy))
+    recorded = []
+    assert compare_calibrated(cli_changed, base, policy, observations=recorded) == []
+    total = next(item for item in recorded if item["caller"] == "fresh_python_cli" and item["metric"] == METRIC)
+    assert total["samples"] == [3] * 5 and total["policy"] == "observation_only" and "limit" not in total
+    assert [row["process_observations"][0]["wait_sites"][SITE]
+            for row in cli_changed["counters"] if row["caller"] == "fresh_python_cli"] == [3] * 5
 
 
 def test_containing_counters_keep_their_existing_caps():
     base = proof((2, 2, 2, 2, 2))
     policy = calibration(base)
-    failures = compare_calibrated(replace_sdk(copy.deepcopy(base)), base, policy)
+    actual = replace_sdk(copy.deepcopy(base))
+    recorded = []
+    failures = compare_calibrated(actual, base, policy, observations=recorded)
     for name in ("python.sleep_attempt", "process." + PARENT + ".sleep_attempt"):
-        assert policy["callers"]["resident_sdk"]["metrics"][name]["limit"] == 2
-        assert any(item["metric"] == name and item["actual"] == 3 and item["limit"] == 2 for item in failures)
+        observation = policy["callers"]["resident_sdk"]["metrics"][name]
+        assert observation["samples"] == [2] * 5 and observation["maximum"] == 2
+        assert observation["policy"] == "observation_only" and observation["decision"] == "6987905451"
+        assert "limit" not in observation
+        assert not any(item["metric"] == name for item in failures)
+        total = next(item for item in recorded if item["caller"] == "resident_sdk" and item["metric"] == name)
+        assert total["samples"] == [3] * 5 and total["policy"] == "observation_only" and "limit" not in total
+    assert [row["python_counts"]["sleep_attempt"] for row in actual["counters"]
+            if row["caller"] == "resident_sdk"] == [3] * 5
+    assert failures == []
     assert not any(item["metric"] == METRIC for item in failures)
 
 

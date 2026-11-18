@@ -23,15 +23,17 @@ PLAN_PREDECESSORS = {
     PREVIOUS_PLAN_BASE: "24c68a2702339583b7be1693d101146bed31cfa6",
 }
 REQUIRED_ANCESTOR = "6451821e18bd300484a921a425cafd856095b1a4"
-PREVIOUS_CONTROLLER = "d0834eb62c9343a54a6f1731ae5e0213a4503644"
+PREVIOUS_CONTROLLER = "c6ebb69774e3b9415253de82cac95de627f79147"
 WORKFLOW = ".github/workflows/plan55-native-flush.yml"
 PACKET_PATHS = {WORKFLOW, "tests/_local_speed_process.py", "tests/_local_speed_calibration.py",
                 "tests/_local_speed_census.py", "tests/core/generation/test_local_speed_census.py",
                 "tests/_local_speed_sdk_poll.py", "tests/core/generation/test_local_speed_sdk_poll.py",
                 "tests/core/generation/test_local_speed_ambient_calibration.py",
+                "tests/core/generation/test_local_speed_host_cadence.py",
                 "tests/core/generation/test_local_speed_qualification.py",
                 "tests/core/generation/test_local_speed_policy.py", "tests/local_speed_policy.py",
-                "tests/local_speed_qualification.py", "tests/fixtures/local-speed-baselines/README.md"}
+                "tests/local_speed_qualification.py", "tests/local_speed_paired_run.py",
+                "tests/fixtures/local-speed-baselines/README.md"}
 PLAN_HARNESS_ADDITIONS = {"tests/helpers/ls5_comfy_peer.py", "tests/integrations/test_ls5_meter.py"}
 PIN_READER = '''      - name: Read the pinned Runtime commit
         id: runtime-pin
@@ -180,6 +182,7 @@ def validate_sources(root, controller, *, original_head=ORIGINAL_HEAD, plan_base
             "plan_added_harness_paths_not_in_original_tuple": sorted(PLAN_HARNESS_ADDITIONS),
             "new_plan_tuple_qualified": False,
             "decisions": {"census": "6970432614", "sdk_poll": "6981129059",
+                          "duration_totals": "6987905451",
                           "original_tuple": "6967421223", "plan_merge": "6968915902",
                           "plan_advance": "6985581776", "previous_plan_advance": "6983043853"}}
 

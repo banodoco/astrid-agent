@@ -29,8 +29,10 @@ OPERATIONS = ("sleep_attempt", "event_wait_attempt", "condition_wait_attempt",
               "runtime_commit_statement", "runtime_commit_statement_unattributed",
               "platform_write_through_success", "workflow_compile", "bundle_compile",
               "bundle_emission")
+# The host renews executor registration every 30 seconds, including during
+# active work. Its request total follows duration; per-request caps stay separate.
 AMBIENT_ROUTES = {"GET /v1/health", "GET /v1/tasks/<task>", "POST /v1/tasks/claim",
-                  "POST /v1/attempts/<attempt>/heartbeat"}
+                  "POST /v1/attempts/<attempt>/heartbeat", "POST /v1/executors"}
 
 
 def scoped_values(row, *, known_counter_names=()):
@@ -281,7 +283,7 @@ def calibration(reference):
         raise ValueError("calibration needs a current paired product-default measurement")
     result = {"schema": SCHEMA, "pair_id": baseline["pair_id"], "sources": baseline["sources"],
               "system": baseline["system"], "measurement": baseline["measurement"],
-              "margin_rule": "one observed base range for named ambient counters; named host polling additionally uses the base-only window/period budget with exact cadence guards",
+              "margin_rule": "duration-following totals are observations under 6987905451; scoped and deterministic counters retain exact caps and existing cadence/invocation guards",
               "minimum_control_samples": 5, "callers": {}, "reference_eligible": False}
     for caller in CALLERS:
         rows = [row for row in reference["counters"] if row["caller"] == caller]
@@ -312,8 +314,8 @@ def calibration(reference):
         cadence = _calibrate_host_poll(rows, metrics)
         sdk = sdk_rule(rows) if caller == "resident_sdk" else None
         if sdk is not None:
-            # Only this named total loses its cap. Containing counters, the
-            # independent per-poll maximum, and the CLI policy are unchanged.
+            # Preserve the earlier named SDK ruling and its complete
+            # invocation/poll evidence independently of the total policy.
             samples = sdk["base_sleep_calls"]
             item = metrics.setdefault(SDK_SLEEP_METRIC,
                                       {"samples": samples, "minimum": min(samples), "maximum": max(samples),
@@ -328,13 +330,27 @@ def calibration(reference):
                 item["census_sleep_samples"] = [sample["sleep_calls"] for sample in census_samples]
                 item["remainder_policy"] = item["policy"]
                 item["policy"] = "remainder_after_individually_gated_census_sleeps"
+        # Owner 6987905451: the existing ambient classification identifies
+        # duration-following totals. Keep their observations, not a limit.
+        # Scoped/per-poll/per-request caps and every invariant stay intact.
+        for name, item in metrics.items():
+            if census is not None and name == CONTAINERS[-1]:
+                # This is the unrelated residual after the individually
+                # gated census sleeps, not the duration-following raw total.
+                continue
+            if item["group"] != "scoped_or_deterministic":
+                item.pop("limit", None)
+                if item["policy"] != "observation_only":
+                    item.update(policy="observation_only", decision="6987905451")
+                if "remainder_policy" in item:
+                    item["remainder_policy"] = "observation_only"
         result["callers"][caller] = {"samples": len(rows), "metrics": metrics,
                                      "host_poll_cadence": cadence, "census_invariants": census,
                                      "sdk_poll_invariants": sdk}
     return result
 
 
-def compare_calibrated(actual, reference, policy):
+def compare_calibrated(actual, reference, policy, *, observations=None):
     """Validate the policy from base-only bytes before looking at candidates."""
     if policy != calibration(reference):
         raise ValueError("counter limits must be derived only from the recorded base controls")
@@ -342,7 +358,7 @@ def compare_calibrated(actual, reference, policy):
     if current.get("pair_id") != prior["pair_id"]:
         raise ValueError("calibrated comparison requires the same runner pair")
     # Keep the existing source, mode, coverage, sample and timing checks. Only
-    # counter policy changes, and every old counter is still compared below.
+    # counter policy changes, and every old counter is still observed below.
     failures = [failure for failure in compare_baseline(current, prior)
                 if failure["metric"].startswith("overhead_seconds.")]
     for caller in CALLERS:
@@ -363,13 +379,23 @@ def compare_calibrated(actual, reference, policy):
         if sdk is not None:
             failures.extend(compare_sdk(rows, sdk, caller))
         for name in sorted(names):
-            if caller == "resident_sdk" and sdk is not None and name == SDK_SLEEP_METRIC:
-                continue  # Raw observation; the complete per-poll evidence gated above.
             limits = metrics.get(name, {"maximum": 0, "limit": 0, "margin": 0, "spread": 0})
             samples = [values.get(name) for values in observed]
             if any(value is None for value in samples):
                 failures.append({"caller": caller, "metric": name, "actual": None,
-                                 "limit": limits["limit"], "reason": "previously observed counter disappeared"})
+                                 "limit": limits.get("limit"), "reason": "previously observed counter disappeared"})
+            elif limits.get("policy") == "observation_only":
+                if observations is not None:
+                    recorded = {"caller": caller, "metric": name, "policy": "observation_only",
+                                "decision": limits["decision"], "group": limits["group"],
+                                "samples": samples, "minimum": min(samples), "maximum": max(samples),
+                                "base_samples": limits["samples"]}
+                    if "raw_samples" in limits:
+                        recorded["raw_samples"] = [values.get(name) for values in initial]
+                        recorded["base_raw_samples"] = limits["raw_samples"]
+                        recorded["census_sleep_samples"] = [sample["sleep_calls"] for sample in census_samples]
+                    observations.append(recorded)
+                continue  # Complete evidence and invariant checks still ran above.
             elif max(samples) > limits["limit"]:
                 failures.append({"caller": caller, "metric": name, "actual": max(samples),
                                  "samples": samples, "limit": limits["limit"], "reference": limits["maximum"],
