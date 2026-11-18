@@ -41,6 +41,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           path: head
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
@@ -58,6 +59,9 @@ jobs:
       - name: Verify unchanged dependency pins and integrated ancestry
         id: pins
         run: |
+          mkdir -p proof
+          git -C head rev-parse HEAD 'HEAD^{tree}' > proof/head.txt
+          git -C base rev-parse HEAD 'HEAD^{tree}' > proof/base.txt
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import json, pathlib
           pairs = {}
