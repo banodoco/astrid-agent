@@ -144,19 +144,19 @@ def test_production_unrelated_track_edit_preserves_legacy_boundaries(kind, dry_r
     assert records["steps"][0]["patch"]
 
 
-@pytest.mark.parametrize("damage", ["new", "interval", "bound", "owner"])
-def test_new_changed_or_rebound_occurrence_intervals_are_strict(damage):
+@pytest.mark.parametrize("damage", ["offset", "grown"])
+def test_a_window_past_the_shot_content_is_strict_but_a_cropped_child_is_not(damage):
     baseline = bundle_from_document(legacy_document("occurrence"))
+    cropped = copy.deepcopy(baseline)
+    internal = cropped["shots"]["chapter-shot"]["internal_timeline"]
+    internal["clips"].append(dict(internal["clips"][0], id="new", at=2))   # past the window: cropped
+    cropped["placements"][0]["duration_ms"] = 50
+    validate_final_candidate(cropped, baseline=baseline)
     value = copy.deepcopy(baseline)
-    internal = value["shots"]["chapter-shot"]["internal_timeline"]
-    if damage == "new":
-        internal["clips"].append(dict(internal["clips"][0], id="new"))
-    elif damage == "interval":
-        internal["clips"][0]["at"] = 2
-    elif damage == "bound":
-        value["placements"][0]["duration_ms"] = 50
+    if damage == "offset":
+        value["placements"][0]["source_offset"] = 9000_000   # the window starts far past the content
     else:
-        value["source_mapping"]["shots"]["chapter-shot"]["internal_timeline_revision_id"] = "other"
+        value["placements"][0]["duration_ms"] += 9000_000     # the end grows past the content
     before = encoded(value)
     with pytest.raises(AuthoringBundleError, match="half-open bounds"):
         validate_final_candidate(value, baseline=baseline)

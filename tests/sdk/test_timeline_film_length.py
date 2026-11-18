@@ -1,5 +1,5 @@
 """The film's length follows its content: extending or shortening the last cut re-times the last shot's placement,
-and check blocks any visible clip that would run past its shot (the render stops at the shot's end)."""
+and check blocks a shot whose window runs past its content; a clip past the window is cropped, not blocked."""
 from __future__ import annotations
 
 import copy
@@ -50,17 +50,25 @@ def test_check_syncs_the_placement_and_says_so_in_words():
     assert "the film now runs 9.00 s (was 8.00 s): the last shot follows its last picture" in report.problems
 
 
-def test_a_layer_longer_than_its_middle_shot_blocks_check():
+def test_a_layer_longer_than_its_middle_shot_is_cropped_not_blocked():
     data = tiny()
     shot_a = data["shots"]["A"]["internal_timeline"]["clips"]
     shot_a.append({"id": "a-card", "clipType": "am-type", "track": "type", "at": 0.0, "hold": 6.0,
                    "params": {"text": "Long."}, "app": {"cut": "c1", "layer": "card", "for": 6.0}})
     tl = Checkout(data)
     report = tl.check()
-    lines = length_lines(report)
-    assert any("c1.card ends at 6.00 s, after its shot ends at 4.00 s" in line for line in lines), lines
-    assert report.valid is False
+    assert length_lines(report) == []
     assert placement(tl, "A") == 4000  # middle shots are not resized
+
+
+def test_a_trimmed_window_past_its_content_blocks_check():
+    data = tiny()
+    first, second = data["placements"]
+    first["placement"]["start_ms"], first["source_offset"] = 1000, 1000  # window [1 s, 5 s] of 4 s of content
+    second["placement"]["start_ms"] = 5000
+    blocking, existing = Checkout(data)._length_problems()  # check() itself re-anchors words first
+    assert any("shot A shows 5.00 s" in line for line in blocking), blocking
+    assert existing == []
 
 
 def test_audio_past_the_end_is_not_flagged():

@@ -146,23 +146,23 @@ def test_an_end_trim_hides_content_without_failing_the_final_validation():
     original = populated()
     shorter = trim(original, edge='end', to_ms=14000).bundle
     validate_final_candidate(copy.deepcopy(shorter), baseline=original)
-    from astrid.core.timeline.authoring_bundle import AuthoringBundleError
-    with pytest.raises(AuthoringBundleError, match='half-open bounds'):  # no baseline: judged in full
-        validate_final_candidate(copy.deepcopy(shorter))
+    validate_final_candidate(copy.deepcopy(shorter))  # judged in full too: a cropped child is not an overrun
 
 
 def test_overrun_check_is_relative_to_the_window_origin():
-    """A start-trimmed shot is not an overrun; a clip that really runs past the window end still is."""
+    """A start-trimmed shot is not an overrun, and neither is a clip running past the window (it is cropped);
+    a window running past the shot's content is."""
     from astrid.sdk.timeline_checkout import Checkout
 
     trimmed = trim(populated(), edge='start', to_ms=12000).bundle   # window [2 s, 6 s] of the shot
     assert Checkout(copy.deepcopy(trimmed))._length_findings() == {}
     for clip in trimmed['shots'][row(trimmed)['shot_id']]['internal_timeline']['clips']:
-        if clip['id'] == 'voice-1':
-            continue  # audio is exempt from the overrun rule
-        clip.update(at=5, hold=3)  # ends at shot time 8 s, past the window end at 6 s
+        if clip['id'] != 'voice-1':
+            clip.update(at=5, hold=3)  # ends at shot time 8 s, past the window end at 6 s: cropped
+    assert Checkout(copy.deepcopy(trimmed))._length_findings() == {}
+    trimmed['placements'][0]['duration_ms'] = 11000  # window [2 s, 13 s] of 12 s of content
     found = Checkout(copy.deepcopy(trimmed))._length_findings()
-    assert [key[1] for key in found] == ['picture-1']
+    assert [key[0] for key in found] == [row(trimmed)['shot_id']]
 
 
 def test_a_stored_mapping_offset_stays_a_mapping():

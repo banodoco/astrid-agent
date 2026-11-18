@@ -34,7 +34,7 @@ def test_valid_candidate_keeps_unknown_authored_fields_verbatim():
         (lambda value: value["parent"]["config"]["output"].update(
             fps={"numerator": 0, "denominator": 1}), "fps rational must be positive"),
         (lambda value: value["parent"]["clips"][0].update(at=-1), "must not be negative"),
-        (lambda value: value["placements"][0].update(duration_ms=500), "half-open bounds"),
+        (lambda value: value["placements"][0].update(source_offset=9000), "half-open bounds"),
         (lambda value: value["parent"]["config"]["tracks"].append(
             {"id": "picture", "kind": "visual"}), "duplicate id"),
         (lambda value: value["parent"]["clips"][0].update(track="missing"), "existing track"),

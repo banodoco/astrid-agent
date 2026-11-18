@@ -187,7 +187,7 @@ def test_source_copy_still_needs_its_placements_to_name_shots():
         validate_final_candidate(value, authenticated_copy=True)
 
 
-# --- rule: clip longer than its shot (check) -------------------------------------------------------------------
+# --- rule: trimmed window past its shot's content (check; occurrence_window.window_overrun_ms) -----------------
 
 def canonical_media(bundle):
     for shot in bundle["shots"].values():
@@ -197,54 +197,68 @@ def canonical_media(bundle):
 
 
 def overrunning_head():
+    """Two shots (the last one is re-timed to its picture, so the overrun lives in the first): `film` is
+    start-trimmed by 1.5 s and its window runs 0.5 s past the shot's 12 s of content."""
+    from tests.sdk.test_timeline_restructure import flat_film, published
+
+    head = canonical_media(flat_film())
+    tail = copy.deepcopy(head["shots"]["film"])
+    head["shots"]["tail"] = tail
+    row = head["placements"][0]
+    head["placements"].append(dict(copy.deepcopy(row), shot_id="tail", occurrence_id="occ-tail",
+                                   placement={"start_ms": 30000}))
+    row["placement"]["start_ms"] = 2000
+    row["source_offset"] = 1500
+    row["duration_ms"] = 11000  # window [1.5 s, 12.5 s] of 12 s of content
+    return published(head)
+
+
+def check(bundle):
+    """(blocking, existing) length findings against the published base. (check() itself first resolves cut-ended
+    layers, which fill the shot's window; the rule under test is the finding and its baseline scoping.)"""
+    from astrid.sdk.timeline_cuts import base_bundle
+
+    checkout = Checkout(copy.deepcopy(bundle))
+    return checkout._length_problems(Checkout(base_bundle(checkout.document())))
+
+
+def test_existing_overrun_does_not_block_an_unrelated_edit_and_is_reported():
+    head = overrunning_head()
+    edited = copy.deepcopy(head)
+    edited["shots"]["film"]["internal_timeline"]["clips"][0]["params"] = {"note": 1}
+    blocking, existing = check(edited)
+    assert blocking == []
+    assert any("shot film shows" in line for line in existing)
+
+
+def test_existing_overrun_survives_a_ripple_edit():
+    """Moving the shot (an earlier shot trimmed, inserted or removed) does not change the window-vs-content signature."""
+    head = overrunning_head()
+    edited = copy.deepcopy(head)
+    edited["placements"][0]["placement"]["start_ms"] = 3000
+    blocking, existing = check(edited)
+    assert blocking == [] and existing
+
+
+@pytest.mark.parametrize("touch", ["longer", "later-start"])
+def test_introduced_or_touched_overrun_still_blocks(touch):
+    head = overrunning_head()
+    edited = copy.deepcopy(head)
+    row = edited["placements"][0]
+    if touch == "longer":
+        row["duration_ms"] += 500
+    else:
+        row["source_offset"] += 500
+    assert check(edited)[0], touch
+
+
+def test_a_child_past_the_window_is_cropped_and_never_a_length_finding():
     from tests.sdk.test_timeline_restructure import flat_film, published
 
     head = canonical_media(flat_film())
     head["shots"]["film"]["internal_timeline"]["clips"].append(
         {"id": "over", "clipType": "am-sprite", "track": "sprite", "asset": "R", "at": 11.5, "hold": 2.0, "params": {}})
-    return published(head)
-
-
-def check(bundle):
-    return Checkout(copy.deepcopy(bundle))._check_core()
-
-
-def length_blocking(report):
-    return [line for line in report.blocking if line.startswith("length")]
-
-
-def test_existing_overrun_does_not_block_an_unrelated_edit_and_is_reported():
-    head = overrunning_head()
-    assert length_blocking(check(head)) == []
-    edited = copy.deepcopy(head)
-    edited["shots"]["film"]["internal_timeline"]["clips"][0]["params"] = {"note": 1}
-    report = check(edited)
-    assert length_blocking(report) == []
-    assert any(line.startswith(PREEXISTING + "length") and "over ends at 13.50" in line for line in report.problems)
-    assert "length" not in " ".join(report.blocking)
-
-
-def test_existing_overrun_survives_a_ripple_edit():
-    """Moving the shot (an earlier shot trimmed, inserted or removed) moves both ends of the overrun in film time."""
-    head = overrunning_head()
-    edited = copy.deepcopy(head)
-    edited["placements"][0]["placement"]["start_ms"] = 1000
-    report = check(edited)
-    assert length_blocking(report) == []
-    assert any(line.startswith(PREEXISTING + "length") for line in report.problems)
-
-
-@pytest.mark.parametrize("touch", ["longer", "new-overrun"])
-def test_introduced_or_touched_overrun_still_blocks(touch):
-    head = overrunning_head()
-    edited = copy.deepcopy(head)
-    clips = edited["shots"]["film"]["internal_timeline"]["clips"]
-    if touch == "longer":
-        next(clip for clip in clips if clip["id"] == "over")["hold"] = 3.0
-    else:
-        clips.append({"id": "second", "clipType": "am-sprite", "track": "sprite", "asset": "R",
-                      "at": 11.9, "hold": 2.0, "params": {}})
-    assert length_blocking(check(edited)), touch
+    assert check(published(head)) == ([], [])
 
 
 # --- the invariant ---------------------------------------------------------------------------------------------

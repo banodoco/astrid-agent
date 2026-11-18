@@ -472,7 +472,7 @@ class _ReflowMixin:
         if not pictures:
             return []
         row = self._row(sid)
-        start = self._shot_start(sid)
+        start = self._shot_start(sid) + self._shot_offset(sid)  # the window's start (placement), not shot-local zero
         old_ms = _num(row.get("duration_ms"))
         new_ms = int(round((max(c.end for c in pictures) - start) * 1000))
         notes = []

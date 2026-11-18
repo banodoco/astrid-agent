@@ -12,7 +12,7 @@ its neighbour keeps that finding; refusal needs an edge to be pushed further out
 """
 from __future__ import annotations
 
-from astrid.core.timeline.occurrence_window import MIN_OCCURRENCE_DURATION_MS
+from astrid.core.timeline.occurrence_window import MIN_OCCURRENCE_DURATION_MS, window_overrun_ms
 
 from ._command_state import CommandError
 from ._occurrence_window import content_extent_ms, occurrence_offset_ms
@@ -66,7 +66,7 @@ def occurrence_trim(ctx, command):
             for field in CLIP_FIELDS:
                 ctx.read(ref, [field])
         extent = content_extent_ms(ctx.state, owner)
-        if new_offset + new_duration > extent + _EPS:
+        if window_overrun_ms(new_offset, new_duration, extent, previous=(offset, duration)):
             raise CommandError(
                 f'trim window ends at {new_offset + new_duration:g} ms but the shot has {extent:g} ms of content',
                 kind='occurrence_boundary', ref=owner)

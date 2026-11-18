@@ -348,7 +348,6 @@ def _validate_clip_list(
     path: str,
     tracks: Mapping[str, Mapping[str, Any]],
     registry: Mapping[str, Any],
-    bound: Fraction | None = None,
     baseline: Mapping[str, Any] | None = None,
 ) -> dict[str, Mapping[str, Any]]:
     if not isinstance(registry, Mapping):
@@ -370,13 +369,10 @@ def _validate_clip_list(
                 _fail(f"{clip_path}.track", "must reference an existing track")
         timing_changed = not _same_fields(
             clip, prior, ("at", "at_ms", "from", "to", "hold", "duration", "speed"))
-        # D12a checks the interval when its declaration is written (always, without a baseline).
-        # An unrelated edit preserves an existing overrun verbatim, and so does a trim of the
-        # occurrence's window: content past the window's end is hidden, not rewritten.
+        # A child past the occurrence's window is cropped, not refused: the window-vs-content rule
+        # (occurrence_window.window_overrun_ms) is judged per occurrence in validate_final_candidate.
         if timing_changed:
-            start, duration = _clip_duration(clip, clip_path)
-            if bound is not None and start + duration > bound:
-                _fail(clip_path, "timeline interval must fit the occurrence's half-open bounds")
+            _clip_duration(clip, clip_path)
         asset_key = clip.get("asset", clip.get("asset_id"))
         if asset_key is not None:
             if asset_key not in assets or not isinstance(assets[asset_key], Mapping):
@@ -398,6 +394,56 @@ def _validate_clip_list(
             if source_duration is not None and source_end > source_duration:
                 _fail(clip_path, "source interval exceeds the retained asset bounds")
     return by_id
+
+
+def _content_extent_ms(clips: Mapping[str, Mapping[str, Any]]) -> float:
+    end = Fraction(0)
+    for clip_id, clip in clips.items():
+        start, duration = _clip_duration(clip, f"clips[{clip_id!r}]")
+        end = max(end, start + duration)
+    return float(end * 1000)
+
+
+def _window_overrun(placement: Mapping[str, Any], clips: Mapping[str, Mapping[str, Any]],
+                    path: str, previous: Mapping[str, Any] | None = None) -> tuple[float, float] | None:
+    """(window end, content extent) in ms when the occurrence's window runs past its shot's content."""
+    from astrid.core.timeline.occurrence_window import source_offset_ms, window_overrun_ms
+
+    try:
+        offset = source_offset_ms(placement.get("source_offset"))
+    except ValueError as exc:
+        _fail(f"{path}.source_offset", str(exc))
+    duration = _validation_number(placement.get("duration_ms"), f"{path}.duration_ms", positive=True)
+    extent = _content_extent_ms(clips)
+    before = None
+    if previous is not None:
+        try:
+            before = (source_offset_ms(previous.get("source_offset")), float(previous.get("duration_ms")))
+        except (ValueError, TypeError):
+            before = None
+    return ((float(offset + duration), extent)
+            if window_overrun_ms(offset, float(duration), extent, previous=before) else None)
+
+
+def _check_window_within_content(occurrence_id: str, placement: Mapping[str, Any],
+                                 clips: Mapping[str, Mapping[str, Any]],
+                                 previous_placement: Mapping[str, Any] | None,
+                                 baseline_internal: Mapping[str, Any]) -> None:
+    """Refuse a window that runs past the shot's content, unless the baseline had the very same overrun."""
+    path = f"candidate.placements[{occurrence_id!r}]"
+    found = _window_overrun(placement, clips, path, previous_placement)
+    if found is None:
+        return
+    if previous_placement is not None and isinstance(baseline_internal.get("clips"), list):
+        try:
+            before = _window_overrun(previous_placement, _identity_rows(
+                baseline_internal["clips"], "baseline.clips", "id"), "baseline")
+        except AuthoringBundleError:
+            before = None
+        if before == found:
+            return
+    _fail(path, "timeline interval must fit the occurrence's half-open bounds: the window "
+                f"ends at {found[0]:g} ms but the shot has {found[1]:g} ms of content")
 
 
 def _parent_clips(parent: Mapping[str, Any]) -> list[Any]:
@@ -758,11 +804,6 @@ def validate_final_candidate(
         start = _validation_number(start_ms, f"candidate.placements[{occurrence_id!r}].placement.start_ms") / 1000
         if start < 0:
             _fail(f"candidate.placements[{occurrence_id!r}].placement.start_ms", "must not be negative")
-        # The window ends at source_offset + duration in shot-local time (offset 0 unless trimmed).
-        offset_ms = placement.get("source_offset")
-        if isinstance(offset_ms, (int, float)) and not isinstance(offset_ms, bool) and offset_ms > 0:
-            duration_ms += _validation_number(offset_ms, f"candidate.placements[{occurrence_id!r}].source_offset")
-        bound = duration_ms / 1000
         shot_value: Any = shots[shot_id]
         internal_value = shot_value.get("internal_timeline") if isinstance(shot_value, Mapping) else None
         if not isinstance(internal_value, Mapping):
@@ -782,9 +823,12 @@ def validate_final_candidate(
             baseline_internal = {}
         child_clips = _validate_clip_list(
             child_config.get("clips", []), path=f"candidate.shots[{shot_id!r}].internal_timeline.clips",
-            tracks=child_tracks, registry=child_config.get("registry", {}), bound=bound,
+            tracks=child_tracks, registry=child_config.get("registry", {}),
             baseline=baseline_internal,
         )
+        _check_window_within_content(
+            occurrence_id, placement, child_clips, previous_placement,
+            baseline_internal if isinstance(baseline_internal, Mapping) else {})
         before_child = _identity_rows(baseline_internal.get("clips", []), "baseline.clips", "id") if isinstance(baseline_internal, Mapping) and isinstance(baseline_internal.get("clips"), list) else {}
         for clip_id, clip in child_clips.items():
             clip_path = f"candidate.shots[{shot_id!r}].internal_timeline.clips[{clip_id!r}]"

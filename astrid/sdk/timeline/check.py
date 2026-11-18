@@ -17,7 +17,7 @@ from astrid.core.timeline.cuts import (
 )
 
 from astrid.sdk.timeline import store as _store
-from astrid.sdk.timeline._common import TimelineEditError
+from astrid.sdk.timeline._common import PARENT_SHOT, TimelineEditError
 from astrid.sdk.timeline._preexisting import split_findings, warning
 from astrid.sdk.timeline.doc import _get_path
 from astrid.sdk.timeline.model import Clip
@@ -282,21 +282,25 @@ class _CheckMixin:
             return _scene_only_unavailable()
 
     def _length_findings(self) -> dict[tuple[str, str], tuple[tuple[float, float], str]]:
-        """Visible clips that run past the end of their shot's placement: the render stops at the shot's end, so
-        they would be cut off. Audio is exempt (a music bed runs out with the film). Keyed by shot and clip,
-        signed by the clip end and the shot length within the shot, so a change to either is a new finding."""
-        out = {}
-        tolerance = 0.5 / self.fps
+        """Shots whose window shows more than the shot has: the window [offset, offset + length] of the shot's own
+        timeline runs past its content (the one rule, occurrence_window.window_overrun_ms). A clip that runs past
+        the window is cropped, not a finding. Keyed by shot, signed by the window end and the content extent in
+        shot-local ms, so a change to either is a new finding."""
+        from astrid.core.timeline.occurrence_window import window_overrun_ms
+
+        extents: dict[str, float] = {}
         for clip in self.clips():
-            if clip.is_audio:
+            if clip.shot_id == PARENT_SHOT:
                 continue
-            shot_start, shot_length = self._shot_start(clip.shot_id), self._shot_length(clip.shot_id)
-            shot_end = shot_start + shot_length
-            if clip.end > shot_end + tolerance:
-                # Signed within its shot, so moving the shot (a ripple edit) is not a change to the overrun.
-                out[(clip.shot_id, clip.id)] = ((round(clip.end - shot_start, 6), round(shot_length, 6)),
-                    f"{clip.address} ends at {clip.end:.2f} s, after its shot ends at {shot_end:.2f} s: "
-                    "the render would cut it off; extend its shot's picture or shorten the clip")
+            extents[clip.shot_id] = max(extents.get(clip.shot_id, 0.0), (clip.end - self._shot_start(clip.shot_id)) * 1000)
+        out = {}
+        for shot_id, extent in extents.items():
+            window_end = self._shot_length(shot_id) * 1000
+            if window_overrun_ms(self._shot_offset(shot_id) * 1000, window_end - self._shot_offset(shot_id) * 1000,
+                                 extent + 0.5 / self.fps * 1000):
+                out[(shot_id, shot_id)] = ((round(window_end, 3), round(extent, 3)),
+                    f"shot {shot_id} shows {window_end / 1000:.2f} s of its own timeline but its content ends at "
+                    f"{extent / 1000:.2f} s: shorten the shot's placement or extend its picture")
         return out
 
     def _length_problems(self, base: "Checkout | None" = None) -> tuple[list[str], list[str]]:  # noqa: F821
