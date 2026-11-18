@@ -151,7 +151,12 @@ def _materialize(data: bytes, *, filename: str, media_type: str, cache_root: str
     # disposable delivery deterministic enough to identify while preserving
     # ordinary filename extensions for host readers.
     strategy = "verified-copy"
-    if target.exists():
+    candidates = [target]
+    if default_cache:
+        candidates.append(target.with_name(f"{target.stem}-{digest[:12]}{target.suffix}"))
+    for target in candidates:
+        if not target.exists():
+            break
         if (not target.is_symlink() and target.is_file() and target.stat().st_nlink == 1
                 and hashlib.sha256(target.read_bytes()).hexdigest() == digest):
             if source is not None:
@@ -167,10 +172,9 @@ def _materialize(data: bytes, *, filename: str, media_type: str, cache_root: str
             else:
                 strategy = "verified-reuse"
             return str(target), strategy
+    else:
         if default_cache:
-            target = target.with_name(f"{target.stem}-{digest[:12]}{target.suffix}")
-            if target.exists():
-                raise FileExistsError(f"media-open view path collision: {target}")
+            raise FileExistsError(f"media-open view path collision: {target}")
     if source is not None:
         from .media_views import clone_or_copy
 
@@ -178,10 +182,15 @@ def _materialize(data: bytes, *, filename: str, media_type: str, cache_root: str
     else:
         # A predictable temporary name or a reused hardlink can expose the
         # store's inode for writing. Create an owned, independent file instead.
-        fd, raw = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+        fd, raw = tempfile.mkstemp(prefix=".astrid-open-", dir=target.parent)
+        os.close(fd)
         temporary = Path(raw)
+        # Recreate the unique name exclusively with ordinary creation modes:
+        # the kernel applies the caller's umask without changing process state.
+        temporary.unlink()
+        stream = temporary.open("xb")
         try:
-            with os.fdopen(fd, "wb") as stream:
+            with stream:
                 stream.write(data)
                 stream.flush()
                 os.fsync(stream.fileno())
