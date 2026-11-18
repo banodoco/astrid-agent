@@ -24,6 +24,8 @@ def bind_thumbnail_output(capability_id, outputs, task):
     if (output.get("name") != "thumbnail" or output.get("ordinal") != 0
             or output.get("media_type") != "image/jpeg" or output.get("role") != "result"):
         raise ValueError("thumbnail task must produce its one declared JPEG")
+    # Runtime's thumbnail contract forbids the creative output primary flag.
+    output.pop("is_primary", None)
     output.update(role="thumbnail", output_port="thumbnail", durability="durable",
         provenance={"thumbnail": {"source_object_ids": [payload["source_object_id"]], "recipe_version": 1}})
 
