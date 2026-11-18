@@ -1,0 +1,87 @@
+name: LS-7 packet proof
+
+on:
+  pull_request:
+    branches: [release/14/plan-55]
+    paths:
+      - .github/workflows/ls7-packet.yml
+      - astrid/core/execution/generic_host.py
+      - astrid/core/execution/task_waits.py
+      - astrid/core/generation/resolution_descriptor.py
+      - astrid/sdk/invocation.py
+      - astrid/sdk/remote.py
+      - astrid/sdk/workspace_client.py
+      - tests/**/test_ls7_*.py
+      - runtime.lock.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ls7-agent-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  handoff:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [packet, unchanged-regressions]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: agent
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-runtime
+          ref: ac2d29dce0a12e00fac7e4593623401c11ff0dae
+          path: runtime
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install exact candidate test inputs
+        run: |
+          python -m pip install -e './runtime[test]' -e ./runtime/packages/python -e './agent[dev]'
+      - name: Record identities and validate generated artifacts
+        run: |
+          mkdir -p proof
+          git -C agent rev-parse HEAD > proof/agent-head.txt
+          git -C runtime rev-parse HEAD > proof/runtime-head.txt
+          python -m pip freeze > proof/environment.txt
+          python agent/scripts/vendor_lock.py check agent/runtime.lock.json
+      - name: Run packet or unchanged regression tests
+        env:
+          ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/runtime
+          PYTHONPATH: ${{ github.workspace }}/runtime:${{ github.workspace }}/runtime/packages/python:${{ github.workspace }}/agent
+        run: |
+          export ASTRID_RUNTIME_DATA_ROOT="$(mktemp -d)"
+          if [ '${{ matrix.suite }}' = packet ]; then
+            python -m pytest --import-mode=importlib -q -rA --junitxml=proof/results.xml \
+              agent/tests/core/execution/test_ls7_task_waits.py \
+              agent/tests/core/execution/test_ls7_rework.py \
+              agent/tests/core/execution/test_ls7_http_handoff.py \
+              agent/tests/core/generation/test_ls7_resolution_parity.py \
+              agent/tests/sdk/test_ls7_invocation_wait.py 2>&1 | tee proof/tests.log
+          else
+            python -m pytest --import-mode=importlib -q -rA --junitxml=proof/results.xml \
+              agent/tests/core/execution/test_generic_host_claim_loop.py \
+              agent/tests/core/execution/test_fail_closed_g28.py \
+              agent/tests/sdk/test_invoke_settlement_and_replay.py \
+              agent/tests/sdk/test_invocation_follow.py 2>&1 | tee proof/tests.log
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ls7-agent-${{ matrix.suite }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: proof
+          retention-days: 14

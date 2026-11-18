@@ -3453,15 +3453,53 @@ def _wait_for_kernel_task_loop(
             "runtime client does not expose task status for synchronous invocation"
         )
 
+    wait = getattr(tasks, "wait", None)
+    supports_wait = getattr(tasks, "supports_wait", None)
+    event_wait = bool(callable(wait) and callable(supports_wait) and supports_wait())
+    wait_cursor = None
+    wait_snapshot = None
+
     started = last_heartbeat = time.monotonic()
     effective_timeout = float(timeout_seconds)
     deadline = started + effective_timeout
+    reconnect_attempts = 0
+
+    def reconnect_wait(error):
+        """Repair a failed read subscription, never the admitted command.
+
+        Fault-path backoff is bounded separately from the no-poll warm path.
+        Keep the last cursor: a fresh authenticated snapshot repairs missed
+        notifications or a changed Runtime instance without another create.
+        """
+        nonlocal reconnect_attempts
+        code = error.get("code") if isinstance(error, Mapping) else getattr(error, "code", None)
+        if not event_wait or code not in {"transport_error", "transport_timeout"}:
+            return False
+        while reconnect_attempts < 3:
+            delay = .05 * 2 ** reconnect_attempts
+            if deadline is not None and time.monotonic() + delay >= deadline:
+                return False
+            reconnect_attempts += 1
+            time.sleep(delay)
+            try:
+                return bool(supports_wait(refresh=True))
+            except Exception as exc:
+                if getattr(exc, "code", None) not in {"transport_error", "transport_timeout"}:
+                    return False
+        return False
+
     previous = None
     queued_diagnostic_emitted = False
     while True:
         try:
-            observed = show(task_id)
+            if event_wait:
+                wait_budget = 25.0 if deadline is None else max(0.0, min(25.0, deadline - time.monotonic()))
+                observed = wait(task_id, cursor=wait_cursor, timeout_seconds=wait_budget)
+            else:
+                observed = show(task_id)
         except Exception as exc:
+            if reconnect_wait(exc):
+                continue
             return {
                 "ok": False,
                 "run_id": run_id,
@@ -3479,6 +3517,8 @@ def _wait_for_kernel_task_loop(
             error = getattr(observed, "error", None)
             if hasattr(error, "as_dict"):
                 error = error.as_dict()
+            if reconnect_wait(error):
+                continue
             return {
                 "ok": False,
                 "run_id": run_id,
@@ -3491,6 +3531,16 @@ def _wait_for_kernel_task_loop(
                 },
             }, False, ""
 
+        if event_wait:
+            wait_snapshot = dict(data)
+            if wait_snapshot.get("reason") == "shutdown":
+                return {"ok": False, "kernel_task_id": task_id, "run_id": run_id,
+                        "error": {"code": "task_status_unavailable", "message": "Runtime stopped while following the admitted task"}}, False, ""
+            wait_cursor = wait_snapshot.get("cursor")
+            data = wait_snapshot.get("task")
+            if not isinstance(data, Mapping) or not isinstance(wait_cursor, str):
+                raise CapabilityInvocationError("Runtime task wait returned an invalid snapshot")
+            reconnect_attempts = 0
         task = dict(data)
         if owner_tick is not None:
             owner_tick(task)
@@ -3560,9 +3610,18 @@ def _wait_for_kernel_task_loop(
                 },
             }
             if read_managed_outputs:
-                managed_outputs, read_error = _settle_task_managed_outputs(
-                    client, task_id, expects_outputs=expects_outputs,
-                )
+                if event_wait:
+                    page = wait_snapshot.get("managed_outputs")
+                    managed_outputs = page.get("items") if isinstance(page, Mapping) else None
+                    read_error = None
+                    if not isinstance(managed_outputs, list):
+                        read_error = {"code": "managed_output_readback_invalid", "message": "Runtime task wait returned an invalid output page", "details": {"task_id": task_id}}
+                    elif expects_outputs and not managed_outputs:
+                        read_error = {"code": "managed_outputs_unsettled", "message": f"task {task_id} is terminal but its committed snapshot lists no managed outputs", "details": {"task_id": task_id}}
+                else:
+                    managed_outputs, read_error = _settle_task_managed_outputs(
+                        client, task_id, expects_outputs=expects_outputs,
+                    )
                 if read_error is not None:
                     if read_error.get("code") == "managed_outputs_unsettled":
                         raise CapabilityInvocationError(
@@ -3653,7 +3712,8 @@ def _wait_for_kernel_task_loop(
                     },
                 },
             }, False, attempt_id
-        time.sleep(min(float(poll_seconds), remaining, max(0.001, 60.0 - (now - last_heartbeat))))
+        if not event_wait:
+            time.sleep(min(float(poll_seconds), remaining, max(0.001, 60.0 - (now - last_heartbeat))))
 
 
 def _observe_task_invocation(
