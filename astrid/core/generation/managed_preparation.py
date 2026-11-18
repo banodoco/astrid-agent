@@ -271,7 +271,7 @@ def read_preparation(*, task: str, attempt: str | None, endpoint: str,
     return body
 
 
-def judge_declarations(workflow, scratch, engine):
+def judge_declarations(workflow, scratch, engine, *, companion=None):
     """Render and judge the declarations without consulting installed state."""
     from vibecomfy.runtime.dependencies import runtime_requirements_from_workflow
     from vibecomfy.security.provenance import Provenance
@@ -286,7 +286,7 @@ def judge_declarations(workflow, scratch, engine):
     for source_format in ("ready_template", "scratchpad"):
         try:
             emitted = emit_bundle_with_candidate(workflow.clone(), canonical_path,
-                Provenance.USER_CONFIRMED, None, source_format=source_format)
+                Provenance.USER_CONFIRMED, companion, source_format=source_format)
             break
         except WorkflowBundleError:
             if source_format == "scratchpad":

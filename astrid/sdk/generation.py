@@ -333,7 +333,7 @@ LOCAL_REFUSAL_SCOPE = ('refused locally before submission; nothing was sent to a
 
 def _offline_invocation_preflight(workflow: Any, *, plan: Mapping[str, Any] | None,
                                   assets: Mapping[str, Any], comfy_url: str | None,
-                                  lineage: Any, source_video: bool) -> None:
+                                  lineage: Any, source_video: bool, capsule: Path | None = None) -> None:
     """Run the same invocation preflight a live submission runs, offline, on the emitted bundle.
 
     Every dry run calls this so a request the live path would refuse is refused before a
@@ -367,8 +367,9 @@ def _offline_invocation_preflight(workflow: Any, *, plan: Mapping[str, Any] | No
     prompt = run_inputs.get('prompt')
     expected_prompt = prompt if isinstance(prompt, str) and prompt.strip() else None
     with TemporaryDirectory(prefix='astrid-dry-preflight-') as scratch:
-        capsule = Path(scratch) / 'workflow.py'
-        emit_bundle(workflow, capsule, {'operation': 'authored'})
+        if capsule is None:
+            capsule = Path(scratch) / 'workflow.py'
+            emit_bundle(workflow, capsule, {'operation': 'authored'})
         try:
             preflight_invocation(
                 capsule, run_inputs=run_inputs, comfy_url=comfy_url or '',
@@ -1917,19 +1918,22 @@ class GenerationFacade:
                             candidate = {**candidate, 'needs': needs}
                         schema = workflow_entries.target_schema(candidate, workflow, target_client, engine=runpod_engine,
                                                                 pending_target=pending_target, align=align)
-                from vibecomfy.workflow_bundle import load_bundle
-                if source == "workflow":
-                    # Re-emit the edited canonical workflow before approval so
-                    # the input bindings are represented by a fresh revision.
-                    from vibecomfy.workflow_bundle import emit_bundle
-                    with TemporaryDirectory(prefix="astrid-entry-approval-") as scratch:
-                        bundle = emit_bundle(workflow, Path(scratch) / "workflow.py", {"operation": "authored"})
-                        bundle.require_canonical_authority("generate on target")
-                        approval = bundle.compile(schema_provider=schema) if schema is not None and not assets else None
-                else:
+                from tempfile import mkdtemp
+                from vibecomfy.workflow_bundle import emit_bundle, load_bundle
+
+                # Catalog candidates must already own canonical authority. Workflow
+                # entries acquire a fresh revision after binding their public inputs.
+                if source == "catalog":
                     bundle = load_bundle(workflow)
                     bundle.require_canonical_authority("generate on target")
-                    approval = bundle.compile(schema_provider=schema) if schema is not None and not assets else None
+                capsule_root = Path(mkdtemp(prefix="astrid-entry-capsule-"))
+                _job_dirs.append(capsule_root)
+                capsule = capsule_root / "workflow.py"
+                authored = emit_bundle(workflow, capsule, {"operation": "authored"})
+                if source == "workflow":
+                    bundle = authored
+                    bundle.require_canonical_authority("generate on target")
+                approval = bundle.compile(schema_provider=schema) if schema is not None and not assets else None
             except (AstridError, ValueError, KeyError, OSError, CapabilityValidationError, ProductionEngineError) as exc:
                 if (model is not None or workflow_entry is not None or identifier in preferred
                         or getattr(exc, "code", None) in {"COMFY_TARGET_NOT_READY", "engine_not_found"}):
@@ -1953,7 +1957,7 @@ class GenerationFacade:
                         code='missing_dependency' if 'missing' in str(exc).lower() else 'input_rejected') from exc
                 failures.append(f"{identifier}: {exc}")
                 continue
-            selected = (identifier, workflow, bundle, plan, schema, approval, assets)
+            selected = (identifier, workflow, capsule, plan, schema, approval, assets)
             break
         if selected is None:
             raise AstridError(
@@ -1962,7 +1966,7 @@ class GenerationFacade:
                 code="COMFY_TARGET_NO_MODEL", field="model",
                 fix="Use an attached ComfyUI with the required nodes and models, or an installed managed runtime",
             )
-        entry_id, workflow, bundle, plan, schema, approval, assets = selected
+        entry_id, workflow, capsule, plan, schema, approval, assets = selected
         if is_remote_target and placement_policy is not None:
             placement_policy["engine"] = runpod_engine
         target_record = getattr(target_client, 'generation_target', None)
@@ -2008,21 +2012,15 @@ class GenerationFacade:
                 preview["approval"] = {"status": "approved", "api_digest": approval.api_digest}
             # Only managed placements run declaration preparation on the execution host.
             if is_managed_target or is_remote_target:
-                from vibecomfy.workflow_bundle import emit_bundle
-
                 from astrid.core.generation.managed_preparation import judge_declarations
-                from astrid.packs.vibecomfy.production_engine import (
-                    _canonical_bundle_value,
-                    load_workflow_path,
-                )
+                from astrid.packs.vibecomfy.production_engine import load_workflow_path
+
                 with TemporaryDirectory(prefix="astrid-dry-declarations-") as scratch:
                     root = Path(scratch)
-                    capsule = root / "workflow.py"
-                    emit_bundle(workflow, capsule, {"operation": "authored"})
                     loaded = load_workflow_path(capsule, root / "load")
-                    canonical = _canonical_bundle_value(loaded.resolved).workflow
-                    manifest, _ = judge_declarations(canonical, root / "engine",
-                                                     workflow_entries.engine_table()['comfyui'])
+                    manifest, _ = judge_declarations(
+                        loaded.resolved.workflow, root / "engine", workflow_entries.engine_table()['comfyui'],
+                        companion=loaded.resolved.ui_sidecar)
                 if placement.kind == 'local':
                     from astrid.core.generation.managed_preparation import configured_models_root
                     manifest = {**manifest, 'models_root': configured_models_root()}
@@ -2037,19 +2035,17 @@ class GenerationFacade:
             _offline_invocation_preflight(
                 workflow, plan=plan, assets=assets or {},
                 comfy_url=(target_client.target.url if placement.kind == 'attached' and target_client is not None else None),
-                lineage=h3_lineage, source_video=entry_id != 'h3')
+                lineage=h3_lineage, source_video=entry_id != 'h3', capsule=capsule)
             readiness['entry'].update(preview)
             if align == 'trust':
                 readiness['alignment'] = {'mode': 'trust', 'verified': False}
             return readiness
 
-        from vibecomfy.workflow_bundle import emit_bundle
         if source_ref is None:
             raise CapabilityInvocationError('generation did not retain its original source')
 
         with TemporaryDirectory(prefix="astrid-generate-target-") as scratch:
             root = Path(scratch)
-            emit_bundle(workflow, root / "workflow.py", {"operation": "authored"})
             # The native bindings sent as workflow_inputs below.
             sent_inputs = {name: value for name, value in (plan or {}).get('bindings', {}).items()
                            if name not in assets}
@@ -2105,8 +2101,8 @@ class GenerationFacade:
                                        'inputs': job['inputs'], 'files': job['files']}, sort_keys=True)
             result = self.workflow(
                 **({'after_outputs_job': hook_job} if hook_job else {}),
-                python=import_member(root / "workflow.py"),
-                companion=import_member(root / "workflow.vibe.json"),
+                python=import_member(capsule),
+                companion=import_member(capsule.with_suffix(".vibe.json")),
                 source=source_ref,
                 # Carry explicit native bindings through the executor as well
                 # as the sealed graph. The attached runner chooses a fresh
