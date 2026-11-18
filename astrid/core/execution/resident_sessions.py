@@ -284,7 +284,9 @@ def open_resident_task(host: Any, *, record: Any, task: Mapping[str, Any],
     key = _digest({"definition": original_record.definition.to_dict(), "source": originals,
                    "dependency": record.dependency_digest, "installation": installation,
                    "scope": scope, "environment": environment, "network_policy": policy,
-                   "authority_generation": authority})
+                   "authority_generation": authority,
+                   "pack_preparation_generation": admission.get("pack_preparation_generation"),
+                   "managed_readiness_generation": admission.get("managed_readiness_generation")})
     manager = host.managed_tool_session
     adapter = manager.current_adapter
     if isinstance(adapter, ResidentPackAdapter) and adapter.key == key and manager.active:
@@ -413,6 +415,10 @@ class ResidentPackAdapter:
             core._verify_admitted_source(self.admission)
             if core._runtime_external_sources is not None:
                 core._runtime_external_sources.verify()
+            for resource in self.retained_resources:
+                validate = getattr(resource, "assert_current", None)
+                if validate is not None:
+                    validate()
         except (OSError, ValueError, core.HostError) as exc:
             raise StaleAdmissionError("resident source identity changed or could not be verified") from exc
 

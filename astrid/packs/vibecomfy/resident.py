@@ -100,12 +100,18 @@ class CanonicalCatalogue:
 
 class HostPreparationCache(CanonicalCatalogue):
     """Parent-side canonical facts; linked to the same resident adapter owner."""
-    def __init__(self, root, scope):
+    def __init__(self, root, scope, compiler_generation):
         super().__init__(root)
         self.scope = scope
         self.prepared = {}
         self.last_loaded = None
         self.managed = None
+        self.compiler_generation = compiler_generation
+
+    def assert_current(self):
+        from .resident_source import compiler_content_identity
+        if compiler_content_identity() != self.compiler_generation:
+            raise ValueError("resident compiler source generation changed")
 
     def load(self, path, *, url, generation=""):
         self.last_loaded = super().load(path, url=url, generation=generation)
@@ -145,15 +151,51 @@ class HostPreparationCache(CanonicalCatalogue):
             self.managed = None
         super().close()
 
+    def retire_managed(self, host, *, clear_catalogue):
+        """Retire the existing owner before reacquiring its installation lock."""
+        from astrid.core.execution.managed_tool_session import SessionCapacityError
+        adapter = host.managed_tool_session.current_adapter
+        if getattr(adapter, "has_jobs", False):
+            raise SessionCapacityError("managed generation replacement is pending active admissions")
+        # Keep this request's immutable workflow capture reachable across the
+        # owner replacement. Its old preparation cannot survive the release.
+        if self.managed is not None:
+            self.managed.close()
+            self.managed = None
+        resources = getattr(adapter, "retained_resources", [])
+        if self in resources:
+            resources.remove(self)
+            getattr(adapter, "vibecomfy_preparations", {}).pop(self.scope, None)
+        if host.managed_tool_session.active:
+            host.managed_tool_session.release(reason="managed_readiness_changed")
+        self.prepared.clear()
+        if clear_catalogue:
+            for child in self.root.iterdir():
+                if child.is_dir():
+                    shutil.rmtree(child)
+            self.loaded.clear()
+            self.last_loaded = None
+
+    def observe_managed(self, host, preparation):
+        adapter = host.managed_tool_session.current_adapter
+        managed = self.managed
+        other_managed = any(getattr(cache, "managed", None) is not None and cache is not self
+                            for cache in getattr(adapter, "vibecomfy_preparations", {}).values())
+        if other_managed or managed is not None and not managed.observe(preparation):
+            self.retire_managed(host, clear_catalogue=True)
+
 
 def host_cache(host, record, task, inputs, *, align, entry):
     """Select cached facts only after the host captured and checked the source."""
     if not _eligible(inputs) or inputs.get("comfy_url") and align == "align":
         return None
+    from .resident_source import compiler_content_identity
+    compiler_generation = compiler_content_identity()
+    from astrid.core.execution.generic_host import _admitted_task_spec
     scope = _digest([record.capability_digest, record.source_digest, record.dependency_digest,
                      task.get("project_id"), task.get("realm_id"), task.get("runtime_epoch"),
-                     task.get("spec", {}).get("authority_context"), align, entry,
-                     inputs.get("comfy_url"), inputs.get("comfy_output_dir")])
+                     _admitted_task_spec(task).get("authority_context", task.get("spec", {}).get("authority_context")), align, entry,
+                     inputs.get("comfy_url"), inputs.get("comfy_output_dir"), compiler_generation])
     adapter = host.managed_tool_session.current_adapter
     caches = getattr(adapter, "vibecomfy_preparations", {})
     existing = caches.get(scope)
@@ -171,7 +213,7 @@ def host_cache(host, record, task, inputs, *, align, entry):
     from astrid.sdk.storage_root import resolve_runtime_data_root
     area = resolve_runtime_data_root() / "runtime" / "pack-preparations"
     platform.private_directory(area)
-    return HostPreparationCache(area / uuid.uuid4().hex, scope)
+    return HostPreparationCache(area / uuid.uuid4().hex, scope, compiler_generation)
 
 
 def current_session():
@@ -214,6 +256,17 @@ class VibeComfySession(CanonicalCatalogue):
     """One captured catalogue, target pair and bounded prepared-template map."""
     def __init__(self, root):
         super().__init__(root)
+        from .resident_source import compiler_content_identity
+        from vibecomfy.runtime import session as runtime_session
+        self.compiler_generation = compiler_content_identity()
+        # The pinned producer's metadata helper probes the ambient cwd on
+        # every receipt. This interpreter has one fixed private cwd for its
+        # entire lifetime. Resolve that advisory value once; actual compiler
+        # and source authority remains content-checked for every job.
+        self._git_sha = runtime_session._git_sha
+        revision = self._git_sha()
+        self._revision = lambda: revision
+        runtime_session._git_sha = self._revision
         self.lock = threading.RLock()
         self.targets = {}
         self.templates = {}
@@ -245,6 +298,9 @@ class VibeComfySession(CanonicalCatalogue):
                                         loaded_workflow_execution_identity)
 
         job = current_pack_job()
+        from .resident_source import compiler_content_identity
+        if compiler_content_identity() != self.compiler_generation:
+            raise ValueError("resident compiler generation changed before dispatch")
         # Only preparation and lookup are serial. The GPU run, receipt and
         # delivery below never hold this lock.
         with self.lock:
@@ -294,6 +350,9 @@ class VibeComfySession(CanonicalCatalogue):
             prepared_workflow=held, prepared_context=context, retained_session=session)
 
     def close(self):
+        from vibecomfy.runtime import session as runtime_session
+        if runtime_session._git_sha is self._revision:
+            runtime_session._git_sha = self._git_sha
         for _bundle, held, _context in self.templates.values():
             held.session.invalidate()
         self.templates.clear()
