@@ -260,6 +260,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rules", help="project rules JSON resolved by the client (thresholds, severities)")
     parser.add_argument("--highlight", help="a clip id to outline over the frames (implies the bounds layer)")
     parser.add_argument("--cuts", help="contact view: only these cut numbers (comma-separated)")
+    parser.add_argument("--title", help="the timeline's display name for page headers (resolved by the client)")
+    parser.add_argument("--shot-plans", dest="shot_plans",
+                        help="contact view: shot plan rows JSON resolved by the client (labels and planned lines)")
     parser.add_argument("--render-every", dest="render_every", type=float, default=None,
                         help="contact view with a render: seconds between sampled frames (default 5)")
     parser.add_argument("--preview", action="store_true", default=False,

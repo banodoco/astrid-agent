@@ -295,6 +295,46 @@ def _timeline_snapshot(envelope: Mapping) -> Mapping:
     return snapshot
 
 
+
+def _hydrate_render_snapshot(envelope: Mapping, client: Any) -> Mapping:
+    """Open the selected task's immutable snapshot, verifying identity and bytes."""
+    inputs = envelope.get('inputs', {})
+    if not isinstance(inputs, Mapping):
+        _fail('Render has malformed frozen inputs; rerender the selected timeline.')
+    ref = inputs.get('timeline_snapshot_ref')
+    if ref is None:
+        return envelope
+    if not isinstance(ref, Mapping) or 'timeline_snapshot' in inputs or 'timeline_snapshot' in envelope:
+        _fail('Render snapshot reference is malformed or ambiguous; rerender the timeline.')
+    authority = _authority(envelope)
+    for ref_key, authority_key in (('project_id', 'project_id'), ('timeline_id', 'timeline_id'),
+                                   ('revision_id', 'parent_revision_id'),
+                                   ('revision_digest', 'parent_content_digest')):
+        if ref.get(ref_key) is not None and ref.get(ref_key) != authority.get(authority_key):
+            _fail('Render snapshot reference differs from its authority; rerender the timeline.')
+    digest = _digest(ref.get('digest'))
+    from .workspace_client import WorkspaceClientError
+    try:
+        response = client.get_object(digest)
+    except WorkspaceClientError as exc:
+        if exc.status != 404:
+            raise
+        _fail('Render snapshot object is missing; rerender the timeline.')
+    raw = response if isinstance(response, bytes) else response.get('data') if isinstance(response, Mapping) else getattr(response, 'data', None)
+    if not isinstance(raw, bytes) or 'sha256:' + hashlib.sha256(raw).hexdigest() != digest:
+        _fail('Render snapshot bytes do not match their digest; rerender the timeline.')
+    try:
+        snapshot = json.loads(raw)
+    except (ValueError, UnicodeDecodeError):
+        _fail('Render snapshot is invalid JSON; rerender the timeline.')
+    if not isinstance(snapshot, Mapping):
+        _fail('Render snapshot is invalid; rerender the timeline.')
+    result = deepcopy(dict(envelope))
+    result['inputs'] = dict(result['inputs'])
+    result['inputs'].pop('timeline_snapshot_ref')
+    result['inputs']['timeline_snapshot'] = snapshot
+    return result
+
 def _canonical_shot_occurrences(config: Mapping[str, Any]) -> list[dict[str, Any]]:
     app = config.get("app") if isinstance(config, Mapping) else None
     composition = app.get("astrid_shot_composition") if isinstance(app, Mapping) else None
@@ -529,6 +569,24 @@ def _is_verified_speech_annotation(annotation: Mapping) -> bool:
     # Preserve the existing frozen annotation shape when no source classifier
     # is present; explicit negative markers still cannot enter captions.
     return annotation.get('spoken') is not False and annotation.get('verified') is not False
+
+
+def _attach_speech_words(snapshot: dict, client: Any, project: str, config: Mapping, registry: Mapping) -> None:
+    """Freeze this render's timed words into the snapshot (``speech_words``): stored transcripts with their
+    document id and version, clip-local words where none is stored. ``None`` means no word read was possible;
+    the readers then fall back to clip ``app.words`` and the reason is kept in the metadata."""
+    from astrid.sdk.timeline.words import frozen_speech_words
+
+    try:
+        if client is None:
+            raise RuntimeError('no runtime client to read stored transcripts')
+        rows, issues = frozen_speech_words(client, project, config, registry)
+        snapshot['speech_words'] = rows
+        if issues:
+            snapshot.setdefault('metadata', {})['speech_words_issues'] = issues
+    except Exception as exc:  # noqa: BLE001 - a read failure must be said, not hidden behind app.words
+        snapshot['speech_words'] = None
+        snapshot.setdefault('metadata', {})['speech_words_issues'] = [f'stored transcripts unavailable: {exc}']
 
 
 def build_filmstrip_snapshot(envelope: Mapping, *, client: Any, project: str, run_id: str, video_digest: str) -> dict:
@@ -908,6 +966,7 @@ def prepare_filmstrip(
         )
         snapshot['config'] = deepcopy(config)
         snapshot['registry'] = deepcopy(registry)
+        _attach_speech_words(snapshot, client, canonical_project, config, registry)
         snapshot['metadata']['selection'] = 'composed_frame_capture'
         snapshot['metadata']['capture_authority'] = deepcopy(authority)
         if host_transition_contract == 'runtime-parent-closure/v1':
@@ -1075,6 +1134,11 @@ def prepare_filmstrip(
     if selected is None:
         _status_failure(render_status(lifecycle="absent", output={"timeline": selector}, project=project))
     run, task, envelope, authority = selected
+    requested_revision = inputs.get('revision_id')
+    render_revision = _identifier(authority, 'parent_revision_id', 'head_revision_id', 'revision_id')
+    if requested_revision not in (None, '') and str(requested_revision) != str(render_revision):
+        _fail('Explicit revision_id conflicts with the saved revision selected by render_run.')
+    envelope = _hydrate_render_snapshot(envelope, client)
     if 'output' not in components['resolved']:
         timeline_snapshot = _timeline_snapshot(envelope)
         config = timeline_snapshot.get('config', {})
@@ -1120,7 +1184,8 @@ def prepare_filmstrip(
             },
         }
     if not exact:
-        pins = [{'timeline_id': authority['timeline_id'], 'config_version': authority.get('config_version')}]
+        pins = [{'timeline_id': authority['timeline_id'], 'config_version': authority.get('config_version'),
+                 'revision_id': _identifier(authority, 'parent_revision_id', 'head_revision_id', 'revision_id')}]
         pins += authority.get('expansion', {}).get('children', [])
         current_rows = paged_rows(client.list_timelines, project_id, limit=50) or []
         for pin in pins:
@@ -1144,7 +1209,7 @@ def prepare_filmstrip(
                     output={"available": True, "run_id": _identifier(run, "id", "run_id"), "timeline": selector},
                     fresh=False, project=project,
                 ))
-            current_head = current.get("head_revision_id") if isinstance(current, Mapping) else None
+            current_head = _identifier(current, 'head_revision_id', 'parent_revision_id', 'revision_id') if isinstance(current, Mapping) else None
             pinned_head = pin.get("revision_id") or pin.get("head_revision_id")
             if pinned_head and current_head and str(current_head) != str(pinned_head):
                 _status_failure(render_status(
@@ -1257,6 +1322,30 @@ def prepare_filmstrip(
             ))
     run_id = _identifier(run, 'id', 'run_id')
     snapshot = build_filmstrip_snapshot(envelope, client=client, project=canonical_project, run_id=run_id, video_digest=digest)
+    # Read only the auxiliary output of this exact task, and verify its bytes
+    # before trusting its timeline clock. Old renders may have no sidecar.
+    provenance_outputs = [o for o in task.get('result', {}).get('outputs', []) if o.get('name') == 'provenance']
+    if len(provenance_outputs) > 1:
+        _fail('Render has multiple provenance outputs; rerender the timeline.')
+    if provenance_outputs:
+        provenance_id = _digest(provenance_outputs[0].get('digest') or provenance_outputs[0].get('object_id'))
+        response = client.get_object(provenance_id)
+        raw = response if isinstance(response, bytes) else response.get('data') if isinstance(response, Mapping) else getattr(response, 'data', None)
+        if not isinstance(raw, bytes) or 'sha256:' + hashlib.sha256(raw).hexdigest() != provenance_id:
+            _fail('Render provenance bytes do not match their digest; rerender the timeline.')
+        try:
+            provenance = json.loads(raw)
+        except (ValueError, UnicodeDecodeError):
+            _fail('Render provenance is invalid JSON; rerender the timeline.')
+        if not isinstance(provenance, Mapping):
+            _fail('Render provenance is invalid; rerender the timeline.')
+        if 'timeline_range' in provenance:
+            snapshot['metadata']['timeline_range'] = provenance['timeline_range']
+            from astrid.packs.rendering.actions.timeline_visualize.render_clock import RenderClock
+            try:
+                RenderClock(snapshot)
+            except (ValueError, TypeError, ZeroDivisionError) as exc:
+                _fail(str(exc))
     selection = 'latest_current_render'
     if exact and not inputs.get('auto_selected_render'):
         selection = _explicit_render_selection(envelope, authority, timeline_row)
@@ -1265,6 +1354,7 @@ def prepare_filmstrip(
     timeline_snapshot = _timeline_snapshot(envelope)
     config = timeline_snapshot.get('config', {})
     registry = timeline_snapshot.get('registry', {})
+    _attach_speech_words(snapshot, client, canonical_project, config, registry)
     try:
         transcript_input = transcript_input_from_snapshot(config, registry)
     except ValueError as exc:

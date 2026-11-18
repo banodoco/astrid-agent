@@ -37,6 +37,26 @@ _DOCUMENT_CONTENT_UNSET = object()
 RECONFIGURE_ACTION = "run the Astrid install line again"
 
 
+# Generated operations that only read Runtime state.  A timed-out read changed
+# nothing; a timed-out write may still land, so it is reported as unknown.
+_READ_PREFIXES = ("get_", "list_", "head_", "inspect_", "diff_")
+_READ_OPERATIONS = frozenset({"health", "handshake", "doctor", "current_project"})
+
+
+def _timeout_report(operation: str, timeout: Any, details: Any) -> tuple[str, dict[str, Any]]:
+    """Name the Runtime request that timed out and whether anything was written."""
+    seconds = float(timeout) if isinstance(timeout, (int, float)) and not isinstance(timeout, bool) else None
+    after = f" within {seconds:g} s" if seconds is not None else ""
+    read = operation in _READ_OPERATIONS or operation.startswith(_READ_PREFIXES)
+    outcome = ("it only reads, so nothing was written or committed" if read else
+               "it may or may not have been applied")
+    report = dict(details) if isinstance(details, Mapping) else {}
+    report.update({"operation": operation, "read_only": read})
+    if seconds is not None:
+        report["timeout_seconds"] = seconds
+    return f"runtime request timed out: the Runtime did not answer {operation}{after}; {outcome}", report
+
+
 def _reconfigure(field: str, message: str) -> "WorkspaceClientError":
     return WorkspaceClientError(
         0,
@@ -292,11 +312,16 @@ class WorkspaceClient:
         except WorkspaceClientError:
             raise
         except Exception as exc:  # generated ApiError has stable fields
+            code = str(getattr(exc, "code", "transport_error"))
+            message = str(getattr(exc, "message", exc))
+            details = getattr(exc, "details", {})
+            if code == "transport_timeout":
+                message, details = _timeout_report(operation, getattr(self._generated, "timeout", None), details)
             raise WorkspaceClientError(
                 int(getattr(exc, "status", 0)),
-                str(getattr(exc, "code", "transport_error")),
-                str(getattr(exc, "message", exc)),
-                getattr(exc, "details", {}),
+                code,
+                message,
+                details,
                 request_id=str(getattr(exc, "request_id", "")),
             ) from exc
         def plain(item: Any) -> Any:

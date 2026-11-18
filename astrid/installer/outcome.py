@@ -46,7 +46,8 @@ HANDOFF_SENTENCE = "Next: set up generation with the astrid-setup skill."
 # With --skills off there is no setup skill to hand off to. The command is on PATH only when
 # --command is on; otherwise the run-astrid launcher in the install folder is the way in.
 SCAN_HINT = "Next: run `astrid generate scan` to find your ComfyUI."
-SCAN_HINT_LAUNCHER = "Next: run `run-astrid generate scan` in Astrid's install folder to find your ComfyUI."
+SCAN_HINT_LAUNCHER = "Next: run `./run-astrid generate scan` in Astrid's install folder to find your ComfyUI."
+SCAN_HINT_LAUNCHER_WINDOWS = "Next: run `.\\run-astrid.cmd generate scan` in Astrid's install folder to find your ComfyUI."
 
 
 def _repair_next() -> str:
@@ -67,7 +68,19 @@ WARNINGS: dict[str, dict[str, Any]] = {
         "phrase": "another copy of Astrid is still running",
         "next": _repair_next,
     },
+    "renderer-incomplete": {
+        "phrase": "frame looks and renders are unavailable",
+        "next": lambda: f"Next: repair the renderer by running the install line again (it rebuilds the missing packages): {_install_line()}",
+    },
+    "renderer-browser-missing": {
+        "phrase": "timelines visualize and renders are unavailable",
+        "next": lambda: f"Next: fetch Remotion's browser by running the install line again: {_install_line()}",
+    },
 }
+
+
+def _install_line() -> str:
+    return PUBLIC_INSTALL_LINE_WINDOWS if sys.platform == "win32" else PUBLIC_INSTALL_LINE
 
 
 def _next_line(name: str) -> str:
@@ -189,7 +202,9 @@ class Outcome:
     def _handoff(self) -> str:
         if self.skills:
             return HANDOFF_SENTENCE
-        return SCAN_HINT if self.command else SCAN_HINT_LAUNCHER
+        if self.command:
+            return SCAN_HINT
+        return SCAN_HINT_LAUNCHER_WINDOWS if sys.platform == "win32" else SCAN_HINT_LAUNCHER
 
     def record(self) -> dict:
         return {"format": FORMAT, **asdict(self), "exit_code": self.exit_code,
@@ -314,9 +329,13 @@ def _live(state) -> int | None:
 def receipt_warnings(outcomes: dict | None) -> tuple[str, ...]:
     """The warnings a settled run's own steps raised; they never change the exit code."""
     skills = (outcomes or {}).get("skills")
+    renderer = (outcomes or {}).get("renderer")
+    warnings = []
     if isinstance(skills, dict) and not skills.get("ok"):
-        return ("skills-not-refreshed",)
-    return ()
+        warnings.append("skills-not-refreshed")
+    if isinstance(renderer, dict) and not renderer.get("ok"):
+        warnings.append("renderer-browser-missing" if renderer.get("reason") == "browser" else "renderer-incomplete")
+    return tuple(warnings)
 
 
 def _safe_refusal(failure: BaseException) -> bool:

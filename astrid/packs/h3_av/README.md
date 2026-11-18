@@ -33,10 +33,14 @@ The selected base remains Ref2VA (`minimax_h3_ref2va_pruned_int8_convrot.safeten
 an explicit different base is rejected rather than rewritten.
 
 The model path is existing attention, Character Swap when selected, optional
-Turbo when enabled, then existing sigma shift and sampler. Turbo defaults to
-enabled at `0.95`; `settings.guidance` and `settings.guidance_scale` remain legacy
-spellings for its strength and cannot be combined with `settings.turbo.strength`.
-Disabling Turbo removes its loader and model requirement. The compilation records
+Turbo when enabled, then sigma shift and sampler. `settings.turbo.lora` defaults to
+`pika_flex_8step` (Ref2VA, strength 1.0); `lightx2v_8step` names the existing
+FL2VA LoRA and is refused on the current Ref2VA native routes. Pika Flex style is
+baked into the adapter. Defaults are 8 steps, res_multistep/simple, CFG 1, video
+shift 12 and audio shift 3. `settings.guidance` and `settings.guidance_scale` are
+legacy LoRA strength aliases, not CFG; do not combine them with turbo.strength.
+Non-1 CFG is refused. Disabling Turbo removes its loader and model requirement
+where supported; continuation currently refuses disabled Turbo. The compilation records
 effective settings and only connected model assets. We do not download LoRA
 weights as part of request preparation or claim inference quality from this
 candidate.
@@ -110,7 +114,9 @@ silently reduce duration or chain clips. For ordinary source-free generation,
 video/audio references, timed keyframes, and source-free masks are not implemented
 and fail closed. Character Swap is the separate native-v2 exception for one typed
 video and one image reference. The default canvas is 1024×576; `guidance` uses
-the existing Turbo LoRA strength convention.
+the Turbo LoRA strength convention. V1 native requests can set
+`overrides.turbo_lora`, `sampler`, `scheduler`, `cfg`, `video_shift`, and
+`audio_shift`; non-1 CFG and incompatible LoRA variants are refused.
 
 The generated bundle is self-contained and portable. Reference filenames are
 managed run inputs; media defaults remain empty to preserve VibeComfy's
@@ -119,3 +125,7 @@ emission/reload semantic identity. Submit through `astrid generate video --entry
 CPU tests cover structure, bindings, duration and managed transport. Live target
 schema/model attestation, GPU memory sufficiency, and visual acceptance remain
 to be tested on the target machine.
+
+The bundled continuation workflow pairs are historical source captures. Compile them
+through the H3 request path, which emits the selected, compatible LoRA and settings
+into a request-specific bundle before execution.

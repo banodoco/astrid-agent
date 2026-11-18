@@ -142,7 +142,7 @@ def _authenticated_initialization_fps_removals(
     candidate: Mapping[str, Any], baseline: Mapping[str, Any] | None,
     restoration_records: Sequence[Mapping[str, Any]], inverse_records: Sequence[Mapping[str, Any]],
 ) -> set[str]:
-    """Return FPS removed by the complete guarded inverse of ``timeline.init``."""
+    """Allow exact authenticated inverse of initialization or package canvas materialization."""
     allowed: set[str] = set()
     if baseline is None or not inverse_records or not restoration_records:
         return allowed
@@ -167,15 +167,30 @@ def _authenticated_initialization_fps_removals(
         selected = entry_records(inverse_records, entry)
         if not equal(selected, entry.get("records", {}).get("commands")):
             continue
-        init_records = [record for record in selected
-                        if record.get("command", {}).get("op") == "timeline.init"]
-        introduced = any(
-            write.get("ref") == "parent" and write.get("path") == ["config", "output"]
-            and write.get("before") == {"state": "absent"}
-            and write.get("after", {}).get("state") == "present"
-            and isinstance(write.get("after", {}).get("value"), Mapping)
-            and "fps" in write["after"]["value"]
-            for record in init_records for write in record.get("writes", []))
+        def introduced_output(record):
+            op = record.get('command', {}).get('op')
+            for write in record.get('writes', []):
+                after = write.get('after', {})
+                if not (write.get('ref') == 'parent' and write.get('path') == ['config', 'output']
+                        and write.get('before') == {'state': 'absent'} and after.get('state') == 'present'
+                        and isinstance(after.get('value'), Mapping) and 'fps' in after['value']):
+                    continue
+                if op == 'timeline.init':
+                    return True
+                for dependency in record.get('dependencies', []):
+                    pin = dependency.get('pin', {})
+                    if (op in ('clip.set', 'track.set') and dependency.get('key') == 'placement.canvas.materialization'
+                            and pin.get('ref') == 'parent' and pin.get('path') == ['config', 'output']
+                            and equal(pin.get('after'), after['value'])
+                            and equal(baseline.get('parent', {}).get('config', {}).get('output'), after['value'])
+                            and equal(pin.get('authored_canvas'), baseline.get('parent', {}).get('config', {})
+                                      .get('theme_overrides', {}).get('visual', {}).get('canvas'))
+                            and any(w.get('ref') == 'parent' and w.get('path') == ['config', 'output']
+                                    and equal(w.get('before'), after) and w.get('after') == {'state': 'absent'}
+                                    for inverse in restoration_records for w in inverse.get('writes', []))):
+                        return True
+            return False
+        introduced = any(introduced_output(record) for record in selected)
         if not introduced:
             continue
         candidate_output = candidate.get("parent", {}).get("config", {}).get("output")
@@ -657,8 +672,15 @@ def validate_final_candidate(
     source_bundles: Sequence[Mapping[str, Any]] = (),
     restoration_records: Sequence[Mapping[str, Any]] = (),
     inverse_records: Sequence[Mapping[str, Any]] = (),
+    authenticated_copy: bool = False,
 ) -> None:
     """Validate one complete candidate without changing it.
+
+    A rule refuses only what the change introduces or touches: what ``baseline`` already
+    had, unchanged, passes.
+    ``authenticated_copy`` is for ``timeline.duplicate`` alone: its content is the
+    Runtime-authenticated source closure, copied as it is, so nothing authored is
+    re-judged by rules the source may already fail. Only its shape is checked.
 
     ``baseline`` distinguishes newly authored declarations from unchanged
     legacy declarations that must survive a round trip.  ``schema_inputs``
@@ -675,6 +697,12 @@ def validate_final_candidate(
         json.dumps(candidate, allow_nan=False)
     except (TypeError, ValueError) as exc:
         _fail("candidate", f"must be finite JSON: {exc}")
+    if authenticated_copy:
+        shots_in_copy = candidate.get("shots")
+        for row in candidate.get("placements") or []:
+            if not isinstance(shots_in_copy, Mapping) or row.get("shot_id") not in shots_in_copy:
+                _fail(f"candidate.placements[{row.get('occurrence_id')!r}].shot_id", "references a missing shot")
+        return
     _validate_fps(candidate, baseline, restoration_records, inverse_records)
     parent_value: Any = candidate.get("parent")
     if not isinstance(parent_value, Mapping):
@@ -782,14 +810,14 @@ def validate_final_candidate(
     from astrid.sdk.timeline._commit_timing_validation import validate_candidate_timing
 
     try:
+        view = _timing_parent_view(candidate)
+        before = _timing_parent_view(baseline) if baseline else None
         if source_bundles:
-            validate_candidate_timing(_timing_parent_view(candidate),
-                                      baseline=_timing_parent_view(baseline) if baseline else None,
-                                      source_bundles=[_timing_parent_view(source) for source in source_bundles],
-                                      restoration_records=restoration_records)
+            validate_candidate_timing(
+                view, baseline=before, restoration_records=restoration_records,
+                source_bundles=[_timing_parent_view(source) for source in source_bundles])
         else:
-            validate_candidate_timing(_timing_parent_view(candidate),
-                                      baseline=_timing_parent_view(baseline) if baseline else None)
+            validate_candidate_timing(view, baseline=before)
     except (TimingCompileError, KeyError, TypeError, ValueError) as exc:
         _fail("candidate.timing", str(exc))
 

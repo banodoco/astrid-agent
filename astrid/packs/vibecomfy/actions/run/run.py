@@ -314,6 +314,13 @@ def _materialize_managed_generation_result(
     rebased_payload = result.to_dict()
     rebased_outputs: list[dict[str, Any]] = []
     taken = {"managed-generation-result.json"}
+
+    def reserve_destination(name: str, fallback: str, source: Path) -> Path:
+        destination = outputs_root / _friendly_output_name(name, fallback, taken)
+        if destination.exists() and destination.resolve() != source.resolve():
+            raise AstridValueError(f"managed output destination collides: {destination.name}")
+        return destination
+
     for output in result.outputs:
         source = (producer_root / output.path).resolve(strict=True)
         try:
@@ -322,9 +329,7 @@ def _materialize_managed_generation_result(
             raise AstridValueError(f"managed output escapes producer custody: {output.path}") from exc
         if not source.is_file() or source.is_symlink():
             raise AstridValueError(f"managed output is not a regular file: {output.path}")
-        destination = outputs_root / _friendly_output_name(source.name, output.output_port, taken)
-        if destination.exists() and destination.resolve() != source:
-            raise AstridValueError(f"managed output destination collides: {destination.name}")
+        destination = reserve_destination(source.name, output.output_port, source)
         if destination.resolve() != source:
             shutil.copy2(source, destination)
         rebased = output.to_dict()
@@ -337,6 +342,10 @@ def _materialize_managed_generation_result(
             raise AstridValueError("after_outputs must return one file per output")
         for row, replacement in zip(rebased_outputs, produced):
             target = managed_root / row["path"]
+            if target.suffix != replacement.suffix:
+                target = reserve_destination(target.with_suffix(replacement.suffix).name, row["output_port"], replacement)
+                row["path"] = target.relative_to(managed_root).as_posix()
+                row["media_type"] = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
             if replacement.resolve() != target.resolve():
                 shutil.copyfile(replacement, target)
             data = target.read_bytes()

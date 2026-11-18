@@ -626,3 +626,97 @@ def test_hostwedge_restart_live_job_fences_claim_until_exact_recovery(machine_ca
     assert c.pod.cancelled == [old.job_id]
     assert c.deletes == ["pod-1"] and c.creates == 1
     assert c.read()["state"] == "cleanup_complete"
+
+
+@pytest.mark.parametrize("condition", ["live", "spent", "deadline", "gone", "stopped", "unknown", "unverified"])
+def test_restart_settles_only_checkpointed_job(machine_case, monkeypatch, condition):
+    from astrid.core.generation import settings
+    from astrid.packs.runpod import remote_placement, target_selection, worker_preparation
+    from astrid.packs.runpod.worker_preparation import write_target_record
+
+    c = machine_case
+    claim(c)
+    interrupted, *queued = [job(c, n) for n in range(1, 5)]
+    lease = c.machine.claim(interrupted)
+    detached = c.machine.start(lease, interrupted)
+    record = c.read()
+    if condition == "spent":
+        record["paid_limits"]["max_usd"] = 0.00001
+        write_target_record(c.owner.path, record)
+        c.clock.advance(1)
+    elif condition == "deadline":
+        record["paid_limits"]["deadline"] = datetime.fromtimestamp(c.clock(), timezone.utc).isoformat()
+        write_target_record(c.owner.path, record)
+    c.host.close()
+
+    monkeypatch.setattr(settings, "machine_policy", lambda *args, **kwargs: c.prefs.as_mapping())
+    monkeypatch.setattr(target_selection, "canonical_claim_path", lambda account: c.owner.path)
+    bindings, _ = restart_bindings(c, monkeypatch)
+    if condition in {"gone", "stopped", "unknown"}:
+        observed = {"gone": (404, None), "stopped": (200, {"id": "pod-1", "actualStatus": "EXITED"}),
+                    "unknown": (200, {"id": "pod-1"})}[condition]
+        exact = worker_preparation.read_exact_pod
+        observations = [observed]
+        monkeypatch.setattr(worker_preparation, "read_exact_pod",
+                            lambda key, pod: observations.pop() if observations else exact(key, pod))
+    if condition == "unverified":
+        monkeypatch.setattr(remote_placement.RemotePlacement, "_canonical_installed", lambda *a, **kw: False)
+
+    forbid_allocation(c, monkeypatch)
+    provider = bindings.get(kind="runpod", engine="comfyui", job=True)
+    assert c.read()["paid_limits"] == record["paid_limits"]
+    if condition != "live":
+        assert c.read()["state"] == "cleanup_complete"
+        assert c.deletes == ["pod-1"]
+        assert c.read()["lease"]["ended"] == {
+            "gone": "provider_terminated", "stopped": "provider_terminated",
+            "unverified": "installation_unverified",
+        }.get(condition, "restart")
+        bindings.close()
+        return
+    settled = c.read()["lease"]
+    assert settled["state"] == "idle"
+    assert settled["invocation_id"] == interrupted.invocation_id
+    assert settled["paid_expires_at"] == record["lease"]["paid_expires_at"]
+    assert settled["last_job"]["outcome"] == "failed"
+    assert settled["last_job"]["failure"]["code"] == "host_restarted_during_job"
+    assert settled["last_job"]["failure"]["issue_message"] == "host restarted during the job"
+    assert detached.job_id in c.pod.cancelled
+    assert c.pod.resets[-1]["ok"]
+    provider.placement = c.placement
+    provider.observe_mounts = c.adapter.observe_mounts
+    c.machine = c.machine.for_host(provider, begin=lambda lease: None, done=bindings.done)
+    for request in queued:
+        run(c, request)
+        assert c.read()["lease"]["last_job"]["outcome"] == "success"
+    assert c.creates == 1 and not c.deletes
+    bindings.close()
+
+
+def test_durable_queued_tasks_survive_host_restart(tmp_path):
+    from runtime_protocol.service import RuntimeService
+    from runtime_protocol.store import RealmStore
+
+    root = tmp_path / "realm"
+    RealmStore.initialize(root).close()
+    host = RuntimeService(root)
+    capability = "vibecomfy.run"
+    try:
+        host.register_executor({"executor_id": "worker", "capabilities": [capability]})
+        tasks = [host.create_task({"capability_id": capability, "spec": {},
+                                  "idempotency_key": f"generation-{n}"})["task"]["id"]
+                 for n in range(4)]
+        interrupted = host.claim_next({"executor_id": "worker", "capability_ids": [capability],
+                                       "runtime_epoch": host.health()["runtime_epoch"]})
+        assert interrupted["task_id"] == tasks[0]
+    finally:
+        host.close()
+
+    restarted = RuntimeService(root)
+    try:
+        assert restarted.runtime_lifecycle()["recovered_task_count"] == 1
+        for task_id in tasks[1:]:
+            task = restarted.task(task_id)["task"]
+            assert task["status"] == "queued" and task["attempt"] == 0
+    finally:
+        restarted.close()

@@ -127,6 +127,41 @@ class CommitOutcomeUnknown(TimelineEditError, WorkspaceClientError):
                                       {**self.presentation, "cause": failure})
 
 
+class PreviewUnanswered(CommitOutcomeUnknown):
+    """A dry run got no answer. A preview cannot land, so nothing was kept."""
+
+    def __init__(self, cause):
+        super().__init__(cause)
+        self.outcome = "not_applied"
+        self.headline = "The dry run got no answer; nothing was committed"
+        self.detail = ("A dry run only previews an edit, so no request was kept and "
+                       "later commits on this timeline are not blocked.")
+        self.fix = "Run the dry run again, or commit for real."
+        self.presentation.update(headline=self.headline, detail=self.detail, fix=self.fix,
+                                 outcome=self.outcome)
+        WorkspaceClientError.__init__(self, 0, "timeline_preview_unanswered",
+                                      f"{self.headline}. {self.fix}",
+                                      {**self.presentation, "cause": self.failure})
+
+
+def _release_preview(state, flight, *, refused=False):
+    """Drop every trace of a dry run from the outbox, as an answered preview does.
+
+    The Runtime keeps nothing for a preview, so a dry-run request never needs
+    an exact retry: no in-flight record, conflict or pending record survives it.
+    A refused preview also drops its queued commands, which cannot commit.
+    """
+    if refused or "commit_options" in state:
+        del state["pending"][:flight["count"]]
+        state.pop("commit_options", None)
+        state.pop("evaluation", None)
+    state.pop("preview_key", None)
+    state["flight"] = None
+    state.pop("conflict", None)
+    for field in ("pending_close", "pending_close_path", "pending_how", "pending_part", "pending_identity"):
+        state.pop(field, None)
+
+
 def _flight_kind(flight):
     """Return the processing kind without defaulting a present discriminator."""
     if flight is None:
@@ -1080,6 +1115,19 @@ class TimelineSession:
             if isinstance(details, dict) and details.get("status") in {"conflict", "refused", "invalid"}:
                 failure = {"code": getattr(exc, "code", "conflict"), "message": str(getattr(exc, "message", exc)), "details": details}
                 save_pending = release_conflict or details.get("status") != "conflict"
+                if dry_run and save_pending:
+                    # A refused preview changed nothing in the Runtime. It is
+                    # reported, never saved as a pending record to clear later.
+                    with self.outbox.locked():
+                        state = self._state()
+                        if state["flight"] == flight:
+                            self._flight_body(state, flight, idempotency_key, dry_run)
+                            _release_preview(state, flight, refused=True)
+                            self.outbox.write(state)
+                    error_type = CommitConflict if details.get("status") == "conflict" else CommitRefused
+                    raise error_type(failure, fixed_list=release_conflict and details.get("status") == "conflict",
+                                     timeline_id=self.timeline_id, project_id=self.project_id,
+                                     label=body.get("label")) from exc
                 record = None
                 external_conflict = None
                 settled = None
@@ -1163,6 +1211,18 @@ class TimelineSession:
                                      pending_id=record["id"] if record else None,
                                      retry_clash=bool(details.get("status") == "conflict" and flight.get("pending_id") and record),
                                      clash=(record.get("clash") or clash(record)) if record and not settled else None) from exc
+            if dry_run and isinstance(exc, (WorkspaceClientError, OSError, TimeoutError)):
+                # A preview that got no answer, or an error answer, cannot have
+                # landed: there is nothing to confirm later, and keeping it would
+                # block every commit. A reply that cannot be parsed or verified
+                # is kept, exactly as for a real commit.
+                with self.outbox.locked():
+                    state = self._state()
+                    if state["flight"] == flight:
+                        self._flight_body(state, flight, idempotency_key, dry_run)
+                        _release_preview(state, flight)
+                        self.outbox.write(state)
+                raise PreviewUnanswered(exc) from exc
             raise CommitOutcomeUnknown(exc, key=_display_key(flight)) from exc  # Keep the durable flight byte-for-byte retryable.
         try:
             data, receipt = _ack(result, body, flight, self.identity)

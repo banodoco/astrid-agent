@@ -429,13 +429,19 @@ def _failure(reason, message, base, current=None, *, conflicts=None, path=(),
                    status=status)
 
 
-def _load(port, context, revision):
-    document = port.revision_closure(revision)
-    request = context["request"]
-    _require(document.get("project_id") == request["project_id"]
-             and document.get("timeline_id") == request["timeline_id"]
-             and document.get("parent_revision", {}).get("revision_id") == revision,
-             "Runtime returned a different revision or project/timeline scope")
+def _load(port, context, revision, memo=None):
+    """Load one revision closure. A memo keeps only the verified document;
+    every use still opens a fresh bundle, because scans mutate bundles."""
+    document = memo.get(revision) if memo is not None else None
+    if document is None:
+        document = port.revision_closure(revision)
+        request = context["request"]
+        _require(document.get("project_id") == request["project_id"]
+                 and document.get("timeline_id") == request["timeline_id"]
+                 and document.get("parent_revision", {}).get("revision_id") == revision,
+                 "Runtime returned a different revision or project/timeline scope")
+        if memo is not None:
+            document = memo[revision] = copy.deepcopy(document)
     return bundle_from_document(document)
 
 
@@ -727,7 +733,15 @@ def _reservation_refs(state):
     return refs
 
 
-def _check_reservations(port, plan, current, rejected, base):
+def _check_reservations(port, plan, current, rejected, base, memo):
+    """Refuse a create that claims an identity accepted history reserved.
+
+    ``memo`` belongs to one provider instance, so one realm run, and maps
+    (project, timeline) to (publication, revision, reserved, recorded) for the
+    newest history this provider has scanned cleanly. Ancestry is immutable,
+    so reserved(head) = reserved(memo head) + what the newer entries add; the
+    scan reads only those entries.
+    """
     from astrid.sdk.timeline.commands import CommandError
 
     from ._command_state import State, equal, one, root_identity
@@ -763,9 +777,11 @@ def _check_reservations(port, plan, current, rejected, base):
         return
     reserved, recorded = set(), False
     context = {'request': {key: plan.bundle[key] for key in ('project_id', 'timeline_id')}}
+    documents = {}
+    scope = (plan.bundle['project_id'], plan.bundle['timeline_id'])
 
     def boundary(revision):
-        return _load(port, context, revision)
+        return _load(port, context, revision, documents)
 
     def restore_native_fork(state, record, write, accepted_base, requested_base, recorder_abi):
         """Retain the native fork proof while replaying an accepted birth."""
@@ -994,8 +1010,23 @@ def _check_reservations(port, plan, current, rejected, base):
             for write in record['derived_writes']:
                 state.set(write['ref'], write['path'], write['after'])
 
+    def read_history():
+        """Entries newer than the stored publication, or all of them."""
+        nonlocal reserved, recorded
+        row = memo.get(scope)
+        if row is not None:
+            after = {'publication_id': row[0], 'revision_id': row[1]}
+            try:
+                entries = _history(port, current, after, rejected, base)
+                reserved, recorded = set(row[2]), row[3]
+                return entries
+            except rejected:
+                pass  # not an ancestor of this head: read it all
+        reserved, recorded = set(), False
+        return _history(port, current, None, rejected, base)
+
     try:
-        for entry in _history(port, current, None, rejected, base):
+        for entry in read_history():
             if (not recorded and entry.get('intent') in {'bootstrap', 'legacy_unknown'}
                     and entry.get('records') is None):
                 # Unknown legacy intent is not allocation proof. The first
@@ -1018,8 +1049,53 @@ def _check_reservations(port, plan, current, rejected, base):
     except (AuthoringBundleError, CommandError, KeyError, TypeError, ValueError) as exc:
         raise rejected(_failure('history_unavailable', 'semantic identity history is unavailable',
                                 base, current)) from exc
+    memo[scope] = (current['publication_id'], current['revision_id'], frozenset(reserved), recorded)
     scan(plan.records, boundary(current['revision_id']), ordinary=True, output=plan.bundle,
          accepted_base=current, requested_base=base)
+
+
+def reader_problem(service, document):
+    """Why render and visualize could not open this exact closure, or ``None``.
+
+    The closure goes through the readers' shared parent-composition projection
+    and render's normalization (``reader_view``), then the readers' own strict
+    timeline and registry schemas. The renderer itself is never imported.
+    """
+    from astrid.core.timeline.reader_projection import (
+        ReaderProjectionError,
+        check_reader_projection,
+        reader_view,
+    )
+
+    try:
+        # Appearance normalization (the Node placement package) only resolves
+        # canvas geometry; skipping it keeps this check free of a subprocess.
+        projected = service.project_capture(document, normalize_appearance=False)
+        check_reader_projection(*reader_view(projected["config"], projected["registry"]))
+    except ReaderProjectionError as exc:
+        return str(exc)
+    except Exception as exc:  # noqa: BLE001 - the readers run this same projection
+        return f"render and visualize cannot project the result: {exc}"
+    return None
+
+
+def _check_readers(service, document, baseline_document, base, current):
+    """Refuse a commit that turns a timeline the readers can open into one they cannot.
+
+    A timeline that is already unreadable may still be edited (for example,
+    undone back to a readable revision); the gate never makes it worse.
+    """
+    from runtime_protocol.timeline_commit import CommitRejected
+
+    problem = reader_problem(service, document)
+    if problem is None or reader_problem(service, baseline_document) is not None:
+        return
+    raise CommitRejected(_failure(
+        "unreadable_result",
+        f"Refused: after this edit {problem}. Nothing was committed.",
+        base, current, invalid=True, status="invalid",
+        hint="Select clip media through a registry asset (clip.asset), then commit again",
+        suggested_command="timelines visualize"))
 
 
 class RuntimeCommitService:
@@ -1028,6 +1104,7 @@ class RuntimeCommitService:
 
     def __init__(self, contract_digest):
         self.contract_digest = contract_digest
+        self._reserved = {}
 
     def capture_candidate_inputs(self, document, *, candidate):
         """Pure optional inputs for Runtime's working-copy verification."""
@@ -1037,8 +1114,12 @@ class RuntimeCommitService:
             "preview": preview_authoring_candidate(candidate),
         })
 
-    def project_capture(self, document, *, authoring_preview=None):
-        """Pure optional capture admission; Runtime supplies a verified closure."""
+    def project_capture(self, document, *, authoring_preview=None, normalize_appearance=True):
+        """Pure optional capture admission; Runtime supplies a verified closure.
+
+        ``normalize_appearance=False`` skips the Node placement package, which
+        only resolves canvas geometry; the commit-time reader check uses it.
+        """
         from astrid.core.timeline.shot_composition_projection import (
             project_runtime_parent_composition,
         )
@@ -1131,6 +1212,15 @@ class RuntimeCommitService:
             index = {row["revision_id"]: row for row in internals}
             internals = list({row["internal_timeline_revision_id"]:
                               index[row["internal_timeline_revision_id"]] for row in shots}.values())
+        # Capture admission and SDK capture must project the same normalized
+        # copies of the verified immutable closure.
+        from ._appearance import normalize_revision_closure
+        if normalize_appearance:
+            parent, internals, placement_findings = normalize_revision_closure(parent, internals)
+        else:
+            placement_findings = []
+        if marker is not None:
+            marker['placement_migrations'] = placement_findings
         projected = project_runtime_parent_composition(
             parent, shot_revisions=shots, internal_timeline_revisions=internals)
         shot_rows = []
@@ -1150,7 +1240,8 @@ class RuntimeCommitService:
             "shots": shot_rows, "occurrences": list(projected.occurrences),
         }
         if marker is None:
-            expansion.update(outputs=list(projected.outputs), graph=projected.graph)
+            expansion.update(placement_migrations=placement_findings,
+                             outputs=list(projected.outputs), graph=projected.graph)
         else:
             expansion["working_copy"] = marker
         result = {"config": projected.config, "registry": projected.registry, "expansion": expansion}
@@ -1395,7 +1486,7 @@ class RuntimeCommitService:
                 for record in plan.records:
                     if record['command']['op'] == 'timeline.inverse' and undo_steps is not None:
                         record['command']['args']['steps'] = copy.deepcopy(undo_steps)
-                _check_reservations(port, plan, current, CommitRejected, base)
+                _check_reservations(port, plan, current, CommitRejected, base, self._reserved)
                 from astrid.sdk.timeline.validation import validate_final_candidate
 
                 validation_bundle = plan.bundle
@@ -1409,6 +1500,9 @@ class RuntimeCommitService:
                         plan.bundle['source_mapping'].get('pinned_documents', []))
                 validate_final_candidate(
                     validation_bundle,
+                    # A source copy is Runtime-authenticated content; it is checked for shape only.
+                    authenticated_copy=bool(plan.records) and all(
+                        record['command']['op'] == 'timeline.duplicate' for record in plan.records),
                     baseline=(closures[restored_from['revision_id']] if restored_from is not None
                               else bundle if current == base else head_bundle),
                     schema_inputs=schema_inputs,
@@ -1419,6 +1513,17 @@ class RuntimeCommitService:
                 )
                 document = document_from_bundle(plan.bundle, source_bundles=inverse_sources,
                                                 inverse_records=inverse_records)
+                # What a commit accepts, every reader must be able to open.
+                reader_baseline = (bundle if current == base else head_bundle)
+                baseline_document = reader_baseline["source_mapping"]["_runtime_document"]
+                if len(plan.records) == 1 and plan.records[0]['command']['op'] == 'timeline.duplicate':
+                    # A copy is as readable as its source, not as the empty
+                    # destination: copying an unreadable timeline (to repair
+                    # it) is no readable-to-unreadable change, while a copy of
+                    # a readable source that comes out unreadable is refused.
+                    baseline_document = port.revision_closure(
+                        copy.deepcopy(plan.records[0]['command']['args']['source_ref']))
+                _check_readers(self, document, baseline_document, base, current)
                 from ._commit_preview import capture_sequential_execution, prepared_records
 
                 records = prepared_records(plan, undo_of=undo_of,

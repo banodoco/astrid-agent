@@ -36,14 +36,50 @@ def _video(path, seconds, frames=None):
 @pytest.mark.parametrize("prepared", [False, True], ids=["public-job", "controller-prepared-job"])
 def test_job_runs_h3_build_and_after_outputs_once_each(tmp_path, monkeypatch, prepared):
     action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
-    source = _video(tmp_path / "source.mp4", 3, frames=57)
+    source = _video(tmp_path / "source.mp4", 3)
     request = json.loads(REQUEST.read_text())
-    asset_map = {request["media"][0]["asset"]["id"]: str(source), "source": str(source)}
-    job = tmp_path / "job.json"
-    payload = {"schema": "astrid.machine-job.v1", "entry": "h3", "mode": "v2v", "align": "check",
-               "inputs": {"request": str(REQUEST), "asset_map": asset_map}}
+    request["media"][0]["asset"]["id"] = "source"
+    source_id = "source"
+    request_path = tmp_path / "controller-request.json"
+    request_path.write_text(json.dumps(request), encoding="utf-8")
+    from astrid.core.generation.engine_facts import comfyui_facts
+    from astrid.packs.h3_av.shared import engine_facts as h3_engine_facts
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+    from astrid.packs.h3_av.shared.request import normalize_request
+
+    h3_engine_facts.install(comfyui_facts())
+    normalized_request = normalize_request(request)
+    controller_preparation = prepare_request(
+        normalized_request, asset_map={source_id: str(source)}, out_dir=tmp_path / "controller-build",
+    )
+    prepared_source = Path(controller_preparation["assets"][0]["path"])
+    prepared_sha256 = controller_preparation["source_conform"]["output"]["sha256"]
+    handoff = {
+        "version": 1,
+        "request_digest": normalized_request.digest,
+        "asset": source_id,
+        "managed_source": {
+            "digest": "sha256:" + prepared_sha256,
+            "sha256": prepared_sha256,
+            "bytes": prepared_source.stat().st_size,
+            "filename": prepared_source.name,
+        },
+        "conform": controller_preparation["source_conform"],
+    }
+    handoff_path = tmp_path / "prepared-source.json"
+    handoff_path.write_text(json.dumps(handoff), encoding="utf-8")
+    asset_map = {source_id: str(prepared_source), "__astrid_h3_prepared__": str(handoff_path)}
+    execution = {"python": str(entries.bundle_path(entries.find_entry("h3")))}
     if prepared:
-        payload.update(execution={"python": str(entries.bundle_path(entries.find_entry("h3")))}, bindings={"seed": 987})
+        execution["source_video"] = str(prepared_source)
+    job = tmp_path / "job.json"
+    worker_inputs = {"request": str(request_path), "asset_map": asset_map}
+    if not prepared:
+        worker_inputs["source_video"] = str(prepared_source)
+    payload = {"schema": "astrid.machine-job.v1", "entry": "h3", "mode": "v2v", "align": "check",
+               "inputs": worker_inputs}
+    if prepared:
+        payload.update(execution=execution, bindings={"seed": 987})
     job.write_text(json.dumps(payload))
 
     builds, hooks = [], []

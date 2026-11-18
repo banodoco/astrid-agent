@@ -375,6 +375,56 @@ _LOSSLESS_MASK_CODECS = {"ffv1", "ffvhuff", "huffyuv", "png", "rawvideo", "utvid
 _MASK_FPS = 24
 
 
+def _validate_mask_clock(path: Path, probe: Mapping[str, Any], stream: Mapping[str, Any],
+                         *, mask_id: str, frames: int) -> None:
+    """Verify the decoded frame clock that both the graph and composer consume."""
+    rate = str(stream.get("r_frame_rate", "unknown"))
+    average = str(stream.get("avg_frame_rate", "unknown"))
+    stream_start = stream.get("start_time")
+    container = probe.get("format")
+    container_start = container.get("start_time") if isinstance(container, Mapping) else None
+    try:
+        time_base = Fraction(str(stream["time_base"]))
+        valid = (Fraction(rate) == Fraction(24) and Fraction(average) == Fraction(24)
+                 and Fraction(str(stream_start)) == 0 and Fraction(str(container_start)) == 0
+                 and 0 < time_base <= Fraction(1, 24))
+    except (KeyError, ValueError, TypeError, ZeroDivisionError):
+        valid = False
+    if not valid:
+        raise CompositionError(
+            f"regional video mask {mask_id!r} clock observed rate={rate}, average={average}, "
+            f"stream_start={stream_start}, container_start={container_start}, "
+            f"time_base={stream.get('time_base')}; expected 24/1 CFR from zero"
+        )
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe is None:
+        raise CompositionError(f"regional video mask {mask_id!r} clock requires ffprobe")
+    try:
+        result = subprocess.run(
+            [ffprobe, "-v", "error", "-select_streams", "v:0", "-show_frames",
+             "-show_entries", "frame=best_effort_timestamp", "-of", "json", str(path)],
+            check=True, capture_output=True, text=True, timeout=30,
+        )
+        decoded = json.loads(result.stdout).get("frames")
+        if not isinstance(decoded, list) or len(decoded) != frames:
+            raise ValueError("decoded timestamp count does not match the frame count")
+        timestamps = [int(row["best_effort_timestamp"]) * time_base for row in decoded]
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+        raise CompositionError(f"regional video mask {mask_id!r} clock timestamps are unreadable: {exc}") from exc
+    if not timestamps or timestamps[0] != 0:
+        raise CompositionError(
+            f"regional video mask {mask_id!r} first frame must start at 0; "
+            f"observed {float(timestamps[0]) if timestamps else 'none'}"
+        )
+    for index, timestamp in enumerate(timestamps):
+        expected = Fraction(index, 24)
+        if abs(timestamp - expected) > time_base:
+            raise CompositionError(
+                f"regional video mask {mask_id!r} frame {index} observed timestamp {float(timestamp):.6f}s; "
+                f"expected {float(expected):.6f}s on the 24 fps clock"
+            )
+
+
 def probe_mask(
     path: Path,
     *,
@@ -414,6 +464,7 @@ def probe_mask(
         frames = int(stream.get("nb_read_frames") or stream.get("nb_frames"))
     except (TypeError, ValueError):
         raise CompositionError(f"regional video mask {mask_id!r} has no countable frames") from None
+    _validate_mask_clock(path, probe, stream, mask_id=mask_id, frames=frames)
     if duration is not None and frames != round(float(duration) * _MASK_FPS):
         raise CompositionError(
             f"regional video mask {mask_id!r} has {frames} frames; "

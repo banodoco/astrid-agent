@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -54,10 +55,16 @@ def _assert_runtime(actual: dict, expected: dict[str, str]) -> None:
 def _compile_v2_context(tmp_path: Path, *, with_reference: bool):
     tmp_path.mkdir(parents=True)
     source = tmp_path / "source.mp4"
-    source.write_bytes(b"CPU structural fixture; compilation only archives source bytes")
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+         "color=c=blue:s=1024x576:r=24:d=2", "-an", "-c:v", "libx264", "-pix_fmt",
+         "yuv420p", str(source)],
+        check=True,
+        capture_output=True,
+    )
     media = [{
         "id": "source", "asset": "source.mp4", "role": "timeline", "modality": "video",
-        "at": {"frame": 0}, "range": [0, 1],
+        "at": {"frame": 0}, "range": [0, "39/24"],
     }]
     asset_map = {"source.mp4": str(source)}
     if with_reference:

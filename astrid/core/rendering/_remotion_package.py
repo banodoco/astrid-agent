@@ -9,7 +9,7 @@ from typing import Any, Mapping
 _COMPOSITION_PACKAGE_NAME = "@banodoco/timeline-composition"
 # Release wheels omit remotion/package-lock.json; this runtime pin is guarded
 # against the checkout lock by tests/core/rendering/test_remotion_package_pin.py.
-_COMPOSITION_PACKAGE_VERSION = "0.0.17"
+_COMPOSITION_PACKAGE_VERSION = "0.0.19"
 _REQUIRED_COMPOSITION_EXPORTS = (
     ".",
     "./evaluation",

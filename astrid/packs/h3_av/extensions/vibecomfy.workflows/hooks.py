@@ -14,6 +14,7 @@ relative imports) and takes engine-side facts from the ``engine`` argument the e
 from __future__ import annotations
 
 import importlib.util
+import json
 import shutil
 import sys
 import tempfile
@@ -67,6 +68,19 @@ def _given(inputs: Mapping[str, Any], files: Mapping[str, Any], name: str) -> An
     return (files or {}).get(name) or (inputs or {}).get(name)
 
 
+def _source_av_measurement(preparation: Mapping[str, Any], source: Path, facts: Any) -> dict[str, Any]:
+    """Reuse the measurement already bound to conformed source bytes when available."""
+    conform = preparation.get("source_conform")
+    measured = conform.get("decoded_av") if isinstance(conform, Mapping) else None
+    if isinstance(measured, Mapping):
+        if measured.get("has_audio") is False:
+            # measure_source_av historically rejected silent video references;
+            # retain that admission behavior without decoding the sealed bytes again.
+            raise ValueError("H3_SOURCE_AV_MISSING_AUDIO: speaking-prefix tasks require an audio stream")
+        return dict(measured)
+    return dict(facts.measure_source_av(source))
+
+
 def _plain_request(inputs: Mapping[str, Any], files: Mapping[str, Any], facts: Any) -> tuple[dict[str, Any], dict[str, str]]:
     """The request.v1 document and asset map for the kind's plain inputs (a prompt and one media file).
 
@@ -88,7 +102,21 @@ def _plain_request(inputs: Mapping[str, Any], files: Mapping[str, Any], facts: A
                  "references": [{"asset": "image_ref", "purpose": "appearance"}]}, {"image_ref": str(image)})
     if (inputs or {}).get("frames") is not None:
         raise ValueError("h3 frames is only supported with image_ref; video_ref uses its full source length")
-    duration = int(facts.measure_source_av(video)["video_frames"]) / 24
+    # Preserve the exact compliant-input path; for real footage that needs
+    # conforming, select complete target frames inside its measured duration.
+    try:
+        duration_frames = int(facts.measure_source_av(video)["video_frames"])
+    except ValueError:
+        from fractions import Fraction
+        probe = _shared("conform")._probe(Path(str(video)))
+        stream = next((s for s in probe.get("streams", []) if s.get("codec_type") == "video"), None)
+        try:
+            duration_frames = int(Fraction(str(stream["duration"])) * 24)
+        except (TypeError, KeyError, ValueError, ZeroDivisionError) as exc:
+            raise ValueError("h3 video_ref needs a measurable video duration") from exc
+    if duration_frames <= 0:
+        raise ValueError("h3 video_ref is shorter than one 24 fps frame")
+    duration = duration_frames / 24
     return ({**base, "operation": "edit", "source": {"asset": "video_ref", "range": [0.0, duration]},
              "output": {"duration": duration},
              "changes": {"video": [{"during": [0.0, duration], "area": {"full_frame": True}, "action": "generate"}],
@@ -99,7 +127,7 @@ def _state_dir(job_dir) -> Path:
     return (Path(job_dir) if job_dir else Path(tempfile.mkdtemp(prefix="astrid-h3-"))) / "h3"
 
 
-def build(inputs, files, out, *, engine=None, check_runtime=False):
+def build(inputs, files, out, *, engine=None, check_runtime=False, publish_source=None):
     """{workflow, bindings, plan, assets, bundle}: the chosen trio's graph, bindings, sealed plan, media, folder."""
     # Source inspection checks its own tools during planning. Output composition
     # tools belong to execution, on the machine that will run after_outputs.
@@ -118,6 +146,17 @@ def build(inputs, files, out, *, engine=None, check_runtime=False):
     else:
         document, asset_map = _plain_request(inputs, files, facts)
     request = request_module.normalize_request(document)
+    reserved = "__astrid_h3_prepared__"
+    if reserved in request_module._asset_ids(request):
+        raise ValueError("H3 request asset name is reserved for internal prepared-source handoff")
+    frozen_source = None
+    if reserved in asset_map:
+        try:
+            frozen_source = json.loads(Path(asset_map.pop(reserved)).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"invalid H3 prepared-source handoff: {exc}") from exc
+        if not isinstance(frozen_source, dict):
+            raise ValueError("H3 prepared-source handoff must be an object")
     run_logs = facts.run_logs
     for name, relative in {
         "h3.preparation": "preparation.json",
@@ -127,15 +166,22 @@ def build(inputs, files, out, *, engine=None, check_runtime=False):
         "h3.verification": "verify.json",
     }.items():
         run_logs.declare(work.parent, run_logs.LogDecl(name, "run", str(Path("h3") / relative)))
-    paths, preparation, compilation = stages.compile_stages(request, asset_map, work / "plan")
+    options = {}
+    if frozen_source is not None:
+        options["frozen_source"] = frozen_source
+    if publish_source is not None:
+        options["publish_source"] = publish_source
+    paths, preparation, compilation = stages.compile_stages(request, asset_map, work / "plan", **options)
     _shared("prepare").write_preparation(work / "preparation.json", preparation)
     bindings = compilation["workflow_inputs"]
     facts.assert_no_unresolved_placeholders(bindings)
     plan = {**stages._sealed_plan(compilation), "request_digest": request.digest}
+    if preparation.get("source_conform"):
+        plan["source_conform"] = preparation["source_conform"]
     source_id = stages._authoritative_source_asset_id(request)
     source = paths[source_id] if source_id else None
     if source is not None and "source_video" in bindings:
-        plan["source_av"] = dict(facts.measure_source_av(source))
+        plan["source_av"] = _source_av_measurement(preparation, source, facts)
     stages.save_build_state(work, request=request, document=document, preparation=preparation, source=source, plan=plan)
     trio = Path(compilation["workflow"]["workflow.py"]["path"]).parent
     # The media the graph binds, unpacked from compile's managed-assets archive: {binding: path}.
@@ -179,4 +225,23 @@ def after_outputs(job_dir, inputs, files, outputs, *, engine=None):
     verification = verify_candidate(preparation=preparation, composition=composition, source=source,
                                     candidate=composition["candidate"]["path"])
     facts.write_json_atomic(work / "verify.json", verification)
+    _continuation_take(work, state, composition, facts)
     return [composition["candidate"]["path"], *outputs[1:]]
+
+
+def _continuation_take(work, state, composition, facts) -> None:
+    """Record the verified continuation's range or its derivation error."""
+    take = _shared("take")
+    request = state["request_object"].value
+    if not take.is_continuation(request):
+        return
+    candidate = Path(composition["candidate"]["path"])
+    mode = take.lead_in_of(request)
+    report: dict[str, Any] = {"lead_in": mode, "full_take": str(candidate)}
+    try:
+        probe = facts.probe_media(candidate)
+        report["range"] = take.take_range(composition, lead_in=mode, media_duration=take.video_duration(probe))
+    except Exception as exc:  # noqa: BLE001 - the take is verified; the range is best effort
+        report["error"] = f"{type(exc).__name__}: {exc}"
+    take.write_take_report(work, report)
+    facts.run_logs.declare(work.parent, facts.run_logs.LogDecl("h3.take", "run", str(Path("h3") / "take.json")))

@@ -43,6 +43,9 @@ def _changes(command):
 def track_set(ctx, command):
     ref = _target(ctx, command, 'track')
     values, clear = _changes(command)
+    if (set(values) | set(clear)) & {'fit', 'scale', 'opacity', 'blendMode'}:
+        from ._appearance import normalize_owner
+        normalize_owner(ctx, ref)
     for key in sorted(values):
         ctx.write(ref, [key], values[key])
     for key in sorted(clear):

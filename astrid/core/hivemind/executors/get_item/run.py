@@ -2,9 +2,19 @@
 """Fetch a message or stable resource with exact revision/reference context."""
 from __future__ import annotations
 import argparse
+import re
 import sys
 import urllib.error
 from typing import Any
+
+
+def _decimal_id(flag: str):
+    def validate(value: str) -> str:
+        if not value or re.fullmatch(r"[0-9]+", value, flags=re.ASCII) is None:
+            raise argparse.ArgumentTypeError(f"{flag} must be a non-empty ASCII decimal string")
+        return value
+
+    return validate
 
 try:
     from .._common import output_json, postgrest_get, resolve_anon_key, resolve_endpoint
@@ -18,8 +28,9 @@ except ImportError:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="hivemind.get_item", description="Fetch a full message or current resource.")
     p.add_argument("--kind", required=True, choices=["message", "resource", "revision"])
-    p.add_argument("--id", required=True, help="Positive decimal id.")
-    p.add_argument("--revision-id", help="For a resource, fetch this exact pinned revision.")
+    p.add_argument("--id", required=True, type=_decimal_id("--id"), help="Positive decimal id.")
+    p.add_argument("--revision-id", type=_decimal_id("--revision-id"),
+                   help="For a resource, fetch this exact pinned revision.")
     p.add_argument("--out")
     return p
 

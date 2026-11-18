@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .exceptions import CapabilityValidationError
+from .media_ids import MIN_PREFIX, canonical_digest
 from .pagination import page_pair
 
 __all__ = [
@@ -53,6 +54,7 @@ REFERENCE_ROLES: dict[str, str] = {
 }
 
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+_MEDIA_ID = re.compile(r"(?:sha256:)?[0-9a-fA-F]{8,64}")  # canonical, bare digest, or a prefix (media_ids)
 _OUTPUT_HANDLE = re.compile(r"(run|task):([0-9A-Za-z_-]+)(?:/([A-Za-z0-9_.-]+))?(?:#(\d+))?")
 _THUMBNAIL_ROLES = frozenset({"thumbnail"})
 
@@ -80,7 +82,7 @@ def _rows(value: Any) -> list[Mapping[str, Any]]:
 def is_media_handle(value: Any) -> bool:
     """True for handle strings, ``{"ref": ...}`` mappings and managed output rows."""
     if isinstance(value, str):
-        return value.startswith(("ref:", "run:", "task:")) or bool(_DIGEST.fullmatch(value))
+        return value.startswith(("ref:", "run:", "task:")) or bool(_MEDIA_ID.fullmatch(value))
     if isinstance(value, Mapping):
         return "ref" in value or ("output_port" in value and ("digest" in value or "object_id" in value))
     return False
@@ -97,8 +99,12 @@ def _safe_filename(name: str, media_type: str, fallback: str) -> str:
 def _project_media(client: Any, project: str, digest: str, handle: str) -> Mapping[str, Any]:
     result = client.media.show(project, digest)
     if hasattr(result, "ok") and not result.ok:
+        error = getattr(result, "error", None)
+        message = str(getattr(error, "message", None) or f"no media in project {project} matches {digest}")
+        if getattr(error, "code", None) != "not_found":
+            raise MediaHandleError(f"{handle!r}: {message}")
         raise MediaHandleError(
-            f"{handle!r} resolves to {digest}, which is not media in project {project!r}; "
+            f"{handle!r}: {message}; "
             "import it with `python3 -m astrid media import <file> --project <slug>` first"
         )
     row = _data(result, f"media {digest}")
@@ -112,6 +118,20 @@ def _reference(client: Any, project: str, ref: str) -> Mapping[str, Any]:
     if not isinstance(resource, Mapping):
         raise MediaHandleError(f"reference {ref!r} returned no read model")
     return resource
+
+
+def _is_reference_name(client: Any, project: str, text: str) -> bool:
+    """True when a reference of exactly this name exists in the project.
+
+    Used only for bare hex-looking text, which may be a media prefix or a reference name; a
+    reference of that exact name always wins, so the media-prefix reading never shadows it."""
+    if client is None or not project:
+        return False
+    try:
+        result = client.references.show(project, text)
+    except Exception:  # noqa: BLE001 - an unreadable reference list is "no such reference"
+        return False
+    return bool(getattr(result, "ok", False)) and isinstance(getattr(result, "data", None), Mapping)
 
 
 def _resolve_reference(client: Any, project: str, text: str) -> tuple[str, dict[str, Any], str]:
@@ -189,6 +209,7 @@ def resolve_media_handle(client: Any, project: str, value: Any) -> tuple[dict[st
     if isinstance(value, Mapping) and "ref" in value:
         value = value["ref"]
     lineage: dict[str, Any]
+    media: Mapping[str, Any] | None = None
     name_hint = ""
     if isinstance(value, Mapping):
         digest = str(value.get("digest") or value.get("object_id") or "")
@@ -206,18 +227,29 @@ def resolve_media_handle(client: Any, project: str, value: Any) -> tuple[dict[st
         digest = str(row.get("digest") or row.get("object_id") or "")
         lineage = _row_lineage(row)
         name_hint = str(row.get("filename") or "")
-    elif isinstance(value, str) and _DIGEST.fullmatch(value):
-        handle, digest, lineage = value, value, {}
+    elif isinstance(value, str) and _MEDIA_ID.fullmatch(value) and canonical_digest(value) is None and _is_reference_name(client, project, value):
+        # A bare name that is a reference's exact name is the reference, never a media prefix.
+        return resolve_media_handle(client, project, "ref:" + value)
+    elif isinstance(value, str) and _MEDIA_ID.fullmatch(value):
+        handle, lineage = value, {}
+        digest = canonical_digest(value) or ""
+        if not digest:
+            # A bare-digest prefix: the shared resolver names the one media it matches (or refuses).
+            media = _project_media(client, project, value, handle)
+            digest = canonical_digest(media.get("digest")) or canonical_digest(media.get("object_id")) or ""
     else:
         raise MediaHandleError(
-            f"not a media handle: {value!r}; use 'sha256:<digest>', 'ref:<reference name>', "
+            f"not a media handle: {value!r}; use 'sha256:<digest>' (or its 64-hex digest, or a unique "
+            f"prefix of at least {MIN_PREFIX} hex characters), 'ref:<reference name>', "
             "'run:<run_id>/<port>#n', or a row from result.output(...)"
         )
+    digest = canonical_digest(digest) or digest
     if not digest.startswith("sha256:"):
         digest = "sha256:" + digest
     if not _DIGEST.fullmatch(digest):
         raise MediaHandleError(f"{handle!r} did not resolve to a sha256 media digest")
-    media = _project_media(client, project, digest, handle)
+    if media is None:
+        media = _project_media(client, project, digest, handle)
     media_type = str(media.get("media_type") or "application/octet-stream")
     if not name_hint or name_hint == "generated_images":
         stored = str(media.get("filename") or "")
@@ -231,7 +263,8 @@ def resolve_media_handle(client: Any, project: str, value: Any) -> tuple[dict[st
     return descriptor, {"handle": handle, "digest": digest, **lineage}
 
 
-def _expand_references(capability: Any, inputs: dict[str, Any]) -> list[dict[str, Any]]:
+def _expand_references(capability: Any, inputs: dict[str, Any], *,
+                       named: Any = lambda text: False) -> list[dict[str, Any]]:
     """Move ``references=[...]`` onto the capability's ports (pure, no I/O)."""
     entries = inputs.pop("references", None)
     if entries is None:
@@ -267,8 +300,9 @@ def _expand_references(capability: Any, inputs: dict[str, Any]) -> list[dict[str
             )
         taken[port] = role
         handle = entry["ref"]
-        if isinstance(handle, str) and not is_media_handle(handle):
-            handle = "ref:" + handle  # a bare name inside references= is a reference name
+        bare_hex = isinstance(handle, str) and canonical_digest(handle) is None and _MEDIA_ID.fullmatch(handle) is not None
+        if isinstance(handle, str) and (not is_media_handle(handle) or (bare_hex and named(handle))):
+            handle = "ref:" + handle  # a bare name inside references= is a reference name (an exact reference name wins over a media prefix)
         inputs[port] = handle
         planned.append({"port": port, "role": role, "depicts": bool(entry.get("depicts", False))})
     return planned
@@ -288,7 +322,8 @@ def apply_media_handles(
     and non-handle values pass through unchanged (backwards compatible).
     """
     values = dict(inputs)
-    planned = {item["port"]: item for item in _expand_references(capability, values)}
+    planned = {item["port"]: item for item in _expand_references(
+        capability, values, named=lambda text: _is_reference_name(client, str(project or ""), text))}
     file_ports = [
         str(port.name)
         for port in (getattr(capability, "inputs", ()) or ())

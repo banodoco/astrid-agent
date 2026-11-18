@@ -15,7 +15,7 @@ from astrid.packs.h3_av.shared.generation import (
     CHARACTER_SWAP_FILENAME,
     CHARACTER_SWAP_REVISION,
     CHARACTER_SWAP_SHA256,
-    TURBO_FILENAME,
+    PIKA_REF2VA_FILENAME,
 )
 from astrid.packs.h3_av.shared.request import H3RequestError, load_request_document, load_request, normalize_request
 from astrid.packs.h3_av.shared.request_v2 import REF2VA_MODEL, effective_settings
@@ -90,7 +90,8 @@ def test_adapter_defaults_aliases_and_legacy_replay_are_canonical_without_mutati
         "sampler": "res_multistep",
         "scheduler": "simple",
         "seed": 123456789,
-        "turbo": {"enabled": True, "strength": 0.95},
+        "turbo": {"enabled": True, "lora": "pika_flex_8step", "strength": 1.0},
+        "cfg": 1.0, "video_shift": 12.0, "audio_shift": 3.0,
         "adapter": {"id": "character_swap_v1", "strength": 1.0},
     }
     assert normalized.value["model_tags"] == {"performance": "<Video 1>", "replacement": "<Picture 1>"}
@@ -129,7 +130,7 @@ def test_adapter_defaults_aliases_and_legacy_replay_are_canonical_without_mutati
     sealed = read_prepared_request(legacy, digest, require_normalized_v2=True)
     assert sealed.digest == digest
     assert sealed.value == legacy
-    assert effective_settings(sealed)["turbo"] == {"enabled": True, "strength": 0.35}
+    assert effective_settings(sealed)["turbo"] == {"enabled": True, "lora": "pika_flex_8step", "strength": 0.35}
     assert "turbo" not in sealed.value["settings"]
 
     tampered_replay = copy.deepcopy(normalize_request(raw).value)
@@ -266,7 +267,7 @@ def test_native_v2_compile_binds_exact_references_and_connected_lora_chain(
     }
     connected = {row["name"]: row for row in compiled["effective_configuration"]["connected_model_assets"]}
     assert CHARACTER_SWAP_FILENAME in connected
-    assert (TURBO_FILENAME in connected) is turbo_enabled
+    assert (PIKA_REF2VA_FILENAME in connected) is turbo_enabled
     assert compiled["effective_configuration"]["turbo"]["enabled"] is turbo_enabled
     assert (compiled["effective_configuration"]["turbo"]["asset"] is not None) is turbo_enabled
 
@@ -287,7 +288,7 @@ def test_native_v2_compile_binds_exact_references_and_connected_lora_chain(
     by_class = {row["class_type"]: row["inputs"] for row in api.values()}
     assert by_class["ModelAttentionBackend"]["attention"] == "comfy kitchen attention"
     loras = [row["inputs"]["lora_name"] for row in api.values() if row["class_type"] == "LoraLoaderModelOnly"]
-    assert loras == ([CHARACTER_SWAP_FILENAME, TURBO_FILENAME] if turbo_enabled else [CHARACTER_SWAP_FILENAME])
+    assert loras == ([CHARACTER_SWAP_FILENAME, PIKA_REF2VA_FILENAME] if turbo_enabled else [CHARACTER_SWAP_FILENAME])
     character = next(row for row in api.values() if row["inputs"].get("lora_name") == CHARACTER_SWAP_FILENAME)
     assert character["inputs"]["strength_model"] == 0.7
     assert by_class["BasicScheduler"]["scheduler"] == "karras"
@@ -295,7 +296,7 @@ def test_native_v2_compile_binds_exact_references_and_connected_lora_chain(
     assert by_class["RandomNoise"]["noise_seed"] == 731
     assert by_class["KSamplerSelect"]["sampler_name"] == "heun"
     if turbo_enabled:
-        turbo_node = next(row for row in api.values() if row["inputs"].get("lora_name") == TURBO_FILENAME)
+        turbo_node = next(row for row in api.values() if row["inputs"].get("lora_name") == PIKA_REF2VA_FILENAME)
         assert turbo_node["inputs"]["strength_model"] == 0.4
     assert workflow.validate().ok
 

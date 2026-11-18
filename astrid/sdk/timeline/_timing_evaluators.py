@@ -1,9 +1,11 @@
 """Main Moment/cut evaluators over captured inputs; no mutable Checkout execution."""
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import replace
 from fractions import Fraction
 from types import MappingProxyType, SimpleNamespace
+from typing import Any
 
 from astrid.core.timeline import moments as mo
 from astrid.core.timeline.authoring_bundle import _digest
@@ -19,6 +21,18 @@ from astrid.sdk.timeline.units import (
     source_to_timeline_time,
 )
 from astrid.sdk.timeline_checkout import Checkout
+
+# Declarations the timing kernel refuses outright; older timelines carry them as authored data.
+UNSUPPORTED_DECLARATIONS = ("sequence", "sequence_fit", "formulas", "orphan", "gap_after_s")
+
+
+def unsupported_declaration(declarations: Mapping[str, Any], name: str) -> bool:
+    """Whether the kernel refuses this declaration. ``formulas`` that only derive ``params.*`` values
+    (what ``Clip.set`` writes) never move a clip, so they are not timing declarations."""
+    value = declarations.get(name)
+    if name == "formulas" and isinstance(value, Mapping):
+        return any(not str(path).startswith("params.") for path in value)
+    return bool(value)
 
 
 def _timing_number(value):
@@ -265,7 +279,7 @@ def _legacy_word_owners(documents, clips, internals, is_source):
     return owners
 
 
-def evaluate(bundle, sources, bindings, policy, legacy_declarations=()):
+def evaluate(bundle, sources, bindings, policy, legacy_declarations=(), collect=None):
     legacy = {
         (row[0], row[1]): row[2]
         for row in legacy_declarations
@@ -313,6 +327,12 @@ def evaluate(bundle, sources, bindings, policy, legacy_declarations=()):
     # Reuse main's group membership, picture choice, ordering and cut aliases.
     lookup = _ReadLookup(bundle, fps)
     groups = lookup._cut_groups()
+    # The bundle is fixed for this evaluation, so a cut text resolves the same way every time: look each
+    # one up once, and group the clips once, instead of regrouping them for every declaration.
+    lookup._cut_groups = lambda groups=groups: groups
+    resolve_cut, resolved_cuts = lookup._cut_id, {}
+    lookup._cut_id = lambda text: (resolved_cuts[text] if text in resolved_cuts
+                                   else resolved_cuts.setdefault(text, resolve_cut(text)))
     by_clip = {(owner[1], owner[2]): owner for owner in clips if owner[1]}
     bases, local_groups, local_bases = {}, {}, {}
     for group in groups:
@@ -498,8 +518,8 @@ def evaluate(bundle, sources, bindings, policy, legacy_declarations=()):
         if clip.get("at_ms") is not None or clip.get("duration_ms") is not None:
             raise TimingCompileError("clip millisecond timing needs an explicit authoring adapter")
         declarations = intent._app(clip)
-        for key in ("sequence", "sequence_fit", "formulas", "orphan", "gap_after_s"):
-            if declarations.get(key):
+        for key in UNSUPPORTED_DECLARATIONS:
+            if collect is None and unsupported_declaration(declarations, key):
                 raise TimingCompileError(f"unsupported timing declaration {owner}.{key}")
         if declarations.get("until_film_end") is not None:
             raise TimingCompileError("unsupported until_film_end timing basis")
@@ -516,6 +536,10 @@ def evaluate(bundle, sources, bindings, policy, legacy_declarations=()):
         audio = owner[1] and lookup._is_audio(owner[1], clip)
         identity = (("parent", "", owner[2]) if owner[0] == "parent"
                     else ("shot", owner[1], owner[2]))
+        if collect is not None:
+            _collect_declaration_failures(collect, identity, declarations, owner,
+                                          lambda field, text: moment_rule(owner, field, text, base == owner))
+            continue
         on = intent.on(clip)
         until = intent.until(clip)
         if legacy.get((identity, "on")) == on:
@@ -547,6 +571,8 @@ def evaluate(bundle, sources, bindings, policy, legacy_declarations=()):
                 lambda values, owner=owner, length=length: values[node(owner, "start")] + length)
         else:
             raise TimingCompileError(f"missing interval end for {owner}")
+    if collect is not None:
+        return collect
     if used != set(pins):
         raise TimingCompileError("unused or stale captured word binding")
     values = _walk(graph, functions)
@@ -570,6 +596,33 @@ def evaluate(bundle, sources, bindings, policy, legacy_declarations=()):
                 if start < occurrence_start or start >= occurrence_end or end > occurrence_end:
                     raise TimingCompileError("bound word is outside the half-open occurrence interval")
     return result
+
+
+def _collect_declaration_failures(collect, identity, declarations, owner, check):
+    """Record each legacy ``on``/``until`` text that fails its declaration-time checks.
+
+    Only the checks ``moment_rule`` makes before any time is resolved run here (parse, cut anchor,
+    nested anchors); word declarations are bound elsewhere, so they are skipped.
+    """
+    anchors = declarations.get("word_anchors")
+    anchors = anchors if isinstance(anchors, dict) else {}
+    for field in ("on", "until"):
+        text = declarations.get(field)
+        if field in anchors or not isinstance(text, str) or not text.strip():
+            continue
+        try:
+            if mo.parse(text).kind != "word":
+                check(field, text)
+        except (TimingCompileError, mo.MomentError, ValueError, TypeError, KeyError) as exc:
+            collect.append((identity, field, str(exc)))
+
+
+def legacy_declaration_failures(bundle, sources=()):
+    """Return ``(key, field, message)`` for each legacy non-word declaration that fails to resolve.
+
+    A declaration-only pre-pass beside ``evaluate``: no timing graph is walked.
+    """
+    return evaluate(bundle, sources, (), "nearest", collect=[])
 
 
 def group_has_successor(groups, cut):

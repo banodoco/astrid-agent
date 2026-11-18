@@ -961,6 +961,36 @@ def _stderr_tail(stderr: str) -> str:
     return "\n".join(tail).strip()
 
 
+_MISSING_NODE_PACKAGE = re.compile(r"Cannot find (?:package|module) ['\"]?([^'\"\s]+)")
+
+
+_MISSING_NODE_MODULE = re.compile(r"Cannot find (?:package|module) ['\"]([^'\"]+)['\"]")
+
+
+def _missing_renderer_package(stderr: str) -> str | None:
+    """Plain words for a Node failure to find a package in the Remotion tree, or None.
+
+    Only a missing node_modules path or a bare package specifier counts: a
+    relative or absolute path from the project is not a missing renderer package.
+    """
+    from astrid.installer.outcome import PUBLIC_INSTALL_LINE, PUBLIC_INSTALL_LINE_WINDOWS
+
+    for match in _MISSING_NODE_MODULE.finditer(stderr or ""):
+        spec = match.group(1).replace("\\", "/")
+        if "node_modules/" in spec:
+            parts = spec.rsplit("node_modules/", 1)[1].split("/")
+        elif spec.startswith((".", "/")) or ":" in spec.split("/", 1)[0]:
+            continue  # a file path or URL, not a package
+        else:
+            parts = spec.split("/")
+        name = "/".join(parts[:2]) if parts[0].startswith("@") else parts[0]
+        line = PUBLIC_INSTALL_LINE_WINDOWS if sys.platform == "win32" else PUBLIC_INSTALL_LINE
+        return (f"Remotion's renderer is incomplete: package {name} is missing from its node_modules, "
+                f"so renders and timeline frame looks are unavailable. Repair it by running the install "
+                f"line again: {line}")
+    return None
+
+
 def _require_free_space(path: Path, min_free_gb: float | None) -> None:
     if min_free_gb is None or min_free_gb <= 0:
         return
@@ -1368,6 +1398,9 @@ def _execute_remotion_locked(
                 (diagnostic_root / f'render-{diagnostic_label}-stdout.log').write_text(diagnostic_stdout or "")
                 (diagnostic_root / f'render-{diagnostic_label}-stderr.log').write_text(completed.stderr)
             if completed.returncode != 0:
+                missing = _missing_renderer_package(completed.stderr)
+                if missing:
+                    raise RuntimeError(missing)
                 stderr_tail = _stderr_tail(completed.stderr)
                 message = f"Remotion render failed with exit code {completed.returncode}"
                 if stderr_tail:

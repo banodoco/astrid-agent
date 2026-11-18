@@ -177,12 +177,14 @@ def archive_path(name: str) -> Path:
 
 
 def archive_destinations(entries: list[tuple[str, bool]], destination: Path, *,
-                         platform_name: str, strip_root: bool = False) -> list[Path]:
+                         platform_name: str, strip_root: bool = False,
+                         vibecomfy_source: bool = False) -> list[Path]:
     """Plan from the index, before writes; count Windows UTF-16 path units.
 
     Keep paths usable by ordinary Win32 consumers too, without depending on
     the machine's long-path registry setting. mkdir needs MAX_PATH - 12 room.
-    Only the redundant single archive directory may be removed, never a file.
+    Strip only the redundant archive root; a source projection may then omit
+    selected paths before applying the Windows path budget.
     """
     relatives = [archive_path(name) for name, _ in entries]
     if strip_root:
@@ -191,6 +193,11 @@ def archive_destinations(entries: list[tuple[str, bool]], destination: Path, *,
                                    for path, (_, directory) in zip(relatives, entries))):
             raise ValueError("Unexpected source archive layout.")
         relatives = [Path(*path.parts[1:]) for path in relatives]
+    if vibecomfy_source:
+        kept = [(path, entry) for path, entry in zip(relatives, entries)
+                if _keep_vibecomfy_source_path(path)]
+        relatives = [path for path, _ in kept]
+        entries = [entry for _, entry in kept]
     targets = [destination / path for path in relatives]
     if platform_name == "win32":
         def length(path):
@@ -205,15 +212,40 @@ def archive_destinations(entries: list[tuple[str, bool]], destination: Path, *,
     return targets
 
 
+def _keep_vibecomfy_source_path(path: Path) -> bool:
+    """Keep runtime/build inputs while omitting user-facing VibeComfy docs/examples."""
+    parts = path.parts
+    if not parts or parts[0] == "examples":
+        return False
+    if parts[0] == "docs":
+        return parts == ("docs", "templates", "strict_ready_exceptions.json")
+    return True
+
+
+def _archive_relative_path(name: str, strip_root: bool) -> Path:
+    path = archive_path(name)
+    return Path(*path.parts[1:]) if strip_root else path
+
+
 def extract(archive: Path, destination: Path, *, reject_links: bool = False,
-            strip_root: bool = False, platform_name: str | None = None) -> None:
+            strip_root: bool = False, platform_name: str | None = None,
+            vibecomfy_source: bool = False) -> None:
     """Extract regular files/directories only, including on Python 3.11/Windows."""
     platform_name = platform_name or sys.platform
     if zipfile.is_zipfile(archive):
         with zipfile.ZipFile(archive) as bundle:
             members = bundle.infolist()
+            if vibecomfy_source:
+                for member in members:
+                    if stat.S_ISLNK(member.external_attr >> 16):
+                        raise ValueError(f"Archive contains a link: {member.filename}")
             targets = archive_destinations([(m.filename, m.is_dir()) for m in members], destination,
-                                           platform_name=platform_name, strip_root=strip_root)
+                                           platform_name=platform_name, strip_root=strip_root,
+                                           vibecomfy_source=vibecomfy_source)
+            if vibecomfy_source:
+                members = [member for member in members
+                           if _keep_vibecomfy_source_path(_archive_relative_path(
+                               member.filename, strip_root))]
             destination.mkdir(parents=True, exist_ok=True)
             for zip_member, target in zip(members, targets):
                 if stat.S_ISLNK(zip_member.external_attr >> 16):
@@ -228,8 +260,21 @@ def extract(archive: Path, destination: Path, *, reject_links: bool = False,
         return
     with tarfile.open(archive) as bundle:
         tar_members = bundle.getmembers()
+        if vibecomfy_source:
+            for tar_entry in tar_members:
+                path = _archive_relative_path(tar_entry.name, strip_root)
+                excluded = not _keep_vibecomfy_source_path(path)
+                if excluded and (tar_entry.issym() or tar_entry.islnk()):
+                    raise ValueError(f"Source archive contains a link: {tar_entry.name}")
+                if excluded and not (tar_entry.isdir() or tar_entry.isfile()):
+                    raise ValueError(f"Archive contains a special entry: {tar_entry.name}")
         targets = archive_destinations([(m.name, m.isdir()) for m in tar_members], destination,
-                                       platform_name=platform_name, strip_root=strip_root)
+                                       platform_name=platform_name, strip_root=strip_root,
+                                       vibecomfy_source=vibecomfy_source)
+        if vibecomfy_source:
+            tar_members = [member for member in tar_members
+                           if _keep_vibecomfy_source_path(_archive_relative_path(
+                               member.name, strip_root))]
         destination.mkdir(parents=True, exist_ok=True)
         for tar_member, target in zip(tar_members, targets):
             if tar_member.isdir():
@@ -254,13 +299,13 @@ def extract(archive: Path, destination: Path, *, reject_links: bool = False,
 
 def fetch_archive(url: str, destination: Path, *, sha256: str | None = None,
                   reject_links: bool = False, strip_root: bool = False,
-                  platform_name: str | None = None) -> None:
+                  platform_name: str | None = None, vibecomfy_source: bool = False) -> None:
     archive = destination.with_name(destination.name + ".download")
     archive.parent.mkdir(parents=True, exist_ok=True)
     try:
         download(url, archive, sha256=sha256)
         extract(archive, destination, reject_links=reject_links, strip_root=strip_root,
-                platform_name=platform_name)
+                platform_name=platform_name, vibecomfy_source=vibecomfy_source)
     finally:
         archive.unlink(missing_ok=True)
 
@@ -449,14 +494,18 @@ def source(name: str, sha: str, destination: Path, *, repo: str | None = None,
     try:
         if repo is not None:
             local_source(repo, sha, archive, git_executable=git_executable)
-            extract(archive, staging, **({"platform_name": "win32"} if windows else {}))
+            extract(archive, staging, **({"platform_name": "win32"} if windows else {}),
+                    **({"vibecomfy_source": True} if name == "vibecomfy" else {}))
             platform.replace_path(staging, destination)
         else:
             repository = (VIBECOMFY_FORK_URL.removesuffix(".git") if name == "vibecomfy"
                           else f"https://github.com/banodoco/astrid-{name}")
+            prefixless = windows or name == "vibecomfy"
             fetch_archive(f"{repository}/archive/{sha}.tar.gz", staging,
-                          **({"strip_root": True, "platform_name": "win32"} if windows else {}))
-            if windows:
+                          **({"strip_root": True} if prefixless else {}),
+                          **({"platform_name": "win32"} if windows else {}),
+                          **({"vibecomfy_source": True} if name == "vibecomfy" else {}))
+            if prefixless:
                 platform.replace_path(staging, destination)
                 return destination
             children = list(staging.iterdir())

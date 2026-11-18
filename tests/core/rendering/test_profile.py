@@ -178,3 +178,12 @@ def test_explicit_missing_theme_path_fails_closed(tmp_path: Path) -> None:
             {"tracks": [], "clips": []},
             theme=missing,
         )
+
+
+def test_explicit_output_canvas_preserves_theme_content():
+    from astrid.core.rendering.profile import _resolve_merged_theme, _remotion_canvas
+    theme = builtin_theme()
+    timeline = _timeline(output={'resolution': '1280x720', 'fps': 24, 'file': 'out.mp4'})
+    merged = _resolve_merged_theme(timeline, theme=theme)
+    assert merged == theme
+    assert _remotion_canvas(timeline, merged) == {'width': 1280, 'height': 720, 'fps': 24}

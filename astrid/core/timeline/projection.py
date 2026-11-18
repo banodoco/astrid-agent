@@ -457,12 +457,14 @@ def _apply_theme_overridden(assembly: dict[str, Any], payload: ThemeOverriddenPa
 
 
 def _apply_track_added(assembly: dict[str, Any], payload: TrackAddedPayload) -> None:
+    from astrid.core.timeline.track_appearance import stamp_new_track_appearance
+
     tracks: list[dict[str, Any]] = assembly["tracks"]
-    track_entry: dict[str, Any] = {
+    track_entry = stamp_new_track_appearance({
         "id": payload.track_id,
         "kind": payload.kind,
         "label": payload.label,
-    }
+    })
     tracks.append(track_entry)
 
 

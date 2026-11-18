@@ -319,9 +319,12 @@ def test_visual_placement_transform_is_refused_even_for_empty_shots(project, pla
             revision["internal_timeline_revision"]["timeline"]["clips"] = []
     with pytest.raises(ShotCompositionProjectionError) as exc:
         project(graph)
+    property_path = ('opacity' if 'opacity' in placement else
+                     'transform.' + next(iter(placement['transform'])))
     assert str(exc.value) == (
         "Shot opacity and transforms are not supported yet. "
-        "Remove them from the shot placement to render this timeline."
+        "Remove them from the shot placement to render this timeline. "
+        f"Occurrence {graph['occurrences'][0]['occurrence_id']!r} property {property_path}"
     )
 
 

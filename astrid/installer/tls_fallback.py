@@ -1,54 +1,29 @@
-"""Retry installer HTTPS opens once using native certificate verification.
+"""Installer HTTPS opens using the shared, verifying OS trust policy.
 
-Keep the default urllib path untouched until certificate verification fails.
-Truststore is bundled because the bootstrap installs Astrid with --no-deps;
-on Windows its CryptoAPI chain engine can retrieve missing roots. No global
-SSL injection or dependency download is needed.
+The historical helper names are kept for their internal callers. There is no
+fallback: every connection, including redirects, uses the same trust context
+from the start. The shared factory works in the dependency-free bootstrap.
 """
 
 from __future__ import annotations
 
-import ssl
-import urllib.error
 import urllib.request
+
+from astrid.core.util import http as http_util
 
 
 def urlopen_with_tls_fallback(request: urllib.request.Request, *, timeout: float):
-    """Open with the default verifier, then at most one native-store retry."""
-    try:
-        return urllib.request.urlopen(request, timeout=timeout)
-    except ssl.SSLCertVerificationError:
-        pass
-    except urllib.error.URLError as error:
-        if not isinstance(error.reason, ssl.SSLCertVerificationError):
-            raise
-
-    from ._tls_truststore import SSLContext
-
-    context = SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    # PROTOCOL_TLS_CLIENT requires both certificate and hostname verification.
-    return urllib.request.urlopen(request, timeout=timeout, context=context)
+    """Open once with the same verifying policy as all external HTTP clients."""
+    with http_util.request_error_host(request.full_url):
+        return urllib.request.urlopen(
+            request, timeout=timeout, context=http_util.os_trust_ssl_context()
+        )
 
 
 def open_with_tls_fallback(request: urllib.request.Request, *, timeout: float, handlers=()):
-    """Like :func:`urlopen_with_tls_fallback`, for an opener with extra handlers.
-
-    The default opener runs first; only a certificate failure retries once with
-    the native-store context.  Use this where the caller needs a custom opener
-    (for example, a redirect policy) that ``urlopen`` cannot express.
-    """
-    try:
-        return urllib.request.build_opener(*handlers).open(request, timeout=timeout)
-    except ssl.SSLCertVerificationError:
-        pass
-    except urllib.error.URLError as error:
-        if not isinstance(error.reason, ssl.SSLCertVerificationError):
-            raise
-
-    from ._tls_truststore import SSLContext
-
-    context = SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    """Open once with the shared trust policy and the caller's redirect policy."""
     opener = urllib.request.build_opener(
-        *handlers, urllib.request.HTTPSHandler(context=context)
+        *handlers, urllib.request.HTTPSHandler(context=http_util.os_trust_ssl_context())
     )
-    return opener.open(request, timeout=timeout)
+    with http_util.request_error_host(request.full_url):
+        return opener.open(request, timeout=timeout)

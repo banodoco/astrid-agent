@@ -155,6 +155,7 @@ For example, the managed Hivemind pack exposes:
 
 ```text
 astrid hivemind search QUERY [--limit N] [--json]
+astrid hivemind item --kind {message,resource,revision} --id ID [--revision-id ID] [--json]
 ```
 
 Adding another pack command requires a declaration of its pack id, public

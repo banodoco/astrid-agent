@@ -21,6 +21,7 @@ from astrid import __version__
 
 _SOURCES = (
     "__init__.py",
+    "_tls_policy.py",
     "version.py",
     "core/__init__.py",
     "core/generation/__init__.py",
