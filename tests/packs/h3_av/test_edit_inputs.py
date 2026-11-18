@@ -337,6 +337,8 @@ def test_character_swap_requires_each_minimum_reference():
 def test_modality_total_boundary(monkeypatch, tmp_path, modality, seconds, accepted):
     path = tmp_path / "clip"
     path.touch()
+    if modality == "video" and not accepted:
+        seconds = 15.1  # More than one 24-fps frame beyond the limit.
     monkeypatch.setattr(prepare, "_probe_conditioning", lambda _: {"streams": [{"codec_type": modality, "duration": str(seconds / 2)}]})
     items = [{"occurrence_id": str(i), "asset": "x", "role": "reference", "modality": modality, "audio": False} for i in range(2)]
     records = [{"asset": "x", "status": "resolved", "path": str(path)}]
@@ -355,10 +357,11 @@ def test_real_reference_frames_follow_loader_and_node_truncation(tmp_path):
             "resolved_range": [0, 48]}
     records = [{"asset": "v", "status": "resolved", "path": str(path)}]
     row = prepare._admit_conditioning(_request([item]), records)[0]
-    assert prepare._retained_video_frames(48, 158) == 39
+    assert row["retained_picture_frames_estimate"] == {"value": 39, "kind": "metadata_upper_bound", "observed": False}
     assert row["retained_picture_frames"] is None
     assert row["effective_size"] == {"width": 96, "height": 64}
     assert row["resource_estimate"]["raw_bytes"] is None
+    assert row["resource_estimate"]["raw_bytes_upper_bound"] == 39 * 96 * 64 * 3
     assert row["resource_estimate"]["qualified"] is False
 
 
@@ -389,3 +392,26 @@ def test_video_metadata_does_not_claim_resampled_count_or_decode(monkeypatch, tm
     assert row["retained_picture_frames"] is None
     assert row["resource_estimate"]["raw_bytes"] is None
     assert not row["resource_estimate"]["qualified"]
+
+
+def test_video_duration_near_limit_warns_and_clear_excess_fails(monkeypatch, tmp_path):
+    path = tmp_path / "clip"
+    path.touch()
+    duration = [15.01]
+    monkeypatch.setattr(prepare, "_probe_conditioning", lambda _: {"streams": [{"codec_type": "video", "duration": str(duration[0]), "width": 96, "height": 64}]})
+    item = {"occurrence_id": "v", "asset": "v", "role": "reference", "modality": "video", "audio": False}
+    records = [{"asset": "v", "status": "resolved", "path": str(path)}]
+    warnings = []
+    row = prepare._admit_conditioning(_request([item]), records, warnings)[0]
+    assert {warning["limit"] for warning in warnings} == {"clip_seconds", "modality_seconds"}
+    assert row["retained_picture_frames"] is None
+    duration[0] = 15.1
+    with pytest.raises(prepare.PreparationError, match="conditioning clip"):
+        prepare._admit_conditioning(_request([item]), records, [])
+
+
+def test_file_limit_warns_at_twelve():
+    items = [{"occurrence_id": f"{kind}{i}", "asset": f"{kind}{i}", "role": "reference", "modality": kind} for kind, count in [("image", 9), ("video", 3)] for i in range(count)]
+    warnings = []
+    prepare._admit_conditioning(_request(items), [], warnings)
+    assert any(warning["limit"] == "conditioning_files" for warning in warnings)

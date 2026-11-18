@@ -63,9 +63,10 @@ def _reference_size(modality: str, width: int, height: int) -> dict[str, int]:
         w, h = width, height
     return {"width": max(32, round(w / 32) * 32), "height": max(32, round(h / 32) * 32)}
 
-def _admit_conditioning(request: H3Request, assets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _admit_conditioning(request: H3Request, assets: list[dict[str, Any]], warnings: list[dict[str, str]] | None = None) -> list[dict[str, Any]]:
     """Apply the shared reference table before scheduling any paid/runtime work."""
     from .compose import _streams, _number
+    warnings = warnings if warnings is not None else []
     resolved = {str(row["asset"]): Path(str(row["path"])) for row in assets
                 if row.get("status") == "resolved" and isinstance(row.get("path"), str)}
     refs = [row for row in request.value["media"] if row.get("role") == "reference" and row.get("use") != "replacement"]
@@ -126,14 +127,26 @@ def _admit_conditioning(request: H3Request, assets: list[dict[str, Any]]) -> lis
             start = 0.0
             end = measured
         clip_min, clip_max = LIMITS["clip_seconds"]["value"]
-        if span < clip_min or span > clip_max:
+        uncertainty = 1 / duration_clock[modality]
+        if span < clip_min - uncertainty or span > clip_max + uncertainty:
             raise PreparationError(f"conditioning clip 2–15 seconds: {item['occurrence_id']} selects {span:.3f}s")
-        totals[modality] += span
+        if span <= clip_min + uncertainty or span >= clip_max - uncertainty:
+            warnings.append({"limit": "clip_seconds", "message": f"{item['occurrence_id']} selects {span:.3f}s near the clip duration limit; metadata is approximate."})
+        totals[modality] += math.ceil(span * 24 - 1e-9) / 24 if modality == "video" else span
         if modality == "video":
-            # ffprobe's average/rate/stream counts do not establish the output
-            # of VHS's 24-fps filter, especially for variable-rate timestamps,
-            # seeking, and truncated streams. Do not decode during preparation.
-            measurement["resource_estimate"]["schema_valid"] = True
+            # Estimate the loader's maximum 24-fps frames from metadata; the
+            # actual filter output and node-retained count remain unobserved.
+            bound = (int(selected[1]) - int(selected[0])) if isinstance(selected, list) else math.ceil(span * 24 - 1e-9)
+            duration = request.value.get("duration")
+            if duration is not None:
+                from .timing import frame_index, smallest_h3_run_at_least
+                target = smallest_h3_run_at_least(frame_index(float(duration), "duration"))
+            else:
+                target = bound
+            estimate = _retained_video_frames(bound, target)
+            measurement["retained_picture_frames_estimate"] = {"value": estimate, "kind": "metadata_upper_bound", "observed": False}
+            effective = measurement["effective_size"]
+            measurement["resource_estimate"].update({"schema_valid": True, "raw_bytes_upper_bound": estimate * effective["width"] * effective["height"] * 3 if estimate is not None and effective else None})
         else:
             measurement["resource_estimate"]["schema_valid"] = True
         if modality == "video" and item.get("audio", True):
@@ -182,9 +195,15 @@ def _admit_conditioning(request: H3Request, assets: list[dict[str, Any]]) -> lis
             raise PreparationError(f"builder slots {entry}: {modality} has {counts[modality]} references (limit {limit})")
     if files > LIMITS["conditioning_files"]["value"]:
         raise PreparationError("conditioning files 12: supplied conditioning occurrences exceed 12")
+    if files == LIMITS["conditioning_files"]["value"]:
+        warnings.append({"limit": "conditioning_files", "message": "Conditioning references are at the 12-file limit."})
     for modality, total in totals.items():
-        if total > LIMITS["modality_seconds"]["value"] + 1e-6:
+        limit = LIMITS["modality_seconds"]["value"]
+        uncertainty = (1 / 24 if modality == "video" or (modality == "audio" and counts["video"]) else 1 / 48000)
+        if total > limit + uncertainty + 1e-9:
             raise PreparationError(f"per modality total 15 seconds: {modality} selects {total:.3f}s")
+        if total >= limit - uncertainty:
+            warnings.append({"limit": "modality_seconds", "message": f"{modality} selects {total:.3f}s near the modality duration limit; metadata is approximate."})
     continuation = request.value.get("continuation")
     if continuation:
         allowed = LIMITS["continuation_references"]["value"]
@@ -618,7 +637,7 @@ def prepare_request(
         warnings.append({"limit": "job_duration_seconds", "message": duration_limits["warning"]})
     if request.value.get("version") == 2:
         assets = _resolve_assets(request, asset_map)
-        conditioning_measurements = _admit_conditioning(request, assets)
+        conditioning_measurements = _admit_conditioning(request, assets, warnings)
         unresolved = [record["asset"] for record in assets if record["status"] != "resolved"]
         timeline_audio_presence: dict[str, bool] = {}
         adapter = request.value.get("settings", {}).get("adapter")
@@ -665,6 +684,7 @@ def prepare_request(
                 "target_raw_rgb_bytes": round(float(request.value.get("duration") or 0) * float(fps)) * int(width) * int(height) * 3,
                 "reference_rows": len(conditioning_measurements),
                 "reference_raw_rgb_bytes": (sum(row["resource_estimate"]["raw_bytes"] for row in conditioning_measurements if row["modality"] in {"image", "video"}) if all(row["resource_estimate"]["raw_bytes"] is not None for row in conditioning_measurements if row["modality"] in {"image", "video"}) else None),
+                "reference_raw_rgb_bytes_upper_bound": (sum((row["resource_estimate"].get("raw_bytes_upper_bound") if row["modality"] == "video" else row["resource_estimate"]["raw_bytes"]) for row in conditioning_measurements if row["modality"] in {"image", "video"}) if all((row["resource_estimate"].get("raw_bytes_upper_bound") if row["modality"] == "video" else row["resource_estimate"]["raw_bytes"]) is not None for row in conditioning_measurements if row["modality"] in {"image", "video"}) else None),
                 "reference_raw_audio_bytes": sum(row["resource_estimate"]["raw_bytes"] or 0 for row in conditioning_measurements if row["modality"] == "audio"),
                 "guide_rows": len(guide_occurrences),
                 "unit": "bytes",
