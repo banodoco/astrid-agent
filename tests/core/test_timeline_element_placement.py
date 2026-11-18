@@ -228,3 +228,27 @@ def test_retarget_refuses_an_unadmitted_ref_and_a_stale_head(monkeypatch, tmp_pa
     assert _place(owner, ref, expected_head='stale').error.code == 'conflict'
     owner.commit.assert_not_called()
     assert State(bundle).entity(TARGET)['clipType'] == 'am-footage'
+
+
+
+def test_builtin_effect_parent_clip_is_pointed_at_the_admitted_effect(monkeypatch, tmp_path, configured):
+    from astrid.sdk.timeline.validation import validate_final_candidate
+
+    parent_target = 'parent/clip:clip-a'
+    owner, ref, _, bundle = _setup(monkeypatch, tmp_path, configured)
+    edited = {'clipType': 'am-footage', 'params': {'seed': 7, 'author_note': 'keep me'}}
+    State(bundle).entity(parent_target).update(**edited)
+    next(c for c in bundle['parent']['config']['clips'] if c['id'] == 'clip-a').update(**edited)  # config mirrors clips
+    before = copy.deepcopy(State(bundle).entity(parent_target))
+    baseline = copy.deepcopy(bundle)
+    assert _place(owner, ref, target=parent_target, expected_head='stale').error.code == 'conflict'
+    owner.commit.assert_not_called()
+    result = _place(owner, ref, target=parent_target)
+    assert result.ok, result.error
+    after = State(owner.last_plan.bundle).entity(parent_target)
+    assert (after['clipType'], after['elementRef']) == (ref['id'], ref)
+    assert after['params'] == {'seed': 7, 'author_note': 'keep me'}
+    assert {k: v for k, v in after.items() if k not in ('clipType', 'elementRef')} == {
+        k: v for k, v in before.items() if k != 'clipType'}
+    validate_final_candidate(owner.last_plan.bundle, baseline=baseline,
+                             schema_inputs=owner.schema_inputs, realm_id='realm')
