@@ -129,3 +129,25 @@ def test_grayscale_rgb_is_supported(tmp_path):
 def test_missing_asset_and_invalid_dimensions_are_coded():
     _assert_error("asset", lambda: resolve_static_region(Region("r", mask_asset="missing"), width=4, height=3, polarity=POLARITY))
     _assert_error("dimensions", lambda: resolve_static_region(Region("r", box=(0, 0, 1, 1)), width=True, height=3))
+
+
+def test_authored_canvas_box_scales_edges_with_ties_down():
+    result = resolve_static_region(Region("r", box=(1, 0, 2, 2), canvas=(8, 4)), width=4, height=2, authored_canvas=True)
+    assert _pixels(result.mask_png)[2] == [255, 0, 0, 0, 0, 0, 0, 0]
+
+
+def test_authored_canvas_image_resamples_after_validation(tmp_path):
+    path = _save(tmp_path, "L", [0, 255, 255, 0], size=(2, 2))
+    result = resolve_static_region(Region("r", mask_asset="mask"), width=4, height=2,
+                                   assets={"mask": path}, polarity=POLARITY, authored_canvas=True)
+    assert _pixels(result.mask_png)[2] == [0, 0, 255, 255, 255, 255, 0, 0]
+
+
+def test_authored_box_scales_to_non_16_9_canvas():
+    result = resolve_static_region(Region("landmark", box=(256, 144, 256, 144)), width=768, height=448, authored_canvas=True)
+    _, size, pixels = _pixels(result.mask_png)
+    assert size == (768, 448)
+    assert sum(pixel == 255 for pixel in pixels) == 192 * 112
+    assert pixels[112 * 768 + 192] == 255
+    assert pixels[111 * 768 + 192] == 0
+    assert pixels[112 * 768 + 384] == 0

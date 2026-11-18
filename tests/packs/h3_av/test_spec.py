@@ -581,3 +581,12 @@ def test_pre_sr1_settled_receipt_returns_existing_result(tmp_path: Path, monkeyp
     assert reads == ["old-task"]
     assert result.seed_used == 42 and result.model_actual == "old-h3"
     assert result.manifest == saved_result["manifest"]
+
+
+def test_rectangle_authored_canvas_survives_request_and_typed_round_trip():
+    document = copy.deepcopy(next(case["v2"] for case in CASES if case["name"] == "source_backed_regenerate"))
+    edit = next(item for item in document["media"] if item.get("edit"))["edit"][0]
+    edit["mask"]["canvas"] = [640, 360]
+    request = normalize_request(document)
+    assert request.canonical.regions[0].canvas == (640, 360)
+    assert normalize_spec(request.canonical).regions[0].canvas == (640, 360)

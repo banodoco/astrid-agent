@@ -645,6 +645,8 @@ def _compile_native_masked_edit(
         spec = canonical_spec(request)
     except H3RequestError as exc:
         raise CompilationError(str(exc)) from exc
+    if any(region.canvas is not None for region in spec.regions):
+        raise CompilationError("authored mask canvas requires prepared-mask composition handoff")
     settings = spec.settings
     from .generation import DEFAULT_SIZE
     request_canvas = request.value.get("canvas") or {}
