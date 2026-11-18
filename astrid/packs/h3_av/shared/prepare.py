@@ -200,7 +200,7 @@ def _admit_conditioning(request: H3Request, assets: list[dict[str, Any]], warnin
         warnings.append({"limit": "conditioning_files", "message": "Conditioning references are at the 12-file limit."})
     for modality, total in totals.items():
         limit = LIMITS["modality_seconds"]["value"]
-        uncertainty = (2 / 24 if modality == "video" else (1 / 24 if modality == "audio" and counts["video"] else 1 / 48000))
+        uncertainty = (2 * counts["video"] / 24 if modality == "video" else (1 / 24 if modality == "audio" and counts["video"] else 1 / 48000))
         if total > limit + uncertainty + 1e-9:
             raise PreparationError(f"per modality total 15 seconds: {modality} selects {total:.3f}s")
         if total >= limit - uncertainty:
