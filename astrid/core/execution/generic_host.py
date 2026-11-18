@@ -61,6 +61,7 @@ from runtime_protocol.errors import ConflictError
 from runtime_protocol.storage import free_disk_floor_bytes
 
 from astrid.core.execution.pipe_io import PipeReader, PipeWriter, close_pipe_workers
+from astrid.core.execution.stall_diagnostics import process_stall_diagnostics
 from astrid.core.execution.platform_helpers import (
     PROCESS_CONTROL_SUPPORT_ENV,
     configure_process_control,
@@ -9561,7 +9562,7 @@ class GenericPackHost:
         digest = hashlib.sha256(encoded_bytes).hexdigest()
         # Publish a new immutable spool object before atomically changing the
         # universal receipt, so a crash never invalidates its prior hash.
-        destination = output_root / "outputs" / f"managed-generation-result-{digest}.json"
+        destination = output_root / "outputs" / f"result-{digest}.json"
         if destination.is_symlink() or not destination.resolve().is_relative_to(output_root.resolve()):
             raise HostError("managed result manifest escapes output custody")
         if destination.exists() and destination.read_bytes() != encoded_bytes:
@@ -11657,6 +11658,10 @@ class GenericPackHost:
         if self.attempt_root is not None:
             terminal["root"] = self.attempt_root
 
+        stall_diagnostics = process_stall_diagnostics()
+        stall_task_key = f"{data.get('id')}\0{exact_attempt or ''}"
+        stall_diagnostics.begin(stall_task_key, (terminal["stage"], _canonical_digest(None)))
+
         def completion_call(operation, *args, **kwargs):
             if operation == self.client.settle and lifetime.expired():
                 force_abort("timeout")
@@ -11890,6 +11895,12 @@ class GenericPackHost:
             # checkpoint is sent as progress; a bounded liveness tick omits it.
             progress = read_progress()
             token = (terminal["stage"], _canonical_digest(progress))
+            stall_diagnostics.update(stall_task_key, token)
+            if stall_diagnostics.stalled(stall_task_key):
+                # Piggyback the stuck phase on the existing observer. Fast work
+                # keeps its producer-only progress and its original RPC cadence.
+                progress = {**(progress or {}), "phase": str(terminal["stage"])}
+                token = (terminal["stage"], _canonical_digest(progress))
             with completion_lock:
                 if (stop.is_set() or terminal.get("recorded") or terminal.get("forced")
                         or (lifetime.expired() and not terminal.get("publication_pending"))):
@@ -11952,6 +11963,15 @@ class GenericPackHost:
             finally:
                 with completion_lock:
                     terminal["renewal_inflight"] = False
+
+        def publish_stage(stage: str) -> None:
+            # Diagnostics observe work; they must not wait for a heartbeat,
+            # make another lease RPC or add a deadline/cancellation boundary.
+            terminal["stage"] = stage
+            stall_diagnostics.update(
+                stall_task_key, (stage, _canonical_digest(terminal.get("progress"))))
+
+        terminal["publish_stage"] = publish_stage
 
         def force_abort(code):
             if code == "lease_lost" and terminal["lease_diagnostic"].get("category") == "observing":
@@ -12324,6 +12344,7 @@ class GenericPackHost:
                         try:
                             reconcile_publication()
                         finally:
+                            stall_diagnostics.end(stall_task_key)
                             stop.set()
                             if pump_thread is not None:
                                 pump_thread.join(timeout=2)
@@ -12343,6 +12364,7 @@ class GenericPackHost:
                     stop.set()
                     if pump_thread is not None and pump_thread.ident is not None:
                         pump_thread.join(timeout=2)
+                    stall_diagnostics.end(stall_task_key)
                     if busy_published:
                         _publish_busy(busy_path, -1)
                     if owns_attempt:
@@ -13014,7 +13036,7 @@ class GenericPackHost:
                 if isinstance(raw_optional_cas_param_ports, (list, tuple))
                 else None
             )
-            _terminal["stage"] = "materialize_inputs"
+            _terminal["publish_stage"]("materialize_inputs")
             inputs = self._materialize_inputs(
                 spec,
                 root,
@@ -13179,6 +13201,7 @@ class GenericPackHost:
                     network_admission["managed_engine_preparation"] = report
                     inputs["comfy_url"] = report["endpoint"]
                 try:
+                    _terminal["publish_stage"]("vibecomfy_preparation")
                     prepared_identity = _prepare_vibecomfy_execution_identity(
                         inputs, root / "workflow-identity", readiness_profile, prepare_engine=prepare_engine)
                 except (CancelledError, HostCancelled):
@@ -13267,6 +13290,8 @@ class GenericPackHost:
                 raise HostCancelled("task cancelled after managed preparation")
             lifetime.assert_deadline()
             if capability_id == "vibecomfy.run":
+                if prepared_identity is None:
+                    _terminal["publish_stage"]("vibecomfy_preparation")
                 execution_identity, model_id, template_id, workflow_session_requirements = (
                     prepared_identity or _prepare_vibecomfy_execution_identity(
                         inputs,
@@ -13376,7 +13401,7 @@ class GenericPackHost:
                 with suppress(Exception):
                     if job_evidence is not None:
                         job_evidence.start_execution()
-                _terminal["stage"] = "execution"
+                _terminal["publish_stage"]("execution")
                 render_child_pending = True
                 if capability_id != "wan2gp.generate_video":
                     managed_adapter = self.managed_tool_session.adapter_for(managed_token, begin=True)
@@ -13494,7 +13519,7 @@ class GenericPackHost:
             _terminal["output_root"] = output_root
             _terminal["payload"] = getattr(result, "payload", {}) or {}
             lifetime.begin_collection(collection_limit)
-            _terminal["stage"] = "collection"
+            _terminal["publish_stage"]("collection")
             if child_bridge is not None:
                 child_bridge.finish()
             # The periodic lease pump may not get another turn after a fast
@@ -13743,7 +13768,7 @@ class GenericPackHost:
             managed_settled = True
             payload["managed_tool_session"] = managed_envelope.to_dict()
             lifetime.assert_deadline()
-            _terminal["stage"] = "settlement"
+            _terminal["publish_stage"]("settlement")
             _terminal.update(
                 evidence_pending=True, publication_pending=True,
                 pending_outputs=outputs, pending_result=payload, pending_status="succeeded",
@@ -13969,6 +13994,16 @@ class GenericPackHost:
                 self._write_task_result(_terminal)
             except Exception as exc:
                 cleanup_errors.append(f"terminal result: {exc}")
+            if ((retain_attempt or self.attempt_root is not None)
+                    and not cleanup_errors and not retain_for_unresolved_scope
+                    and not _terminal.get("retain_spool")):
+                # Keeping the receipt/output evidence does not keep relocated
+                # VibeComfy scratch. Unresolved writers/publication keep both.
+                from astrid.core.generation.vibecomfy_runtime_root import remove_windows_runtime_root
+                try:
+                    remove_windows_runtime_root(root / "outputs")
+                except OSError as exc:
+                    cleanup_errors.append(f"short runtime folder: {exc}")
             # An unverified session release may still own a writer: fail this
             # task and keep its attempt below; the host keeps accepting work.
             if retain_attempt:

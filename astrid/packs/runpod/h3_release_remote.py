@@ -17,10 +17,12 @@ import sys
 import time
 import tomllib
 import urllib.request
+from functools import partial
 from pathlib import Path
 
 from runtime_protocol import platform
 
+from astrid._tls_policy import os_trust_ssl_context
 from astrid.core.generation._engine_python_bootstrap import engine_process_env
 from astrid.core.generation.engine_contracts import ModelSpec
 from astrid.core.generation.model_downloader import _download_model
@@ -69,9 +71,11 @@ def download_model(row, destination, repository, deadline, *, opener=None, chunk
     # H3's historical request deadline is wall-clock time. The shared contract
     # uses an absolute monotonic deadline, so preserve its remaining duration.
     shared_deadline = time.monotonic() + max(0.0, deadline - time.time())
+    if opener is None:
+        opener = partial(urllib.request.urlopen, context=os_trust_ssl_context())
     _download_model(model, models_root=str(models_root),
                     deadline=shared_deadline,
-                    opener=urllib.request.urlopen if opener is None else opener,
+                    opener=opener,
                     range_bytes=min(chunk_bytes, 64 << 20))
 
 

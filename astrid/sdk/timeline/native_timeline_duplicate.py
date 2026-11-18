@@ -47,7 +47,10 @@ def resolve_source(port, resolver):
 
 
 def duplicate(ctx, command):
-    from astrid.core.timeline.authoring_bundle import _copy_shot_for_placement
+    from astrid.core.timeline.authoring_bundle import (
+        _copy_shot_for_placement,
+        _missing_registry_asset,
+    )
 
     args = command['args']
     source = getattr(ctx, 'source_copy', None)
@@ -82,6 +85,8 @@ def duplicate(ctx, command):
         after = present(parent[key]) if key in parent else ABSENT
         if not equal(before, after):
             ctx.assign('parent', [key], after)
+    copied_clips = {}
+    target['source_mapping']['_copy_source_clips'] = copied_clips  # filled below; read by the recompile
     for identity, shot in sorted(shots.items()):
         occurrence = next(row['occurrence_id'] for row in rows if row['shot_id'] == identity)
         payload, _ = _copy_shot_for_placement(
@@ -90,6 +95,10 @@ def duplicate(ctx, command):
             source_shot_id=identity)
         payload.pop('internal_timeline_revision_id', None)
         internal = adopt_parent_assets(internals[shot['internal_timeline_revision_id']], parent)
+        # Only clips whose asset the source itself already left unresolved: the compiler may take those as copied.
+        copied_clips[args['shots'][identity]] = {
+            clip['id']: copy.deepcopy(clip) for clip in internal.get('clips') or []
+            if isinstance(clip, dict) and _missing_registry_asset(clip, internal)}
         ctx.create_entity('shot:' + args['shots'][identity], kind='shot', owner=None,
                           value={'payload': payload, 'internal_timeline': internal})
     for row in rows:

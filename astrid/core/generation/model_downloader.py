@@ -612,7 +612,14 @@ def _download_model(
     if part.exists() and part.stat().st_size > model.bytes:
         raise IntegrityError("model partial exceeds its locked byte count")
 
-    opener = urllib.request.urlopen if opener is None else opener
+    from astrid._tls_policy import request_error_host
+
+    if opener is None:
+        from functools import partial
+
+        from astrid.core.util.http import os_trust_ssl_context
+
+        opener = partial(urllib.request.urlopen, context=os_trust_ssl_context())
     failures = 0
     while not part.exists() or part.stat().st_size < model.bytes:
         remaining = _check_deadline(deadline)
@@ -622,7 +629,7 @@ def _download_model(
             "Range": f"bytes={offset}-{end}", "Accept-Encoding": "identity",
         })
         try:
-            with opener(request, timeout=min(60.0, remaining)) as response:
+            with request_error_host(request.full_url), opener(request, timeout=min(60.0, remaining)) as response:
                 expected_range = f"bytes {offset}-{end}/{model.bytes}"
                 if (getattr(response, "status", None) != 206
                         or response.headers.get("Content-Range") != expected_range):
