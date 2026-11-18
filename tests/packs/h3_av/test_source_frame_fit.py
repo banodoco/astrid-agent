@@ -331,3 +331,29 @@ def test_next_frame_after_native_boundary_keeps_maximum_internal_tail(tmp_path):
     assert np.array_equal(images[:frames], source_frames)
     assert np.array_equal(images[frames:], np.repeat(source_frames[-1:], 16, axis=0))
     assert audio.shape[-1] == 102900
+
+
+@pytest.mark.ffmpeg
+def test_source_preflight_uses_resolved_canvas_dimensions(tmp_path: Path) -> None:
+    """The v2 source preflight checks the request canvas; v1 keeps its legacy canvas."""
+    source = tmp_path / "source-768x448.mkv"
+    subprocess.run([
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "lavfi", "-i", "testsrc2=s=768x448:r=24:d=2",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100:duration=2",
+        "-c:v", "ffv1", "-pix_fmt", "yuv420p", "-c:a", "pcm_s16le", str(source),
+    ], check=True, capture_output=True, timeout=30)
+    request = normalize_request({
+        "version": 2,
+        "duration": "48/24",
+        "prompt": "Canvas-specific source preflight.",
+        "output": {"size": [768, 448]},
+        "media": [{
+            "id": "source", "asset": "source.mkv", "role": "timeline", "modality": "video",
+            "at": {"frame": 0}, "range": ["0/24", "48/24"],
+        }],
+        "settings": {},
+    })
+    preparation = prepare_request(request, asset_map={"source.mkv": str(source)})
+    assert preparation["media"]["width"] == 768
+    assert preparation["media"]["height"] == 448
