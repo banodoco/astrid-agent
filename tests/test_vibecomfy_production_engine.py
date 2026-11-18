@@ -545,3 +545,26 @@ def test_generated_outputs_are_named_after_the_users_save_prefix():
     assert name("_astrid_b1b97070_00001_.png", "SaveImage", taken) == "SaveImage.png"
     assert name("lantern scene (v2)_00003_.MP4", "SaveVideo", taken) == "lantern_scene_v2.mp4"
     assert name("managed-generation-result.json", "x", taken) == "managed-generation-result-2.json"
+
+
+def test_hook_output_keeps_verified_container(tmp_path, monkeypatch):
+    monkeypatch.setenv("ASTRID_INTERNAL_INVOCATION", "1")
+    run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    envelope, payload = _managed_result_fixture(tmp_path)
+    production = production_engine.ProductionRunResult(
+        outputs=(envelope.parent / "outputs/final.mp4",),
+        managed_generation_result_path=envelope, managed_generation_result=payload,
+    )
+    candidate = tmp_path / "composed.mkv"
+    candidate.write_bytes(b"verified candidate")
+    spool = tmp_path / "spool"
+    manifest = run._materialize_managed_generation_result(
+        spool, production, task_identity="task-1", workflow_path=tmp_path / "workflow.py",
+        after_outputs=lambda paths: [candidate],
+    )
+    row = manifest["managed_generation_result"]["outputs"][0]
+    assert row["path"] == manifest["outputs"][0]["path"] == "outputs/final.mkv"
+    assert row["media_type"] == "video/x-matroska"
+    assert (spool / row["path"]).read_bytes() == candidate.read_bytes()
+    assert row["sha256"] == hashlib.sha256(candidate.read_bytes()).hexdigest()
+    assert row["bytes"] == candidate.stat().st_size

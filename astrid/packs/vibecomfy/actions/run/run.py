@@ -337,6 +337,10 @@ def _materialize_managed_generation_result(
             raise AstridValueError("after_outputs must return one file per output")
         for row, replacement in zip(rebased_outputs, produced):
             target = managed_root / row["path"]
+            if target.suffix != replacement.suffix:
+                target = target.with_suffix(replacement.suffix)
+                row["path"] = target.relative_to(managed_root).as_posix()
+                row["media_type"] = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
             if replacement.resolve() != target.resolve():
                 shutil.copyfile(replacement, target)
             data = target.read_bytes()
