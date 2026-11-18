@@ -10,7 +10,12 @@ from astrid.sdk.contracts import DomainResult,ErrorObject
 from pathlib import Path
 import pytest
 import yaml
+import os
+import subprocess
+
 from astrid.core.element import project_packs as packs
+from astrid.core.pack.cli_manage import TOOLCHAIN_ENV
+from astrid.pack_build import _SINGLETONS
 
 # Wire grammar of Runtime's Idempotency-Key (runtime_protocol/service.py: IDEMPOTENCY_KEY_RE,
 # enforced by validate_idempotency_key). Mirrored here so the fake client needs no runtime checkout.
@@ -58,6 +63,35 @@ class FakeMedia:
         return next(data for (_,digest),data in self.objects.items() if digest==object_id)
 
 
+def _sha(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def pinned_toolchain(tmp_path):
+    """Write the release lock for the locally pinned Node and esbuild 0.27.7.
+
+    ASTRID_BUILD_TEST_NODE and ASTRID_BUILD_TEST_ESBUILD name the binaries; the esbuild
+    binary must sit beside the installer layout's lib/main.js (bin/ and lib/ siblings).
+    Admission compiles every element for real, so these tests cannot run without them.
+    """
+    node = os.environ.get('ASTRID_BUILD_TEST_NODE')
+    esbuild = os.environ.get('ASTRID_BUILD_TEST_ESBUILD')
+    if not node or not esbuild:
+        raise RuntimeError('Project element admission tests need the pinned toolchain: set ASTRID_BUILD_TEST_NODE '
+                           'and ASTRID_BUILD_TEST_ESBUILD (see tests/lanes.py, pack_build_tools)')
+    node, esbuild = Path(node).resolve(), Path(esbuild).absolute()
+    env = {'PATH': '', 'LANG': 'C.UTF-8', 'ESBUILD_BINARY_PATH': str(esbuild)}
+    node_version = subprocess.run([str(node), '--version'], capture_output=True, text=True, env=env,
+                                  check=True).stdout.strip().removeprefix('v')
+    shared = tmp_path / 'shared-modules.json'
+    shared.write_text(json.dumps({'shared_modules': {name: {'url': f'/assets/{i}.js', 'sha256': hashlib.sha256(name.encode()).hexdigest(), 'version': '1.0.0'} for i, name in enumerate(sorted(_SINGLETONS))}}))
+    lock = tmp_path / 'toolchain.json'
+    lock.write_text(json.dumps({'version': 1, 'node_path': str(node), 'node_version': node_version, 'node_sha256': _sha(node),
+                                'esbuild_path': str(esbuild), 'esbuild_version': '0.27.7', 'esbuild_sha256': _sha(esbuild),
+                                'shared_modules_lock': str(shared)}))
+    return lock
+
+
 @pytest.fixture(autouse=True)
 def configured(tmp_path,monkeypatch):
     monkeypatch.setenv(packs.ROOT_ENV,str(tmp_path/'user-data'))
@@ -65,6 +99,7 @@ def configured(tmp_path,monkeypatch):
     verifier=tmp_path/'test-build-verifier.py'
     verifier.write_text("import json,sys,hashlib\nfrom pathlib import Path\np=Path(sys.argv[1]);x=json.loads(p.read_text());print(json.dumps({'schema':'astrid.element-build/v1','selectionDigest':'sha256:'+hashlib.sha256(p.read_bytes()).hexdigest(),'elements':[{'projectId':e['projectId'],**{k:e['descriptor'][k] for k in ('packId','id','kind','revision')}} for e in x['elements']]}))")
     monkeypatch.setenv(packs.BUILD_ENV,json.dumps([sys.executable,str(verifier)]))
+    monkeypatch.setenv(TOOLCHAIN_ENV,str(pinned_toolchain(tmp_path)))
     documents=FakeDocuments()
     documents.media=FakeMedia()
     client=SimpleNamespace(documents=documents,media=documents.media)
@@ -229,7 +264,11 @@ def test_one_pack_change_does_not_scan_or_rewrite_1000_other_configs(configured)
     row=next(row for (_,identity),row in configured.rows.items() if identity not in {f'other-{i}' for i in range(1000)})
     assert row['content']['schema']=='astrid.project-pack/v1'
     assert row['version']>1 and 'schema_version' not in row['content']
-    encoded=json.dumps(row['content']);assert str(Path.home()) not in encoded and 'component.tsx' not in encoded
+    # Portable admission facts only: no machine-local absolute path reaches the shared document.
+    encoded=json.dumps(row['content']);assert str(Path.home()) not in encoded
+    for admission in row['content']['admissions']:
+        assert set(admission['authoring']) == {'packRoot','descriptorPath','componentPath','status'}
+        assert not admission['authoring']['descriptorPath'].startswith('/') and not admission['authoring']['componentPath'].startswith('/')
 
 
 def test_named_collection_uses_one_exact_stable_document(configured):

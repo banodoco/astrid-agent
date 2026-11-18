@@ -94,9 +94,16 @@ def _project_pack_content(row):
     if not re.fullmatch(r'[a-z][a-z0-9_]*',str(content.get('pack_id',''))):raise ValueError('Invalid project pack owner')
     if set(content)!={'schema','pack_id','source_binding_key','relative_manifest','admissions'} or not isinstance(content['admissions'],list):raise ValueError('Invalid project pack payload fields')
     for admission in content['admissions']:
-        if not isinstance(admission,dict) or set(admission)-{'snapshot_object'}!={'id','kind','revision','snapshot_digest'} or admission['kind'] not in {'effect','animation','transition'} or not re.fullmatch(r'sha256:[0-9a-f]{64}',str(admission['revision'])) or not re.fullmatch(r'[0-9a-f]{64}',str(admission['snapshot_digest'])):raise ValueError('Invalid selected pack admission')
+        if not isinstance(admission,dict) or set(admission)-{'snapshot_object','compiled','descriptor','authoring'}!={'id','kind','revision','snapshot_digest'} or admission['kind'] not in {'effect','animation','transition'} or not re.fullmatch(r'sha256:[0-9a-f]{64}',str(admission['revision'])) or not re.fullmatch(r'[0-9a-f]{64}',str(admission['snapshot_digest'])):raise ValueError('Invalid selected pack admission')
         if 'snapshot_object' in admission:
             _snapshot_descriptor(admission['snapshot_object'])
+        if 'compiled' in admission:
+            compiled=admission['compiled']
+            if (not isinstance(compiled,dict) or set(compiled)!={'path','sha256'}
+                    or not isinstance(compiled['path'],str) or not re.fullmatch(r'[0-9a-f]{64}',str(compiled['sha256']))):
+                raise ValueError('Invalid compiled element descriptor')
+        if 'descriptor' in admission and not isinstance(admission['descriptor'],dict):raise ValueError('Invalid admitted element descriptor')
+        if 'authoring' in admission and not isinstance(admission['authoring'],dict):raise ValueError('Invalid admitted element authoring')
 
     return content
 
@@ -366,6 +373,48 @@ def _definitions(root: Path, entry):
     return definitions
 
 
+COMPILED_DIR='compiled'
+
+
+def _compiled_path(component: str) -> str:
+    return f'{COMPILED_DIR}/{component}.mjs'
+
+
+def _closure(root: Path, entry, resources) -> list[dict[str,str]]:
+    """Source resources plus one compiled module per element component, path-sorted."""
+    components=[definition.component.relative_to(root).as_posix() for definition,_ in _definitions(root,entry)]
+    files=[{'path':p,'sha256':r.sha256} for p,r in resources.items()]
+    for component in sorted(set(components)):
+        name=_compiled_path(component);target=root/name
+        if target.is_symlink() or not target.is_file():
+            raise ValueError(f'Compiled element module {name} is missing from the admitted snapshot; re-admit the pack')
+        files.append({'path':name,'sha256':hashlib.sha256(target.read_bytes()).hexdigest()})
+    return sorted(files,key=lambda item:item['path'])
+
+
+def _compiled_ref(files, component: str) -> dict[str,str]:
+    name=_compiled_path(component)
+    return {'path':name,'sha256':next(item['sha256'] for item in files if item['path']==name)}
+
+
+def _element_toolchain() -> dict[str,Any]:
+    from astrid.core.pack.cli_manage import _toolchain
+    from astrid.core.pack.install import PackInstallError
+    try:
+        return _toolchain(None)
+    except PackInstallError as exc:
+        raise ValueError('Project element admission needs the pinned esbuild toolchain (Node and esbuild 0.27.7 from the installed Astrid release). '
+                         f'Set ASTRID_PACK_TOOLCHAIN to its pack-build/toolchain.json, then admit again. Detail: {exc}') from exc
+
+
+def _compile_components(staging: Path, components) -> None:
+    from astrid.pack_build import compile_element_module
+    toolchain=_element_toolchain()
+    for component in sorted(set(components)):
+        target=staging/_compiled_path(component);target.parent.mkdir(parents=True,exist_ok=True)
+        target.write_bytes(compile_element_module(toolchain,staging,component))
+
+
 def _selected_index(realm,project,document_id,row):
     content=row['content'];path=Path(_location(realm,project,content,document_id,row['version'])['manifestPath'])
     if not path.exists():return _index(realm,project,document_id,row['version'],content,[])
@@ -416,21 +465,27 @@ def admit_project_pack(realm: str, project: str, *, client=None, collection='def
 
         for helper in definition.root.rglob("*"):
             if helper.is_file() and helper.suffix in _SOURCE_EXTENSIONS and helper.relative_to(root).as_posix() not in resources:raise ValueError(f"Element helper is undeclared: {helper}")
-    files=[{"path":p,"sha256":r.sha256} for p,r in sorted(resources.items())]
-    closure_hash=_closure_digest(files)
-    snapshot_root=artifact_root()/realm/project/entry.definition.id/"snapshots"/closure_hash
-    snapshot_root.parent.mkdir(parents=True,exist_ok=True)
-    staging=Path(tempfile.mkdtemp(prefix="capture-",dir=snapshot_root.parent))
+    components=[definition.component.relative_to(root).as_posix() for definition,_ in definitions]
+    if any(_compiled_path(component) in resources for component in components):raise ValueError("Compiled element path collides with a source file")
+    snapshots=artifact_root()/realm/project/entry.definition.id/"snapshots"
+    snapshots.mkdir(parents=True,exist_ok=True)
+    staging=Path(tempfile.mkdtemp(prefix="capture-",dir=snapshots))
     try:
-        for item in files:
-            target=staging/item["path"];target.parent.mkdir(parents=True,exist_ok=True)
-            payload=(root/item["path"]).read_bytes()
-            if hashlib.sha256(payload).hexdigest()!=item["sha256"]:raise ValueError("Source changed during admission; inspect and admit again")
+        for relative,handle in sorted(resources.items()):
+            target=staging/relative;target.parent.mkdir(parents=True,exist_ok=True)
+            payload=(root/relative).read_bytes()
+            if hashlib.sha256(payload).hexdigest()!=handle.sha256:raise ValueError("Source changed during admission; inspect and admit again")
             target.write_bytes(payload)
         # Revalidate after capture; the canonical source cannot silently move mid-copy.
         _,confirmed=_resources(root)
         if {p:r.sha256 for p,r in confirmed.items()}!={p:r.sha256 for p,r in resources.items()}:raise ValueError("Source changed during admission")
         validate_canonical_pack(staging,expected_pack_id=entry.definition.id)
+        # Each component also compiles to one ESM module; that file joins the closure.
+        # The raw TSX stays in the snapshot for render.
+        _compile_components(staging,components)
+        files=_closure(staging,entry,resources)
+        closure_hash=_closure_digest(files)
+        snapshot_root=snapshots/closure_hash
         if snapshot_root.exists():
             for item in files:
                 saved=snapshot_root/item["path"]
@@ -444,7 +499,8 @@ def admit_project_pack(realm: str, project: str, *, client=None, collection='def
             descriptor["componentPath"]=f"external/{entry.definition.id}/{closure_hash}/{component}"
             records.append({"projectId":project,"descriptor":descriptor,
                 "authoring":{"packRoot":str(root),"descriptorPath":str(descriptor_path),"componentPath":str(definition.component),"status":"admitted"},
-                "snapshot":{"root":str(snapshot_root),"componentPath":component,"files":files}})
+                "snapshot":{"root":str(snapshot_root),"componentPath":component,"files":files},
+                "compiled":_compiled_ref(files,component)})
         previous=_selected_index(realm,project,document_id,row)
         admissions=[dict(a) for a in content['admissions']]
         build_records=list(records)
@@ -461,6 +517,10 @@ def admit_project_pack(realm: str, project: str, *, client=None, collection='def
                     e['descriptor'][k]==admission[k] for k in ('id','kind','revision'))),None)
                 records[index]=retained if retained is not None else _record_from_admission(realm,project,content,matching[0])
             else:
+                # Runtime's exact listing shape: packRoot is the authoring root; the element paths are pack-relative.
+                admission.update(descriptor=descriptor,compiled=record['compiled'],
+                    authoring={'packRoot':str(root),'descriptorPath':Path(record['authoring']['descriptorPath']).relative_to(root).as_posix(),
+                               'componentPath':record['snapshot']['componentPath'],'status':'admitted'})
                 admissions.append(admission)
             if not matching or matching[0]['snapshot_digest']==closure_hash:
                 selected_keys.add((admission['id'],admission['kind'],admission['revision']))
@@ -515,9 +575,10 @@ def admit_project_pack(realm: str, project: str, *, client=None, collection='def
 
 
 def _record_from_admission(realm,project,content,admission):
+    if 'compiled' not in admission:raise ValueError('Admitted element predates compiled modules; re-admit the pack')
     root=artifact_root()/realm/project/content['pack_id']/'snapshots'/admission['snapshot_digest']
     entry,resources=_resources(root,expected_pack_id=content['pack_id'])
-    files=[{'path':p,'sha256':r.sha256} for p,r in sorted(resources.items())]
+    files=_closure(root,entry,resources)
     if _closure_digest(files)!=admission['snapshot_digest']:raise ValueError('Selected snapshot resource closure is corrupt')
     matches=[(d,p) for d,p in _definitions(root,entry) if d.id==admission['id'] and _element_descriptor(d)['kind']==admission['kind']]
     if len(matches)!=1:raise ValueError('Selected pack element is unavailable')
@@ -526,7 +587,7 @@ def _record_from_admission(realm,project,content,admission):
     source_root=Path(_location(realm,project,content,'derived',0)['packRoot'])
     relative_component=definition.component.relative_to(root).as_posix()
     descriptor['componentPath']=f"external/{content['pack_id']}/{admission['snapshot_digest']}/{relative_component}"
-    return {'projectId':project,'descriptor':descriptor,'authoring':{'packRoot':str(source_root),'descriptorPath':str(source_root/path.relative_to(root)),'componentPath':str(source_root/relative_component),'status':'admitted'},'snapshot':{'root':str(root),'componentPath':relative_component,'files':files}}
+    return {'projectId':project,'descriptor':descriptor,'authoring':{'packRoot':str(source_root),'descriptorPath':str(source_root/path.relative_to(root)),'componentPath':str(source_root/relative_component),'status':'admitted'},'snapshot':{'root':str(root),'componentPath':relative_component,'files':files},'compiled':_compiled_ref(files,relative_component)}
 
 
 def materialize_project_pack(realm,project,*,client=None,collection='default'):
@@ -724,14 +785,14 @@ def resolve_admitted_element(realm: str, project: str, reference: dict[str,str],
     expected_root=artifact_root()/realm/project/reference['packId']/'snapshots'/admitted[0]['snapshot_digest']
     if root!=expected_root:raise ValueError('Artifact snapshot is outside its selected Runtime binding')
     entry,resources=_resources(root,expected_pack_id=reference['packId'])
-    files=[{'path':p,'sha256':r.sha256} for p,r in sorted(resources.items())]
+    files=_closure(root,entry,resources)
     digest=_closure_digest(files)
     if digest!=admitted[0]['snapshot_digest'] or files!=snapshot['files']:raise ValueError('Admitted element snapshot is missing or corrupt')
     verified={'pin':{'document_id':document_id,'version':row['version'],
                      'content_digest':_json_digest(row['content'])},
               'document':{**row,'project_id':project}}
     descriptor=admitted_element_descriptor(
-        realm,project,reference,verified,{name:(root/name).read_bytes() for name in resources},
+        realm,project,reference,verified,{item['path']:(root/item['path']).read_bytes() for item in files},
         (root/'.build-receipt.json').read_bytes())
     if descriptor!=record['descriptor']:
         raise ValueError('Admitted source descriptor mismatch')
