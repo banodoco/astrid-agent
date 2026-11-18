@@ -99,20 +99,48 @@ def test_new_unsupported_declaration_is_refused():
         validate_final_candidate(with_formulas(candidate()))  # no baseline: nothing was pre-existing
 
 
-@pytest.mark.parametrize("touch", ["declaration", "timing", "track"])
-def test_edited_or_touched_unsupported_declaration_is_refused(touch):
+def test_edited_unsupported_declaration_is_refused():
+    baseline = with_formulas(candidate())
+    value = copy.deepcopy(baseline)
+    child_clips(value)[0]["app"]["astrid"]["formulas"]["at"]["moment"] = "word:line-2:first"
+    with pytest.raises(AuthoringBundleError, match="unsupported timing declaration"):
+        validate_final_candidate(value, baseline=baseline)
+
+
+@pytest.mark.parametrize("touch", ["timing", "track"])
+def test_moving_a_clip_keeps_its_unchanged_unsupported_declaration_retained(touch):
+    """The signature is the declaration's own value: the kernel never evaluates it, so a move or a track
+    change on its clip changes nothing it refuses."""
     baseline = with_formulas(candidate())
     value = copy.deepcopy(baseline)
     clip = child_clips(value)[0]
-    if touch == "declaration":
-        clip["app"]["astrid"]["formulas"]["at"]["moment"] = "word:line-2:first"
-    elif touch == "timing":
+    if touch == "timing":
         clip["at"] = 2
     else:
         value["shots"][SHOT]["internal_timeline"]["tracks"].append({"id": "other", "kind": "visual"})
         clip["track"] = "other"
+    validate_final_candidate(value, baseline=baseline)
+
+
+def _head_gap_after():
+    head = candidate()
+    child_clips(head)[0].setdefault("app", {}).setdefault("astrid", {})["gap_after_s"] = 1.5
+    return head
+
+
+def test_moving_a_clip_with_an_unchanged_gap_after_s_is_accepted_and_a_changed_one_refused():
+    baseline = _head_gap_after()
+    moved = copy.deepcopy(baseline)
+    child_clips(moved)[0]["at"] = 2
+    validate_final_candidate(moved, baseline=baseline)
+    changed = copy.deepcopy(baseline)
+    child_clips(changed)[0]["app"]["astrid"]["gap_after_s"] = 2.5
     with pytest.raises(AuthoringBundleError, match="unsupported timing declaration"):
-        validate_final_candidate(value, baseline=baseline)
+        validate_final_candidate(changed, baseline=baseline)
+    added = copy.deepcopy(baseline)
+    child_clips(added)[1].setdefault("app", {}).setdefault("astrid", {})["gap_after_s"] = 1.5
+    with pytest.raises(AuthoringBundleError, match="unsupported timing declaration"):
+        validate_final_candidate(added, baseline=baseline)
 
 
 def test_other_timing_errors_still_refuse_beside_a_retained_declaration():
@@ -263,8 +291,16 @@ def _head_mismatched_fps():
     return head
 
 
+def _head_half_association():
+    head = candidate()
+    head["parent"]["registry"].setdefault("assets", {})["half"] = {
+        "media_id": "sha256:" + "4a" * 32, "generationId": "gen-1", "variantId": None}
+    return head
+
+
 HEADS = {"unsupported-declaration": _head_unsupported_declaration, "unknown-asset": _head_unknown_asset,
-         "mismatched-fps": _head_mismatched_fps}
+         "mismatched-fps": _head_mismatched_fps, "gap-after-s": _head_gap_after,
+         "half-association": _head_half_association}
 
 
 @pytest.mark.parametrize("name", sorted(HEADS))
