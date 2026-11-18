@@ -750,7 +750,9 @@ def prepare_request(
             "warnings": warnings,
             "resource_estimate": {
                 "schema_valid": True,
-                "qualified": all(row["resource_estimate"]["qualified"] for row in conditioning_measurements),
+                "qualified": False,  # The target is not yet resource-qualified.
+                "conditioning_qualified": all(row["resource_estimate"]["qualified"] for row in conditioning_measurements),
+                "target_qualified": None,  # Target resource feasibility has not been established.
                 "observed": False,
                 "target_rows": target_timing["raw_frames"],
                 "requested_target_rows": target_timing["requested_frames"],

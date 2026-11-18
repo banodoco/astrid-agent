@@ -445,3 +445,14 @@ def test_public_preparation_validates_only_red_mask_channel(tmp_path, red_outsid
     else:
         prepared = prepare_request(request, asset_map={"source": str(source), "mask": str(mask)})
         assert prepared["mask_schedule"]["video"]["generated_intervals"] == [[0.25, 0.75]]
+
+@pytest.mark.parametrize("size", [(1024, 576), (512, 288), (768, 448)])
+def test_masked_canvas_is_emitted(tmp_path, size):
+    from vibecomfy.cli_loader import load_workflow_any
+    raw = json.loads(json.dumps(WATERMARK))
+    raw["output"] = {"size": list(size)}
+    compiled = compile_preparation(_prepare(raw, tmp_path), out_dir=tmp_path / "out")
+    api = load_workflow_any(compiled["workflow"]["workflow.py"]["path"]).compile("api", run_inputs=compiled["workflow_inputs"])
+    sized = [(row["class_type"], key, value) for row in api.values() for key, value in row["inputs"].items() if key in ("width", "height")]
+    assert sorted(sized) == sorted([("MiniMaxH3ReferenceToVideo", "width", size[0]), ("MiniMaxH3ReferenceToVideo", "height", size[1])])
+    assert compiled["size"] == {"width": size[0], "height": size[1]}

@@ -675,3 +675,14 @@ def test_masked_character_swap_refuses_prompt_tag_for_unselected_video(tmp_path)
         assets[item["asset"]] = path
     with pytest.raises(CompilationError, match="prompt reference tag <Video 1> has no effective binding"):
         _compile_native_v2(request, assets, tmp_path / "out")
+
+@pytest.mark.parametrize("size", [(1024, 576), (512, 288), (768, 448)])
+def test_character_swap_canvas_is_emitted(tmp_path, size):
+    from vibecomfy.cli_loader import load_workflow_any
+    raw = _request()
+    raw["output"] = {"size": list(size)}
+    compiled = compile_preparation(_preparation(raw, _files(tmp_path)), out_dir=tmp_path / "out")
+    api = load_workflow_any(compiled["workflow"]["workflow.py"]["path"]).compile("api", run_inputs=compiled["workflow_inputs"])
+    sized = [(row["class_type"], key, value) for row in api.values() for key, value in row["inputs"].items() if key in ("width", "height")]
+    assert sorted(sized) == sorted([("MiniMaxH3ReferenceToVideo", "width", size[0]), ("MiniMaxH3ReferenceToVideo", "height", size[1])])
+    assert compiled["size"] == {"width": size[0], "height": size[1]}

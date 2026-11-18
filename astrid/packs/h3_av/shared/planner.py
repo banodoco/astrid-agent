@@ -172,7 +172,7 @@ def plan_request(
     else:
         compilation = {"status": "compiled", **{
             key: compiled[key] for key in (
-                "profile", "compilation_digest", "manifest_path", "workflow_inputs", "capabilities", "limitations"
+                "profile", "compilation_digest", "manifest_path", "workflow_inputs", "capabilities", "limitations", "size"
             )
         }}
         if "branch" in compiled:

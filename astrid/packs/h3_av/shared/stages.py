@@ -78,6 +78,7 @@ def _sealed_plan(compilation: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
         raise ValueError("H3 compilation has no sealed identity")
     return {"compilation_digest": digest, "output_contract": contract, "intent": intent,
+            "size": compilation["size"],
             "workflow_members": {name: row["sha256"] for name, row in compilation["workflow"].items()},
             "workflow_inputs_sha256": stable_digest(compilation["workflow_inputs"])}
 
