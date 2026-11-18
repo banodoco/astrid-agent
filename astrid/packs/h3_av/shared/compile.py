@@ -646,6 +646,9 @@ def _compile_native_masked_edit(
     except H3RequestError as exc:
         raise CompilationError(str(exc)) from exc
     settings = spec.settings
+    from .generation import DEFAULT_SIZE
+    request_canvas = request.value.get("canvas") or {}
+    canvas_size = (request_canvas.get("width", DEFAULT_SIZE[0]), request_canvas.get("height", DEFAULT_SIZE[1]))
     adapter = settings.get("adapter")
     if adapter:
         from .generation import LIMITS, character_swap_asset_sha256
@@ -753,7 +756,7 @@ def _compile_native_masked_edit(
     inputs = generation_inputs_from_bindings(
         references=[f"reference_{index}" for index in range(len(references))],
         prompt=prompt, frames=timing["raw_frames"], model=settings["model"],
-        steps=settings["steps"], seed=seed, sampler=settings["sampler"],
+        steps=settings["steps"], seed=seed, canvas_size=canvas_size, sampler=settings["sampler"],
         scheduler=settings["scheduler"], guidance=turbo["strength"], turbo_enabled=turbo["enabled"],
         adapter_strength=adapter["strength"] if adapter else None,
         character_swap_sha256=adapter_sha256 if adapter else CHARACTER_SWAP_SHA256,
@@ -936,12 +939,16 @@ def _compile_character_swap_v2(
     prompt = _native_v2_prompt(request)
     turbo = settings["turbo"]
     adapter = settings["adapter"]
+    from .generation import DEFAULT_SIZE
+    request_canvas = value.get("canvas") or {}
+    canvas_size = (request_canvas.get("width", DEFAULT_SIZE[0]), request_canvas.get("height", DEFAULT_SIZE[1]))
     inputs = generation_inputs_from_bindings(
         references=[f"reference_{index}" for index in range(len(images))],
         video_references=video_reference_rows,
         audio_references=audio_reference_rows,
         prompt=prompt,
         frames=timing["raw_frames"],
+        canvas_size=canvas_size,
         model=settings["model"],
         steps=settings["steps"],
         seed=settings["seed"],
@@ -1313,10 +1320,14 @@ def _compile_generation(
         adapter_strength = native_settings.get("adapter", {}).get("strength")
     timing = generation_timing(request.value["duration"] if native_v2 else request.value["output"]["duration"])
     prompt = request.value["prompt"] if native_v2 else request.value["content"]["prompt"]
+    from .generation import DEFAULT_SIZE
+    request_canvas = request.value.get("canvas") or {}
+    canvas_size = (request_canvas.get("width", DEFAULT_SIZE[0]), request_canvas.get("height", DEFAULT_SIZE[1]))
     inputs = generation_inputs_from_bindings(
         references=image_members, prompt=prompt,
         audio_references=[{"binding": f"audio_reference_{index}", "resolved_range": item.get("resolved_range")} for index, item in enumerate(audio_references)],
         frames=timing["raw_frames"], model=settings["model"],
+        canvas_size=canvas_size,
         steps=settings["steps"], seed=settings["seed"],
         sampler=settings["sampler"], guidance=settings["guidance"],
         scheduler=scheduler, turbo_enabled=turbo_enabled,

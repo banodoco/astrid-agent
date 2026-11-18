@@ -20,7 +20,7 @@ from .masks import (
 )
 from .request import H3Request, H3RequestError, _asset_ids
 from .request_v2 import branch_for
-from .generation import LIMITS
+from .generation import DEFAULT_SIZE, LIMITS
 
 
 def _probe_conditioning(path: Path) -> dict[str, Any]:
@@ -634,14 +634,35 @@ def prepare_request(
     *,
     asset_map: Mapping[str, str] | None = None,
     fps: float = 24.0,
-    width: int = 1024,
-    height: int = 576,
+    width: int | None = None,
+    height: int | None = None,
     sample_rate: int = 48000,
 ) -> dict[str, Any]:
     """Create a deterministic preparation manifest without touching a runtime."""
 
+    if (width is None) != (height is None):
+        raise PreparationError("width and height compatibility inputs must be supplied together")
+    resolved_canvas = request.value.get("canvas")
+    has_resolved_canvas = isinstance(resolved_canvas, Mapping)
+    if has_resolved_canvas:
+        effective_width = resolved_canvas.get("width")
+        effective_height = resolved_canvas.get("height")
+    else:
+        effective_width, effective_height = DEFAULT_SIZE
     canvas = LIMITS["canvas_dimension"]["value"]
-    if any(value < canvas["min"] or value > canvas["max"] or value % canvas["multiple"] for value in (width, height)):
+    # Compatibility for existing internal callers. Normalized request records
+    # are authoritative: a compatibility argument may confirm, but cannot
+    # replace, their canvas. Unresolved legacy records have no canvas to conflict.
+    if width is not None and height is not None:
+        if any(type(value) is not int or value < canvas["min"] or value > canvas["max"]
+               or value % canvas["multiple"] for value in (width, height)):
+            raise PreparationError(f"width and height 32–16384, multiples of 32: received {width}x{height}")
+        if has_resolved_canvas and (width, height) != (effective_width, effective_height):
+            raise PreparationError("width and height compatibility inputs cannot override the normalized request canvas")
+        if not has_resolved_canvas:
+            effective_width, effective_height = width, height
+    width, height = effective_width, effective_height
+    if any(type(value) is not int or value < canvas["min"] or value > canvas["max"] or value % canvas["multiple"] for value in (width, height)):
         raise PreparationError(f"width and height 32–16384, multiples of 32: received {width}x{height}")
     if fps <= 0 or sample_rate <= 0:
         raise PreparationError("fps and sample_rate must be positive")
