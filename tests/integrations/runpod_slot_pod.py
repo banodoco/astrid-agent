@@ -42,7 +42,7 @@ def _snapshots():
     rows = {}
     for path in sorted(glob.glob(str(cache_dir() / "*.json"))):
         try:
-            data = json.loads(Path(path).read_text())
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
         except ValueError:
             continue
         if not isinstance(data, dict):
@@ -250,6 +250,11 @@ class PodComfy:
             return 400, {"error": {"type": "prompt_outputs_failed_validation",
                                    "message": "Prompt outputs failed validation", "details": "", "extra_info": {}},
                          "node_errors": errors}
+        # This fake has no queue or asynchronous worker: record its explicit
+        # enqueue/start boundary, not the HTTP response duration.
+        from time import monotonic
+        queued = monotonic()
+        started = monotonic()
         self.prompts.append(body)
         self.count += 1
         prompt_id = f"slot-{self.count}"
@@ -268,4 +273,8 @@ class PodComfy:
         self.history = getattr(self, "history", {})
         self.history[prompt_id] = {"outputs": outputs, "prompt": [self.count, prompt_id, graph, {}, list(outputs)],
                                    "status": {"status_str": "success", "completed": True, "messages": []}}
+        ended = monotonic()
+        observer = getattr(self, "timeline_observer", None)
+        if observer is not None:
+            observer(prompt_id, queued, started, ended)
         return 200, {"prompt_id": prompt_id, "number": self.count, "node_errors": {}}

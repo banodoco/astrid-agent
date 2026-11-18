@@ -1,0 +1,270 @@
+name: Plan 55 held connection proof
+on:
+  pull_request:
+    branches: ["release/14/plan-55"]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - "astrid/packs/runpod/pins.json"
+      - "astrid/packs/vibecomfy/pins.json"
+      - "astrid/packs/**/recipe.*.json"
+      - "astrid/core/generation/backends/comfy_target.py"
+      - "astrid/core/generation/backends/comfy_held.py"
+      - "astrid/core/generation/backends/vibecomfy_local_server.py"
+      - "astrid/packs/vibecomfy/local_server_engine.py"
+      - "pyproject.toml"
+      - "tests/core/generation/backends/test_comfy*.py"
+      - "tests/helpers/ls5_comfy_peer.py"
+      - "tests/packs/vibecomfy/test_ls5_rework_run.py"
+      - "tests/packs/vibecomfy/test_ls5_preparation_run.py"
+      - "tests/integrations/test_ls5_meter.py"
+      - "tests/ls5_meter_run.py"
+      - "tests/ls5_meter_compare.py"
+      - "tests/ls5_rework_proof.py"
+      - "tests/ls5_preparation_proof.py"
+      - "tests/ls5_windows_baseline.py"
+      - "tests/test_ls5_windows_baseline.py"
+      - "tests/_ls5_meter_observer.py"
+      - ".github/workflows/plan55-ls5.yml"
+permissions:
+  contents: read
+concurrency:
+  group: plan55-ls5-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  prove:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      ASTRID_CI_JOB: lanes-integration
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTEST_ADDOPTS: "-rA"
+      ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/runtime
+      ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/vibe
+      ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/lifecycle
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Read the candidate's existing pin authorities
+        id: pins
+        shell: python
+        run: |
+          import json, os, pathlib, re
+          p = json.loads(pathlib.Path("astrid/packs/runpod/pins.json").read_text())["sources"]
+          v = json.loads(pathlib.Path("astrid/packs/vibecomfy/pins.json").read_text())["sources"]
+          r = json.loads(pathlib.Path("runtime.lock.json").read_text())["source_commit"]
+          assert p["vibecomfy"]["revision"] == v["vibecomfy"]["revision"]
+          values = {"vibe": p["vibecomfy"]["revision"], "runtime": r, "lifecycle": p["lifecycle"]["revision"]}
+          assert all(re.fullmatch("[0-9a-f]{40}", value) for value in values.values())
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              for key, value in values.items(): out.write(f"{key}={value}\n")
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/VibeComfy
+          ref: ${{ steps.pins.outputs.vibe }}
+          path: vibe
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-runtime
+          ref: ${{ steps.pins.outputs.runtime }}
+          path: runtime
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/runpod-lifecycle
+          ref: ${{ steps.pins.outputs.lifecycle }}
+          path: lifecycle
+          persist-credentials: false
+      - name: Retain exact public source snapshots
+        shell: bash
+        run: |
+          mkdir -p plan55-ls5-proof
+          git -C vibe archive --format=zip --output="$GITHUB_WORKSPACE/plan55-ls5-proof/vibe-source.zip" HEAD
+          git archive --format=zip --output="$GITHUB_WORKSPACE/plan55-ls5-proof/agent-source.zip" HEAD
+          git rev-parse HEAD > plan55-ls5-proof/agent.sha
+          git -C vibe rev-parse HEAD > plan55-ls5-proof/vibe.sha
+          git -C runtime rev-parse HEAD > plan55-ls5-proof/runtime.sha
+          git -C lifecycle rev-parse HEAD > plan55-ls5-proof/lifecycle.sha
+      - name: Install the CPU test dependencies, with unchanged Runtime and lifecycle
+        shell: bash
+        run: |
+          python -m pip install -e '.[dev]'
+          python -m pip install --no-deps -e ./runtime -e ./runtime/packages/python -e ./lifecycle
+          python -m pip install -e ./vibe
+      - name: Require reproducible generated pin bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/vibecomfy_pin.py "${{ steps.pins.outputs.vibe }}" --checkout "$GITHUB_WORKSPACE/vibe" > plan55-ls5-proof/generator.log 2>&1
+          git diff --exit-code -- astrid > plan55-ls5-proof/generator.diff
+      - name: Prove Agent pin and recipe authority
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q -rA tests/test_vibecomfy_pin.py tests/core/generation/test_engine_recipe.py --junitxml=plan55-ls5-proof/agent-pin.xml 2>&1 | tee plan55-ls5-proof/agent-pin.log
+          rc=${PIPESTATUS[0]}; echo "$rc" > plan55-ls5-proof/agent-pin.exit; exit "$rc"
+      - name: Prove the actual approved VibeComfy transport
+        working-directory: vibe
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q -rA tests/test_runtime_transport.py --junitxml=../plan55-ls5-proof/vibe-transport.xml 2>&1 | tee ../plan55-ls5-proof/vibe-transport.log
+          rc=${PIPESTATUS[0]}; echo "$rc" > ../plan55-ls5-proof/vibe-transport.exit; exit "$rc"
+      - name: Prove Agent guarded transport and attempt custody
+        env:
+          PYTHONSAFEPATH: "1"
+          PYTHONPATH: ${{ github.workspace }}/vibe
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q -rA tests/core/generation/backends/test_comfy_target.py tests/core/generation/backends/test_comfy_held_transport.py tests/core/generation/backends/test_comfy_held_rework.py tests/core/generation/backends/test_comfy_preparation_rework.py tests/test_ls5_windows_baseline.py --junitxml=plan55-ls5-proof/agent-transport.xml 2>&1 | tee plan55-ls5-proof/agent-transport.log
+          rc=${PIPESTATUS[0]}; echo "$rc" > plan55-ls5-proof/agent-transport.exit; exit "$rc"
+      - name: Reproduce Lead regression probes at unchanged 0a49ce48
+        shell: bash
+        run: |
+          python -m tests.ls5_rework_proof --output plan55-ls5-proof/review-baseline --vibe vibe --runtime runtime --lifecycle lifecycle
+      - name: Reproduce unsent preparation probes at unchanged 04539d38
+        shell: bash
+        run: |
+          python -m tests.ls5_preparation_proof --output plan55-ls5-proof/preparation-baseline --vibe vibe --runtime runtime --lifecycle lifecycle
+      - name: Prove the unchanged attached pack integration cases
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q -rA -m integration tests/packs/vibecomfy/test_local_server_run.py tests/packs/vibecomfy/test_local_server_mask_preflight.py tests/packs/vibecomfy/test_local_server_media.py tests/packs/vibecomfy/test_ls5_rework_run.py tests/packs/vibecomfy/test_ls5_preparation_run.py --junitxml=plan55-ls5-proof/agent-integration.xml 2>&1 | tee plan55-ls5-proof/agent-integration.log
+          rc=${PIPESTATUS[0]}; echo "$rc" > plan55-ls5-proof/agent-integration.exit; exit "$rc"
+      - name: Install native observation tools
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y strace ffmpeg
+      - name: Acquire the same-pin LS-5 comparison with the unchanged LS-2 meter
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m tests.ls5_meter_compare --output plan55-ls5-proof/comparison --samples 2 --counter-samples 1 --timeout 1800 2>&1 | tee plan55-ls5-proof/comparison.log
+          rc=${PIPESTATUS[0]}; echo "$rc" > plan55-ls5-proof/comparison.exit; exit "$rc"
+      - name: Preserve exact result manifest
+        if: ${{ always() }}
+        shell: python
+        run: |
+          import hashlib, pathlib
+          out = pathlib.Path("plan55-ls5-proof")
+          out.mkdir(exist_ok=True)
+          files = sorted(p for p in out.rglob("*") if p.is_file() and p.name != "SHA256SUMS")
+          (out / "SHA256SUMS").write_text("".join(hashlib.sha256(p.read_bytes()).hexdigest() + "  " + p.relative_to(out).as_posix() + "\n" for p in files))
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: plan55-ls5-${{ github.run_id }}-${{ github.run_attempt }}
+          path: plan55-ls5-proof
+          include-hidden-files: true
+          retention-days: 14
+  prove-windows-websocket:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/runtime
+      ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/vibe
+      ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/lifecycle
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Read the candidate's existing pin authorities
+        id: pins
+        shell: python
+        run: |
+          import json, os, pathlib, re
+          p = json.loads(pathlib.Path("astrid/packs/runpod/pins.json").read_text())["sources"]
+          v = json.loads(pathlib.Path("astrid/packs/vibecomfy/pins.json").read_text())["sources"]
+          r = json.loads(pathlib.Path("runtime.lock.json").read_text())["source_commit"]
+          assert p["vibecomfy"]["revision"] == v["vibecomfy"]["revision"]
+          values = {"vibe": p["vibecomfy"]["revision"], "runtime": r, "lifecycle": p["lifecycle"]["revision"]}
+          assert all(re.fullmatch("[0-9a-f]{40}", value) for value in values.values())
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              for key, value in values.items(): out.write(f"{key}={value}\n")
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/VibeComfy
+          ref: ${{ steps.pins.outputs.vibe }}
+          path: vibe
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-runtime
+          ref: ${{ steps.pins.outputs.runtime }}
+          path: runtime
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/runpod-lifecycle
+          ref: ${{ steps.pins.outputs.lifecycle }}
+          path: lifecycle
+          persist-credentials: false
+      - name: Retain Windows source identity
+        shell: python
+        run: |
+          import json, pathlib, platform, subprocess, sys
+          out = pathlib.Path("plan55-ls5-windows-proof")
+          out.mkdir()
+          sources = {name: subprocess.check_output(["git", "-C", path, "rev-parse", "HEAD", "HEAD^{tree}"], text=True).splitlines() for name, path in {"agent": ".", "vibe": "vibe", "runtime": "runtime", "lifecycle": "lifecycle"}.items()}
+          (out / "identity.json").write_text(json.dumps({"sources": sources, "python": sys.version, "platform": platform.platform()}, indent=2))
+      - name: Install CPU transport dependencies
+        shell: bash
+        run: |
+          python -m pip install -e '.[dev]'
+          python -m pip install --no-deps -e ./runtime -e ./runtime/packages/python -e ./lifecycle
+          python -m pip install -e ./vibe
+      - name: Gate the 61 packet websocket and review cases on Windows
+        id: transport
+        env:
+          PYTHONSAFEPATH: "1"
+          PYTHONPATH: ${{ github.workspace }}/vibe
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q -rA tests/core/generation/backends/test_comfy_held_transport.py tests/core/generation/backends/test_comfy_held_rework.py --junitxml=plan55-ls5-windows-proof/agent-transport.xml 2>&1 | tee plan55-ls5-windows-proof/agent-transport.log
+          rc=${PIPESTATUS[0]}; echo "$rc" > plan55-ls5-windows-proof/agent-transport.exit; exit "$rc"
+      - name: Gate the new unsent-prompt and comparison-drift probes on Windows
+        env:
+          PYTHONSAFEPATH: "1"
+          PYTHONPATH: ${{ github.workspace }}/vibe
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q -rA tests/core/generation/backends/test_comfy_preparation_rework.py tests/test_ls5_windows_baseline.py --junitxml=plan55-ls5-windows-proof/preparation.xml 2>&1 | tee plan55-ls5-windows-proof/preparation.log
+          rc=${PIPESTATUS[0]}; echo "$rc" > plan55-ls5-windows-proof/preparation.exit; exit "$rc"
+      - name: Retain exact-base outcomes for unchanged Windows target cases
+        if: ${{ always() && steps.transport.outcome != 'skipped' }}
+        shell: bash
+        run: |
+          python -m tests.ls5_windows_baseline --output plan55-ls5-windows-proof
+      - name: Preserve Windows result manifest
+        if: ${{ always() }}
+        shell: python
+        run: |
+          import hashlib, pathlib
+          out = pathlib.Path("plan55-ls5-windows-proof")
+          out.mkdir(exist_ok=True)
+          files = sorted(p for p in out.rglob("*") if p.is_file() and p.name != "SHA256SUMS")
+          (out / "SHA256SUMS").write_text("".join(hashlib.sha256(p.read_bytes()).hexdigest() + "  " + p.relative_to(out).as_posix() + "\n" for p in files))
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: plan55-ls5-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: plan55-ls5-windows-proof
+          retention-days: 14

@@ -1,0 +1,116 @@
+{
+  "schema": "astrid.local-speed-baseline.v2",
+  "system": "Windows",
+  "sources": {
+    "agent": "3663fd5c667549ae764144866e1354bce46d5c04",
+    "runtime": "6855dfa8df65cf8ae4c002b57134d6505493c17c",
+    "vibecomfy": "dba38f8644c46f652376f2cd5112ea161e40f09b",
+    "lifecycle": "7f0b025e9391baac9f5c2fb7393617ea6fef0704"
+  },
+  "tolerance": {
+    "median_relative": 0.5,
+    "median_seconds": 3,
+    "slowest_relative": 1,
+    "slowest_seconds": 5,
+    "background_relative": 0.5,
+    "background_count": 10
+  },
+  "callers": {
+    "resident_sdk": {
+      "caller_seconds": {
+        "samples": 5,
+        "median": 99.96899999999994,
+        "slowest": 102.31200000000001
+      },
+      "overhead_seconds": {
+        "samples": 5,
+        "median": 99.96899999999994,
+        "slowest": 102.31200000000001
+      },
+      "queue_seconds": {
+        "samples": 5,
+        "median": 0,
+        "slowest": 0
+      },
+      "execution_seconds": {
+        "samples": 5,
+        "median": 0,
+        "slowest": 0
+      },
+      "counter_samples": 2,
+      "counter_maxima": {
+        "comfy_http.GET /history/<prompt>": 1,
+        "comfy_http.GET /object_info": 4,
+        "comfy_http.GET /queue": 2,
+        "comfy_http.GET /system_stats": 2,
+        "comfy_http.GET /view": 1,
+        "comfy_http.POST /prompt": 1,
+        "comfy_http.POST /queue": 2,
+        "output_hash_streams": 25,
+        "process_start.external": 5,
+        "process_start.pack_worker": 1,
+        "python.bundle_compile": 2,
+        "python.bundle_emission": 3,
+        "python.fdatasync_attempt": 0,
+        "python.fdatasync_success": 0,
+        "python.fsync_attempt": 84,
+        "python.fsync_success": 84,
+        "python.sleep_attempt": 264,
+        "python.workflow_compile": 8,
+        "python_forced_write_requests": 84,
+        "runtime_commit_statements": 1266
+      },
+      "native_flush_coverage": "unobserved"
+    },
+    "fresh_python_cli": {
+      "caller_seconds": {
+        "samples": 5,
+        "median": 48.125,
+        "slowest": 56
+      },
+      "overhead_seconds": {
+        "samples": 5,
+        "median": 48.125,
+        "slowest": 56
+      },
+      "queue_seconds": {
+        "samples": 5,
+        "median": 0,
+        "slowest": 0
+      },
+      "execution_seconds": {
+        "samples": 5,
+        "median": 0,
+        "slowest": 0
+      },
+      "counter_samples": 2,
+      "counter_maxima": {
+        "comfy_http.GET /history/<prompt>": 1,
+        "comfy_http.GET /object_info": 4,
+        "comfy_http.GET /queue": 2,
+        "comfy_http.GET /system_stats": 2,
+        "comfy_http.GET /view": 1,
+        "comfy_http.POST /prompt": 1,
+        "comfy_http.POST /queue": 2,
+        "output_hash_streams": 25,
+        "process_start.cli": 1,
+        "process_start.external": 5,
+        "process_start.pack_worker": 1,
+        "python.bundle_compile": 2,
+        "python.bundle_emission": 3,
+        "python.fdatasync_attempt": 0,
+        "python.fdatasync_success": 0,
+        "python.fsync_attempt": 84,
+        "python.fsync_success": 84,
+        "python.sleep_attempt": 266,
+        "python.workflow_compile": 8,
+        "python_forced_write_requests": 84,
+        "runtime_commit_statements": 664
+      },
+      "native_flush_coverage": "unobserved"
+    }
+  },
+  "fixture": "attached stand-in, 16x16 PNG; no inference, not a D1 workload",
+  "native_windows_flushes": "unqualified; LS-13 owns the native trace",
+  "budget_certified": false
+}

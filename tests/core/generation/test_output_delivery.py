@@ -315,3 +315,72 @@ def test_failed_generation_is_preserved_for_the_cli_failure_handler(tmp_path):
 
     result = SimpleNamespace(ok=False)
     assert deliver_generation(result, client=None, out=tmp_path / 'image.png') is result
+
+
+def test_output_hash_passes_across_download_host_runtime_and_delivery(tmp_path, monkeypatch):
+    """Count the still-distinct custody checks; Runtime, not a child, validates upload bytes."""
+    from astrid.core._shared.result_manifest import harvest_staged_outputs
+    from astrid.core.execution.generic_host import GenericPackHost, RuntimeProtocolClient
+    from astrid.core.generation.delivery import deliver_generation
+    from runtime_protocol.service import RuntimeService
+    from runtime_protocol.store import RealmStore
+
+    runtime = settled_media(filenames=('one.png',))
+    data = b'output 0'
+    digest = 'sha256:' + sha(data)
+    root = tmp_path / 'attempt'
+    output_root = root / 'outputs'
+    output_root.mkdir(parents=True)
+    path = output_root / 'one.png'
+    counts = []
+    original = hashlib.sha256
+
+    class Counted:
+        def __init__(self, initial=b'', *args, **kwargs):
+            self.value = original(initial, *args, **kwargs)
+            if initial == data:
+                counts.append('hash')
+        def update(self, block):
+            if block == data:
+                counts.append('hash')
+            return self.value.update(block)
+        def __getattr__(self, key):
+            return getattr(self.value, key)
+
+    class Response(io.BytesIO):
+        status = 200
+        headers = {'Content-Length': str(len(data))}
+
+    monkeypatch.setattr(hashlib, 'sha256', Counted)
+    client = ComfyTargetClient(ComfyTarget('http://127.0.0.1:8188', 'attached'),
+                               opener=lambda *_args, **_kwargs: Response(data))
+    client.download_output({'filename': 'one.png', 'subfolder': '', 'type': 'output'}, path)
+    assert len(counts) == 1
+    declared = SimpleNamespace(name='result', path_template='one.png', artifact_type='image/png')
+    record = SimpleNamespace(definition=SimpleNamespace(outputs=(declared,), metadata={}))
+    (output_root / 'manifest.json').write_text(json.dumps({'outputs': [{
+        'name': 'result', 'path': 'one.png', 'content_hash': digest, 'bytes': len(data),
+    }]}))
+    harvested = harvest_staged_outputs(output_root, declared_outputs=(declared,))
+    assert len(counts) == 2
+    host = object.__new__(GenericPackHost)
+    host.client = object.__new__(RuntimeProtocolClient)
+    typed = host._typed_outputs(record, harvested, root, defer_content_check_to_runtime=True)
+    outputs = host._upload_outputs(typed, project_id=None)
+    assert len(counts) == 2  # no host reread/re-hash after harvest
+    assert outputs[0]['digest'] == digest
+
+    realm = tmp_path / 'realm'
+    RealmStore.initialize(realm).close()
+    service = RuntimeService(realm)
+    try:
+        before = len(counts)
+        service._stage_outputs('attempt-1', outputs)
+        assert len(counts) > before  # Runtime verifies the exact inline bytes
+    finally:
+        service.close()
+    before = len(counts)
+    result = deliver_generation(runtime.payload, client=runtime.client, out=tmp_path / 'delivered.png')
+    assert Path(result['image_paths'][0]).read_bytes() == data
+    # SDK response verification and view hash, plus the mutable-path check.
+    assert len(counts) - before == 3

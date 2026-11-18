@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
+import threading
 import time
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError
+
+from astrid.core.generation.engine_contracts import TransportError
 
 from ..vibecomfy_runtime_root import vibecomfy_runtime_root
 from .comfy_target import (
+    ComfyRequestNotStarted,
     ComfyTarget,
     ComfyTargetClient,
     validate_identity,
@@ -28,30 +34,192 @@ __all__ = [
 class TargetRuntimeClient:
     """Adapt the selected G22 client to VibeComfy's existing async runner."""
 
-    def __init__(self, client: ComfyTargetClient) -> None:
+    def __init__(self, client: ComfyTargetClient, *, on_event=None) -> None:
         self.client = client
         self.server_url = client.http_origin
+        self.session = client.held_session
+        self._attempt = None
+        self._progress = None
+        self._on_event = on_event
+        self._recovery = None
+        self._released = False
+        self._history_readiness = None
+        self._ready_history = None
+        self.evidence = dict(getattr(client, "transport_evidence", {}))
+        if self.session is not None:
+            self.evidence.update(mode="held", target_generation=client.generation.identity,
+                                 target_identity="unverified")
 
     async def _post_prompt(self, prompt: dict[str, Any]) -> Any:
-        return await asyncio.to_thread(self.client.submit_prompt, {"prompt": prompt})
+        if self._released:
+            raise TransportError("Comfy attempt is released")
+        if self.session is None:
+            return await asyncio.to_thread(self.client.submit_prompt, {"prompt": prompt})
+        body = self.client._begin_prompt({"prompt": prompt})
+
+        async def post():
+            self._attempt = await self.session.attempt(self.client)
+            result = await self._attempt._post_prompt(body["prompt"])
+            if not isinstance(result, dict):
+                raise ValueError("Comfy prompt acceptance is not an object")
+            # An acknowledgement that races retirement is still a witness for
+            # this old attempt; it is never a licence to post again.
+            self.client.witness_prompt(result.get("prompt_id"))
+            if self._on_event is not None:
+                self._progress = asyncio.create_task(self._consume_events())
+            return result
+
+        try:
+            return await self.session.wait(post())
+        except ComfyRequestNotStarted as exc:
+            exc.prompt_not_started = True
+            raise
+        except HTTPError as exc:
+            if exc.code in {400, 401, 403, 404, 422}:
+                raise
+            raise self.client._unknown_acceptance() from exc
+        except Exception as exc:
+            raise self.client._unknown_acceptance() from exc
+
+    async def _consume_events(self):
+        while True:
+            event = await self._attempt.next_event()
+            if event is None:
+                return
+            data = event.get("data", {})
+            if not self.client.owns_prompt(data.get("prompt_id")):
+                continue
+            try:
+                # VibeComfy coalesces into one slot. Slow display work cannot
+                # block its socket reader, history-ready event or worker exit.
+                await self._publish_event(event)
+            except Exception:  # noqa: BLE001 - an advisory consumer cannot fail terminal custody
+                pass  # Progress is advisory; terminal custody is not.
+
+    async def _publish_event(self, event):
+        loop = asyncio.get_running_loop()
+        finished = loop.create_future()
+        context = contextvars.copy_context()
+
+        def finish():
+            if not finished.done():
+                finished.set_result(None)
+
+        def publish():
+            try:
+                if not self._released:
+                    context.run(self._on_event, event)
+            except Exception:  # noqa: BLE001 - consumer errors are advisory
+                pass
+            finally:
+                try:
+                    loop.call_soon_threadsafe(finish)
+                except RuntimeError:
+                    pass  # The owning job already closed its event loop.
+
+        # ThreadPoolExecutor joins its workers at interpreter exit, even after
+        # cancelling the awaiting task. One active daemon callback per attempt avoids
+        # making a stalled display consumer part of the job's terminal path.
+        # Awaiting this callback leaves subsequent events in Vibe's single slot.
+        threading.Thread(target=publish, name="comfy-progress", daemon=True).start()
+        await finished
+
+    async def history_ready(self, prompt_id: str) -> bool:
+        if not self.client.owns_prompt(prompt_id):
+            raise ValueError("runtime history requires this attempt's witnessed prompt")
+        if self.session is None:
+            return False
+        if self._history_readiness is not None:
+            return self._history_readiness
+        ready = await self.session.wait(self._attempt.history_ready(prompt_id))
+        if not ready or self.client.generation.retired:
+            self._recovery_client(prompt_id)
+            self._history_readiness = False
+            return False
+        # Some older servers announce node=null before persisting history.
+        # Check once and cache the response for Vibe's unchanged decoder. An
+        # empty or explicitly non-terminal entry selects its bounded poll;
+        # all malformed/status/output checks remain the decoder's authority.
+        history = await self.history(prompt_id)
+        self._ready_history = (history, self._recovery or self.client)
+        entry = history.get(prompt_id) if isinstance(history, dict) else None
+        status = entry.get("status") if isinstance(entry, dict) else None
+        early = history == {} or (isinstance(status, dict)
+                                  and status.get("status_str") in {"pending", "queued", "running"})
+        if early:
+            self.evidence.update(mode="bounded-poll-early-ready",
+                                 reason="Comfy history-ready event preceded terminal history")
+        self._history_readiness = not early
+        return self._history_readiness
+
+    def _recovery_client(self, prompt_id):
+        if not self.client.owns_prompt(prompt_id):
+            raise ValueError("reconciliation requires this attempt's witnessed prompt")
+        if self._recovery is None:
+            # No shared witness set, submission capability, target facts or
+            # upload cache is transferred to this bounded recovery connection.
+            self._recovery = ComfyTargetClient(self.client.target)
+            self._recovery._prompt_attempted = True
+            self._recovery.witness_prompt(prompt_id)
+            import uuid
+            self.evidence.update(mode="bounded-poll-disconnect", recovery_generation=uuid.uuid4().hex,
+                                 reason=self.client.generation.reason)
+        if not self._recovery.owns_prompt(prompt_id):
+            raise ValueError("reconciliation belongs to another prompt")
+        return self._recovery
+
+    def artifact_client(self, prompt_id):
+        if self.session is not None and self.client.generation.retired:
+            return self._recovery_client(prompt_id)
+        return self.client
 
     async def history(self, prompt_id: str) -> Any:
-        return await asyncio.to_thread(self.client.history, prompt_id)
+        if not self.client.owns_prompt(prompt_id):
+            raise ValueError("runtime history requires this attempt's witnessed prompt")
+        if self._ready_history is not None:
+            (history, source), self._ready_history = self._ready_history, None
+            if source.generation is None or not source.generation.retired:
+                return source._current(history)
+        if self.session is None or self._attempt is None:
+            return await asyncio.to_thread(self.client.history, prompt_id)
+        if self.client.generation.retired:
+            return await asyncio.to_thread(self._recovery_client(prompt_id).history, prompt_id)
+        try:
+            result = await self.session.wait(self._attempt.history(prompt_id))
+            return self.client._current(result)
+        except (TransportError, OSError, ValueError):
+            if not self.client.generation.retired:
+                raise
+            return await asyncio.to_thread(self._recovery_client(prompt_id).history, prompt_id)
+
+    async def release_attempt(self):
+        if self._released:
+            return
+        self._released = True
+        if self.session is not None and self._attempt is not None:
+            async def release():
+                self._attempt.release()
+                if self._progress is not None:
+                    self._progress.cancel()
+                    await asyncio.gather(self._progress, return_exceptions=True)
+            await self.session.wait(release())
 
 
 class AttachedArtifacts:
     """Use the runner's existing attributed-artifact seam with G22 /view custody."""
 
-    def __init__(self, client: ComfyTargetClient, *, legacy_output_directory: str = "") -> None:
+    def __init__(self, client: ComfyTargetClient, *, legacy_output_directory: str = "", runtime_client=None) -> None:
         if client.target.kind != "attached":
             raise ValueError("attached artifact custody requires an attached target")
         self.client = client
+        self.runtime_client = runtime_client
         self.server_url = client.http_origin
         self.legacy_output_directory = Path(legacy_output_directory) if legacy_output_directory else None
 
     def describe(self) -> dict[str, Any]:
         return {"transport": "comfy-http-view", "target_kind": "attached",
-                "endpoint_url": self.client.target.url}
+                "endpoint_url": self.client.target.url,
+                **({"connection": dict(self.runtime_client.evidence)} if self.runtime_client is not None else {})}
 
     async def download_artifacts(self, *, local_root: Path) -> dict[str, Any]:
         from .comfy_target import validate_output_descriptor
@@ -59,8 +227,12 @@ class AttachedArtifacts:
         root = Path(local_root)
         attempt = json.loads((root.parent / "attempt.json").read_text(encoding="utf-8"))
         prompt_id = attempt.get("prompt_id")
+        acceptance = attempt.get("queue_acceptance")
         if (not isinstance(prompt_id, str)
-                or prompt_id not in self.client._witnessed_prompts):
+                or not isinstance(acceptance, dict)
+                or acceptance.get("status") != "accepted"
+                or acceptance.get("prompt_id") != prompt_id
+                or not self.client.owns_prompt(prompt_id)):
             raise ValueError("artifact custody requires this attempt's witnessed prompt")
         artifacts = attempt.get("artifacts")
         if not isinstance(artifacts, list) or not artifacts:
@@ -82,7 +254,16 @@ class AttachedArtifacts:
             if relative in seen:
                 raise ValueError("accepted output descriptors are ambiguous")
             seen.add(relative)
-            await asyncio.to_thread(self.client.download_output, descriptor, root / relative)
+            download_client = (self.runtime_client.artifact_client(prompt_id)
+                               if self.runtime_client is not None else self.client)
+            try:
+                await asyncio.to_thread(download_client.download_output, descriptor, root / relative)
+            except (TransportError, ValueError):
+                if (self.runtime_client is None or download_client is not self.client
+                        or self.client.generation is None or not self.client.generation.retired):
+                    raise
+                await asyncio.to_thread(self.runtime_client.artifact_client(prompt_id).download_output,
+                                        descriptor, root / relative)
         return {"status": "retrieved", "local_root": str(root), **self.describe()}
 
 

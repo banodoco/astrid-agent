@@ -6,6 +6,9 @@ existing attested EngineEndpointTransport, not a mock /view replacement.
 from __future__ import annotations
 
 import hashlib
+import json
+import re
+from urllib.parse import parse_qs, urlsplit
 from types import SimpleNamespace
 import pytest
 from aiohttp import web
@@ -72,9 +75,14 @@ def comfy(network):
     state = {"prompts": [], "mode": "success", "upload": None, "controls": [], "running": "unrelated"}
 
     async def handler(request):
+        if request.path == "/view" and request.method == "HEAD":
+            return web.Response(status=404)
         if request.path == "/upload/image":
             state["upload"] = await request.read()
-            return web.json_response({"name": "source.png", "subfolder": "astrid/task-1", "type": "input"})
+            body = state["upload"].decode("latin-1")
+            name = re.search(r'name="image"; filename="([^"]+)"', body).group(1)
+            subfolder = re.search(r'name="subfolder"\r\n\r\n([^\r\n]+)', body).group(1)
+            return web.json_response({"name": name, "subfolder": subfolder, "type": "input"})
         if request.path == "/prompt":
             state["prompts"].append(await request.json())
             if state["mode"] == "lost-reply":
@@ -108,9 +116,115 @@ def pod_client(transport, tmp_path):
     }), endpoint_transport=transport)
 
 
+class _ProbeResponse:
+    def __init__(self, body=b"", *, status=200, headers=None):
+        self.body = body
+        self.status = status
+        self.headers = headers or {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return None
+
+    def read(self, size=-1):
+        if size < 0:
+            result, self.body = self.body, b""
+        else:
+            result, self.body = self.body[:size], self.body[size:]
+        return result
+
+
+def _upload_probe(source_bytes, *, existing=None, head_mode="normal"):
+    """Model stock Comfy /view HEAD and /upload/image without touching disk state."""
+    files = dict(existing or {})
+    uploads = []
+    digest = hashlib.sha256(source_bytes).hexdigest()
+    content_name = f"sha256-{digest}.png"
+    if head_mode == "unknown":
+        files.setdefault(("astrid/content", content_name), b"unknown prior object")
+
+    def opener(request, timeout):
+        assert timeout == comfy_target.HTTP_TRANSFER_SECONDS
+        if request.get_method() == "HEAD":
+            if head_mode == "error":
+                raise OSError("HEAD unavailable")
+            if head_mode == "unsupported":
+                return _ProbeResponse(status=405)
+            values = parse_qs(urlsplit(request.full_url).query)
+            key = (values["subfolder"][0], values["filename"][0])
+            if key not in files:
+                return _ProbeResponse(status=404)
+            headers = {} if head_mode == "unknown" else {"Content-Length": str(len(files[key]))}
+            return _ProbeResponse(status=200, headers=headers)
+        assert request.full_url.endswith("/upload/image")
+        body = request.data.decode("latin-1")
+        filename = re.search(r'name="image"; filename="([^"]+)"', body).group(1)
+        subfolder = re.search(r'name="subfolder"\r\n\r\n([^\r\n]+)', body).group(1)
+        uploads.append((subfolder, filename, request.data))
+        files[(subfolder, filename)] = source_bytes
+        result = json.dumps({"name": filename, "subfolder": subfolder, "type": "input"}).encode()
+        return _ProbeResponse(result)
+
+    return opener, files, uploads, content_name
+
+
+def test_content_named_input_is_reused_only_when_size_matches(tmp_path):
+    source_bytes = b"identical content"
+    source = tmp_path / "photo.png"
+    source.write_bytes(source_bytes)
+    client = ComfyTargetClient(ComfyTarget("http://127.0.0.1:8188", "attached"))
+    opener, files, uploads, name = _upload_probe(source_bytes)
+    client._opener = opener
+
+    first = client.upload_media(source, task_id="task-1")
+    second = client.upload_media(source, task_id="task-2")
+
+    assert first == second == f"astrid/content/{name}"
+    assert len(uploads) == 1
+    assert files[("astrid/content", name)] == source_bytes
+
+
+def test_wrong_size_content_input_falls_back_without_repairing_shared_file(tmp_path):
+    source_bytes = b"new bytes"
+    source = tmp_path / "source.png"
+    source.write_bytes(source_bytes)
+    client = ComfyTargetClient(ComfyTarget("http://127.0.0.1:8188", "attached"))
+    original = b"existing shared bytes with a different size"
+    opener, files, uploads, name = _upload_probe(source_bytes,
+        existing={("astrid/content", f"sha256-{hashlib.sha256(source_bytes).hexdigest()}.png"): original})
+    client._opener = opener
+
+    reference = client.upload_media(source, task_id="task-7")
+
+    assert reference == f"astrid/task-7/{hashlib.sha256(source_bytes).hexdigest()}-source.png"
+    assert len(uploads) == 1 and uploads[0][0] == "astrid/task-7"
+    assert files[("astrid/content", name)] == original
+
+
+@pytest.mark.parametrize("head_mode", ["unsupported", "unknown", "error"])
+def test_unusable_content_head_falls_back_to_task_input(tmp_path, head_mode):
+    source_bytes = b"safe fallback"
+    source = tmp_path / "source.png"
+    source.write_bytes(source_bytes)
+    client = ComfyTargetClient(ComfyTarget("http://127.0.0.1:8188", "attached"))
+    opener, _files, uploads, _name = _upload_probe(source_bytes, head_mode=head_mode)
+    client._opener = opener
+
+    reference = client.upload_media(source, task_id="task-8")
+
+    assert reference == f"astrid/task-8/{hashlib.sha256(source_bytes).hexdigest()}-source.png"
+    assert len(uploads) == 1 and uploads[0][0] == "astrid/task-8"
+
+
 def exercise(client, source, destination, expected):
     reference = client.upload_media(source, task_id="task-1", expected_sha256=hashlib.sha256(source.read_bytes()).hexdigest())
-    assert reference == "astrid/task-1/source.png"
+    if client.endpoint_transport is None:
+        filename = f"sha256-{hashlib.sha256(source.read_bytes()).hexdigest()}.png"
+        assert reference == f"astrid/content/{filename}"
+    else:
+        assert reference == "astrid/task-1/source.png"
     acceptance = client.submit_prompt(PROMPT)
     assert acceptance["prompt_id"] == "ours"
     history = client.history(acceptance["prompt_id"])
@@ -231,7 +345,9 @@ def test_multipart_upload_overhead_must_fit_agent_request_limit(tmp_path, networ
     source.write_bytes(b"image")
     monkeypatch.setattr(comfy_target, "MAX_ENGINE_BODY_BYTES", 128)
     client = attached(network)
-    client._opener = lambda *_args, **_kwargs: pytest.fail("oversized multipart reached upstream")
+    client._opener = lambda request, **_kwargs: (
+        _ProbeResponse(status=405) if request.get_method() == "HEAD"
+        else pytest.fail("oversized multipart reached upstream"))
     with pytest.raises(ValueError, match="multipart media upload exceeds"):
         client.upload_media(source, task_id="x" * 200)
     assert network["upstream"] == []
@@ -257,9 +373,11 @@ def test_upload_and_output_use_the_shared_relay_deadline(tmp_path, network):
     client._opener = opener
     client.upload_media(source, task_id="task-1")
     client.download_output(DESCRIPTOR, output)
-    assert timeouts == [comfy_target.HTTP_TRANSFER_SECONDS, comfy_target.LOCAL_HTTP_SECONDS]
-    assert timeouts == [15, 30]
-    assert len(requests[0].data) <= comfy_target.MAX_ENGINE_BODY_BYTES
+    assert timeouts == [comfy_target.HTTP_TRANSFER_SECONDS, comfy_target.HTTP_TRANSFER_SECONDS,
+                        comfy_target.LOCAL_HTTP_SECONDS]
+    assert timeouts == [15, 15, 30]
+    assert [request.get_method() for request in requests] == ["HEAD", "POST", "GET"]
+    assert len(requests[1].data) <= comfy_target.MAX_ENGINE_BODY_BYTES
     assert output.read_bytes() == b"output"
 
 
@@ -405,3 +523,52 @@ def test_pod_target_requires_attested_transport(endpoint, network, tmp_path):
         with pytest.raises(ValueError):
             ComfyTargetClient(ComfyTarget(endpoint.url.replace("/single", "/other"), "pod"), endpoint_transport=transport)
     assert network["upstream"] == []
+
+
+def test_runtime_history_is_scoped_to_attempt_witness(monkeypatch):
+    import asyncio
+    from astrid.core.generation.backends.vibecomfy_local_server import TargetRuntimeClient
+
+    first = ComfyTargetClient(ComfyTarget('http://127.0.0.1:8188', 'attached'))
+    second = ComfyTargetClient(ComfyTarget('http://127.0.0.1:8188', 'attached'))
+    first.witness_prompt('first')
+    second.witness_prompt('second')
+    calls = []
+    monkeypatch.setattr(first, 'history', lambda prompt_id: calls.append(prompt_id) or {'id': prompt_id})
+    adapter = TargetRuntimeClient(first)
+    with pytest.raises(ValueError, match='witnessed prompt'):
+        asyncio.run(adapter.history('second'))
+    with pytest.raises(ValueError, match='unsafe'):
+        asyncio.run(adapter.history('../bad'))
+    assert calls == []
+    assert asyncio.run(adapter.history('first')) == {'id': 'first'}
+    assert calls == ['first']
+
+
+def test_artifact_custody_requires_same_attempt_and_durable_acceptance(tmp_path, monkeypatch):
+    import asyncio
+    from astrid.core.generation.backends.vibecomfy_local_server import AttachedArtifacts
+
+    owner = ComfyTargetClient(ComfyTarget('http://127.0.0.1:8188', 'attached'))
+    other = ComfyTargetClient(ComfyTarget('http://127.0.0.1:8188', 'attached'))
+    owner.witness_prompt('ours')
+    attempt_path = tmp_path / 'attempt.json'
+    root = tmp_path / 'downloaded-artifacts'
+    calls = []
+    monkeypatch.setattr(owner, 'download_output', lambda descriptor, path: calls.append(path))
+    monkeypatch.setattr(other, 'download_output', lambda descriptor, path: calls.append(path))
+    artifact = {'descriptor': DESCRIPTOR}
+    def journal(status, prompt='ours'):
+        attempt_path.write_text(json.dumps({'prompt_id': prompt, 'queue_acceptance': {
+            'status': status, 'prompt_id': prompt}, 'artifacts': [artifact]}))
+
+    journal('accepted')
+    with pytest.raises(ValueError, match='witnessed prompt'):
+        asyncio.run(AttachedArtifacts(other).download_artifacts(local_root=root))
+    journal('unknown')
+    with pytest.raises(ValueError, match='witnessed prompt'):
+        asyncio.run(AttachedArtifacts(owner).download_artifacts(local_root=root))
+    assert not calls and not root.exists()
+    journal('accepted')
+    result = asyncio.run(AttachedArtifacts(owner).download_artifacts(local_root=root))
+    assert result['status'] == 'retrieved' and len(calls) == 1

@@ -59,6 +59,7 @@ def pinned_comfy_checkout(cache_root):
 def attached_comfy(comfy, port=0):
     """A human-attached ComfyUI on loopback: the stand-in pod's ComfyUI behind a real socket."""
     import http.server
+    import time
     from urllib.parse import parse_qs, urlsplit
 
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -74,6 +75,15 @@ def attached_comfy(comfy, port=0):
             self.wfile.write(body)
 
         def do_GET(self):
+            started = time.monotonic()
+            try:
+                self._get()
+            finally:
+                observer = getattr(comfy, "request_observer", None)
+                if observer is not None:
+                    observer("GET", urlsplit(self.path).path, started, time.monotonic())
+
+        def _get(self):
             url = urlsplit(self.path)
             if url.path == "/object_info":
                 return self._send(200, comfy.object_info())
@@ -93,6 +103,15 @@ def attached_comfy(comfy, port=0):
             self._send(404, {})
 
         def do_POST(self):
+            started = time.monotonic()
+            try:
+                self._post()
+            finally:
+                observer = getattr(comfy, "request_observer", None)
+                if observer is not None:
+                    observer("POST", urlsplit(self.path).path, started, time.monotonic())
+
+        def _post(self):
             body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
             if self.path == "/prompt":
                 status, payload = comfy.submit(json.loads(body))
