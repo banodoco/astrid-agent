@@ -28,7 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ matrix.source == 'baseline' && '19103ea6acbc030b3379e840ccc03491e47f1a0e' || github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ matrix.source == 'baseline' && 'b9a0a57184f9baf453d149d4f89a45b69532a122' || github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -76,12 +76,26 @@ jobs:
         run: |
           python -m pytest -q -m integration \
             tests/packs/vibecomfy/test_local_server_run.py \
+            tests/packs/vibecomfy/test_local_server_mask_preflight.py \
+            tests/packs/vibecomfy/test_local_server_media.py \
+            tests/packs/vibecomfy/test_ls5_rework_run.py \
+            tests/packs/vibecomfy/test_ls5_preparation_run.py \
             --junitxml=proof/regressions.xml 2>&1 | tee proof/regressions.log
       - name: Unchanged executable H3 build and output hooks
         if: always() && steps.install.outcome == 'success'
         run: |
           python -m pytest -q tests/core/generation/test_h3_local_job.py \
             --junitxml=proof/hooks.xml 2>&1 | tee proof/hooks.log
+      - name: Unchanged merged LS-5 target and one-submit guards
+        if: always() && steps.install.outcome == 'success'
+        run: |
+          python -m pytest -q \
+            tests/core/generation/backends/test_comfy_target.py \
+            tests/core/generation/backends/test_comfy_held_transport.py \
+            tests/core/generation/backends/test_comfy_held_rework.py \
+            tests/core/generation/backends/test_comfy_preparation_rework.py \
+            tests/test_ls5_windows_baseline.py \
+            --junitxml=proof/transport.xml 2>&1 | tee proof/transport.log
       - name: Prepared local-server integration
         if: always() && matrix.source == 'candidate' && steps.install.outcome == 'success'
         run: |

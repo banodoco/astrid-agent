@@ -474,6 +474,64 @@ def run_local_server(
     prepared_workflow: PreparedLocalWorkflow | None = None,
     prepared_context: Any = None,
 ) -> ProductionRunResult:
+    from astrid.core.generation.backends.comfy_held import ComfyTargetSession
+    from astrid.core.generation.backends.comfy_target import ComfyRequestNotStarted, ComfyTarget
+
+    with ComfyTargetSession(ComfyTarget(comfy_url, "attached")) as session:
+        for preparation in range(2):
+            try:
+                return _run_local_server(
+                    resolved, destination, comfy_url=comfy_url, comfy_output_dir=comfy_output_dir,
+                    task_identity=task_identity, attempt_identity=attempt_identity, run_inputs=run_inputs,
+                    workflow_conversion_object_info_sha256=workflow_conversion_object_info_sha256,
+                    session=session,
+                    prepared_workflow=prepared_workflow, prepared_context=prepared_context,
+                )
+            except Exception as exc:
+                # Vibe preserves the typed transport result in its exception
+                # chain. Only an unsent prompt permits one full re-preparation:
+                # new client, schema, media checks and approval. A failed read
+                # after acceptance or a lost POST acknowledgement cannot retry.
+                cause, seen = exc, set()
+                while cause is not None and id(cause) not in seen:
+                    seen.add(id(cause))
+                    if isinstance(cause, ComfyRequestNotStarted) and cause.prompt_not_started:
+                        break
+                    cause = cause.__cause__ or cause.__context__
+                else:
+                    raise
+                if preparation:
+                    raise
+                if prepared_workflow is not None:
+                    from vibecomfy.prepared import PreparedWorkflowSession
+
+                    # The permitted retry must capture fresh target facts and
+                    # approval; an old generation's prepared receipt cannot
+                    # authorize the replacement transport.
+                    PreparedWorkflowSession.invalidate(prepared_workflow.session)
+                    prepared_workflow = None
+                    prepared_context = None
+
+
+def _publish_comfy_progress(event):
+    from astrid.core.generation.progress import write_progress
+
+    data = event.get("data", {})
+    if event.get("type") != "progress":
+        return
+    value, maximum = data.get("value"), data.get("max")
+    if (isinstance(value, int) and not isinstance(value, bool)
+            and isinstance(maximum, int) and not isinstance(maximum, bool)
+            and 0 <= value <= maximum and maximum > 0):
+        write_progress("run", 50 + 39 * value // maximum, value=value, maximum=maximum)
+
+
+def _run_local_server(
+    resolved: Any, destination: Path, *, comfy_url: str, comfy_output_dir: str,
+    task_identity: str, attempt_identity: str | None, run_inputs: Mapping[str, Any] | None,
+    workflow_conversion_object_info_sha256: str | None = None, session,
+    prepared_workflow: PreparedLocalWorkflow | None = None, prepared_context: Any = None,
+) -> ProductionRunResult:
     from vibecomfy.runtime.run import run_sync
     from vibecomfy.runtime.session import SessionConfig
 
@@ -481,8 +539,6 @@ def run_local_server(
         AttachedArtifacts,
         TargetRuntimeClient,
         cleanup_prompts,
-        upload_image,
-        upload_media,
         validate_comfy_url,
         validate_identity,
         validate_output_directory,
@@ -514,10 +570,10 @@ def run_local_server(
     if attempt_identity is not None:
         values["attempt_id"] = attempt_identity
     config = SessionConfig.from_dict(values)
-    from astrid.core.generation.backends.comfy_target import ComfyTarget, ComfyTargetClient
     from astrid.core.generation.managed_preparation import read_preparation
     prepared = read_preparation(task=task_identity, attempt=attempt_identity, endpoint=url)
-    client = ComfyTargetClient(ComfyTarget(url, "attached"))
+    client = session.client()
+    runtime_client = TargetRuntimeClient(client, on_event=_publish_comfy_progress)
     custody = _trust_from_environment(bundle)
     from astrid.core.generation.target_inventory import declared_rows
     if prepared_workflow is None:
@@ -547,12 +603,12 @@ def run_local_server(
         if media in {"image", "mask", "video", "audio"}:
             source = destination / "engine-input" / str(value)
             if media in {"image", "mask"}:
-                bindings[name] = upload_image(url, source, task_id=task_identity)
+                bindings[name] = client.upload_media(source, task_id=task_identity)
             else:
                 # Same custody as images, plus the digest the managed-assets
                 # archive was verified against when it was staged.
-                bindings[name] = upload_media(
-                    url, source, task_id=task_identity, kind=media,
+                bindings[name] = client.upload_media(
+                    source, task_id=task_identity, kind=media,
                     expected_sha256=_staged_digest(destination, str(value)),
                 )
     if prepared_workflow is None:
@@ -601,8 +657,9 @@ def run_local_server(
             try:
                 result = run_sync(
                     record, bundle, server_url=url, config=config, schema_provider=provider,
-                    server_client=TargetRuntimeClient(client),
-                    artifact_client=AttachedArtifacts(client, legacy_output_directory=output_directory),
+                    server_client=runtime_client,
+                    artifact_client=AttachedArtifacts(client, legacy_output_directory=output_directory,
+                                                      runtime_client=runtime_client),
                     **({"run_context": context} if context is not None else {}),
                 )
             except Exception as exc:

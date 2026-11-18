@@ -189,7 +189,7 @@ def test_h3_executable_hooks_keep_the_existing_full_path(monkeypatch):
 
 @pytest.mark.parametrize("change", ["additional_input", "omitted_input", "prefix_colon", "prefix_long"])
 def test_unusable_prepared_fill_uses_full_path_before_upload(comfy, tmp_path, monkeypatch, change):
-    from astrid.core.generation.backends import vibecomfy_local_server as backend
+    from astrid.core.generation.backends.comfy_target import ComfyTargetClient
 
     comfy.schema["LoadImage"] = {
         "input": {"required": {"image": [["server-existing.png"], {"image_upload": True}]}},
@@ -217,7 +217,7 @@ def test_unusable_prepared_fill_uses_full_path_before_upload(comfy, tmp_path, mo
 
     capture(engine, "_live_preflight", "full-preflight")
     capture(engine, "local_server_bundle", "full-bundle")
-    capture(backend, "upload_image", "upload")
+    capture(ComfyTargetClient, "upload_media", "upload")
     capture(engine, "_approve_live", "full-approval")
 
     def incompatible_fill(*_args, **_kwargs):
@@ -257,3 +257,63 @@ def test_wrapped_compile_stage_admission_refusal_returns_to_full_path(comfy, tmp
     assert str(fallback.value) == str(full.value)
     assert not [call for call in comfy.calls if call[0] == "POST"]
     assert not comfy.prompts
+
+
+def test_unsent_transport_retirement_discards_prepared_authority_before_retry(comfy, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from urllib.request import Request
+
+    from astrid.core.generation.backends.comfy_held import ComfyTargetSession
+    from astrid.core.generation.backends.comfy_target import open_comfy_http
+    from tests.helpers.ls5_comfy_peer import ComfyPeer
+
+    adapter = SimpleNamespace(history=comfy.histories, outputs={}, views=[], input_files=set(),
+                              object_info=lambda: comfy.schema)
+
+    def submit(body):
+        request = Request(comfy.url + "/prompt", data=json.dumps(body).encode(),
+                          headers={"Content-Type": "application/json"}, method="POST")
+        with open_comfy_http(request, timeout=5) as response:
+            result = json.load(response)
+        for path in comfy.output.iterdir():
+            adapter.outputs[path.name] = (path.read_bytes(), "image/png")
+        return 200, result
+
+    adapter.submit = submit
+    with ComfyPeer(adapter) as peer:
+        selected = SimpleNamespace(url=peer.url, schema=comfy.schema)
+        bundle = fixture_bundle()
+        values = {"seed": 7, "prefix": "user/name"}
+        held, context = admit(bundle, values, selected, tmp_path)
+        clients, full_preflights = [], []
+        original_client = ComfyTargetSession.client
+        original_preflight = engine._live_preflight
+
+        def retire_first_client(session):
+            client = original_client(session)
+            clients.append(client)
+            if len(clients) == 1:
+                assert client.generation is not None
+                client.generation.retire("unsent prepared attempt test")
+                client.system_stats()
+            return client
+
+        def preflight(*args, **kwargs):
+            full_preflights.append(kwargs["client"])
+            return original_preflight(*args, **kwargs)
+
+        monkeypatch.setattr(ComfyTargetSession, "client", retire_first_client)
+        monkeypatch.setattr(engine, "_live_preflight", preflight)
+        destination = tmp_path / "attempt" / "outputs"
+        result = run_prepared(bundle, held, context, selected, destination, values, 0)
+        assert len(clients) == 2 and clients[0].generation.retired
+        assert clients[0].generation.identity != clients[1].generation.identity
+        assert full_preflights == [clients[1]]
+        assert not clients[0]._witnessed_prompts
+        assert clients[1].owns_prompt("ours-1")
+        assert peer.counts()["GET /ws"] == 2
+        assert peer.counts()["POST /prompt"] == len(comfy.prompts) == 1
+        assert comfy.prompts[0]["2"]["inputs"]["filename_prefix"] == "user/name_astrid_attempt-0"
+        assert_owned_result(result, destination, comfy, 0)
+        with pytest.raises(PreparedWorkflowUnavailable):
+            held.require_current(bundle, context=context, url=peer.url)
