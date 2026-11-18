@@ -31,7 +31,10 @@ def _media_admission_inputs(base: Mapping[str, Any], candidate: Mapping[str, Any
     """Capture the Runtime inputs required by an ordinary authored candidate."""
     from astrid.core.timeline.authoring_bundle import compile_authoring_candidate
     from astrid.sdk.timeline._command_state import equal
-    from astrid.sdk.timeline.native_media_admission import check_registry_associations, registry_selections
+    from astrid.sdk.timeline.native_media_admission import (
+        check_registry_associations,
+        registry_selections,
+    )
 
     source = base["source_mapping"]["_runtime_document"]
     publication = compile_authoring_candidate(candidate).publication

@@ -47,7 +47,10 @@ def resolve_source(port, resolver):
 
 
 def duplicate(ctx, command):
-    from astrid.core.timeline.authoring_bundle import _copy_shot_for_placement, _missing_registry_asset
+    from astrid.core.timeline.authoring_bundle import (
+        _copy_shot_for_placement,
+        _missing_registry_asset,
+    )
 
     args = command['args']
     source = getattr(ctx, 'source_copy', None)
