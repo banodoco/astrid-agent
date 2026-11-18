@@ -84,12 +84,15 @@ Fallback, if lip sync to a fixed voice does not work in H3: generate each on-cam
 
 ## Open: how the voice gets into a masked lip sync (LM)
 
-Not settled; we are building this skill as we go. The masked edit today keeps the shot's own sound and takes no reference image. Candidates, each with the cheapest test that would settle it:
-1. **Voice in the lead-in.** Put a snippet of the target voice (from the voice track) just before the masked span, as unmasked context. H3 then generates the masked span's audio and mouth together, in that voice, from the prompt's words. Test: one run on the 12-16 s close-up, with lead-in audio swapped for the voice-track slice.
-2. **Fixed replacement audio.** Feed the shot's slice of the voice track as the audio, held fixed, and regenerate only the mouth pixels to match it. Needs a new input on the masked edit. Test: the same shot, mouth mask only; does the mouth follow?
+Not settled; we are building this skill as we go. The masked edit has a route for fixed replacement audio (one voice span per request, a window of a voice-track clip spliced over the mouth's interval) and takes up to two reference images. Both compile on CPU; neither has a GPU result yet. Audio cannot be time-masked on the continuation route: its audio strength is one number for the whole clip. So options 1 and 4 are continuation-route candidates, not masked-edit ones. Candidates, each with the cheapest test that would settle it:
+1. **Voice in the lead-in** (continuation route). Put a snippet of the target voice just before the span, as unmasked context, so H3 generates the mouth and its audio together from the prompt's words. Test: one run on the 12-16 s close-up, with lead-in audio swapped for the voice-track slice.
+2. **Fixed replacement audio** (masked edit; route exists). Feed the voice track's slice for the shot as a replacement span (its range is the slice of the track, its interval is the span in the shot), held fixed at audio strength 0, and regenerate only the mouth pixels to match. Use a mouth mask that covers the lower face (jaw and cheeks), not only the lips. Test: the same shot, mouth mask only; does the mouth follow?
 3. **Voice as a reference.** A reference-audio input (H3's reference route has one, not exposed on edits). Test after it is exposed.
-4. **Unmasked audio.** Mask the mouth and lenses in the picture but let all of the shot's audio regenerate from the prompt and the surrounding real sound. The simplest, but the voice may drift from the voice track.
-Also open: mouth and lenses in one pass (two masks, one run, cheaper) or two passes (independent, easier to judge)? And how the edges of the masked span join the real footage in sound and picture.
+4. **Unmasked audio** (continuation route). Regenerate all of the shot's audio from the prompt and the surrounding real sound. The simplest, but the voice may drift from the voice track.
+
+Lenses and mouth: recommend two passes. Lenses first (reference image, lens mask, audio left alone); then the mouth pass with the replacement span last, on the lens output. One pass is possible only when both regions use the same references: the request is refused otherwise, and the lens reference would also condition the mouth region. The reason is that references and the single inside strength condition the whole clip in one pass.
+
+Also open: how the edges of the masked span join the real footage in sound and picture.
 
 ## Stage 5 - Picture passes, shot by shot
 

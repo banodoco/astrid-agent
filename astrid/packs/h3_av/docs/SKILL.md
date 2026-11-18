@@ -180,8 +180,9 @@ contracts—not creative request fields.
 `changes` list means preserve source material. References are an ordered list
 and may be empty; the selected workflow advertises its actual reference
 capacity in the compiled manifest rather than silently discarding extras.
-The current continuation workflow supports up to two image references; the
-edit workflow has no reference-image input. Ordinary source-free generation
+The continuation workflow and the source-backed masked edit both support up to
+two image references; the masked edit advertises `reference_capacity: 2` in its
+manifest when it carries references. Ordinary source-free generation
 supports one to nine ordered still-image references. The Character Swap route
 supports exactly one video and one image reference. Unsupported counts fail
 admission or compilation.
@@ -226,8 +227,9 @@ visual quality; target attestation and a live run remain separate gates.
 
 ## Worked source-backed edits
 
-Edits can't regenerate audio; use video-only changes (the source audio is kept).
-Ordinary source-backed edits use the native `H3V2VGranularFractionalDenoise`
+Source-backed edits keep the shot's audio unless the request supplies a
+replacement audio clip (see "Edit inputs" below); `audio_strength` stays 0 either
+way. Ordinary source-backed edits use the native `H3V2VGranularFractionalDenoise`
 spatial/temporal mask route. The LanPaint helper in `shared/compile.py` is not
 on the active edit dispatch. The composer rejects changed outside-mask pixels
 (`shared/compose.py:678–680`); CPU admission alone does not prove output equality.
@@ -294,6 +296,114 @@ changes:
   video: [{during: [0.0, 3.0], area: {mask_asset: frame-mask.png}, action: generate}]
   audio: []
 overrides: {steps: 8, seed: 42}
+```
+
+## Edit inputs: reference images and replacement audio
+
+A v2 source-backed edit takes three independent parts. Each is optional, and
+they combine in one request:
+
+- **Masks** are the `mask` of a video `edit` entry: a mask asset (static image;
+  white is editable), or `{"rectangle": [x, y, width, height]}` in 1024x576 pixel
+  coordinates. An image mask must match the 1024x576 working frame whatever the
+  source fit, and be strictly binary (0 and 255), so build any margin
+  into the shape rather than feathering it. Polygon masks are not supported on the edit route. Several static
+  masks in one request merge into one union mask. Per-frame mask video cannot be
+  merged.
+- **Reference images** are `role: reference`, `modality: image` media, linked
+  with the edit's `guides`. An edit takes up to two references, matching the
+  continuation graph's two reference slots. Three or more fail compilation with
+  "two image-reference slots".
+- **Replacement audio** is a span: `role: reference`, `modality: audio`, with a
+  `range` in seconds naming a window of the clip (the clip may be a longer voice
+  track), plus one `stream: audio` edit whose `during` has exactly the range's
+  length and whose `guides` names that clip. The window is trimmed in the graph
+  and spliced over `during`; source audio outside it is kept. Admission fails
+  with "replacement audio length must match the edited span" when the lengths
+  differ. The request shape is a list of spans; the compiler accepts one per
+  request today and refuses more. `audio_strength` stays 0.
+
+Guide rules follow the modalities each edit supports: video edits take image
+references today (a video reference would be a capacity change, not a schema
+change), and a replacement audio span takes an audio reference. A guide of any
+other modality fails admission.
+
+Regions in one request share one `during`, one `strength`, one `seed` and one
+reference set, because the graph has one mask input and one reference set. So:
+
+- Regions whose `guides` differ are refused with "regions with different references
+  need two passes; references condition the whole clip in one pass".
+- Regions with different `during` intervals are refused.
+- Lenses and mouth with the same reference can share one pass, but the lens
+  reference then also conditions the mouth region. For lenses plus mouth, prefer
+  two passes: lenses first (reference image, lens mask), then the mouth pass with
+  the replacement audio span last. Mouth masks should cover the lower face (jaw
+  and cheeks), not only the lips.
+
+The compiled manifest reports `reference_capacity`, `replacement_audio` (the
+clip range, the interval, `audio_strength: 0`, and `length_check`: `ffprobe` when
+the clip is verified to cover its range, or `request_range_only` when ffprobe is
+unavailable), `audio_binding` and `mask_binding`. If ffprobe is installed and
+cannot read the clip, compilation refuses it. Status:
+compile-verified on CPU only; no GPU run yet.
+
+Lens region replace with one reference image:
+
+```json
+{
+  "version": 2,
+  "prompt": "The sunglasses lenses reflect the old man's face; everything else in the frame is unchanged.",
+  "duration": 3,
+  "settings": {},
+  "media": [
+    {"id": "shot", "asset": "shot.mp4", "role": "timeline", "modality": "video",
+     "at": {"frame": 0}, "range": [0, 3],
+     "edit": [{"stream": "video", "during": [1.0, 2.5], "mask": {"asset": "lens-mask.png"}, "guides": ["old-man"]}]},
+    {"id": "old-man", "asset": "old-man.png", "role": "reference", "modality": "image"}
+  ]
+}
+```
+
+Mouth edit with replacement audio (the clip is exactly the 1.5 s span):
+
+```json
+{
+  "version": 2,
+  "prompt": "The speaker says the supplied line; head, hands and background stay as they are.",
+  "duration": 3,
+  "settings": {},
+  "media": [
+    {"id": "shot", "asset": "speaker.mp4", "role": "timeline", "modality": "video",
+     "at": {"frame": 0}, "range": [0, 3],
+     "edit": [
+       {"stream": "video", "during": [1.0, 2.5], "mask": {"asset": "mouth-mask.png"}},
+       {"stream": "audio", "during": [1.0, 2.5], "guides": ["line"]}
+     ]},
+    {"id": "line", "asset": "line.wav", "role": "reference", "modality": "audio", "range": [0, 1.5]}
+  ]
+}
+```
+
+Both in one request (lens region and mouth region, one interval, one reference):
+
+```json
+{
+  "version": 2,
+  "prompt": "The sunglasses reflect the old man's face; the same man speaks the supplied line; everything else is unchanged.",
+  "duration": 3,
+  "settings": {},
+  "media": [
+    {"id": "shot", "asset": "shot.mp4", "role": "timeline", "modality": "video",
+     "at": {"frame": 0}, "range": [0, 3],
+     "edit": [
+       {"stream": "video", "during": [1.0, 2.5], "mask": {"asset": "lens-mask.png"}, "guides": ["old-man"]},
+       {"stream": "video", "during": [1.0, 2.5], "mask": {"asset": "mouth-mask.png"}, "guides": ["old-man"]},
+       {"stream": "audio", "during": [1.0, 2.5], "guides": ["line"]}
+     ]},
+    {"id": "old-man", "asset": "old-man.png", "role": "reference", "modality": "image"},
+    {"id": "line", "asset": "line.wav", "role": "reference", "modality": "audio", "range": [0, 1.5]}
+  ]
+}
 ```
 
 ## Mask semantics

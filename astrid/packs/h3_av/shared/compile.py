@@ -467,6 +467,47 @@ def _bounded_edit_mask(path: Path, *, kind: str, frames: int, during: tuple[int,
     return target
 
 
+def _union_static_masks(ops, *, regions, assets, source, destination: Path) -> Path:
+    """Combine several static spatial regions into one binary edit mask.
+
+    The union is per-pixel max of the same resolved PNG masks a single region
+    would use, so one V2V node sees one static mask. Video masks cannot be
+    combined here and are refused.
+    """
+    import io
+
+    from PIL import Image, ImageChops
+
+    from .compose import CompositionError, probe_mask
+    from .spec import Region
+    from .static_regions import resolve_static_region
+
+    combined = None
+    for op in ops:
+        region = regions[op.region] if op.region else Region("full-frame", box=(0, 0, 1024, 576))
+        if region.mask_asset:
+            if region.mask_asset not in assets:
+                raise CompilationError(f"native masked edit mask {region.mask_asset!r} is missing from preparation")
+            try:
+                info = probe_mask(assets[region.mask_asset], mask_id=region.mask_asset, source=source)
+            except CompositionError as exc:
+                raise CompilationError(str(exc)) from exc
+            if str(info["kind"]) != "image":
+                raise CompilationError("combined masked edit regions accept static image masks only; video masks cannot be combined")
+        try:
+            resolved = resolve_static_region(
+                region, width=1024, height=576, assets=assets,
+                polarity="black_preserve_white_edit" if region.mask_asset else None,
+            )
+        except H3RequestError as exc:
+            raise CompilationError(str(exc)) from exc
+        mask = Image.open(io.BytesIO(resolved.mask_png)).convert("L")
+        combined = mask if combined is None else ImageChops.lighter(combined, mask)
+    path = destination / "resolved-mask.png"
+    combined.save(path, format="PNG")
+    return path
+
+
 def _compile_native_masked_edit(
     request: H3Request, assets: Mapping[str, Path], destination: Path, *, branch: str
 ) -> dict[str, Any]:
@@ -494,9 +535,24 @@ def _compile_native_masked_edit(
     if settings.get("adapter"):
         raise CompilationError("native masked edit does not combine with an adapter")
     passes = spec.sampling_passes()
-    if len(passes) != 1 or passes[0].operation.op != "regenerate":
+    ops = [item.operation for item in passes]
+    video_ops = [op for op in ops if op.stream == "video"]
+    audio_ops = [op for op in ops if op.stream != "video"]
+    if not video_ops or any(op.op != "regenerate" for op in ops):
         raise CompilationError("native masked edit requires exactly one modifying video operation")
-    operation = passes[0].operation
+    if len(audio_ops) > 1:
+        raise CompilationError("one replacement audio span per request is supported; the graph has one replacement clip slot")
+    if audio_ops and audio_ops[0].replacement_asset is None:
+        raise CompilationError("native masked edit audio regeneration requires replacement audio")
+    replacement = audio_ops[0] if audio_ops else None
+    # One V2V node has one inside strength, one seed and one reference set, so
+    # several spatial regions in one edit must share those and one interval.
+    union = len(video_ops) > 1
+    if union and len({frozenset(op.refs) for op in video_ops}) > 1:
+        raise CompilationError("regions with different references need two passes; references condition the whole clip in one pass")
+    if len({(op.during, op.strength, op.seed) for op in video_ops}) != 1:
+        raise CompilationError("combined masked edit regions must share one interval, strength and seed")
+    operation = video_ops[0]
     source = spec.source
     if source is None:
         raise CompilationError("native masked edit requires one bounded timeline video")
@@ -514,7 +570,10 @@ def _compile_native_masked_edit(
     region = regions[operation.region] if operation.region else Region("full-frame", box=(0, 0, 1024, 576))
     destination.mkdir(parents=True, exist_ok=True)
     mask_kind = "image"
-    if region.mask_asset:
+    if union:
+        mask_path = _union_static_masks(video_ops, regions=regions, assets=assets, source=assets[source_id],
+                                        destination=destination)
+    if region.mask_asset and not union:
         if region.mask_asset not in assets:
             raise CompilationError(f"native masked edit mask {region.mask_asset!r} is missing from preparation")
         try:
@@ -529,7 +588,7 @@ def _compile_native_masked_edit(
                     f"the source window loads {frame_load_cap}"
                 )
             mask_path = assets[region.mask_asset]
-    if mask_kind == "image":
+    if mask_kind == "image" and not union:
         try:
             resolved = resolve_static_region(
                 region, width=1024, height=576, assets=assets,
@@ -547,11 +606,51 @@ def _compile_native_masked_edit(
     mask_binding = "video_mask_0" if mask_kind == "video" else "mask_0"
     bindings: dict[str, Path] = {"source_video": assets[source_id], mask_binding: mask_path}
     references_by_name = {item.name: item for item in spec.refs}
-    references = [references_by_name[name] for name in operation.refs]
+    if union:
+        used = {name for op in video_ops for name in op.refs}
+        references = [item for item in spec.refs if item.name in used]
+    else:
+        references = [references_by_name[name] for name in operation.refs]
+    # Same slot limit and message as the continuation reference graph.
+    if len(references) > 2:
+        raise CompilationError("native masked edit has two image-reference slots; more references cannot be bound")
     for index, item in enumerate(references):
         if item.asset not in assets:
             raise CompilationError(f"native masked edit reference {item.asset!r} is missing from preparation")
         bindings[f"reference_{index}"] = assets[item.asset]
+    replacement_length_check = None
+    if replacement is not None:
+        if replacement.replacement_asset not in assets:
+            raise CompilationError(f"native masked edit replacement audio {replacement.replacement_asset!r} is missing from preparation")
+        bindings["replacement_audio"] = assets[replacement.replacement_asset]
+        # The clip range is trimmed in the graph; its length must equal the audio
+        # interval. Only an unavailable ffprobe permits a range-only check.
+        from .compose import CompositionError, _audio_coverage, _probe
+
+        span = float(replacement.during[1] - replacement.during[0])
+        clip_start, clip_end = (float(value) for value in replacement.replacement_range)
+        if abs((clip_end - clip_start) - span) > 1 / 48000:
+            raise CompilationError(
+                f"replacement audio range is {clip_end - clip_start:.6f}s; the audio edit covers {span:.6f}s "
+                "and the lengths must match"
+            )
+        if _probe(assets[replacement.replacement_asset]) is None:
+            if shutil.which("ffprobe") is not None:
+                raise CompilationError(
+                    f"ffprobe could not read replacement audio {replacement.replacement_asset!r}"
+                )
+            replacement_length_check = "request_range_only"
+        else:
+            try:
+                measured = float(_audio_coverage(assets[replacement.replacement_asset])["duration"])
+            except CompositionError as exc:
+                raise CompilationError(f"replacement audio: {exc}") from exc
+            if measured + 1 / 48000 < clip_end:
+                raise CompilationError(
+                    f"replacement audio {replacement.replacement_asset!r} lasts {measured:.6f}s "
+                    f"but its range ends at {clip_end:.6f}s"
+                )
+            replacement_length_check = "ffprobe"
     try:
         timing = generation_timing(spec.duration)
     except ValueError as exc:
@@ -570,6 +669,13 @@ def _compile_native_masked_edit(
             "source_binding": "source_video", "mask_binding": mask_binding, "mask_channel": _MASK_CHANNEL,
             "mask_kind": mask_kind, "strength": operation.strength,
             "start_time": float(source.range[0]), "frame_load_cap": frame_load_cap,
+            "replacement_audio": None if replacement is None else {
+                "binding": "replacement_audio",
+                "start": float(replacement.during[0]), "end": float(replacement.during[1]),
+                "window": frame_load_cap / 24,
+                "clip_start": float(replacement.replacement_range[0]),
+                "clip_duration": float(replacement.during[1] - replacement.during[0]),
+            },
         },
     )
     active_assets, unresolved = resolve_referenced_assets(graph)
@@ -590,45 +696,75 @@ def _compile_native_masked_edit(
     }
     if turbo["enabled"]:
         workflow_inputs["guidance"] = turbo["strength"]
+    capabilities = {
+        "operation": "transform", "native_v2_branch": branch,
+        "source_binding": "source_video",
+        "mask_binding": (
+            "per-frame video mask"
+            if mask_kind == "video"
+            else "mask_0 (static image, spatial, crop disabled, channel " + _MASK_CHANNEL + ")"),
+        "audio_binding": "source_audio_from_source_video, audio_strength=0",
+        "references": len(references),
+        "reference_order": [item.asset for item in references],
+        "edit_binding": {"during_frames": list(during), "frame_load_cap": frame_load_cap,
+                         "strength": operation.strength, "seed": seed, "refs": list(operation.refs)},
+        "overrides": ["model", "steps", "seed", "sampler", "guidance", "turbo_lora",
+                      "scheduler", "cfg", "video_shift", "audio_shift"],
+        "generation_timing": timing,
+        "source_frame_fit": {
+            "source_window_frames": frame_load_cap,
+            "internal_tail_frames": timing["trim_tail_frames"],
+            "video_tail": "repeat_last_selected_frame",
+            "audio_tail": "silence",
+            "video_mask_tail": "preserve" if mask_kind == "video" else "broadcast_static_mask",
+        },
+        "output_contract": "muxed_av_full_timeline",
+        "public_generation": {"modality": "video", "selectors": [
+            {"selector": "main-0", "ordinal": 0, "variant_key": "original", "required": True}],
+            "internal_outputs": []},
+        "connected_model_assets": sorted(str(row["name"]) for row in active_assets),
+    }
+    # Default texts are unchanged; new-input texts replace whole entries, never by index.
+    mask_limit = (
+        "one interval per request; static boxes or image masks (several merge into one union mask), or per-frame mask video for a single region"
+        if union else
+        "one modifying video operation per request; static boxes, image masks or per-frame mask video")
+    audio_limit = (
+        "audio regeneration is replacement-only: one supplied clip span per request; polygon masks and per-operation adapters are unsupported"
+        if replacement is not None else
+        "audio regeneration, polygon masks and per-operation adapters are unsupported")
+    limitations = [
+        "native masked edit is CPU-verified only; spatial mode on ref2va plus Turbo is unproven on GPU",
+        mask_limit,
+        audio_limit,
+        "box-only regions bind in the graph; end-to-end execution still needs resolved mask propagation for composition paste-back",
+        "windows are limited to 15 s with no automatic chunking",
+        "zero-reference requests assume MiniMaxH3ReferenceToVideo accepts no ref images (unverified)",
+    ]
+    # Optional inputs add keys only when present, so existing requests keep their manifest.
+    if references:
+        capabilities["reference_capacity"] = 2
+    if union:
+        capabilities["mask_binding"] = f"union of {len(video_ops)} static image masks (per-pixel max), one shared interval"
+        limitations.append("combined regions share one reference set, one inside strength and one seed; references are not bound per region")
+    if replacement is not None:
+        capabilities["audio_binding"] = "replacement_audio"
+        capabilities["replacement_audio"] = {
+            "asset": replacement.replacement_asset,
+            "media_range_seconds": [float(replacement.replacement_range[0]), float(replacement.replacement_range[1])],
+            "during_seconds": [float(replacement.during[0]), float(replacement.during[1])],
+            "clip_trim": "TrimAudioDuration to media_range_seconds",
+            "spliced_over": "during_seconds",
+            "source_window_seconds": frame_load_cap / 24,
+            "audio_strength": 0,
+            "length_check": replacement_length_check,
+        }
+        limitations.append("replacement audio: the clip range must equal the audio interval; the clip is trimmed to that range and source audio outside the interval is kept")
     return _compile_manifest(
         request=request, destination=destination, resource_root=workflow_resource,
         workflow_inputs=workflow_inputs, asset_bindings=bindings,
-        capabilities={
-            "operation": "transform", "native_v2_branch": branch,
-            "source_binding": "source_video",
-            "mask_binding": (
-                "per-frame video mask"
-                if mask_kind == "video"
-                else "mask_0 (static image, spatial, crop disabled, channel " + _MASK_CHANNEL + ")"),
-            "audio_binding": "source_audio_from_source_video, audio_strength=0",
-            "references": len(references),
-            "reference_order": [item.asset for item in references],
-            "edit_binding": {"during_frames": list(during), "frame_load_cap": frame_load_cap,
-                             "strength": operation.strength, "seed": seed, "refs": list(operation.refs)},
-            "overrides": ["model", "steps", "seed", "sampler", "guidance", "turbo_lora",
-                          "scheduler", "cfg", "video_shift", "audio_shift"],
-            "generation_timing": timing,
-            "source_frame_fit": {
-                "source_window_frames": frame_load_cap,
-                "internal_tail_frames": timing["trim_tail_frames"],
-                "video_tail": "repeat_last_selected_frame",
-                "audio_tail": "silence",
-                "video_mask_tail": "preserve" if mask_kind == "video" else "broadcast_static_mask",
-            },
-            "output_contract": "muxed_av_full_timeline",
-            "public_generation": {"modality": "video", "selectors": [
-                {"selector": "main-0", "ordinal": 0, "variant_key": "original", "required": True}],
-                "internal_outputs": []},
-            "connected_model_assets": sorted(str(row["name"]) for row in active_assets),
-        },
-        limitations=[
-            "native masked edit is CPU-verified only; spatial mode on ref2va plus Turbo is unproven on GPU",
-            "one modifying video operation per request; static boxes, image masks or per-frame mask video",
-            "audio regeneration, polygon masks and per-operation adapters are unsupported",
-            "box-only regions bind in the graph; end-to-end execution still needs resolved mask propagation for composition paste-back",
-            "windows are limited to 15 s with no automatic chunking",
-            "zero-reference requests assume MiniMaxH3ReferenceToVideo accepts no ref images (unverified)",
-        ],
+        capabilities=capabilities,
+        limitations=limitations,
         profile_id="h3_av.native.v2" if request.value.get("version") == 2 else _PROFILE_ID,
         extra_manifest={"branch": branch, "effective_settings": settings},
     )
