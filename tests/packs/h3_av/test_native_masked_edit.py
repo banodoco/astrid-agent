@@ -363,3 +363,53 @@ def test_partial_window_mask_preprocessing_preserves_red_and_green_channels(tmp_
     assert pixel(1, 12, 12) == b"\xff\x00\x00"
     assert pixel(1, 80, 12) == b"\x00\xff\x00"
     assert pixel(2, 12, 12) == b"\x00\x00\x00"
+    assert set(decoded[0::3]) <= {0, 255}
+
+
+@pytest.mark.ffmpeg
+def test_intermediate_red_video_permission_is_refused(tmp_path):
+    import subprocess
+
+    raw = _multi_grant_request()
+    raw["media"][0]["edit"] = [raw["media"][0]["edit"][0]]
+    raw["media"][0]["edit"][0]["mask"] = {"asset": "mask"}
+    prepared = _prepare(raw, tmp_path)
+    mask = tmp_path / "nonbinary-mask.mkv"
+    frame = bytes((128, 255, 0)) * (1024 * 576)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "1024x576", "-r", "24", "-i", "-", "-c:v", "ffv1", "-pix_fmt", "gbrp", str(mask)], input=frame * 24, check=True, capture_output=True)
+    for record in prepared["assets"]:
+        if record["asset"] == "mask":
+            record.update(path=str(mask), size=mask.stat().st_size, sha256=hashlib.sha256(mask.read_bytes()).hexdigest())
+    with pytest.raises(CompilationError, match=r"grant occurrence-1\.edit\[0\].*binary \(0 or 255\)"):
+        compile_preparation(prepared, out_dir=tmp_path / "out")
+
+
+def test_masked_edit_accepts_nine_images_and_video_reference(tmp_path):
+    from vibecomfy.cli_loader import load_workflow_any
+    raw = _multi_grant_request()
+    raw["media"][0]["edit"] = [raw["media"][0]["edit"][0]]
+    raw["media"].extend({"id": f"image-{i}", "asset": f"image-{i}", "role": "reference", "modality": "image"} for i in range(9))
+    raw["media"].append({"id": "video", "asset": "video", "role": "reference", "modality": "video", "audio": False})
+    compilation = compile_preparation(_prepare(raw, tmp_path), out_dir=tmp_path / "out")
+    caps = compilation["capabilities"]
+    assert caps["effective_reference_count"] == 10
+    assert caps["reference_modality_counts"] == {"image": 9, "video": 1, "audio": 0}
+    workflow = load_workflow_any(compilation["workflow"]["workflow.py"]["path"])
+    api = workflow.compile("api", run_inputs=compilation["workflow_inputs"])
+    target = next(node for node in api.values() if node["class_type"] == "MiniMaxH3ReferenceToVideo")
+    assert sum(name.startswith("ref_images.") for name in target["inputs"]) == 9
+    assert "ref_videos.ref_video_0" in target["inputs"]
+
+
+@pytest.mark.parametrize("images,videos,audios,limit", [(10, 0, 0, "builder slots"), (0, 4, 0, "builder slots"), (0, 0, 4, "builder slots"), (9, 3, 1, "conditioning files")])
+def test_masked_edit_enforces_each_reference_limit(tmp_path, images, videos, audios, limit):
+    raw = _multi_grant_request()
+    raw["media"][0]["edit"] = [raw["media"][0]["edit"][0]]
+    for modality, count in (("image", images), ("video", videos), ("audio", audios)):
+        for index in range(count):
+            item = {"id": f"{modality}-{index}", "asset": f"{modality}-{index}", "role": "reference", "modality": modality}
+            if modality == "video":
+                item["audio"] = False
+            raw["media"].append(item)
+    with pytest.raises(CompilationError, match=limit):
+        compile_preparation(_prepare(raw, tmp_path), out_dir=tmp_path / "out")

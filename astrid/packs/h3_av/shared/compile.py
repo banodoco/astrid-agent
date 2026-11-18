@@ -20,6 +20,7 @@ from .request_v2 import (
     REF2VA_MODEL,
     branch_for,
     effective_settings,
+    json_times,
     read_prepared_request,
 )
 from .timing import ContinuationTimingError, plan_continuation
@@ -165,8 +166,11 @@ def _asset_bindings(request: H3Request, assets: Mapping[str, Path], *, include_m
 def _conditioning_rows(request: H3Request, assets: Mapping[str, Path], *, selected: set[str] | None = None) -> tuple[list[dict[str, Any]], dict[str, Path]]:
     """Resolve occurrence identity in the same order as the target node's ports."""
     references = [item for item in request.value["media"]
-                  if item["role"] == "reference" and item.get("use") != "replacement"
-                  and (selected is None or item["occurrence_id"] in selected)]
+                  if item["role"] == "reference" and item.get("use") != "replacement"]
+    for item in references:
+        if item.get("modality") not in {"image", "video", "audio"}:
+            raise CompilationError(f"conditioning occurrence {item['occurrence_id']!r} has unresolved modality; declare image, video, or audio")
+    references = [item for item in references if selected is None or item["occurrence_id"] in selected]
     rows: list[dict[str, Any]] = []
     bindings: dict[str, Path] = {}
     audio_number = 0
@@ -185,7 +189,7 @@ def _conditioning_rows(request: H3Request, assets: Mapping[str, Path], *, select
                 number = index + 1
             input_binding: dict[str, Any] = {"binding": binding, "port": f"ref_{modality if modality != 'image' else 'image'}s.ref_{modality}_{index}"}
             row = {"occurrence": item["occurrence_id"], "modality": modality,
-                   "trim": item.get("range"), "input_binding": input_binding,
+                   "trim": json_times(item.get("range")), "input_binding": input_binding,
                    "tag": f"<{label} {number}>"}
             if modality == "video":
                 raw = item.get("range")
@@ -205,6 +209,17 @@ def _conditioning_rows(request: H3Request, assets: Mapping[str, Path], *, select
             raise CompilationError(f"prompt reference tag {tag} has no effective binding")
     return rows, bindings
 
+
+
+def _conditioning_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Describe the one effective row list without restating declared inputs."""
+    counts = {modality: sum(row["modality"] == modality for row in rows) for modality in ("image", "video", "audio")}
+    audio_tags = [row["input_binding"]["soundtrack"]["tag"] for row in rows
+                  if "soundtrack" in row["input_binding"]]
+    audio_tags.extend(row["tag"] for row in rows if row["modality"] == "audio")
+    return {"effective_reference_count": len(rows),
+            "effective_reference_order": [row["occurrence"] for row in rows],
+            "reference_modality_counts": counts, "effective_audio_tags": audio_tags}
 
 def _with_v2_intent(inputs: Any, request: H3Request) -> Any:
     """Attach the normalized placed items and edit grants to the shared record."""
@@ -565,6 +580,8 @@ def _combined_strength_mask(grants: list[tuple[Path, str, tuple[int, int], float
                     if len(data) != 1024 * 576 * 3:
                         raise CompilationError(f"grant {name} mask video is short or has the wrong dimensions")
                     support = Image.frombytes("RGB", (1024, 576), data).getchannel("R")
+                    if any(value not in (0, 255) for _, value in support.getcolors(maxcolors=256)):
+                        raise CompilationError(f"grant {name} mask red permission must be binary (0 or 255)")
                 else:
                     support = static[index]
                 if not start <= frame < end or strength == 0:
@@ -582,7 +599,7 @@ def _combined_strength_mask(grants: list[tuple[Path, str, tuple[int, int], float
                     combined = ImageChops.lighter(combined, weight)
             if writer:
                 writer.stdin.write(combined.tobytes())
-            elif survived[0] or grants[0][3] == 0:
+            elif grants[0][1] != "video" and (survived[0] or grants[0][3] == 0):
                 break
         if writer:
             writer.stdin.close()
@@ -634,10 +651,6 @@ def _compile_native_masked_edit(
         from .generation import LIMITS, character_swap_asset_sha256
         if adapter.get("id") != CHARACTER_SWAP_ID or settings["model"] != REF2VA_MODEL:
             raise CompilationError("Character Swap adapter requires the Ref2VA base model")
-        required = LIMITS["character_swap_references"]["value"]
-        refs = [item for item in request.value["media"] if item.get("role") == "reference" and item.get("use") != "replacement"]
-        if any(sum(item.get("modality") == modality for item in refs) < required[modality] for modality in ("image", "video")):
-            raise CompilationError("Character Swap references: lowering requires at least one video and one image reference")
         for item in request.value["media"]:
             for edit in item.get("edit", []):
                 rectangle = edit.get("mask", {}).get("rectangle")
@@ -709,6 +722,9 @@ def _compile_native_masked_edit(
             mask_path = _bounded_edit_mask(mask_path, kind=mask_kind, frames=frame_load_cap,
                                            during=during, destination=destination)
             mask_kind = "video"
+            # Validate the exact transformed bytes that the managed graph receives.
+            _combined_strength_mask([(mask_path, "video", (0, frame_load_cap), operation.strength, grant_masks[0][4])],
+                                    frames=frame_load_cap, destination=destination)
     mask_binding = "video_mask_0" if mask_kind == "video" else "mask_0"
     bindings: dict[str, Path] = {"source_video": assets[source_id], mask_binding: mask_path}
     references_by_name = {item.name: item for item in spec.refs}
@@ -717,6 +733,10 @@ def _compile_native_masked_edit(
     if request.value.get("version") == 2:
         selected = {item.occurrence_id for item in references}
         conditioning, reference_bindings = _conditioning_rows(request, assets, selected=selected)
+        if adapter:
+            required = LIMITS["character_swap_references"]["value"]
+            if any(sum(row["modality"] == modality for row in conditioning) < required[modality] for modality in ("image", "video")):
+                raise CompilationError("Character Swap effective references: lowering requires at least one video and one image reference")
         bindings.update(reference_bindings)
     else:
         for index, item in enumerate(references):
@@ -785,9 +805,9 @@ def _compile_native_masked_edit(
                 if mask_kind == "video"
                 else "mask_0 (static image, spatial, crop disabled, channel " + _MASK_CHANNEL + ")"),
             "audio_binding": "source_audio_from_source_video, audio_strength=0",
-            "references": len(references),
-            "reference_order": [item.asset for item in references],
-            **({"conditioning": conditioning} if conditioning is not None else {}),
+            "references": len(conditioning) if conditioning is not None else len(references),
+            "reference_order": ([next(item["asset"] for item in request.value["media"] if item["occurrence_id"] == row["occurrence"]) for row in conditioning] if conditioning is not None else [item.asset for item in references]),
+            **({"conditioning": conditioning, **_conditioning_summary(conditioning)} if conditioning is not None else {}),
             "sampler_mask_precision": "8-bit" if len(grant_masks) > 1 else "native",
             "edit_binding": {"during_frames": list(during), "frame_load_cap": frame_load_cap,
                              "strength": operation.strength, "seed": seed, "refs": list(operation.refs)},
@@ -886,14 +906,26 @@ def _compile_character_swap_v2(
                     f"character_swap_v1 media[{item['occurrence_id']}].edit[{edit_index}] requests channel-specific audio; the current composer supports whole-stream audio intervals only"
                 )
 
-    references = [item for item in value["media"] if item["role"] == "reference"]
-    images = [item for item in references if item.get("modality") == "image"]
-    videos = [item for item in references if item.get("modality") == "video"]
-    standalone_audio = [item for item in references if item.get("modality") == "audio" and item.get("use") != "replacement"]
+    references = [item for item in value["media"] if item["role"] == "reference" and item.get("use") != "replacement"]
+    by_id = {item.get("id", item["occurrence_id"]): item["occurrence_id"] for item in references}
+    all_occurrences = frozenset(item["occurrence_id"] for item in references)
+    guide_sets = []
+    for item in value["media"]:
+        if item["role"] != "timeline":
+            continue
+        for edit in item.get("edit", []):
+            if edit.get("stream") != "video" or edit.get("action") == "preserve" or edit.get("strength", 1) == 0:
+                continue
+            guide_sets.append(frozenset(by_id[name] for name in edit["guides"]) if "guides" in edit else all_occurrences)
+    if len(set(guide_sets)) > 1:
+        raise CompilationError("regions per pass: grants with different reference sets require separate sequential passes, which this lowering cannot execute")
+    selected = set(guide_sets[0]) if guide_sets else None
+    conditioning, bindings = _conditioning_rows(request, assets, selected=selected)
     minimum = LIMITS["character_swap_references"]["value"]
-    if len(images) < minimum["image"] or len(videos) < minimum["video"]:
-        raise CompilationError("Character Swap references: lowering requires at least one video and one image reference")
-    conditioning, bindings = _conditioning_rows(request, assets)
+    if any(sum(row["modality"] == modality for row in conditioning) < minimum[modality] for modality in ("image", "video")):
+        raise CompilationError("Character Swap effective references: lowering requires at least one video and one image reference")
+    images = [row for row in conditioning if row["modality"] == "image"]
+    videos = [row for row in conditioning if row["modality"] == "video"]
     video_reference_rows = [row for row in conditioning if row["modality"] == "video"]
     audio_reference_rows = [row for row in conditioning if row["modality"] == "audio"]
 
@@ -1017,9 +1049,10 @@ def _compile_character_swap_v2(
             "operation": "transform",
             "native_v2_branch": branch,
             "character_swap": {"id": CHARACTER_SWAP_ID, "strength": adapter["strength"]},
-            "references": 2,
-            "reference_video": 1,
-            "reference_image": 1,
+            "references": len(conditioning),
+            "reference_video": len(videos),
+            "reference_image": len(images),
+            **_conditioning_summary(conditioning),
             "reference_tags": {modality: next(row["tag"] for row in conditioning if row["modality"] == modality) for modality in ("video", "image")},
             "conditioning": conditioning,
             "output_contract": "muxed_av_full_timeline",
@@ -1057,7 +1090,9 @@ def _compile_native_v2(
     branch = branch_for(request)
     settings = effective_settings(request)
     if settings.get("adapter", {}).get("id") == CHARACTER_SWAP_ID:
-        regional = any(edit.get("stream") == "video" and edit.get("mask", {}).get("full_frame") is not True
+        regional = any(edit.get("stream") == "video" and (
+                           edit.get("mask", {}).get("full_frame") is not True
+                           or edit.get("strength", 1) != 1 or "seed" in edit)
                        for item in request.value["media"] for edit in item.get("edit", []))
         if branch == "source_backed_v2v" and regional:
             return _compile_native_masked_edit(request, assets, destination, branch=branch)
@@ -1238,8 +1273,9 @@ def _compile_generation(
     conditioning = None
     if native_v2:
         conditioning, bindings = _conditioning_rows(request, assets)
-        references = [item for item in request.value["media"] if item.get("role") == "reference" and item.get("modality") == "image" and item.get("use") != "replacement"]
-        audio_references = [item for item in request.value["media"] if item.get("role") == "reference" and item.get("modality") == "audio" and item.get("use") != "replacement"]
+        by_occurrence = {item["occurrence_id"]: item for item in request.value["media"]}
+        references = [by_occurrence[row["occurrence"]] for row in conditioning if row["modality"] == "image"]
+        audio_references = [by_occurrence[row["occurrence"]] for row in conditioning if row["modality"] == "audio"]
     else:
         references = request.value["references"]
         audio_references = list(audio_references or [])
@@ -1306,8 +1342,9 @@ def _compile_generation(
         "reference_binding": "ordered image conditioning; Picture 1..N",
         "audio_references": len(audio_references),
         "audio_reference_order": [item["asset"] for item in audio_references],
-        "audio_reference_binding": "ordered standalone audio conditioning; Audio 1..N",
-        **({"conditioning": conditioning} if conditioning is not None else {}),
+        "audio_reference_binding": "ordered standalone audio conditioning; tags follow paired video soundtracks",
+        "reference_count_modality": "image",
+        **({"conditioning": conditioning, **_conditioning_summary(conditioning)} if conditioning is not None else {}),
         "generation_timing": timing,
         "output_contract": "muxed_av_full_timeline",
         "public_generation": {"modality": "video", "selectors": [

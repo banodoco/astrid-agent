@@ -368,6 +368,12 @@ def test_source_free_mixed_reference_tags_follow_connected_soundtracks(tmp_path)
         (request.value["media"][0]["occurrence_id"], "<Audio 2>"),
     ]
     assert rows[1]["input_binding"]["soundtrack"]["tag"] == "<Audio 1>"
+    caps = compiled["capabilities"]
+    assert caps["references"] == 1 and caps["reference_count_modality"] == "image"
+    assert caps["effective_reference_count"] == 3
+    assert caps["reference_modality_counts"] == {"image": 1, "video": 1, "audio": 1}
+    assert caps["effective_audio_tags"] == ["<Audio 1>", "<Audio 2>"]
+    assert caps["effective_reference_order"] == [row["occurrence"] for row in rows]
     workflow = load_workflow_any(compiled["workflow"]["workflow.py"]["path"])
     api = workflow.compile("api", run_inputs=compiled["workflow_inputs"])
     target = next(node for node in api.values() if node["class_type"] == "MiniMaxH3ReferenceToVideo")
@@ -526,3 +532,40 @@ def test_same_mixed_occurrences_bind_identically_on_source_free_and_masked_route
                 assert row["input_binding"]["soundtrack"]["port"] in target["inputs"]
         outputs.append(rows)
     assert outputs[0] == outputs[1]
+
+
+def test_fractional_reference_trim_survives_compilation_manifest(tmp_path):
+    from astrid.packs.h3_av.shared.compile import _compile_native_v2
+    from astrid.packs.h3_av.shared.request_v2 import normalize_v2
+
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"video fixture")
+    request = normalize_v2({"version": 2, "prompt": "<Video 1>", "duration": 6, "media": [
+        {"asset": "video", "role": "reference", "modality": "video", "range": ["1/24", "49/24"], "audio": False},
+    ]})
+    compilation = _compile_native_v2(request, {"video": video}, tmp_path / "out")
+    manifest = json.loads(Path(compilation["manifest_path"]).read_text())
+    assert manifest["capabilities"]["conditioning"][0]["trim"] == ["1/24", "49/24"]
+
+
+@pytest.mark.parametrize("with_typed", [False, True])
+def test_public_hook_refuses_untyped_image_occurrence_before_claim(tmp_path, with_typed):
+    import importlib.util
+    from astrid.core.generation.engine_facts import comfyui_facts
+
+    hook_path = Path(__file__).parents[3] / "astrid/packs/h3_av/extensions/vibecomfy.workflows/hooks.py"
+    spec = importlib.util.spec_from_file_location("h3_untyped_test_hooks", hook_path)
+    hooks = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hooks)
+    image = tmp_path / "image.png"
+    Image.new("RGB", (32, 32)).save(image)
+    media = [{"asset": "untyped", "role": "reference"}]
+    asset_map = {"untyped": str(image)}
+    if with_typed:
+        media.append({"asset": "typed", "role": "reference", "modality": "image"})
+        asset_map["typed"] = str(image)
+    request_file = tmp_path / "request.json"
+    request_file.write_text(json.dumps({"version": 2, "prompt": "A scene", "duration": 6, "media": media}))
+    with pytest.raises(ValueError, match=r"occurrence-1.*unresolved modality.*declare image, video, or audio"):
+        hooks.build({"request": str(request_file), "asset_map": asset_map}, {}, tmp_path / "out", engine=comfyui_facts())
+    assert not (tmp_path / "out/h3/plan/compile/compilation.json").exists()

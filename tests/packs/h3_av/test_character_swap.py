@@ -584,3 +584,64 @@ def test_character_swap_with_pixel_rectangle_binds_adapter_and_mask(tmp_path, mo
     assert adapter["inputs"]["strength_model"] == 1.0
     assert api[mask["inputs"]["source_mask"][0]]["class_type"] == "LoadImageMask"
     assert compiled["workflow_inputs"]["mask_0"]
+
+
+def test_full_frame_character_swap_uses_only_selected_guides(tmp_path):
+    from vibecomfy.cli_loader import load_workflow_any
+    from astrid.packs.h3_av.shared.compile import _compile_native_v2
+    raw = _request(source=True)
+    raw["media"][0]["edit"][0]["guides"] = ["performance", "replacement"]
+    raw["media"].append({"id": "unused", "asset": "unused.png", "role": "reference", "modality": "image"})
+    request = normalize_request(raw)
+    assets = {}
+    for item in raw["media"]:
+        path = tmp_path / item["asset"]
+        path.write_bytes(b"asset fixture")
+        assets[item["asset"]] = path
+    compiled = _compile_native_v2(request, assets, tmp_path / "out")
+    caps = compiled["capabilities"]
+    assert caps["references"] == 2
+    assert caps["reference_modality_counts"] == {"image": 1, "video": 1, "audio": 0}
+    assert [row["occurrence"] for row in caps["conditioning"]] == [request.value["media"][2]["occurrence_id"], request.value["media"][1]["occurrence_id"]]
+    assert "reference_1" not in compiled["workflow_inputs"]
+    workflow = load_workflow_any(compiled["workflow"]["workflow.py"]["path"])
+    api = workflow.compile("api", run_inputs=compiled["workflow_inputs"])
+    target = next(node for node in api.values() if node["class_type"] == "MiniMaxH3ReferenceToVideo")
+    assert "ref_images.ref_image_0" in target["inputs"]
+    assert "ref_images.ref_image_1" not in target["inputs"]
+    assert "ref_videos.ref_video_0" in target["inputs"]
+
+
+def test_character_swap_refuses_differing_full_frame_guide_sets(tmp_path):
+    from astrid.packs.h3_av.shared.compile import _compile_native_v2
+    raw = _request(source=True)
+    raw["media"][0]["edit"][0]["guides"] = ["performance", "replacement"]
+    raw["media"].append({"id": "unused", "asset": "unused.png", "role": "reference", "modality": "image"})
+    raw["media"][0]["edit"].append({"stream": "video", "during": [0, 1], "mask": {"full_frame": True}, "guides": ["performance", "unused"]})
+    request = normalize_request(raw)
+    with pytest.raises(CompilationError, match="different reference sets"):
+        _compile_native_v2(request, {"baseline.mp4": tmp_path / "source"}, tmp_path / "out")
+
+
+def test_masked_character_swap_requires_bound_video_not_merely_declared(tmp_path):
+    from astrid.packs.h3_av.shared.compile import _compile_native_v2
+    raw = _request(source=True)
+    raw["media"][0]["edit"][0].update(mask={"rectangle": [0, 0, 128, 128]}, guides=["replacement"])
+    request = normalize_request(raw)
+    assets = {}
+    for item in raw["media"]:
+        path = tmp_path / item["asset"]
+        path.write_bytes(b"asset fixture")
+        assets[item["asset"]] = path
+    with pytest.raises(CompilationError, match="effective references.*video.*image"):
+        _compile_native_v2(request, assets, tmp_path / "out")
+
+
+def test_character_swap_refuses_differing_full_frame_grant_seeds(tmp_path):
+    from astrid.packs.h3_av.shared.compile import _compile_native_v2
+    raw = _request(source=True)
+    raw["media"][0]["edit"][0]["seed"] = 1
+    raw["media"][0]["edit"].append({"stream": "video", "during": [0, 1], "mask": {"full_frame": True}, "seed": 2})
+    request = normalize_request(raw)
+    with pytest.raises(CompilationError, match="different seeds"):
+        _compile_native_v2(request, {"baseline.mp4": tmp_path / "source"}, tmp_path / "out")

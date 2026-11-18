@@ -358,13 +358,15 @@ def _normalize_spec(
             "duration",
             "Use an explicit extend operation",
         )
-    if len(refs) > 9:
-        _fail(
-            "unsupported_reference",
-            "Single-window requests support at most nine image references",
-            "refs",
-            "Use at most nine references",
-        )
+    from .generation import LIMITS
+    conditioning = [ref for ref in refs.values() if ref.use != "replacement"]
+    slot_limits = LIMITS["builder_slots"]["value"]
+    for modality, limit in slot_limits.items():
+        if sum(ref.modality == modality for ref in conditioning) > limit:
+            _fail("unsupported_reference", f"builder slots: at most {limit} {modality} references", "refs", "Reduce references for this modality")
+    file_limit = LIMITS["conditioning_files"]["value"]
+    if len(conditioning) > file_limit:
+        _fail("unsupported_reference", f"conditioning files: at most {file_limit} references", "refs", "Reduce the number of conditioning occurrences")
     for index, op in enumerate(ops):
         for other in ops[index + 1 :]:
             if (op.op == "preserve") != (other.op == "preserve") and _overlap(op, other, regions):

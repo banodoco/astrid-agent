@@ -80,7 +80,7 @@ def _admit_conditioning(request: H3Request, assets: list[dict[str, Any]], warnin
     for item in refs:
         modality = item.get("modality")
         if modality not in counts:
-            continue
+            raise PreparationError(f"conditioning occurrence {item['occurrence_id']!r} has unresolved modality; declare image, video, or audio")
         counts[modality] += 1
         files += 1
         ordinal = counts[modality]

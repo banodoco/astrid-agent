@@ -518,3 +518,9 @@ def test_continuation_resource_estimate_uses_actual_raw_extension(monkeypatch):
     result = prepare.prepare_request(request)
     expected = plan_continuation(source_end=Fraction(5), output_duration=8)
     assert result["resource_estimate"]["target_rows"] == expected.raw_extension_frames
+
+
+def test_unresolved_modalities_cannot_bypass_reference_limits():
+    items = [{"occurrence_id": f"unknown-{index}", "asset": f"asset-{index}", "role": "reference"} for index in range(13)]
+    with pytest.raises(prepare.PreparationError, match=r"unknown-0.*unresolved modality"):
+        prepare._admit_conditioning(_request(items), [])
