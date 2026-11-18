@@ -92,6 +92,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="-",
         help="Host-issued attempt identity used for stale-result fencing.",
     )
+    parser.add_argument("--admitted-execution-identity", default="null")
     parser.add_argument(
         "--execution-identity",
         default="-",
@@ -406,6 +407,26 @@ def _materialize_managed_generation_result(
            if key not in {"source", "effective_settings", "values"}},
     })
     producer = rebased_payload["evidence"]["producer"]
+    admitted = context.get("admitted_execution_identity")
+    if admitted is not None:
+        from astrid.packs.vibecomfy.invocation_preflight import invocation_identity
+
+        # The native approval carries the bound API projection sent to ComfyUI.
+        # Older producers and attempts that failed before submission may lack it.
+        runtime = producer.get("runtime")
+        projection = runtime.get("approved_projection") if isinstance(runtime, dict) else None
+        queue = runtime.get("queue_acceptance") if isinstance(runtime, dict) else None
+        submitted = execution_status == "succeeded" or isinstance(queue, dict) and queue.get("status") == "accepted"
+        executed = None
+        if submitted and isinstance(projection, dict):
+            digest = projection.get("api_digest")
+            bindings = projection.get("input_binding")
+            if isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest) and isinstance(bindings, dict):
+                executed = invocation_identity("sha256:" + digest, bindings)
+        producer["execution_identity"] = {
+            "admitted": admitted, "executed": executed,
+            "matches": executed == admitted if executed is not None else None,
+        }
     provenance = context.get("comfy_provenance")
     if provenance is not None:
         captured = provenance.evidence()
@@ -802,6 +823,7 @@ def _run_and_settle(
     *,
     task_identity: str | None,
     execution_identity: str = "-",
+    admitted_execution_identity: dict[str, str] | None = None,
     attempt_identity: str = "-",
     readiness_profile_path: str = "-",
     readiness_profile_hash: str = "-",
@@ -937,6 +959,7 @@ def _run_and_settle(
     provenance.source(workflow_path)
     producer_run_id = f"astrid-{uuid4().hex}"
     producer_context = {
+        "admitted_execution_identity": admitted_execution_identity,
         "comfy_provenance": provenance,
         "values": dict(workflow_input_bindings),
         "target": (execution_request.get("target") if isinstance(execution_request, dict) else None)
@@ -978,6 +1001,8 @@ def _run_and_settle(
                 align=align or "check",
                 workflow_inputs=json.dumps(workflow_input_bindings, sort_keys=True),
                 execution_request=execution_request,
+                **({"admitted_execution_identity": admitted_execution_identity}
+                   if admitted_execution_identity is not None else {}),
                 manifest=manifest,
                 entry=entry,
                 after_outputs_job=after_outputs_job,
@@ -1182,6 +1207,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.out,
                 task_identity=args.task_identity,
                 execution_identity=args.execution_identity,
+                admitted_execution_identity=json.loads(args.admitted_execution_identity),
                 readiness_profile_path=args.readiness_profile_path,
                 readiness_profile_hash=args.readiness_profile_hash,
                 attempt_identity=args.attempt_identity,

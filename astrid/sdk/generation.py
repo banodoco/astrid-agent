@@ -350,11 +350,10 @@ def _offline_invocation_preflight(workflow: Any, *, plan: Mapping[str, Any] | No
         preflight_invocation,
     )
 
-    # Mirror the live submission: run inputs come from the staged asset manifest, and a
-    # workflow without managed assets compiles with none (its bindings are already sealed).
+    # Use the native scalar bindings and resolve any media to their staged basenames.
     sent = {name: value for name, value in (dict((plan or {}).get('bindings') or {})).items()
             if name not in assets}
-    run_inputs: dict[str, Any] = {}
+    run_inputs = sent
     source_path = None
     source_digest = None
     if assets:

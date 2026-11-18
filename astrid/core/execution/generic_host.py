@@ -2786,6 +2786,15 @@ def _admitted_spec_envelope(raw_spec: Any) -> Mapping[str, Any]:
     return nested
 
 
+def _vibecomfy_admission_inputs(spec: Mapping[str, Any]) -> dict[str, str]:
+    """Project the controller's selected invocation into the local or machine job."""
+    receipt = _admitted_spec_envelope(spec).get("invocation_preflight")
+    identity = receipt.get("admitted_execution_identity") if isinstance(receipt, Mapping) else None
+    if identity is None:
+        return {}
+    return {"admitted_execution_identity": json.dumps(identity, sort_keys=True, separators=(",", ":"))}
+
+
 def _admitted_task_spec(task_data: Mapping[str, Any]) -> Mapping[str, Any]:
     """Decode the canonical immutable request from a task snapshot."""
     return _admitted_spec_envelope(task_data.get("spec"))
@@ -13062,6 +13071,9 @@ class GenericPackHost:
                     if port.type == "file"
                 ),
             )
+            if record.id == "vibecomfy.run":
+                inputs.pop("admitted_execution_identity", None)
+                inputs.update(_vibecomfy_admission_inputs(spec))
             local_device = None
             placement_policy = inputs.get("placement_policy")
             if record.definition.metadata.get("host_target_operation") and not placement_policy:

@@ -47,6 +47,7 @@ from .execution_request import (
     normalize_execution_request,
     reject_caller_execution_binding,
 )
+from .remote import _admission_preflight_scope
 from .results import DiscoveryResult, InvocationResult, _json_safe, _json_safe_mapping
 from .task_spec import task_executable_spec
 
@@ -2572,6 +2573,7 @@ def _ingested_object_digest(response: Any) -> str | None:
     return getattr(response, "digest", None)
 
 
+@_admission_preflight_scope()
 def _kernel_invoke(
     capability: Any,
     *,

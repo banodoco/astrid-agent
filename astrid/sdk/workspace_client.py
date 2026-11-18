@@ -1022,7 +1022,8 @@ class WorkspaceClient:
             from .remote import _vibecomfy_invocation_preflight
 
             strict = bool(
-                isinstance(wire_spec.get("execution_request"), Mapping)
+                execution_request is not None and "workflow" in normalized
+                or isinstance(wire_spec.get("execution_request"), Mapping)
                 and "workflow" in wire_spec["execution_request"]
             )
             receipt = _vibecomfy_invocation_preflight(
@@ -1030,6 +1031,7 @@ class WorkspaceClient:
                 wire_spec,
                 strict=strict,
             )
+            wire_spec.pop("invocation_preflight", None)
             if receipt is not None:
                 wire_spec["invocation_preflight"] = receipt
         admission = {
@@ -1040,7 +1042,7 @@ class WorkspaceClient:
             "schema_version": schema_version,
             "settlement_effect": settlement_effect,
             "project_id": project_id,
-            "spec": wire_spec if execution_request is not None else spec,
+            "spec": wire_spec if spec is not None or execution_request is not None else None,
             "generation_intent": generation_intent,
             "storage_estimate": storage_estimate,
             "required_facts": required_facts,

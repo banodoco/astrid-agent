@@ -8,6 +8,9 @@ import mimetypes
 import re
 import tempfile
 import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
+from copy import deepcopy
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -29,6 +32,24 @@ from .execution_request import (
 from .media_ids import MediaIdError, canonical_digest, resolve_project_media
 from .pagination import page_pair, paged_rows
 from .workspace_client import WorkspaceClient, WorkspaceClientError
+
+
+_preflight_cache: ContextVar[dict[tuple[int, str], dict[str, Any]] | None] = ContextVar(
+    "vibecomfy_admission_preflight", default=None
+)
+
+
+@contextmanager
+def _admission_preflight_scope():
+    """Reuse verified CAS inputs only during this invocation's SDK admission layers."""
+    if _preflight_cache.get() is not None:
+        yield
+        return
+    token = _preflight_cache.set({})
+    try:
+        yield
+    finally:
+        _preflight_cache.reset(token)
 
 
 def _vibecomfy_invocation_preflight(
@@ -94,6 +115,17 @@ def _vibecomfy_invocation_preflight(
     if "managed_assets" in inputs:
         managed_descriptor = descriptor("managed_assets")
 
+    # Descriptors have already passed this caller's strictness and shape checks.
+    # Ignore port metadata that does not affect execution (e.g. "required").
+    cache = _preflight_cache.get()
+    if cache is not None:
+        selected = [descriptors, source_descriptor, managed_descriptor,
+                    inputs.get("workflow_inputs"), inputs.get("prompt"), inputs.get("comfy_url")]
+        content = json.dumps(selected, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+        cache_key = (id(client), hashlib.sha256(content.encode("utf-8")).hexdigest())
+        if cache_key in cache:
+            return deepcopy(cache[cache_key])
+
     def read_object(digest: str, name: str) -> bytes:
         response = client.get_object(digest)
         if isinstance(response, (bytes, bytearray)):
@@ -122,6 +154,19 @@ def _vibecomfy_invocation_preflight(
             path.write_bytes(read_object(descriptors[name][0], name))
         source_video_path = None
         run_inputs: dict[str, Any] = {}
+        raw_workflow_inputs = inputs.get("workflow_inputs")
+        if isinstance(raw_workflow_inputs, str):
+            try:
+                decoded_workflow_inputs = json.loads(raw_workflow_inputs or "{}")
+            except json.JSONDecodeError as exc:
+                raise ValueError("workflow_inputs must be valid JSON") from exc
+            if not isinstance(decoded_workflow_inputs, Mapping):
+                raise ValueError("workflow_inputs must be a JSON object")
+            run_inputs = dict(decoded_workflow_inputs)
+        elif isinstance(raw_workflow_inputs, Mapping):
+            run_inputs = dict(raw_workflow_inputs)
+        elif raw_workflow_inputs is not None:
+            raise ValueError("workflow_inputs must be a JSON object")
         managed_manifest: dict[str, Any] | None = None
         managed_members: dict[str, bytes] = {}
         if managed_descriptor is not None:
@@ -139,20 +184,8 @@ def _vibecomfy_invocation_preflight(
                 raise ValueError(str(exc)) from exc
             managed_manifest = resolved.manifest
             managed_members = resolved.members
-            supplied_workflow_inputs: dict[str, Any] = {}
-            raw_workflow_inputs = inputs.get("workflow_inputs")
-            if isinstance(raw_workflow_inputs, str):
-                try:
-                    decoded_workflow_inputs = json.loads(raw_workflow_inputs or "{}")
-                except json.JSONDecodeError as exc:
-                    raise ValueError("workflow_inputs must be valid JSON") from exc
-                if not isinstance(decoded_workflow_inputs, Mapping):
-                    raise ValueError("workflow_inputs must be a JSON object")
-                supplied_workflow_inputs = dict(decoded_workflow_inputs)
-            elif isinstance(raw_workflow_inputs, Mapping):
-                supplied_workflow_inputs = dict(raw_workflow_inputs)
             try:
-                run_inputs = resolve_inputs(managed_manifest, supplied_workflow_inputs)
+                run_inputs = resolve_inputs(managed_manifest, run_inputs)
             except AssetManifestError as exc:
                 raise ValueError(str(exc)) from exc
         managed_source_digest = next(
@@ -170,7 +203,7 @@ def _vibecomfy_invocation_preflight(
                 raise ValueError("managed assets conflict with workflow inputs: source_video")
             if "source_video" not in run_inputs:
                 run_inputs["source_video"] = source_descriptor[1]
-        elif "source_video" in run_inputs:
+        elif managed_manifest is not None and "source_video" in run_inputs:
             source_member = str(run_inputs["source_video"])
             managed_member = next(
                 (name for name in managed_members if Path(name).name == source_member),
@@ -231,6 +264,8 @@ def _vibecomfy_invocation_preflight(
         receipt["resolved_workflow_inputs"] = run_inputs
         if managed_manifest is not None:
             receipt["managed_asset_manifest"] = managed_manifest
+        if cache is not None:
+            cache[cache_key] = deepcopy(receipt)
         return receipt
 
 
@@ -2148,6 +2183,7 @@ class RemoteTasks(_RemoteFamily):
         )
         return self.dispatch_admission(prepared.data) if prepared.ok else prepared
 
+    @_admission_preflight_scope()
     def prepare_admission(
         self,
         *,
@@ -2946,6 +2982,7 @@ class RemoteAstridClient:
         )
     def purge_realm(self, confirmation): return self._transport.purge_realm(confirmation)
 
+    @_admission_preflight_scope()
     def invoke(
         self,
         capability_id: str,

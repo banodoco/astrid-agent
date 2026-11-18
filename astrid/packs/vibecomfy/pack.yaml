@@ -538,6 +538,11 @@ actions:
       name: attempt_identity
       required: false
       type: string
+    - default: 'null'
+      description: Controller-observed API and bound-input digests from submission preflight.
+      name: admitted_execution_identity
+      required: false
+      type: string
     - description: Host-issued canonical workflow execution identity.
       name: execution_identity
       required: false
@@ -636,6 +641,8 @@ actions:
         - '{task_identity}'
         - --attempt-identity
         - '{attempt_identity}'
+        - --admitted-execution-identity
+        - '{admitted_execution_identity}'
         - --execution-identity
         - '{execution_identity}'
         - --readiness-profile-path

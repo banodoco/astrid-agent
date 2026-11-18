@@ -62,6 +62,8 @@ class VibeComfyStructuredMetadataTest(unittest.TestCase):
                 "{task_identity}",
                 "--attempt-identity",
                 "{attempt_identity}",
+                "--admitted-execution-identity",
+                "{admitted_execution_identity}",
                 "--execution-identity",
                 "{execution_identity}",
                 "--readiness-profile-path",

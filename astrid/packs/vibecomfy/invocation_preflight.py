@@ -398,6 +398,11 @@ def _canonical_digest(value: Any) -> str:
     return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def invocation_identity(api_digest: str, bindings: Mapping[str, Any]) -> dict[str, str]:
+    """Identify the selected API projection and its public run inputs."""
+    return {"api_digest": api_digest, "bound_inputs_digest": _canonical_digest(bindings)}
+
+
 def preflight_invocation(
     workflow_path: str | Path,
     *,
@@ -503,6 +508,8 @@ def preflight_invocation(
         "run_inputs": bindings,
         "reachable_nodes": sorted(_reachable_node_ids(workflow)),
     }
+    if phase == "submission":
+        receipt["admitted_execution_identity"] = invocation_identity(receipt["api_digest"], bindings)
     if expected_prompt is not None:
         receipt["expected_prompt"] = expected_prompt
     if source_video_path is not None and _is_h3_workflow(api):

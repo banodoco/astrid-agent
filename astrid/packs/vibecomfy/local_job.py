@@ -263,6 +263,7 @@ def run_prepared_job(entry: str, inputs: dict[str, Any], execution: dict[str, An
     if not isinstance(workflow, str):
         raise JobFileError("a prepared job must ship its workflow")
     files = {name: str(execution[name]) for name in ("managed_assets", "source_video") if execution.get(name)}
+    admitted = json.loads(execution.get("admitted_execution_identity") or "null")
     if entry == "workflow":
         named = None
     else:
@@ -290,7 +291,8 @@ def run_prepared_job(entry: str, inputs: dict[str, Any], execution: dict[str, An
             if entry == "h3":
                 _validate_h3_prepared_handoff(inputs, files)
             return run_named_entry(described, entry, inputs, files if entry == "h3" else {}, out,
-                                    task=task, attempt=attempt, mode=mode, align=align, bindings=bindings)
+                                    task=task, attempt=attempt, mode=mode, align=align, bindings=bindings,
+                                    admitted_execution_identity=admitted)
         # The facade has already bound this exact graph. Rebinding or rebuilding it
         # would discard its chosen seed, native controls and uploaded media bindings.
     from astrid.packs.vibecomfy.shared.bundle_inputs import staged_workflow_path
@@ -298,12 +300,14 @@ def run_prepared_job(entry: str, inputs: dict[str, Any], execution: dict[str, An
                               companion=execution.get("companion"), source=execution.get("source")) as (workflow, _):
         return run_owned_action(
             workflow, out, task_identity=task, attempt_identity=attempt, entry=named,
-            workflow_inputs=json.dumps(bindings, sort_keys=True), align=align, **files)
+            workflow_inputs=json.dumps(bindings, sort_keys=True), align=align,
+            admitted_execution_identity=admitted, **files)
 
 
 def run_named_entry(described: dict[str, Any], named: str, inputs: dict[str, Any], files: dict[str, str],
                      out: Path, *, task: str, attempt: str, mode: str | None, align: str,
-                     bindings: dict[str, Any] | None = None) -> dict[str, Any]:
+                     bindings: dict[str, Any] | None = None,
+                     admitted_execution_identity: dict[str, str] | None = None) -> dict[str, Any]:
     """A named entry through the contract the controller's facade applies (sdk/generation.py).
 
     * the CLI's own validation of the entry's public inputs; the resolved values (aliases to public
@@ -416,7 +420,8 @@ def run_named_entry(described: dict[str, Any], named: str, inputs: dict[str, Any
         result = run_owned_action(
             workflow, out, task_identity=task, attempt_identity=attempt,
             workflow_inputs=json.dumps(workflow_inputs, sort_keys=True, default=str), entry=named,
-            align=align, manifest=manifest, **hook_job, **run_files)
+            align=align, manifest=manifest, admitted_execution_identity=admitted_execution_identity,
+            **hook_job, **run_files)
         return result
     finally:
         if job_dir is not None:
