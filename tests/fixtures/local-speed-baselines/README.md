@@ -1,44 +1,70 @@
 # Standing attached-meter references
 
-These references describe the current attached stand-in workload, not the D1
-speed target or GPU inference. Each caller has five uninstrumented samples
-and two separate instrumented counter samples. Every sample follows a
+The saved references describe the original attached stand-in workload, not the
+D1 speed target or GPU inference. Their acquisition used five uninstrumented
+samples and two separate counter samples per caller. Every sample follows a
 successful warm-up in its own host session and verifies the delivered PNG and
 two distinct succeeded task records.
 
 ## LS-2.2 gate
 
-The standing workflow measures the exact PR base and exact candidate, in that
-order, on one runner with one Python/dependency environment. Each side has five
-uninstrumented samples and two separate counter samples per caller. The base
+The standing workflow measures the exact PR base, an independent repeat of that
+base, and the exact candidate on one runner with one Python/dependency
+environment. Each of those cells has five uninstrumented samples and five
+separate counter samples per caller. The base
 has only a byte-checked copy of the current test harness; its product, packs,
 vendored client and source authority remain the base commit. Import locations,
 product and harness identities, dependency freeze and raw results are retained.
 The Windows comparison therefore does not use an unrelated historical runner
 as its only timing control.
 
-The first transition from the original v2 references adds a third measurement:
+While the saved references are still the original v2 records, the runner also
+retains a separate historical measurement:
 the **same candidate product**, in a separate checked worktree, using the
 historical harness copied from the immutable PR base. That control retains the
 original accelerated poll settings and observer, so it can be compared with
 the historical numbers. It still uses the current 15% timing policy and exact
 counter caps. Its separate raw measurements and harness hashes are retained.
-The new product-default pair must also pass before a replacement is eligible.
-This transition cannot qualify a different candidate, dependency tuple, runner
-pair, OS or workload, and cannot bypass an established default-cell reference.
-Each cell keeps five timing/two counter samples per caller and the original
-per-test and per-phase deadlines; the workflow has time for the extra cell.
+The historical control retains five timing/two counter samples per caller.
+Its strict comparison and any rejection stay in the report independently of
+the calibrated gate. All cells retain the original per-test and per-phase
+deadlines. This packet does not approve, emit or replace a saved reference.
 
 The current comparison is **15% relative** for both median and slowest overhead,
-with **no absolute floor**. All counter caps remain upper bounds, including
-waits, commits and forced writes. A missing previously observed counter fails.
+with **no absolute floor**. Counter caps are upper bounds. A missing previously
+observed counter fails, and incomplete scoped coverage cannot become zero.
 The historical JSON files below retain their original values and acquisition
 policy; those policy fields do not select the current comparison tolerance.
-Newly observed counters are compared with the paired base under the same
-observer. During the initial transition the historical control keeps all old
-caps; different polling settings and observer costs are never combined into a
-single distribution. Once a default-cell reference is established, that cell
-is compared directly with its prior reference as well as its paired base.
+Different polling settings and observer costs are never combined into a single
+distribution. The historical control keeps all old caps. The active same-runner
+comparison follows the Release 14 Lead's
+[base-vs-base calibration decision](https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6965824641):
+
+- Five exact-base controls set the policy. Five fresh base samples validate it;
+  five candidate samples are then compared with those same limits. Neither the
+  holdout nor candidate samples can set or adjust a limit.
+- `counter-calibration.json` retains every control value, minimum, maximum,
+  spread, margin, group and final limit for each caller/counter.
+- The stated margin is **one observed base range (maximum minus minimum)**,
+  only for the explicit ambient allowlist in `_local_speed_calibration.py`.
+  Stable counters and counters outside that list have zero margin.
+- Ambient groups cover whole-workload/parent wait volume, observed polling
+  wait producers, Runtime poll/reaper invocation volume, aggregate associated
+  commits and native operations. The named lease-pump and parent pipe-readiness
+  counts can also vary. A new parent sleep producer has no automatic allowance.
+- Separate process, request and polling-cycle guards protect per-job work:
+  compiles, emissions, hashes, starts and writes remain independently checked;
+  each Runtime request has its own commit/write maxima; each observed SDK
+  status or host process polling cycle has its own wait maximum.
+- Wait-producer totals must reconcile with process waits. Request scope totals
+  must reconcile with observed routes. Scoped commits must reconcile with the
+  SQL-trace and process totals. Carry-in requests remain explicit and are not
+  counted as new requests. Lost partial observations fail those checks.
+
+The held-out base comparison must pass as well as the candidate comparison.
+A failed comparison is retained; it cannot expand its own margin or become a
+replacement reference. The historical comparison remains a separate reported
+result even when the current calibrated comparison passes.
 
 The attached cell leaves host, SDK and machine polling at product defaults.
 It counts `Event.wait`, direct `Condition.wait`, `asyncio.sleep` and selector
@@ -69,6 +95,7 @@ proof continues to require two succeeded Runtime records and verified delivery.
 
 Forced-write evidence reports effective SQLite settings before and after the
 call, successful outer commits separately from attempted COMMIT statements,
+all connection commit calls and no-op calls outside a transaction,
 application sync origins and Runtime routes, and platform write-through calls.
 The autonomous lifetime reaper is identified by its exact server/code owner;
 HTTP-triggered reaping and heartbeat/progress commits remain separate contexts.
@@ -86,13 +113,15 @@ attribution. Windows native mapping remains explicitly unqualified under
 LS-13; Python calls are never represented as a native count.
 
 `tests.local_speed_paired_run` reads the old reference from the **base Git
-commit**, not the candidate checkout. A proposed replacement cannot grade
-itself. It writes `eligible-reference.json` only after the candidate passes
-both the old-reference and paired-reference comparisons in their matching
-cells. The historical control cannot be an old product measured in place of
-the candidate. This is an evidence
-artifact, not an automatic repository reference update. The standalone meter's
-`--reference-output` likewise requires and passes the prior reference first.
+commit**, not the candidate checkout. It does not write
+`eligible-reference.json` and always reports `reference_eligible: false`.
+The separate `approve_reference` API and standalone `--reference-output` path
+still require the candidate to pass the prior reference first; a proposed
+replacement cannot grade itself. Where an initial historical control is used
+for that API, it must be this exact candidate in the same runner pair, with the
+same dependency tuple, OS and workload. It cannot substitute an old product or
+bypass an established default-cell reference. Reacquisition after a new product
+dependency tuple remains separate work; this packet makes no cross-tuple claim.
 
 The workflow covers the harness dependency paths and `pyproject.toml`.
 `dev-constraints.txt` pins direct development requirements for this lane;
@@ -101,9 +130,14 @@ also records transitive versions; this constraints file is not claimed to be
 a fully resolved lock for every package.
 
 Focused proof lives in `test_local_speed_gate.py`, `test_local_speed_waits.py`,
-`test_local_speed_write_attribution.py` and the resident-process probe, alongside
+`test_local_speed_write_attribution.py`, `test_local_speed_ambient_calibration.py`
+and the resident-process probe, alongside
 all original observer/collector tests. `tests.local_speed_gate_probes` retains
-old-accept/new-reject results against Agent `19103ea6` in each hosted artifact.
+old-accept/new-reject results against Agent `19103ea6` in each hosted artifact,
+separately from the active calibration mechanism probes. The latter accept
+independent base variation and reject a real extra per-job commit or sleep even
+inside the aggregate margin. Direct SQL COMMIT, no-op commit, partial coverage
+loss and actual retained-worker observations have separate focused probes.
 The full paired run remains the product acceptance evidence; neither unit
 tests nor an instrumented duration qualify D1 or real GPU performance.
 
@@ -152,8 +186,8 @@ their retained SHA256SUMS manifest.
 | Fresh CLI | 5 | 48.125 | 56.000 |
 
 The workflow requires the recorded reference on each OS and fails if its file
-is missing. Product changes trigger the meter so future optimizations are
-compared against these references. The acquisition-only product freeze is
+is missing. Product changes trigger the meter, retaining the historical
+comparison and the calibrated current-default comparison separately. The acquisition-only product freeze is
 removed; exact dependency source-byte and identity checks remain.
 
 ## Initial Linux acquisition failure retained
@@ -220,5 +254,7 @@ YAML, its embedded Python, capture syntax and reference-policy validation pass.
 Local native calibration is NO-RESULT because this container denies
 `PTRACE_TRACEME` with `Operation not permitted`; no privileges were changed.
 Both hosted calibrations and the full repeated meter passed in run 44127948473.
-The workflow now requires a reference comparison on both OSes. Submission
-requires a later CI run passing both comparisons, retained in the packet evidence.
+At that acquisition, the workflow required a reference comparison on both OSes.
+Current LS-2.2 submission additionally requires the calibrated base holdout and
+candidate comparisons on both systems, retained in the packet evidence. The
+historical acquisition and later rejected/canceled runs remain distinct results.
