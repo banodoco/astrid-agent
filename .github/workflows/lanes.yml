@@ -13,7 +13,7 @@ on:
         required: false
         type: string
   push:
-    branches: [main, release-1, "int/**", "release/*/main", "release/14/plan-39"]
+    branches: [main, release-1, "int/**", "release/*/main", "release/*/plan-*"]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -275,38 +275,28 @@ jobs:
           echo "- ComfyUI: $checked_out" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Integration tests (shard)
-        run: mkdir -p "$TEST_RESULTS_DIR" && python -m pytest -v -rA --junitxml="$TEST_RESULTS_DIR/integration.xml" --durations=40 -m "integration and not opt_in and not app_checkout" --splits 4 --group ${{ matrix.group }}
+        run: mkdir -p "$TEST_RESULTS_DIR" && python -P -m ci.run_pytest -v -rA --junitxml="$TEST_RESULTS_DIR/integration.xml" --durations=40 -m "integration and not opt_in and not app_checkout" --splits 4 --group ${{ matrix.group }}
         shell: bash
         env:
+          PYTHONPATH: ${{ github.workspace }}/scripts
           TEST_RESULTS_DIR: ${{ runner.temp }}/test-results-integration-${{ matrix.group }}-${{ runner.os }}
       - name: Summarize test result XML
         if: always()
         env:
+          PYTHONPATH: ${{ github.workspace }}/scripts
           TEST_RESULTS_DIR: ${{ runner.temp }}/test-results-integration-${{ matrix.group }}-${{ runner.os }}
-        run: |
-          python - <<'PY'
-          import os
-          from pathlib import Path
-          from xml.etree import ElementTree as ET
-          files = sorted(Path(os.environ['TEST_RESULTS_DIR']).glob('*.xml'))
-          if not files:
-              print('JUnit: no XML files; no test result available')
-              raise SystemExit(1)
-          root = ET.parse(files[0]).getroot()
-          suites = [root] if root.tag == 'testsuite' else list(root.iter('testsuite'))
-          counts = [sum(int(suite.get(key, '0')) for suite in suites) for key in ('tests', 'failures', 'errors', 'skipped')]
-          line = f'{files[0].name}: tests={counts[0]} failures={counts[1]} errors={counts[2]} skipped={counts[3]}'
-          print(line)
-          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
-              summary.write(line + '\n')
-          PY
+        run: python -P -m ci.check_results "${{ env.TEST_RESULTS_DIR }}" --expected 1
 
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-results-integration-${{ matrix.group }}-${{ runner.os }}
-          path: ${{ runner.temp }}/test-results-integration-${{ matrix.group }}-${{ runner.os }}/*.xml
+          path: |
+            ${{ runner.temp }}/test-results-integration-${{ matrix.group }}-${{ runner.os }}/*.xml
+            ${{ runner.temp }}/test-results-integration-${{ matrix.group }}-${{ runner.os }}/*.jsonl
+            ${{ runner.temp }}/test-results-integration-${{ matrix.group }}-${{ runner.os }}/*.log
+            ${{ runner.temp }}/test-results-integration-${{ matrix.group }}-${{ runner.os }}/*.json
           retention-days: 90
           if-no-files-found: warn
 

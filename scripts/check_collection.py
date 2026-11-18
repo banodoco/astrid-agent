@@ -80,7 +80,8 @@ def main(argv=None):
     try:
         known = read_known(KNOWN)
         result = subprocess.run(
-            [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider",
+            [sys.executable, "-I", "-u", str(Path(__file__).resolve().parent / "ci/pytest_entrypoint.py"),
+             "--collect-only", "-q", "-p", "no:cacheprovider",
              "-o", "addopts=", "--continue-on-collection-errors", "tests"],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False,
         )
