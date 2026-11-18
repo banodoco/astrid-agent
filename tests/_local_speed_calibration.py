@@ -13,6 +13,7 @@ from collections import Counter
 
 from tests._local_speed_baseline import CALLERS, compare_baseline, counter_values
 from tests._local_speed_census import CONTAINERS, census_remainder, census_rule, compare_census
+from tests._local_speed_sdk_poll import METRIC as SDK_SLEEP_METRIC, compare_sdk, sdk_rule
 
 SCHEMA = "astrid.local-speed-ambient-calibration.v2"
 PARENT = "parent_runtime_host_sdk"
@@ -309,6 +310,17 @@ def calibration(reference):
                              "limit": maximum + margin, "group": group or "scoped_or_deterministic",
                              "policy": "observed_maximum_plus_range" if margin else "observed_maximum_exact_cap"}
         cadence = _calibrate_host_poll(rows, metrics)
+        sdk = sdk_rule(rows) if caller == "resident_sdk" else None
+        if sdk is not None:
+            # Only this named total loses its cap. Containing counters, the
+            # independent per-poll maximum, and the CLI policy are unchanged.
+            samples = sdk["base_sleep_calls"]
+            item = metrics.setdefault(SDK_SLEEP_METRIC,
+                                      {"samples": samples, "minimum": min(samples), "maximum": max(samples),
+                                       "spread": max(samples) - min(samples), "margin": 0,
+                                       "group": "parent_poll_wait_volume"})
+            item.pop("limit", None)
+            item.update(policy="observation_only", decision="6981129059")
         if census is not None:
             for name in CONTAINERS:
                 item = metrics[name]
@@ -317,7 +329,8 @@ def calibration(reference):
                 item["remainder_policy"] = item["policy"]
                 item["policy"] = "remainder_after_individually_gated_census_sleeps"
         result["callers"][caller] = {"samples": len(rows), "metrics": metrics,
-                                     "host_poll_cadence": cadence, "census_invariants": census}
+                                     "host_poll_cadence": cadence, "census_invariants": census,
+                                     "sdk_poll_invariants": sdk}
     return result
 
 
@@ -346,7 +359,12 @@ def compare_calibrated(actual, reference, policy):
         cadence = policy["callers"][caller]["host_poll_cadence"]
         if cadence is not None:
             failures.extend(_compare_host_poll(rows, cadence, caller))
+        sdk = policy["callers"][caller]["sdk_poll_invariants"]
+        if sdk is not None:
+            failures.extend(compare_sdk(rows, sdk, caller))
         for name in sorted(names):
+            if caller == "resident_sdk" and sdk is not None and name == SDK_SLEEP_METRIC:
+                continue  # Raw observation; the complete per-poll evidence gated above.
             limits = metrics.get(name, {"maximum": 0, "limit": 0, "margin": 0, "spread": 0})
             samples = [values.get(name) for values in observed]
             if any(value is None for value in samples):

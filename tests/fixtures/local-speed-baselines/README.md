@@ -26,21 +26,28 @@ target has since re-pinned VibeComfy; this proof cannot qualify that new tuple.
 LS-2.1 owns its measurement after re-pins. Other branches select their exact PR
 base. The dependency identity guard remains enforced in every comparison.
 
-The packet branch integrates accepted plan base `24c68a27` (including `6451821e`)
+The packet branch integrates accepted plan base `d0217776` (including `24c68a27` and `6451821e`)
 before final proof. Under the original-tuple and merge rulings, the workflow
 checks the exact clean merge head and ordered parents, reproduces its native
 merge, preserves the accepted Runtime-pin reader, and verifies every shared
 measurement-harness blob. It then selects the clean original-tuple parent, whose changes
-from `b18080bc` are confined to the named census/qualification files. That
+from `b18080bc` are confined to the named observation, policy, qualification and
+focused proof files. That
 parent retains the original product, dependency pins, references and test
 guards. `plan55-qualification.json` records both commits and trees, all harness
 hashes and the two plan-added LS-5 harness files outside this measurement.
 Follow-ups retain the preceding published controller as the first parent;
-the current predecessor is `d7f53b0d`, which retains `d84e7276`. Each
+the current predecessor is `02add382`, which retains `d7f53b0d` and `d84e7276`. Each
 qualification source extends its predecessor's original-tuple source. The
 checker follows that published chain back to the accepted plan merge and
 verifies both identities and the ordinary two-parent merge;
 the published first-parent history is preserved without rebasing.
+Under [Lead 6983043853](https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6983043853),
+the SDK fix first merges into that retained controller, then the new accepted
+plan merges into the result. The checker reproduces both ordinary merges and
+requires the current plan as an ancestor; the original-tuple source still
+extends the preceding original source. The newly accepted LS-8 product bytes
+stay in the integrated head and are not substituted into the original proof.
 The continuation source archive retains the integrated PR head. This source
 handoff does not qualify the newer accepted product/dependency tuple; LS-2.1
 owns that measurement. Any unexpected source or merge difference fails before
@@ -187,6 +194,35 @@ their remainders are compared with their existing policies. Each subtraction
 is recorded as `census_sleep_samples`; non-census waits cannot use it. Every
 other counter, the host-window rule, timing policy and reference guard remains
 unchanged. Earlier failed runs keep their original outcome.
+
+The **resident SDK polling rule** follows
+[Lead decision 6981129059](https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6981129059).
+It applies only to `resident_sdk` and
+`waitsite.parent_runtime_host_sdk.sleep_attempt|astrid.sdk.invocation:_wait_for_kernel_task_loop`.
+That total follows task duration: an identical-product held-out base recorded
+12 sleeps against the old cap of 11. The total, base samples and range remain
+observations; this named metric has no `limit`. Its former range/margin metadata
+remains descriptive and does not authorize work.
+
+The observer records each SDK invocation's task identity, boundaries, actual
+task-status calls and returns, poll state, and sleep requests and completions.
+Each nonterminal poll must contain exactly one sleep; the terminal task read
+exits without a sleep. Every requested period must be at least the positive
+period established by the base controls. Unknown periods, missing results,
+unaccounted sleeps, ambiguous invocation or poll identities, and clipped
+invocations fail closed. Aggregate maxima alone cannot prove these invariants.
+Older artifacts lacking these records keep their original outcomes and cannot
+be reclassified as complete under this rule. If the controls observe no sleep,
+the period remains unknown and cannot authorize a later wait.
+
+Only the named total's cap changes. Its independent per-poll maximum, all
+containing counters, CLI limits, host and census rules, timing policy, immutable
+references, approved dependency identities and earlier Windows base-only
+breaches are retained. SDK sleeps are never subtracted from containing totals.
+The existing ambient test fixture now supplies a positive period and a final
+terminal poll; all existing test assertions remain unchanged. This is the
+round-one fix under the practical threat model, with no additional defenses
+for its documented deliberately crafted bypasses and no further meter round.
 
 The held-out base comparison must pass as well as the candidate comparison.
 A failed comparison is retained; it cannot expand its own margin or become a

@@ -126,6 +126,36 @@ def test_followup_retains_published_history_without_changing_either_tuple(tmp_pa
         validate_sources(**args)
 
 
+def test_followup_then_new_plan_merge_keeps_both_native_merges_and_original_tuple(tmp_path):
+    args, qualified = graph(tmp_path)
+    previous, old_plan = args["controller"], args["plan_base"]
+    run(tmp_path, "checkout", "--detach", qualified)
+    write(tmp_path, "tests/_local_speed_process.py", "SDK invariant observer\n")
+    source = commit(tmp_path, "original-tuple SDK fix")
+    run(tmp_path, "checkout", "--detach", previous)
+    run(tmp_path, "merge", "--no-commit", "--no-ff", source)
+    followup = commit(tmp_path, "retain controller and SDK fix")
+    run(tmp_path, "checkout", "--detach", old_plan)
+    write(tmp_path, "astrid/product.py", "new accepted plan product\n")
+    plan = commit(tmp_path, "accepted LS-8")
+    run(tmp_path, "checkout", "--detach", followup)
+    run(tmp_path, "merge", "--no-commit", "--no-ff", plan)
+    controller = commit(tmp_path, "merge newly accepted plan")
+    args.update(controller=controller, plan_base=plan, previous_plan_base=old_plan,
+                previous_controller=previous)
+    receipt = validate_sources(**args)
+    assert receipt["qualification"] == source
+    assert receipt["previous_controller_preserved"] == previous
+    assert receipt["retained_followup_merge"]["controller"] == followup
+    assert receipt["retained_followup_merge"]["native_merge_tree"] == run(tmp_path, "rev-parse", followup + "^{tree}")
+    assert receipt["native_merge_tree"] == run(tmp_path, "rev-parse", controller + "^{tree}")
+    assert receipt["native_merge_conflicts"] == []
+    assert run(tmp_path, "show", controller + ":astrid/product.py") == "new accepted plan product"
+    assert run(tmp_path, "show", source + ":astrid/product.py") == "original product"
+    assert run(tmp_path, "show", source + ":runtime.lock.json") == '{"source_commit": "original-runtime"}'
+    assert receipt["new_plan_tuple_qualified"] is False
+
+
 def test_fixture_preserves_exact_lf_bytes_with_windows_text_defaults(tmp_path, monkeypatch):
     original = type(tmp_path).write_text
 

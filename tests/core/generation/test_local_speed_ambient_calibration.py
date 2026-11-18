@@ -35,16 +35,20 @@ def probe_row(caller, index, polls, *, extra_sleep=False, extra_commit=False, ex
     runtime.process, runtime.requests, runtime.background = meter, [], []
     namespace = {"__name__": "astrid.sdk.invocation", "time": time}
     exec(compile(
-        "def _wait_for_kernel_task_loop(show, polls, extra):\n"
+        "def _wait_for_kernel_task_loop(show, polls, extra, task_id='probe-task'):\n"
         "    for index in range(polls):\n"
         "        show()\n"
-        "        time.sleep(0)\n"
+        "        state = 'running'\n"
+        "        time.sleep(0.001)\n"
         "        if extra and index == 0:\n"
-        "            time.sleep(0)\n", "<per-job-sleep-injection>", "exec"), namespace)
+        "            time.sleep(0.001)\n"
+        "    show()\n"
+        "    state = 'completed'\n"
+        "    return ({}, True, 'attempt')\n", "<per-job-sleep-injection>", "exec"), namespace)
 
     class Status:
         def show(self):
-            return None
+            return {}
 
     meter.start()
     begin = time.perf_counter_ns()
