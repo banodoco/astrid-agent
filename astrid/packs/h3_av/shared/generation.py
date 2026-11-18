@@ -15,8 +15,20 @@ from typing import Any, Mapping
 from .engine_facts import facts
 from .timing import frame_index, smallest_h3_run_at_least
 
-IMAGE_REFERENCE_CAPACITY = 9
-VIDEO_REFERENCE_CAPACITY = 3
+LIMITS = {
+    "builder_slots": {"value": {"image": 9, "video": 3, "audio": 3}, "source": "node"},
+    "clip_seconds": {"value": [2, 15], "source": "model card"},
+    "modality_seconds": {"value": 15, "source": "model card"},
+    "conditioning_files": {"value": 12, "source": "model card"},
+    "canvas_dimension": {"value": {"min": 32, "max": 16384, "multiple": 32}, "source": "node"},
+    "character_swap_references": {"value": {"video": 1, "image": 1, "additional": "allowed but untested"}, "source": "Astrid lowering"},
+    "continuation_references": {"value": {"image": 2, "video": 0, "audio": 0}, "source": "Astrid lowering"},
+    "audio_grant_strength": {"value": [0, 1], "source": "node"},
+    "regions_per_pass": {"value": {"seeds": 1, "reference_sets": 1}, "source": "Astrid lowering"},
+    "job_duration_seconds": {"value": [124 / 24, 362 / 24], "source": "node", "warning": "Outside 124–362 frames is outside the tested range."},
+}
+IMAGE_REFERENCE_CAPACITY = LIMITS["builder_slots"]["value"]["image"]
+VIDEO_REFERENCE_CAPACITY = LIMITS["builder_slots"]["value"]["video"]
 CHARACTER_SWAP_ID = "character_swap_v1"
 CHARACTER_SWAP_REPOSITORY = "akatz-ai/MiniMax-H3-Character-Swap-LoRA"
 CHARACTER_SWAP_REVISION = "62407e0cc8089c363abd9ce4b0b27662abb237af"
@@ -206,6 +218,7 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
                               model: str, steps: int, seed: int,
                               sampler: str = "res_multistep", guidance: float = 0.95,
                               scheduler: str = "simple", video_references: list[dict[str, Any]] | None = None,
+                              audio_references: list[dict[str, Any]] | None = None,
                               adapter_strength: float | None = None, turbo_enabled: bool = True,
                               character_swap_sha256: str = CHARACTER_SWAP_SHA256,
                               masked_edit: dict[str, Any] | None = None):
@@ -225,7 +238,7 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
     from vibecomfy.templates import ModelAsset, OutputSpec, ReadyMetadata, new_workflow, node
     from vibecomfy.nodes.core import (
         AudioConcat, BasicGuider, BasicScheduler, CLIPLoader, EmptyAudio, EmptyImage,
-        ImageBatch, ImageFromBatch, KSamplerSelect, LoadImage, RepeatImageBatch,
+        ImageBatch, ImageFromBatch, KSamplerSelect, LoadAudio, LoadImage, RepeatImageBatch,
         LoraLoaderModelOnly, RandomNoise, SamplerCustomAdvanced, UNETLoader,
         VAEDecode, VAEDecodeAudio, VAELoader,
     )
@@ -234,8 +247,11 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
     if not (0 if masked_edit else 1) <= len(references) <= IMAGE_REFERENCE_CAPACITY:
         raise ValueError("this adapter requires one to nine image references")
     video_references = list(video_references or [])
+    audio_references = list(audio_references or [])
     if len(video_references) > VIDEO_REFERENCE_CAPACITY:
         raise ValueError("this adapter requires at most three video references")
+    if len(audio_references) > LIMITS["builder_slots"]["value"]["audio"]:
+        raise ValueError("this adapter supports at most three standalone audio references")
     locked_models = _h3_locked_urls()
     names = {
         "model": ("diffusion_models", "minimax_h3_ref2va_pruned_int8_convrot.safetensors"),
@@ -332,13 +348,18 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
                 audio_port = f"ref_video_audios.ref_video_audio_{index}"
                 refs[audio_port] = loader.out(2)
                 video_audio_inputs.add(audio_port)
+        for index, reference in enumerate(audio_references):
+            ident = str(reference.get("binding", f"audio_reference_{index}"))
+            loader = LoadAudio(audio="", _id=ident)
+            wf.register_input(ident, ident, "audio", "", type="CHOICE", default="", required=True, media_semantics="audio")
+            refs[f"ref_audios.ref_audio_{index}"] = loader.out("audio")
         # Retain the pinned define_schema contract: the offline schema predates
         # this node. Declare only the exact dynamic reference ports used here.
         target_inputs = ["clip", "vae", "audio_vae", "prompt", "width", "height", "length", "ref_image_size", *refs]
         target = node("MiniMaxH3ReferenceToVideo", _id="target", _outputs=("positive", "LATENT"),
                       _native_ports={
                           "native_input_names": target_inputs,
-                          "native_input_types": ["CLIP", "VAE", "VAE", "STRING", "INT", "INT", "INT", "COMBO", *["AUDIO" if name in video_audio_inputs else "IMAGE" for name in refs]],
+                          "native_input_types": ["CLIP", "VAE", "VAE", "STRING", "INT", "INT", "INT", "COMBO", *["AUDIO" if name in video_audio_inputs or name.startswith("ref_audios.") else "IMAGE" for name in refs]],
                           "native_output_names": ["positive", "LATENT"],
                           "native_output_types": ["CONDITIONING", "LATENT"],
                       },

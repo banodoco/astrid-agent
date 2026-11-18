@@ -26,7 +26,7 @@ SCHEMA = Draft202012Validator(json.loads((PACK / "schemas/request.v2.json").read
 
 def _request(*, adapter: bool = True, turbo: bool = True, source: bool = False) -> dict:
     media = [
-        {"id": "performance", "asset": "performance.mp4", "role": "reference", "modality": "video", "range": [1, 2], "audio": False},
+        {"id": "performance", "asset": "performance.mp4", "role": "reference", "modality": "video", "range": [1, 3], "audio": False},
         {"id": "replacement", "asset": "replacement.png", "role": "reference", "modality": "image"},
     ]
     if source:
@@ -73,11 +73,18 @@ def _files(tmp_path: Path, *, source: bool = False) -> dict[str, Path]:
         "performance.mp4": tmp_path / "performance.mp4",
         "replacement.png": tmp_path / "replacement.png",
     }
-    files["performance.mp4"].write_bytes(b"reference video fixture")
-    files["replacement.png"].write_bytes(b"reference image fixture")
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+                    "-i", "color=c=green:s=64x64:r=24:d=4", "-an", "-c:v", "libx264",
+                    "-pix_fmt", "yuv420p", str(files["performance.mp4"])], check=True, capture_output=True)
+    from PIL import Image
+    Image.new("RGB", (64, 64), color="red").save(files["replacement.png"])
     if source:
         files["baseline.mp4"] = tmp_path / "baseline.mp4"
-        files["baseline.mp4"].write_bytes(b"timeline baseline fixture")
+        subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+                        "-i", "color=c=blue:s=1024x576:r=24:d=1", "-f", "lavfi",
+                        "-i", "sine=frequency=440:sample_rate=48000:duration=1", "-map", "0:v:0",
+                        "-map", "1:a:0", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                        "-c:a", "aac", "-shortest", str(files["baseline.mp4"])], check=True, capture_output=True)
     return files
 
 
@@ -144,7 +151,7 @@ def test_adapter_defaults_aliases_and_legacy_replay_are_canonical_without_mutati
         "version": 2, "prompt": raw["prompt"], "duration": 1,
         "media": [
             {"occurrence_id": "occurrence-1", "id": "performance", "asset": "performance.mp4",
-             "role": "reference", "modality": "video", "range": [1, 2], "audio": False},
+             "role": "reference", "modality": "video", "range": [1, 3], "audio": False},
             {"occurrence_id": "occurrence-2", "id": "replacement", "asset": "replacement.png",
              "role": "reference", "modality": "image"},
         ],
@@ -246,8 +253,12 @@ def test_adapter_media_and_branch_limits_fail_before_compile(case: str) -> None:
         raw["media"].insert(0, {"asset": "voice.wav", "role": "timeline", "modality": "audio", "at": {"frame": 0}, "range": [0, 1]})
     elif case == "separate_audio":
         raw["media"].insert(0, {"asset": "voice.wav", "role": "timeline", "modality": "audio", "at": {"frame": 1}, "range": [0, 1]})
-    with pytest.raises(H3RequestError, match="character_swap_v1"):
+    if case in {"extra_picture", "extra_video", "audio_reference"}:
+        # The shared limits table allows further references but marks them untested.
         normalize_request(raw)
+    else:
+        with pytest.raises(H3RequestError, match="character_swap_v1"):
+            normalize_request(raw)
 
 
 @pytest.mark.parametrize("turbo_enabled", [True, False])
@@ -310,7 +321,7 @@ def test_native_v2_compile_binds_exact_references_and_connected_lora_chain(
     video_loader = api[target["inputs"]["ref_videos.ref_video_0"][0]]
     assert video_loader["class_type"] == "VHS_LoadVideoFFmpeg"
     assert video_loader["inputs"]["start_time"] == 1
-    assert video_loader["inputs"]["frame_load_cap"] == 24
+    assert video_loader["inputs"]["frame_load_cap"] == 48
     by_class = {row["class_type"]: row["inputs"] for row in api.values()}
     assert by_class["ModelAttentionBackend"]["attention"] == "comfy kitchen attention"
     loras = [row["inputs"]["lora_name"] for row in api.values() if row["class_type"] == "LoraLoaderModelOnly"]

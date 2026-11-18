@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 from dataclasses import replace
 from pathlib import Path
@@ -51,6 +52,65 @@ def test_generation_assets_use_recipe_lock_revisions():
         f'{row["subdir"]}/{row["name"]}'
         for row in _locked_model_workflow(turbo_enabled=False).metadata["model_assets"]
     }
+
+
+def test_generation_binds_standalone_audio_to_audio_typed_reference_port():
+    workflow = _locked_model_workflow(audio_references=[{"binding": "audio_reference_0"}])
+    target = workflow.nodes["target"]
+    ports = dict(zip(target.native_input_names, target.native_input_types, strict=True))
+    assert ports["ref_audios.ref_audio_0"] == "AUDIO"
+    assert workflow.inputs["audio_reference_0"].media_semantics == "audio"
+
+
+def test_builder_reference_port_counts_match_the_limits_table():
+    from astrid.packs.h3_av.shared.generation import LIMITS, build_generation_workflow
+
+    capacities = LIMITS["builder_slots"]["value"]
+    workflow = build_generation_workflow(
+        references=[f"image-{index}" for index in range(capacities["image"])],
+        video_references=[{"binding": f"video-{index}"} for index in range(capacities["video"])],
+        audio_references=[{"binding": f"audio-{index}"} for index in range(capacities["audio"])],
+        prompt="A scene", frames=24, model="minimax_h3_ref2va_pruned_int8_convrot.safetensors", steps=8, seed=1,
+    )
+    target = workflow.nodes["target"]
+    ports = dict(zip(target.native_input_names, target.native_input_types, strict=True))
+    assert sum(name.startswith("ref_images.") for name in ports) == capacities["image"]
+    assert sum(name.startswith("ref_videos.") for name in ports) == capacities["video"]
+    assert sum(name.startswith("ref_audios.") for name in ports) == capacities["audio"]
+    assert all(ports[f"ref_audios.ref_audio_{index}"] == "AUDIO" for index in range(capacities["audio"]))
+    dimensions = LIMITS["canvas_dimension"]["value"]
+    assert (dimensions["min"], dimensions["max"], dimensions["multiple"]) == (32, 16384, 32)
+
+
+def test_builder_rejects_one_past_standalone_audio_slots():
+    from astrid.packs.h3_av.shared.generation import LIMITS, build_generation_workflow
+
+    with pytest.raises(ValueError, match="at most three standalone audio references"):
+        build_generation_workflow(references=["image-0"], audio_references=[
+            {"binding": f"audio-{index}"} for index in range(LIMITS["builder_slots"]["value"]["audio"] + 1)
+        ], prompt="A scene", frames=24, model="minimax_h3_ref2va_pruned_int8_convrot.safetensors", steps=8, seed=1)
+
+
+def test_limits_match_the_pinned_cached_h3_node_schema():
+    from astrid.packs.h3_av.shared.generation import LIMITS
+
+    cache = Path(os.environ["VIBECOMFY_SOURCE"]) / "vibecomfy/porting/cache/object_info/comfy_core@cpu-runtime.json"
+    classes = json.loads(cache.read_text())
+    schema = classes["MiniMaxH3ReferenceToVideo"]
+    assert schema["git_commit"] == "6bfaacc67c2103481e5f0c84d75257cd0581d86a"
+    optional = schema["inputs"]["optional"]
+    slots = LIMITS["builder_slots"]["value"]
+    assert optional["ref_images"][1]["template"]["max"] == slots["image"]
+    assert optional["ref_videos"][1]["template"]["max"] == slots["video"]
+    assert optional["ref_audios"][1]["template"]["max"] == slots["audio"]
+    width = schema["inputs"]["required"]["width"][1]
+    height = schema["inputs"]["required"]["height"][1]
+    for dim in (width, height):
+        assert (dim["min"], dim["max"], dim["step"]) == (
+            LIMITS["canvas_dimension"]["value"]["min"],
+            LIMITS["canvas_dimension"]["value"]["max"],
+            LIMITS["canvas_dimension"]["value"]["multiple"],
+        )
 
 
 @pytest.mark.parametrize("invalid", [

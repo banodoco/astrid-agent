@@ -20,6 +20,139 @@ from .masks import (
 )
 from .request import H3Request, H3RequestError, _asset_ids
 from .request_v2 import branch_for
+from .generation import LIMITS
+
+
+def _probe_conditioning(path: Path) -> dict[str, Any]:
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe is None:
+        raise PreparationError("conditioning limits require ffprobe")
+    try:
+        result = subprocess.run([ffprobe, "-v", "error", "-show_entries",
+            "stream=codec_type,duration,nb_frames,width,height,avg_frame_rate,sample_rate,channels:format=duration", "-of", "json", str(path)],
+            check=False, capture_output=True, text=True, timeout=30)
+        payload = json.loads(result.stdout) if result.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+        raise PreparationError(f"cannot measure conditioning media {path.name!r}: {exc}") from exc
+    if not isinstance(payload, Mapping) or not isinstance(payload.get("streams"), list):
+        raise PreparationError(f"conditioning media {path.name!r} is unreadable (conditioning clip 2–15 seconds)")
+    return dict(payload)
+
+
+def _admit_conditioning(request: H3Request, assets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Apply the shared reference table before scheduling any paid/runtime work."""
+    from .compose import _streams, _duration
+    resolved = {str(row["asset"]): Path(str(row["path"])) for row in assets
+                if row.get("status") == "resolved" and isinstance(row.get("path"), str)}
+    refs = [row for row in request.value["media"] if row.get("role") == "reference" and row.get("use") != "replacement"]
+    counts = {"image": 0, "video": 0, "audio": 0}
+    totals = {"image": 0.0, "video": 0.0, "audio": 0.0}
+    files = 0
+    entry = LIMITS["builder_slots"]["value"]
+    duration_clock = {"video": 24, "audio": 48000}
+    measurements: list[dict[str, Any]] = []
+    for item in refs:
+        modality = item.get("modality")
+        if modality not in counts:
+            continue
+        counts[modality] += 1
+        files += 1
+        ordinal = counts[modality]
+        slot = {"image": f"ref_images.ref_image_{ordinal - 1}", "video": f"ref_videos.ref_video_{ordinal - 1}", "audio": f"ref_audios.ref_audio_{ordinal - 1}"}[modality]
+        tag = {"image": f"<Picture {ordinal}>", "video": f"<Video {ordinal}>", "audio": None}[modality]
+        measurement: dict[str, Any] = {"occurrence": item["occurrence_id"], "modality": modality,
+            "trim": item.get("range"), "bound_file": None, "tracks": [], "retained_picture_frames": None,
+            "audio_duration_seconds": None, "slot": slot, "tag": tag, "effective_size": None,
+            "resource_estimate": {"schema_valid": False, "qualified": False, "observed": False, "raw_bytes": None}}
+        measurements.append(measurement)
+        path = resolved.get(str(item["asset"]))
+        if path is None:
+            continue
+        measurement["bound_file"] = str(path)
+        probe = _probe_conditioning(path)
+        measurement["tracks"] = [str(row.get("codec_type")) for row in probe.get("streams", []) if isinstance(row, Mapping)]
+        streams = _streams(probe, "video" if modality == "image" else modality)
+        if not streams:
+            raise PreparationError(f"conditioning clip 2–15 seconds: {item['occurrence_id']} has no {modality} stream")
+        stream = streams[0]
+        measured = _duration(probe, stream)
+        size = (stream.get("width"), stream.get("height"))
+        if all(isinstance(value, int) and value > 0 for value in size):
+            measurement["effective_size"] = {"width": size[0], "height": size[1]}
+        if modality == "image":
+            try:
+                from PIL import Image
+                with Image.open(path) as image:
+                    image.verify()
+            except Exception as exc:
+                raise PreparationError(f"conditioning image metadata is unreadable: {item['occurrence_id']}") from exc
+            measurement["retained_picture_frames"] = 1
+            measurement["resource_estimate"].update({"schema_valid": True, "raw_bytes": size[0] * size[1] * 3 if measurement["effective_size"] else None})
+            continue
+        if measured is None:
+            raise PreparationError(f"conditioning clip 2–15 seconds: cannot measure {item['occurrence_id']} duration")
+        selected = item.get("resolved_range")
+        if isinstance(selected, list) and len(selected) == 2:
+            start, end = (float(v) / duration_clock[modality] for v in selected)
+            if end > measured + 1e-6:
+                raise PreparationError(f"conditioning clip 2–15 seconds: {item['occurrence_id']} trim ends past measured stream duration")
+            span = end - start
+        else:
+            span = measured
+            start = 0.0
+            end = measured
+        if span < 2 or span > 15:
+            raise PreparationError(f"conditioning clip 2–15 seconds: {item['occurrence_id']} selects {span:.3f}s")
+        totals[modality] += span
+        measurement["retained_picture_frames"] = (int(selected[1]) - int(selected[0])) if modality == "video" and isinstance(selected, list) else (int(stream["nb_frames"]) if modality == "video" and str(stream.get("nb_frames", "")).isdigit() else None)
+        if modality == "video" and measurement["retained_picture_frames"] is None and stream.get("avg_frame_rate"):
+            rate = _rate_fraction(stream["avg_frame_rate"])
+            if rate:
+                measurement["retained_picture_frames"] = round(span * float(rate))
+        measurement["resource_estimate"].update({"schema_valid": True, "raw_bytes": (measurement["retained_picture_frames"] * size[0] * size[1] * 3) if modality == "video" and measurement["retained_picture_frames"] is not None and measurement["effective_size"] else None})
+        if modality == "video" and item.get("audio", True):
+            audio_streams = _streams(probe, "audio")
+            if not audio_streams:
+                raise PreparationError(f"conditioning soundtrack trim: {item['occurrence_id']} requests audio but the video has no audio stream")
+            audio_duration = _duration(probe, audio_streams[0])
+            if audio_duration is None:
+                raise PreparationError(f"conditioning soundtrack trim: cannot measure soundtrack for {item['occurrence_id']}")
+            audio_start, audio_end = (start, end) if isinstance(selected, list) else (0.0, audio_duration)
+            if audio_end > audio_duration + 1e-6:
+                raise PreparationError(f"conditioning soundtrack trim: {item['occurrence_id']} trim ends past measured audio stream duration")
+            totals["audio"] += audio_end - audio_start
+            measurement["audio_duration_seconds"] = audio_end - audio_start
+        elif modality == "audio":
+            measurement["audio_duration_seconds"] = span
+            channels = int(stream.get("channels") or 1)
+            measurement["resource_estimate"]["raw_bytes"] = round(span * int(stream.get("sample_rate") or 48000) * channels * 4)
+    # Audio tags follow node input order: video soundtracks, then standalone clips.
+    audio_index = 0
+    for item, measurement in zip([row for row in refs if row.get("modality") in counts], measurements):
+        if item.get("modality") == "video" and item.get("audio", True):
+            audio_index += 1
+            measurement["audio_tag"] = f"<Audio {audio_index}>"
+        elif item.get("modality") == "audio":
+            audio_index += 1
+            measurement["tag"] = f"<Audio {audio_index}>"
+            measurement["input_type"] = "AUDIO"
+    for row in measurements:
+        estimate = row["resource_estimate"]["raw_bytes"]
+        row["resource_estimate"].update({"qualified": estimate is not None, "unit": "bytes"})
+    for modality, limit in entry.items():
+        if counts[modality] > limit:
+            raise PreparationError(f"builder slots {entry}: {modality} has {counts[modality]} references (limit {limit})")
+    if files > LIMITS["conditioning_files"]["value"]:
+        raise PreparationError("conditioning files 12: supplied conditioning occurrences exceed 12")
+    for modality, total in totals.items():
+        if total > LIMITS["modality_seconds"]["value"] + 1e-6:
+            raise PreparationError(f"per modality total 15 seconds: {modality} selects {total:.3f}s")
+    continuation = request.value.get("continuation")
+    if continuation:
+        allowed = LIMITS["continuation_references"]["value"]
+        if counts["image"] > allowed["image"] or counts["video"] > allowed["video"] or counts["audio"] > allowed["audio"]:
+            raise PreparationError(f"continuation references {allowed}: supplied references exceed lowering slots")
+    return measurements
 
 
 class _SourceAVError(H3RequestError, PreparationError):
@@ -435,10 +568,14 @@ def prepare_request(
 ) -> dict[str, Any]:
     """Create a deterministic preparation manifest without touching a runtime."""
 
-    if fps <= 0 or width <= 0 or height <= 0 or sample_rate <= 0:
-        raise PreparationError("fps, width, height, and sample_rate must be positive")
+    canvas = LIMITS["canvas_dimension"]["value"]
+    if any(value < canvas["min"] or value > canvas["max"] or value % canvas["multiple"] for value in (width, height)):
+        raise PreparationError(f"width and height 32–16384, multiples of 32: received {width}x{height}")
+    if fps <= 0 or sample_rate <= 0:
+        raise PreparationError("fps and sample_rate must be positive")
     if request.value.get("version") == 2:
         assets = _resolve_assets(request, asset_map)
+        conditioning_measurements = _admit_conditioning(request, assets)
         unresolved = [record["asset"] for record in assets if record["status"] != "resolved"]
         timeline_audio_presence: dict[str, bool] = {}
         adapter = request.value.get("settings", {}).get("adapter")
@@ -464,6 +601,10 @@ def prepare_request(
             schedule = _v2_mask_schedule(request, timeline_audio_presence=timeline_audio_presence)
         except MaskScheduleError as exc:
             raise PreparationError(str(exc)) from exc
+        guide_occurrences = {
+            guide for item in request.value["media"] if item.get("role") == "timeline"
+            for edit in item.get("edit", []) for guide in edit.get("guides", [])
+        }
         return {
             "schema_version": 2,
             "kind": "h3_av_preparation",
@@ -471,6 +612,19 @@ def prepare_request(
             "request": request.value,
             "media": {"fps": float(fps), "width": int(width), "height": int(height), "sample_rate": int(sample_rate)},
             "assets": assets,
+            "conditioning_measurements": conditioning_measurements,
+            "resource_estimate": {
+                "schema_valid": True,
+                "qualified": all(row["resource_estimate"]["qualified"] for row in conditioning_measurements),
+                "observed": False,
+                "target_rows": round(float(request.value.get("duration") or 0) * float(fps)),
+                "target_raw_rgb_bytes": round(float(request.value.get("duration") or 0) * float(fps)) * int(width) * int(height) * 3,
+                "reference_rows": len(conditioning_measurements),
+                "reference_raw_rgb_bytes": sum(row["resource_estimate"]["raw_bytes"] or 0 for row in conditioning_measurements if row["modality"] in {"image", "video"}),
+                "reference_raw_audio_bytes": sum(row["resource_estimate"]["raw_bytes"] or 0 for row in conditioning_measurements if row["modality"] == "audio"),
+                "guide_rows": len(guide_occurrences),
+                "unit": "bytes",
+            },
             "unresolved_assets": unresolved,
             "mask_schedule": schedule,
             "status": "prepared" if not unresolved else "requires_resolution",
