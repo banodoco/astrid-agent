@@ -86,12 +86,13 @@ def test_edge_defaults_to_zero(tmp_path: Path) -> None:
 
 
 @pytest.mark.ffmpeg
-def test_threshold_binarizes_for_the_check(tmp_path: Path) -> None:
+def test_mask_threshold_is_refused(tmp_path: Path) -> None:
     mask = tmp_path / "m.mkv"
     _mask_video(mask, value=128)
     with pytest.raises(PreparationError, match="mouth-mask"):
         _prepare(tmp_path, mask)
-    _prepare(tmp_path, mask, mask_spec={"asset": "mouth-mask", "threshold": 100})
+    with pytest.raises(H3RequestError, match="unsupported field.*threshold"):
+        _prepare(tmp_path, mask, mask_spec={"asset": "mouth-mask", "threshold": 100})
 
 
 @pytest.mark.ffmpeg
@@ -118,3 +119,16 @@ def test_edge_with_full_frame_rejected(tmp_path: Path) -> None:
     _mask_video(mask)
     with pytest.raises(H3RequestError, match="edge"):
         _prepare(tmp_path, mask, mask_spec={"full_frame": True, "edge": {"dilate": 1}})
+
+
+@pytest.mark.ffmpeg
+def test_colored_binary_video_mask_is_refused(tmp_path: Path) -> None:
+    mask = tmp_path / "red.mkv"
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+         "-i", f"color=red:size={W}x{H}:rate=24,format=rgb24",
+         "-frames:v", str(FRAMES), "-c:v", "ffv1", "-pix_fmt", "bgr0", str(mask)],
+        check=True, capture_output=True,
+    )
+    with pytest.raises(PreparationError, match="Color mask channels disagree"):
+        _prepare(tmp_path, mask)

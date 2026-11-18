@@ -154,6 +154,46 @@ def _import_generation_member(path: Path, controls: dict[str, Any]) -> dict[str,
     return {'digest': actual, 'sha256': sha256, 'bytes': len(data), 'filename': path.name}
 
 
+def _h3_remote_handoff(plan: Mapping[str, Any], root: Path) -> dict[str, Any] | None:
+    """Freeze the controller's prepared H3 source for transport to its worker."""
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from astrid.packs.h3_av.shared.stages import _authoritative_source_asset_id
+
+    state_path = Path(plan['job_dir']) / 'h3' / 'build-state.json'
+    state = json.loads(state_path.read_text(encoding='utf-8'))
+    source_id = _authoritative_source_asset_id(normalize_request(state['request']))
+    if source_id is None:
+        return None
+    preparation = state['preparation']
+    conform = preparation.get('source_conform')
+    if not isinstance(conform, Mapping) or not state.get('source'):
+        raise CapabilityInvocationError('H3 remote source requires a frozen prepared-source handoff')
+    prepared = Path(state['source'])
+    descriptor = preparation.get('managed_source')
+    expected = conform['output']['sha256']
+    if (not isinstance(descriptor, Mapping) or descriptor.get('digest') != 'sha256:' + expected
+            or descriptor.get('sha256') != expected):
+        raise CapabilityInvocationError('H3 source was not published as the prepared managed object')
+    import hashlib
+    if not prepared.is_file() or hashlib.sha256(prepared.read_bytes()).hexdigest() != expected:
+        raise CapabilityInvocationError('managed H3 prepared source digest mismatch')
+    lineage = {'digest': descriptor['digest'], 'source_asset': source_id,
+               'source_sha256': conform['source']['sha256'],
+               'source_range': conform['source']['range_seconds'],
+               'fit': conform['output']['fit'], 'request_digest': state['request_digest']}
+    conform = {**conform, 'source': {k: v for k, v in conform['source'].items() if k != 'path'}}
+    envelope = {'version': 1, 'request_digest': state['request_digest'], 'asset': source_id,
+                'managed_source': dict(descriptor), 'conform': conform}
+    handoff = root / 'h3-prepared-source.json'
+    handoff.write_text(json.dumps(envelope, sort_keys=True), encoding='utf-8')
+    request_file = root / 'h3-request.json'
+    request_file.write_text(json.dumps(state['request'], sort_keys=True), encoding='utf-8')
+    source_map = {item['asset']: item['path'] for item in preparation['assets']}
+    source_map['__astrid_h3_prepared__'] = str(handoff)
+    return {'inputs': {'request': str(request_file), 'asset_map': source_map},
+            'descriptor': descriptor, 'lineage': lineage}
+
+
 def _retain_generation_source(path: Path, controls: dict[str, Any]) -> dict[str, Any]:
     from tempfile import TemporaryDirectory
     data = path.read_bytes()
@@ -287,6 +327,78 @@ def _runpod_job_preferences(preferences, datacenter):
 
 
 _NO_MACHINE = 'no machine: run `astrid machines claim`'
+LOCAL_REFUSAL_SCOPE = ('refused locally before submission; nothing was sent to a machine; '
+                       'any claimed machine is unaffected')
+
+
+def _offline_invocation_preflight(workflow: Any, *, plan: Mapping[str, Any] | None,
+                                  assets: Mapping[str, Any], comfy_url: str | None,
+                                  lineage: Any, source_video: bool) -> None:
+    """Run the same invocation preflight a live submission runs, offline, on the emitted bundle.
+
+    Every dry run calls this so a request the live path would refuse is refused before a
+    machine is required, claimed, or paid for. Refusals name their scope: they happened
+    locally and nothing was sent anywhere.
+    """
+    from tempfile import TemporaryDirectory
+
+    from vibecomfy.workflow_bundle import emit_bundle
+
+    from astrid.packs.vibecomfy.asset_manifest import build_asset_manifest, resolve_inputs
+    from astrid.packs.vibecomfy.invocation_preflight import (
+        InvocationPreflightError,
+        preflight_invocation,
+    )
+
+    # Mirror the live submission: run inputs come from the staged asset manifest, and a
+    # workflow without managed assets compiles with none (its bindings are already sealed).
+    sent = {name: value for name, value in (dict((plan or {}).get('bindings') or {})).items()
+            if name not in assets}
+    run_inputs: dict[str, Any] = {}
+    source_path = None
+    source_digest = None
+    if assets:
+        manifest = build_asset_manifest(assets, lineage=lineage)
+        run_inputs = resolve_inputs(manifest, sent)
+        record = next((row for row in manifest['assets'] if row.get('binding') == 'source_video'), None)
+        if record is not None and source_video:
+            source_path = assets['source_video']
+            source_digest = 'sha256:' + str(record['sha256'])
+    prompt = run_inputs.get('prompt')
+    expected_prompt = prompt if isinstance(prompt, str) and prompt.strip() else None
+    with TemporaryDirectory(prefix='astrid-dry-preflight-') as scratch:
+        capsule = Path(scratch) / 'workflow.py'
+        emit_bundle(workflow, capsule, {'operation': 'authored'})
+        try:
+            preflight_invocation(
+                capsule, run_inputs=run_inputs, comfy_url=comfy_url or '',
+                expected_prompt=expected_prompt, source_video_path=source_path,
+                expected_source_digest=source_digest, phase='dry-run')
+        except InvocationPreflightError as exc:
+            from astrid.core.generation.preflight import generation_error
+            raise generation_error(ValueError(f'{exc}. {LOCAL_REFUSAL_SCOPE}.'),
+                                   code='input_rejected') from exc
+
+
+def offline_request_preflight(entry_id: str, *, mode: str | None, inputs: Mapping[str, Any]) -> None:
+    """Refuse an explicit entry request locally, without a facade, Runtime or machine.
+
+    Compiles the named shipped entry for these inputs and runs the invocation preflight a
+    submission would run. Auto-selected requests have no single entry to compile, and H3's
+    prepared source exists only on the live path; neither is checked here.
+    """
+    from astrid.core.generation import entries as workflow_entries
+
+    row = workflow_entries.find_entry(entry_id)
+    if row is None or row.get('action') or entry_id == 'h3':
+        return
+    chosen_mode = mode or (row.get('modes') or [None])[0]
+    values = dict(inputs or {})
+    workflow, plan, assets = workflow_entries.prepare(
+        workflow_entries.bundle_path(row), target_client=None, mode=chosen_mode,
+        binds=row.get('binds'), defaults=row.get('defaults'), values=values)
+    _offline_invocation_preflight(workflow, plan=plan, assets=assets or {}, comfy_url=None,
+                                  lineage=None, source_video=True)
 
 
 def _require_claimed_machine(kind, machine=None):
@@ -1435,11 +1547,69 @@ class GenerationFacade:
             python_exec=python_exec, verbose=verbose, argv=argv,
         )
 
+    @staticmethod
+    def _h3_handle_assets(inputs: Mapping[str, Any]) -> list[str]:
+        from astrid.sdk.media_handles import is_media_handle
+        from astrid.packs.h3_av.shared.request import _asset_ids, load_request_document, normalize_request
+        request = inputs.get("request")
+        if not request:
+            return []
+        return [asset for asset in _asset_ids(normalize_request(load_request_document(request)))
+                if is_media_handle(asset)]
+
     def _generate_on_target(self, **kwargs: Any) -> Any:
         """Run ``_generate_on_target_impl``, then remove any hook job directories it made."""
         import shutil
         job_dirs: list[Path] = []
         try:
+            if kwargs.get("model") == "h3":
+                inputs = dict(kwargs.get("inputs") or {})
+                from astrid.core.generation.entries import read_file_map_document
+                supplied_map = read_file_map_document(
+                    inputs.get("asset_map") or {}, allow_output_handles=True, allow_empty=True)
+                if isinstance(supplied_map, Mapping) and "__astrid_h3_prepared__" in supplied_map:
+                    raise CapabilityValidationError("the H3 prepared-source handoff is reserved for the runtime")
+                handles = self._h3_handle_assets(inputs)
+                if handles:
+                    from astrid.sdk.media_handles import resolve_media_handle
+                    from tempfile import mkdtemp
+                    client = kwargs.get("client")
+                    _, project = _resolve_invoke_destination(client=client, out=kwargs.get("out"),
+                        project=kwargs.get("project"), project_root=kwargs.get("project_root"), dry_run=True)
+                    if client is None or not project:
+                        raise CapabilityValidationError("H3 media handles require a project and Runtime connection")
+                    kwargs["project"] = project
+                    root = Path(mkdtemp(prefix="astrid-h3-handles-"))
+                    job_dirs.append(root)
+                    if not isinstance(supplied_map, Mapping):
+                        raise CapabilityValidationError("H3 asset_map must be a readable map of asset IDs to files")
+                    mapping = dict(supplied_map)
+                    lineage = []
+                    for index, handle in enumerate(handles):
+                        descriptor, record = resolve_media_handle(client, project, handle)
+                        lineage.append({"port": "request.asset", **record})
+                        opened = client.media.open(project, descriptor["digest"], materialize=True,
+                            cache_root=root / str(index), preview_bytes=0,
+                            max_bytes=max(descriptor["size_bytes"], 1))
+                        if not opened.ok:
+                            raise CapabilityValidationError(f"cannot open media handle {handle!r}: {opened.error.message}")
+                        mapping[handle] = opened.data["local_path"]
+                    inputs["asset_map"] = mapping
+                    kwargs["inputs"] = inputs
+                    context = dict(kwargs.get("idempotency_context") or {})
+                    if "media_handles" in context:
+                        raise CapabilityValidationError("media_handles is reserved for resolved H3 media lineage")
+                    context["media_handles"] = lineage
+                    kwargs["idempotency_context"] = context
+            if not kwargs.get("dry_run") and kwargs.get("placement") is not None:
+                from astrid.core.generation import placement as placements
+                resolved = placements.validate_placement(placements.resolve_placement(
+                    placements.request_from_selector(kwargs["placement"]),
+                    client=kwargs.get("client"), repo=kwargs.get("project_root")))
+                if resolved.kind not in placements.BUILTIN_KINDS:
+                    # A remote request is refused locally, with the same dry-run preflight,
+                    # before the claimed-machine requirement below can apply.
+                    self._generate_on_target_impl(_job_dirs=job_dirs, **{**kwargs, "dry_run": True})
             return self._generate_on_target_impl(_job_dirs=job_dirs, **kwargs)
         finally:
             for directory in job_dirs:
@@ -1693,8 +1863,25 @@ class GenerationFacade:
                                 for port in candidate.get('inputs', [])):
                             build_inputs.pop('count')  # single-output admission was checked above
                         build_inputs = workflow_entries.validate_inputs(candidate, build_inputs)
+                        build_options: dict[str, Any] = {}
+                        if identifier == 'h3' and not dry_run:
+                            def publish_h3_source(path: Path, expected: str) -> tuple[Path, dict[str, Any]]:
+                                descriptor = import_member(path)
+                                if descriptor['sha256'] != expected:
+                                    raise CapabilityInvocationError('managed H3 source digest mismatch during publication')
+                                client = controls.get('client')
+                                project = controls.get('project')
+                                opened = client.media.open(project, descriptor['digest'], materialize=True,
+                                    cache_root=Path(job_dir) / 'h3-published-source', preview_bytes=0,
+                                    max_bytes=max(descriptor['bytes'], 1))
+                                if not opened.ok:
+                                    raise CapabilityInvocationError(
+                                        f"could not reopen managed H3 source: {opened.error.message}")
+                                return Path(opened.data['local_path']), descriptor
+                            build_options['publish_source'] = publish_h3_source
                         built = workflow_entries.build_entry(
-                            candidate, build_inputs, job_dir, check_runtime=not dry_run and not is_remote_target)
+                            candidate, build_inputs, job_dir, check_runtime=not dry_run and not is_remote_target,
+                            **build_options)
                         workflow, assets = built['workflow'], dict(built.get('assets') or {})
                         plan = {'kind': candidate['kind'], 'unbound': [], 'bindings': dict(built['bindings']),
                                 'build_plan': built.get('plan'), 'job_dir': str(job_dir)}
@@ -1840,6 +2027,17 @@ class GenerationFacade:
                     from astrid.core.generation.managed_preparation import configured_models_root
                     manifest = {**manifest, 'models_root': configured_models_root()}
                 readiness['entry']['requirements'] = manifest
+            # Every dry run runs the invocation preflight that precedes a paid submission.
+            # H3 measures its prepared source on the live path; an offline dry run cannot
+            # reproduce that source, so H3 skips only the source-AV measurement here.
+            h3_lineage = None
+            if entry_id == 'h3' and plan and isinstance(plan.get('build_plan'), Mapping):
+                from astrid.packs.h3_av.shared.stages import source_asset_lineage
+                h3_lineage = source_asset_lineage(plan['build_plan'])
+            _offline_invocation_preflight(
+                workflow, plan=plan, assets=assets or {},
+                comfy_url=(target_client.target.url if placement.kind == 'attached' and target_client is not None else None),
+                lineage=h3_lineage, source_video=entry_id != 'h3')
             readiness['entry'].update(preview)
             if align == 'trust':
                 readiness['alignment'] = {'mode': 'trust', 'verified': False}
@@ -1861,7 +2059,12 @@ class GenerationFacade:
                 import zipfile
 
                 from astrid.packs.vibecomfy.asset_manifest import build_asset_manifest
-                manifest = build_asset_manifest(assets)
+                if entry_id == 'h3' and plan and isinstance(plan.get('build_plan'), Mapping):
+                    from astrid.packs.h3_av.shared.stages import source_asset_lineage
+                    lineage = source_asset_lineage(plan['build_plan'])
+                else:
+                    lineage = None
+                manifest = build_asset_manifest(assets, lineage=lineage)
                 archive = root / "assets.zip"
                 with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zipped:
                     zipped.writestr("manifest.json", json.dumps(manifest))
@@ -1874,6 +2077,16 @@ class GenerationFacade:
                 # (workflow_inputs). The shipped archive carries it only when the entry
                 # declares it as an input; an entry without that port must not refuse it.
                 archive_inputs = {name: value for name, value in inputs.items() if name != 'filename_prefix'}
+                if entry_id == 'h3' and plan and plan.get('job_dir'):
+                    handoff = _h3_remote_handoff(plan, root)
+                    if handoff is not None:
+                        asset_arguments['source_video'] = handoff['descriptor']
+                        authority = dict(controls.get('idempotency_context') or {})
+                        if 'h3_prepared_source' in authority:
+                            raise CapabilityValidationError('h3_prepared_source is reserved for prepared media lineage')
+                        authority['h3_prepared_source'] = handoff['lineage']
+                        controls['idempotency_context'] = authority
+                        archive_inputs = handoff['inputs']
                 public, public_values = workflow_entries.resolve_entry_inputs(entry_id, archive_inputs, mode=mode)
                 if 'filename_prefix' in inputs and any(
                         'filename_prefix' in {port['name'], *port.get('aliases', [])} for port in public['inputs']):

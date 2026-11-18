@@ -12,4 +12,8 @@ defaults:
   steps: 8
   sampler: res_multistep
   seed: 123456789
-  guidance_scale: 0.95
+  scheduler: simple
+  cfg: 1.0
+  video_shift: 12.0
+  audio_shift: 3.0
+  turbo: {enabled: true, lora: pika_flex_8step, strength: 1.0}

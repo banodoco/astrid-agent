@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from astrid.core.timeline.authoring_bundle import compile_authoring_candidate
+from astrid.core.timeline.asset_dimensions import canonicalize_asset_dimensions
 from astrid.sdk.timeline._common import TimelineEditError
 from astrid.sdk.timeline_duplicate import _copy_source, copy_content, id_map
 from astrid.sdk.timeline_restructure import STRUCTURE_KEY
@@ -290,13 +291,29 @@ def _normalize_legacy_internal_assets(source: dict[str, Any]) -> None:
     shot_ids = set(shots)
     for shot in shots.values():
         internal = shot.get("internal_timeline") if isinstance(shot, dict) else None
-        if not isinstance(internal, dict) or not isinstance(internal.get("assets"), dict):
+        if not isinstance(internal, dict):
+            continue
+        registry = internal.get("registry")
+        registry_assets = registry.get("assets") if isinstance(registry, dict) else None
+        if isinstance(registry_assets, dict):
+            try:
+                internal["registry"]["assets"] = {
+                    key: canonicalize_asset_dimensions(key, entry) if isinstance(entry, Mapping) else entry
+                    for key, entry in registry_assets.items()
+                }
+            except ValueError as exc:
+                _fail(str(exc))
+        if not isinstance(internal.get("assets"), dict):
             continue
         result = []
         for key, entry in internal["assets"].items():
             if not isinstance(key, str) or not key or key in shot_ids or not isinstance(entry, Mapping) or "id" in entry:
                 _fail("legacy internal assets require non-empty, non-shot keys and object entries without id")
-            result.append({**copy.deepcopy(dict(entry)), "id": key})
+            try:
+                canonical_entry = canonicalize_asset_dimensions(key, entry)
+            except ValueError as exc:
+                _fail(str(exc))
+            result.append({**copy.deepcopy(canonical_entry), "id": key})
         internal["assets"] = result
 
 

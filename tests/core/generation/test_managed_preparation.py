@@ -232,13 +232,24 @@ def doctor_case():
         prep = ManagedEnginePreparation.__new__(ManagedEnginePreparation)
         prep._preparing_engine = prep.uncertain = False
         prep.report = prep.lock = None
+        prep._workflow_classes = ['SaveTranscript']
+        prep.engine_restarted = False
         prep.deadline = time.monotonic() + 60
         prep.cancelled = lambda: False
         prep.recipe = SimpleNamespace(start=SimpleNamespace(port=8188))
         prep.context = SimpleNamespace(service_client=SimpleNamespace(stop_owned=stop_owned))
         prep._verify_alignment = lambda *args: None
         prep._alignment_verification = ()
-        runner = SimpleNamespace(start=start)
+        runner = SimpleNamespace(service_owner=None)
+
+        def start_owned(*, readonly):
+            if not state.running:
+                assert runner.service_owner is None, 'the retired supervisor cannot own a fresh start'
+            result = start(readonly=readonly)
+            runner.service_owner = 'supervisor-' + str(len(state.stops))
+            return result
+
+        runner.start = start_owned
 
         def check_health():
             state.health_checks += 1
@@ -248,6 +259,8 @@ def doctor_case():
             return 'skipped', {}
 
         def native(*args, **kwargs):
+            if kwargs['step'] == 'node_probe':
+                return SimpleNamespace(stdout='[]')
             if state.failure is not None:
                 raise state.failure
             return 'doctor passed'
@@ -291,6 +304,8 @@ def test_reused_engine_doctor_failure_stops_changed_engine(doctor_case, change):
     native = prep._native
 
     def fail_doctor(*args, **kwargs):
+        if kwargs['step'] == 'node_probe':
+            return native(*args, **kwargs)
         c.health_failure = change == 'unhealthy'
         if change == 'schema':
             c.schema = 'e' * 64
@@ -809,14 +824,15 @@ def fetch_volume(tmp_path, monkeypatch):
 
     prep._verify_alignment = alignment_complete
 
-    def fetch():
+    workflow = SimpleNamespace(compile=lambda backend, *, run_inputs: {})
+    def fetch(**inputs):
         try:
-            prep._prepare(source, execution_identity='execution', inputs={},
-                          canonical_workflow=None, input_digests={})
+            prep._prepare(source, execution_identity='execution', inputs=inputs,
+                          canonical_workflow=workflow, input_digests={})
         except AlignmentComplete:
             pass  # Never start an engine in a CPU storage test.
 
-    return SimpleNamespace(prep=prep, fetch=fetch, models=models, have=have, rows=rows,
+    return SimpleNamespace(prep=prep, fetch=fetch, workflow=workflow, runner=runner, models=models, have=have, rows=rows,
                            state=state, native=native, quota_calls=quota_calls)
 
 
@@ -1212,3 +1228,123 @@ def test_storage_inventory_never_deletes_volume_content(inventory_pod):
     assert {str(p): p.read_bytes() for p in c.models.rglob('*') if p.is_file()} == before
     assert c.models in c.listings
     assert 'storage.inventory' in (c.prep.logs_root / 'logs.json').read_text()
+
+
+def test_nodes_restore_links_recipe_checkout_on_worker(tmp_path):
+    """The managed worker runs the pinned checkout's node setup before restore."""
+    import subprocess
+    import sys
+
+    checkout = tmp_path / 'runtime/vibecomfy'
+    package = checkout / 'vibecomfy'
+    commands = package / 'commands'
+    commands.mkdir(parents=True)
+    (package / '__init__.py').write_text('')
+    (commands / '__init__.py').write_text('')
+    (package / 'comfy_nodes').mkdir()
+    (commands / 'runpod_setup.py').write_text(
+        'def link_vibecomfy_custom_node(*, custom_nodes, package_root):\n'
+        '    custom_nodes.mkdir(parents=True, exist_ok=True)\n'
+        '    (custom_nodes / "vibecomfy_custom_nodes").symlink_to(package_root / "vibecomfy/comfy_nodes")\n'
+    )
+    prep = ManagedEnginePreparation.__new__(ManagedEnginePreparation)
+    prep.root = str(tmp_path)
+    prep.mode = 'align'
+    prep.recipe = SimpleNamespace(sources=[SimpleNamespace(name='vibecomfy', relative_path='runtime/vibecomfy'),
+                                           SimpleNamespace(name='comfyui', relative_path='runtime/ComfyUI')])
+    prep.adapter = SimpleNamespace(join=lambda *parts: str(Path(*parts)))
+    calls = []
+
+    def native(program, *args, step):
+        calls.append((program, args, step))
+        if len(calls) == 1:
+            subprocess.run([sys.executable, '-I', '-c', program, *args], check=True)
+        else:
+            assert (tmp_path / 'runtime/ComfyUI/custom_nodes/vibecomfy_custom_nodes').resolve() == package / 'comfy_nodes'
+
+    prep._native = native
+    prep._command(['nodes', 'restore'])
+    assert len(calls) == 2
+    assert all(call[2] == 'nodes_restore' for call in calls)
+    assert calls[1][1] == ('nodes', 'restore')
+
+
+@pytest.mark.parametrize('mode', ['align', 'check', 'trust'])
+def test_preparation_probes_compiled_classes_in_every_mode(fetch_volume, mode):
+    c = fetch_volume
+    c.rows.clear()
+    c.prep.mode = mode
+    c.prep._verify_alignment = lambda *args: None
+    events = []
+
+    def compile_graph(backend, *, run_inputs):
+        assert backend == 'api' and run_inputs == {'language': 'en'}
+        return {'1': {'class_type': 'SaveTranscript'}, '2': {'class_type': 'Loader'},
+                '3': {'class_type': 'Loader'}}
+
+    def probe(program, request, *, step):
+        assert step == 'node_probe'
+        assert json.loads(request)['classes'] == ['Loader', 'SaveTranscript']
+        events.append('probe')
+        raise IntegrityError('probe unavailable')
+
+    c.workflow.compile = compile_graph
+    c.runner.start = lambda **kw: ('skipped', {})
+    c.runner.check_health = lambda: events.append('health')
+    c.prep._native = probe
+    with pytest.raises(IntegrityError, match='probe unavailable'):
+        c.fetch(workflow_inputs=json.dumps({'language': 'en'}))
+    assert events == ['health', 'probe', 'probe']
+
+
+@pytest.mark.parametrize('outcome', ['loaded', 'missing', 'start failure', 'transient'])
+def test_doctor_checks_warm_engine_before_diagnosis(doctor_case, outcome):
+    c = doctor_case
+    c.failure = None
+    prep = c.preparation()
+    answers = iter([IntegrityError('unavailable'), []] if outcome == 'transient' else
+                   [['SaveTranscript'], ['SaveTranscript'] if outcome == 'missing' else []])
+    native = prep._native
+
+    def probe(program, request, *, step):
+        if step == 'doctor':
+            return native(program, request, step=step)
+        assert step == 'node_probe' and json.loads(request)['classes'] == ['SaveTranscript']
+        answer = next(answers)
+        if isinstance(answer, Exception):
+            raise answer
+        return SimpleNamespace(stdout=json.dumps(answer))
+
+    prep._native = probe
+    if outcome == 'start failure':
+        start = prep._alignment_runner.start
+        def start_once(**kw):
+            if not c.running:
+                raise IntegrityError('restart refused')
+            return start(**kw)
+        prep._alignment_runner.start = start_once
+        with pytest.raises(IntegrityError, match='restart refused'):
+            c.prepare(prep)
+        prep.close()
+        assert len(c.stops) == 1
+    elif outcome == 'missing':
+        with pytest.raises(IntegrityError, match='even after a fresh start.*SaveTranscript'):
+            c.prepare(prep)
+        assert c.starts == ['skipped', 'executed'] and not c.running
+    else:
+        assert c.prepare(prep) == 'doctor passed'
+        assert c.starts == (['skipped'] if outcome == 'transient' else ['skipped', 'executed'])
+        assert len(c.stops) == (0 if outcome == 'transient' else 1)
+    assert prep.checked_classes == ['SaveTranscript']
+    assert prep.engine_restarted == (outcome != 'transient')
+
+
+def test_fresh_engine_missing_workflow_class_fails_without_restart(doctor_case):
+    c = doctor_case
+    c.running = False
+    prep = c.preparation()
+    prep._native = lambda *args, **kwargs: SimpleNamespace(stdout='["SaveTranscript"]')
+    with pytest.raises(IntegrityError, match='even after a fresh start.*SaveTranscript'):
+        c.prepare(prep)
+    assert c.starts == ['executed'] and len(c.stops) == 1
+    assert prep.engine_restarted is False

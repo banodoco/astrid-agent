@@ -26,6 +26,19 @@ from astrid.sdk.timeline._common import (
 from astrid.sdk.timeline.doc import _free_key, _row_start, _set_length
 from astrid.sdk.timeline.model import Clip, Cut, Word, music_keyword, validate_param_value
 
+_MEDIA_ID_TEXT = re.compile(r"(?:sha256:)?[0-9a-fA-F]{8,64}")
+
+
+def _registry_source(typed: str, entry: Mapping[str, Any]) -> str:
+    """The registry ``source`` for media the user named. A media id (bare, prefix or labelled) is stored as
+    the canonical digest it resolved to, never the prefix typed; handles such as run:, ref: or task: stay as typed."""
+    from astrid.sdk.media_ids import canonical_digest
+
+    if isinstance(typed, str) and _MEDIA_ID_TEXT.fullmatch(typed):
+        return canonical_digest(entry.get("media_id") or entry.get("content_sha256")) or canonical_digest(typed) or typed
+    return typed
+
+
 _ASSET_REGISTRY_FIELDS = ("media_id", "content_sha256", "type", "duration", "resolution", "size", "size_bytes",
                           "handle", "filename", "pixel_provenance", "generationId", "variantId")
 
@@ -615,7 +628,7 @@ class _EditMixin:
         entry.pop("key", None)
         new_entry = {k: v for k, v in entry.items()
                      if k in ("media_id", "content_sha256", "type", "resolution", "size", "size_bytes")}
-        new_entry["source"] = asset
+        new_entry["source"] = _registry_source(asset, entry)
         new_kind = _media_kind(new_entry)
         for old in old_by_shot.values():
             old_kind = _media_kind(old)
@@ -732,7 +745,7 @@ class _EditMixin:
                 if not old_kind or not new_kind or old_kind != new_kind:
                     raise TimelineEditError(f"asset key {name!r} cannot be replaced by different or unknown media kind")
             assets[name] = {k: v for k, v in entry.items() if k in _ASSET_REGISTRY_FIELDS}
-            assets[name]["source"] = str(asset["ref"])
+            assets[name]["source"] = _registry_source(str(asset["ref"]), entry)
             return name
         if isinstance(asset, str):
             for sid in self._shot_ids():
@@ -751,7 +764,7 @@ class _EditMixin:
                 entry = _store.resolve_handle_entry(str(self.bundle.get("project_id")), asset)
                 key = _free_key(assets, str(entry.pop("key")), entry)
                 assets[key] = {k: v for k, v in entry.items() if k in _ASSET_REGISTRY_FIELDS}
-                assets[key]["source"] = asset
+                assets[key]["source"] = _registry_source(asset, entry)
                 return key
             known = sorted({k for sid in self._shot_ids() for k in self._registry(sid)})
             close = difflib.get_close_matches(asset, known, n=5)

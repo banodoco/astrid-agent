@@ -115,6 +115,28 @@ def test_normalized_production_video_birth_and_guarded_inverse(hold):
     assert bundle == before
 
 
+def test_duplicate_media_preserves_clip_fit_independently_of_track_fit():
+    bundle, old, new, verified = case()
+    track = next(row for row in bundle['parent']['config']['tracks'] if row['id'] == 'overlay')
+    track['fit'] = 'contain'
+    for rows in (bundle['parent']['clips'], bundle['parent']['config']['clips']):
+        source = next(row for row in rows if row['id'] == 'target')
+        source.update(fit='cover', x=24, cropLeft=.1, future_projection_hint={'private': True})
+    source_before = copy.deepcopy(next(row for row in bundle['parent']['clips']
+                                       if row['id'] == 'target'))
+
+    plan = execute(bundle, [capture(bundle, old, new, verified)], verified_media=verified)
+
+    created = State(plan.bundle).entity('parent/clip:born')
+    assert created['fit'] == 'cover'
+    assert State(plan.bundle).entity('parent/track:overlay')['fit'] == 'contain'
+    assert (created['x'], created['cropLeft']) == (24, .1)
+    assert created['transition'] == source_before['transition']
+    assert created['params'] == source_before['params']
+    assert 'opaque' not in created and 'future_projection_hint' not in created
+    assert State(plan.bundle).entity('parent/clip:target') == source_before
+
+
 def test_literal_after_insert_request_is_identical_on_c36_and_new(monkeypatch):
     bundle, old, new, verified = case()
     row = {'id': 'literal', 'clipType': 'video', 'track': 'overlay', 'asset': new['asset'],

@@ -140,6 +140,9 @@ def test_timing_rejects_zero_or_subframe_suffix_before_execution() -> None:
 
 
 def test_compiler_exports_raw_h3_duration_not_requested_suffix_duration(tmp_path: Path) -> None:
+    from vibecomfy.security.provenance import Provenance
+    from vibecomfy.workflow_bundle import load_bundle
+
     source = tmp_path / "source.mp4"
     source.write_bytes(b"synthetic-source")
     preparation = prepare_request(_request(), asset_map={"source": str(source)})
@@ -155,7 +158,12 @@ def test_compiler_exports_raw_h3_duration_not_requested_suffix_duration(tmp_path
         encoding="utf-8"
     )
     assert "max(5, round(a * 24)) + (5 - (max(5, round(a * 24)) % 17)) % 17" in workflow_source
-    assert "('duration', '102', 'values.a', duration, None)" in workflow_source
+    graph = load_bundle(compilation["workflow"]["workflow.py"]["path"], trust=Provenance.USER_CONFIRMED).workflow
+    api = graph.compile("api", run_inputs=compilation["workflow_inputs"])
+    assert api["102"]["class_type"] == "ComfyMathExpression"
+    assert api["102"]["inputs"]["values.a"] == 73 / 24
+    changed = graph.compile("api", run_inputs={**compilation["workflow_inputs"], "duration": 1.0})
+    assert changed["102"]["inputs"]["values.a"] == 1.0
 
 
 @pytest.mark.ffmpeg

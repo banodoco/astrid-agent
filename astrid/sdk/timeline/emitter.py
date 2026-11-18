@@ -242,6 +242,26 @@ def _created(changes: list[dict[str, Any]], before: Mapping[str, Any]) -> list[s
     return created
 
 
+def _with_track_labels(bundle: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Copy of ``bundle`` in which every parent and shot track has a label.
+
+    A whole-document candidate may omit track labels; the timeline schema (and
+    render) require one, so a missing label becomes the track id, as everywhere
+    else a track is introduced.
+    """
+    from astrid.core.timeline.track_appearance import label_track_with_id
+
+    bundle = copy.deepcopy(dict(bundle))
+    containers = [bundle["parent"].get("config")]
+    containers += [shot["internal_timeline"] for shot in bundle["shots"].values()]
+    for container in containers:
+        tracks = container.get("tracks") if isinstance(container, Mapping) else None
+        for track in tracks if isinstance(tracks, list) else ():
+            if isinstance(track, dict):
+                label_track_with_id(track)
+    return bundle
+
+
 def emit_document_commands(before_bundle: Mapping[str, Any], after_bundle: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Emit guarded payload changes, bound to the verified input closure.
 
@@ -266,6 +286,7 @@ def emit_document_commands(before_bundle: Mapping[str, Any], after_bundle: Mappi
     if not _same(_outside(before_bundle), _outside(after_bundle)):
         raise DocumentPatchError("closure membership or provenance changed; use a semantic command")
 
+    after_bundle = _with_track_labels(after_bundle)
     changes: list[dict[str, Any]] = []
     try:
         for ref, old, new in _root_pairs(before_bundle, after_bundle):

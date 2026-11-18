@@ -97,7 +97,7 @@ different extension or codec from a backend alias.
 
 Render only when the user asks for one; by default, publish and point the
 user to the editor link. Look at composed frames of your own edits whenever it
-helps ([how to look](how-to-look.md)).
+helps ([timeline-visualize](../visualize/SKILL.md)).
 
 `timelines visualize` accepts `png` or `md` formats and always produces the
 paired rendered filmstrip. A successful managed render is required;

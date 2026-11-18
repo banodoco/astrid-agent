@@ -19,6 +19,7 @@ from astrid.personal_packs_root import resolve_personal_packs_root
 __all__: list[str] = []
 
 _CORE_ROOT = Path(__file__).resolve().parent
+_IMPLEMENTATION_ROOT = _CORE_ROOT.parent / "core"
 _PERSONAL_ROOT = resolve_personal_packs_root()
 
 
@@ -55,6 +56,18 @@ def _child_directory_names(root: Path) -> tuple[str, ...]:
         raise ImportError(f"cannot scan pack root {root}: {exc}") from exc
 
 
+def _core_pack_roots() -> tuple[Path, ...]:
+    """Return only declared first-party pack roots beneath ``astrid/core``."""
+    try:
+        with os.scandir(_IMPLEMENTATION_ROOT) as entries:
+            return tuple(sorted(
+                Path(entry.path) for entry in entries
+                if entry.is_dir() and (Path(entry.path) / "pack.yaml").is_file()
+            ))
+    except OSError as exc:
+        raise ImportError(f"cannot scan core pack roots under {_IMPLEMENTATION_ROOT}: {exc}") from exc
+
+
 def _check_collisions(roots: tuple[Path, ...], *, selected=None, verified_relocations=None) -> None:
     relocations = verified_relocations if verified_relocations is not None else {}
     if relocations:
@@ -64,7 +77,7 @@ def _check_collisions(roots: tuple[Path, ...], *, selected=None, verified_reloca
             validate_selected_pack_map(selected, verified_relocations=relocations)
         except (OSError, ValueError) as exc:
             raise ImportError(f"refusing astrid.packs: invalid verified relocation: {exc}") from exc
-    owners = {name: _CORE_ROOT / name for name in _child_directory_names(_CORE_ROOT)}
+    owners = {root.name: root for root in _core_pack_roots()}
     for root in roots:
         for name in _child_directory_names(root):
             path = root / name

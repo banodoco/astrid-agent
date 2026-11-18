@@ -188,3 +188,70 @@ def test_structural_navigation_options_are_removed():
 def test_invalid_sampling_rejected_before_runtime():
     with pytest.raises(CapabilityValidationError, match='positive'):
         invocation._validate_timeline_visualize_inputs({'view': 'filmstrip', 'every_frames': 0}, project='p')
+
+
+@pytest.mark.parametrize("address", [{"frame": 29}, {"at": 0.5}, {"range": "0.5..1.5"}])
+def test_out_of_range_render_frame_is_a_sdk_validation_error_before_admission(monkeypatch, address):
+    snapshot = {
+        'fps_rational': [30, 1],
+        'duration_frames': 60,
+        'clips': [],
+        'metadata': {'timeline_range': {
+            'start_frame': 30,
+            'end_frame': 60,
+            'fps_rational': [30, 1],
+        }},
+    }
+    monkeypatch.setattr(
+        'astrid.sdk.timeline_filmstrip.prepare_filmstrip',
+        lambda *_, **__: {'mode': 'filmstrip', 'filmstrip_snapshot': snapshot},
+    )
+
+    with pytest.raises(CapabilityValidationError, match=r'render that range, or ask for a time inside it'):
+        invocation._validate_timeline_visualize_inputs(
+            {'view': 'filmstrip', 'render_run': 'run-1', **address}, project='p')
+
+
+@pytest.mark.parametrize("address", [
+    {"at": 6.6},
+    {"range": "6.6..8.8"},
+])
+def test_sdk_preflight_accepts_decimal_values_at_render_boundaries(monkeypatch, address):
+    snapshot = {
+        'fps_rational': [30, 1],
+        'duration_frames': 264,
+        'clips': [],
+        'metadata': {'timeline_range': {
+            'start_frame': 198,
+            'end_frame': 264,
+            'fps_rational': [30, 1],
+        }},
+    }
+    monkeypatch.setattr(
+        'astrid.sdk.timeline_filmstrip.prepare_filmstrip',
+        lambda *_, **__: {'mode': 'filmstrip', 'filmstrip_snapshot': snapshot},
+    )
+
+    invocation._validate_timeline_visualize_inputs(
+        {'view': 'filmstrip', 'render_run': 'run-1', **address}, project='p')
+
+
+def test_sdk_preflight_rejects_decimal_timestamp_at_exclusive_render_end(monkeypatch):
+    snapshot = {
+        'fps_rational': [30, 1],
+        'duration_frames': 198,
+        'clips': [],
+        'metadata': {'timeline_range': {
+            'start_frame': 0,
+            'end_frame': 198,
+            'fps_rational': [30, 1],
+        }},
+    }
+    monkeypatch.setattr(
+        'astrid.sdk.timeline_filmstrip.prepare_filmstrip',
+        lambda *_, **__: {'mode': 'filmstrip', 'filmstrip_snapshot': snapshot},
+    )
+
+    with pytest.raises(CapabilityValidationError, match='outside the rendered range'):
+        invocation._validate_timeline_visualize_inputs(
+            {'view': 'filmstrip', 'render_run': 'run-1', 'at': 6.6}, project='p')

@@ -295,16 +295,20 @@ def _cmd_logs(parsed: argparse.Namespace) -> int:
             data = reader(str(digest))
             sys.stdout.buffer.write(redact_log(data.decode("utf-8", errors="replace")).encode("utf-8"))
             return 0
-        print(redact_log(f"{selected.get('variant_key') or selected.get('filename')}  {digest or 'object reference unavailable'}"))
+        from astrid.sdk.media_ids import media_id_text
+
+        print(redact_log(f"{selected.get('variant_key') or selected.get('filename')}  {media_id_text(digest) if digest else 'object reference unavailable'}"))
         print("This client cannot read managed output bytes; showing the object reference instead.", file=sys.stderr)
         return 0
     if parsed.json:
         return print_result(DomainResult.success(json.loads(redact_log(json.dumps(logs)))), as_json=True)
+    from astrid.sdk.media_ids import media_id_text
+
     for row in logs:
         name = row.get("variant_key") or row.get("filename") or "-"
         media_type = row.get("media_type") or "-"
         size = row.get("size_bytes", row.get("size", "-"))
-        digest = row.get("digest") or row.get("object_id") or "-"
+        digest = media_id_text(row.get("digest") or row.get("object_id") or "-")
         print(redact_log(f"{name}  {media_type}  {size}  {digest}"))
     return 0
 

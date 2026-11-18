@@ -7,6 +7,9 @@
   "additionalProperties": false,
   "required": ["version", "operation", "content", "changes", "references", "overrides"],
   "allOf": [{
+    "if": {"not": {"properties": {"operation": {"const": "continue"}}, "required": ["operation"]}},
+    "then": {"properties": {"output": {"not": {"required": ["lead_in"]}}}}
+  }, {
     "if": {"properties": {"operation": {"const": "generate"}}, "required": ["operation"]},
     "then": {
       "required": ["output"],
@@ -28,13 +31,17 @@
       "required": ["asset"],
       "properties": {
         "asset": {"type": "string", "minLength": 1},
-        "range": {"$ref": "#/$defs/range"}
+        "range": {"$ref": "#/$defs/range"},
+        "fit": {"enum": ["fill", "fit"]}
       }
     },
     "output": {
       "type": "object",
       "additionalProperties": false,
-      "properties": {"duration": {"type": "number", "exclusiveMinimum": 0}}
+      "properties": {
+        "duration": {"type": "number", "exclusiveMinimum": 0},
+        "lead_in": {"enum": ["drop", "keep"], "description": "continue only: what the take uses of the stored file (default drop)"}
+      }
     },
     "content": {
       "type": "object",
@@ -60,7 +67,12 @@
         "steps": {"type": "integer", "minimum": 1, "maximum": 200},
         "seed": {"type": "integer", "minimum": 0},
         "sampler": {"type": "string"},
-        "guidance": {"type": "number", "minimum": 0}
+        "guidance": {"type": "number", "minimum": 0},
+        "turbo_lora": {"enum": ["pika_flex_8step", "lightx2v_8step"]},
+        "scheduler": {"type": "string"},
+        "cfg": {"const": 1.0},
+        "video_shift": {"type": "number", "minimum": 0},
+        "audio_shift": {"type": "number", "minimum": 0}
       }
     }
   },

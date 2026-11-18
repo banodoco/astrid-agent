@@ -490,3 +490,67 @@ def test_cross_realm_timeline_export_import_reload_and_reimport(tmp_path, real_r
 
     invalid = target.timelines.import_timeline(target_id, {"timeline_id": "bad-import"}, idempotency_key="bad-import")
     assert not invalid.ok and invalid.error.code in {"validation_error", "not_found"}
+
+
+def test_sdk_export_then_import_preserves_track_placement_markers(tmp_path):
+    fixture_path = Path(__file__).parents[1] / "editing_scenarios" / "fixtures" / "empty.json"
+    source = json.loads(fixture_path.read_text(encoding="utf-8"))
+    source["project_id"] = "source-project"
+    source["timeline_id"] = "source-timeline"
+    source["placements"] = []
+    source["shots"] = {}
+    unknown_id = "effect-not-in-source-catalog"
+    clip = {"id": "unknown-occurrence", "clipType": unknown_id, "track": "effects", "at": 0, "hold": 1}
+    source["parent"]["clips"] = [clip]
+    source["parent"]["config"]["clips"] = [clip]
+
+    source['parent']['config']['tracks'] = [{'id': 'effects', 'kind': 'visual', 'label': 'Effects', 'app': {'clipPlacementVersion': 1, 'scaleAppliesToPositionedClips': True}}]
+    calls = []
+
+    class Transport:
+        def list_timelines(self, _project, *, cursor=None, limit=50):
+            return ([{"timeline_id": "source-timeline", "name": "Unknown effect fixture"}], None)
+
+        def list_documents(self, _project, *, cursor=None, limit=50, kind=None):
+            return ([], None)
+
+        def list_project_objects(self, _project, *, cursor=None, limit=100):
+            return ([], None)
+
+    class Timelines:
+        def open_bundle(self, _project, _timeline):
+            return SimpleNamespace(ok=True, data={
+                "bundle": source, "project_id": "source-project", "timeline_id": "source-timeline",
+            })
+
+        def import_timeline(self, project_id, body, *, idempotency_key):
+            calls.append((project_id, body, idempotency_key))
+            return SimpleNamespace(ok=True, data={"timeline_id": body["timeline_id"], "name": body["name"]})
+
+    class Media:
+        def import_stream(self, **kwargs):
+            pytest.fail(f"empty fixture unexpectedly uploaded media: {kwargs.get('filename')}")
+
+    client = SimpleNamespace(
+        projects=SimpleNamespace(show=lambda _project: SimpleNamespace(ok=True, data={"project_id": "target-project"})),
+        timelines=Timelines(), media=Media(), _transport=Transport(),
+    )
+    archive_path = tmp_path / "unknown-effect.astrid"
+    export_timeline(client, "source-project", "source-timeline", archive_path)
+
+    with zipfile.ZipFile(archive_path) as archive:
+        exported_manifest = json.loads(archive.read("manifest.json"))
+    unresolved = next(row for row in exported_manifest["elements"] if row["id"] == unknown_id)
+    assert unresolved == {"packId": "", "kind": "effect", "id": unknown_id, "revision": "", "pinned": False}
+
+    receipt = timeline_import.import_timeline(client, archive_path, "target-project")
+    assert len(calls) == 1
+    assert calls[0][1]['publication']['parent_composition']['config']['tracks'][0]['app'] == {
+        'clipPlacementVersion': 1, 'scaleAppliesToPositionedClips': True}
+    project_id, body, _key = calls[0]
+    assert project_id == "target-project"
+    assert any(clip.get("clipType") == unknown_id
+               for clip in body["publication"]["parent_composition"]["clips"])
+    assert body["differences"]["missing_effects"] == [unresolved]
+    assert body["differences"]["different_effects"] == []
+    assert receipt["missing_effects"] == [unresolved]

@@ -781,6 +781,25 @@ def _validate_timeline_visualize_inputs(
     context = prepare_filmstrip(values, project=project, client=_client)
     if values.get("mode") == "scene_only":
         context = {**context, "mode": "scene_only"}
+    if any(values.get(name) not in (None, "") for name in ("frame", "at", "range")):
+        snapshot = (
+            context.get("capture_snapshot") if values.get("composed_capture") else None
+        ) or context.get("filmstrip_snapshot") or context.get("input_snapshot")
+        if (isinstance(snapshot, Mapping)
+                and (snapshot.get("metadata") or {}).get("timeline_range") is not None):
+            from astrid.packs.rendering.actions.timeline_visualize.render_clock import RenderClock
+
+            options = filmstrip_options(values)
+            clock = RenderClock(snapshot)
+            try:
+                if options.get("frame") is not None:
+                    clock.validate_frame(options["frame"])
+                if options.get("at") is not None:
+                    clock.validate_timestamp(options["at"])
+                if options.get("range") is not None:
+                    clock.validate_range(*options["range"])
+            except (TypeError, ValueError, ZeroDivisionError) as exc:
+                raise CapabilityValidationError(str(exc)) from exc
     from copy import deepcopy
     # These snapshots are host-prepared immutable closures. Carry resource
     # identity in derived metadata; never rewrite their authored config.
@@ -913,7 +932,7 @@ def _validate_managed_profile_theme_compatibility(
         )
     except (TypeError, ValueError, OSError, FileNotFoundError) as exc:
         raise CapabilityValidationError(
-            f"cannot resolve authoritative theme canvas for canonical timeline "
+            f"cannot resolve authored timeline canvas for canonical timeline "
             f"{timeline_slug!r}: {exc}. Fix the timeline theme and retry"
         ) from exc
 
@@ -926,13 +945,13 @@ def _validate_managed_profile_theme_compatibility(
         requested = profile.get(field)
         if requested != expected:
             mismatches.append(
-                f"{field}={requested!r} (authoritative theme canvas produces {expected!r})"
+                f"{field}={requested!r} (authored timeline canvas produces {expected!r})"
             )
     if mismatches:
         raise CapabilityValidationError(
             f"invalid render profile for canonical timeline {timeline_slug!r}: "
             + "; ".join(mismatches)
-            + ". Explicit profiles must match the authoritative theme canvas; "
+            + ". Explicit profiles must match the authored timeline canvas; "
             "use the default profile from timelines render --help or set "
             "theme_overrides.visual.canvas to the requested width, height, and fps, then retry"
         )
@@ -1223,6 +1242,18 @@ def _render_reuse_toolchain_digest() -> str | None:
     return "sha256:" + hashlib.sha256(json.dumps(parts, sort_keys=True).encode()).hexdigest()
 
 
+def _reject_uncaptured_legacy_theme(snapshot, values):
+    """A runtime theme file is not part of the verified legacy canvas fact."""
+    if values.get('theme') in (None, ''):
+        return
+    expansion = snapshot.expansion if isinstance(snapshot.expansion, Mapping) else {}
+    if any(isinstance(row, Mapping) and row.get('source') == 'legacy-render-resolved'
+           for row in expansion.get('placement_migrations', [])):
+        raise CapabilityValidationError(
+            'timeline output canvas is unresolved for the supplied runtime theme; '
+            'its theme_path is not part of the verified legacy canvas context')
+
+
 def _prepare_managed_render_inputs(
     inputs: Mapping[str, Any] | None,
     *,
@@ -1346,6 +1377,7 @@ def _prepare_managed_render_inputs(
             snapshot = candidate_preview_snapshot(
                 authoring_preview, snapshot=snapshot, client=_client
             )
+        _reject_uncaptured_legacy_theme(snapshot, values)
         # `resolve_managed_render_snapshot` returned this graph only after
         # reading and validating the exact typed parent -> shot -> internal
         # revision closure. Preserve that producer proof across the ordinary
@@ -1493,6 +1525,7 @@ def _prepare_managed_render_inputs(
             registry=expanded_registry,
             materialized_registry_hash=_expanded_config_hash(expanded_registry),
             expansion={
+                "placement_migrations": list((snapshot.expansion or {}).get('placement_migrations', [])),
                 "children": child_records,
                 "shots": [shot_records[key] for key in sorted(shot_records)],
                 "occurrences": shot_occurrences,
@@ -2668,8 +2701,10 @@ def _kernel_invoke(
                     strict=True,
                 )
             except Exception as exc:  # noqa: BLE001 - admission validation boundary
+                from .generation import LOCAL_REFUSAL_SCOPE
+
                 raise CapabilityValidationError(
-                    f"VibeComfy invocation preflight failed: {exc}"
+                    f"VibeComfy invocation preflight failed: {exc}. {LOCAL_REFUSAL_SCOPE}."
                 ) from exc
     if str(capability.id) in {"generation.generate_image_codex", "generation.generate_image_openai"}:
         # Bounded host profiles consume typed params as their single input
@@ -3527,6 +3562,8 @@ def _wait_for_kernel_task_loop(
             if queued_diagnostic_due or reason in {"waiting_for_worker", "waiting_for_gpu"}:
                 holders, unavailable = _queued_task_holders(task, include_registered=queued_diagnostic_due)
                 if queued_diagnostic_due or holders:
+                    if state in {"queued", "waiting"}:
+                        line += "; waiting behind other Runtime work (it starts when that finishes)"
                     line += "; current executor occupancy: " + (
                         ", ".join(holders) if holders else str(unavailable)
                     )
@@ -3646,7 +3683,12 @@ def _wait_for_kernel_task_loop(
                 "task": task,
                 "error": {
                     "code": "task_wait_timeout",
-                    "message": "render task did not reach a terminal state before the wait timeout",
+                    "message": (
+                        f"task {task_id} was still queued behind other Runtime work when the wait ran out; "
+                        f"it has not run yet, so no frames exist. Follow it with: astrid tasks follow {task_id}"
+                        if state in {"queued", "waiting"} else
+                        "render task did not reach a terminal state before the wait timeout"
+                    ),
                     "details": {
                         "state": state or "unknown",
                         "timeout_seconds": effective_timeout,

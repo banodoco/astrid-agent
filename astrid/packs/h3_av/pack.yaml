@@ -51,6 +51,8 @@ documentation:
   kind: skill
   path: docs/SKILL.md
 resources:
+- kind: skill
+  path: docs/recast-scene/SKILL.md
 - kind: documentation
   path: README.md
 - kind: implementation

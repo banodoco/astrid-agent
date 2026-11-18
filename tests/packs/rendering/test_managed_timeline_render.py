@@ -22,6 +22,16 @@ from astrid.sdk.exceptions import CapabilityValidationError
 from astrid.sdk.invocation import _prepare_managed_render_inputs
 
 
+def test_projection_preserves_independent_clip_fit():
+    config = {"tracks": [{"id": "v1", "fit": "contain"}], "clips": [
+        {"id": "fit", "track": "v1", "fit": "contain"},
+        {"id": "fill", "track": "v1", "fit": "cover"},
+    ]}
+    projected, _ = managed_timeline._render_compatible_projection(config, {"assets": {}})
+    assert projected == config
+    assert projected is not config
+
+
 @pytest.mark.parametrize("location", ["config", "duplicate", "payload"])
 def test_saved_parent_clip_precedence_preserves_prepared_scene(location):
     from astrid.core.timeline.shot_composition_projection import project_runtime_parent_composition
@@ -270,6 +280,7 @@ def test_exact_parent_head_projects_pinned_children_with_unique_local_ids(
             "revision_id": internal_revision_id,
             "content_digest": f"sha256:{digest}",
             "payload": {
+                "output": {"resolution": "1920x1080", "fps": 30, "file": "fixture.mp4"},
                 "tracks": [{"id": "picture", "kind": "visual", "label": "Picture"}],
                 "clips": [{
                     "id": "charcoal-process-preview",
@@ -293,6 +304,7 @@ def test_exact_parent_head_projects_pinned_children_with_unique_local_ids(
         "content_digest": f"sha256:{'d' * 64}",
         "payload": {
             "config": {
+                "output": {"resolution": "1920x1080", "fps": 30, "file": "fixture.mp4"},
                 "tracks": [{"id": "picture", "kind": "visual", "label": "Picture"}],
                 "clips": [],
             },
@@ -612,6 +624,7 @@ def test_managed_preflight_rejects_unmatched_speech_linkage() -> None:
 def test_snapshot_validation_rejects_missing_registry_asset() -> None:
     runtime = _Runtime()
     runtime.timeline["config"] = {
+        "output": {"resolution": "1920x1080", "fps": 30, "file": "fixture.mp4"},
         "tracks": [{"id": "visual", "kind": "visual", "label": "Visual"}],
         "clips": [{"id": "source", "at": 0, "track": "visual", "clipType": "video", "asset": "missing"}],
     }
@@ -810,7 +823,7 @@ def test_render_profile_shape_type_and_canvas_mismatch_are_actionable(tmp_path: 
     with pytest.raises(CapabilityValidationError, match="width must be an integer"):
         _prepare_managed_render_inputs({"timeline_ref": "main", "profile": bad_type}, project="demo", _client=runtime)
     bad_canvas = _profile(); bad_canvas.update(width=320, height=180, fps_rational=[24, 1])
-    with pytest.raises(CapabilityValidationError, match="authoritative theme canvas"):
+    with pytest.raises(CapabilityValidationError, match="authored timeline canvas"):
         _prepare_managed_render_inputs({"timeline_ref": "main", "profile": bad_canvas}, project="demo", _client=runtime)
 
 
@@ -880,3 +893,28 @@ def test_render_rejects_incomplete_or_invalid_shot_text_snapshot(data):
     client = SimpleNamespace(shots=SimpleNamespace(list_text_bindings=lambda *args, **kwargs: _result(data)))
     with pytest.raises(CapabilityValidationError):
         shot_text_snapshot(client, 'project', 'shot')
+
+
+def test_unsupported_clip_property_names_clip_and_property():
+    from astrid.core.timeline.validators.timeline import validate_timeline
+
+    with pytest.raises(ValueError, match=r"clip 'my-clip'.*unexpectedAppearance"):
+        validate_timeline({'tracks': [{'id': 'v', 'kind': 'visual', 'label': 'V'}], 'clips': [
+            {'id': 'my-clip', 'track': 'v', 'at': 0, 'unexpectedAppearance': 1}]})
+
+
+@pytest.mark.parametrize('kind', ['text', 'effect-layer', 'example.effect', 'audio'])
+def test_explicit_fit_on_nonmedia_names_clip_and_kind(kind):
+    snapshot = SimpleNamespace(timeline_slug='main', registry={'assets': {}})
+    config = {'tracks': [{'id': 'v', 'kind': 'visual'}],
+              'clips': [{'id': 'bad', 'track': 'v', 'clipType': kind, 'fit': 'cover'}]}
+    with pytest.raises(ManagedRenderValidationError, match=rf"bad.*fit.*{kind}"):
+        managed_timeline._validate_render_element_clip_types(snapshot, config)
+
+
+@pytest.mark.parametrize('kind', ['image', 'video', 'media'])
+def test_visual_media_fit_is_admitted(kind):
+    snapshot = SimpleNamespace(timeline_slug='main', registry={'assets': {'a': {'type': 'video/mp4'}}})
+    config = {'tracks': [{'id': 'v', 'kind': 'visual', 'fit': 'cover'}],
+              'clips': [{'id': 'good', 'track': 'v', 'clipType': kind, 'asset': 'a', 'fit': 'contain'}]}
+    managed_timeline._validate_render_element_clip_types(snapshot, config)

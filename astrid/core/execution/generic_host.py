@@ -1592,10 +1592,10 @@ def _prepare_vibecomfy_execution_identity(
             os.environ["VIBECOMFY_HEADLESS"] = previous_headless
 
 
-def _dependency_pythonpath() -> tuple[str, ...]:
+def _dependency_pythonpath(environment: Mapping[str, str] | None = None) -> tuple[str, ...]:
     """Keep only approved dependency roots across children."""
-    roots = dependency_pythonpath()
-    if os.environ.get("ASTRID_HOST_EXECUTION_PROFILE") == "installed":
+    roots = dependency_pythonpath(environment)
+    if (os.environ if environment is None else environment).get("ASTRID_HOST_EXECUTION_PROFILE") == "installed":
         return roots
     # Source-mode workers need the Runtime already selected by this host.
     # Carry its actual origin, without inheriting the caller's PYTHONPATH.
@@ -2190,7 +2190,7 @@ def _launch_worker_probe_environments(pack_roots: tuple[Path, ...], environment:
                 source_root=pack_root, matrix=matrix.get(definition.id, {}))
     # The SDK caller can carry import paths removed from the installed host
     # launch. Qualify the explicit host mapping, not that caller's ambient env.
-    dependencies = dependency_pythonpath(environment)
+    dependencies = _dependency_pythonpath(environment)
     baseline = build_child_subprocess_env(base=environment, parent=environment)
     installed = (environment.get('ASTRID_HOST_EXECUTION_PROFILE') == 'installed'
                  or os.environ.get('ASTRID_HOST_EXECUTION_PROFILE') == 'installed')
@@ -18559,7 +18559,7 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
             try:
                 _prepare_render_validation(
                     source_checkout, validation_environment, support_root, sys.executable,
-                    tuple(Path(root) for root in args.pack_root),
+                    host.pack_roots,
                     identity_attestation["source"].get("closure_digest"),
                 )
             except BaseException:

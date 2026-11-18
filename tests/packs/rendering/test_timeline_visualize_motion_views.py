@@ -400,7 +400,8 @@ def test_contact_and_motion_draw_audio_and_preview(tmp_path, monkeypatch):
     }}))
     contact = _execute(tmp_path / "c", snapshot, {"view": "contact", "assets_registry": registry}, monkeypatch)
     lines = contact["outputs"]["findings"]
-    assert any(line.startswith("DEADAIR") for line in lines) and any(line.startswith("NO-VO") for line in lines)
+    # silence is flagged only where a line is placed or planned: this short gap inside the VO clip is not
+    assert not any(line.startswith(("DEADAIR", "NO-VO")) for line in lines)
     motion = _execute(tmp_path / "m", snapshot, {"view": "motion", "cut": "1", "preview": True,
                                                  "assets_registry": registry}, monkeypatch)
     outputs = motion["outputs"]
@@ -501,10 +502,10 @@ def test_cli_window_navigation_offers_neighbours():
     rows = dict((name, " ".join(argv)) for name, argv in cli._window_navigation(window, ["visualize"]))
     assert rows["earlier 0.00–5.00 s"].endswith("--preset scan --range 0.00..5.00")
     assert rows["later 10.00–15.00 s"].endswith("--range 10.00..15.00")
-    assert rows["zoom in on the busiest moment 7.75 s"].endswith("--preset motion --range 6.50..9.00")
-    assert rows["zoom out"].endswith("--preset scan --range 2.50..12.50")
+    assert rows["shorter time window around the busiest moment 7.75 s"].endswith("--preset motion --range 6.50..9.00")
+    assert rows["longer time window 2.50–12.50 s"].endswith("--preset scan --range 2.50..12.50")
     assert rows["same window as beat"].endswith("--preset beat --range 5.00..10.00")
-    assert rows["the cut it is in (#3)"].endswith("--cut 3")
+    assert rows["the cut it is in (cut 3)"].endswith("--cut 3")
 
 
 # --- the platform: pack layers + checks, project rules, data tracks, diff ----------------

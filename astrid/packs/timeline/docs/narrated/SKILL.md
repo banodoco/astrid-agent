@@ -24,6 +24,12 @@ result = tl.commit(place_to_words, label="Place to narration",
 `"Astrid"` is the word's start; `after "Astrid"` is its end. List nearby beat
 addresses with `"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" timelines words <timeline> Astrid --project <project> --beats`.
 
+Words come from each media's stored transcript, read through the timeline as it
+stands (trim, speed and repeated placements included). If a clip's media has no
+stored transcript, its clip-local words (`app.words`) are used instead, if it has any.
+Run `timelines transcripts refresh <timeline> --project <project>` (see the transcripts skill) to see
+which media has a stored transcript and to link one.
+
 ## Arrange selected shots
 
 ```python

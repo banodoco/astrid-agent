@@ -9,6 +9,8 @@ Editing a timeline? Load the `timeline` skill.
 
 Use `rendering.render` for a published timeline render, only when asked. Inspect renders with the [rendering guide](references/render-inspect-transfer.md), which covers playback and transfer.
 
+An installed host started directly with `--register` refuses startup if its personal collection adds a Remotion-capable pack outside the supplied `--pack-root` roots (`installed Remotion workers require product-owned pack roots`); remove that pack from the collection or start the host through Runtime with its approved pack roots.
+
 ## Worlds
 
 Build and inspect live scenes with the [world authoring guide](references/worlds-authoring.md). It covers the Three.js Live Editor and importing a world into a timeline.

@@ -53,6 +53,10 @@ class RenderCommandInputs:
 
 
 def timeline_canvas(timeline_data: Mapping[str, Any]) -> tuple[int, int, int]:
+    from astrid.core.rendering.profile import explicit_timeline_canvas
+    explicit = explicit_timeline_canvas(timeline_data)
+    if explicit is not None:
+        return int(explicit['width']), int(explicit['height']), int(explicit['fps'])
     canvas = (
         timeline_data.get("theme_overrides", {})
         .get("visual", {})

@@ -26,6 +26,7 @@ from .execution_request import (
     reject_caller_execution_binding,
     require_targeted_execution_binding_support,
 )
+from .media_ids import MediaIdError, canonical_digest, resolve_project_media
 from .pagination import page_pair, paged_rows
 from .workspace_client import WorkspaceClient, WorkspaceClientError
 
@@ -1031,8 +1032,8 @@ class RemoteTimelines(_RemoteFamily, _RemoteTimelineRevisionMixin):
         The default composed request includes synchronized input lanes so the
         source placements remain apparent beside the output; callers can use
         ``show``/``hide`` to choose a narrower surface.
-        An explicit run may select a saved revision only after exact-run
-        admission; its rendered video is never used as the frame source.
+        An explicit render run selects its admitted rendered video for review;
+        times refer to the timeline, including for ranged renders.
         """
         selected_mode = str(mode or "auto").strip().lower()
         if selected_mode not in {"auto", "inputs", "composed"}:
@@ -1180,9 +1181,11 @@ class RemoteTimelines(_RemoteFamily, _RemoteTimelineRevisionMixin):
                 executor_inputs.pop("revision_id", None)
             else:
                 executor_inputs["revision_id"] = pinned_revision
-            executor_inputs["composed_capture"] = True
+            # A requested run means review its actual video. Without a run,
+            # capture the pinned composition as before.
+            executor_inputs["composed_capture"] = not bool(requested_run)
             executor_inputs.setdefault("timeline_slug", timeline_ref)
-            if not explicit_run:
+            if not requested_run:
                 # The matching lookup selected this run from the current head;
                 # keep that provenance distinct from a user-pinned historical
                 # or candidate render when the executor builds its receipt.
@@ -1610,12 +1613,27 @@ class RemoteTimelines(_RemoteFamily, _RemoteTimelineRevisionMixin):
                         break
                 if asset_key is not None:
                     break
+            if asset_key is None and re.fullmatch(r"sha256:[0-9a-fA-F]{64}", normalized):
+                # Readers select media only through a registry asset; never
+                # leave a bare media_id on the clip. Register the digest in
+                # this shot's own registry and point the clip at it.
+                if not isinstance(internal, dict):
+                    return DomainResult.failure(ErrorObject("validation_error", "target internal timeline cannot hold a registry asset", {"occurrence_id": occurrence_id}), idempotency_key=key)
+                registry = internal.setdefault("registry", {})
+                assets = registry.setdefault("assets", {}) if isinstance(registry, dict) else None
+                if not isinstance(assets, dict):
+                    return DomainResult.failure(ErrorObject("validation_error", "target internal timeline registry is not an object", {"occurrence_id": occurrence_id}), idempotency_key=key)
+                digest = normalized.lower()
+                seed = "media-" + digest.removeprefix("sha256:")[:16]
+                asset_key, suffix = seed, 1
+                while asset_key in assets:
+                    suffix += 1
+                    asset_key = f"{seed}-{suffix}"
+                assets[asset_key] = {"media_id": digest, "content_sha256": digest.removeprefix("sha256:")}
             for field in ("asset", "asset_id", "media_id", "object_id"):
                 clip.pop(field, None)
             if asset_key is not None:
                 clip["asset"] = asset_key
-            elif re.fullmatch(r"sha256:[0-9a-fA-F]{64}", normalized):
-                clip["media_id"] = normalized.lower()
             else:
                 return DomainResult.failure(ErrorObject("validation_error", "replacement media must be an admitted project-owned digest or registry asset", {"source_object_id": source}), idempotency_key=key)
 
@@ -1914,25 +1932,24 @@ class RemoteMedia(_RemoteFamily):
             **filters,
         )
     def show(self, project, ref):
+        """One project media row, for any accepted id spelling (see ``media_ids``)."""
         rows = paged_rows(self._client.list_project_objects, str(project), limit=50)
         if rows is None:
-            return DomainResult.failure(ErrorObject("not_found", "media object is not in the selected project", {"project": str(project)}))
-        match = next(
-            (
-                item
-                for item in rows
-                if isinstance(item, dict)
-                and str(ref) in {str(item.get("digest")), str(item.get("object_id"))}
-            ),
-            None,
-        )
-        if match is None:
-            return DomainResult.failure(ErrorObject("not_found", "media object is not in the selected project", {"project": str(project)}))
+            return DomainResult.failure(ErrorObject("unavailable", "Runtime project media listing is unavailable", {"project": str(project)}))
+        try:
+            match = resolve_project_media(rows, project, ref)
+        except MediaIdError as exc:
+            return DomainResult.failure(ErrorObject(exc.code, exc.message, {"project": str(project), "ref": str(ref)}))
         # ``get_object`` is the byte-download endpoint. ``media show`` is a
         # metadata read and must remain JSON-safe; returning the download
         # response would put raw bytes in the stable product envelope and make
         # ``--json`` fail during canonicalization.
-        return DomainResult.success(match)
+        row = dict(match)
+        for field in ("digest", "object_id"):
+            canonical = canonical_digest(row.get(field))
+            if canonical is not None:
+                row[field] = canonical
+        return DomainResult.success(row)
     def read_bytes(self, object_id: str) -> bytes:
         """Read runtime-authorized artifact bytes, including unscoped outputs.
 
@@ -1964,19 +1981,51 @@ class RemoteMedia(_RemoteFamily):
             return realm_error
         scoped = self.show(project, ref)
         if not scoped.ok: return scoped
-        result = self._typed("head_object", ref, key=idempotency_key)
-        return DomainResult.success({"verified": True, "object_id": str(ref)}, idempotency_key=result.idempotency_key) if result.ok else result
-    def relate(self, project, *, from_object_id: str, to_object_id: str, kind: str, metadata=None, idempotency_key=None):
+        object_id = canonical_digest(scoped.data.get("digest")) or str(scoped.data.get("object_id") or ref)
+        result = self._typed("head_object", object_id, key=idempotency_key)
+        return DomainResult.success({"verified": True, "object_id": object_id}, idempotency_key=result.idempotency_key) if result.ok else result
+
+    def relate(self, project, *, from_object_id: str | None = None, to_object_id: str | None = None,
+               kind: str | None = None, metadata=None, idempotency_key=None, relations=None, ordinal=None):
+        """One media relation, or the CLI's ``relations=[{from_media_id, to_media_id, kind, ordinal?, metadata?}]``
+        (one relation per call). Both ids resolve through ``show`` to their canonical digests."""
+        if relations is not None:
+            if not isinstance(relations, (list, tuple)) or len(relations) != 1 or not isinstance(relations[0], Mapping):
+                return DomainResult.failure(ErrorObject("validation_error", "media relate takes exactly one relation per call", {"project": str(project)}))
+            relation = dict(relations[0])
+            if not relation.get("kind"):
+                return DomainResult.failure(ErrorObject("validation_error", "media relate needs a relation kind (--kind)", {"project": str(project)}))
+            return self.relate(
+                project,
+                from_object_id=relation.get("from_media_id"),
+                to_object_id=relation.get("to_media_id"),
+                kind=relation.get("kind"),
+                metadata=relation.get("metadata", metadata),
+                idempotency_key=idempotency_key,
+                ordinal=relation.get("ordinal"),
+            )
+        if not kind:
+            return DomainResult.failure(ErrorObject("validation_error", "media relate needs a relation kind (--kind)", {"project": str(project)}))
+        resolved = {}
+        for side, value in (("from", from_object_id), ("to", to_object_id)):
+            shown = self.show(project, value)
+            if not shown.ok:
+                return shown
+            resolved[side] = canonical_digest(shown.data.get("digest")) or str(shown.data.get("object_id"))
+        if resolved["from"] == resolved["to"]:
+            return DomainResult.failure(ErrorObject("validation_error", "a media relation needs two different media", {"project": str(project), "media_id": resolved["from"]}))
         key = idempotency_key or uuid.uuid4().hex
+        extra = {"ordinal": int(ordinal)} if ordinal else {}
         return self._typed(
             "create_media_relation",
             project,
-            from_object_id,
-            to_object_id,
+            resolved["from"],
+            resolved["to"],
             kind,
             key=key,
             metadata=metadata,
             idempotency_key=key,
+            **extra,
         )
 
     def list_relations(self, project, *, cursor=None, limit=50):

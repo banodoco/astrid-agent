@@ -137,7 +137,7 @@ def test_legacy_edit_uses_native_model_and_keeps_sampling_defaults_and_explicit_
     native = normalize_request(CASES[1]["v2"]).canonical
     assert legacy.settings["model"] == native.settings["model"]
     assert legacy.settings["model"] == "minimax_h3_ref2va_pruned_int8_convrot.safetensors"
-    assert legacy.settings["steps"] == 20
+    assert legacy.settings["steps"] == 8
     assert legacy.settings["seed"] == 0
     assert legacy != native
     raw["overrides"] = {"model": native.settings["model"], "steps": 12, "seed": 42}

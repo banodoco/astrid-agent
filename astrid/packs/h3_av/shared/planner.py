@@ -63,14 +63,6 @@ def _ignored_fields(request: H3Request, spec: H3Spec, compilation: Mapping[str, 
                 if name not in supported:
                     ignored.append({"field": f"overrides.{name}", "value": setting,
                                     "reason": "Validated graph constant; no runtime input"})
-    elif compilation.get("continuation_timing"):
-        settings = value["settings"]
-        for name in ("sampler", "scheduler"):
-            ignored.append({"field": f"settings.{name}", "value": settings[name],
-                            "reason": "Validated graph constant; no runtime input"})
-        for name in ("enabled", "strength"):
-            ignored.append({"field": f"settings.turbo.{name}", "value": settings["turbo"][name],
-                            "reason": "Validated graph constant; no runtime input"})
     elif value["settings"]["turbo"]["enabled"] is False:
         ignored.append({"field": "settings.turbo.strength", "value": value["settings"]["turbo"]["strength"],
                         "reason": "Turbo is disabled; its strength is disconnected"})
@@ -177,6 +169,8 @@ def plan_request(
         }}
         if "branch" in compiled:
             compilation["branch"] = compiled["branch"]
+        if "effective_settings" in compiled:
+            compilation["effective_settings"] = compiled["effective_settings"]
     timing = _timing(spec, compiled)
     if timing["trim"]["tail_frames"]:
         warnings.append({"code": "h3.plan.tail_trim", "message":

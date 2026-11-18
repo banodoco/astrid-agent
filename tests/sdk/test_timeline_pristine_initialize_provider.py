@@ -7,6 +7,7 @@ import pytest
 
 from astrid.sdk.timeline.commit import _digest, bundle_from_document
 from tests.editing_conformance.test_pristine_initialize import (
+    CURRENT,
     GOLDEN,
     batch,
     empty_document,
@@ -28,7 +29,7 @@ def test_init_undo_redo_and_reinitialization_requires_bootstrap_history():
     calls = batch(bundle_from_document(empty_document()))
     original = copy.deepcopy(realm.head)
     accepted = realm.call(calls)
-    assert accepted['data']['canonical_document']['parent_revision']['payload'] == GOLDEN['app_parent']
+    assert accepted['data']['canonical_document']['parent_revision']['payload'] == CURRENT['app_parent']
     undone = realm.call([inverse(accepted['receipt']['receipt_id'])])
     assert undone['data']['canonical_document'] == empty_document()
     assert realm.head['revision_id'] == original['revision_id']

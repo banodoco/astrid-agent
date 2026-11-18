@@ -36,19 +36,6 @@ def watchdog_module():
     return importlib.import_module("astrid.packs.runpod.pod_watchdog")
 
 
-@pytest.fixture
-def confirmed_write_permission(monkeypatch):
-    """Exercise the confirmed-rights branch with independent permission evidence."""
-    module = watchdog_module()
-    report = module._report_identity
-
-    def independently_authorised():
-        report()  # Retain the real read-only probe and its identity log.
-        return "yes"  # Independent write permission supplied by this test.
-
-    monkeypatch.setattr(module, "_report_identity", independently_authorised)
-
-
 def write(path: Path, deadline: float, generation: int):
     path.write_text(json.dumps({"deadline": deadline, "generation": generation}))
 
@@ -101,7 +88,7 @@ def test_missing_pod_identity_refuses_without_starting_process(tmp_path, monkeyp
         module.ensure_running(tmp_path / "deadline", 100)
 
 
-def test_termination_retries_with_bounded_backoff_until_accepted(tmp_path, monkeypatch, confirmed_write_permission):
+def test_termination_retries_with_bounded_backoff_until_accepted(tmp_path, monkeypatch):
     module = watchdog_module()
     monkeypatch.setenv("RUNPOD_POD_ID", "fake-pod")
     monkeypatch.setenv("RUNPOD_API_KEY", "fake-pod-key")
@@ -125,19 +112,19 @@ def test_termination_retries_with_bounded_backoff_until_accepted(tmp_path, monke
     module.run(tmp_path / "deadline", 100)
     assert methods == ["GET"] + ["DELETE"] * 9
     assert sleeps == [1, 2, 4, 8, 16, 30, 30, 30]
-    assert len((tmp_path / "engine.log").read_text().splitlines()) == 1
+    assert len((tmp_path / "engine.log").read_text().splitlines()) == 2
 
 
-@pytest.mark.parametrize(("result", "authorised"), [
-    ({"actions": ["terminate"]}, "unknown"),
-    ({"actions": ["start"]}, "unknown"),
-    ({}, "unknown"),
-    (401, "no"),
-    (403, "no"),
-    (503, "unknown"),
+@pytest.mark.parametrize(("result", "access"), [
+    ({"actions": ["terminate"]}, "reachable"),
+    ({"actions": ["start"]}, "reachable"),
+    ({}, "reachable"),
+    (401, "denied"),
+    (403, "denied"),
+    (503, "unreachable"),
 ])
 def test_identity_report_contains_names_only_and_read_only_authorisation(
-        tmp_path, monkeypatch, result, authorised):
+        tmp_path, monkeypatch, result, access):
     module = watchdog_module()
     monkeypatch.setenv("RUNPOD_POD_ID", "fake-pod")
     monkeypatch.setenv("RUNPOD_API_KEY", "fake-pod-key")
@@ -153,12 +140,11 @@ def test_identity_report_contains_names_only_and_read_only_authorisation(
         return provider_response(json.dumps({**result, "env": {"RUNPOD_API_KEY": "fake-pod-key"}}).encode())
 
     monkeypatch.setattr(module, "urlopen", request)
-    module._report_identity()
+    assert module._report_identity() == access
     assert log.read_text() == (
         "pod_watchdog: identity=RUNPOD_POD_ID,RUNPOD_API_KEY "
-        f"termination_authorised={authorised} probe=GET-own-pod-actions "
-        f"probe_status={result if isinstance(result, int) else 200}"
-        + (" watchdog=unavailable custody=host-only" if authorised == "unknown" else "") + "\n")
+        f"probe=GET-own-pod probe_status={result if isinstance(result, int) else 200} "
+        f"access={access} delete_permission=unproven_until_used\n")
     assert "fake-pod" not in log.read_text()
     assert "fake-pod-key" not in log.read_text()
 
@@ -183,13 +169,12 @@ def test_identity_probe_records_observed_status_when_unavailable(tmp_path, monke
     if failure == "missing-identity":
         monkeypatch.delenv("RUNPOD_API_KEY")
     monkeypatch.setattr(module, "urlopen", request)
-    expected = "no" if failure == "missing-identity" else "unknown"
+    expected = "denied" if failure == "missing-identity" else "unreachable"
     assert module._report_identity() == expected
     line = log.read_text()
     assert f"probe_status={status}" in line
     assert "private" not in line
-    if expected == "unknown":
-        assert "watchdog=unavailable custody=host-only" in line
+    assert "delete_permission=unproven_until_used" in line
 
 
 def test_identity_probe_does_not_infer_status_from_mocked_body(tmp_path, monkeypatch):
@@ -199,11 +184,11 @@ def test_identity_probe_does_not_infer_status_from_mocked_body(tmp_path, monkeyp
     log = tmp_path / "engine.log"
     monkeypatch.setattr(module, "IDENTITY_LOG_PATH", log)
     monkeypatch.setattr(module, "_request", lambda *args, **kwargs: {"actions": ["terminate"]})
-    assert module._report_identity() == "unknown"
+    assert module._report_identity() == "unreachable"
     assert "probe_status=0" in log.read_text()
 
 
-def test_first_start_identity_line_is_collected_by_host(retained, tmp_path, monkeypatch, confirmed_write_permission):
+def test_first_start_identity_line_is_collected_by_host(retained, tmp_path, monkeypatch):
     from tests.packs.runpod.test_generation_preparation import _claim, _request_for_job
 
     module = watchdog_module()
@@ -217,7 +202,9 @@ def test_first_start_identity_line_is_collected_by_host(retained, tmp_path, monk
     with monkeypatch.context() as clock:
         clock.setattr(module.time, "time", lambda: 100)
         module.run(tmp_path / "deadline", 100)
-    line = log.read_text()
+    lines = log.read_text().splitlines(keepends=True)
+    line = lines[0]
+    assert lines[1] == "pod_watchdog: watchdog=armed delete_permission=unproven_until_used\n"
     monkeypatch.setattr(module, "IDENTITY_LOG_PATH", remote_log)
     c = retained
     original = c.pod.exec
@@ -280,6 +267,16 @@ def test_claim_releases_pod_when_watchdog_reports_missing_identity(retained, mon
     assert c.deletes == ["pod-1"]
     assert c.read()["state"] == "cleanup_complete"
     assert c.creates == 1
+
+
+def test_unacknowledged_watchdog_update_releases_paid_claim(retained, monkeypatch):
+    module = watchdog_module()
+    c = retained
+    invocation = c.host.acquire(c.grant, requested_idle_seconds=10)
+    monkeypatch.setattr(module, "write_deadline", lambda *args: False)
+    with pytest.raises(module.PodWatchdogError, match="not acknowledged"):
+        c.host.settle(invocation)
+    assert c.deletes == ["pod-1"] and c.read()["state"] == "cleanup_complete"
 
 
 @pytest.mark.parametrize("provider_state", ["gone", "stopped"])
@@ -412,7 +409,7 @@ def test_termination_commitment_wins_and_refuses_later_publication(tmp_path, mon
     assert json.loads(path.read_text()) == {"deadline": 100, "generation": 1}
 
 
-@pytest.mark.parametrize("probe", [401, 403, {"actions": ["start"]}, {"actions": ["terminate"]}, 503, {}])
+@pytest.mark.parametrize("probe", [401, 403, 503, "RUNPOD_POD_ID", "RUNPOD_API_KEY"])
 def test_startup_authorisation_controls_claim_and_exact_release(
         request, tmp_path, monkeypatch, capsys, probe):
     module = watchdog_module()
@@ -423,7 +420,8 @@ def test_startup_authorisation_controls_claim_and_exact_release(
     monkeypatch.setattr(module, "IDENTITY_LOG_PATH", log)
     monkeypatch.setenv("RUNPOD_POD_ID", "fake-pod")
     monkeypatch.setenv("RUNPOD_API_KEY", "fake-pod-key")
-    denied = probe in (401, 403)
+    if isinstance(probe, str):
+        monkeypatch.delenv(probe)
     monkeypatch.setattr(module, "Watchdog", lambda *args, **kwargs:
                         pytest.fail("read-only evidence must not start a watchdog"))
 
@@ -467,19 +465,93 @@ def test_startup_authorisation_controls_claim_and_exact_release(
     monkeypatch.setattr(module, "urlopen", probe_request)
     monkeypatch.setattr(module.subprocess, "Popen", spawn)
     monkeypatch.setattr(c.pod, "exec", execute)
-    # Release-manager ruling (blocker rule): a denied or unknown termination
-    # authorisation means no watchdog, under the host's custody, never a refused claim.
-    c.host.acquire(c.grant, requested_idle_seconds=10)
+    # Paid claims require the independently running pod watchdog.
+    with pytest.raises(module.PodWatchdogError, match="missing " + probe if isinstance(probe, str) else "not acknowledged"):
+        c.host.acquire(c.grant, requested_idle_seconds=10)
     assert c.read()["self_stop"]["acknowledged"] is False
-    assert c.read()["state"] == "claimed" and not c.deletes
-    assert c.host.deadline_timer is not None
+    assert c.read()["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
     err = capsys.readouterr().err
-    assert "host custody only" in err and "can't stop itself" in err
-    if not denied:
-        assert "watchdog=unavailable custody=host-only" in log.read_text()
+    if not isinstance(probe, str):
+        assert "can't stop itself" in err
+        assert "delete_permission=unproven_until_used" in log.read_text()
     assert c.creates == 1 and not c.pod.job_log
-    assert "fake-pod" not in log.read_text()
-    assert "fake-pod-key" not in log.read_text()
+    if log.exists():
+        assert "fake-pod" not in log.read_text()
+        assert "fake-pod-key" not in log.read_text()
+
+
+def test_real_watchdog_startup_acknowledges_successful_paid_claim(retained, tmp_path, monkeypatch):
+    import threading
+
+    module = watchdog_module()
+    c = retained
+    path, log = tmp_path / "deadline", tmp_path / "engine.log"
+    monkeypatch.setattr(module, "DEADLINE_PATH", path)
+    monkeypatch.setattr(module, "IDENTITY_LOG_PATH", log)
+    monkeypatch.setenv("RUNPOD_POD_ID", "fake-pod")
+    monkeypatch.setenv("RUNPOD_API_KEY", "fake-pod-key")
+    methods = []
+
+    def request(req, timeout):
+        methods.append(req.get_method())
+        assert req.get_method() == "GET"
+        return provider_response(b'{"actions":["terminate"]}')
+
+    monkeypatch.setattr(module, "urlopen", request)
+    stop, armed = threading.Event(), threading.Event()
+    def tick(self, now):
+        armed.set()
+        return stop.wait(10)
+    monkeypatch.setattr(module.Watchdog, "tick", tick)
+    threads, errors = [], []
+
+    class Child:
+        def __init__(self, deadline):
+            def run():
+                try:
+                    module.run(path, deadline)
+                except BaseException as exc:
+                    errors.append(exc)
+            self.thread = threading.Thread(target=run, daemon=True)
+            threads.append(self.thread)
+            self.thread.start()
+        def poll(self):
+            return None if self.thread.is_alive() else 1
+        def wait(self, timeout=None):
+            self.thread.join(timeout)
+            return 1
+        def kill(self):
+            stop.set()
+
+    monkeypatch.setattr(module.subprocess, "Popen", lambda command, **kwargs: Child(float(command[-1])))
+    original = c.pod.exec
+
+    def execute(command, timeout=600):
+        if command.startswith("python3 -c "):
+            saved = c.read()["self_stop"]
+            output = io.StringIO()
+            with redirect_stdout(output):
+                try:
+                    module.main(["publish", saved["deadline"], saved["generation"]])
+                except SystemExit as exc:
+                    return exc.code, output.getvalue(), ""
+            return 0, output.getvalue(), ""
+        return original(command, timeout)
+
+    monkeypatch.setattr(c.pod, "exec", execute)
+    try:
+        c.host.acquire(c.grant, requested_idle_seconds=10)
+        assert armed.wait(2)
+        assert c.read()["state"] == "claimed" and c.read()["self_stop"]["acknowledged"] is True
+        assert methods == ["GET"] and not c.deletes
+        assert "watchdog=armed delete_permission=unproven_until_used" in log.read_text()
+        assert "fake-pod" not in log.read_text() and "fake-pod-key" not in log.read_text()
+        assert c.read()["allocation_terminate_after"]
+    finally:
+        stop.set()
+        for thread in threads:
+            thread.join(timeout=2)
+    assert not errors and all(not thread.is_alive() for thread in threads)
 
 
 def test_initial_watchdog_precedes_readiness_and_provider_verification(request, monkeypatch):
