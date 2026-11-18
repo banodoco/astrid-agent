@@ -1126,27 +1126,24 @@ def _compile_generation(
     members = _member_by_binding(manifest)
     if native_settings is None:
         native_settings = _v1_native_settings(request.value["overrides"])
-        settings = {key: native_settings[key] for key in ("model", "steps", "seed", "sampler")}
-        settings["guidance"] = native_settings["turbo"]["strength"]
-        scheduler = native_settings["scheduler"]
-        turbo_enabled = True
-        adapter_strength = None
-    else:
-        settings = {
-            "model": native_settings["model"],
-            "steps": native_settings["steps"],
-            "seed": native_settings["seed"],
-            "sampler": native_settings["sampler"],
-            "guidance": native_settings["turbo"]["strength"],
-        }
-        scheduler = native_settings["scheduler"]
-        turbo_enabled = native_settings["turbo"]["enabled"]
-        adapter_strength = native_settings.get("adapter", {}).get("strength")
+    settings = {
+        "model": native_settings["model"],
+        "steps": native_settings["steps"],
+        "seed": native_settings["seed"],
+        "sampler": native_settings["sampler"],
+        "guidance": native_settings["turbo"]["strength"],
+    }
+    scheduler = native_settings["scheduler"]
+    turbo_enabled = native_settings["turbo"]["enabled"]
+    adapter_strength = native_settings.get("adapter", {}).get("strength")
     timing = generation_timing(request.value["output"]["duration"])
     prompt = request.value["content"]["prompt"]
-    from .generation import PIKA_REF2VA_FILENAME
+    from .generation import TURBO_LORA_FILES
+    turbo_filename = TURBO_LORA_FILES.get(native_settings["turbo"]["lora"])
+    if turbo_enabled and turbo_filename is None:
+        raise CompilationError(f"turbo LoRA {native_settings['turbo']['lora']!r} has no file on the native route")
     graph = build_generation_workflow(
-        turbo_filename=PIKA_REF2VA_FILENAME,
+        turbo_filename=turbo_filename,
         video_shift=native_settings["video_shift"],
         audio_shift=native_settings["audio_shift"],
         references=list(members.values()), prompt=prompt,
@@ -1183,9 +1180,8 @@ def _compile_generation(
         extra_manifest["branch"] = native_v2_branch
     workflow_inputs = {**settings, "prompt": prompt, **members}
     workflow_inputs["scheduler"] = scheduler
-    if native_settings is not None:
-        if not turbo_enabled:
-            workflow_inputs.pop("guidance", None)
+    if not turbo_enabled:
+        workflow_inputs.pop("guidance", None)
     return _compile_manifest(
         request=request, destination=destination, resource_root=resource,
         workflow_inputs=workflow_inputs, asset_bindings=bindings,

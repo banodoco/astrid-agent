@@ -2135,6 +2135,13 @@ class GenerationFacade:
         # which the executor posts as is. A workflow without a seed input keeps the default 0.
         if type(sent_seed) is int:
             generated.seed_used = sent_seed
+        applied = (plan or {}).get('build_plan', {}) if entry_id == 'h3' else {}
+        applied = applied.get('applied_settings') if isinstance(applied, Mapping) else None
+        if applied:
+            # Record what ran: each effective setting, and the digest of the bound workflow inputs.
+            generated.applied_features = [f'{key}={value}' for key, value in applied['effective_settings'].items()]
+            if generated.effective_settings_ref is None:
+                generated.effective_settings_ref = {'kind': 'h3_applied_settings', **applied}
         return generated
 
     @staticmethod

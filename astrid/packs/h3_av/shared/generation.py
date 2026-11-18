@@ -23,6 +23,9 @@ CHARACTER_SWAP_REVISION = "62407e0cc8089c363abd9ce4b0b27662abb237af"
 CHARACTER_SWAP_FILENAME = "h3_character_swap_pro4500_1000.safetensors"
 CHARACTER_SWAP_SHA256 = "4b2a3f420ae804c0aa3422761ff84dbd1bf52eef6900ffab6d2e66df63cb4e79"
 PIKA_REF2VA_FILENAME = "pika_h3_flex_turbo_8step_hd_ref2va.safetensors"
+# The LoRA file each public ``turbo.lora`` choice binds. The compiler looks the file up here and
+# never hard-codes one, so a choice can neither be silently swapped nor silently ignored.
+TURBO_LORA_FILES = {"pika_flex_8step": PIKA_REF2VA_FILENAME}
 TURBO_FILENAME = "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors"
 _T9_MODEL_SUBSTITUTE_MODE = "deterministic_cpu_model_boundary_v1"
 _T9_MODEL_SUBSTITUTE_PURPOSE = "h3_character_swap_public_runtime_cpu_acceptance_v1"

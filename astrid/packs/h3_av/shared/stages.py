@@ -25,6 +25,32 @@ def stable_digest(value: Any) -> str:
     return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def flatten_settings(settings: Mapping[str, Any]) -> dict[str, Any]:
+    """``{"turbo": {"lora": x}}`` as ``{"turbo.lora": x}``, in a stable order."""
+    flat: dict[str, Any] = {}
+    for key in sorted(settings):
+        value = settings[key]
+        if isinstance(value, Mapping):
+            flat.update({f"{key}.{name}": item for name, item in flatten_settings(value).items()})
+        else:
+            flat[key] = value
+    return flat
+
+
+def settings_record(compilation: Mapping[str, Any]) -> dict[str, Any]:
+    """What a run applied: its effective settings, the defaults, and where it departs from them."""
+    from .request_v2 import _settings
+    effective = flatten_settings(compilation.get("effective_settings") or {})
+    defaults = flatten_settings(_settings({}))
+    return {
+        "effective_settings": effective,
+        "defaults": {key: defaults[key] for key in effective if key in defaults},
+        "differs_from_defaults": {key: {"value": value, "default": defaults.get(key)}
+                                  for key, value in effective.items() if defaults.get(key) != value},
+        "workflow_inputs_sha256": stable_digest(compilation["workflow_inputs"]),
+    }
+
+
 def _authoritative_source_asset_id(request: Any) -> str | None:
     """Return the source baseline asset without projecting v1 keys onto v2."""
 

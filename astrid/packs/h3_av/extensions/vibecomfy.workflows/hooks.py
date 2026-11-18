@@ -123,6 +123,26 @@ def _plain_request(inputs: Mapping[str, Any], files: Mapping[str, Any], facts: A
                          "audio": []}}, {"video_ref": str(video)})
 
 
+_PLAIN_ONLY_INPUTS = ("prompt", "image_ref", "video_ref", "frames")
+
+
+def _refuse_ignored_inputs(inputs: Mapping[str, Any], files: Mapping[str, Any], bindings: Mapping[str, Any],
+                           *, plain: bool) -> None:
+    """A request document is the whole request: an input it would silently override is refused."""
+    if plain:
+        return
+    given = {**(inputs or {}), **(files or {})}
+    for name in _PLAIN_ONLY_INPUTS:
+        if given.get(name) is not None:
+            raise ValueError(f"h3 input {name!r} is ignored when a 'request' document is given; "
+                             f"put it in the request document")
+    for name in ("seed", "steps"):
+        if given.get(name) is not None and bindings.get(name) != int(given[name]):
+            raise ValueError(
+                f"h3 input {name}={given[name]!r} differs from the request document's effective "
+                f"{name}={bindings.get(name)!r}; set it under overrides in the request, not as a separate input")
+
+
 def _state_dir(job_dir) -> Path:
     return (Path(job_dir) if job_dir else Path(tempfile.mkdtemp(prefix="astrid-h3-"))) / "h3"
 
@@ -175,7 +195,9 @@ def build(inputs, files, out, *, engine=None, check_runtime=False, publish_sourc
     _shared("prepare").write_preparation(work / "preparation.json", preparation)
     bindings = compilation["workflow_inputs"]
     facts.assert_no_unresolved_placeholders(bindings)
-    plan = {**stages._sealed_plan(compilation), "request_digest": request.digest}
+    plan = {**stages._sealed_plan(compilation), "request_digest": request.digest,
+            "applied_settings": stages.settings_record(compilation)}
+    _refuse_ignored_inputs(inputs, files, bindings, plain=False if _given(inputs, files, "request") else True)
     if preparation.get("source_conform"):
         plan["source_conform"] = preparation["source_conform"]
     source_id = stages._authoritative_source_asset_id(request)

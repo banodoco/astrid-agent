@@ -233,7 +233,10 @@ def v1_native_settings(overrides: Mapping[str, Any]) -> dict[str, Any]:
     """Translate the v1 spelling into the canonical settings vocabulary."""
     raw = dict(overrides)
     choice = raw.pop("turbo_lora", None)
-    if choice is not None:
+    if choice == "none":
+        # The one spelling for "no speed-up LoRA": the sampler runs the base model.
+        raw["turbo"] = {"enabled": False}
+    elif choice is not None:
         raw["turbo"] = {"lora": choice}
     return raw
 
