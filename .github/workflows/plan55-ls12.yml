@@ -9,6 +9,7 @@ on:
       - "tests/ls12_first_job_run.py"
       - "tests/core/pack/test_ls12*"
       - "tests/core/generation/test_ls12*"
+      - "tests/sdk/test_ls12*"
       - ".github/workflows/plan55-ls12.yml"
 permissions:
   contents: read
@@ -94,7 +95,15 @@ jobs:
           if os.environ["REVISION"] == "base":
               source = root / "ls12-base"
               subprocess.run(["git", "worktree", "add", "--detach", str(source), "91cb4cb499306b2f09686de0fb67b803bcb89077"], check=True)
-              for relative in ["tests/integrations/test_ls12_first_job.py", "tests/ls12_first_job_run.py", "tests/core/generation/test_ls12_first_job_collector.py"]:
+              for relative in [
+                  "tests/integrations/test_ls12_first_job.py", "tests/ls12_first_job_run.py",
+                  "tests/core/generation/test_ls12_first_job_collector.py",
+                  "tests/core/pack/test_ls12_import_admission.py",
+                  "tests/core/pack/test_ls12_source_identity.py",
+                  "tests/core/generation/test_ls12_named_entry.py",
+                  "tests/sdk/test_ls12_single_emission.py",
+                  "tests/core/pack/test_discovery_fingerprint_walk.py",
+              ]:
                   shutil.copyfile(root / relative, source / relative)
           proof = root / "ls12-proof"
           proof.mkdir()
@@ -128,6 +137,30 @@ jobs:
           os.chdir(os.environ["LS12_SOURCE"])
           subprocess.run([sys.executable, "-m", "pytest", "-q", "-rA", "tests/core/generation/test_discovery_scope.py",
               "--junitxml=" + str(pathlib.Path(os.environ["LS12_PROOF"]) / "discovery.xml")], check=True)
+      - name: Admission, source identity, named entry and caller emission probes
+        if: ${{ !cancelled() && steps.source.outcome == 'success' }}
+        shell: python
+        run: |
+          import os, pathlib, subprocess, sys
+          os.chdir(os.environ["LS12_SOURCE"])
+          subprocess.run([sys.executable, "-m", "pytest", "-q", "-rA",
+              "tests/core/pack/test_ls12_import_admission.py",
+              "tests/core/pack/test_ls12_source_identity.py",
+              "tests/core/generation/test_ls12_named_entry.py",
+              "tests/sdk/test_ls12_single_emission.py",
+              "tests/core/pack/test_discovery_fingerprint_walk.py",
+              "--junitxml=" + str(pathlib.Path(os.environ["LS12_PROOF"]) / "ls12.xml")], check=True)
+      - name: Existing caller source, input and target authority tests
+        if: ${{ !cancelled() && steps.source.outcome == 'success' }}
+        shell: python
+        run: |
+          import os, pathlib, subprocess, sys
+          os.chdir(os.environ["LS12_SOURCE"])
+          subprocess.run([sys.executable, "-m", "pytest", "-q", "-rA",
+              "tests/sdk/test_generation_source_retention.py",
+              "tests/sdk/test_generation_workflow.py", "tests/sdk/test_generation_target.py",
+              "tests/core/generation/test_t4i_job_contract.py",
+              "--junitxml=" + str(pathlib.Path(os.environ["LS12_PROOF"]) / "caller.xml")], check=True)
       - name: First-job timing and separate process/hash observations
         if: ${{ !cancelled() && steps.source.outcome == 'success' }}
         shell: python

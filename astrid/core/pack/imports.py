@@ -8,16 +8,48 @@ import keyword
 import os
 import re
 import sys
+from contextvars import ContextVar
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from types import MappingProxyType
+from typing import Callable, Mapping
+
+from astrid.core.pack.identity import _PackSourceSnapshot
+
+
+def _frozen_entries(entries):
+    return MappingProxyType({key: MappingProxyType(dict(value)) for key, value in entries.items()})
+
+
+@dataclass(frozen=True)
+class _ImportAdmission:
+    selected: Mapping[str, Mapping[str, str]]
+    relocations: Mapping[str, Mapping[str, str]]
+
+
+_import_admission: ContextVar[_ImportAdmission | None] = ContextVar("pack_import_admission", default=None)
+
+
+def _check_pack_import_admission(selected, verified_relocations) -> None:
+    """Share one verified result only within the synchronous import admission.
+
+    Public validation and every later install still read the complete tree.
+    The finder retains the Python bytes read by this admission, so subsequent
+    imports cannot execute a file changed after that content check.
+    """
+    admission = _import_admission.get()
+    if admission is not None and admission.selected == selected and admission.relocations == verified_relocations:
+        return
+    validate_selected_pack_map(selected, verified_relocations=verified_relocations)
 
 
 class _PackSourceLoader(importlib.abc.Loader):
     """Compile admitted Python source directly; never consult pack bytecode."""
 
-    def __init__(self, source: Path | None, directory: Path) -> None:
+    def __init__(self, source: Path | None, directory: Path, data: bytes | None) -> None:
         self.source = source
         self.directory = directory
+        self.data = data
 
     def create_module(self, spec):
         return None
@@ -25,8 +57,9 @@ class _PackSourceLoader(importlib.abc.Loader):
     def get_code(self, fullname):
         if self.source is None:
             return compile("", str(self.directory), "exec")
-        data = self.source.read_bytes()
-        return compile(data, str(self.source), "exec")
+        if self.data is None:
+            raise ImportError("Python source was not included in pack admission")
+        return compile(self.data, str(self.source), "exec")
 
     def exec_module(self, module) -> None:
         if self.source is not None:
@@ -37,8 +70,10 @@ class _PackSourceLoader(importlib.abc.Loader):
 class _PackSourceFinder(importlib.abc.MetaPathFinder):
     """Resolve the admitted pack map directly from raw source."""
 
-    def __init__(self, selected: Mapping[str, Mapping[str, str]], aliases: Mapping[str, Mapping[str, str]]) -> None:
+    def __init__(self, selected: Mapping[str, Mapping[str, str]], aliases: Mapping[str, Mapping[str, str]],
+                 snapshots: Mapping[str, _PackSourceSnapshot]) -> None:
         self.selected, self.aliases = selected, aliases
+        self.snapshots = snapshots
 
     def find_spec(self, fullname, path=None, target=None):
         if not fullname.startswith("astrid.packs."):
@@ -49,6 +84,7 @@ class _PackSourceFinder(importlib.abc.MetaPathFinder):
                 raise ModuleNotFoundError(f"pack {pack_id!r} was not selected for this execution")
             return None
         root = Path(self.selected[pack_id]["root"])
+        snapshot = self.snapshots[str(root)]
         path_names = self.aliases.get(pack_id, {})
         suffix = fullname[len("astrid.packs." + pack_id):].lstrip(".")
         parts = suffix.split(".") if suffix else []
@@ -56,19 +92,27 @@ class _PackSourceFinder(importlib.abc.MetaPathFinder):
             raise ValueError("invalid action module name")
         base = root.joinpath(*(path_names.get(part, part) for part in parts))
         directory = base.resolve()
+        if not directory.is_relative_to(root):
+            raise ValueError("action import escapes admitted pack root")
+        relative = base.relative_to(root).as_posix()
+        if relative == ".":
+            relative = ""
         source = None
-        package = directory.is_dir()
+        data = None
+        package = relative in snapshot.directories
         if package:
-            initializer = base / "__init__.py"
-            if initializer.exists():
-                source = initializer.resolve()
+            initializer = f"{relative}/__init__.py" if relative else "__init__.py"
+            if initializer in snapshot.sources:
+                source = (base / "__init__.py").resolve()
+                data = snapshot.sources[initializer]
         else:
             source = Path(str(base) + ".py").resolve()
-            if not source.is_file():
+            data = snapshot.sources.get(relative + ".py")
+            if data is None:
                 raise ModuleNotFoundError(f"no selected Python source for {fullname!r}")
         if not directory.is_relative_to(root) or (source is not None and not source.is_relative_to(root)):
             raise ValueError("action import escapes admitted pack root")
-        loader = _PackSourceLoader(source, directory)
+        loader = _PackSourceLoader(source, directory, data)
         spec = importlib.util.spec_from_loader(fullname, loader, is_package=package)
         if source is not None:
             spec.origin = str(source)
@@ -99,6 +143,13 @@ def validate_selected_pack_map(selected: Mapping[str, Mapping[str, str]], *, ver
     """
     from astrid.core.pack.identity import pack_digest
 
+    return _validate_selected_pack_map(selected, verify_digests=verify_digests,
+                                       verified_relocations=verified_relocations, digest=pack_digest)
+
+
+def _validate_selected_pack_map(selected: Mapping[str, Mapping[str, str]], *, verify_digests: bool,
+                                verified_relocations: Mapping[str, Mapping[str, str]] | None,
+                                digest: Callable[[Path], str]) -> dict[str, dict[str, str]]:
     if not isinstance(selected, Mapping) or not selected:
         raise ValueError("selected pack map must be a nonempty mapping")
     relocations = verified_relocations if verified_relocations is not None else {}
@@ -148,7 +199,7 @@ def validate_selected_pack_map(selected: Mapping[str, Mapping[str, str]], *, ver
         # A relocation is a host-issued authorization, bound to the digest
         # authenticated during capture. Never skip checking its executable bytes,
         # even for admission callers that defer ordinary source digest checks.
-        if (verify_digests or pack_id in relocations) and pack_digest(root) != entry["source_digest"]:
+        if (verify_digests or pack_id in relocations) and digest(root) != entry["source_digest"]:
             raise ValueError("admitted capability source digest changed")
         result[pack_id] = dict(entry)
     return result
@@ -162,7 +213,7 @@ def selected_pack_environment(selected: Mapping[str, Mapping[str, str]], *,
     builtin = Path(__file__).resolve().parents[2] / "packs"
     relocations = verified_relocations if verified_relocations is not None else {}
     if relocations:
-        validate_selected_pack_map(selected, verified_relocations=relocations)
+        _check_pack_import_admission(selected, relocations)
     # Every snapshot keeps its original collection identity. The raw-source
     # finder binds executable imports to the snapshot; discovery must still
     # see only one owner, including for personal and other external packs.
@@ -199,32 +250,45 @@ def install_pack_imports(pack_id: str, root: Path, path_names: Mapping[str, str]
     root = root.resolve(strict=True)
     if not root.is_dir():
         raise ValueError("selected pack root is unavailable")
-    if source_digest is None:
-        from astrid.core.pack.identity import pack_digest
+    from astrid.core.pack.identity import _read_pack_tree
 
-        source_digest = pack_digest(root)
-    selected = validate_selected_pack_map(selected_map if selected_map is not None else {
-        pack_id: {"root": str(root), "source_digest": source_digest}},
-        verified_relocations=verified_relocations)
+    snapshots: dict[str, _PackSourceSnapshot] = {}
+
+    def capture_digest(path: Path) -> str:
+        key = str(path)
+        if key not in snapshots:
+            snapshots[key] = _read_pack_tree(path, retain_sources=True)
+        return snapshots[key].digest
+
+    if source_digest is None:
+        source_digest = capture_digest(root)
+    selected = _validate_selected_pack_map(selected_map if selected_map is not None else {
+        pack_id: {"root": str(root), "source_digest": source_digest}}, verify_digests=True,
+        verified_relocations=verified_relocations, digest=capture_digest)
     if selected.get(pack_id) != {"root": str(root), "source_digest": source_digest}:
         raise ValueError("selected pack differs from admitted map")
-    environment = selected_pack_environment(selected, verified_relocations=verified_relocations)
-    previous = {name: os.environ.get(name) for name in environment}
-    os.environ.update(environment)
-    prefix = "astrid.packs." + pack_id
-    roots = tuple(Path(item) for item in environment["ASTRID_PACKS_PATH"].split(os.pathsep) if item)
+    admission = _ImportAdmission(_frozen_entries(selected), _frozen_entries(verified_relocations or {}))
+    token = _import_admission.set(admission)
     try:
-        import astrid.packs
+        environment = selected_pack_environment(selected, verified_relocations=verified_relocations)
+        previous = {name: os.environ.get(name) for name in environment}
+        os.environ.update(environment)
+        prefix = "astrid.packs." + pack_id
+        roots = tuple(Path(item) for item in environment["ASTRID_PACKS_PATH"].split(os.pathsep) if item)
+        try:
+            import astrid.packs
 
-        astrid.packs._check_collisions(roots, selected=selected, verified_relocations=verified_relocations)
-    except ImportError as exc:
-        # A refused selection leaves no process state behind (PK-4 composition repair).
-        for name, value in previous.items():
-            if value is None:
-                os.environ.pop(name, None)
-            else:
-                os.environ[name] = value
-        raise ValueError(str(exc)) from exc
+            astrid.packs._check_collisions(roots, selected=selected, verified_relocations=verified_relocations)
+        except ImportError as exc:
+            # A refused selection leaves no process state behind (PK-4 composition repair).
+            for name, value in previous.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+            raise ValueError(str(exc)) from exc
+    finally:
+        _import_admission.reset(token)
     names = dict(path_names or {})
     for finder in sys.meta_path:
         if isinstance(finder, _PackSourceFinder):
@@ -234,7 +298,8 @@ def install_pack_imports(pack_id: str, root: Path, path_names: Mapping[str, str]
     if any(name == "astrid.packs." + item or name.startswith("astrid.packs." + item + ".")
            for name in sys.modules for item in selected):
         raise ValueError("selected pack was imported before action admission")
-    sys.meta_path.insert(0, _PackSourceFinder(selected, {pack_id: names}))
+    sys.meta_path.insert(0, _PackSourceFinder(admission.selected, _frozen_entries({pack_id: names}),
+                                           MappingProxyType(snapshots)))
     return prefix
 
 
