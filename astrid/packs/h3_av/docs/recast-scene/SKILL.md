@@ -5,7 +5,7 @@ description: Plan and make a scene with replaced characters and re-voiced dialog
 
 # Recast and re-voice a scene
 
-Draft, 17 November: open questions are marked. The overarching skill for taking an existing scene and changing who is in it and what is said, while keeping the real performance where it can be kept. It is a planning method first and a generation method second. Each generation method it names has its own task skill, proven on a rented machine before this skill points to it.
+Keep the real performance wherever the script allows. Plan the scene in the cut, then choose the smallest edit each shot needs.
 
 Astrid commands here run through the launcher; its path on each OS is in the [astrid-setup skill's Launcher paths](../../../setup/docs/SKILL.md#launcher-paths).
 
@@ -25,7 +25,7 @@ You have source footage (a film scene, an earlier cut), a new script, and new or
 
 ## The principle
 
-**Get the sequence right cheaply, then spend on generation, one method per shot, voice first.**
+**Get the sequence right cheaply, then spend on generation, voice first.**
 - Iterate on timing and picture order with a temporary voice and stills. That costs nothing and is where most creative decisions are made.
 - Generate only once the sequence is approved, and only what each shot needs.
 - Make the whole voice performance first, as one take, so the speaker sounds like one person across every cut. Then the picture follows the voice: cut lengths come from the words, and mouths are made to match the words.
@@ -55,17 +55,17 @@ For each cut, ask what must change, and pick the least invasive method that does
 | Method | Use when | H3 task skill |
 |---|---|---|
 | **V. Voice over** | The line is heard, but the speaker's mouth is not on screen | Voice track (stage 4) only |
-| **LC. Lip sync by continuation** | Real footage of the speaker talking exists, and the new line can follow on from it: the shot starts with them saying something real, then continues with them saying the new line | Continuation (proven on one take) |
-| **LM. Lip sync by mask** | The speaker must say the new line inside the real shot's own frames (fixed length, fixed pose), often with other masked changes such as reflections | Masked edit of the mouth; how the voice gets in is open (below) |
+| **LC. Lip sync by continuation** | Real footage of the speaker talking exists, and the new line can follow on from it: the shot starts with them saying something real, then continues with them saying the new line | Continuation |
+| **LM. Lip sync by mask** | The speaker must say the new line inside the real shot's own frames (fixed length, fixed pose), often with other masked changes such as reflections | Lower-face mask with fixed replacement audio |
 | **R. Region replace** | Something inside real footage must change: a reflection, a held object, a background figure | Masked region edit with a reference image of what should appear |
-| **M. Still to motion** | The shot exists only as a still or a design frame and must move | Image-to-video from the still, with the character references |
+| **M. Still to motion** | The shot exists only as a still or a design frame and must move | For a silent reaction, use the still as a silent video source (Stage 5) |
 | **E. Extend** | The real shot is shorter than its words | Continuation from the real footage (keeps the performance, adds length) |
 | **K. Keep** | Nothing changes | None |
 
 Rules of thumb:
 - Prefer masks on real footage over regenerating a whole shot: the real eyes, head movement and lighting survive.
 - LC is the safe default when the shot can grow longer; LM when its frames must stay as they are.
-- If a speaking shot has no real footage, start from the nearest real footage of the speaker (E), then apply L and R. Avoid animating a still face into speech.
+- If a speaking shot has no real footage, start from the nearest real footage of the speaker (E), then edit the mouth or reflections as needed. Avoid animating a still face into speech.
 - Fixed references, declared once: each character's reference images and the speaker's real voice. Every pass uses the same ones.
 
 Output: the **shot list**, the sequence map plus a method column, inputs (masks, references, voice slice) and a check for each shot.
@@ -75,34 +75,34 @@ Plan: for every shot, write `method`, `intent`, `check`, the fixed `inputs.refer
 ## Stage 4 - The voice track
 
 - Reference: the speaker's real voice, a clean clip of their real lines with its transcript.
-- Generate the whole script as one continuous performance (voice-clone entry in `astrid generate`).
+- Use an approved continuous performance if available. To make a missing line in the speaker’s voice, use a continuation below.
 - Refresh the transcripts (`astrid timelines transcripts refresh <timeline> --project P --run-missing --placement runpod`, after a `--dry-run`), so the new voice has timed words; replace the temporary voice on the timeline, and re-time the cuts to the words (the refresh report lists any cut that splits a word). Look again (Stage 1 views).
 - Owner listens. This is the gate before any picture generation.
 - Plan: once the voice track is approved, write each speaking shot's slice of it: `timelines shots plan set <shot> --project P --timeline T --set inputs.voice.media=<voice track media id> --set inputs.voice.range=START,END`. The range is seconds into that voice track media (from its timed words), not timeline time, and needs the media.
 
-Fallback, if lip sync to a fixed voice does not work in H3: generate each on-camera line with its own voice by continuation, which is proven. Then use that voice as the reference for the off-camera lines.
+### Make someone say a new line
 
-## Open: how the voice gets into a masked lip sync (LM)
+| Available shot | Line length | Choose |
+|---|---|---|
+| The cut can grow and you have footage of the speaker talking | Allow time for the whole new line after the source | Continue picture and voice (LC) |
+| The picture must stay as filmed | The complete recorded line fits the footage | Mouth inpaint with fixed audio (LM) |
+| The picture must stay as filmed, but the line exists only in the script | Measure the line once spoken | Make the voice first, then use LM if it fits |
 
-Not settled; we are building this skill as we go. The masked edit has a route for fixed replacement audio (one voice span per request, a window of a voice-track clip spliced over the mouth's interval) and takes up to two reference images. Both compile on CPU; neither has a GPU result yet. Audio cannot be time-masked on the continuation route: its audio strength is one number for the whole clip. So options 1 and 4 are continuation-route candidates, not masked-edit ones. Candidates, each with the cheapest test that would settle it:
-1. **Voice in the lead-in** (continuation route). Put a snippet of the target voice just before the span, as unmasked context, so H3 generates the mouth and its audio together from the prompt's words. Test: one run on the 12-16 s close-up, with lead-in audio swapped for the voice-track slice.
-2. **Fixed replacement audio** (masked edit; route exists). Feed the voice track's slice for the shot as a replacement span (its range is the slice of the track, its interval is the span in the shot), held fixed at audio strength 0, and regenerate only the mouth pixels to match. Use a mouth mask that covers the lower face (jaw and cheeks), not only the lips. Test: the same shot, mouth mask only; does the mouth follow?
-3. **Voice as a reference.** A reference-audio input (H3's reference route has one, not exposed on edits). Test after it is exposed.
-4. **Unmasked audio** (continuation route). Regenerate all of the shot's audio from the prompt and the surrounding real sound. The simplest, but the voice may drift from the voice track.
-
-Lenses and mouth: recommend two passes. Lenses first (reference image, lens mask, audio left alone); then the mouth pass with the replacement span last, on the lens output. One pass is possible only when both regions use the same references: the request is refused otherwise, and the lens reference would also condition the mouth region. The reason is that references and the single inside strength condition the whole clip in one pass.
-
-Also open: how the edges of the masked span join the real footage in sound and picture.
+1. **Continue from their real voice (LC).** Start with a real clip of the person speaking. Prompt the exact words to follow. Set output duration to source duration plus line length plus a short hold. On 02c, a 3.25 s lead-in in a 7.5 s request left 4.25 s for the line and hold. Use the default lead-in mode (`drop`). Read the usable `range` in the take’s `h3/take.json` and run `astrid media trim TAKE --project P --range START,END` to keep just the new performance. Check the voice, mouth and final word. This worked on 01, 04 and 02c.
+2. **Make the voice first.** Continue any clean clip of the person speaking. The picture can be unrelated. Trim the new line and listen to it against the real voice. Use its audio to drive the mouth pass below. The voice-only continuation produced the line on 02c. Render at the smallest allowed size when the size option lands. Until then it renders full size ([astrid-dev#885](https://github.com/banodoco/astrid-dev/issues/885)).
+3. **Keep the filmed shot (LM).** Listen to the exact audio range in the shot plan before submitting. Mask the lower face, including jaw and cheeks. Feed the line as a replacement audio span of matching length. It plays unchanged while H3 edits the mouth. The combined mouth and lens edit on 02c worked technically, but the plan pointed to the temporary computer voice-over. The 3.25 s close-up also clipped the end of the roughly 3.8 s line. If the words overrun, find longer footage or use LC where the cut can grow. Check the speaker, last syllable and lip sync before approving.
 
 ## Stage 5 - Picture passes, shot by shot
 
-- For a masked edit, make the mask with `astrid media mask`, check `--preview-on` over the shot you will edit, and put the media ID in `edit[].mask.asset`. See the [02c lens example](../SKILL.md#make-a-mask).
+**Lenses and other regions.** Inspect a frame from the actual source and read the script line. Brief each lens separately. On 04 the left lens needed the hand offering the mink and the right needed the hand offering the blue pill. Edit that frame to make the reference. Composite the real hand, mirroring it if needed, and take the mink from the project’s own art. Make the lens mask with `astrid media mask` and check its edges across the shot with `--preview-on CLIP --range START,END`. Set the video edit’s mask and image guide and leave audio untouched. Compare both lenses over time and listen back. The masked pass preserves picture outside the mask and the source audio, including dialogue from a previous LC take. See the [mask recipe](../SKILL.md#make-a-mask) and [edit inputs](../SKILL.md#edit-inputs-reference-images-and-replacement-audio).
 
-- Order: the riskiest, most reused method first, on its best shot. One paid run proves a method; then repeat it across shots.
-- Each pass: a dry run that is the real path stopped before the GPU; one waiting claim with a spend cap and deadline; submit; read back; release.
+**Silent reaction from a still.** For 02b, FFmpeg looped the still at 24 fps for 2.5 s, cropped it to 1024×576 and added a silent WAV as the audio stream. Astrid lacks this preparation step ([astrid-dev#863](https://github.com/banodoco/astrid-dev/issues/863)). Use that video as the edit source. Keep the first four frames. Regenerate the full frame from `"1/6"` s to the end with a video-only edit. Describe visible action without sound words: “His lips stay gently together. His gaze shifts and he blinks once.” Watch the jaw and check that the take plays silently.
+
+- Snap source ranges to H3’s 24 fps grid. The 02c close-up used `["1945/24","2023/24"]`. If a take’s stream durations prevent reuse as a source, use `astrid media trim` on the usable range first.
+- Start with the riskiest method on its best shot. Make one take per approach. Sweep seeds only when asked.
+- Dry-run each request to check validity. Judge the picture on the returned take. Claim one machine with a spend cap and deadline. Admit jobs with `--no-wait`, follow their IDs with `astrid tasks show`, fetch each take with `astrid media open --materialize`, then release the machine. For a lossless Matroska/FFV1 take, make a browser viewing copy ([astrid-dev#864](https://github.com/banodoco/astrid-dev/issues/864)).
 - Reference images with black letterbox bars baked into the pixels are cleaned before generation: `astrid media crop <media> --project P --remove-bars` (dry run first, see [media crop](../../../_core/docs/SKILL.md#crop-still-images-and-video)); use the cleaned item as the reference, never the barred original.
 - Check every take with `visualize` (region zoom on the changed area, a strip across the shot) and with timed words for speech. The owner judges look, voice and lip sync.
-- Run the continuation with the default lead-in mode (`drop`). Read `range` from the take's `h3/take.json` and place the take using those values as `from` and `to`. For a file of just the new performance, run `astrid media trim <take media id> --range START,END --project P` with those values. Use `keep` when the preceding line belongs in the cut. Review the lead-in with `--compare-media take`.
 - Plan: read the shot's inputs from its plan (`timelines shots plan show <shot> --project P --timeline T`: references, masks, voice slice), never from memory or another file. Set `status=in_progress` when the pass starts. After checking the take in visualize, record the methods it satisfies: `timelines shots plan set <shot> --project P --timeline T --add-take '{"generation": "<run id>", "media": "<media id>", "note": "...", "covers": ["LC"]}'`. Keep the shot in progress until one take covers every planned method, then set `status=take_ready`.
 - When the owner approves a take, run `timelines shots plan set <shot> --project P --timeline T --set status=approved` (and say in a take's `note` which take was approved, if there are several).
 
@@ -110,7 +110,7 @@ Also open: how the edges of the masked span join the real footage in sound and p
 
 Place the takes on the timeline, look across every cut boundary (`--preset motion` around each cut), check that words and mouths agree, and render only when asked.
 
-LC takes go in with their `range` (see Stage 5): the clip's `from`/`to` is the new line, so the lead-in does not play twice. Keep the lead-in only when the real line before it belongs in the cut.
+LC takes go in with their `range` (see Stage 4): the clip's `from`/`to` is the new line, so the lead-in does not play twice. Keep the lead-in only when the real line before it belongs in the cut.
 
 Plan: before assembling, `timelines shots plan list --project P --timeline T`: `unplanned`, `invalid` and `not_approved` must all be empty (K shots need no approval). Any shot left is named there; finish or re-plan it first. The final overview with `--shot-plans` shows every shot approved.
 
@@ -134,19 +134,4 @@ Change: Neo is replaced everywhere by the old bearded man in the flat cap (his t
 
 The exact word splits across cuts come from Stage 4's timed words, not from this table.
 
-Status, 17 November:
-- Stage 1 is done: script and temporary-voice cut, watched in Astrid (v23, approved).
-- Stage 2 must be redone through `visualize`, which is blocked by a broken install that is being fixed.
-- Stage 3 is this table.
-- Methods proven on a GPU: only LC/E (one continuation take, owner-approved lip sync).
-- Gaps: voice-clone entry (exists in VibeComfy, not exposed); masked edit lacks a replacement-audio input (L) and a reference-image input (R); mask tracking (a fixed mask works first); `visualize` lacks region zoom.
-
-## Task skills this one points to (each to be written and proven)
-
-1. Voice track from a reference voice.
-2. Lip sync by continuation (exists; the first take).
-2b. Lip sync by mask (open: how the voice gets in).
-3. Region replace by masked edit with a reference image.
-4. Still to motion with character references.
-5. Extend a shot by continuation (same route as 2).
-6. Masks: fixed first, tracked later.
+On 18 November the GPU runs covered dialogue continuation, reference-guided lens edits and the silent reaction. The 02c voice-only take produced the line. Its separate fixed-audio mouth test still needed a longer shot and the correct voice before approval.

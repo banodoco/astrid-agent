@@ -346,8 +346,9 @@ The compiled manifest reports `reference_capacity`, `replacement_audio` (the
 clip range, the interval, `audio_strength: 0`, and `length_check`: `ffprobe` when
 the clip is verified to cover its range, or `request_range_only` when ffprobe is
 unavailable), `audio_binding` and `mask_binding`. If ffprobe is installed and
-cannot read the clip, compilation refuses it. Status:
-compile-verified on CPU only; no GPU run yet.
+cannot read the clip, compilation refuses it. The 18 November GPU runs used image guides for lens edits and fixed audio for a
+mouth edit. Listen to the selected audio range first. The 02c mouth take played
+the temporary voice-over supplied by the shot plan.
 
 Lens region replace with one reference image:
 
@@ -527,7 +528,7 @@ preview it over the shot:
 ```bash
 astrid media mask --project P --name "02c lenses" \
   --ellipse 282,121,119,99 --ellipse 622,114,132,96 --grow 8 \
-  --preview-on SHOT_MEDIA_ID
+  --preview-on SHOT_MEDIA_ID --range 81.041667,84.291667
 ```
 
 Open the contact sheet printed on the last line. It shows the mask over the
