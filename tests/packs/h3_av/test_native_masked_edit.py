@@ -445,3 +445,128 @@ def test_public_preparation_validates_only_red_mask_channel(tmp_path, red_outsid
     else:
         prepared = prepare_request(request, asset_map={"source": str(source), "mask": str(mask)})
         assert prepared["mask_schedule"]["video"]["generated_intervals"] == [[0.25, 0.75]]
+
+
+def test_mixed_audio_composition_is_sample_exact_per_stereo_channel(tmp_path):
+    import struct
+    import subprocess
+    import wave
+    from astrid.packs.h3_av.shared.compose import _compose_media, _decode_exact_pcm, _exact_audio_for_request
+
+    rate = 48000
+    def write_audio(path, samples):
+        with wave.open(str(path), "wb") as stream:
+            stream.setnchannels(2)
+            stream.setsampwidth(2)
+            stream.setframerate(rate)
+            stream.writeframes(b"".join(struct.pack("<hh", left, right) for left, right in samples))
+    source_wav, generated_wav, fixed_wav = (tmp_path / name for name in ("source.wav", "generated.wav", "fixed.wav"))
+    source_samples = [(100 + i % 100, -500 - i % 100) for i in range(rate * 2)]
+    generated_samples = [(1000 + i % 100, -1500 - i % 100) for i in range(rate * 2)]
+    fixed_samples = [(2000 + i % 100, -2500 - i % 100) for i in range(rate)]
+    write_audio(source_wav, source_samples)
+    write_audio(generated_wav, generated_samples)
+    write_audio(fixed_wav, fixed_samples)
+    source, generated = tmp_path / "source.mkv", tmp_path / "generated.mkv"
+    for audio, output in ((source_wav, source), (generated_wav, generated)):
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=size=32x32:rate=24:duration=2",
+                        "-i", str(audio), "-c:v", "ffv1", "-c:a", "pcm_s16le", str(output)], check=True)
+    preparation = {"request": {"version": 2, "media": [
+        {"occurrence_id": "occurrence-1", "role": "timeline", "edit": [
+            {"stream": "audio", "action": "generate", "resolved": {"range": [10000, 30001]}, "guides": ["fixed"]},
+            {"stream": "audio", "action": "generate", "resolved": {"range": [50001, 70000]}},
+        ]},
+        {"id": "fixed", "occurrence_id": "occurrence-2", "asset": "voice", "role": "reference", "use": "replacement",
+         "resolved_range": [1, rate]},
+    ]}, "assets": [{"asset": "voice", "path": str(fixed_wav), "status": "resolved"}]}
+    prepared = _exact_audio_for_request(preparation, source=source, generated=generated,
+                                        destination=tmp_path / "prepared.wav", duration=2, source_offset=0)
+    expected = source_samples[:10000] + fixed_samples[1:20002] + source_samples[30001:50001] + generated_samples[50001:70000] + source_samples[70000:]
+    assert prepared is not None
+    output = tmp_path / "delivered.mkv"
+    _compose_media(source=source, generated=generated, destination=output, duration=2, generated_video=[],
+                   generated_audio=[[10000 / rate, 30001 / rate], [50001 / rate, 70000 / rate]],
+                   source_offset=0, exact_audio_path=prepared[0])
+    decoded, channels = _decode_exact_pcm(output)
+    assert channels == 2
+    assert decoded == b"".join(struct.pack("<hh", left, right) for left, right in expected)
+"""Focused source/generated audio segment coverage for masked edits."""
+
+from astrid.packs.h3_av.shared.compose import _segments
+
+
+def test_audio_window_retains_the_source_on_both_sides():
+    assert _segments(5, [[1, 2], [3, 4]]) == [
+        (0.0, 1.0, False), (1.0, 2.0, True), (2.0, 3.0, False),
+        (3.0, 4.0, True), (4.0, 5.0, False),
+    ]
+
+
+def test_asymmetric_stereo_pcm_splices_exact_samples_and_fixed_wins():
+    import struct
+    from astrid.packs.h3_av.shared.compose import _splice_exact_pcm
+
+    def pcm(samples):
+        return b"".join(struct.pack("<hh", left, right) for left, right in samples)
+
+    source = pcm([(1, -11), (2, -12), (3, -13), (4, -14), (5, -15), (6, -16)])
+    generated = pcm([(101, -101), (102, -102), (103, -103), (104, -104), (105, -105), (106, -106)])
+    fixed = pcm([(201, -201), (202, -202), (203, -203)])
+    delivered = _splice_exact_pcm(source, channels=2, total_samples=6, generated=generated,
+                                  generated_spans=[(1, 5)], fixed_spans=[(2, 4, fixed, 1)])
+    assert delivered == pcm([(1, -11), (102, -102), (202, -202), (203, -203), (105, -105), (6, -16)])
+
+
+def test_pcm_decode_rejects_noncanonical_kept_rate_and_wrong_layout(tmp_path):
+    import wave
+    import pytest
+    from astrid.packs.h3_av.shared.compose import CompositionError, _decode_exact_pcm
+
+    clip = tmp_path / "mono.wav"
+    with wave.open(str(clip), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(44100)
+        output.writeframes(b"\x00\x00" * 100)
+    with pytest.raises(CompositionError, match="48000 Hz"):
+        _decode_exact_pcm(clip)
+    with pytest.raises(CompositionError, match="layout"):
+        _decode_exact_pcm(clip, expected_channels=2, generated=True)
+
+
+def test_fixed_audio_is_spliced_into_managed_v2v_source(tmp_path):
+    import copy
+    import subprocess
+    from astrid.packs.h3_av.shared.compose import _decode_exact_pcm
+    from vibecomfy.cli_loader import load_workflow_any
+
+    source, voice = tmp_path / "scene.mkv", tmp_path / "voice.wav"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=size=32x32:rate=24:duration=2",
+                    "-f", "lavfi", "-i", "sine=frequency=330:sample_rate=48000:duration=2",
+                    "-c:v", "ffv1", "-c:a", "pcm_s16le", str(source)], check=True)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000:duration=2",
+                    "-c:a", "pcm_s16le", str(voice)], check=True)
+    raw = {"version": 2, "duration": 2, "prompt": "Edit", "media": [
+        {"id": "source", "asset": "scene", "role": "timeline", "modality": "video", "at": {"frame": 0},
+         "range": [0, 2], "edit": [
+             {"stream": "video", "during": [0, 2], "mask": {"rectangle": [0, 0, 128, 128]}, "guides": []},
+             {"stream": "audio", "during": [0.5, 1.5], "guides": ["fixed"]}]},
+        {"id": "fixed", "asset": "voice", "role": "reference", "modality": "audio", "range": [0, 2]},
+    ]}
+    request = normalize_request(raw)
+    records = [{"asset": name, "status": "resolved", "path": str(path), "size": path.stat().st_size,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+               for name, path in (("scene", source), ("voice", voice))]
+    preparation = {"kind": "h3_av_preparation", "status": "prepared", "runtime_submission": "eligible",
+                   "request": copy.deepcopy(request.value), "request_digest": request.digest, "assets": records}
+    manifest = compile_preparation(preparation, out_dir=tmp_path / "out")
+    api = load_workflow_any(manifest["workflow"]["workflow.py"]["path"]).compile("api", run_inputs=manifest["workflow_inputs"])
+    v2v = next(row["inputs"] for row in api.values() if row["class_type"] == "H3V2VGranularFractionalDenoise")
+    concat = api[v2v["source_audio"][0]]
+    loader = api[concat["inputs"]["audio1"][0]]
+    assert loader["class_type"] == "LoadAudio"
+    assert v2v["audio_strength"] == 0
+    source_pcm, _ = _decode_exact_pcm(source)
+    voice_pcm, _ = _decode_exact_pcm(voice)
+    prepared_pcm, _ = _decode_exact_pcm(tmp_path / "out" / "source-with-fixed-audio.wav")
+    assert prepared_pcm == source_pcm[:24000 * 2] + voice_pcm[:48000 * 2] + source_pcm[72000 * 2:]

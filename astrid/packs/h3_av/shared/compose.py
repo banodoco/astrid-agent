@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import wave
 import zipfile
 from array import array
 from contextlib import contextmanager
@@ -826,6 +827,7 @@ def _compose_media(
     source_offset: float,
     video_fps: float | None = None,
     spatial_video_masks: list[Mapping[str, Any]] | None = None,
+    exact_audio_path: Path | None = None,
 ) -> dict[str, Any]:
     """Compose source and generated streams into a lossless MKV candidate."""
 
@@ -863,9 +865,12 @@ def _compose_media(
     input_args = ["-i", str(source), "-i", str(generated)]
     if generated_audio_path is not None:
         input_args.extend(["-i", str(generated_audio_path)])
+    exact_audio_index = 2 + int(generated_audio_path is not None)
+    if exact_audio_path is not None:
+        input_args.extend(["-i", str(exact_audio_path)])
     mask_fps = video_fps or 24.0
     mask_input_indices: dict[str, int] = {}
-    next_input_index = 2 + int(generated_audio_path is not None)
+    next_input_index = exact_audio_index + int(exact_audio_path is not None)
     for mask in spatial_video_masks or []:
         path = str(mask["path"])
         if path not in mask_input_indices:
@@ -884,6 +889,10 @@ def _compose_media(
     else:
         video_format = None
     for stream_type, segments, label in (("video", video_segments, "v"), ("audio", audio_segments, "a")):
+        if stream_type == "audio" and exact_audio_path is not None:
+            filters.append(f"[{exact_audio_index}:a:0]asetpts=PTS-STARTPTS[aout]")
+            maps.append("[aout]")
+            continue
         pieces: list[str] = []
         for index, segment in enumerate(segments):
             start, end, use_generated = segment[:3]
@@ -1082,6 +1091,127 @@ def _normalize_full_replacement(
     }
 
 
+
+def _decode_exact_pcm(path: Path, *, expected_channels: int | None = None, generated: bool = False) -> tuple[bytes, int]:
+    """Decode the named baseline as 48 kHz interleaved signed 16-bit PCM.
+
+    Kept and supplied inputs must already have a 48 kHz mono or stereo layout;
+    the generated input alone may be conformed to the baseline sample rate.
+    """
+    probe = _probe(path)
+    streams = _streams(probe, "audio") if probe else []
+    if len(streams) != 1:
+        raise CompositionError(f"{path.name}: exactly one audio stream is required")
+    stream = streams[0]
+    try:
+        rate, channels = int(stream["sample_rate"]), int(stream["channels"])
+    except (KeyError, TypeError, ValueError):
+        raise CompositionError(f"{path.name}: audio sample rate and channel layout must be measurable") from None
+    if channels not in (1, 2) or (expected_channels is not None and channels != expected_channels):
+        raise CompositionError(f"{path.name}: audio layout must match the source mono or stereo layout")
+    if rate != 48000 and not generated:
+        raise CompositionError(f"{path.name}: kept and supplied audio must be 48000 Hz; prepare a 48000 Hz source")
+    command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(path),
+               "-map", "0:a:0", "-vn", *( ["-ar", "48000"] if generated else [] ),
+               "-c:a", "pcm_s16le", "-f", "s16le", "-"]
+    try:
+        pcm = subprocess.run(command, check=True, capture_output=True).stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise CompositionError(f"{path.name}: cannot decode canonical PCM: {exc}") from exc
+    if len(pcm) % (channels * 2):
+        raise CompositionError(f"{path.name}: decoded PCM has an incomplete sample")
+    return pcm, channels
+
+
+def _splice_exact_pcm(source: bytes, *, channels: int, total_samples: int,
+                      source_start: int = 0, generated: bytes | None = None,
+                      generated_spans: list[tuple[int, int]] = (),
+                      fixed_spans: list[tuple[int, int, bytes, int]] = ()) -> bytes:
+    """Select complete interleaved samples at absolute integer boundaries."""
+    stride = channels * 2
+    if channels not in (1, 2) or source_start < 0 or total_samples < 0:
+        raise CompositionError("invalid canonical PCM source or channel count")
+    start, end = source_start * stride, (source_start + total_samples) * stride
+    if len(source) < end:
+        raise CompositionError("source audio does not cover the requested sample window")
+    result = bytearray(source[start:end])
+    if generated is not None:
+        generated = (generated + bytes(max(0, total_samples * stride - len(generated))))[:total_samples * stride]
+    for first, last in generated_spans:
+        if not 0 <= first < last <= total_samples or generated is None:
+            raise CompositionError("invalid generated audio sample span")
+        result[first * stride:last * stride] = generated[first * stride:last * stride]
+    seen: list[tuple[int, int]] = []
+    for first, last, pcm, offset in fixed_spans:
+        if not 0 <= first < last <= total_samples or offset < 0 or len(pcm) < (offset + last - first) * stride:
+            raise CompositionError("supplied audio does not cover its requested sample span")
+        if any(first < other_end and other_start < last for other_start, other_end in seen):
+            raise CompositionError("supplied audio sample spans overlap")
+        seen.append((first, last))
+        result[first * stride:last * stride] = pcm[offset * stride:(offset + last - first) * stride]
+    return bytes(result)
+
+
+
+def _exact_audio_for_request(preparation: Mapping[str, Any], *, source: Path, generated: Path,
+                             destination: Path, duration: float, source_offset: float,
+                             pre_splice_only: bool = False) -> tuple[Path, bytes, int, list[dict[str, Any]]] | None:
+    """Prepare the v2 delivered PCM from occurrence and sample-grid intent."""
+    request = preparation.get("request")
+    if not isinstance(request, Mapping) or request.get("version") != 2:
+        return None
+    media = request["media"]
+    refs = {item.get("id", item["occurrence_id"]): item for item in media if item.get("role") == "reference"}
+    edits = [edit for item in media if item.get("role") == "timeline" for edit in item.get("edit", [])
+             if edit.get("stream") == "audio" and edit.get("action") == "generate" and edit.get("strength", 1) > 0]
+    if not edits:
+        return None
+    assets = {row["asset"]: Path(row["path"]) for row in preparation.get("assets", [])
+              if row.get("status") == "resolved" and row.get("path")}
+    source_pcm, channels = _decode_exact_pcm(source)
+    total = round(duration * 48000)
+    generated_spans = []
+    fixed_spans = []
+    for edit in edits:
+        first, last = edit["resolved"]["range"]
+        guides = edit.get("guides", [])
+        fixed = [refs[name] for name in guides if name in refs and refs[name].get("use") == "replacement"]
+        if fixed:
+            if len(fixed) != 1 or len(guides) != 1:
+                raise CompositionError("a fixed audio span requires exactly one replacement audio occurrence")
+            item = fixed[0]
+            if item["asset"] not in assets:
+                raise CompositionError(f"fixed audio asset {item['asset']!r} is missing")
+            pcm, _ = _decode_exact_pcm(assets[item["asset"]], expected_channels=channels)
+            selected = item.get("resolved_range")
+            offset = selected[0] if selected is not None else 0
+            if selected is not None and selected[1] - offset < last - first:
+                raise CompositionError("fixed audio trim does not cover its delivery span")
+            fixed_spans.append((first, last, pcm, offset))
+        elif not pre_splice_only:
+            generated_spans.append((first, last))
+    candidate_pcm = None
+    if generated_spans:
+        candidate_pcm, _ = _decode_exact_pcm(generated, expected_channels=channels, generated=True)
+    pcm = _splice_exact_pcm(source_pcm, channels=channels, total_samples=total,
+                            source_start=round(source_offset * 48000), generated=candidate_pcm,
+                            generated_spans=generated_spans, fixed_spans=fixed_spans)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(destination), "wb") as wav:
+        wav.setnchannels(channels)
+        wav.setsampwidth(2)
+        wav.setframerate(48000)
+        wav.writeframes(pcm)
+    boundaries = sorted({0, total, *(point for first, last in generated_spans for point in (first, last)),
+                         *(point for first, last, _, _ in fixed_spans for point in (first, last))})
+    spans = []
+    for first, last in zip(boundaries, boundaries[1:]):
+        owner = "fixed" if any(a <= first and last <= b for a, b, _, _ in fixed_spans) else (
+            "generated" if any(a <= first and last <= b for a, b in generated_spans) else "source")
+        spans.append({"samples": [first, last], "source": owner})
+    return destination, pcm, channels, spans
+
+
 def _decode_audio_samples(path: Path, start: float, duration: float) -> tuple[list[int], int]:
     """Decode one interval to a stable comparison format."""
 
@@ -1263,6 +1393,11 @@ def compose_candidate(
         any(schedule[domain]["protected_intervals"] for domain in ("video", "audio"))
         or bool(spatial_video_masks)
     )
+    request_value = preparation.get("request", {})
+    exact_audio_requested = request_value.get("version") == 2 and any(
+        edit.get("stream") == "audio" and edit.get("action") == "generate" and edit.get("strength", 1) > 0
+        for item in request_value.get("media", []) for edit in item.get("edit", [])
+    )
     if protected and source_path is None:
         raise CompositionError("protected composition requires an authoritative source baseline")
 
@@ -1296,11 +1431,16 @@ def compose_candidate(
             candidate = destination / f"{source_path.stem}.preserved{source_path.suffix}"
             shutil.copy2(source_path, candidate)
             composition_method = {"method": "h3-source-preservation-v1"}
-        elif source_path is not None and protected and any(
+        elif source_path is not None and (protected or exact_audio_requested) and any(
             schedule[domain]["generated_intervals"] for domain in ("video", "audio")
         ):
             if _probe(source_path) is not None and _probe(generated_video) is not None:
                 candidate = destination / f"{generated_video.stem}.composed.mkv"
+                exact_audio = _exact_audio_for_request(
+                    preparation, source=source_path, generated=generated_audio or generated_video,
+                    destination=destination / "prepared-delivery-audio.wav", duration=float(schedule["duration"]),
+                    source_offset=_source_offset(preparation),
+                )
                 composition_method = _compose_media(
                     source=source_path,
                     generated=generated_video,
@@ -1312,7 +1452,20 @@ def compose_candidate(
                     source_offset=_source_offset(preparation),
                     video_fps=24.0 if schedule.get("branch") == "source_backed_v2v" else None,
                     spatial_video_masks=spatial_video_masks,
+                    exact_audio_path=exact_audio[0] if exact_audio is not None else None,
                 )
+                if exact_audio is not None:
+                    decoded, channels = _decode_exact_pcm(candidate, expected_channels=exact_audio[2])
+                    if channels != exact_audio[2] or decoded != exact_audio[1]:
+                        raise CompositionError("published PCM differs from the prepared exact audio baseline")
+                    composition_method["audio_segments"] = [
+                        {"during": [span["samples"][0] / 48000, span["samples"][1] / 48000], "source": span["source"]}
+                        for span in exact_audio[3]
+                    ]
+                    composition_method["exact_audio"] = {"rate": 48000, "channels": channels,
+                                                          "representation": "interleaved signed 16-bit little endian",
+                                                          "samples": len(decoded) // (channels * 2),
+                                                          "delivered_spans": exact_audio[3]}
             else:
                 if spatial_video_masks:
                     raise CompositionError(

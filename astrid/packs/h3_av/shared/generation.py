@@ -21,7 +21,6 @@ LIMITS = {
     "modality_seconds": {"value": 15, "source": "model card"},
     "conditioning_files": {"value": 12, "source": "model card"},
     "canvas_dimension": {"value": {"min": 32, "max": 16384, "multiple": 32}, "source": "node"},
-    # SR-5 owns enforcement of audio grant strength; it is not enforced here.
     "audio_grant_strength": {"value": [0, 1], "source": "node"},
     "job_length_frames": {"value": {"min": 5, "max": 3600, "stride": 17}, "source": "node"},
     "job_duration_seconds": {"value": [124 / 24, 362 / 24], "source": "node", "warning": "Outside 124–362 frames is outside the tested range."},
@@ -313,7 +312,8 @@ def build_generation_workflow(inputs: GenerationInputs):
         masked_edit = {"source_binding": source["input_binding"], "start_time": source["start_time"],
                        "frame_load_cap": source["frame_count"], "mask_binding": raster["input_binding"],
                        "mask_channel": raster["channel"], "mask_kind": raster.get("sampler_kind", raster["kind"]),
-                       "strength": raster["sampler_strength"]}
+                       "strength": raster["sampler_strength"],
+                       **({"audio_source_binding": source["audio_input_binding"]} if source.get("audio_input_binding") else {})}
     from vibecomfy.templates import ModelAsset, OutputSpec, ReadyMetadata, new_workflow, node
     from vibecomfy.nodes.core import (
         AudioConcat, BasicGuider, BasicScheduler, CLIPLoader, EmptyAudio, EmptyImage,
@@ -471,6 +471,11 @@ def build_generation_workflow(inputs: GenerationInputs):
                               type="CHOICE", default="", required=True, media_semantics="video")
             source_frames = source.out("IMAGE")
             source_audio = source.out(2)
+            if masked_edit.get("audio_source_binding"):
+                ident = masked_edit["audio_source_binding"]
+                prepared_audio = LoadAudio(audio="", _id=ident)
+                wf.register_input(ident, ident, "audio", "", type="CHOICE", default="", required=True, media_semantics="audio")
+                source_audio = prepared_audio.out("audio")
             source_count = int(masked_edit["frame_load_cap"])
             tail_frames = frames - source_count
             if source_count < 1 or tail_frames < 0:

@@ -18,7 +18,7 @@ from .generation import generation_timing
 from .prepare import prepare_request, write_preparation
 from .request import H3Request, H3RequestError, normalize_request
 from .request_v2 import json_times
-from .spec import H3Spec, canonical_spec, sampling_request_document
+from .spec import H3Spec, canonical_spec, sampling_request
 from .static_regions import resolve_static_region
 from .timing import plan_continuation
 
@@ -103,7 +103,7 @@ def plan_request(
         # compilation here is an inspectable preview: execution must replace its
         # source binding with the preceding composed and verified candidate.
         plans = [plan_request(
-            normalize_request(sampling_request_document(request, index, previous_verified_output=index > 0)),
+            sampling_request(request, index, previous_verified_output=index > 0),
             asset_map=asset_map, out_dir=root / "passes" / f"{index + 1:02d}",
         ) for index in range(len(passes))]
         preparation = prepare_request(request, asset_map=asset_map)

@@ -661,7 +661,13 @@ def _compile_native_masked_edit(
     passes = spec.sampling_passes()
     if request.value.get("version") != 2 and len(passes) != 1:
         raise CompilationError("native masked edit requires exactly one modifying video operation")
-    active_passes = [p for p in passes if p.operation.strength > 0]
+    video_passes = [p for p in passes if p.operation.stream == "video"]
+    audio_passes = [p for p in passes if p.operation.stream == "audio"]
+    references_by_name = {item.name: item for item in spec.refs}
+    if any(not p.operation.refs or any(references_by_name[name].use != "replacement" for name in p.operation.refs)
+           for p in audio_passes):
+        raise CompilationError("generated audio windows require a managed audio mask producer")
+    active_passes = [p for p in video_passes if p.operation.strength > 0]
     if len(active_passes) > 1:
         seeds = {p.operation.seed if p.operation.seed is not None else settings["seed"] for p in active_passes}
         reference_sets = {frozenset(p.operation.refs) for p in active_passes}
@@ -669,9 +675,9 @@ def _compile_native_masked_edit(
             raise CompilationError("regions per pass: grants with different seeds require separate sequential passes, which this lowering cannot execute")
         if len(reference_sets) > 1:
             raise CompilationError("regions per pass: grants with different reference sets require separate sequential passes, which this lowering cannot execute")
-    if not passes or any(p.operation.op != "regenerate" or p.operation.stream != "video" for p in passes):
+    if not video_passes or any(p.operation.op != "regenerate" or p.operation.stream not in {"video", "audio"} for p in passes):
         raise CompilationError("native masked edit requires modifying video operations")
-    operation = (active_passes or list(passes))[0].operation
+    operation = (active_passes or video_passes)[0].operation
     source = spec.source
     if source is None:
         raise CompilationError("native masked edit requires one bounded timeline video")
@@ -686,7 +692,7 @@ def _compile_native_masked_edit(
     regions = {region.name: region for region in spec.regions}
     destination.mkdir(parents=True, exist_ok=True)
     grant_masks = []
-    for index, item in enumerate(passes):
+    for index, item in enumerate(video_passes):
         grant = item.operation
         region = regions[grant.region] if grant.region else Region("full-frame", box=(0, 0, 1024, 576))
         mask_kind = "image"
@@ -727,6 +733,22 @@ def _compile_native_masked_edit(
                                     frames=frame_load_cap, destination=destination)
     mask_binding = "video_mask_0" if mask_kind == "video" else "mask_0"
     bindings: dict[str, Path] = {"source_video": assets[source_id], mask_binding: mask_path}
+    fixed_audio = request.value.get("version") == 2 and any(
+        item.get("use") == "replacement" for item in request.value["media"]
+    )
+    if fixed_audio:
+        from .compose import _exact_audio_for_request
+        prepared = {"request": request.value, "assets": [
+            {"asset": name, "path": str(path), "status": "resolved"} for name, path in assets.items()]}
+        try:
+            exact = _exact_audio_for_request(prepared, source=assets[source_id], generated=assets[source_id],
+                                             destination=destination / "source-with-fixed-audio.wav",
+                                             duration=float(spec.duration), source_offset=float(source.range[0]),
+                                             pre_splice_only=True)
+        except CompositionError as exc:
+            raise CompilationError(str(exc)) from exc
+        if exact is not None:
+            bindings["source_audio_prepared"] = exact[0]
     references_by_name = {item.name: item for item in spec.refs}
     references = [references_by_name[name] for name in operation.refs]
     conditioning = None
@@ -767,12 +789,14 @@ def _compile_native_masked_edit(
         from dataclasses import replace
         inputs = _with_v2_intent(replace(inputs, conditioning=tuple(conditioning)), request)
         grant_records = [dict(grant) for grant in inputs.grants]
-        for grant, mask in zip(grant_records, grant_masks, strict=True):
+        for grant, mask in zip((grant for grant in grant_records if grant["stream"] == "video"), grant_masks, strict=True):
             grant["region_raster"] = {"path": str(mask[0]), "kind": mask[1], "sampler_kind": mask_kind,
                                       "input_binding": mask_binding, "channel": _MASK_CHANNEL,
                                       "sampler_strength": 1.0 if len(grant_masks) > 1 else grant["strength"]}
         placed = tuple({**item, "input_binding": "source_video", "start_time": float(source.range[0]),
-                        "frame_count": frame_load_cap} if item.get("occurrence_id") == source.occurrence_id else item
+                        "frame_count": frame_load_cap,
+                        **({"audio_input_binding": "source_audio_prepared"} if "source_audio_prepared" in bindings else {})}
+                       if item.get("occurrence_id") == source.occurrence_id else item
                        for item in inputs.placed)
         inputs = replace(inputs, grants=tuple(grant_records), placed=placed)
     graph = build_generation_workflow(inputs)
