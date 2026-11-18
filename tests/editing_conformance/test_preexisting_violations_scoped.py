@@ -313,3 +313,37 @@ def test_invariant_every_long_lived_head_accepts_an_unrelated_commit_and_a_dupli
     empty = copy.deepcopy(head)
     empty["placements"], empty["shots"] = [], {}
     validate_final_candidate(copy.deepcopy(head), baseline=empty, authenticated_copy=True)
+
+
+# --- scope: a shot-internal revision bump keeps the baseline of the clips it did not touch -----------------------
+
+def _unresolved_params_head():
+    value = candidate()
+    clip = child_clips(value)[0]
+    clip.update(clipType="no-such-element-anywhere", params={"x": 1})
+    return value
+
+
+def test_shot_internal_revision_bump_judges_untouched_clips_against_the_previous_revision():
+    baseline = _unresolved_params_head()
+    value = copy.deepcopy(baseline)
+    value["source_mapping"]["shots"][SHOT]["internal_timeline_revision_id"] = "internal-revision-next"
+    unrelated_change(value)
+    validate_final_candidate(value, baseline=baseline)
+
+
+def test_shot_internal_revision_bump_still_refuses_what_the_edit_touches():
+    baseline = _unresolved_params_head()
+    value = copy.deepcopy(baseline)
+    value["source_mapping"]["shots"][SHOT]["internal_timeline_revision_id"] = "internal-revision-next"
+    child_clips(value)[0]["params"] = {"x": 2}
+    with pytest.raises(AuthoringBundleError, match="clipType"):
+        validate_final_candidate(value, baseline=baseline)
+
+
+def test_another_internal_timeline_carries_no_baseline_over():
+    baseline = _unresolved_params_head()
+    value = copy.deepcopy(baseline)
+    value["source_mapping"]["shots"][SHOT]["internal_timeline_id"] = "another-internal-timeline"
+    with pytest.raises(AuthoringBundleError, match="clipType"):
+        validate_final_candidate(value, baseline=baseline)

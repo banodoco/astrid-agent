@@ -756,8 +756,10 @@ def validate_final_candidate(
         previous_source = (baseline or {}).get("source_mapping", {}).get("shots", {}).get(shot_id)
         previous_placement = next((row for row in (baseline or {}).get("placements", [])
                                    if row.get("occurrence_id") == occurrence_id), None)
-        if (not _same_fields(source, previous_source, (
-                "shot_id", "revision_id", "internal_timeline_id", "internal_timeline_revision_id"))
+        # A new internal revision of the same shot and internal timeline is the ordinary edit: its
+        # clips are judged against the previous revision. Another shot, shot revision or internal
+        # timeline is a different declaration, so nothing of the baseline carries over.
+        if (not _same_fields(source, previous_source, ("shot_id", "revision_id", "internal_timeline_id"))
                 or not _same_fields(placement, previous_placement, ("shot_id",))
                 or not _same_fields(candidate, baseline, ("project_id", "timeline_id"))):
             baseline_internal = {}
