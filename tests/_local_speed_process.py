@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections import Counter
 import asyncio
 import base64
+import ctypes
 import itertools
 import json
 import os
@@ -26,6 +27,30 @@ if sys.platform == "win32":
     import _overlapped
 else:
     _overlapped = None
+
+
+class _FileTime(ctypes.Structure):
+    _fields_ = [("low", ctypes.c_uint32), ("high", ctypes.c_uint32)]
+
+
+_precise_file_time = None
+if sys.platform == "win32":
+    _precise_file_time = ctypes.WinDLL("kernel32", use_last_error=True).GetSystemTimePreciseAsFileTime
+    _precise_file_time.argtypes = [ctypes.POINTER(_FileTime)]
+    _precise_file_time.restype = None
+
+
+def _windows_epoch_time_ns():
+    value = _FileTime()
+    _precise_file_time(ctypes.byref(value))
+    return (((value.high << 32) | value.low) - 116444736000000000) * 100
+
+
+# Python 3.11's Windows time.time_ns uses coarse GetSystemTimeAsFileTime.
+# Match precise ETW UTC timestamps at the actual boundary, without padding.
+epoch_time_ns = _windows_epoch_time_ns if sys.platform == "win32" else time.time_ns
+EPOCH_CLOCK = ("GetSystemTimePreciseAsFileTime()" if sys.platform == "win32"
+               else time.get_clock_info("time").implementation)
 
 PREFIX = "PLAN55_PROCESS_OBSERVATION "
 MARKER = "# PLAN55_OBSERVER_INSTALLED_AFTER_ADMISSION"
@@ -284,7 +309,7 @@ class ProcessObserver:
                 frame = sys._getframe(1)
                 origin = owner._write_origin(frame)
                 context = owner.runtime_write_context(frame) if origin.startswith("runtime_") else origin
-                started = time.time_ns()
+                started = epoch_time_ns()
                 success = False
                 try:
                     result = _original(fd)
@@ -294,7 +319,7 @@ class ProcessObserver:
                     owner.event("application_sync", operation=_name, origin=origin,
                                 write_context=context,
                                 route=getattr(owner.context, "route", None),
-                                epoch_start_ns=started, epoch_end_ns=time.time_ns(), success=success)
+                                epoch_start_ns=started, epoch_end_ns=epoch_time_ns(), success=success)
             self.patches.setattr(os, name, sync)
 
     def profile(self, frame, event, arg) -> None:
@@ -345,12 +370,12 @@ class ProcessObserver:
                   getattr(arg, "__name__", None) == "commit"):
                 tid = threading.get_native_id()
                 if event == "c_call" and self.runtime_connection.in_transaction:
-                    self.commit_starts[tid] = time.time_ns()
+                    self.commit_starts[tid] = epoch_time_ns()
                     self.event("runtime_outer_commit_attempt")
                 elif event in ("c_return", "c_exception") and tid in self.commit_starts:
                     started = self.commit_starts.pop(tid)
                     self.event("runtime_outer_commit_" + ("success" if event == "c_return" else "error"),
-                               epoch_start_ns=started, epoch_end_ns=time.time_ns(),
+                               epoch_start_ns=started, epoch_end_ns=epoch_time_ns(),
                                write_context=self.runtime_write_context(frame),
                                route=getattr(self.context, "route", None))
         if self.chain_profiles:
@@ -403,6 +428,7 @@ class ProcessObserver:
             hashes = self.hashes.snapshot(since_ns, until_ns)
             return {
                 "schema": "astrid.local-speed-process.v1", "pid": os.getpid(),
+                "epoch_clock": EPOCH_CLOCK,
                 "role": self.role, "start_ns": self.started, "end_ns": time.perf_counter_ns(),
                 "interval": {"monotonic_start_ns": since_ns, "monotonic_reply_ns": until_ns},
                 "counts": dict(sorted(counts.items())), "process_starts": processes,

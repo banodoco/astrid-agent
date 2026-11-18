@@ -7,6 +7,8 @@ import time
 from collections import Counter
 from urllib.parse import unquote, urlsplit
 
+from tests._local_speed_process import epoch_time_ns
+
 
 def request_path(method, path):
     path = unquote(urlsplit(path).path)
@@ -36,11 +38,11 @@ class RuntimeObserver:
         return {"kind": kind, "write_context": context, "route": route,
                 "pid": os.getpid(), "tid": threading.get_native_id(),
                 "monotonic_start_ns": time.perf_counter_ns(), "monotonic_end_ns": None,
-                "epoch_start_ns": time.time_ns(), "epoch_end_ns": None}
+                "epoch_start_ns": epoch_time_ns(), "epoch_end_ns": None}
 
     @staticmethod
     def _finish(span):
-        span["epoch_end_ns"] = time.time_ns()
+        span["epoch_end_ns"] = epoch_time_ns()
         span["monotonic_end_ns"] = time.perf_counter_ns()
 
     def sqlite_mode(self):
@@ -86,7 +88,7 @@ class RuntimeObserver:
             move = platform._move_file_write_through
 
             def write_through(*args, **kwargs):
-                start = time.time_ns()
+                start = epoch_time_ns()
                 success = False
                 try:
                     result = move(*args, **kwargs)
@@ -94,7 +96,7 @@ class RuntimeObserver:
                     return result
                 finally:
                     owner.process.event("platform_write_through_" + ("success" if success else "error"),
-                        epoch_start_ns=start, epoch_end_ns=time.time_ns(),
+                        epoch_start_ns=start, epoch_end_ns=epoch_time_ns(),
                         route=getattr(owner.process.context, "route", None))
             self.process.patches.setattr(platform, "_move_file_write_through", write_through)
         return self

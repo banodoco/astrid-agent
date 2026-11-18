@@ -54,6 +54,11 @@ high-resolution `perf_counter` clock. On Windows Python 3.11 this avoids coarse
 `monotonic_ns` ticks collapsing a warmup or in-flight-wait boundary. Epoch
 timestamps for native trace matching remain separate. The historical control
 retains its original clock along with the rest of its immutable harness.
+Windows epoch boundaries and write spans use `GetSystemTimePreciseAsFileTime`,
+avoiding Python 3.11's coarse UTC clock; the clock identity is retained in raw
+reports. Exact native interval containment has no added post-reply tolerance.
+The original DELETE/FULL calibration ends before the separate WAL calibration
+begins, so the new WAL work cannot satisfy the original native-count check.
 
 Zero worker starts is valid when a worker admitted before the interval supplies
 a complete snapshot for that interval. A whole-lifetime/exit-only report is

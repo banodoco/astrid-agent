@@ -23,9 +23,11 @@ from astrid.core.generation.delivery import deliver_generation
 from tests._local_speed_capture import ProcessReportCapture
 from tests._local_speed_runtime import RuntimeObserver
 from tests._local_speed_process import (
+    EPOCH_CLOCK,
     MAX_REPORT_BYTES,
     PREFIX,
     ProcessObserver,
+    epoch_time_ns,
     read_reports,
     sources,
 )
@@ -77,13 +79,13 @@ class AttachedMeter:
         if self.observer is not None:
             self.sqlite_before = self.runtime.sqlite_mode()
             self.hashes_before = self.observer.snapshot()
-        self.wall_start_ns = time.time_ns()
+        self.wall_start_ns = epoch_time_ns()
         self.start_ns = time.perf_counter_ns()
         self.start = self.start_ns / 1e9
 
     def finish(self):
         self.reply_ns = time.perf_counter_ns()
-        self.wall_reply_ns = time.time_ns()
+        self.wall_reply_ns = epoch_time_ns()
         self.reply = self.reply_ns / 1e9
         if self.observer is not None:
             self.parent_report = self.observer.snapshot(self.start_ns, self.reply_ns)
@@ -118,6 +120,7 @@ class AttachedMeter:
         ]
         return {
             "schema": "astrid.local-speed-observation.v1",
+            "epoch_clock": EPOCH_CLOCK,
             "gate_version": 3,
             "harness_settings": {"host_poll_seconds": "product_default", "machine_poll_seconds": "product_default",
                                  "sdk_poll_seconds": "product_default"},

@@ -4,6 +4,46 @@ from tests._local_speed_native import attribute_writes, count_interval, trace_st
 from tests.core.generation.test_local_speed_process_observer import observer
 
 
+def test_precise_windows_epoch_keeps_filetime_fraction_without_coarse_clock_fallback(monkeypatch):
+    import ctypes
+
+    from tests import _local_speed_process as process
+
+    expected = 1794961460735565500
+    ticks = expected // 100 + 116444736000000000
+
+    def precise(pointer):
+        value = ctypes.cast(pointer, ctypes.POINTER(process._FileTime)).contents
+        value.low, value.high = ticks & 0xffffffff, ticks >> 32
+
+    monkeypatch.setattr(process, "_precise_file_time", precise)
+    monkeypatch.setattr(process.time, "time_ns", lambda: 1794961460734140200)
+    assert ctypes.sizeof(process._FileTime) == 8
+    assert process._windows_epoch_time_ns() == expected
+
+
+def test_calibration_keeps_original_delete_interval_separate_from_wal(tmp_path, monkeypatch, capsys):
+    import json
+    import os
+    import sys
+
+    from tests import local_speed_native_calibration as calibration
+
+    monkeypatch.setattr(sys, "argv", ["calibration", "--output", str(tmp_path)])
+    monkeypatch.setattr(os, "fsync", os.fsync)  # Restore even if the calibration fails.
+    calibration.main()
+    original = json.loads((tmp_path / "calibration-interval.json").read_text())
+    wal = json.loads((tmp_path / "wal-calibration.json").read_text())
+    proof = json.loads(capsys.readouterr().out)
+    assert original["epoch_start_ns"] < original["epoch_reply_ns"] < wal["interval"]["epoch_start_ns"]
+    assert wal["interval"]["epoch_start_ns"] < wal["checkpoint_start_ns"] < wal["interval"]["epoch_reply_ns"]
+    assert proof["explicit_python_fsync_calls"] == 1
+    assert proof["sqlite_commits_exercised"] == 2
+    assert proof["stored_result_verified"] is True
+    assert wal["sqlite"] == {"journal_mode": "wal", "synchronous": 2, "wal_autocheckpoint": 1000}
+    assert wal["checkpoint"][0] == 0
+
+
 def test_shared_runtime_fsync_shim_retains_the_agent_producers_identity(tmp_path):
     import os
 
