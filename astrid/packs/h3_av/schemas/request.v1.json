@@ -8,7 +8,7 @@
   "required": ["version", "operation", "content", "changes", "references", "overrides"],
   "allOf": [{
     "if": {"not": {"properties": {"operation": {"const": "continue"}}, "required": ["operation"]}},
-    "then": {"properties": {"output": {"not": {"anyOf": [{"required": ["lead_in"]}, {"required": ["clip_lead_in"]}]}}}}
+    "then": {"properties": {"output": {"not": {"required": ["lead_in"]}}}}
   }, {
     "if": {"properties": {"operation": {"const": "generate"}}, "required": ["operation"]},
     "then": {
@@ -40,8 +40,7 @@
       "additionalProperties": false,
       "properties": {
         "duration": {"type": "number", "exclusiveMinimum": 0},
-        "lead_in": {"enum": ["drop", "keep"], "description": "continue only: what the take uses of the stored file (default drop)"},
-        "clip_lead_in": {"type": "boolean", "description": "continue only: also write a frame-exact clip of the take's range (default false)"}
+        "lead_in": {"enum": ["drop", "keep"], "description": "continue only: what the take uses of the stored file (default drop)"}
       }
     },
     "content": {

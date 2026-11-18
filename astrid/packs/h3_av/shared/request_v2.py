@@ -477,15 +477,12 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
     output: dict[str, Any] = {}
     if "output" in raw:
         output_raw = _object(raw["output"], "output") or {}
+        _unknown(output_raw, {"lead_in"}, "output")
         if not continuation: raise H3RequestError("output is valid only for a continuation")
-        _unknown(output_raw, {"lead_in", "clip_lead_in"}, "output")
         if "lead_in" in output_raw:
             # The default is not digested: an explicit "drop" is the same request as none.
             if lead_in_mode(output_raw["lead_in"], "output.lead_in") != DEFAULT_LEAD_IN:
                 output["lead_in"] = output_raw["lead_in"]
-        if "clip_lead_in" in output_raw:
-            if type(output_raw["clip_lead_in"]) is not bool: raise H3RequestError("output.clip_lead_in must be boolean")
-            if output_raw["clip_lead_in"]: output["clip_lead_in"] = True
     value = {"version": 2, "prompt": prompt, "duration": duration, "media": occurrences, "settings": settings, "continuation": continuation, "profile": PROFILE, "output_count": 1, "model_tags": {item["occurrence_id"]: item["model_tag"] for item in occurrences if "model_tag" in item}}
     if output: value["output"] = output
     encoded = json.dumps(json_times(value), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")

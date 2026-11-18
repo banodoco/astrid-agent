@@ -188,8 +188,7 @@ matching sample. The video and audio are re-encoded (stream copy cannot cut on
 arbitrary frames). `--dry-run` prints the frame and sample bounds and imports
 nothing. The new item is imported like `media import` and linked to the source by
 a `derived_from` relation whose metadata records the range, the bounds, and the
-source digest. An H3 continuation can request the same clip for its take with
-`output.clip_lead_in: true`.
+source digest. For an H3 continuation, use the range from the take's `h3/take.json`.
 
 ### Crop still images and video
 
