@@ -21,6 +21,7 @@ from pathlib import Path
 
 PREFIXES = ("scripts/", ".github/workflows/", "requirements/")
 FILES = {"scripts/__init__.py", "scripts/check_collection.py", "scripts/known_collection_errors.txt",
+         "astrid/core/structure.py",
          "tests/lanes.py", "Makefile", "uv.lock", "poetry.lock", "Pipfile", "Pipfile.lock",
          "requirements.txt", ".python-version", "CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS",
          "setup.py", "scripts/ci_install_runtime.py", "scripts/vibecomfy_pin.py"}

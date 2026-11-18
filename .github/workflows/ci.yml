@@ -198,6 +198,17 @@ jobs:
         if: ${{ !cancelled() }}
         run: make structure
 
+      - name: Structure ceiling policy from merge base
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trusted_structure="$(mktemp -d "$RUNNER_TEMP/structure-gate.XXXXXX")"
+          trap 'rm -rf "$trusted_structure"' EXIT
+          echo "Structure policy merge base: $ASTRID_GATE_BASE"
+          git archive "$ASTRID_GATE_BASE" | tar -x -C "$trusted_structure"
+          python -I "$trusted_structure/scripts/reshape/check_structure_ceiling.py" --root "$GITHUB_WORKSPACE"
+
       - name: Baseline and suppression controls gate
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts
@@ -237,6 +248,7 @@ jobs:
           --junitxml="${{ runner.temp }}/agent-gate-probes/probes.xml"
           tests/reshape/test_identity_gate.py tests/scripts/test_ci_test_evidence.py
           tests/test_release_branch_workflows.py tests/scripts/test_gate_integrity.py tests/scripts/test_gate_base.py
+          tests/reshape/test_structure_ceiling.py
 
       - name: Upload gate probe evidence
         if: always()
