@@ -93,7 +93,6 @@ jobs:
           f103bb46866999c961a8865636f2e66d544e0c9b
           9ef808711a5207f5be74dc5f267af6fdd7bc9550
           6d53a19070faf63fc15ae1f81417722edc2c8a5f
-          df3d4ddac7bf73cd858106cc51a802521a4d3552
 
       - name: Verify Runtime sources before tests
         shell: bash
@@ -108,19 +107,15 @@ jobs:
           test "$historical_runtime" = "$HISTORICAL_RUNTIME_SHA"
           historical_type="$(git -C "$ASTRID_RUNTIME_CHECKOUT" cat-file -t "$HISTORICAL_RUNTIME_SHA")"
           test "$historical_type" = commit
-          # These source trees are used by real Lanes tests via git archive.
+          # Both source trees are used by real Lanes tests via git archive.
           # A shallow checkout does not otherwise guarantee their availability.
           historical_busy_runtime=6d53a19070faf63fc15ae1f81417722edc2c8a5f
-          historical_lease_runtime=df3d4ddac7bf73cd858106cc51a802521a4d3552
           historical_r12_agent=0e1543e0da2215db9cb3320cfd1083174c3c62a9
           test "$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse "${historical_busy_runtime}^{commit}")" = "$historical_busy_runtime"
-          test "$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse "${historical_lease_runtime}^{commit}")" = "$historical_lease_runtime"
           test "$(git rev-parse "${historical_r12_agent}^{commit}")" = "$historical_r12_agent"
           git -C "$ASTRID_RUNTIME_CHECKOUT" cat-file -e "${historical_busy_runtime}^{tree}"
-          git -C "$ASTRID_RUNTIME_CHECKOUT" cat-file -e "${historical_lease_runtime}^{tree}"
           git cat-file -e "${historical_r12_agent}^{tree}"
           git -C "$ASTRID_RUNTIME_CHECKOUT" archive --format=tar "$historical_busy_runtime" >/dev/null
-          git -C "$ASTRID_RUNTIME_CHECKOUT" archive --format=tar "$historical_lease_runtime" >/dev/null
           git archive --format=tar "$historical_r12_agent" >/dev/null
           {
             echo "## Effective Runtime sources"
@@ -128,7 +123,6 @@ jobs:
             echo "- Runtime lock source: $RUNTIME_LOCK_SHA (checkout HEAD: $locked_runtime)"
             echo "- Runtime historical source: $HISTORICAL_RUNTIME_SHA (resolved: $historical_runtime; object: $historical_type)"
             echo "- Busy-upgrade historical Runtime tree: $historical_busy_runtime (commit, tree and archive available)"
-            echo "- Short-lease historical Runtime tree: $historical_lease_runtime (commit, tree and archive available)"
             echo "- R12 historical Agent tree: $historical_r12_agent (commit, tree and archive available)"
           } >> "$GITHUB_STEP_SUMMARY"
 
