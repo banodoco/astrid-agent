@@ -125,7 +125,10 @@ def _validate_mask_assets(request: H3Request, assets: list[dict[str, Any]]) -> N
                 for index, frame in enumerate(
                     iter_mask_frames(path, start_frame=0, count=total, width=width, height=height)
                 ):
-                    values = set(frame)
+                    red = frame[::3]
+                    if not red == frame[1::3] == frame[2::3]:
+                        raise PreparationError(f"mask video {mask_id!r} frame {index}: Color mask channels disagree")
+                    values = set(red)
                     if not values <= {0, 255}:
                         raise PreparationError(
                             f"mask video {mask_id!r} frame {index} has values other than 0 and 255"
