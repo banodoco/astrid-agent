@@ -9,6 +9,7 @@
     "generation.generate_image_upscale",
     "generation.generate_speech",
     "generation.generate_video",
+    "generation.thumbnail_backfill",
     "hivemind.contribute",
     "hivemind.get_item",
     "hivemind.ingest_article",
