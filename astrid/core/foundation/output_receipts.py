@@ -7,11 +7,85 @@ Source/evidence validation and caller delivery do not use this shortcut.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import shutil
 import stat
 from collections.abc import Mapping
 from pathlib import Path
+
+
+OBSERVATIONS_NAME = "managed-generation-result.receipts.json"
+
+
+def content_receipt(receipt: Mapping, path: str) -> dict:
+    """Keep filesystem observations out of the durable producer evidence."""
+    return {**receipt, "file_identity": {
+        "sha256": receipt["sha256"], "bytes": receipt["bytes"], "path": path,
+    }}
+
+
+def write_output_observations(root: Path, payload: Mapping, receipts: Mapping) -> None:
+    """Persist local observations separately from the deterministic envelope."""
+    from .atomic_io import write_json_atomic
+    write_json_atomic(root / OBSERVATIONS_NAME, {
+        "schema_version": 1,
+        **{key: payload.get(key) for key in ("task_id", "attempt_id", "producer_run_id")},
+        "output_receipts": dict(receipts),
+    })
+
+
+def bind_output_receipts(payload: Mapping, root: Path) -> dict:
+    """Bind content receipts to unchanged files; otherwise use ordinary hashing.
+
+    The adjacent observations are an optimization, never upload authority.
+    Correlation, logical path, all receipt fields and the current stat tuple
+    must agree before the independent Runtime upload check may be deferred to.
+    """
+    evidence = payload.get("evidence")
+    producer = evidence.get("producer") if isinstance(evidence, Mapping) else None
+    receipts = producer.get("output_receipts") if isinstance(producer, Mapping) else None
+    if not isinstance(receipts, Mapping):
+        return {}
+    observed = {}
+    sidecar = root / OBSERVATIONS_NAME
+    try:
+        if not sidecar.is_symlink() and stat.S_ISREG(sidecar.lstat().st_mode):
+            data = json.loads(sidecar.read_bytes())
+            if (isinstance(data, Mapping) and data.get("schema_version") == 1
+                    and all(data.get(key) == payload.get(key)
+                            for key in ("task_id", "attempt_id", "producer_run_id"))
+                    and isinstance(data.get("output_receipts"), Mapping)):
+                observed = data["output_receipts"]
+    except (OSError, ValueError, TypeError):
+        pass
+    bound = {}
+    for logical_path, public in receipts.items():
+        if not isinstance(logical_path, str) or not isinstance(public, Mapping):
+            continue
+        relative = Path(logical_path)
+        if relative.is_absolute() or ".." in relative.parts:
+            continue
+        path = root / relative
+        if not path.resolve().is_relative_to(root.resolve()):
+            continue
+        # Existing in-process/legacy stat receipts remain supported. New
+        # serialized evidence carries only the stable content projection.
+        candidate = public if isinstance(public.get("file_identity"), list) else observed.get(logical_path)
+        if not isinstance(candidate, Mapping):
+            continue
+        if candidate is not public:
+            try:
+                if content_receipt(candidate, logical_path) != public:
+                    continue
+            except (KeyError, TypeError):
+                continue
+        try:
+            if receipt_digest(path, candidate) is not None:
+                bound[logical_path] = dict(candidate)
+        except (OSError, ValueError):
+            continue
+    return bound
 
 
 def file_identity(path: Path) -> list[int]:
@@ -57,8 +131,10 @@ def output_digest(path: Path, receipt: object = None) -> str:
 
 
 def copy_output_receipt(source: Path, destination: Path, receipt: object) -> dict | None:
-    digest = receipt_digest(source, receipt)
     before = file_identity(source)
+    digest = receipt_digest(source, receipt)
+    if file_identity(source) != before:
+        raise ValueError("producer output changed before copying")
     shutil.copy2(source, destination)
     if file_identity(source) != before:
         raise ValueError("producer output changed while copying")

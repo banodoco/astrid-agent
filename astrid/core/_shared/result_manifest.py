@@ -696,6 +696,13 @@ def _collect_manifest_files(
     if not isinstance(outputs, list):
         raise HarvestError("manifest outputs must be a list")
 
+    bound_receipts = {}
+    if use_output_receipts:
+        from astrid.core.foundation.output_receipts import bind_output_receipts
+        envelope = payload.get("managed_generation_result")
+        if isinstance(envelope, Mapping):
+            bound_receipts = bind_output_receipts(envelope, root)
+
     flattened: list[tuple[int, Mapping[str, Any]]] = []
     for index, entry in enumerate(outputs):
         if not isinstance(entry, Mapping):
@@ -770,7 +777,7 @@ def _collect_manifest_files(
             raise HarvestError(f"output {raw_path!r} must declare content_hash")
         if use_output_receipts:
             from astrid.core.foundation.output_receipts import output_digest
-            actual_hash = f"sha256:{output_digest(resolved, entry.get('output_receipt'))}"
+            actual_hash = f"sha256:{output_digest(resolved, bound_receipts.get(raw_path, entry.get('output_receipt')))}"
         else:
             actual_hash = f"sha256:{sha256_file(resolved)}"
         if declared_hash != actual_hash:

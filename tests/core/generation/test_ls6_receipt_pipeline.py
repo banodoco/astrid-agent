@@ -94,12 +94,21 @@ def test_one_fetch_one_producer_hash_and_independent_runtime_and_caller(tmp_path
         worker.register_executor("receipt-worker", capabilities=[{"capability_id": "vibecomfy.run",
             "definition_digest": definition_digest, "status": "ready", "required_resource_keys": [],
             "estimated_scratch_bytes": 0, "estimated_output_bytes": size * 2 + 1024 * 1024}],
-            max_concurrency=1, resource_keys=[], source_digest=None, runtime_epoch=service.health()["runtime_epoch"])
-        effect = {"effect_type": "generation.create_with_variant", "target_id": project["id"], "payload": {
-            "generation_type": "image", "metadata": {}, "variant_type": "original", "output_name": "vibecomfy_run",
-            "output_ordinal": 0, "primary_policy": "preserve"}}
+            max_concurrency=1, resource_keys=[],
+            source_digest=hashlib.sha256(b"ls6 fixture source").hexdigest(),
+            dependency_digest=hashlib.sha256(b"ls6 fixture dependencies").hexdigest(),
+            source_epoch=hashlib.sha256(b"ls6 fixture epoch").hexdigest(),
+            runtime_epoch=service.health()["runtime_epoch"])
+        intent = {"version": 1, "modality": "image", "metadata": {}, "partial_success_policy": "reject",
+            "groups": [{"group_key": "main", "selectors": [
+                {"selector": "image", "ordinal": 0, "variant_key": "original"}]}]}
+        effect = {"effect_type": "generation.publish_v1", "target_id": project["id"], "payload": {
+            **intent, "generation_type": "vibecomfy.run",
+            "groups": [{"group_key": "main", "selectors": [
+                {"selector": "image", "ordinal": 0, "variant_key": "original", "output_port": "vibecomfy_run"}]}]}}
         service.create_task({"capability_id": "vibecomfy.run", "capability_digest": definition_digest,
             "project": project["id"], "input_object_ids": [source], "settlement_effect": effect,
+            "generation_intent": intent,
             "idempotency_key": "primary"})
         claim = worker.claim_next(executor_id="receipt-worker", capability_ids=["vibecomfy.run"], idempotency_key="claim")
         claim = asdict(claim) if not isinstance(claim, dict) else claim
@@ -116,15 +125,16 @@ def test_one_fetch_one_producer_hash_and_independent_runtime_and_caller(tmp_path
         spool, manifest, calls = produce(tmp_path, data, monkeypatch,
             task_id=claim["task_id"], attempt_id=claim["attempt_id"])
         assert len(calls) == 1 and "/view?" in calls[0]
-        declared = (SimpleNamespace(name="vibecomfy_run", path_template="outputs/final.png", artifact_type="image/png"),
-                    SimpleNamespace(name="result_manifest", path_template="outputs/managed-generation-result.json", artifact_type="application/json"))
+        declared = (SimpleNamespace(name="vibecomfy_run", type="file", path_template="outputs/final.png", artifact_type="image/png"),
+                    SimpleNamespace(name="result_manifest", type="file", path_template="outputs/managed-generation-result.json", artifact_type="application/json"))
         harvested = harvest_staged_outputs(spool, declared_outputs=declared, use_output_receipts=True)
         host = object.__new__(GenericPackHost)
         host.client = worker
         host._validate_producer_evidence(harvested, output_root=spool, task_id=claim["task_id"],
                                          attempt_id=claim["attempt_id"], successful=True)
         record = SimpleNamespace(definition=SimpleNamespace(outputs=declared, metadata={}))
-        typed = host._typed_outputs(record, harvested, spool.parent, defer_content_check_to_runtime=True)
+        typed = host._typed_outputs(record, harvested, spool.parent, generation_intent=intent,
+                                    defer_content_check_to_runtime=True)
         assert observers["producer"].snapshot().completed_streams == 1
         # Client-side upload remains producer work; server request threads are
         # counted separately while receiving/verifying actual upload bytes.
@@ -135,11 +145,13 @@ def test_one_fetch_one_producer_hash_and_independent_runtime_and_caller(tmp_path
             fence=claim["fence"], runtime_epoch=claim["runtime_epoch"])
         result = worker.generated.settle_attempt(claim["attempt_id"], {"effect": effect, "outputs": outputs,
             **{key: claim[key] for key in ("lease_id", "fence", "runtime_epoch")}}, idempotency_key="settle")
-        assert result["state"] == "completed"
+        assert result["state"] == "succeeded"
+        settled_task = service.store.get_task(claim["task_id"])["task"]
+        assert settled_task["status"] == "completed"
         rows = service.managed_outputs(claim["task_id"])
         primary = next(row for row in rows if row["role"] == "result")
         envelope = next(row for row in rows if row["role"] == "manifest")
-        assert result["result"]["thumbnail_intents"][0]["source_object_id"] == "sha256:" + digest
+        assert settled_task["result"]["thumbnail_intents"][0]["source_object_id"] == "sha256:" + digest
         before_delivery = observers["runtime"].snapshot()
         opens = []
         original_open = service.open_object

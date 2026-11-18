@@ -282,7 +282,8 @@ def _materialize_managed_generation_result(
         raise AstridValueError(f"managed-generation result is missing: {envelope_path}")
     producer_root = envelope_path.resolve().parent
     from astrid.core.foundation.output_receipts import (
-        copy_output_receipt, transformed_output_receipt,
+        bind_output_receipts, content_receipt, copy_output_receipt,
+        transformed_output_receipt, write_output_observations,
     )
     try:
         result = read_managed_generation_result(
@@ -316,7 +317,7 @@ def _materialize_managed_generation_result(
         raise AstridValueError("managed output namespaces cannot be symlinks")
     outputs_root.mkdir(parents=True, exist_ok=True)
     rebased_payload = result.to_dict()
-    original_receipts = result.evidence["producer"].get("output_receipts", {})
+    original_receipts = bind_output_receipts(result.to_dict(), producer_root)
     rebased_receipts = {}
     rebased_outputs: list[dict[str, Any]] = []
     taken = {"managed-generation-result.json"}
@@ -354,7 +355,9 @@ def _materialize_managed_generation_result(
             row.update(sha256=receipt["sha256"], bytes=receipt["bytes"])
             row.pop("hash_check", None)  # compared the producer's bytes, not the hook's
     rebased_payload["outputs"] = rebased_outputs
-    rebased_payload["evidence"]["producer"]["output_receipts"] = rebased_receipts
+    rebased_payload["evidence"]["producer"]["output_receipts"] = {
+        path: content_receipt(receipt, path) for path, receipt in rebased_receipts.items()
+    }
     if source_snapshot is None and "source" not in result.inputs and workflow_path.is_file():
         original = workflow_path.with_name("source.json") if workflow_path.suffix == ".py" else workflow_path
         if original.is_file():
@@ -499,6 +502,7 @@ def _materialize_managed_generation_result(
     rebased_payload["evidence"] = redact_evidence(rebased_payload["evidence"])
     staged_envelope = managed_storage_root / "managed-generation-result.json"
     staged_envelope.parent.mkdir(parents=True, exist_ok=True)
+    write_output_observations(managed_root, rebased_payload, rebased_receipts)
     staged_envelope.write_text(
         json.dumps(rebased_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
         encoding="utf-8",
@@ -532,7 +536,8 @@ def _materialize_managed_generation_result(
                 "is_primary": execution_status == "succeeded" and output.ordinal == 0,
                 "content_hash": f"sha256:{output.sha256}",
                 "bytes": output.bytes,
-                **({"output_receipt": rebased_receipts[output.path]} if output.path in rebased_receipts else {}),
+                **({"output_receipt": content_receipt(rebased_receipts[output.path], output.path)}
+                   if output.path in rebased_receipts else {}),
                 "media_type": output.media_type,
                 "producer": {
                     "output_port": next(original.output_port for original in result.outputs

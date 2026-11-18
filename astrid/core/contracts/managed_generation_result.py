@@ -537,9 +537,10 @@ def validate_managed_generation_result(
     }
     if universal_outputs:
         try:
+            from astrid.core.foundation.output_receipts import bind_output_receipts
             validated: ValidatedResultManifest = validate_result_manifest(
                 universal, staging_root=staging_root,
-                output_receipts=(evidence_namespaces["producer"].get("output_receipts")
+                output_receipts=(bind_output_receipts(payload, Path(staging_root))
                                  if use_output_receipts else None),
             )
         except ResultManifestError as exc:
