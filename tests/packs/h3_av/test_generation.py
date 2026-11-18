@@ -615,6 +615,8 @@ def test_large_canvas_resource_estimate_does_not_claim_target_qualification():
     assert estimate["target_qualified"] is None
     assert estimate["observed"] is False
     assert estimate["target_raw_rgb_bytes"] == estimate["target_rows"] * 16384 * 16384 * 3
+    assert estimate["target_raw_float32_rgb_bytes"] == estimate["target_raw_rgb_bytes"] * 4
+    assert estimate["unit"] == "bytes"
 
 
 def test_canvas_is_visible_in_dry_run_and_retained_hook_plan(tmp_path):
