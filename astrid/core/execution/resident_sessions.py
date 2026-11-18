@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -396,6 +397,7 @@ class ResidentPackAdapter:
         self._root: Path | None = None
         self.ready = False
         self.retained_resources: list[Any] = []
+        self.dependency_pythonpath: tuple[str, ...] = ()
 
     def assert_current(self) -> None:
         from astrid.core.pack.imports import validate_selected_pack_map
@@ -434,6 +436,10 @@ class ResidentPackAdapter:
         self._captures = self._pending_captures.pop_all()
         self._pending_captures = None
         self.assert_current()
+        # Keep the startup-approved import locations with this incarnation.
+        # Per-job command projection must not re-run checkout subprocesses.
+        if os.environ.get("ASTRID_HOST_EXECUTION_PROFILE") != "installed":
+            self.dependency_pythonpath = core._dependency_pythonpath()
         area = resolve_runtime_data_root() / "runtime" / "pack-sessions"
         if area.is_symlink():
             raise ResidentProtocolError("resident session area must not be a symlink")

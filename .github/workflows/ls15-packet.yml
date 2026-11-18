@@ -29,6 +29,9 @@ jobs:
           - {os: ubuntu-latest, suite: resident}
           - {os: macos-latest, suite: resident}
           - {os: windows-latest, suite: resident}
+          - {os: ubuntu-latest, suite: regression}
+          - {os: macos-latest, suite: regression}
+          - {os: windows-latest, suite: regression}
           - {os: ubuntu-latest, suite: native}
     env:
       PYTHONDONTWRITEBYTECODE: "1"
@@ -225,7 +228,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
       - name: Unchanged base regressions including inherited failures
-        if: ${{ !cancelled() && steps.install.outcome == 'success' && matrix.suite == 'resident' }}
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && matrix.suite == 'regression' }}
         run: |
           python head/tests/helpers/ls15_run.py base proof base \
             tests/core/execution/test_managed_tool_session.py \
@@ -242,7 +245,7 @@ jobs:
             tests/core/generation/test_managed_preparation.py \
             tests/sdk/test_ls6_default_materialization.py tests/sdk/test_ls6_materialization_regressions.py
       - name: Unchanged candidate regressions including inherited failures
-        if: ${{ !cancelled() && steps.install.outcome == 'success' && matrix.suite == 'resident' }}
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && matrix.suite == 'regression' }}
         run: |
           python head/tests/helpers/ls15_run.py head proof head \
             tests/core/execution/test_managed_tool_session.py \
@@ -258,8 +261,20 @@ jobs:
             tests/core/generation/backends/test_comfy_held_transport.py tests/core/generation/backends/test_comfy_held_rework.py \
             tests/core/generation/test_managed_preparation.py \
             tests/sdk/test_ls6_default_materialization.py tests/sdk/test_ls6_materialization_regressions.py
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && matrix.suite == 'regression' }}
+        with:
+          name: ls15-comparison-${{ matrix.os }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            proof/*.txt
+            proof/*.log
+            proof/*.xml
+            proof/*.exit
+            proof/*-command.json
+          if-no-files-found: error
+          retention-days: 30
       - name: Unchanged attached-server integration on both sides
-        if: ${{ !cancelled() && steps.install.outcome == 'success' && matrix.suite == 'resident' }}
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && matrix.suite == 'regression' }}
         env:
           ASTRID_CI_JOB: lanes-integration
         run: |

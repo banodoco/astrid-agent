@@ -60,6 +60,7 @@ def test_resident_command_projection_retains_ordinary_child_network_denial(resid
     host.discover()
     record = host.capabilities["resident_probe.run"]
     adapter = ResidentPackAdapter.__new__(ResidentPackAdapter)
+    adapter.dependency_pythonpath = ()
     monkeypatch.setattr(host.managed_tool_session, "adapter_for", lambda *_args, **_kwargs: adapter)
     attempt = tmp_path / "command-attempt"
     attempt.mkdir()

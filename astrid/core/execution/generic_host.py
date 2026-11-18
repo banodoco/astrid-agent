@@ -10681,7 +10681,8 @@ class GenericPackHost:
         """
         if resident_token is not None:
             from .resident_sessions import ResidentPackAdapter
-            if not isinstance(self.managed_tool_session.adapter_for(resident_token), ResidentPackAdapter):
+            resident_adapter = self.managed_tool_session.adapter_for(resident_token)
+            if not isinstance(resident_adapter, ResidentPackAdapter):
                 raise HostError("command resident dispatch has no admitted resident owner")
             scoped = dict(admission or {})
             # Keep the ordinary command's per-dispatch environment contract.
@@ -10695,7 +10696,7 @@ class GenericPackHost:
                 network_policy=_network_policy(record, inputs),
                 explicit_env={
                     **({} if os.environ.get('ASTRID_HOST_EXECUTION_PROFILE') == 'installed' else {
-                        "PYTHONPATH": os.pathsep.join((str(Path(__file__).resolve().parents[3]), *_dependency_pythonpath())),
+                        "PYTHONPATH": os.pathsep.join((str(Path(__file__).resolve().parents[3]), *resident_adapter.dependency_pythonpath)),
                     }),
                     ASTRID_INTERNAL_INVOCATION: "1",
                     "ASTRID_PROGRESS_PATH": str(attempt / ".astrid-progress.json"),
