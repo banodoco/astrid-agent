@@ -129,8 +129,9 @@ def test_a_later_edit_of_a_start_trimmed_shot_is_accepted():
     moved = execute(trimmed, [capture_placement(trimmed, FIRST, 'picture-1', 14, ownership='occurrence')]).bundle
     assert State(moved).entity(FIRST + '/clip:picture-1')['at'] == 4
     validate_final_candidate(copy.deepcopy(moved), baseline=trimmed)
-    with pytest.raises(CommandError) as raised:   # before the window starts is still refused
-        execute(trimmed, [capture_placement(trimmed, FIRST, 'picture-1', 11, ownership='occurrence')])
+    execute(trimmed, [capture_placement(trimmed, FIRST, 'picture-1', 11, ownership='occurrence')])   # cropped, not refused
+    with pytest.raises(CommandError) as raised:   # before the shot's own zero (10 s) is a fault
+        execute(trimmed, [capture_placement(trimmed, FIRST, 'picture-1', 9, ownership='occurrence')])
     assert raised.value.kind == 'occurrence_boundary'
     # clip.set on a CHILD clip of the trimmed shot: hold 2 s at shot time 4 s fits the window [2, 6]
     child = FIRST + '/clip:picture-1'
@@ -155,14 +156,18 @@ def test_overrun_check_is_relative_to_the_window_origin():
     from astrid.sdk.timeline_checkout import Checkout
 
     trimmed = trim(populated(), edge='start', to_ms=12000).bundle   # window [2 s, 6 s] of the shot
-    assert Checkout(copy.deepcopy(trimmed))._length_findings() == {}
-    for clip in trimmed['shots'][row(trimmed)['shot_id']]['internal_timeline']['clips']:
+    sid = row(trimmed)['shot_id']
+
+    def mine():  # the untrimmed neighbour's own content overhang is a separate finding
+        return {key: sig for key, sig in Checkout(copy.deepcopy(trimmed))._length_findings().items() if key[0] == sid}
+
+    assert mine() == {}
+    for clip in trimmed['shots'][sid]['internal_timeline']['clips']:
         if clip['id'] != 'voice-1':
             clip.update(at=5, hold=3)  # ends at shot time 8 s, past the window end at 6 s: cropped
-    assert Checkout(copy.deepcopy(trimmed))._length_findings() == {}
+    assert mine() == {}
     trimmed['placements'][0]['duration_ms'] = 11000  # window [2 s, 13 s] of 12 s of content
-    found = Checkout(copy.deepcopy(trimmed))._length_findings()
-    assert [key[0] for key in found] == [row(trimmed)['shot_id']]
+    assert [key[0] for key in mine()] == [sid]
 
 
 def test_a_stored_mapping_offset_stays_a_mapping():

@@ -131,15 +131,19 @@ def test_a_child_extending_past_the_window_is_cropped_not_refused():
 
 def test_check_signature_agrees_on_start_trimmed_and_flags_only_a_real_overrun():
     trimmed = start_trimmed()
-    assert Checkout(copy.deepcopy(trimmed))._length_findings() == {}
-    clips = trimmed['shots'][row(trimmed)['shot_id']]['internal_timeline']['clips']
+    sid = row(trimmed)['shot_id']
+
+    def mine():  # occ-2's own untrimmed content overhang is a separate finding (see the end-card test)
+        return {key: sig for key, sig in Checkout(copy.deepcopy(trimmed))._length_findings().items() if key[0] == sid}
+
+    assert mine() == {}
+    clips = trimmed['shots'][sid]['internal_timeline']['clips']
     next(c for c in clips if c['id'] == 'picture-1').update(at=1, hold=9)    # cropped, not flagged
-    assert Checkout(copy.deepcopy(trimmed))._length_findings() == {}
+    assert mine() == {}
     trimmed['placements'][0]['duration_ms'] = 11000                          # window [2, 13] of 12 s
-    found = Checkout(copy.deepcopy(trimmed))._length_findings()
-    assert [key[0] for key in found] == [row(trimmed)['shot_id']]
+    assert [key for key in mine()] == [(sid, sid)]
     blocking, existing = Checkout(copy.deepcopy(trimmed))._length_problems(Checkout(copy.deepcopy(trimmed)))
-    assert blocking == [] and len(existing) == 1                             # same overrun in the base
+    assert blocking == [] and len(existing) >= 1                             # the same overrun in the base
 
 
 # ---- Task 2: child edits after a start trim ---------------------------------------------------
@@ -164,8 +168,12 @@ def test_child_placement_move_and_clip_move_land_at_the_right_absolute_time(make
         assert State(moved).entity(CHILD)['at'] == 4                       # 14 s - (12 s - 2 s)
         assert absolute(moved, 'picture-1') == window_origin_time(moved, 'picture-1') == 14.0
         validate_final_candidate(copy.deepcopy(moved), baseline=trimmed)
-        with pytest.raises(CommandError) as raised:                        # before the window: refused
-            execute(trimmed, [capture_move(trimmed, CHILD, 11)])
+        # Before the window (but inside the shot) is cropped there, not refused; the shot's own zero is the fault.
+        cropped = execute(trimmed, [capture_move(trimmed, CHILD, 11)]).bundle
+        assert State(cropped).entity(CHILD)['at'] == 1
+        validate_final_candidate(copy.deepcopy(cropped), baseline=trimmed)
+        with pytest.raises(CommandError) as raised:
+            execute(trimmed, [capture_move(trimmed, CHILD, 9)])
         assert raised.value.kind == 'occurrence_boundary'
 
 
@@ -185,3 +193,64 @@ def test_the_last_shot_length_sync_follows_the_window_not_shot_local_zero():
     tl = Checkout(copy.deepcopy(head))
     assert tl._sync_film_length() == []
     assert tl._row('film')['duration_ms'] == 10500
+
+
+def test_check_does_not_shift_a_word_anchored_clip_in_a_start_trimmed_shot():
+    """A word anchored clip stays put: word time is shot-local zero (start - source_offset) + the word's local time.
+    words.py used the window start as zero, so check() moved the clip by exactly source_offset (1 s here)."""
+    import json
+    from pathlib import Path
+
+    raw = json.loads((Path(__file__).parents[1] / 'fixtures' / 'timeline_editing' / 'tiny.json').read_text())
+    trimmed = copy.deepcopy(raw)
+    first = trimmed['placements'][0]  # what occurrence.trim start->1000 ms leaves behind
+    first['placement']['start_ms'], first['duration_ms'], first['source_offset'] = 1000, 3000, 1000
+    tl = Checkout(copy.deepcopy(trimmed))
+    before = {c.address: (round(c.start, 4), round(c.end, 4)) for c in tl.clips()}
+    tl.check()
+    assert {c.address: (round(c.start, 4), round(c.end, 4)) for c in tl.clips()} == before
+
+
+def _tiny(overrides):
+    """tiny.json (shot A [0, 4 s), shot B [4, 8 s) last), with the given internal clip fields overridden."""
+    import json
+    from pathlib import Path
+
+    raw = json.loads((Path(__file__).parents[1] / 'fixtures' / 'timeline_editing' / 'tiny.json').read_text())
+    for (shot, clip_id), fields in overrides.items():
+        next(c for c in raw['shots'][shot]['internal_timeline']['clips'] if c['id'] == clip_id).update(fields)
+    return raw
+
+
+def test_check_says_out_loud_that_a_trimmed_shot_crops_a_clip():
+    raw = _tiny({('A', 'a-plate'): {'hold': 6.0}})                      # shot-local [0, 6]
+    first = raw['placements'][0]                               # window [1 s, 4 s] of shot A after a start trim to 1 s
+    first['placement']['start_ms'], first['duration_ms'], first['source_offset'] = 1000, 3000, 1000
+    notes = Checkout(copy.deepcopy(raw))._crop_notes()
+    assert [line for line in notes if 'plate' in line and 'runs 2.0 s past its shot and is cropped there' in line], notes
+    report = Checkout(copy.deepcopy(raw)).check()
+    lines = [line for line in report.problems if 'cropped there' in line]
+    assert lines and not set(lines) & set(report.blocking), report.problems   # a note: the crop is visible, never blocking
+    assert not any(line.startswith('length') for line in report.blocking)
+
+
+def test_a_clip_past_the_last_shots_window_cannot_extend_the_film_in_one_path_and_be_cut_in_another():
+    """Almost Ready's end card shape: the last (untrimmed) shot's picture runs past the shot's end.
+    Authoring path: the film follows its last picture (sync), so the window grows to cover it: nothing is cut.
+    A clip that is NOT a picture (a voice-over) cannot move the film's end, so the render cuts it at the stored end and the
+    preview would show it: that disagreement blocks."""
+    picture = _tiny({('B', 'b-plate'): {'hold': 9.0}})                   # ends at 4 + 9 = 13 s, window ends 8 s
+    stale = Checkout(copy.deepcopy(picture))
+    assert any('past its shot' in line for line in stale._length_problems()[0])   # unsynced: new, so it blocks
+    synced = Checkout(copy.deepcopy(picture))
+    assert synced._sync_film_length()                                              # the film now runs 13 s
+    assert synced._row('B')['duration_ms'] == 9000
+    assert synced._length_findings() == {}
+    assert not [line for line in synced.check().problems if 'cropped' in line or 'past its shot' in line]
+
+    voice = _tiny({('B', 'b-vo'): {'hold': 9.0}})                    # a voice-over 9 s long on a 4 s shot
+    tl = Checkout(copy.deepcopy(voice))
+    tl._sync_film_length()
+    assert tl._row('B')['duration_ms'] == 4000                                     # not a picture: the film does not grow
+    assert any('render cuts it off' in line for line in tl._length_problems()[0])         # a new one blocks
+    assert any('render cuts it off' in line for line in tl.check().problems)              # and an old one is still said

@@ -122,11 +122,9 @@ def test_append_to_an_empty_shot_starts_at_the_occurrence_start():
     assert result['capture']['start_frame'] == 240
 
 
-def test_append_past_the_occurrence_window_is_refused_by_the_existing_boundary():
-    # The window is fixed at migration; growing it needs an extent writer (see the design note).
-    with pytest.raises(CommandError) as error:
-        build('image', wide=False)
-    assert error.value.kind == 'occurrence_boundary'
+def test_append_past_the_occurrence_window_is_cropped_not_refused():
+    # An appended child past the window is cropped there; check() says so (it does not refuse the placement).
+    build('image', wide=False)
 
 
 @pytest.mark.parametrize('kind', ['image', 'video'])

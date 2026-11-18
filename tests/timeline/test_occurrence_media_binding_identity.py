@@ -61,9 +61,9 @@ def test_publish_caller_preserves_both_consumers_payload_effects_and_inverse():
 def test_second_consumer_is_still_validated_before_any_rebind():
     document, old, new, verified = same_alias()
     bundle = bundle_from_document(document)
-    State(bundle).entity(OWNER + '/clip:clip-b')['hold'] = 100
+    State(bundle).entity(OWNER + '/clip:clip-b')['at'] = -1
     before = copy.deepcopy(bundle)
-    with pytest.raises(CommandError, match='exceeds occurrence'):
+    with pytest.raises(CommandError, match='before its shot'):
         capture_occurrence_swap_media(bundle, TARGET, old, new, verified_media=verified)
     assert bundle == before
 

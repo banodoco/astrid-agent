@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .duration import clip_timeline_duration
-from .occurrence_window import source_offset_ms
+from .occurrence_window import source_offset_ms, visible_span_ms
 from .asset_dimensions import canonicalize_asset_dimensions
 from .shot_composition import validate_shot_composition
 from .validators.meta import validate_meta, validate_timeline_meta_locations
@@ -454,17 +454,15 @@ def _project_clip(
     source_duration = _duration({**clip, "speed": effective_speed}, path=path)
     # source_offset is the window origin into the shot's timeline: a child at internal time tau
     # sits at start - offset + tau and is visible only inside [start, end] (offset 0: unchanged).
-    origin = occurrence_start - _source_offset_seconds(occurrence, path=path)
-    absolute_at = origin + relative_at
-    absolute_end = absolute_at + source_duration
-    if absolute_at >= occurrence_end or absolute_end <= occurrence_start:
+    offset = _source_offset_seconds(occurrence, path=path)
+    # The one crop rule (occurrence_window.visible_span_ms), here in shot-local seconds: the window is
+    # [offset, offset + length]; the unit of the arithmetic is irrelevant to it.
+    span = visible_span_ms(relative_at, relative_at + source_duration, offset, occurrence_end - occurrence_start)
+    if span is None:
         return None
-    visible_start = max(absolute_at, occurrence_start)
-    clipped_end = min(absolute_end, occurrence_end)
-    visible_duration = max(0.0, clipped_end - visible_start)
-    if visible_duration <= 0:
-        return None
-    cut = visible_start - absolute_at  # shot time hidden before the window
+    visible_start = occurrence_start + (span[0] - offset)
+    visible_duration = span[1] - span[0]
+    cut = span[0] - relative_at  # shot time hidden before the window
     source_from = _number(clip.get("from", 0), f"{path}.from", default=0.0) + cut * effective_speed
     if "hold" in clip:
         clip["hold"] = visible_duration * effective_speed

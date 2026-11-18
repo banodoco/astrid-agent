@@ -19,6 +19,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from astrid.core.timeline.cuts import clip_duration
+from astrid.core.timeline.occurrence_window import source_offset_ms
 from astrid.sdk import timeline_intent as intent
 from astrid.sdk.media_ids import canonical_digest
 from astrid.sdk.media_transcript import IMPORT_SOURCE, NARRATION_SOURCE, transcript_document_id
@@ -159,13 +160,17 @@ def _occurrences(bundle: Mapping[str, Any], scope: str) -> list[dict[str, Any]]:
     shots = bundle.get("shots") or {}
     if scope == "parent":
         found = [{"holder": bundle.get("parent") or {}, "shot_id": PARENT_SHOT, "owner": 0.0,
-                  "length": math.inf, "occurrence": 0}]
+                  "length": math.inf, "window": (0.0, math.inf), "occurrence": 0}]
         for index, row in enumerate(placements):
             sid = str(row.get("shot_id"))
             shot = shots.get(sid) or {}
+            # `owner` is timeline time of shot-local zero (start - source_offset); the window is what shows.
+            start = _row_start(row) / 1000.0
+            offset = source_offset_ms(row.get("source_offset")) / 1000.0
+            length = float(row.get("duration_ms") or 0) / 1000.0
             found.append({"holder": shot.get("internal_timeline") or {}, "shot_id": sid,
-                          "owner": _row_start(row) / 1000.0,
-                          "length": float(row.get("duration_ms") or 0) / 1000.0, "occurrence": index})
+                          "owner": start - offset, "window": (start, start + length),
+                          "length": length, "occurrence": index})
         return found
     if scope.startswith("shot:"):
         sid = scope[len("shot:"):]
@@ -174,7 +179,9 @@ def _occurrences(bundle: Mapping[str, Any], scope: str) -> list[dict[str, Any]]:
             raise ValueError(f"no shot {sid!r} in this timeline")
         length = float(rows[0].get("duration_ms") or 0) / 1000.0 if rows else math.inf
         holder = (shots.get(sid) or {}).get("internal_timeline") or {}
-        return [{"holder": holder, "shot_id": sid, "owner": 0.0, "length": length, "occurrence": 0}]
+        offset = source_offset_ms(rows[0].get("source_offset")) / 1000.0 if rows else 0.0
+        return [{"holder": holder, "shot_id": sid, "owner": 0.0, "window": (offset, offset + length),
+                 "length": length, "occurrence": 0}]
     raise ValueError(f"unknown word scope {scope!r} (use 'parent' or 'shot:<id>')")
 
 
@@ -202,7 +209,8 @@ def project_words(bundle: Mapping[str, Any], transcripts: Mapping[str, Mapping[s
                    if _track_is_audio(_holder_tracks(occ["holder"]), clip)}
     rows: list[dict[str, Any]] = []
     for occ in occurrences:
-        holder, owner, length = occ["holder"], occ["owner"], occ["length"]
+        holder, owner = occ["holder"], occ["owner"]
+        window_start, window_end = occ["window"]
         tracks = _holder_tracks(holder)
         for clip in _holder_clips(holder):
             clip_media = _clip_media_id(holder, clip)
@@ -228,9 +236,9 @@ def project_words(bundle: Mapping[str, Any], transcripts: Mapping[str, Mapping[s
                     if not (src_in - _EPS <= s < src_out - _EPS):
                         continue
                     t0 = owner + clip_at + (s - src_in) / speed
-                    if t0 >= owner + length - _EPS:
+                    t1 = min(owner + clip_at + (min(e, src_out) - src_in) / speed, window_end)
+                    if t0 >= window_end - _EPS or t1 <= window_start + _EPS:
                         continue
-                    t1 = min(owner + clip_at + (min(e, src_out) - src_in) / speed, owner + length)
                     rows.append({**base, "word_id": word_id, "text": text, "media_id": clip_media,
                                  "source": source, "version": doc.get("version"),
                                  "document_id": doc.get("document_id"),
@@ -240,7 +248,7 @@ def project_words(bundle: Mapping[str, Any], transcripts: Mapping[str, Mapping[s
                 # No stored transcript used for this clip's media: keep its clip-local words.
                 for s, e, text in _read_words({"words": intent.words(clip)}, relative=True):
                     t0 = owner + clip_at + s
-                    if t0 >= owner + length - _EPS:
+                    if t0 >= window_end - _EPS or owner + clip_at + e <= window_start + _EPS:
                         continue
                     rows.append({**base, "word_id": None, "text": text, "media_id": clip_media,
                                  "source": "clip", "version": None, "document_id": None,

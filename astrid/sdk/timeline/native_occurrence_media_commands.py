@@ -25,7 +25,7 @@ def _owner(ctx, ref, *, child=False):
     row = ctx.state.occurrence(owner)
     occurrence_start(row)
     # A trimmed window (source_offset >= 0) is supported; a malformed offset is refused here.
-    offset = occurrence_offset(row)
+    occurrence_offset(row)
     if (not active(row) or isinstance(row.get('speed'), bool)
             or row.get('speed') not in (None, 1)
             or any(row.get(key) is not None for key in ('time_map', 'timeMap'))):
@@ -37,7 +37,7 @@ def _owner(ctx, ref, *, child=False):
     if ctx.read(owner + '/source', ['source_window']) is not None:
         raise CommandError('internal source_window is unsupported', kind='unsupported_map')
     ctx.bind('media.owner', owner)
-    return owner, row['duration_ms'] / 1000 + offset
+    return owner
 
 
 def _exclusive(ctx, owner):
@@ -154,7 +154,7 @@ def _registry(ctx, owner, pin, kind, *, create=False, alias=None):
     return ref
 
 
-def _clip(ctx, owner, row, limit, kind, verified, *, raw_window=False, bound_tracks=None):
+def _clip(ctx, owner, row, kind, verified, *, raw_window=False, bound_tracks=None):
     clip_type = row.get('clipType')
     if ((clip_type not in ('media', kind) and not (kind == 'image' and clip_type == 'hold'))
             or not isinstance(row.get('asset'), str)):
@@ -182,8 +182,9 @@ def _clip(ctx, owner, row, limit, kind, verified, *, raw_window=False, bound_tra
         hold = number(row.get('to'), 'clip.to') - number(row.get('from'), 'clip.from')
     hold = number(hold, 'clip.hold', positive=True)
     speed = number(1 if row.get('speed') is None else row['speed'], 'clip.speed', positive=True)
-    if at < 0 or at + hold / speed > limit:
-        raise CommandError('child interval exceeds occurrence', kind='occurrence_boundary')
+    # A child past the occurrence's window is cropped there, not refused; only a negative start is a fault.
+    if at < 0:
+        raise CommandError('child starts before its shot', kind='occurrence_boundary')
     if kind == 'image':
         if speed != 1 or any(row.get(key) is not None for key in ('from', 'to')):
             raise CommandError('image requires hold without a source window', kind='unsupported_timing')
@@ -215,7 +216,7 @@ def _clip(ctx, owner, row, limit, kind, verified, *, raw_window=False, bound_tra
 
 
 def add_media(ctx, command):
-    owner, limit = _owner(ctx, command['select'])
+    owner = _owner(ctx, command['select'])
     _exclusive(ctx, owner)
     # Automatic births also depend on promotion and legacy-group eligibility.
     # Keep absent fields guarded even when no pool removal follows the birth.
@@ -226,15 +227,15 @@ def add_media(ctx, command):
     value, kind = _verified(ctx, pin)
     if row.get('asset') != pin['asset']:
         raise CommandError('child asset must equal the reserved selection alias')
-    _clip(ctx, owner, row, limit, kind, [value])
+    _clip(ctx, owner, row, kind, [value])
     _registry(ctx, owner, pin, kind, create=True)
     ctx.create(owner, 'clip', row)
 
 
 def swap_media(ctx, command):
     ref = command['select']
-    owner, limit = _owner(ctx, ref, child=True)
-    _swap(ctx, command, owner, limit)
+    owner = _owner(ctx, ref, child=True)
+    _swap(ctx, command, owner)
 
 
 def parent_swap_media(ctx, command):
@@ -245,7 +246,7 @@ def parent_swap_media(ctx, command):
     _swap(ctx, command, 'parent', float('inf'))
 
 
-def _swap(ctx, command, owner, limit):
+def _swap(ctx, command, owner):
     ref = command['select']
     ctx.select('collection.clips', owner)
     row = ctx.read(ref)
@@ -267,7 +268,7 @@ def _swap(ctx, command, owner, limit):
         for member in members:
             candidate = ctx.read(member)
             if isinstance(candidate, dict) and candidate.get('asset') == alias:
-                _clip(ctx, owner, candidate, limit, kind, [previous, value],
+                _clip(ctx, owner, candidate, kind, [previous, value],
                       raw_window=owner == 'parent', bound_tracks=bound_tracks)
                 affected.append(member)
         if not affected:
@@ -277,7 +278,7 @@ def _swap(ctx, command, owner, limit):
             ctx.write(owner + '/asset:' + alias, [key], replacement)
         _replace_payload_media(ctx, owner, old['object_id'], pin['object_id'])
     else:
-        _clip(ctx, owner, row, limit, kind, [previous, value], raw_window=owner == 'parent')
+        _clip(ctx, owner, row, kind, [previous, value], raw_window=owner == 'parent')
         _registry(ctx, owner, old, kind, alias=alias)
         _registry(ctx, owner, pin, kind, create=True)
     ctx.bind('media.target', ref, dependencies=['media.old', 'media.new'])

@@ -230,8 +230,7 @@ def test_unsupported_child_maps_fail_precisely(field, value, kind):
 
 
 @pytest.mark.parametrize('field,value', [('speed', 2), ('speed', {'numerator': 1, 'denominator': 1}),
-                                       ('speed', True), ('source_offset', 100),
-                                       ('source_offset', {'start': 2}), ('time_map', {})])
+                                       ('speed', True), ('time_map', {})])
 def test_unsupported_occurrence_maps_fail_closed(field, value):
     original = bundle()
     original['placements'][0][field] = value
@@ -240,11 +239,12 @@ def test_unsupported_occurrence_maps_fail_closed(field, value):
     assert error.value.kind == 'unsupported_map'
 
 
-@pytest.mark.parametrize('on', [9, 19.1, 20])
-def test_complete_interval_must_fit_occurrence(on):
+def test_a_child_may_run_past_the_window_but_not_start_before_its_shot():
     original = bundle()
+    for on in (19.1, 20):  # past the window end: cropped there, not refused
+        assert capture_move(original, 'occurrence:occ-1/clip:picture-1', on)['args']['on'] == on
     with pytest.raises(CommandError) as error:
-        capture_move(original, 'occurrence:occ-1/clip:picture-1', on)
+        capture_move(original, 'occurrence:occ-1/clip:picture-1', 9)
     assert error.value.kind == 'occurrence_boundary'
     assert capture_move(original, 'occurrence:occ-1/clip:picture-1', 19)['args']['on'] == 19
 

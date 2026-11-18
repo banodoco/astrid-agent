@@ -189,7 +189,7 @@ def move(ctx, command):
         raise CommandError(str(exc), kind='unsupported_timing', ref=ref) from exc
     quantized = Fraction(frame, 1) / fps
     try:
-        duration = _duration(clip)
+        _duration(clip)  # validates the clip's extent
     except ValueError as exc:
         if isinstance(exc, CommandError):
             raise
@@ -217,21 +217,16 @@ def move(ctx, command):
         if isinstance(lane, str):
             for field in ('id', 'kind', 'role', 'enabled', 'active', 'disabled', 'hidden', 'deleted'):
                 ctx.read('parent/track:' + lane, [field])
-        blockers = ctx.select('move.blockers', owner)
-        next_start = math.inf
-        for other in blockers:
+        # The neighbours stay a read dependency of the capture (a changed neighbour re-captures), though no
+        # guard follows from them: a child past the window is cropped, not refused.
+        for other in ctx.select('move.blockers', owner):
             for path in (('placement', 'start_ms'), ('at_ms',), ('track',), ('placement', 'track'),
                          ('enabled',), ('active',), ('disabled',), ('hidden',), ('deleted',)):
                 ctx.read(other, path)
-            other_row = ctx.state.occurrence(other)
-            start = occurrence_start(other_row)
-            if other != owner and start > origin:
-                next_start = min(next_start, start)
-        if float(quantized) + duration > next_start + 1e-9:
-            raise CommandError("moved interval crosses the next occurrence", kind='occurrence_boundary', ref=owner)
     local = float(quantized) - origin + offset
-    if local < offset:
-        raise CommandError("moved interval precedes its occurrence", kind='occurrence_boundary', ref=owner)
+    # A child before or past the window is cropped there; only a start before the shot's own zero is a fault.
+    if local < 0:
+        raise CommandError("moved interval precedes its shot", kind='occurrence_boundary', ref=owner)
     _provenance(ctx, owner)
     ctx.bind('move.target', ref, dependencies=['move.images', 'move.quantization', *source_dependencies])
     ctx.write(ref, ['at_ms'] if 'at_ms' in clip and 'at' not in clip else ['at'],

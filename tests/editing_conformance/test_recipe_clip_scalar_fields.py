@@ -139,10 +139,8 @@ def test_source_hold_speed_two_rational_fps_boundary_and_no_implicit_rewrites(fp
     assert clip(plan.bundle, REF) == dict(row, hold=18)
     assert inverse(plan.bundle, plan.records).bundle == original
     assert plan.records[0]['writes'] == [{'ref': REF, 'path': ['hold'], 'before': present(2), 'after': present(18)}]
-    for hold in (18.01, 20):
-        with pytest.raises(CommandError) as error:
-            capture_clip_set(original, REF, values={'hold': hold})
-        assert error.value.kind == 'occurrence_boundary'
+    for hold in (18.01, 20):  # past the window: cropped there, not refused
+        capture_clip_set(original, REF, values={'hold': hold})
     head = copy.deepcopy(original)
     head['placements'][1]['placement']['start_ms'] = 19000
     with pytest.raises(CommandError):
@@ -364,6 +362,7 @@ def test_hold_after_move_retains_half_open_occurrence_and_frame_guards():
     # Local start 1.011 leaves exactly 8.989 timeline seconds at speed two.
     plan = execute(moved, [capture_clip_set(moved, REF, values={'hold': 17.978})])
     assert clip(plan.bundle, REF)['app']['astrid']['for'] == pytest.approx(8.989)
+    capture_clip_set(moved, REF, values={'hold': 17.98})  # one frame past the window: cropped there, not refused
     with pytest.raises(CommandError) as error:
-        capture_clip_set(moved, REF, values={'hold': 17.98})
+        capture_clip_set(moved, REF, values={'at': -0.5})
     assert error.value.kind == 'occurrence_boundary'

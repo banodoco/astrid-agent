@@ -19,11 +19,9 @@ from ._command_state import CommandError
 from ._delete_commands import _unreferenced
 from ._media_inputs import _verified
 from .capture import (
-    _duration,
     move,
     move_intent,
     number,
-    occurrence_offset,
     occurrence_origin,
     rate,
 )
@@ -50,15 +48,6 @@ def placement_move(ctx, command):
         else:
             ctx.read(owner + '/source', ['registry', 'assets', str(asset)])
     move(ctx, command)
-    if owner != 'parent':
-        extent = number(ctx.read(owner, ['duration_ms']), 'occurrence.duration_ms', positive=True) / 1000
-        # The window ends at source_offset + duration in shot-local time.
-        extent += occurrence_offset(ctx.state.occurrence(owner))
-        moved = ctx.state.entity(ref)
-        start = moved['at'] if 'at' in moved else moved['at_ms'] / 1000
-        if start + _duration(moved) > extent + 1e-9:
-            raise CommandError('placed interval exceeds occurrence duration',
-                               kind='occurrence_boundary', ref=owner)
 
 
 def capture_placement(bundle, owner, clip_id, on, *, ownership):
@@ -90,7 +79,7 @@ def capture_placement(bundle, owner, clip_id, on, *, ownership):
 
 def placement_create(ctx, command):
     """Image-only expression at an absolute time; the wrapper adds no media semantics."""
-    owner, _ = _owner(ctx, command['select'])
+    owner = _owner(ctx, command['select'])
     _exclusive(ctx, owner)
     args = command['args']
     _, kind = _verified(ctx, args['media'])

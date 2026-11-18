@@ -282,11 +282,12 @@ class _CheckMixin:
             return _scene_only_unavailable()
 
     def _length_findings(self) -> dict[tuple[str, str], tuple[tuple[float, float], str]]:
-        """Shots whose window shows more than the shot has: the window [offset, offset + length] of the shot's own
-        timeline runs past its content (the one rule, occurrence_window.window_overrun_ms). A clip that runs past
-        the window is cropped, not a finding. Keyed by shot, signed by the window end and the content extent in
-        shot-local ms, so a change to either is a new finding."""
-        from astrid.core.timeline.occurrence_window import window_overrun_ms
+        """Blocking length findings, keyed and signed so only a new or touched one blocks.
+        1. A shot whose window shows more than the shot has: [offset, offset + length] runs past its content
+           (occurrence_window.window_overrun_ms). Signed by the window end and the content extent in shot-local ms.
+        2. In an untrimmed shot (offset 0), a child that runs past the window: its preview and its render disagree.
+        A child past a TRIMMED window is cropped in every path and is only reported (_crop_notes)."""
+        from astrid.core.timeline.occurrence_window import cropped_ms, window_overrun_ms
 
         extents: dict[str, float] = {}
         for clip in self.clips():
@@ -301,7 +302,40 @@ class _CheckMixin:
                 out[(shot_id, shot_id)] = ((round(window_end, 3), round(extent, 3)),
                     f"shot {shot_id} shows {window_end / 1000:.2f} s of its own timeline but its content ends at "
                     f"{extent / 1000:.2f} s: shorten the shot's placement or extend its picture")
+        # An untrimmed shot's window is soft: the preview (Runtime seam, App) stretches it to its content, while the
+        # render cuts a child off at the stored length. The two disagree, so a child past that window blocks. (A
+        # trimmed window is explicit in every path, so there the crop is only reported: see _crop_notes.)
+        for clip in self.clips():
+            shot_id = clip.shot_id
+            if shot_id == PARENT_SHOT or self._shot_offset(shot_id) > 0:
+                continue
+            origin = self._shot_start(shot_id)
+            window_end = self._shot_length(shot_id) * 1000
+            _, after = cropped_ms((clip.start - origin) * 1000, (clip.end - origin) * 1000, 0.0, window_end)
+            if after >= 500 / self.fps:
+                out[(shot_id, clip.id)] = ((round(window_end, 3), round((clip.end - origin) * 1000, 3)),
+                    f"{clip.address} runs {after / 1000:.1f} s past its shot's {window_end / 1000:.2f} s: the preview "
+                    "shows it but the render cuts it off; lengthen the shot's placement or shorten the clip")
         return out
+
+    def _crop_notes(self) -> list[str]:
+        """Non-blocking: a clip that runs outside its shot's visible window is cropped there. Say so, so the
+        crop is never silent (the one rule, occurrence_window.cropped_ms)."""
+        from astrid.core.timeline.occurrence_window import cropped_ms
+
+        notes = []
+        for clip in self.clips():
+            if clip.shot_id == PARENT_SHOT or self._shot_offset(clip.shot_id) <= 0:
+                continue  # an untrimmed shot's overhang is blocking (see _length_findings), not a note
+            origin = self._shot_start(clip.shot_id)
+            offset_ms = self._shot_offset(clip.shot_id) * 1000
+            duration_ms = (self._shot_length(clip.shot_id) - self._shot_offset(clip.shot_id)) * 1000
+            before, after = cropped_ms((clip.start - origin) * 1000, (clip.end - origin) * 1000, offset_ms, duration_ms)
+            for amount, where in ((before, "starts"), (after, "runs")):
+                if amount >= 500 / self.fps:
+                    side = "before its shot's window" if where == "starts" else "past its shot"
+                    notes.append(f"crop    Clip {clip.address} {where} {amount / 1000:.1f} s {side} and is cropped there")
+        return notes
 
     def _length_problems(self, base: "Checkout | None" = None) -> tuple[list[str], list[str]]:  # noqa: F821
         """``(blocking, existing)``: overruns this change introduced or touched block; one the base already had
@@ -679,6 +713,7 @@ class _CheckMixin:
         length_blocking, length_existing = self._length_problems(base_checkout)
         blocking += [f"length  {line}" for line in length_blocking]
         existing = [warning(f"length  {line}") for line in length_existing]
+        problems += self._crop_notes()
         if diagnostics:
             spans = self._managed_scene_spans()
             if spans is None:

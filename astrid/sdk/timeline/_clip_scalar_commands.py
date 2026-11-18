@@ -4,7 +4,7 @@ from __future__ import annotations
 import copy
 import math
 
-from astrid.core.timeline.duration import clip_end_frame, clip_start_frame
+from astrid.core.timeline.duration import clip_end_frame
 
 from ._command_state import CommandError
 from ._scalar_commands import _capture, _changes, _clip_basis, _selected_schema, _target
@@ -15,7 +15,6 @@ from .capture import (
     _duration,
     number,
     occurrence_offset,
-    occurrence_start,
     rate,
 )
 
@@ -58,7 +57,7 @@ def _hold_extent(ctx, ref, values, clear):
     row['at'] = row.get('at', row.get('at_ms', 0) / 1000)
     fps = rate(ctx.read('parent', ['config', 'output', 'fps']))
     # Preserve source seconds exactly; only the consumed extent is quantized.
-    end = clip_end_frame(row, float(fps))
+    clip_end_frame(row, float(fps))  # validates the quantized extent
     ctx.dependency('clip.set.quantization', 'time-map', {
         'numerator': fps.numerator, 'denominator': fps.denominator,
         'rounding': 'half-toward-positive-infinity'})
@@ -74,24 +73,14 @@ def _hold_extent(ctx, ref, values, clear):
             or isinstance(occurrence.get('speed'), bool)
             or occurrence.get('speed') not in (None, 1)):
         raise CommandError('clip.set requires a translation-only occurrence', kind='unsupported_map')
-    offset = occurrence_offset(occurrence)
-    window = occurrence_start(occurrence)
-    origin = window - offset  # timeline time of shot-local zero
-    extent = occurrence.get('duration_ms')
-    if extent is None:
-        raise CommandError('clip.set requires an explicit occurrence extent', kind='unsupported_timing')
-    limit = window + number(extent, 'occurrence.duration_ms', positive=True) / 1000
-    for other in ctx.select('move.blockers', owner):
+    occurrence_offset(occurrence)  # a malformed offset is refused
+    for other in ctx.select('move.blockers', owner):  # a read dependency only: nothing is refused past the window
         for path in (('placement', 'start_ms'), ('at_ms',), ('track',), ('placement', 'track'),
                      ('enabled',), ('active',), ('disabled',), ('hidden',), ('deleted',)):
             ctx.read(other, path)
-        start = occurrence_start(ctx.state.occurrence(other))
-        if other != owner and start > window:
-            limit = min(limit, start)
-    # Both the authored half-open interval and its compiled frames must fit.
-    boundary = clip_start_frame({'at': limit - origin, 'hold': 1}, float(fps))
-    if row['at'] < 0 or row['at'] + duration > limit - origin + 1e-9 or end > boundary:
-        raise CommandError('clip.set interval crosses occurrence boundary', kind='occurrence_boundary', ref=owner)
+    # A child past the occurrence's window is cropped there; only a negative start is a fault.
+    if row['at'] < 0:
+        raise CommandError('clip.set interval starts before its shot', kind='occurrence_boundary', ref=owner)
     return duration_paths, duration
 
 

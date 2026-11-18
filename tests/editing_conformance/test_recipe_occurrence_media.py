@@ -220,7 +220,7 @@ def test_refusals_preserve_input(operation, damage):
         if damage == 'window':
             row['to'] = 7
         elif damage == 'outside':
-            row['at'] = 9
+            row['at'] = -1  # a start before the shot's zero is a fault; past the window end is cropped
         else:
             row['speed'] = {'zero-speed': 0, 'negative-speed': -1, 'boolean-speed': True}[damage]
     elif damage == 'hold-clip-type':
@@ -521,6 +521,8 @@ def test_noninteger_positive_speed_preserves_source_units_and_half_open_boundary
     row = State(plan.bundle).entity(OWNER + '/clip:reserved-child')
     assert (row['at'], row['hold'], row['speed'], row['from'], row['to']) == (7, 4.5, 1.5, 1.5, 6)
     assert inverse(plan.bundle, plan.records).bundle == bundle
-    plain['args']['row']['at'] = 7.001
-    with pytest.raises(CommandError, match='exceeds occurrence'):
+    plain['args']['row']['at'] = 7.001  # past the window end: cropped there, not refused
+    execute(bundle, [plain], verified_media=verified)
+    plain['args']['row']['at'] = -0.001
+    with pytest.raises(CommandError, match='before its shot'):
         execute(bundle, [plain], verified_media=verified)
