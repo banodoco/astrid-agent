@@ -467,6 +467,22 @@
    "required_packages": []
   },
   {
+   "id": "generation.thumbnail_backfill",
+   "disposition": "required",
+   "evidence_reason": "LS-6 durable thumbnail intents execute through the ordinary fenced generic-host action and settlement.",
+   "adapter_family": "cpu",
+   "resource_keys": [],
+   "required_env": [],
+   "required_binaries": [
+    "ffmpeg"
+   ],
+   "required_packages": [
+    "PIL"
+   ],
+   "estimated_scratch_bytes": 2097152,
+   "estimated_output_bytes": 524288
+  },
+  {
    "id": "generation.generate_video",
    "disposition": "required",
    "evidence_reason": "Required video-generation facade; provider credentials are checked at call time.",

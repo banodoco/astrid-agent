@@ -281,12 +281,16 @@ def _materialize_managed_generation_result(
     if not envelope_path.is_file():
         raise AstridValueError(f"managed-generation result is missing: {envelope_path}")
     producer_root = envelope_path.resolve().parent
+    from astrid.core.foundation.output_receipts import (
+        copy_output_receipt, transformed_output_receipt,
+    )
     try:
         result = read_managed_generation_result(
             envelope_path,
             staging_root=producer_root,
             expected_task_id=task_identity,
             expected_attempt_id=attempt_identity,
+            use_output_receipts=True,
         )
     except ManagedGenerationResultError as exc:
         raise AstridValueError(f"managed-generation result failed validation: {exc}") from exc
@@ -312,6 +316,8 @@ def _materialize_managed_generation_result(
         raise AstridValueError("managed output namespaces cannot be symlinks")
     outputs_root.mkdir(parents=True, exist_ok=True)
     rebased_payload = result.to_dict()
+    original_receipts = result.evidence["producer"].get("output_receipts", {})
+    rebased_receipts = {}
     rebased_outputs: list[dict[str, Any]] = []
     taken = {"managed-generation-result.json"}
     for output in result.outputs:
@@ -326,10 +332,14 @@ def _materialize_managed_generation_result(
         if destination.exists() and destination.resolve() != source:
             raise AstridValueError(f"managed output destination collides: {destination.name}")
         if destination.resolve() != source:
-            shutil.copy2(source, destination)
+            receipt = copy_output_receipt(source, destination, original_receipts.get(output.path))
+        else:
+            receipt = original_receipts.get(output.path)
         rebased = output.to_dict()
         rebased["path"] = destination.relative_to(managed_root).as_posix()
         rebased["output_port"] = "vibecomfy_run"
+        if receipt is not None:
+            rebased_receipts[rebased["path"]] = receipt
         rebased_outputs.append(rebased)
     if after_outputs is not None and rebased_outputs:
         produced = [Path(item) for item in after_outputs([managed_root / row["path"] for row in rebased_outputs])]
@@ -339,10 +349,12 @@ def _materialize_managed_generation_result(
             target = managed_root / row["path"]
             if replacement.resolve() != target.resolve():
                 shutil.copyfile(replacement, target)
-            data = target.read_bytes()
-            row.update(sha256=hashlib.sha256(data).hexdigest(), bytes=len(data))
+            receipt = transformed_output_receipt(target, rebased_receipts.pop(row["path"], None))
+            rebased_receipts[row["path"]] = receipt
+            row.update(sha256=receipt["sha256"], bytes=receipt["bytes"])
             row.pop("hash_check", None)  # compared the producer's bytes, not the hook's
     rebased_payload["outputs"] = rebased_outputs
+    rebased_payload["evidence"]["producer"]["output_receipts"] = rebased_receipts
     if source_snapshot is None and "source" not in result.inputs and workflow_path.is_file():
         original = workflow_path.with_name("source.json") if workflow_path.suffix == ".py" else workflow_path
         if original.is_file():
@@ -497,6 +509,7 @@ def _materialize_managed_generation_result(
             staging_root=managed_root,
             expected_task_id=task_identity,
             expected_attempt_id=(attempt_identity or result.attempt_id),
+            use_output_receipts=True,
         )
     except ManagedGenerationResultError as exc:
         raise AstridValueError(f"rebased managed-generation result failed validation: {exc}") from exc
@@ -519,6 +532,7 @@ def _materialize_managed_generation_result(
                 "is_primary": execution_status == "succeeded" and output.ordinal == 0,
                 "content_hash": f"sha256:{output.sha256}",
                 "bytes": output.bytes,
+                **({"output_receipt": rebased_receipts[output.path]} if output.path in rebased_receipts else {}),
                 "media_type": output.media_type,
                 "producer": {
                     "output_port": next(original.output_port for original in result.outputs

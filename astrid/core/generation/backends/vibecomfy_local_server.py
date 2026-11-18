@@ -239,6 +239,18 @@ class AttachedArtifacts:
             raise ValueError("accepted history has no attributed artifacts")
         root.mkdir(parents=True, exist_ok=False)
         seen = set()
+        receipts = {}
+        async def download(client, descriptor, relative):
+            # Older adapters retain the original two-argument operation. Only
+            # a downloader advertising receipts may hand one across custody.
+            import inspect
+            method = client.download_output
+            options = {}
+            if "receipt_callback" in inspect.signature(method).parameters:
+                options = {"prompt_id": prompt_id, "receipt_callback":
+                    lambda receipt: receipts.update({relative.as_posix(): receipt})}
+            await asyncio.to_thread(method, descriptor, root / relative, **options)
+
         for artifact in artifacts:
             descriptor = artifact.get("descriptor") if isinstance(artifact, dict) else None
             filename, subfolder, kind = validate_output_descriptor(descriptor)
@@ -257,14 +269,14 @@ class AttachedArtifacts:
             download_client = (self.runtime_client.artifact_client(prompt_id)
                                if self.runtime_client is not None else self.client)
             try:
-                await asyncio.to_thread(download_client.download_output, descriptor, root / relative)
+                await download(download_client, descriptor, relative)
             except (TransportError, ValueError):
                 if (self.runtime_client is None or download_client is not self.client
                         or self.client.generation is None or not self.client.generation.retired):
                     raise
-                await asyncio.to_thread(self.runtime_client.artifact_client(prompt_id).download_output,
-                                        descriptor, root / relative)
-        return {"status": "retrieved", "local_root": str(root), **self.describe()}
+                await download(self.runtime_client.artifact_client(prompt_id), descriptor, relative)
+        return {"status": "retrieved", "local_root": str(root),
+                **({"output_receipts": receipts} if receipts else {}), **self.describe()}
 
 
 def validate_output_directory(value: str, attempt_root: Path) -> str:

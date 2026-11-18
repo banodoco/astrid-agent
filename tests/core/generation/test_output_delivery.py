@@ -383,4 +383,4 @@ def test_output_hash_passes_across_download_host_runtime_and_delivery(tmp_path, 
     result = deliver_generation(runtime.payload, client=runtime.client, out=tmp_path / 'delivered.png')
     assert Path(result['image_paths'][0]).read_bytes() == data
     # SDK response verification and view hash, plus the mutable-path check.
-    assert len(counts) - before == 3
+    assert len(counts) - before == 1
