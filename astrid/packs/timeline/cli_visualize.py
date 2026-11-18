@@ -1461,6 +1461,7 @@ def shot_plan_lines(rows: list[Mapping[str, Any]]) -> list[str]:
     lines = [f"shot plans ({sum(1 for r in rows if r.get('plan'))} of {len(rows)} placed shots planned):"]
     for row in rows:
         lines.append(f"  {float(row['start']):6.2f}–{float(row['end']):.2f}s  {row['name']}  {row['label']}"
+                     + (f" · {row['coverage']}" if row.get("coverage") else "")
                      + ("  (shared shot)" if row.get("shared") else ""))
     if not rows:
         lines.append("  (no shots on this timeline)")

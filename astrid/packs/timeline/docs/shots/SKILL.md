@@ -78,8 +78,8 @@ The shape (`version` 1; every other key is optional; any other key is refused):
 ```
 
 - `method`: one or more of the recast method codes `V LC LM R M E K` (see the [recast skill](../../../h3_av/docs/recast-scene/SKILL.md#stage-3---shot-list-pick-a-method-for-each-shot)); `K` (keep) stands alone.
-- `status`: `planned`, `in_progress`, `take_ready` or `approved`. `take_ready` and `approved` need at
-  least one take; the one exception is a `K` shot, which is `approved` without one.
+- `status`: `planned`, `in_progress`, `take_ready` or `approved`. `take_ready` and `approved` require one take covering every planned method. A `K` shot can be approved without a take.
+  After checking a take in visualize, record the verified method codes in its `covers` list.
 - `line` is a label for planning. The narration itself is the shot's `voiceover_script` text
   (`timelines shots text set --kind voiceover_script`); address it by shot and kind, never by binding id.
 - `inputs.voice.range` is `[start, end]` in **seconds into the voice media `inputs.voice.media`**
@@ -93,7 +93,7 @@ shows the Linux path. Write, read, list and see:
 "${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" timelines shots plan set <shot> --project <project> --timeline <timeline> --set method=LM,R --set status=planned
 "${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" timelines shots plan set <shot> --project <project> --timeline <timeline> --json-file plan.json
 "${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" timelines shots plan set <shot> --project <project> --timeline <timeline> --set inputs.voice.media=<media id> --set inputs.voice.range=5,8
-"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" timelines shots plan set <shot> --project <project> --timeline <timeline> --add-take '{"generation": "<run id>", "media": "<media id>"}' --set status=take_ready
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" timelines shots plan set <shot> --project <project> --timeline <timeline> --add-take '{"generation": "<run id>", "media": "<media id>", "covers": ["LM", "R"]}' --set status=take_ready
 "${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" timelines shots plan show <shot> --project <project> --timeline <timeline>
 "${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" timelines shots plan list --project <project> --timeline <timeline>
 "${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" timelines visualize <timeline> --project <project> --preset overview --shot-plans
