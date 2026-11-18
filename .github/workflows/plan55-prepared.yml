@@ -28,7 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ matrix.source == 'baseline' && 'b9a0a57184f9baf453d149d4f89a45b69532a122' || github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ matrix.source == 'baseline' && '6451821e18bd300484a921a425cafd856095b1a4' || github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
