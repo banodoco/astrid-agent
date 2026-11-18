@@ -274,6 +274,15 @@ def test_source_free_audio_trim_compiles_to_bound_audio_graph(tmp_path):
     ]}
     prepared = prepare_request(normalize_v2(raw), asset_map={"image": str(image), "audio": str(audio)})
     compiled = compile_preparation(prepared, out_dir=tmp_path / "compiled")
+    capabilities = compiled["capabilities"]
+    assert capabilities["references"] == 1
+    assert capabilities["reference_order"] == ["image"]
+    assert capabilities["audio_references"] == 1
+    assert capabilities["audio_reference_order"] == ["audio"]
+    assert not any("image references only" in text for text in compiled["limitations"])
+    assert prepared["resource_estimate"]["requested_target_rows"] == 144
+    assert prepared["resource_estimate"]["target_rows"] == 158
+    assert prepared["resource_estimate"]["target_raw_rgb_bytes"] == 158 * 1024 * 576 * 3
     workflow = load_workflow_any(compiled["workflow"]["workflow.py"]["path"])
     api = workflow.compile("api", run_inputs=compiled["workflow_inputs"])
     target = next(row for row in api.values() if row["class_type"] == "MiniMaxH3ReferenceToVideo")

@@ -426,3 +426,55 @@ def test_uncapped_video_estimate_includes_timestamp_boundary_frame(monkeypatch, 
     # 55 metadata frames align to 39; one boundary frame aligns to 56.
     assert row["retained_picture_frames_estimate"]["value"] == 56
     assert row["retained_picture_frames"] is None
+
+
+def test_exact_trim_ticks_refuse_short_clip_and_excess_total(monkeypatch, tmp_path):
+    path = tmp_path / "clip"
+    path.touch()
+    monkeypatch.setattr(prepare, "_probe_conditioning", lambda _: {"streams": [{"codec_type": "video", "duration": "10"}]})
+    records = [{"asset": "v", "status": "resolved", "path": str(path)}]
+    def item(i, end):
+        return {"occurrence_id": str(i), "asset": "v", "role": "reference", "modality": "video", "audio": False, "resolved_range": [0, end]}
+    with pytest.raises(prepare.PreparationError, match="conditioning clip"):
+        prepare._admit_conditioning(_request([item(0, 47)]), records)
+    with pytest.raises(prepare.PreparationError, match="per modality total"):
+        prepare._admit_conditioning(_request([item(i, 122) for i in range(3)]), records)
+
+
+@pytest.mark.parametrize("frames, accepted", [(3592, True), (3593, False), (3600, False)])
+def test_preparation_rejects_lengths_outside_node_grid(monkeypatch, frames, accepted):
+    req = H3Request({"version": 2, "media": [], "continuation": False, "duration": frames / 24}, "test")
+    monkeypatch.setattr(prepare, "_resolve_assets", lambda *_: [])
+    monkeypatch.setattr(prepare, "_validate_mask_assets", lambda *_: None)
+    monkeypatch.setattr(prepare, "_check_source_av_rates", lambda *_: None)
+    monkeypatch.setattr(prepare, "_v2_mask_schedule", lambda *_args, **_kwargs: {"status": "ready"})
+    if accepted:
+        assert prepare.prepare_request(req)["resource_estimate"]["target_rows"] == 3592
+    else:
+        with pytest.raises(prepare.PreparationError, match="job length frames"):
+            prepare.prepare_request(req)
+
+
+def test_masked_reference_bindings_are_provisional_and_audio_total_unknown(monkeypatch, tmp_path):
+    from PIL import Image
+    image = tmp_path / "image.png"
+    Image.new("RGB", (32, 32)).save(image)
+    video = tmp_path / "reference.mp4"
+    video.touch()
+    items = [
+        {"occurrence_id": "a", "asset": "a", "role": "reference", "modality": "image"},
+        {"occurrence_id": "b", "asset": "b", "role": "reference", "modality": "image"},
+        {"occurrence_id": "v", "asset": "v", "role": "reference", "modality": "video", "audio": True},
+        {"occurrence_id": "source", "asset": "s", "role": "timeline", "modality": "video", "edit": [{"guides": ["b"]}]},
+    ]
+    records = [{"asset": name, "status": "resolved", "path": str(path)} for name, path in [("a", image), ("b", image), ("v", video), ("s", video)]]
+    monkeypatch.setattr(prepare, "_resolve_assets", lambda *_: records)
+    monkeypatch.setattr(prepare, "_probe_conditioning", lambda path: {"streams": [{"codec_type": "video", "width": 32, "height": 32}] if path == image else [{"codec_type": "video", "duration": "3"}, {"codec_type": "audio", "duration": "3"}]})
+    monkeypatch.setattr(prepare, "_validate_mask_assets", lambda *_: None)
+    monkeypatch.setattr(prepare, "_check_source_av_rates", lambda *_: None)
+    monkeypatch.setattr(prepare, "_v2_mask_schedule", lambda *_args, **_kwargs: {"status": "ready"})
+    result = prepare.prepare_request(H3Request({"version": 2, "media": items, "continuation": False, "duration": 6}, "test"))
+    assert result["conditioning_measurements"][1]["tag"] is None
+    assert result["conditioning_measurements"][1]["slot"] is None
+    assert result["conditioning_measurements"][1]["binding_status"] == "provisional_until_lowering"
+    assert result["resource_estimate"]["reference_raw_audio_bytes"] is None

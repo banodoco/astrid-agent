@@ -932,6 +932,8 @@ def _compile_native_v2(
         )
 
     if branch == "source_backed_v2v":
+        if any(item.get("role") == "reference" and item.get("modality") in {"audio", "video"} and item.get("use") != "replacement" for item in request.value["media"]):
+            raise CompilationError("native masked edit does not bind audio or video conditioning references")
         return _compile_native_masked_edit(request, assets, destination, branch=branch)
 
     destination.mkdir(parents=True, exist_ok=True)
@@ -1149,6 +1151,9 @@ def _compile_generation(
         "references": len(references),
         "reference_order": [item["asset"] for item in references],
         "reference_binding": "ordered image conditioning; Picture 1..N",
+        "audio_references": len(audio_references),
+        "audio_reference_order": [item["asset"] for item in audio_references],
+        "audio_reference_binding": "ordered standalone audio conditioning; Audio 1..N",
         "generation_timing": timing,
         "output_contract": "muxed_av_full_timeline",
         "public_generation": {"modality": "video", "selectors": [
@@ -1169,7 +1174,7 @@ def _compile_generation(
         request=request, destination=destination, resource_root=resource,
         workflow_inputs=workflow_inputs, asset_bindings=bindings,
         capabilities=capabilities,
-        limitations=["image references only; no timed keyframes or source-free masks", "single pass, up to 3592 frames at 24 fps; outside 124–362 frames is untested"],
+        limitations=["no video references, timed keyframes or source-free masks", "single pass, up to 3592 frames at 24 fps; outside 124–362 frames is untested"],
         profile_id=profile_id,
         extra_manifest=extra_manifest,
     )
