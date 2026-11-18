@@ -198,6 +198,59 @@ def _word_declaration_unresolved(
     return False
 
 
+def _clear_legacy_declarations(bundle: dict[str, Any], keep: tuple[tuple[Any, ...], str]) -> None:
+    """Leave one declaration in a detached probe of the original bundle."""
+    rows = dict(_legacy_rows(bundle))
+    for key, clip in rows.items():
+        for field in ("on", "until"):
+            if (key, field) != keep:
+                intent._set(clip, field, None)
+
+
+def _legacy_declaration_is_resolvable(
+    bundle: Mapping[str, Any], key: tuple[Any, ...], field: str, declaration: str,
+) -> bool:
+    """Prove a retained declaration resolves before allowing an exemption."""
+    try:
+        moment = moments.parse(declaration)
+    except (TypeError, ValueError, moments.MomentError):
+        return False
+
+    if moment.kind == "word":
+        return not _word_declaration_unresolved(bundle, key, field, declaration)
+
+    probe = copy.deepcopy(dict(bundle))
+    _clear_legacy_declarations(probe, (key, field))
+    target = dict(_legacy_rows(probe)).get(key)
+    if target is None:
+        return False
+    intent._set(target, field, declaration)
+    try:
+        validate_candidate_timing(probe)
+    except (TimingCompileError, KeyError, TypeError, ValueError) as exc:
+        # A detached shared-child probe can fail on a sibling physical image
+        # before reaching this declaration. Re-run the same evaluator against
+        # this declaration's exact occurrence-scoped image; unresolved or
+        # unknown results must never be converted into an exemption.
+        if "ambiguous cut identity" not in str(exc) and "clip starts before its occurrence" not in str(exc):
+            # An unclassified failure is not proof that this declaration was
+            # unresolvable in the base, so keep it in the real validation path.
+            return not _known_unresolvable_message(str(exc))
+        context = _physical_shot_context(probe, key[1]) if key[0] == "shot" else None
+        if context is None:
+            return True
+        try:
+            validate_candidate_timing(context)
+        except (TimingCompileError, KeyError, TypeError, ValueError) as context_error:
+            # A second ambiguity is unknown, not proof of an unresolvable
+            # declaration. Known invalid/missing inputs remain exemptible.
+            if "ambiguous cut identity" in str(context_error):
+                return True
+            return not _known_unresolvable_message(str(context_error))
+        return True
+    return True
+
+
 def _collect_failures(
     bundle: Mapping[str, Any], source_bundles: Sequence[Mapping[str, Any]],
 ) -> list[tuple[tuple[Any, ...], str, str]]:
@@ -589,11 +642,91 @@ def _adapt_projection(
         row["speed"], row["source_offset"] = 1, 0
 
 
+def _failing_candidates(
+    error: BaseException, candidate: Mapping[str, Any], baseline: Mapping[str, Any],
+    spent: set[tuple[tuple[Any, ...], str]],
+) -> list[tuple[tuple[Any, ...], str, str]]:
+    """Unchanged legacy declarations a resolve-time failure may come from, most specific first."""
+    message = str(error)
+    before = dict(_legacy_rows(baseline))
+    found = []
+    for key, clip in _legacy_rows(candidate):
+        prior = before.get(key)
+        if prior is None:
+            continue
+        prior_values = _legacy_declarations(prior)
+        for field, value in _legacy_declarations(clip).items():
+            if ((key, field) in spent or prior_values.get(field) != value
+                    or _reference_basis(candidate, key, clip, value)
+                    != _reference_basis(baseline, key, prior, value)):
+                continue
+            try:
+                kind = moments.parse(value).kind
+            except (TypeError, ValueError, moments.MomentError):
+                continue
+            if kind == "word":
+                continue
+            found.append((key, field, value))
+    owned = [row for row in found if f"'{row[0][1]}', '{row[0][2]}')" in message]
+    if owned:
+        return owned
+    for marker in ("no beat", "no downbeat"):
+        if marker in message:
+            wanted = {"no beat": "beat", "no downbeat": "downbeat"}[marker]
+            return [row for row in found if wanted in {
+                m.kind for m in _moment_chain(row[2])}]
+    return found
+
+
+def _moment_chain(text: str):
+    moment = moments.parse(text)
+    while moment is not None:
+        yield moment
+        moment = moment.base
+
+
 def validate_candidate_timing(
     candidate: Mapping[str, Any], *, baseline: Mapping[str, Any] | None = None,
     _allow_physical_context_fallback: bool = True,
     source_bundles: Sequence[Mapping[str, Any]] = (),
     restoration_records: Sequence[Mapping[str, Any]] = (),
+) -> None:
+    """Validate timing; compile first, and probe only a declaration a resolve-time failure points at.
+
+    The declaration-only pre-pass cannot see failures found while times resolve ("no beat", "clip
+    starts before its occurrence"). When the compile raises one of those and the failing declaration
+    is an unchanged legacy ``on``/``until``, the per-declaration probe proves whether the base could
+    resolve it; if not, it is exempt and the compile repeats. Each declaration is probed at most once.
+    A new, changed or unattributable failure refuses as before. A clean commit runs no probe.
+    """
+    exemptions = _legacy_exemptions(candidate, baseline, source_bundles)
+    spent: set[tuple[tuple[Any, ...], str]] = set()
+    while True:
+        try:
+            return _validate_candidate_timing(
+                candidate, baseline, _allow_physical_context_fallback, source_bundles,
+                restoration_records, exemptions)
+        except (TimingCompileError, KeyError, TypeError, ValueError) as exc:
+            if baseline is None or not (
+                    _known_unresolvable_message(str(exc)) or "ambiguous cut identity" in str(exc)):
+                raise
+            progress = False
+            for key, field, value in _failing_candidates(exc, candidate, baseline, spent):
+                spent.add((key, field))
+                if not _legacy_declaration_is_resolvable(baseline, key, field, value):
+                    exemptions = exemptions | {(key, field)}
+                    progress = True
+                    break
+            if not progress:
+                raise
+
+
+def _validate_candidate_timing(
+    candidate: Mapping[str, Any], baseline: Mapping[str, Any] | None,
+    _allow_physical_context_fallback: bool,
+    source_bundles: Sequence[Mapping[str, Any]],
+    restoration_records: Sequence[Mapping[str, Any]],
+    exemptions: set[tuple[tuple[Any, ...], str]],
 ) -> None:
     """Compile a detached validation view, leaving authored JSON and pins intact.
 
@@ -607,7 +740,7 @@ def validate_candidate_timing(
     publication = compile_authoring_candidate(candidate).publication
     projection = copy.deepcopy(dict(candidate))
     _drop_preexisting_unsupported(projection, candidate, baseline)
-    exemptions = _legacy_exemptions(candidate, baseline, source_bundles)
+    exemptions = set(exemptions)
     restored = _restored_legacy_exemptions(candidate, source_bundles, restoration_records)
     exemptions.update(restored)
     legacy_declarations = _legacy_inputs(candidate, exemptions)
