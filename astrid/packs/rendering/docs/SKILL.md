@@ -15,4 +15,4 @@ Build and inspect live scenes with the [world authoring guide](references/worlds
 
 ## Effects and generated elements
 
-Use the [generated elements guide](references/generated-elements-authoring.md) to author effects and reusable visual elements. Use [worlds](references/worlds-authoring.md) for live scene work.
+Use the [generated elements guide](references/generated-elements-authoring.md) to author effects and reusable visual elements. Effects live in one project pack (init, validate, admit, update-element); never edit built-in or other packs' elements, fork them under a new id. No core or vendored code change is ever needed for an effect. Use [worlds](references/worlds-authoring.md) for live scene work.
