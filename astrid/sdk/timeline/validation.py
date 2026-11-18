@@ -319,12 +319,23 @@ def _asset_duration(asset: Mapping[str, Any]) -> Fraction | None:
     return None
 
 
+def _canonical(value: Any) -> Any:
+    """Numbers compare by value (2 equals 2.0), so a re-serialised clip is not a changed one."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        if isinstance(value, Mapping):
+            return {key: _canonical(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [_canonical(item) for item in value]
+        return value
+    return float(value)
+
+
 def _same_fields(current: Mapping[str, Any], previous: Mapping[str, Any] | None,
                  fields: Sequence[str]) -> bool:
     if previous is None:
         return False
-    return json.dumps({key: current[key] for key in fields if key in current}, sort_keys=True) == json.dumps(
-        {key: previous[key] for key in fields if key in previous}, sort_keys=True)
+    return json.dumps(_canonical({key: current[key] for key in fields if key in current}), sort_keys=True) == json.dumps(
+        _canonical({key: previous[key] for key in fields if key in previous}), sort_keys=True)
 
 
 def _validate_clip_list(
@@ -356,9 +367,11 @@ def _validate_clip_list(
                 _fail(f"{clip_path}.track", "must reference an existing track")
         timing_changed = not _same_fields(
             clip, prior, ("at", "at_ms", "from", "to", "hold", "duration", "speed"))
-        # D12a checks the interval when its declaration or occurrence bound is
-        # written. An unrelated edit preserves an existing overrun verbatim.
-        if timing_changed or bound != baseline_bound:
+        # D12a checks the interval of a clip the candidate added or changed, or of any clip when the
+        # occurrence bound shrinks. An untouched clip keeps an existing overrun verbatim.
+        bound_shrank = bound != baseline_bound and not (
+            bound is not None and baseline_bound is not None and bound >= baseline_bound)
+        if timing_changed or bound_shrank:
             start, duration = _clip_duration(clip, clip_path)
             if bound is not None and start + duration > bound:
                 _fail(clip_path, "timeline interval must fit the occurrence's half-open bounds")

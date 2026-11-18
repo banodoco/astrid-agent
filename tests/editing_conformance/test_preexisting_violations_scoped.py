@@ -347,3 +347,78 @@ def test_another_internal_timeline_carries_no_baseline_over():
     value["source_mapping"]["shots"][SHOT]["internal_timeline_id"] = "another-internal-timeline"
     with pytest.raises(AuthoringBundleError, match="clipType"):
         validate_final_candidate(value, baseline=baseline)
+
+
+# --- scope: strict candidate checks judge only the clips the candidate added or changed --------------------------
+
+def _overrunning_shot_head():
+    head = candidate()
+    clip = child_clips(head)[0]
+    clip.update(at=9.9, hold=0.103)  # ends 3 ms past the 10 s occurrence
+    return head
+
+
+def _edit_sibling(value):
+    child_clips(value)[1]["at"] = 6
+    child_clips(value).append({**copy.deepcopy(child_clips(value)[1]), "id": "added", "at": 8})
+
+
+def test_untouched_clip_with_a_small_overrun_does_not_block_an_unrelated_clip_edit():
+    baseline = _overrunning_shot_head()
+    value = copy.deepcopy(baseline)
+    _edit_sibling(value)
+    validate_final_candidate(value, baseline=baseline)
+
+
+def test_same_overrun_on_the_edited_clip_is_refused():
+    baseline = _overrunning_shot_head()
+    value = copy.deepcopy(baseline)
+    child_clips(value)[0]["hold"] = 0.104
+    with pytest.raises(AuthoringBundleError, match="half-open bounds"):
+        validate_final_candidate(value, baseline=baseline)
+
+
+def test_reserialised_numbers_are_not_a_change():
+    baseline = _overrunning_shot_head()
+    value = copy.deepcopy(baseline)
+    child_clips(value)[0]["at"] = 9.9  # same value; and an integral float for another clip
+    child_clips(value)[1]["at"] = float(child_clips(value)[1]["at"])
+    validate_final_candidate(value, baseline=baseline)
+
+
+def test_shrinking_the_occurrence_so_an_untouched_clip_overruns_is_refused():
+    baseline = candidate()
+    value = copy.deepcopy(baseline)
+    value["placements"][0]["duration_ms"] = 1500  # clip-a (1..3) and clip-b (5..7) no longer fit
+    with pytest.raises(AuthoringBundleError, match="half-open bounds"):
+        validate_final_candidate(value, baseline=baseline)
+
+
+def _unbound_word_head():
+    head = candidate()
+    child_clips(head)[0].setdefault("app", {}).setdefault("astrid", {})["on"] = "word:hello"
+    return head
+
+
+def test_untouched_unresolved_word_binding_does_not_block_an_edit_to_another_clip_of_the_shot():
+    baseline = _unbound_word_head()
+    value = copy.deepcopy(baseline)
+    _edit_sibling(value)
+    validate_final_candidate(value, baseline=baseline)
+
+
+def test_unresolved_word_binding_on_a_changed_clip_is_refused():
+    baseline = _unbound_word_head()
+    value = copy.deepcopy(baseline)
+    child_clips(value)[0]["app"]["astrid"]["on"] = "word:goodbye"
+    with pytest.raises(AuthoringBundleError, match="missing exact word binding"):
+        validate_final_candidate(value, baseline=baseline)
+
+
+def test_unresolved_word_binding_on_an_added_clip_is_refused():
+    baseline = candidate()
+    value = copy.deepcopy(baseline)
+    _edit_sibling(value)
+    child_clips(value)[-1].setdefault("app", {}).setdefault("astrid", {})["on"] = "word:hello"
+    with pytest.raises(AuthoringBundleError, match="missing exact word binding"):
+        validate_final_candidate(value, baseline=baseline)

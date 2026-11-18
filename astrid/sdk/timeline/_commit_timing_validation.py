@@ -101,6 +101,14 @@ class _BasisReader:
 
     def signature(self, key: tuple[Any, ...], clip: Mapping[str, Any], declaration: str) -> str:
         """The basis as text, assembled from per-bundle parts so each declaration adds only its own."""
+        try:
+            word = moments.parse(declaration).kind == "word"
+        except (TypeError, ValueError, moments.MomentError):
+            word = False
+        if word and key[0] != "parent":
+            # A shot clip's word declaration never has an authorized binding, whatever its siblings,
+            # placements or other shots say: the finding depends on this clip alone.
+            return json.dumps({"clip": _reference_shape(clip)}, sort_keys=True, default=str)
         basis = self.basis(key, clip, declaration)
         own = {"clip": basis["clip"]}
         parts = [json.dumps(own, sort_keys=True, default=str), self._json("documents", basis["documents"])]
