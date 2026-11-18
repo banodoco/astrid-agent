@@ -343,6 +343,9 @@ def local_server_bundle(resolved: Any, destination: Path, *, output_identity: st
     if output_identity is not None:
         validate_identity(output_identity)
     bundle = _canonical_bundle_value(resolved)
+    if output_identity is not None:
+        from vibecomfy.workflow_bundle import _rebind_current_bundle
+        _rebind_current_bundle(bundle)
     workflow = bundle.workflow.clone()
     changed = False
     if "image" not in workflow.inputs:
@@ -359,6 +362,7 @@ def local_server_bundle(resolved: Any, destination: Path, *, output_identity: st
                     type=input_types.get("image", "STRING"), media_semantics="image",
                 )
                 changed = True
+    added_input = changed
     if output_identity is not None:
         output_ids = {str(output.node_id) for output in workflow.outputs}
         empty_prefix_nodes = set()
@@ -387,6 +391,8 @@ def local_server_bundle(resolved: Any, destination: Path, *, output_identity: st
 
     # A full path: a bare name is published relative to the process cwd.
     extra_members = {root / "source.json": source.read_bytes()} if source and source.is_file() else None
+    if output_identity is not None and not added_input and bundle.python_path is not None:
+        return _attempt_value_bundle(bundle, workflow, root, extra_members)
     derived = None
     # The ready-template renderer rebuilds ``requirements`` from the workflow and drops the pinned
     # ``runtime`` block of a materialized template (the H3 graph carries one), so the publish check
@@ -406,6 +412,48 @@ def local_server_bundle(resolved: Any, destination: Path, *, output_identity: st
                 raise
     assert derived is not None  # the scratchpad branch raises if no candidate was emitted
     return load_bundle(derived.python_path, trust=Provenance.USER_CONFIRMED)
+
+
+def _attempt_value_bundle(bundle: Any, workflow: Any, root: Path, extra_members: Any) -> Any:
+    """Bind attempt values to admitted IR; retain the exact source pair.
+
+    Only the existing prefix transform reaches this path. New public input
+    shape still uses canonical emission. This creates an in-memory canonical
+    candidate, not an approval: live compilation and queue verification remain
+    the ordinary full path. No object or result is retained across jobs.
+    """
+    from vibecomfy.porting.object_info.consume import class_entry_snapshot
+    from vibecomfy.workflow_bundle import (
+        _atomic_publish_pair, _build_v2_sidecar, _make_bundle,
+        _source_provenance, _v2_marker,
+    )
+
+    # Publication checks the held candidate against the exact copied bytes and
+    # retains the ordinary no-symlink, atomic pair/source custody checks.
+    source_path = root / "workflow.py"
+    _atomic_publish_pair(source_path, bundle.python_path.read_bytes(), bundle.ui_sidecar,
+                         expected=bundle, extra_members=extra_members)
+    provenance = dict(bundle.provenance)
+    provenance["operation"] = "authored"
+    classes = {str(node.class_type) for node in workflow.nodes.values()}
+    if workflow.definitions:
+        classes.update(str(node["class_type"])
+                       for node in workflow._semantic_definition_nodes(workflow.definitions))
+    with class_entry_snapshot(classes):
+        sidecar = _build_v2_sidecar(workflow, bundle.ui_sidecar, provenance=provenance,
+                                   operation="authored", parent_revision=bundle.revision_id)
+    workflow.metadata["source_bundle"] = _v2_marker(sidecar)
+    # python_path=None is VibeComfy's existing in-memory candidate contract.
+    # The source reference remains the retained, unmodified admitted pair;
+    # the attempt's approved record carries its private execution values.
+    workflow.source.path = str(source_path)
+    derived = _make_bundle(
+        workflow, python_path=None, ui_sidecar=sidecar, provenance=provenance,
+        operation="authored", parent_revision=bundle.revision_id,
+        parent_evidence={"revision_id": bundle.revision_id, "workflow_identity": bundle.workflow_identity},
+    )
+    workflow.source.provenance = _source_provenance(derived.provenance)
+    return derived
 
 
 def _staged_digest(destination: Path, name: str) -> str | None:
@@ -647,7 +695,7 @@ def _run_local_server(
                     raise ProductionEngineError("local_server native attempt escaped attempt custody")
                 context = RunContext(run_id, run_dir, task_id=task_identity,
                                      attempt_id=attempt_identity, execution_id=prepared.get("execution_identity"))
-                context.begin(str(bundle.python_path))
+                context.begin(str(bundle.python_path or bundle.workflow.source.path))
                 try:
                     from astrid.core._shared import run_logs
                     run_logs.declare_child(destination, run_dir / "logs.json")
