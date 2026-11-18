@@ -1542,7 +1542,7 @@ def _prepare_vibecomfy_execution_identity(
     inputs: Mapping[str, Any],
     scratch: Path,
     readiness_profile: Mapping[str, Any] | None,
-    *, prepare_engine: Any = None,
+    *, prepare_engine: Any = None, resident_cache: Any = None,
 ) -> tuple[str, str, str, Mapping[str, Any]]:
     """Select and identify the exact VibeComfy input form before launch."""
     from astrid.core.generation.engine_contracts import CustodyUnresolved
@@ -1571,11 +1571,8 @@ def _prepare_vibecomfy_execution_identity(
                 )
 
                 comfy_url = validate_comfy_url(comfy_url)
-            loaded = load_workflow_path(
-                workflow_path,
-                scratch / "canonical-loader",
-                comfy_url=comfy_url,
-            )
+            loaded = (resident_cache.load(workflow_path, url=comfy_url) if resident_cache is not None
+                      else load_workflow_path(workflow_path, scratch / "canonical-loader", comfy_url=comfy_url))
             identity = loaded_workflow_execution_identity(loaded, readiness_profile)
             if prepare_engine is not None:
                 prepare_engine(workflow_path, identity, loaded)
@@ -11179,6 +11176,7 @@ class GenericPackHost:
         child_bridge: Any | None = None,
         captured_record: CapabilityRecord | None = None,
         resident_token: AdmissionToken | None = None,
+        concurrent_resident_dispatch: bool = False,
     ) -> Any:
         """Run one pack capability in a dedicated child process.
 
@@ -11223,13 +11221,22 @@ class GenericPackHost:
             adapter = self.managed_tool_session.adapter_for(resident_token)
             if not isinstance(adapter, ResidentPackAdapter):
                 raise StaleAdmissionError("resident admission has another adapter")
-            return adapter.invoke(
-                resident_token, request=request, admission=admission or {}, attempt=attempt_path,
-                cancelled=cancelled,
-                storage_guard=lambda: _assert_live_storage_envelope(
-                    storage_estimate, attempt_path, attempt_path / "outputs",
-                    storage_floor_exempt=storage_floor_exempt),
-            )
+            release_lock = concurrent_resident_dispatch and getattr(adapter, "concurrent", False)
+            idle_seconds = self._requested_idle_seconds
+            if release_lock:
+                self._session_task_lock.release()
+            try:
+                return adapter.invoke(
+                    resident_token, request=request, admission=admission or {}, attempt=attempt_path,
+                    cancelled=cancelled,
+                    storage_guard=lambda: _assert_live_storage_envelope(
+                        storage_estimate, attempt_path, attempt_path / "outputs",
+                        storage_floor_exempt=storage_floor_exempt),
+                )
+            finally:
+                if release_lock:
+                    self._session_task_lock.acquire()
+                    self._requested_idle_seconds = idle_seconds
         request_path = attempt_path / ".astrid-capability-request.json"
         result_path = attempt_path / ".astrid-capability-result.json"
         remotion_lease = None
@@ -13150,6 +13157,9 @@ class GenericPackHost:
         child_bridge = None
         session_hold = None
         engine_preparation = None
+        resident_preparation = None
+        resident_preparation_retained = False
+        resident_allowed = True
         prepared_identity = None
         assert_managed_input_identity = None
         target_context = machine_policy = None
@@ -13274,6 +13284,14 @@ class GenericPackHost:
             for input_root in (root / "inputs", root / "managed-objects"):
                 immutable_input_baseline.update(self.execution_policy.immutable_input_baseline(input_root))
             evidence_root = root
+            if capability_id == "vibecomfy.run" and machine_policy is None and readiness_profile is None:
+                from astrid.packs.vibecomfy.resident import host_cache
+                resident_preparation = host_cache(self, record, task_data, inputs,
+                    align=_align_admission(task_data).get("align", "check"),
+                    entry=_align_admission(task_data).get("entry"))
+                resident_allowed = resident_preparation is not None
+                resident_preparation_retained = (resident_preparation is not None and resident_preparation in
+                    getattr(self.managed_tool_session.current_adapter, "retained_resources", ()))
             if (capability_id == "vibecomfy.run" and machine_policy is None
                     and not inputs.get("comfy_url") and readiness_profile is None):
                 from concurrent.futures import CancelledError
@@ -13359,7 +13377,8 @@ class GenericPackHost:
                     inputs["comfy_url"] = report["endpoint"]
                 try:
                     prepared_identity = _prepare_vibecomfy_execution_identity(
-                        inputs, root / "workflow-identity", readiness_profile, prepare_engine=prepare_engine)
+                        inputs, root / "workflow-identity", readiness_profile, prepare_engine=prepare_engine,
+                        resident_cache=resident_preparation)
                 except (CancelledError, HostCancelled):
                     raise HostCancelled("task cancelled during managed engine preparation") from None
             if capability_id == "vibecomfy.run" and inputs.get("comfy_url"):
@@ -13451,6 +13470,7 @@ class GenericPackHost:
                         inputs,
                         root / "workflow-identity",
                         readiness_profile,
+                        resident_cache=resident_preparation,
                     )
                 )
                 network_admission["execution_identity"] = execution_identity
@@ -13490,13 +13510,27 @@ class GenericPackHost:
                     # workflow switch stays in the same owned session.
                     execution_identity=stable_session_identity,
                 )
+            per_job_adapter = managed_adapter
+            network_admission.update(_align_admission(task_data))
+            if resident_preparation is not None:
+                resident_allowed = resident_preparation.can_retain(inputs,
+                    align=_align_admission(task_data).get("align", "check"))
             resident = open_resident_task(
                 self, record=record, task=task_data, admission=network_admission,
                 terminal=_terminal, binding=managed_binding,
                 private_runtime_context=private_runtime_context, machine_policy=machine_policy,
-            )
+                effective_policy=_network_policy(record, inputs),
+            ) if resident_allowed else None
             if resident is not None:
                 managed_capability, managed_binding, managed_adapter = resident
+                if resident_preparation is not None:
+                    caches = getattr(managed_adapter, "vibecomfy_preparations", None)
+                    if caches is None:
+                        caches = managed_adapter.vibecomfy_preparations = {}
+                    if resident_preparation.scope not in caches:
+                        caches[resident_preparation.scope] = resident_preparation
+                        managed_adapter.retained_resources.append(resident_preparation)
+                    resident_preparation_retained = True
             elif capability_id == "wan2gp.generate_video":
                 managed_binding = self.prepare_wan_session(**self._wan_session_context(task_data))
                 managed_adapter = self.managed_tool_session.current_adapter
@@ -13507,6 +13541,9 @@ class GenericPackHost:
                     warm_reuse_expected=True,
                 )
             else:
+                if getattr(self.managed_tool_session.current_adapter, "has_jobs", False):
+                    from .managed_tool_session import SessionCapacityError
+                    raise SessionCapacityError("session replacement is pending active resident admissions")
                 self._open_managed_task_session(
                     capability=managed_capability,
                     binding=managed_binding,
@@ -13518,6 +13555,8 @@ class GenericPackHost:
                 capability_id=capability_id,
                 invocation_id=f"{task_id}:{attempt_id}:{fence}",
             )
+            if getattr(managed_adapter, "concurrent", False):
+                managed_adapter.bind_admission(managed_token, per_job_adapter)
             if record.adapter.family == "provider" and record.definition.isolation.network:
                 policy = _network_policy(record)
                 descriptor = (policy or {}).get("broker", {})
@@ -13588,7 +13627,7 @@ class GenericPackHost:
                         record, task_data, machine_policy, target_context, inputs, root=root,
                         output_root=output_root, cancelled=cancelled, cancel_signal=cancel_signal,
                         task_id=task_id, attempt_id=attempt_id, fence=fence, terminal=_terminal)
-                elif record.definition.command is not None:
+                elif record.definition.command is not None and not isinstance(managed_adapter, ResidentPackAdapter):
                     result = self._run_command_definition(
                         record,
                         inputs,
@@ -13666,7 +13705,8 @@ class GenericPackHost:
                             network_broker_required=network_broker is not None,
                             storage_estimate=storage_estimate,
                             child_bridge=child_bridge,
-                            **({"resident_token": managed_token} if isinstance(managed_adapter, ResidentPackAdapter) else {}),
+                            **({"resident_token": managed_token, "concurrent_resident_dispatch": True}
+                               if isinstance(managed_adapter, ResidentPackAdapter) else {}),
                             **({"captured_record": captured_record} if captured_record is not None else {}),
                         )
                     finally:
@@ -14105,6 +14145,13 @@ class GenericPackHost:
                             self.managed_tool_session.fence(reason="cancel_unconfirmed")
                         except Exception as fence_exc:
                             cleanup_errors.append(f"managed fence: {fence_exc}")
+                elif getattr(managed_adapter, "concurrent", False) and managed_adapter.has_completed(managed_token):
+                    # This job returned complete failure evidence. Consume its
+                    # lifecycle token without revoking another live admission.
+                    from .resident_sessions import token_identity
+                    self.managed_tool_session.settle(managed_token, result_evidence=token_identity(managed_token))
+                    managed_adapter.finish_admission(managed_token)
+                    managed_settled = True
                 else:
                     try:
                         self.managed_tool_session.fence(reason="task_failed")
@@ -14113,8 +14160,10 @@ class GenericPackHost:
             if managed_opened:
                 retain_persistent_session = (
                     isinstance(managed_adapter, tuple(_WARM_SESSION_ADAPTERS))
-                    and managed_settled
-                    and settled
+                    and ((managed_settled and settled)
+                         or (getattr(managed_adapter, "concurrent", False)
+                             and self.managed_tool_session.active
+                             and not managed_adapter.has_token(managed_token)))
                 )
                 if not retain_persistent_session:
                     try:
@@ -14146,6 +14195,8 @@ class GenericPackHost:
                 self._latch_cleanup_uncertainty("managed preparation cleanup is unconfirmed")
                 cleanup_errors.append(f"managed preparation release: {exc}")
             try:
+                if resident_preparation is not None and not resident_preparation_retained:
+                    resident_preparation.close()
                 if session_hold is not None:
                     self._settle_session_hold(session_hold)
             except Exception:

@@ -425,9 +425,9 @@ def _trust_from_environment(bundle: Any) -> tuple[dict[str, Any], ...] | None:
     """``--align trust`` on an attached ComfyUI: the workflow's declared rows; otherwise none."""
     from astrid.core.generation import target_inventory
 
-    child_trust = os.environ.pop(target_inventory.TRUST_ENV, None) == "trust"
     pod_align = target_inventory.POD_ALIGN.get()
-    if not (child_trust if pod_align is None else pod_align == "trust"):
+    child_trust = (os.environ.pop(target_inventory.TRUST_ENV, None) == "trust") if pod_align is None else pod_align == "trust"
+    if not child_trust:
         return None
     return target_inventory.declared_rows(bundle.workflow)
 
@@ -473,11 +473,14 @@ def run_local_server(
     workflow_conversion_object_info_sha256: str | None = None,
     prepared_workflow: PreparedLocalWorkflow | None = None,
     prepared_context: Any = None,
+    retained_session: Any = None,
 ) -> ProductionRunResult:
+    from contextlib import nullcontext
     from astrid.core.generation.backends.comfy_held import ComfyTargetSession
     from astrid.core.generation.backends.comfy_target import ComfyRequestNotStarted, ComfyTarget
 
-    with ComfyTargetSession(ComfyTarget(comfy_url, "attached")) as session:
+    with (nullcontext(retained_session) if retained_session is not None
+          else ComfyTargetSession(ComfyTarget(comfy_url, "attached"))) as session:
         for preparation in range(2):
             try:
                 return _run_local_server(
@@ -630,10 +633,19 @@ def _run_local_server(
 
     pins = {"VIBECOMFY_COMFY_CONFIGURATION": "{}", "VIBECOMFY_WARM": "never",
             "VIBECOMFY_SCHEMA_WARN_ONLY": "0"}
-    previous = {key: os.environ.get(key) for key in pins}
-    restore = platform.install_stop_handlers(stop)
+    from astrid.core.execution.resident_sessions import _JOB
+    job = _JOB.get()
+    explicit = job is not None and bool(job.session_identity)
+    if explicit and any(os.environ.get(key) != value for key, value in pins.items()):
+        raise ProductionEngineError("resident process configuration differs from its admitted pins")
+    previous = {} if explicit else {key: os.environ.get(key) for key in pins}
+    restore = (lambda: None) if explicit else platform.install_stop_handlers(stop)
+    if explicit:
+        from astrid.packs.vibecomfy.resident import run_cancellable
+        run_sync = run_cancellable
     try:
-        os.environ.update(pins)
+        if not explicit:
+            os.environ.update(pins)
         try:
             context = None
             if prepared is not None:

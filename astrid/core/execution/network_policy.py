@@ -20,6 +20,7 @@ import subprocess
 import threading
 import time
 from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Mapping, MutableMapping
 from urllib.parse import urlsplit
@@ -34,6 +35,33 @@ _EVIDENCE: Path | None = None
 _EVIDENCE_KEY = ""
 _ADMISSION: dict[str, Any] = {}
 _RESIDENT_JOB = False
+_JOB_NETWORK: ContextVar[dict[str, Any] | None] = ContextVar("resident_network", default=None)
+_INSTALL_LOCK = threading.Lock()
+
+
+def _policy():
+    state = _JOB_NETWORK.get()
+    return state["policy"] if state is not None else _POLICY
+
+
+def _dns():
+    state = _JOB_NETWORK.get()
+    return state["dns"] if state is not None else _DNS_NAMES
+
+
+def _events():
+    state = _JOB_NETWORK.get()
+    return state["events"] if state is not None else _EVENTS
+
+
+def _admission():
+    state = _JOB_NETWORK.get()
+    return state["admission"] if state is not None else _ADMISSION
+
+
+def _evidence():
+    state = _JOB_NETWORK.get()
+    return state["evidence"] if state is not None else _EVIDENCE
 
 
 class NetworkPolicyError(RuntimeError):
@@ -62,9 +90,9 @@ def _protocol_allowed(protocol: str) -> bool:
             current_job()
         except ResidentProtocolError:
             return False  # Background or completed contexts cannot borrow the next job's routes.
-    protocols = _POLICY.get("allowed_protocols", _POLICY.get("protocols"))
+    protocols = _policy().get("allowed_protocols", _policy().get("protocols"))
     if protocols is None:
-        return _policy_bool(_POLICY, protocol, _policy_bool(_POLICY, "network", False))
+        return _policy_bool(_policy(), protocol, _policy_bool(_policy(), "network", False))
     if isinstance(protocols, str):
         protocols = (protocols,)
     return protocol.lower() in {str(item).lower() for item in protocols}
@@ -88,11 +116,11 @@ def _endpoint_parts(address: Any) -> tuple[str, int | None]:
 
 def _allowed_destination(host: str, port: int | None) -> bool:
     host = host.strip("[]").lower().rstrip(".")
-    allowed = _destinations(_POLICY)
+    allowed = _destinations(_policy())
     if not allowed:
         return False
     aliases = {host}
-    aliases.update(_DNS_NAMES.get(host, set()))
+    aliases.update(_dns().get(host, set()))
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:
@@ -118,7 +146,7 @@ def _record(kind: str, *, host: str = "", port: int | None = None, allowed: bool
     if detail:
         event["detail"] = detail
     with _LOCK:
-        _EVENTS.append(event)
+        _events().append(event)
 
 
 def _check(kind: str, address: Any) -> tuple[str, int | None]:
@@ -131,21 +159,21 @@ def _check(kind: str, address: Any) -> tuple[str, int | None]:
 
 
 def _write_evidence() -> None:
-    if _EVIDENCE is None:
+    if _evidence() is None:
         return
-    protocols = _POLICY.get("allowed_protocols", _POLICY.get("protocols", ()))
+    protocols = _policy().get("allowed_protocols", _policy().get("protocols", ()))
     if isinstance(protocols, str):
         protocols = (protocols,)
-    payload = {"schema_version": 1, "pid": os.getpid(), "events": list(_EVENTS), "limitations": [
+    payload = {"schema_version": 1, "pid": os.getpid(), "events": list(_events()), "limitations": [
         "application_hook_only; native children outside Python are not OS-firewall isolated",
-    ], "admission": dict(_ADMISSION), "policy": {
-        "allowed_destinations": list(_destinations(_POLICY)),
+    ], "admission": dict(_admission()), "policy": {
+        "allowed_destinations": list(_destinations(_policy())),
         "allowed_protocols": list(protocols or ()),
-        "redirects": _policy_bool(_POLICY, "redirects", _policy_bool(_POLICY, "allow_redirects", False)),
-        "proxy": bool(_POLICY.get("proxy")),
+        "redirects": _policy_bool(_policy(), "redirects", _policy_bool(_policy(), "allow_redirects", False)),
+        "proxy": bool(_policy().get("proxy")),
     }}
     broker_path = os.environ.get("ASTRID_NETWORK_BROKER_EVIDENCE", "")
-    if broker_path and "admission_digest" not in _ADMISSION:
+    if broker_path and "admission_digest" not in _admission():
         try:
             broker_value = json.loads(Path(broker_path).read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -160,8 +188,8 @@ def _write_evidence() -> None:
     # the signing key for settlement evidence, and an unsigned child file is
     # never accepted as authority by the host.  Host/broker evidence is
     # finalized and signed by the parent after the child exits.
-    _EVIDENCE.parent.mkdir(parents=True, exist_ok=True)
-    _EVIDENCE.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    _evidence().parent.mkdir(parents=True, exist_ok=True)
+    _evidence().write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
 
 
 def _kernel_socketpair() -> bool:
@@ -175,9 +203,9 @@ def _patch_socket(originals: Mapping[tuple[Any, str], Any]) -> None:
         value = originals[(socket, "getaddrinfo")](host, port, *args, **kwargs)
         name = str(host).lower().rstrip(".")
         ips = {str(item[4][0]).lower() for item in value if item and len(item) > 4 and item[4]}
-        _DNS_NAMES.setdefault(name, set()).update(ips)
+        _dns().setdefault(name, set()).update(ips)
         for ip in ips:
-            _DNS_NAMES.setdefault(ip, set()).add(name)
+            _dns().setdefault(ip, set()).add(name)
         allowed = _protocol_allowed("dns") and _allowed_destination(name, None)
         _record("dns", host=name, port=int(port) if str(port).isdigit() else None, allowed=allowed)
         if not allowed:
@@ -261,7 +289,7 @@ def _patch_redirects(originals: Mapping[tuple[Any, str], Any]) -> None:
 
     def redirect_request(self: Any, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str, *args: Any, **kwargs: Any):
         host, port = _endpoint_parts(newurl)
-        allowed = _policy_bool(_POLICY, "redirects", _policy_bool(_POLICY, "allow_redirects", False)) and _allowed_destination(host, port or 80)
+        allowed = _policy_bool(_policy(), "redirects", _policy_bool(_policy(), "allow_redirects", False)) and _allowed_destination(host, port or 80)
         _record("redirect", host=host, port=port, allowed=allowed)
         if not allowed:
             raise NetworkPolicyError(f"network policy denied redirect destination {host}")
@@ -277,7 +305,7 @@ def _validated_descendant_owner() -> bool:
     only honest escape hatch is an explicitly validated proxy/broker or an OS
     network sandbox that owns that descendant and emits evidence itself.
     """
-    raw = _POLICY.get("descendant_enforcement", _POLICY.get("native_descendants"))
+    raw = _policy().get("descendant_enforcement", _policy().get("native_descendants"))
     if not isinstance(raw, Mapping):
         return False
     kind = str(raw.get("kind", raw.get("owner", ""))).lower()
@@ -287,7 +315,7 @@ def _validated_descendant_owner() -> bool:
         return False
     # A declaration alone is not a route.  Require an explicit endpoint or a
     # host-issued broker descriptor, plus a named allowlisted route/wrapper.
-    endpoint = _POLICY.get("proxy") or _POLICY.get("broker")
+    endpoint = _policy().get("proxy") or _policy().get("broker")
     return bool(endpoint) and bool(raw.get("route")) and bool(raw.get("wrapper"))
 
 
@@ -366,6 +394,9 @@ def _local_identity_tool(command: Any) -> bool:
         ("rev-parse", "--show-toplevel"),
         ("ls-files", "-z", "-c", "-o", "--exclude-standard"),
         ("status", "--porcelain", "--untracked-files=all"),
+        # The pinned prepared compiler narrows the existing read-only status
+        # probe to its own package. It grants no additional Git operation.
+        ("status", "--porcelain", "--untracked-files=all", "--", "vibecomfy"),
     }
     # Accept an optional local checkout selector, but never a remote URL.
     if len(tokens) >= 3 and tokens[1] == "-C":
@@ -444,7 +475,7 @@ def _patch_native_descendants(originals: MutableMapping[tuple[Any, str], Any]) -
 
 def _broker_handshake() -> None:
     """Perform the live admission handshake for an explicitly configured proxy."""
-    raw_proxy = _POLICY.get("proxy")
+    raw_proxy = _policy().get("proxy")
     if not isinstance(raw_proxy, str) or not raw_proxy:
         return
     parsed = urlsplit(raw_proxy)
@@ -533,36 +564,30 @@ def install_from_environment(*, strict: bool = False, broker_required: bool = Fa
 @contextmanager
 def resident_job_policy(policy: Mapping[str, Any] | None, evidence_path: Path,
                         *, admission: Mapping[str, Any]):
-    """Bind the existing Python hook to one serial resident job, then revoke it.
+    """Keep one job's routes, DNS observations and evidence in its context.
 
-    Broker/native/delegation policies still use disposable workers. This adds
-    no network route and gives idle/background code no new-connect authority.
-    Child observations remain diagnostics; only the parent can publish results.
+    Hooks are installed once. Idle threads have no connect authority, and
+    copied contexts lose authority when their originating job is cancelled.
     """
-    global _RESIDENT_JOB, _POLICY, _EVIDENCE, _ADMISSION
-    if _RESIDENT_JOB:
+    global _RESIDENT_JOB, _EVIDENCE
+    if _JOB_NETWORK.get() is not None:
         raise NetworkPolicyError("resident network context is already occupied")
     selected = dict(policy or {"allowed_protocols": [], "allowed_destinations": []})
     if selected.get("broker") or selected.get("proxy"):
         raise NetworkPolicyError("brokered work requires a disposable worker")
-    install({"allowed_protocols": [], "allowed_destinations": []}, evidence_path)
-    with _LOCK:
+    with _INSTALL_LOCK:
+        install({"allowed_protocols": [], "allowed_destinations": []}, evidence_path)
+        _EVIDENCE = None  # No job's record may be overwritten by process exit.
         _RESIDENT_JOB = True
-        _POLICY, _EVIDENCE, _ADMISSION = selected, Path(evidence_path), dict(admission)
-        _DNS_NAMES.clear()
-        _EVENTS.clear()
+    token = _JOB_NETWORK.set({"policy": selected, "evidence": Path(evidence_path),
+                              "admission": dict(admission), "events": [], "dns": {}})
     try:
         yield
     finally:
         try:
             _write_evidence()
         finally:
-            with _LOCK:
-                _POLICY = {"allowed_protocols": [], "allowed_destinations": []}
-                _EVIDENCE, _ADMISSION = None, {}
-                _DNS_NAMES.clear()
-                _EVENTS.clear()
-                _RESIDENT_JOB = False
+            _JOB_NETWORK.reset(token)
 
 
 __all__ = ["NetworkPolicyError", "install", "install_from_environment"]

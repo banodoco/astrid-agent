@@ -19,7 +19,12 @@ _PERCENT = dict(PHASES)
 
 def write_progress(phase: str, percent: int | None = None, **extra: int) -> bool:
     """Atomically publish the newest phase; never lets a progress failure fail the run."""
-    raw = os.environ.get(PROGRESS_PATH_ENV)
+    from astrid.core.execution.resident_sessions import _JOB
+
+    job = _JOB.get()
+    if job is not None and job.cancelled():
+        return False
+    raw = job.environment.get(PROGRESS_PATH_ENV) if job is not None and job.session_identity else os.environ.get(PROGRESS_PATH_ENV)
     if not raw:
         return False
     payload = {"phase": phase, "percent": _PERCENT.get(phase) if percent is None else percent, **extra}

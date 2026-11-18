@@ -8,8 +8,11 @@ import keyword
 import os
 import re
 import sys
+import threading
 from pathlib import Path
 from typing import Mapping
+
+_INSTALL_LOCK = threading.RLock()
 
 
 class _PackSourceLoader(importlib.abc.Loader):
@@ -187,6 +190,15 @@ def install_pack_imports(pack_id: str, root: Path, path_names: Mapping[str, str]
                          *, source_digest: str | None = None,
                          selected_map: Mapping[str, Mapping[str, str]] | None = None,
                          verified_relocations: Mapping[str, Mapping[str, str]] | None = None) -> str:
+    with _INSTALL_LOCK:
+        return _install_pack_imports(pack_id, root, path_names, source_digest=source_digest,
+                                     selected_map=selected_map, verified_relocations=verified_relocations)
+
+
+def _install_pack_imports(pack_id: str, root: Path, path_names: Mapping[str, str] | None = None,
+                         *, source_digest: str | None = None,
+                         selected_map: Mapping[str, Mapping[str, str]] | None = None,
+                         verified_relocations: Mapping[str, Mapping[str, str]] | None = None) -> str:
     """Bind this worker to one canonical source identity for its lifetime.
 
     Ordinary actions use a fresh interpreter. Declared resident actions keep
@@ -208,6 +220,15 @@ def install_pack_imports(pack_id: str, root: Path, path_names: Mapping[str, str]
         verified_relocations=verified_relocations)
     if selected.get(pack_id) != {"root": str(root), "source_digest": source_digest}:
         raise ValueError("selected pack differs from admitted map")
+    names = dict(path_names or {})
+    prefix = "astrid.packs." + pack_id
+    for finder in sys.meta_path:
+        if isinstance(finder, _PackSourceFinder):
+            if finder.selected != selected or finder.aliases.get(pack_id, {}) != names:
+                raise ValueError("selected pack changed; start a fresh action worker")
+            # Source verification above remains per job. Process import and
+            # environment setup belong to the retained incarnation, once.
+            return prefix
     environment = selected_pack_environment(selected, verified_relocations=verified_relocations)
     previous = {name: os.environ.get(name) for name in environment}
     os.environ.update(environment)
@@ -225,12 +246,6 @@ def install_pack_imports(pack_id: str, root: Path, path_names: Mapping[str, str]
             else:
                 os.environ[name] = value
         raise ValueError(str(exc)) from exc
-    names = dict(path_names or {})
-    for finder in sys.meta_path:
-        if isinstance(finder, _PackSourceFinder):
-            if finder.selected != selected or finder.aliases.get(pack_id, {}) != names:
-                raise ValueError("selected pack changed; start a fresh action worker")
-            return prefix
     if any(name == "astrid.packs." + item or name.startswith("astrid.packs." + item + ".")
            for name in sys.modules for item in selected):
         raise ValueError("selected pack was imported before action admission")

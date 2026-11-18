@@ -863,8 +863,12 @@ def _run_and_settle(
     # The requirements this run resolved for its entry, recorded in the attempt's producer evidence on every
     # route (align still judges the manifest above, on the local route only).
     admitted_requirements = None
+    from astrid.packs.vibecomfy.resident import current_session
+    resident = current_session()
     if entry:
-        admitted_requirements = manifest if manifest is not None else _entry_manifest(entry, _workflow_inputs(workflow_inputs), workflow_path=workflow_path)
+        admitted_requirements = manifest if manifest is not None else (
+            resident.entry_manifest(entry, _workflow_inputs(workflow_inputs), workflow_path) if resident is not None
+            else _entry_manifest(entry, _workflow_inputs(workflow_inputs), workflow_path=workflow_path))
     if manifest is None and engine_local_run:
         manifest = admitted_requirements
     if manifest is not None and engine_local_run and not manifest.get("models_root"):
@@ -974,9 +978,11 @@ def _run_and_settle(
                 after_outputs_job=after_outputs_job,
             )
         with provenance.capture():
-            if synthetic is None and prepared is not None:
+            if synthetic is None and (prepared is not None or resident is not None):
                 # Trusted host already aligned this exact attempt and verified
                 # the owned HTTP listener. The worker has no lifecycle authority.
+                # An admitted attached resident uses its held generation's full
+                # live preflight on a miss, instead of probing /object_info again.
                 local = _AttachedServer(adapter, output_root, production_kwargs)
                 local.submit(comfy_url, workflow_path)
                 production_result = local.result

@@ -19,6 +19,8 @@ from .resident_sessions import (
     PROTOCOL,
     ResidentJobContext,
     ResidentProtocolError,
+    resident_capacity,
+    resident_invocation,
     decode_frame,
     encode_frame,
 )
@@ -118,7 +120,7 @@ def serve(*, captured=None) -> int:
     _verify_admitted_source(admission)
     if (definition.get("metadata", {}).get("action_declaration", {}).get("session")
             != {"kind": "resident", "protocol": PROTOCOL}
-            or definition.get("metadata", {}).get("action_invocation", {}).get("kind") != "python"
+            or resident_invocation(definition.get("metadata", {})) is None
             or any(key in admission for key in ("task_id", "attempt_id", "fence", "network_nonce"))):
         raise ResidentProtocolError("resident startup does not name a retained Python contract")
     send({"protocol": PROTOCOL, "kind": "ready", "binding": binding,
@@ -130,6 +132,13 @@ def serve(*, captured=None) -> int:
     secret_values = {key: value for key, value in baseline_environment.items()
                      if key in declared_secrets
                      or key.upper().endswith(("_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIAL"))}
+    if resident_capacity(definition.get("metadata", {})) > 1:
+        from .resident_worker_context import serve_context_jobs
+        try:
+            return serve_context_jobs(init, send=send, captured=captured,
+                                      baseline_environment=baseline_environment, secret_values=secret_values)
+        finally:
+            wire.close()
     idle_cwd = Path.cwd()
     active = None
     previous = None

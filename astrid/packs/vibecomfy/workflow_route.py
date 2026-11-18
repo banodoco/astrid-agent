@@ -55,10 +55,15 @@ class WorkflowRunner(VibeComfyBackend):
             source = source_input_ref(workflow_path, out_dir)
             with preserve_result_on_error(out_dir, task_id=task_identity, attempt_id=attempt_identity,
                                           source=source, workflow_path=workflow_path, transport=transport):
-                result = run_workflow_result_path(
-                    workflow_path, out_dir, profile_id="local_server",
-                    comfy_url=comfy_url, **kwargs,
-                )
+                from astrid.packs.vibecomfy.resident import current_session
+                resident = current_session()
+                if resident is not None:
+                    result = resident.run(workflow_path, out_dir, comfy_url=comfy_url, **kwargs)
+                else:
+                    result = run_workflow_result_path(
+                        workflow_path, out_dir, profile_id="local_server",
+                        comfy_url=comfy_url, **kwargs,
+                    )
                 return complete_producer_result(result, out_dir, task_id=task_identity,
                                                 attempt_id=attempt_identity, source=source, transport=transport)
         # Embedded and host-session checkout profiles keep the base behavior.
