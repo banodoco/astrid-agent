@@ -171,3 +171,49 @@ def test_sampler_strength_mask_uses_requested_dimensions(tmp_path):
     frames = list(iter_mask_frames(path, start_frame=0, count=2, width=32, height=32))
     assert [frame[(7 * 32 + 7) * 3] for frame in frames] == [64, 191]
     assert all(frame[0] == 0 for frame in frames)
+
+
+def test_compiler_hands_prepared_static_permission_to_composition(tmp_path):
+    import copy
+    from astrid.packs.h3_av.shared.compile import compile_preparation
+    from astrid.packs.h3_av.shared.prepare import _v2_mask_schedule
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from tests.packs.h3_av.test_native_masked_edit import WATERMARK, _prepare
+
+    raw = copy.deepcopy(WATERMARK)
+    raw["media"][0]["edit"][0]["mask"] = {"rectangle": [256, 144, 256, 144]}
+    raw["output"] = {"size": [512, 288]}
+    preparation = _prepare(raw, tmp_path)
+    preparation["mask_schedule"] = _v2_mask_schedule(normalize_request(raw))
+    result = compile_preparation(preparation, out_dir=tmp_path / "compile")
+    change = preparation["mask_schedule"]["video"]["changes"][0]
+    binding = change["prepared_mask_asset"]
+    record = next(item for item in preparation["assets"] if item["asset"] == binding)
+    assert any(item["binding"] == binding for item in result["managed_assets"]["manifest"]["assets"])
+    with Image.open(record["path"]) as mask:
+        assert mask.size == (512, 288)
+        assert mask.getpixel((128, 72)) == 255
+        assert mask.getpixel((127, 72)) == 0
+
+
+def test_compiled_permission_is_used_by_composition_and_verification(tmp_path):
+    from astrid.packs.h3_av.shared.compile import compile_preparation
+    from astrid.packs.h3_av.shared.compose import compose_candidate
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from astrid.packs.h3_av.shared.verify import verify_candidate
+    from tests.packs.h3_av.test_moving_masks import _fixtures
+
+    source, generated = _fixtures(tmp_path)
+    request = normalize_request({
+        "version": 2, "prompt": "Change the rectangle", "duration": 1,
+        "media": [{"id": "source", "asset": "source.mkv", "role": "timeline", "modality": "video",
+                   "at": {"frame": 0}, "range": [0, 1],
+                   "edit": [{"stream": "video", "during": [0, 1],
+                             "mask": {"rectangle": [160, 96, 128, 96]}}]}],
+    })
+    preparation = prepare_request(request, asset_map={"source.mkv": str(source)})
+    compile_preparation(preparation, out_dir=tmp_path / "compiled")
+    composition = compose_candidate(preparation=preparation, generated=generated, source=source, out_dir=tmp_path / "composition")
+    result = verify_candidate(preparation=preparation, composition=composition, source=source)
+    assert result["preservation"]["spatial_complement"][0]["protected_pixel_count_per_frame"] == 1024 * 576 - 128 * 96

@@ -646,8 +646,6 @@ def _compile_native_masked_edit(
         spec = canonical_spec(request)
     except H3RequestError as exc:
         raise CompilationError(str(exc)) from exc
-    if any(region.canvas is not None for region in spec.regions):
-        raise CompilationError("authored mask canvas requires prepared-mask composition handoff")
     settings = spec.settings
     from .generation import DEFAULT_SIZE
     request_canvas = request.value.get("canvas") or {}
@@ -687,8 +685,7 @@ def _compile_native_masked_edit(
     frame_load_cap = round((source.range[1] - source.range[0]) * 24)
     if frame_load_cap != round(spec.duration * 24):
         raise CompilationError("native masked edit source window must match output duration")
-    # B2 resolves boxes and supplied static masks to the same binary PNG. The
-    # graph fixes its output canvas at 1024x576, as source preflight requires.
+    # Resolve each static grant once at the request canvas for both consumers.
     regions = {region.name: region for region in spec.regions}
     destination.mkdir(parents=True, exist_ok=True)
     grant_masks = []
@@ -710,7 +707,7 @@ def _compile_native_masked_edit(
                 mask_path = assets[region.mask_asset]
         if mask_kind == "image":
             try:
-                resolved = resolve_static_region(region, width=1024, height=576, assets=assets,
+                resolved = resolve_static_region(region, width=canvas_size[0], height=canvas_size[1], assets=assets, authored_canvas=True,
                     polarity="black_preserve_white_edit" if region.mask_asset else None)
             except H3RequestError as exc:
                 raise CompilationError(str(exc)) from exc
@@ -718,7 +715,7 @@ def _compile_native_masked_edit(
             mask_path.write_bytes(resolved.mask_png)
         interval = tuple(round(value * 24) for value in grant.during)
         grant_masks.append((mask_path, mask_kind, interval, grant.strength, f"{source.occurrence_id or source_id}.edit[{index}]"))
-    combined = _combined_strength_mask(grant_masks, frames=frame_load_cap, destination=destination)
+    combined = _combined_strength_mask(grant_masks, frames=frame_load_cap, destination=destination, size=canvas_size)
     during = tuple(round(value * 24) for value in operation.during)
     if len(grant_masks) > 1:
         mask_path, mask_kind = combined, "video"
@@ -730,7 +727,7 @@ def _compile_native_masked_edit(
             mask_kind = "video"
             # Validate the exact transformed bytes that the managed graph receives.
             _combined_strength_mask([(mask_path, "video", (0, frame_load_cap), operation.strength, grant_masks[0][4])],
-                                    frames=frame_load_cap, destination=destination)
+                                    frames=frame_load_cap, destination=destination, size=canvas_size)
     mask_binding = "video_mask_0" if mask_kind == "video" else "mask_0"
     bindings: dict[str, Path] = {"source_video": assets[source_id], mask_binding: mask_path}
     references_by_name = {item.name: item for item in spec.refs}
@@ -786,6 +783,13 @@ def _compile_native_masked_edit(
     if unresolved:
         raise CompilationError(f"H3 model requirements are unresolved: {unresolved!r}")
     members = _member_by_binding(facts().build_asset_manifest(bindings))
+    active_index = 0
+    for permission_path, kind, _, strength, _ in grant_masks:
+        if strength <= 0:
+            continue
+        if kind == "image":
+            bindings[f"permission_mask_{active_index}"] = permission_path
+        active_index += 1
     destination.mkdir(parents=True, exist_ok=True)
     workflow_resource = destination / "native-masked-edit-bundle"
     emit_bundle(graph, workflow_resource / "workflow.py", provenance=Provenance.AGENT_AUTHORED)
@@ -836,7 +840,6 @@ def _compile_native_masked_edit(
             "native masked edit is CPU-verified only; spatial mode on ref2va plus Turbo is unproven on GPU",
             "one modifying video operation per request; static boxes, image masks or per-frame mask video",
             "audio regeneration, polygon masks and per-operation adapters are unsupported",
-            "box-only regions bind in the graph; end-to-end execution still needs resolved mask propagation for composition paste-back",
             "long windows use one pass without automatic chunking",
             "zero-reference requests assume MiniMaxH3ReferenceToVideo accepts no ref images (unverified)",
         ],
@@ -1253,14 +1256,52 @@ def compile_preparation(preparation: Mapping[str, Any], *, out_dir: str | Path) 
     destination = Path(out_dir).expanduser().resolve()
     destination.mkdir(parents=True, exist_ok=True)
     if request.value.get("version") == 2:
-        return _compile_native_v2(request, assets, destination)
-    if request.value["operation"] == "generate":
-        return _compile_generation(request, assets, destination)
-    if request.value["operation"] == "edit":
-        return _compile_native_masked_edit(request, assets, destination, branch="source_backed_v2v")
-    if request.value["operation"] == "continue":
-        return _compile_native(request, assets, destination)
-    raise CompilationError(f"unsupported H3 operation: {request.value['operation']!r}")
+        result = _compile_native_v2(request, assets, destination)
+    elif request.value["operation"] == "generate":
+        result = _compile_generation(request, assets, destination)
+    elif request.value["operation"] == "edit":
+        result = _compile_native_masked_edit(request, assets, destination, branch="source_backed_v2v")
+    elif request.value["operation"] == "continue":
+        result = _compile_native(request, assets, destination)
+    else:
+        raise CompilationError(f"unsupported H3 operation: {request.value['operation']!r}")
+    managed = result.get("managed_assets", {})
+    records = managed.get("manifest", {}).get("assets", [])
+    permission_records = [r for r in records if str(r.get("binding", "")).startswith("permission_mask_")]
+    if permission_records and isinstance(preparation.get("mask_schedule"), Mapping):
+        import zipfile
+        if not isinstance(preparation, dict) or not isinstance(preparation.get("assets"), list):
+            raise CompilationError("prepared permission masks require mutable preparation assets")
+        changes = [change for change in preparation["mask_schedule"]["video"]["changes"]
+                   if change.get("action") == "generate"]
+        existing_ids = {row.get("asset") for row in preparation["assets"]}
+        with zipfile.ZipFile(managed["path"]) as archive:
+            for record in permission_records:
+                binding = record["binding"]
+                index = int(binding.removeprefix("permission_mask_"))
+                if index >= len(changes) or binding in existing_ids:
+                    raise CompilationError("prepared permission cannot be associated with its scheduled grant")
+                payload = archive.read(record["member"])
+                if hashlib.sha256(payload).hexdigest() != record["sha256"]:
+                    raise CompilationError(f"managed permission mask {binding} failed integrity validation")
+                path = destination / (binding + ".png")
+                path.write_bytes(payload)
+                change = changes[index]
+                preparation["assets"].append({"asset": binding, "binding": binding, "member": record["member"],
+                    "path": str(path), "status": "resolved", "sha256": record["sha256"], "size": len(payload),
+                    "derivation": {"selector": change.get("area"), "mask_asset": change.get("mask_asset"),
+                                   "occurrence_id": change.get("occurrence_id"), "index": change.get("index")}})
+        for record in permission_records:
+            index = int(record["binding"].removeprefix("permission_mask_"))
+            if index >= len(changes):
+                raise CompilationError("prepared permission does not match a scheduled grant")
+            changes[index]["prepared_mask_asset"] = record["binding"]
+        schedule = preparation["mask_schedule"]
+        schedule["digest"] = hashlib.sha256(json.dumps(
+            {key: value for key, value in schedule.items() if key != "digest"},
+            sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+    return result
 
 
 def _compile_generation(
