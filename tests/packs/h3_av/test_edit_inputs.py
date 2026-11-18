@@ -320,7 +320,7 @@ def test_preparation_reports_duration_warning(monkeypatch, frames, warned):
     warnings = prepare.prepare_request(req)["warnings"]
     duration_warnings = [row for row in warnings if row["limit"] == "job_duration_seconds"]
     assert bool(duration_warnings) is warned
-    assert any(row["limit"] == "no_image_reference" for row in warnings)
+    assert any(row["limit"] == "text_only_documented_use" and "outside the documented use" in row["message"] for row in warnings)
 
 
 def test_character_swap_requires_each_minimum_reference():

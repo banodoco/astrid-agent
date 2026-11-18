@@ -428,11 +428,13 @@ def test_graph_custom_node_requirements_follow_used_lowerings_and_pins():
     assert "VHS_LoadVideoFFmpeg" in video_rows["ComfyUI-VideoHelperSuite"]["classes"]
 
 
-@pytest.mark.parametrize("media", [[], [
-    {"asset": "video", "role": "reference", "modality": "video", "audio": False},
-    {"asset": "audio", "role": "reference", "modality": "audio"},
-]])
-def test_source_free_without_image_compiles_and_warns(monkeypatch, tmp_path, media):
+@pytest.mark.parametrize("media", [[],
+    [{"asset": "video", "role": "reference", "modality": "video", "audio": False}],
+    [{"asset": "audio", "role": "reference", "modality": "audio"}],
+    [{"asset": "video", "role": "reference", "modality": "video", "audio": False},
+     {"asset": "audio", "role": "reference", "modality": "audio"}],
+])
+def test_source_free_without_image_compiles_with_correct_documented_use_note(monkeypatch, tmp_path, media):
     from vibecomfy.cli_loader import load_workflow_any
     from astrid.packs.h3_av.shared import generation, prepare
     from astrid.packs.h3_av.shared.compile import _compile_native_v2
@@ -445,7 +447,10 @@ def test_source_free_without_image_compiles_and_warns(monkeypatch, tmp_path, med
     monkeypatch.setattr(prepare, "_check_source_av_rates", lambda *_: None)
     monkeypatch.setattr(prepare, "_v2_mask_schedule", lambda *_args, **_kwargs: {"status": "ready"})
     dry_run = prepare.prepare_request(request)
-    assert any(row["limit"] == "no_image_reference" for row in dry_run["warnings"])
+    notes = [row for row in dry_run["warnings"] if row["limit"] == "text_only_documented_use"]
+    assert bool(notes) is (not media)
+    if notes:
+        assert "outside the documented use of the Ref2VA checkpoint" in notes[0]["message"]
     assets = {}
     for item in media:
         path = tmp_path / item["asset"]
@@ -470,8 +475,8 @@ def test_source_free_without_image_compiles_and_warns(monkeypatch, tmp_path, med
     api = workflow.compile("api", run_inputs=compiled["workflow_inputs"])
     target = next(node for node in api.values() if node["class_type"] == "MiniMaxH3ReferenceToVideo")
     assert not any(key.startswith("ref_images.") for key in target["inputs"])
-    assert ("ref_videos.ref_video_0" in target["inputs"]) == bool(media)
-    assert ("ref_audios.ref_audio_0" in target["inputs"]) == bool(media)
+    assert ("ref_videos.ref_video_0" in target["inputs"]) == any(item["modality"] == "video" for item in media)
+    assert ("ref_audios.ref_audio_0" in target["inputs"]) == any(item["modality"] == "audio" for item in media)
 
 
 def test_text_only_request_runs_public_hook_without_fabricated_assets(tmp_path):
@@ -493,7 +498,7 @@ def test_text_only_request_runs_public_hook_without_fabricated_assets(tmp_path):
         assert result["assets"] == {}
         assert "managed_assets" not in compilation
         assert not (out / "h3/plan/compile/managed-assets.zip").exists()
-        assert any(row["limit"] == "no_image_reference" for row in preparation["warnings"])
+        assert any(row["limit"] == "text_only_documented_use" and "outside the documented use" in row["message"] for row in preparation["warnings"])
         results.append((compilation["request_digest"], compilation["compilation_digest"]))
     assert results[0] == results[1]
 

@@ -653,8 +653,8 @@ def prepare_request(
     if request.value.get("version") == 2:
         assets = _resolve_assets(request, asset_map)
         conditioning_measurements = _admit_conditioning(request, assets, warnings)
-        if branch_for(request) == "source_free" and not any(item.get("role") == "reference" and item.get("modality") == "image" for item in request.value["media"]):
-            warnings.append({"limit": "no_image_reference", "message": "Generation without an image reference compiles but is untested."})
+        if branch_for(request) == "source_free" and not request.value["media"]:
+            warnings.append({"limit": "text_only_documented_use", "message": "Text-only generation is outside the documented use of the Ref2VA checkpoint."})
         adapter_id = (request.value.get("settings", {}).get("adapter") or {}).get("id")
         if branch_for(request) == "source_backed_v2v" and adapter_id != "character_swap_v1":
             for row in conditioning_measurements:
