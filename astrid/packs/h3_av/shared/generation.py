@@ -30,8 +30,10 @@ LIMITS = {
     "character_swap_references": {"value": {"video": 1, "image": 1, "additional": "allowed but untested"}, "source": "Astrid lowering"},
     "character_swap_mask_rectangle": {"value": "integer pixel coordinates", "source": "Astrid lowering"},
     "continuation_references": {"value": {"image": 2, "video": 0, "audio": 0}, "source": "Astrid lowering"},
+    "continuation_canvas": {"value": [1024, 576], "source": "Astrid lowering"},
     "regions_per_pass": {"value": {"seeds": 1, "reference_sets": 1}, "source": "Astrid lowering"},
 }
+DEFAULT_SIZE = (1024, 576)
 IMAGE_REFERENCE_CAPACITY = LIMITS["builder_slots"]["value"]["image"]
 VIDEO_REFERENCE_CAPACITY = LIMITS["builder_slots"]["value"]["video"]
 CHARACTER_SWAP_ID = "character_swap_v1"
@@ -233,6 +235,7 @@ class GenerationInputs:
 
 def generation_inputs_from_bindings(*, references: list[str], prompt: str, frames: int,
                                     model: str, steps: int, seed: int,
+                                    canvas_size: tuple[int, int] = DEFAULT_SIZE,
                                     sampler: str = "res_multistep", guidance: float = 0.95,
                                     scheduler: str = "simple", video_references: list[dict[str, Any]] | None = None,
                                     audio_references: list[dict[str, Any]] | None = None,
@@ -262,7 +265,7 @@ def generation_inputs_from_bindings(*, references: list[str], prompt: str, frame
         rows.append({"occurrence": binding["binding"], "modality": "audio", "trim": binding.get("resolved_range"),
                      "input_binding": binding, "tag": f"<Audio {audio_index}>"})
     return GenerationInputs(
-        canvas={"width": 1024, "height": 576, "frames": frames},
+        canvas={"width": canvas_size[0], "height": canvas_size[1], "frames": frames},
         placed=({"occurrence": "legacy-source", "input_binding": masked_edit["source_binding"],
                  "start_time": masked_edit["start_time"], "frame_count": masked_edit["frame_load_cap"]},) if masked_edit else (),
         grants=({"stream": "video", "interval": [0, masked_edit["frame_load_cap"]],

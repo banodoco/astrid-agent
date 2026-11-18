@@ -355,13 +355,31 @@ def _identity_value(value: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] | None = None) -> H3Request:
-    _unknown(raw, {"version", "prompt", "duration", "media", "settings", "continuation"}, "request")
+    _unknown(raw, {"version", "prompt", "duration", "media", "settings", "continuation", "output"}, "request")
     if raw.get("version") != 2: raise H3RequestError("version must be 2")
     prompt = _nonblank(raw.get("prompt"), "prompt")
     media_raw = raw.get("media")
     if not isinstance(media_raw, list): raise H3RequestError("media must be an array")
     continuation = raw.get("continuation", False)
     if type(continuation) is not bool: raise H3RequestError("continuation must be boolean")
+    from .generation import DEFAULT_SIZE, LIMITS
+    output = _object(raw.get("output", {}), "output") or {}
+    _unknown(output, {"size"}, "output")
+    size = output.get("size", DEFAULT_SIZE)
+    size_limits = LIMITS["canvas_dimension"]["value"]
+    if (not isinstance(size, (list, tuple)) or len(size) != 2
+            or any(type(dimension) is not int for dimension in size)):
+        raise H3RequestError("output.size must be exactly two JSON integers [width, height]")
+    width, height = size
+    if any(dimension < size_limits["min"] or dimension > size_limits["max"]
+           or dimension % size_limits["multiple"] for dimension in (width, height)):
+        raise H3RequestError(
+            "output.size width and height must each be 32–16384 inclusive and divisible by 32"
+        )
+    if continuation and tuple(size) != tuple(LIMITS["continuation_canvas"]["value"]):
+        raise H3RequestError(
+            f"output.size is limited by continuation_canvas: {LIMITS['continuation_canvas']['value']}"
+        )
     duration_fraction = (
         None if raw.get("duration") is None else _fraction(raw["duration"], "duration")
     )
@@ -486,7 +504,7 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
         duration = _time_value(duration_fraction)
     _ticks(duration_fraction, FPS, "duration")
     _validate_character_swap_media(settings, occurrences, continuation)
-    value = {"version": 2, "prompt": prompt, "duration": duration, "media": occurrences, "settings": settings, "continuation": continuation, "profile": PROFILE, "output_count": 1}
+    value = {"version": 2, "prompt": prompt, "duration": duration, "media": occurrences, "settings": settings, "continuation": continuation, "canvas": {"width": width, "height": height}, "profile": PROFILE, "output_count": 1}
     encoded = json.dumps(json_times(_identity_value(value)), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
     return H3Request(value=value, digest=hashlib.sha256(encoded).hexdigest())
 
