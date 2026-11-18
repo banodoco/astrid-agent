@@ -26,7 +26,7 @@ target has since re-pinned VibeComfy; this proof cannot qualify that new tuple.
 LS-2.1 owns its measurement after re-pins. Other branches select their exact PR
 base. The dependency identity guard remains enforced in every comparison.
 
-The packet branch integrates accepted plan base `d0217776` (including `24c68a27` and `6451821e`)
+The packet branch integrates accepted plan base `91cb4cb4` (including `d0217776`, `24c68a27` and `6451821e`)
 before final proof. Under the original-tuple and merge rulings, the workflow
 checks the exact clean merge head and ordered parents, reproduces its native
 merge, preserves the accepted Runtime-pin reader, and verifies every shared
@@ -37,7 +37,7 @@ parent retains the original product, dependency pins, references and test
 guards. `plan55-qualification.json` records both commits and trees, all harness
 hashes and the two plan-added LS-5 harness files outside this measurement.
 Follow-ups retain the preceding published controller as the first parent;
-the current predecessor is `22b5d21e`, which retains `02add382`, `d7f53b0d` and `d84e7276`. Each
+the current predecessor is `d0834eb6`, which retains `22b5d21e`, `02add382`, `d7f53b0d` and `d84e7276`. Each
 qualification source extends its predecessor's original-tuple source. The
 checker follows that published chain back to the accepted plan merge and
 verifies both identities and the ordinary two-parent merge;
@@ -51,6 +51,13 @@ stay in the integrated head and are not substituted into the original proof.
 The final evidence-field correction extends the same qualification source and
 merges into `22b5d21e`. Source selection follows both recorded plan bases to
 retain the original tuple across that already verified plan advance.
+Under [Lead 6985581776](https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6985581776),
+the next continuation preserves published `d0834eb6`, then merges accepted
+`91cb4cb4`. The recorded plan predecessors are `91cb4cb4` to `d0217776` to
+`24c68a27`; source selection traverses each boundary with the same ordered
+parent and source-ancestry checks. The accepted LS-6 product and test bytes
+stay in the integrated head, and the original product, pins, meter policies,
+limits, references and prior assertions stay unchanged in qualification.
 The continuation source archive retains the integrated PR head. This source
 handoff does not qualify the newer accepted product/dependency tuple; LS-2.1
 owns that measurement. Any unexpected source or merge difference fails before
@@ -77,7 +84,7 @@ continue to use the accepted gate bytes. A legitimate gate/configuration change
 is a visible failure requiring the Lead's review; it cannot approve itself.
 
 This introducing PR's policy job is expected to fail once because accepted
-base `24c68a27` has no policy checker, under Standing ruling 5. Its measurement
+base `91cb4cb4` has no policy checker, under Standing ruling 5. Its measurement
 jobs are independent and keep normal failing exits. After integration, the
 Lead's required-check/path-protection setup must retain this job and protect
 its workflow entrypoint; this packet does not change repository settings.

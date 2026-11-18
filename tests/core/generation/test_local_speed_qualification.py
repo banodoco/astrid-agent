@@ -197,3 +197,53 @@ def test_successive_followups_retain_each_published_controller(tmp_path):
         assert receipt["qualification"] == source
         assert run(tmp_path, "merge-base", git_before, controller) == git_before
         previous = controller
+
+
+def test_second_plan_advance_preserves_each_native_boundary_and_original_tuple(tmp_path, monkeypatch):
+    from tests import local_speed_qualification as qualification
+
+    args, source = graph(tmp_path)
+    controller, plan = args["controller"], args["plan_base"]
+    accepted_predecessors = {}
+    for index in range(2):
+        previous_controller, previous_plan = controller, plan
+        run(tmp_path, "checkout", "--detach", source)
+        write(tmp_path, "tests/_local_speed_process.py", f"original-tuple correction {index}\n")
+        source = commit(tmp_path, f"retain original tuple {index}")
+        run(tmp_path, "checkout", "--detach", controller)
+        run(tmp_path, "merge", "--no-commit", "--no-ff", source)
+        followup = commit(tmp_path, f"retain published controller {index}")
+        run(tmp_path, "checkout", "--detach", plan)
+        write(tmp_path, "astrid/product.py", f"accepted plan product {index}\n")
+        plan = commit(tmp_path, f"accepted plan advance {index}")
+        run(tmp_path, "checkout", "--detach", followup)
+        run(tmp_path, "merge", "--no-commit", "--no-ff", plan)
+        controller = commit(tmp_path, f"native plan merge {index}")
+        accepted_predecessors[plan] = previous_plan
+        monkeypatch.setattr(qualification, "PLAN_PREDECESSORS", dict(accepted_predecessors), raising=False)
+        args.update(controller=controller, plan_base=plan, previous_plan_base=previous_plan,
+                    previous_controller=previous_controller)
+        receipt = validate_sources(**args)
+        assert receipt["qualification"] == source
+        assert receipt["previous_controller_preserved"] == previous_controller
+        assert receipt["retained_followup_merge"]["controller"] == followup
+        assert receipt["native_merge_tree"] == run(tmp_path, "rev-parse", controller + "^{tree}")
+        assert receipt["native_merge_conflicts"] == []
+        assert run(tmp_path, "show", controller + ":astrid/product.py") == f"accepted plan product {index}"
+        assert run(tmp_path, "show", source + ":astrid/product.py") == "original product"
+        assert run(tmp_path, "show", source + ":runtime.lock.json") == '{"source_commit": "original-runtime"}'
+        assert receipt["new_plan_tuple_qualified"] is False
+        # Match the published SDK correction between the two accepted advances.
+        run(tmp_path, "checkout", "--detach", source)
+        write(tmp_path, "tests/_local_speed_process.py", f"final original-tuple correction {index}\n")
+        source = commit(tmp_path, f"final source correction {index}")
+        run(tmp_path, "checkout", "--detach", controller)
+        run(tmp_path, "merge", "--no-commit", "--no-ff", source)
+        corrected = commit(tmp_path, f"preserve accepted native history {index}")
+        args.update(controller=corrected, previous_controller=controller)
+        receipt = validate_sources(**args)
+        assert receipt["qualification"] == source
+        assert receipt["previous_controller_preserved"] == controller
+        assert run(tmp_path, "merge-base", controller, corrected) == controller
+        assert receipt["new_plan_tuple_qualified"] is False
+        controller = corrected
