@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -14,29 +15,43 @@ import yaml
 from scripts.reshape import check_structure_ceiling as gate
 
 ROOT = Path(__file__).resolve().parents[2]
-POLICY = ROOT / "scripts/reshape/check_structure_ceiling.py"
+POLICY = Path("scripts/reshape/check_structure_ceiling.py")
 KNOWN = "top-level astrid module must move to a canonical package: astrid/agent_context.py"
 OTHER = "top-level astrid module must move to a canonical package: astrid/omp_agent.py"
 NEW = "top-level astrid module must move to a canonical package: astrid/gl2_new.py"
 
 
 def write_ceiling(root: Path, records: list[str]) -> None:
-    document = json.loads((ROOT / gate.CEILING).read_text())
-    document["violations"] = sorted(records)
+    document = {
+        "tool": "structure",
+        "origin": {"fixture": "GL.2 fixed two-record structure ceiling"},
+        "violations": sorted(records),
+    }
     path = root / gate.CEILING
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(document) + "\n")
 
 
-def run_gate(root: Path) -> subprocess.CompletedProcess[str]:
+def run_gate(root: Path, trusted_root: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, "-I", str(POLICY), "--root", str(root)],
+        [sys.executable, "-I", str(trusted_root / POLICY), "--root", str(root)],
         capture_output=True, text=True, check=False,
     )
 
 
+@pytest.fixture(scope="module")
+def trusted_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    root = tmp_path_factory.mktemp("trusted-structure")
+    # Keep the real checker and scanner, but make the accepted fixture records
+    # independent of findings that contributors may retire from the real tree.
+    for directory in ("astrid", "scripts"):
+        shutil.copytree(ROOT / directory, root / directory, ignore=shutil.ignore_patterns("__pycache__"))
+    write_ceiling(root, [KNOWN, OTHER])
+    return root
+
+
 @pytest.fixture
-def candidate(tmp_path: Path) -> Path:
+def candidate(tmp_path: Path, trusted_root: Path) -> Path:
     for directory in ("astrid", "astrid/core", "astrid/packs"):
         path = tmp_path / directory
         path.mkdir(parents=True, exist_ok=True)
@@ -44,7 +59,7 @@ def candidate(tmp_path: Path) -> Path:
     for name in ("agent_context.py", "omp_agent.py"):
         (tmp_path / "astrid" / name).write_text("value = 1\n")
     write_ceiling(tmp_path, [KNOWN, OTHER])
-    control = run_gate(tmp_path)
+    control = run_gate(tmp_path, trusted_root)
     assert control.returncode == 0, control.stdout + control.stderr
     assert "candidate=2 current=2 errors=0" in control.stdout
     return tmp_path
@@ -60,7 +75,7 @@ def candidate(tmp_path: Path) -> Path:
         ("fix-and-remove", 0, "candidate=1 current=1 errors=0"),
     ],
 )
-def test_packet_injections(candidate: Path, mutation: str, exit_code: int, message: str) -> None:
+def test_packet_injections(candidate: Path, trusted_root: Path, mutation: str, exit_code: int, message: str) -> None:
     if mutation in {"new-finding", "add-entry", "edit-entry"}:
         (candidate / "astrid/gl2_new.py").write_text("value = 2\n")
     if mutation == "add-entry":
@@ -72,67 +87,70 @@ def test_packet_injections(candidate: Path, mutation: str, exit_code: int, messa
         write_ceiling(candidate, [OTHER])
     if mutation == "fix-and-remove":
         (candidate / "astrid/agent_context.py").unlink()
-    result = run_gate(candidate)
+    result = run_gate(candidate, trusted_root)
     assert result.returncode == exit_code, result.stdout + result.stderr
     assert message in result.stdout + result.stderr
 
 
-def test_removed_entry_cannot_return_after_the_next_merge() -> None:
-    origin = gate.load_ceiling(ROOT / gate.CEILING).origin
+def test_removed_entry_cannot_return_after_the_next_merge(trusted_root: Path) -> None:
+    origin = gate.load_ceiling(trusted_root / gate.CEILING).origin
     accepted = gate.Ceiling(origin, (OTHER,))
     restored = gate.Ceiling(origin, tuple(sorted([KNOWN, OTHER])))
     errors = gate.compare_ceiling(accepted, restored, [KNOWN, OTHER])
     assert "ceiling entry added or edited: " + KNOWN in errors
 
 
-def test_fixing_all_remaining_findings_allows_an_empty_ceiling(candidate: Path) -> None:
+def test_fixing_all_remaining_findings_allows_an_empty_ceiling(candidate: Path, trusted_root: Path) -> None:
     for name in ("agent_context.py", "omp_agent.py"):
         (candidate / "astrid" / name).unlink()
     write_ceiling(candidate, [])
-    result = run_gate(candidate)
+    result = run_gate(candidate, trusted_root)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "candidate=0 current=0 errors=0" in result.stdout
 
 
 @pytest.mark.parametrize("contents", [None, "", '{"tool":"structure",', "{}", "[]"])
-def test_missing_empty_or_truncated_ceiling_fails(candidate: Path, contents: str | None) -> None:
+def test_missing_empty_or_truncated_ceiling_fails(candidate: Path, trusted_root: Path, contents: str | None) -> None:
     path = candidate / gate.CEILING
     if contents is None:
         path.unlink()
     else:
         path.write_text(contents)
-    result = run_gate(candidate)
+    result = run_gate(candidate, trusted_root)
     assert result.returncode == 2, result.stdout + result.stderr
     assert "Structure ceiling failed:" in result.stderr
 
 
-def test_candidate_cannot_run_its_own_gate_or_scanner(candidate: Path) -> None:
+def test_candidate_cannot_run_its_own_gate_or_scanner(candidate: Path, trusted_root: Path) -> None:
     (candidate / "astrid/gl2_new.py").write_text("value = 2\n")
     for relative in ("scripts/reshape/check_structure_ceiling.py", "astrid/core/structure.py"):
         (candidate / relative).write_text("raise SystemExit(0)\n")
-    result = run_gate(candidate)
+    result = run_gate(candidate, trusted_root)
     assert result.returncode == 1, result.stdout + result.stderr
     assert "new structure finding: " + NEW in result.stderr
-    assert "Structure scanner source: " + str(ROOT) in result.stdout
+    assert "Structure scanner source: " + str(trusted_root) in result.stdout
 
 
-def test_missing_source_tree_is_not_a_clean_scan(candidate: Path) -> None:
+def test_missing_source_tree_is_not_a_clean_scan(candidate: Path, trusted_root: Path) -> None:
     (candidate / "astrid/core/__init__.py").unlink()
-    result = run_gate(candidate)
+    result = run_gate(candidate, trusted_root)
     assert result.returncode == 2, result.stdout + result.stderr
     assert "incomplete source tree" in result.stderr
 
 
-def test_early_success_exit_is_not_a_completed_scan(candidate: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_early_success_exit_is_not_a_completed_scan(
+    candidate: Path, trusted_root: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     def incomplete_scan(root: Path) -> list[str]:
         raise SystemExit(0)
 
     monkeypatch.setattr(gate, "scan", incomplete_scan)
+    monkeypatch.setattr(gate, "TRUSTED_ROOT", trusted_root)
     assert gate.main(["--root", str(candidate)]) == 2
 
 
-def test_policy_cannot_read_its_own_ceiling_as_the_base() -> None:
-    result = run_gate(ROOT)
+def test_policy_cannot_read_its_own_ceiling_as_the_base(trusted_root: Path) -> None:
+    result = run_gate(trusted_root, trusted_root)
     assert result.returncode == 2, result.stdout + result.stderr
     assert "not the candidate's own copy" in result.stderr
 
