@@ -35,14 +35,56 @@ from `b18080bc` are confined to the named census/qualification files. That
 parent retains the original product, dependency pins, references and test
 guards. `plan55-qualification.json` records both commits and trees, all harness
 hashes and the two plan-added LS-5 harness files outside this measurement.
-The follow-up for already-exited children merges into published controller
-`d84e7276`, and its qualification source extends that controller's original-tuple
-parent. The checker verifies both identities and the ordinary two-parent merge;
+Follow-ups retain the preceding published controller as the first parent;
+the current predecessor is `d7f53b0d`, which retains `d84e7276`. Each
+qualification source extends its predecessor's original-tuple source. The
+checker follows that published chain back to the accepted plan merge and
+verifies both identities and the ordinary two-parent merge;
 the published first-parent history is preserved without rebasing.
 The continuation source archive retains the integrated PR head. This source
 handoff does not qualify the newer accepted product/dependency tuple; LS-2.1
 owns that measurement. Any unexpected source or merge difference fails before
 the handoff. The paired runner and all its source/dependency guards are unchanged.
+
+### Practical threat model and policy source
+
+[Owner decision 6979024059](https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6979024059)
+sets this gate's scope. It catches realistic weakening intended to make a run
+green, including accidental selection loss, changed caps or references, and a
+candidate grading itself with changed gate code. It fails closed on incomplete
+ordinary results. Reviews have at most two rounds; round two checks only the
+findings from round one.
+
+The separate **Meter policy from accepted base** job checks out the exact PR
+base and runs that base's `tests/local_speed_policy.py` directly, before any
+product or test installation. The proposed commit is fetched only as Git data.
+The checker refuses changes, additions or deletions in the meter harness,
+oracles, integration helpers, saved references, development constraints,
+workflow and pytest configuration, including nested config and conftest files.
+This covers marker/skip/xfail changes, `-k`/`-m`, workflow `PYTEST_ADDOPTS`,
+self-approved ceilings and replacement gate code. Ordinary product changes
+continue to use the accepted gate bytes. A legitimate gate/configuration change
+is a visible failure requiring the Lead's review; it cannot approve itself.
+
+This introducing PR's policy job is expected to fail once because accepted
+base `24c68a27` has no policy checker, under Standing ruling 5. Its measurement
+jobs are independent and keep normal failing exits. After integration, the
+Lead's required-check/path-protection setup must retain this job and protect
+its workflow entrypoint; this packet does not change repository settings.
+
+The existing result checks require both callers once at every sample index,
+complete task/output/observer evidence and the full phase test count with no
+failures, errors or skips. Missing, empty or truncated logs/XML and ordinary
+skip/xfail/deselection results fail. Original byte-identity, dependency, timing,
+reference and counter checks remain in force. The Windows source-graph fixture
+writes explicit UTF-8/LF bytes, so platform text translation cannot change the
+Git blobs that its unchanged byte guards inspect.
+
+Deliberate standard-library shadowing, test-runner-internal patches, packaging
+or build hooks, and crafted malformed result files are stated limits for path
+protection and review. No defences for those attacks are added. In particular,
+the ordinary JUnit count reader is not an authenticity check for forged XML;
+the independent raw-observation checks still require complete real reports.
 
 While the saved references are still the original v2 records, the runner also
 retains a separate historical measurement:

@@ -16,7 +16,7 @@ def run(root, *args, check=True):
 def write(root, path, text):
     target = root / path
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(text, encoding="utf-8")
+    target.write_bytes(text.encode("utf-8"))
 
 
 def commit(root, message):
@@ -124,3 +124,33 @@ def test_followup_retains_published_history_without_changing_either_tuple(tmp_pa
     args["previous_controller"] = qualified
     with pytest.raises(ValueError, match="exact published controller"):
         validate_sources(**args)
+
+
+def test_fixture_preserves_exact_lf_bytes_with_windows_text_defaults(tmp_path, monkeypatch):
+    original = type(tmp_path).write_text
+
+    def windows_write_text(path, data, encoding=None, errors=None, newline=None):
+        return original(path, data, encoding=encoding, errors=errors,
+                        newline="\r\n" if newline is None else newline)
+
+    monkeypatch.setattr(type(tmp_path), "write_text", windows_write_text)
+    test_actual_native_merge_preserves_the_original_tuple_and_accepted_changes(tmp_path)
+
+
+def test_successive_followups_retain_each_published_controller(tmp_path):
+    args, source = graph(tmp_path)
+    previous = args["controller"]
+    for index in range(2):
+        git_before = previous
+        run(tmp_path, "checkout", "--detach", source)
+        write(tmp_path, "tests/_local_speed_process.py", f"follow-up observer {index}\n")
+        source = commit(tmp_path, f"original-tuple follow-up {index}")
+        run(tmp_path, "checkout", "--detach", previous)
+        run(tmp_path, "merge", "--no-commit", "--no-ff", source)
+        controller = commit(tmp_path, f"retain published controller {index}")
+        args.update(controller=controller, previous_controller=previous)
+        receipt = validate_sources(**args)
+        assert receipt["previous_controller_preserved"] == git_before
+        assert receipt["qualification"] == source
+        assert run(tmp_path, "merge-base", git_before, controller) == git_before
+        previous = controller
