@@ -523,7 +523,7 @@ def _bounded_edit_mask(path: Path, *, kind: str, frames: int, during: tuple[int,
             ffmpeg, "-v", "error", "-y", "-fflags", "+bitexact", *inputs, "-i", str(path),
             "-vf", f"drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill:enable='lt(n,{start})+gte(n,{end})'",
             "-frames:v", str(frames), "-an", "-fflags", "+bitexact", "-map_metadata", "-1", "-c:v", "ffv1",
-            "-flags:v", "+bitexact", "-threads", "1", "-level", "3", "-pix_fmt", "gray", str(target),
+            "-flags:v", "+bitexact", "-threads", "1", "-level", "3", "-pix_fmt", "gbrp" if kind == "video" else "gray", str(target),
         ], check=True, capture_output=True, timeout=120)
     except (OSError, subprocess.SubprocessError) as exc:
         raise CompilationError(f"cannot bound native edit mask to its interval: {exc}") from exc
@@ -573,9 +573,11 @@ def _combined_strength_mask(grants: list[tuple[Path, str, tuple[int, int], float
                 if not survived[index]:
                     # The pinned node samples bilinearly with align_corners=False
                     # at 16x reduction: each token samples these four centres.
-                    pixels = weight.load()
-                    survived[index] = any(pixels[x + dx, y + dy] for y in range(7, 576, 16)
-                                          for x in range(7, 1024, 16) for dx in (0, 1) for dy in (0, 1))
+                    pixels = weight.tobytes()
+                    survived[index] = any(
+                        any(pixels[(y + dy) * 1024 + 7 + dx:(y + dy) * 1024 + 1024:16])
+                        for y in range(7, 576, 16) for dy in (0, 1) for dx in (0, 1)
+                    )
                 if writer:
                     combined = ImageChops.lighter(combined, weight)
             if writer:
@@ -639,8 +641,9 @@ def _compile_native_masked_edit(
         for item in request.value["media"]:
             for edit in item.get("edit", []):
                 rectangle = edit.get("mask", {}).get("rectangle")
-                if rectangle is not None and any(not float(value).is_integer() for value in rectangle):
-                    raise CompilationError(f"Character Swap mask rectangle requires {LIMITS['character_swap_mask_rectangle']['value']}")
+                rectangle_limit = LIMITS["character_swap_mask_rectangle"]["value"]
+                if rectangle is not None and rectangle_limit == "integer pixel coordinates" and any(not float(value).is_integer() for value in rectangle):
+                    raise CompilationError(f"Character Swap mask rectangle requires {rectangle_limit}")
         adapter_sha256 = character_swap_asset_sha256()
     passes = spec.sampling_passes()
     if request.value.get("version") != 2 and len(passes) != 1:

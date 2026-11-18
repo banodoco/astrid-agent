@@ -270,7 +270,7 @@ def test_visible_moving_mask_composes_pixels_on_both_sides(tmp_path):
     mask = tmp_path / "visible-mask.mkv"
     frames = []
     for index in range(24):
-        frame = bytearray(1024 * 576 * 3)
+        frame = bytearray(b"\x00\xff\x00" * (1024 * 576))
         for y in range(8, 40):
             x = index * 2
             offset = (y * 1024 + x) * 3
@@ -287,6 +287,10 @@ def test_visible_moving_mask_composes_pixels_on_both_sides(tmp_path):
         return data[offset:offset + 3]
     assert pixel(delivered, 12, 12) == pixel(replacement, 12, 12)
     assert pixel(delivered, 80, 12) == pixel(original, 80, 12)
+    from astrid.packs.h3_av.shared.verify import verify_candidate
+    verification = verify_candidate(preparation=preparation, composition=result, source=source)
+    evidence = verification["preservation"]["spatial_complement"][0]
+    assert evidence["protected_pixel_count_per_frame"] == [1024 * 576 - 32 * 32] * 24
 
 
 @pytest.mark.parametrize("conflict", ["seed", "references"])
@@ -331,3 +335,31 @@ def test_zero_strength_composition_keeps_source_and_positive_overlap_wins(tmp_pa
     prepared = prepare_request(normalize_request(raw), asset_map={"clip": str(source)})
     result = compose_candidate(preparation=prepared, generated=generated, source=source, out_dir=tmp_path / "zero")
     assert Path(result["candidate"]["path"]).read_bytes() == source.read_bytes()
+
+
+def test_mask_verification_uses_only_the_red_permission_channel():
+    from astrid.packs.h3_av.shared.compose import _protected_from_rgb
+    # Black, green-only and blue-only pixels are protected; red is editable.
+    assert _protected_from_rgb(bytes((0, 0, 0, 0, 255, 0, 0, 0, 255, 255, 0, 0))) == [0, 1, 2]
+
+
+def test_partial_window_mask_preprocessing_preserves_red_and_green_channels(tmp_path):
+    import subprocess
+    from astrid.packs.h3_av.shared.compile import _bounded_edit_mask
+
+    raw = bytearray(b"\x00\xff\x00" * (1024 * 576))
+    for y in range(8, 40):
+        start = (y * 1024 + 8) * 3
+        raw[start:start + 32 * 3] = b"\xff\x00\x00" * 32
+    mask = tmp_path / "colored-mask.mkv"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "1024x576", "-r", "24", "-i", "-", "-c:v", "ffv1", "-pix_fmt", "gbrp", str(mask)], input=bytes(raw) * 3, check=True, capture_output=True)
+    bounded = _bounded_edit_mask(mask, kind="video", frames=3, during=(1, 2), destination=tmp_path)
+    decoded = subprocess.run(["ffmpeg", "-v", "error", "-i", str(bounded), "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], check=True, capture_output=True).stdout
+    frame_bytes = 1024 * 576 * 3
+    def pixel(frame, x, y):
+        offset = frame * frame_bytes + (y * 1024 + x) * 3
+        return decoded[offset:offset + 3]
+    assert pixel(0, 12, 12) == b"\x00\x00\x00"
+    assert pixel(1, 12, 12) == b"\xff\x00\x00"
+    assert pixel(1, 80, 12) == b"\x00\xff\x00"
+    assert pixel(2, 12, 12) == b"\x00\x00\x00"

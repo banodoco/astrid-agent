@@ -552,12 +552,9 @@ def iter_mask_frames(path: Path, *, start_frame: int, count: int, width: int, he
 
 
 def _protected_from_rgb(frame: bytes) -> list[int]:
-    """Pixel indexes whose every mask channel is zero."""
+    """Pixel indexes whose red permission channel is zero."""
 
-    return [
-        index for index in range(len(frame) // 3)
-        if not (frame[index * 3] or frame[index * 3 + 1] or frame[index * 3 + 2])
-    ]
+    return [index for index in range(len(frame) // 3) if not frame[index * 3]]
 
 
 def _verify_spatial_mask_complement(
@@ -615,7 +612,7 @@ def _verify_spatial_mask_complement(
                 ))
             else:
                 with Image.open(mask_path) as opened:
-                    static_pixels.append(opened.convert("L").resize((width, height), resampling).tobytes())
+                    static_pixels.append(opened.convert("RGB").getchannel("R").resize((width, height), resampling).tobytes())
         protected_pixels = [
             index for index in range(width * height)
             if all(pixels[index] == 0 for pixels in static_pixels)
@@ -651,7 +648,7 @@ def _verify_spatial_mask_complement(
                     protected_pixels = [
                         pixel for pixel in range(width * height)
                         if all(pixels[pixel] == 0 for pixels in static_pixels)
-                        and all(max(frame[pixel * 3:pixel * 3 + 3]) == 0 for frame in frames)
+                        and all(frame[pixel * 3] == 0 for frame in frames)
                     ]
                     per_frame_counts.append(len(protected_pixels))
                 frames: list[bytes] = []
@@ -918,13 +915,13 @@ def _compose_media(
                             mask_filter = (
                                 f"[{mask_index}:v:0]"
                                 f"trim=start_frame={round(start * 24)}:end_frame={round(end * 24)},"
-                                f"setpts=PTS-STARTPTS,fps={mask_fps},format=gbrp[{member_label}]"
+                                f"setpts=PTS-STARTPTS,fps={mask_fps},format=gbrp,extractplanes=r,format=gray,format=gbrp[{member_label}]"
                             )
                         else:
                             mask_filter = (
                                 f"[{mask_index}:v:0]"
                                 f"scale={output_width}:{output_height}:flags=neighbor,fps={mask_fps},format=gbrp,"
-                                f"trim=duration={end - start},setpts=PTS-STARTPTS[{member_label}]"
+                                f"extractplanes=r,format=gray,format=gbrp,trim=duration={end - start},setpts=PTS-STARTPTS[{member_label}]"
                             )
                         mask_filters.append(mask_filter)
                     current_label = member_labels[0]

@@ -318,9 +318,9 @@ def test_preparation_reports_duration_warning(monkeypatch, frames, warned):
     monkeypatch.setattr(prepare, "_check_source_av_rates", lambda *_: None)
     monkeypatch.setattr(prepare, "_v2_mask_schedule", lambda *_args, **_kwargs: {"status": "ready"})
     warnings = prepare.prepare_request(req)["warnings"]
-    assert bool(warnings) is warned
-    if warned:
-        assert warnings[0]["limit"] == "job_duration_seconds"
+    duration_warnings = [row for row in warnings if row["limit"] == "job_duration_seconds"]
+    assert bool(duration_warnings) is warned
+    assert any(row["limit"] == "no_image_reference" for row in warnings)
 
 
 def test_character_swap_requires_each_minimum_reference():

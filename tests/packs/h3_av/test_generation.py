@@ -387,6 +387,10 @@ def test_unbound_generated_reference_tag_is_refused(tmp_path):
     ]})
     with pytest.raises(CompilationError, match="prompt reference tag <Audio 1> has no effective binding"):
         _compile_native_v2(request, {"image": image}, tmp_path / "out")
+    allowed = normalize_v2({"version": 2, "prompt": "A scene with <ordinary text>", "duration": 6, "media": [
+        {"asset": "image", "role": "reference", "modality": "image"},
+    ]})
+    assert _compile_native_v2(allowed, {"image": image}, tmp_path / "allowed")["status"] == "compiled"
 
 
 @pytest.mark.parametrize("location", ["request", "occurrence"])
@@ -486,3 +490,39 @@ def test_text_only_request_runs_public_hook_without_fabricated_assets(tmp_path):
         assert any(row["limit"] == "no_image_reference" for row in preparation["warnings"])
         results.append((compilation["request_digest"], compilation["compilation_digest"]))
     assert results[0] == results[1]
+
+
+def test_same_mixed_occurrences_bind_identically_on_source_free_and_masked_routes(tmp_path):
+    from vibecomfy.cli_loader import load_workflow_any
+    from astrid.packs.h3_av.shared.compile import _compile_native_v2
+    from astrid.packs.h3_av.shared.request_v2 import normalize_v2
+
+    references = [
+        {"id": "voice", "asset": "voice", "role": "reference", "modality": "audio"},
+        {"id": "performance", "asset": "performance", "role": "reference", "modality": "video", "range": [1, 3], "audio": True},
+        {"id": "picture", "asset": "picture", "role": "reference", "modality": "image"},
+    ]
+    image = tmp_path / "image.png"
+    Image.new("RGB", (32, 32)).save(image)
+    assets = {"picture": image}
+    for name in ("voice", "performance", "source"):
+        assets[name] = tmp_path / name
+        assets[name].write_bytes(b"asset fixture")
+    timeline = {"id": "source", "asset": "source", "role": "timeline", "modality": "video", "at": {"frame": 0}, "range": [0, 6],
+                "edit": [{"stream": "video", "during": [0, 6], "mask": {"full_frame": True}}]}
+    prompt = "<Picture 1> <Video 1> <Audio 1> <Audio 2>"
+    outputs = []
+    for name, media in (("free", references), ("masked", [*references, timeline])):
+        request = normalize_v2({"version": 2, "prompt": prompt, "duration": 6, "media": media})
+        compilation = _compile_native_v2(request, assets, tmp_path / name)
+        rows = compilation["capabilities"]["conditioning"]
+        workflow = load_workflow_any(compilation["workflow"]["workflow.py"]["path"])
+        api = workflow.compile("api", run_inputs=compilation["workflow_inputs"])
+        target = next(node for node in api.values() if node["class_type"] == "MiniMaxH3ReferenceToVideo")
+        assert target["inputs"]["prompt"] == prompt
+        for row in rows:
+            assert row["input_binding"]["port"] in target["inputs"]
+            if "soundtrack" in row["input_binding"]:
+                assert row["input_binding"]["soundtrack"]["port"] in target["inputs"]
+        outputs.append(rows)
+    assert outputs[0] == outputs[1]
