@@ -52,9 +52,62 @@ import aliases. A new suppression, or one moved onto another statement, fails.
 New or changed `.pyi` interfaces also fail: a sibling stub can hide an unchecked
 implementation without an explicit ignore comment. A function or class defined
 in both a `TYPE_CHECKING` branch and its `else` is also a suppression: the typed
-stub can replace the runtime body in mypy's view. Existing structure violations are
-still compared with the committed structure baseline by `make structure`; the
-controls gate does not replace or enlarge that baseline.
+stub can replace the runtime body in mypy's view. The controls gate does not
+replace or enlarge any baseline. Structure uses the separately authorized
+ceiling and trusted comparison described below.
+
+## Structure ceiling (GL.2)
+
+The owner froze exactly 102 existing structure findings in
+`scripts/reshape/structure_ceiling.json` under
+[decision 6979176022](https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6979176022).
+The initial records are the original 23 entries plus the exact 79 strings from
+the [P39-07 proof](https://github.com/banodoco/astrid-agent/pull/397#issuecomment-6976181544).
+The file records their source and hashes. The old
+`scripts/reshape/baselines/structure_astrid.json` is retained byte for byte:
+SHA256 `07b193211dccf453249af6810ce89838d2e2cf0d42b56b0de9456d97609dc232`.
+This is one authorized freeze, not permission to regenerate the ceiling later.
+
+`make structure` reports current findings against that ceiling. It rejects
+`--write-baseline` for the approved ceiling. The separate **Structure ceiling
+policy from merge base** step is also mandatory: it exports `ASTRID_GATE_BASE`
+and uses `python -I` to run that snapshot's `check_structure_ceiling.py`, with
+that snapshot's structure scanner and its imports, against the candidate tree.
+The proposed JSON is data. The candidate cannot supply its own checker, scanner
+or accepted record list. The accepted list is always the merge-base copy, so a
+record removed in one merge cannot be restored in the next.
+
+The check rejects additions, edited records, altered provenance, and removal
+of a record whose finding remains. A real fix can remove its matching entry.
+Fixing one finding never buys allowance for another. Missing, empty, truncated,
+duplicate or invalid ceiling data fails, as does an incomplete source root or
+a scanner that exits before returning. The scan executes directly in trusted
+code; no log or result file is parsed as a successful scan, so missing or
+truncated output cannot supply a pass. A genuinely empty completed scan is
+allowed when no findings remain.
+
+The five packet injections and completeness/source-selection checks run in
+`tests/reshape/test_structure_ceiling.py`, included in the existing hosted gate
+probes. Their product mutations use private fixture trees. All previous tests
+and assertions remain in place.
+
+**Initial installation:** the introducing PR's merge base has neither this
+checker nor the new ceiling. Its trusted-policy step therefore fails once with
+the missing base checker, under Release 14 Standing ruling 5. There is no
+fallback to candidate code and no exit override. The ordinary structure step
+can demonstrate the exact 102-record freeze on that PR. After the Lead lands
+the owner-approved exact head, subsequent comparisons use the accepted checker
+and ceiling. The landing push still compares to the previous head; the Lead's
+qualification on the new plan head must name that plan branch as its destination
+to demonstrate the installed policy. Both steps remain required.
+
+All changed gate paths require the exact-head `ASTRID_GATE_OWNERS` approval
+below, including later ceiling reductions. The Lead owns review, integration,
+trusted workflow installation and required checks. Deliberately crafted
+runner/import/build-hook tampering and code executed by candidate packaging or
+metadata discovery remain limits covered by path protection and human review;
+GL.2 adds no defences for those attacks. Gate review is at most two rounds,
+with round two checking only the round-one fixes.
 
 ## Trusted gate policy and one-time installation
 
@@ -65,6 +118,7 @@ and never checks out or imports the PR tree. It reads Git blobs between the
 PR's merge base and exact head SHA. The following changes require approval:
 
 - all of `scripts/**`, since that directory supplies gate startup imports;
+- `astrid/core/structure.py`, which defines the structure scanner's rules;
 - top-level modules/packages named in `sys.stdlib_module_names`, including
   root `.py`/`.pyi` files and paths inside a matching top-level directory;
 - `tests/lanes.py`, `Makefile`, all workflow files, and CODEOWNERS files;

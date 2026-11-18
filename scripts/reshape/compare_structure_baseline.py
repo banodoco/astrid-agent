@@ -16,7 +16,11 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-BASELINE_PATH = REPO_ROOT / "scripts" / "reshape" / "baselines" / "structure_astrid.json"
+# GL.2 freezes the owner's exact 102 records separately from the original
+# 23-entry baseline, which remains byte-identical as provenance. CI also runs
+# check_structure_ceiling.py from the merge base: this report cannot authorize
+# additions to the ceiling or changes to its own scanner.
+BASELINE_PATH = REPO_ROOT / "scripts" / "reshape" / "structure_ceiling.json"
 
 # Make direct execution (as used by ``make structure``) able to import the
 # checkout's ``astrid`` package even though Python puts this script's folder on
@@ -57,6 +61,9 @@ def main() -> int:
     parser.add_argument("--baseline", type=Path, default=BASELINE_PATH)
     parser.add_argument("--write-baseline", action="store_true")
     args = parser.parse_args()
+
+    if args.write_baseline and args.baseline.resolve() == BASELINE_PATH.resolve():
+        parser.error("the approved structure ceiling cannot be regenerated; remove only fixed findings")
 
     found = current()
     if args.write_baseline:
