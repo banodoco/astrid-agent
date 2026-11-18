@@ -82,6 +82,21 @@ def measure(root, output, native, vocabulary, *, historical=False):
     return summary
 
 
+def write_step_summary(summary):
+    """Publish duration observations and every retained rejection separately."""
+    destination = os.environ.get("GITHUB_STEP_SUMMARY")
+    if destination:
+        fields = ("status", "base", "candidate", "reference_product", "validation_product",
+                  "candidate_product", "duration_observations", "historical_reference_status",
+                  "historical_regressions", "base_validation_regressions", "paired_regressions", "error")
+        report = {name: summary[name] for name in fields if name in summary}
+        with Path(destination).open("a", encoding="utf-8") as stream:
+            stream.write("## Plan 55 calibrated meter\n\n"
+                         "Duration-following totals are observations under owner decision 6987905451. "
+                         "Invariant rejections and strict historical comparisons remain visible.\n\n"
+                         "```json\n" + json.dumps(report, indent=2) + "\n```\n")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", required=True)
@@ -141,8 +156,11 @@ def main():
         summary["historical_reference_status"] = "FAIL; not eligible for replacement" if summary["historical_regressions"] else "PASS; replacement not requested"
         summary["uncalibrated_base_regressions"] = compare_baseline(validation["baseline"], paired["baseline"])
         summary["uncalibrated_paired_regressions"] = compare_baseline(actual["baseline"], paired["baseline"])
-        summary["base_validation_regressions"] = compare_calibrated(validation, paired, policy)
-        summary["paired_regressions"] = compare_calibrated(actual, paired, policy)
+        summary["duration_observations"] = {"base_validation": [], "candidate": []}
+        summary["base_validation_regressions"] = compare_calibrated(
+            validation, paired, policy, observations=summary["duration_observations"]["base_validation"])
+        summary["paired_regressions"] = compare_calibrated(
+            actual, paired, policy, observations=summary["duration_observations"]["candidate"])
         summary["reference_product"] = paired["baseline"]["sources"]
         summary["validation_product"] = validation["baseline"]["sources"]
         summary["candidate_product"] = actual["baseline"]["sources"]
@@ -169,6 +187,7 @@ def main():
             # checked test overlay. No caller-owned checkout is reset/removed.
             subprocess.run(["git", "worktree", "remove", "--force", str(worktree)], cwd=root, check=False)
         base_parent.rmdir()
+    write_step_summary(summary)
     print(json.dumps(summary, indent=2))
     return 0 if summary["status"] == "PASS" else 1
 

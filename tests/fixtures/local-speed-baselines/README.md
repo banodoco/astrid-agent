@@ -8,6 +8,28 @@ two distinct succeeded task records.
 
 ## LS-2.2 gate
 
+[Owner decision 6987905451](https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6987905451)
+sets the current counter policy: duration-following totals are observations,
+with no metric limit. The existing ambient classification identifies them;
+scoped and deterministic counters retain their caps. SDK/host per-poll rules,
+per-request outer-commit caps, exact subprocess counts, dependency identities,
+complete evidence and strict historical comparisons retain their checks.
+No new invariant is introduced. Original failed runs retain their outcomes.
+
+The duration-following route totals include `POST /v1/executors`: the host
+renews registration every 30 seconds, including during active work. Both its
+HTTP count and scope count are observations. Its per-request commit caps and
+complete request-scope evidence remain gates. Run 44368327839 retained the
+original four base-only registration-count breaches before this classification
+correction; each recorded request still had exactly one outer commit.
+
+`counter-calibration.json` retains the controls and observation policy;
+`summary.json` and the Actions step summary record the held-out and candidate
+observations, including samples, extrema and base controls, without a limit.
+Where census attribution produces a remainder, both raw samples and the
+individually attributed census sleeps remain visible. The unrelated residual
+at `subprocess:Popen._wait` keeps its existing cap.
+
 The standing workflow measures the exact comparison base, an independent repeat
 of that base, and the exact candidate on one runner with one Python/dependency
 environment. Each of those cells has five uninstrumented samples and five
@@ -37,7 +59,7 @@ parent retains the original product, dependency pins, references and test
 guards. `plan55-qualification.json` records both commits and trees, all harness
 hashes and the two plan-added LS-5 harness files outside this measurement.
 Follow-ups retain the preceding published controller as the first parent;
-the current predecessor is `d0834eb6`, which retains `22b5d21e`, `02add382`, `d7f53b0d` and `d84e7276`. Each
+the current predecessor is `c6ebb697`, which retains `d0834eb6`, `22b5d21e`, `02add382`, `d7f53b0d` and `d84e7276`. Each
 qualification source extends its predecessor's original-tuple source. The
 checker follows that published chain back to the accepted plan merge and
 verifies both identities and the ordinary two-parent merge;
@@ -61,7 +83,8 @@ limits, references and prior assertions stay unchanged in qualification.
 The continuation source archive retains the integrated PR head. This source
 handoff does not qualify the newer accepted product/dependency tuple; LS-2.1
 owns that measurement. Any unexpected source or merge difference fails before
-the handoff. The paired runner and all its source/dependency guards are unchanged.
+the handoff. The paired runner retains all its source/dependency guards; its
+authorized policy-reporting change is named in the qualification path list.
 
 ### Practical threat model and policy source
 
@@ -129,11 +152,10 @@ comparison follows the Release 14 Lead's
   five candidate samples are then compared with those same limits. Neither the
   holdout nor candidate samples can set or adjust a limit.
 - `counter-calibration.json` retains every control value, minimum, maximum,
-  spread, margin, group and final limit for each caller/counter.
-- The stated margin is **one observed base range (maximum minus minimum)**,
-  only for the explicit ambient allowlist in `_local_speed_calibration.py`.
-  Stable counters and counters outside that list have zero margin, apart from
-  the named host polling cadence model below.
+  spread, margin and group. Duration totals carry `observation_only` and no
+  `limit`; scoped and deterministic counters retain their original limits.
+- The earlier ambient range and host-window arithmetic remain descriptive
+  calibration metadata. They do not turn a duration total into a gate.
 - Ambient groups cover whole-workload/parent wait volume, observed polling
   wait producers, Runtime poll/reaper invocation volume, aggregate associated
   commits and native operations. The named lease-pump and parent pipe-readiness
@@ -155,18 +177,18 @@ Actual `Popen.poll` calls retain their child PID, invocation, start and result;
 actual `time.sleep` calls retain the requested period. For each of the five
 base controls, complete windows reconcile every producer sleep with the raw
 wait totals. The controls must show one sleep per nonterminal poll and one
-common positive requested period. The nominal count budget is the floor of
-the largest control's total polling-window duration divided by that period.
-The producer's final cap is the larger of that budget and its existing
-maximum-plus-range cap. Only the additional increment reaches the parent and
-whole-workload sleep totals, once; every other producer, worker and per-request
-limit stays unchanged. The policy records all five window durations, poll and
-sleep counts, the common period, both bounds and the propagated increment.
+common positive requested period. The recorded historical count estimate is
+the floor of the largest control's total polling-window duration divided by
+that period. The old range, window-budget and propagated-increment metadata
+remain diagnostic observations. Under decision 6987905451 the host and
+containing duration-total metric entries have no limit; the independent
+per-poll, worker and per-request checks remain enforced. The policy records
+all five window durations, poll and sleep counts and the common period.
 
 Every holdout and candidate still requires exactly one sleep per nonterminal
 poll, a per-poll maximum of one, and a requested period at least as long as the
-base period. Neither a longer candidate window nor a new requested period can
-expand the base-derived count cap. Missing poll results, unknown sleep periods,
+base period. A longer candidate window cannot change the base period or the
+per-poll cap. Missing poll results, unknown sleep periods,
 ambiguous child identity, clipped windows and unaccounted producer sleeps are
 incomplete evidence. An observed elimination of the loop remains an improvement.
 Window duration includes guard work and scheduling, so it is not a pure sleep
@@ -200,10 +222,11 @@ becomes zero or authorizes a shorter wait.
 Raw totals remain in the observations and calibration `raw_samples`. Only the
 individually guarded census sleeps are removed from the global sleep total,
 the parent sleep total and that parent's `subprocess:Popen._wait` site before
-their remainders are compared with their existing policies. Each subtraction
-is recorded as `census_sleep_samples`; non-census waits cannot use it. Every
-other counter, the host-window rule, timing policy and reference guard remains
-unchanged. Earlier failed runs keep their original outcome.
+their remainders are compared with their policies. Each subtraction is recorded
+as `census_sleep_samples`; non-census waits cannot use it. The unrelated
+subprocess-site remainder keeps its existing cap. The containing duration
+totals are observations under 6987905451. The host per-poll, timing and reference
+guards remain unchanged. Earlier failed runs keep their original outcome.
 
 The **resident SDK polling rule** follows
 [Lead decision 6981129059](https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6981129059).
@@ -225,14 +248,24 @@ Older artifacts lacking these records keep their original outcomes and cannot
 be reclassified as complete under this rule. If the controls observe no sleep,
 the period remains unknown and cannot authorize a later wait.
 
-Only the named total's cap changes. Its independent per-poll maximum, all
-containing counters, CLI limits, host and census rules, timing policy, immutable
-references, approved dependency identities and earlier Windows base-only
-breaches are retained. SDK sleeps are never subtracted from containing totals.
-The existing ambient test fixture now supplies a positive period and a final
-terminal poll; all existing test assertions remain unchanged. This is the
-round-one fix under the practical threat model, with no additional defenses
-for its documented deliberately crafted bypasses and no further meter round.
+The original 6981129059 change was confined to this SDK total. The owner then
+approved 6987905451 for the other duration totals, including the corresponding
+CLI and containing totals. The SDK's independent per-poll maximum, host and
+census invariants, timing policy, immutable references and approved dependency
+identities remain. SDK sleeps are never subtracted from containing totals.
+The six named assertion migrations are kept together in one commit under
+6987905451 and the delegated narrow clarification
+[6990340205](https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6990340205):
+`test_containing_counters_keep_their_existing_caps`,
+`test_larger_sdk_total_is_an_observation_and_does_not_set_a_limit` (CLI part only),
+`test_five_base_controls_name_each_spread_and_accept_independent_base_variation`,
+`test_control_sample_shortfall_and_candidate_derived_limits_are_refused`,
+`test_base_window_budget_accepts_independent_base_repeat_without_changing_other_limits`,
+and `test_larger_range_bound_is_retained_and_candidate_windows_never_set_it`.
+The two forged-policy probes add a forbidden limit field to an observation and
+retain their original `ValueError` rejection assertions. All per-poll,
+requested-period, completeness and base-only-policy guards remain. No additional
+defense for a documented crafted bypass or extra review round is introduced.
 
 The held-out base comparison must pass as well as the candidate comparison.
 A failed comparison is retained; it cannot expand its own margin or become a

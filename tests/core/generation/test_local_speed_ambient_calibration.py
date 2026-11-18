@@ -106,9 +106,15 @@ def test_five_base_controls_name_each_spread_and_accept_independent_base_variati
     policy = calibration(base)
     item = policy["callers"]["resident_sdk"]["metrics"]["python.sleep_attempt"]
     assert item == {"samples": [2, 3, 4, 5, 6], "minimum": 2, "maximum": 6, "spread": 4,
-                    "margin": 4, "limit": 10, "group": "whole_workload_wait_volume",
-                    "policy": "observed_maximum_plus_range"}
+                    "margin": 4, "group": "whole_workload_wait_volume",
+                    "policy": "observation_only", "decision": "6987905451"}
+    assert "limit" not in item
     assert compare_calibrated(proof((3, 4, 5, 6, 7)), base, policy) == []
+    recorded = []
+    assert compare_calibrated(proof((30, 30, 30, 30, 30)), base, policy, observations=recorded) == []
+    total = next(item for item in recorded if item["caller"] == "resident_sdk"
+                 and item["metric"] == "python.sleep_attempt")
+    assert total["samples"] == [30] * 5 and total["policy"] == "observation_only" and "limit" not in total
     assert policy["reference_eligible"] is False
 
 
@@ -180,7 +186,7 @@ def test_control_sample_shortfall_and_candidate_derived_limits_are_refused():
     with pytest.raises(ValueError, match="five distinct"):
         calibration(proof((2, 3, 4, 5)))
     policy = calibration(base)
-    policy["callers"]["resident_sdk"]["metrics"]["python.sleep_attempt"]["limit"] += 1
+    policy["callers"]["resident_sdk"]["metrics"]["python.sleep_attempt"]["limit"] = 11
     with pytest.raises(ValueError, match="only from.*base"):
         compare_calibrated(base, base, policy)
 
