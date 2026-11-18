@@ -144,7 +144,7 @@ def load_build_state(directory: Path) -> dict[str, Any]:
                          "in the same job directory") from exc
     request = normalize_request(state["request"])
     if request.digest != state["request_digest"]:
-        raise ValueError("h3 build state does not match its request digest")
+        raise ValueError("h3 build state does not match its request digest; rebuild this request")
     preparation = state["preparation"]
     if preparation["request"].get("version") == 2:
         preparation["request"] = read_prepared_request(

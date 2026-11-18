@@ -93,7 +93,11 @@ def test_adapter_defaults_aliases_and_legacy_replay_are_canonical_without_mutati
         "turbo": {"enabled": True, "strength": 0.95},
         "adapter": {"id": "character_swap_v1", "strength": 1.0},
     }
-    assert normalized.value["model_tags"] == {"performance": "<Video 1>", "replacement": "<Picture 1>"}
+    assert [(row["id"], row["occurrence_id"], row["modality"]) for row in normalized.value["media"]] == [
+        ("performance", "occurrence-1", "video"), ("replacement", "occurrence-2", "image"),
+    ]
+    assert "model_tags" not in normalized.value
+    assert all("model_tag" not in row for row in normalized.value["media"])
     SCHEMA.validate(raw)
 
     alias = copy.deepcopy(raw)
@@ -134,7 +138,26 @@ def test_adapter_defaults_aliases_and_legacy_replay_are_canonical_without_mutati
 
     tampered_replay = copy.deepcopy(normalize_request(raw).value)
     tampered_replay["continuation"] = True
-    tampered_payload = json.dumps(tampered_replay, sort_keys=True, separators=(",", ":")).encode()
+    # Construct the identity document from this fixture's authored intent and
+    # normalized sampling defaults, independently of the identity helper.
+    tampered_identity = {
+        "version": 2, "prompt": raw["prompt"], "duration": 1,
+        "media": [
+            {"occurrence_id": "occurrence-1", "id": "performance", "asset": "performance.mp4",
+             "role": "reference", "modality": "video", "range": [1, 2], "audio": False},
+            {"occurrence_id": "occurrence-2", "id": "replacement", "asset": "replacement.png",
+             "role": "reference", "modality": "image"},
+        ],
+        "settings": {
+            "model": REF2VA_MODEL, "steps": 8, "sampler": "res_multistep", "scheduler": "simple",
+            "seed": 123456789, "turbo": {"enabled": True, "strength": 0.95},
+            "adapter": {"id": "character_swap_v1", "strength": 1.0},
+        },
+        "continuation": True,
+    }
+    tampered_payload = json.dumps(tampered_identity, sort_keys=True, separators=(",", ":")).encode()
+    with pytest.raises(H3RequestError, match="digest does not match"):
+        read_prepared_request(tampered_replay, "0" * 64, require_normalized_v2=True)
     with pytest.raises(H3RequestError, match="does not support continuation"):
         read_prepared_request(
             tampered_replay,
@@ -154,7 +177,11 @@ def test_request_document_loader_preserves_raw_v2_payload_for_child_handoff(tmp_
     assert original == raw
     assert normalized == normalize_request(raw)
     assert "model_tags" not in original
-    assert "model_tags" in normalized.value
+    assert [(row["id"], row["occurrence_id"], row["modality"]) for row in normalized.value["media"]] == [
+        ("performance", "occurrence-1", "video"), ("replacement", "occurrence-2", "image"),
+    ]
+    assert "model_tags" not in normalized.value
+    assert all("model_tag" not in row for row in normalized.value["media"])
     # A child reading the handed-off document re-normalizes the original input
     # instead of rejecting derived fields from the parent's normalized value.
     assert normalize_request(original) == normalized

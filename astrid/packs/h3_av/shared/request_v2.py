@@ -330,6 +330,27 @@ def _validate_character_swap_media(settings: Mapping[str, Any], media: list[dict
             raise H3RequestError("character_swap_v1 does not support the implicit continuation route; declare the timeline's video edit permissions")
 
 
+def _identity_value(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Identity covers authored intent, not inspection or clock projections."""
+    result = {key: val for key, val in value.items() if key not in {"profile", "output_count"}}
+    media = []
+    for item in value["media"]:
+        row = {key: val for key, val in item.items()
+               if key not in {"inspection", "modality_inferred", "resolved_at", "resolved_range"}}
+        if item.get("modality_inferred"):
+            row.pop("modality", None)
+            row.pop("use", None)
+            if item.get("audio_inferred"):
+                row.pop("audio", None)
+        row.pop("audio_inferred", None)
+        if "edit" in row:
+            row["edit"] = [{key: val for key, val in edit.items() if key != "resolved"}
+                           for edit in row["edit"]]
+        media.append(row)
+    result["media"] = media
+    return result
+
+
 def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] | None = None) -> H3Request:
     _unknown(raw, {"version", "prompt", "duration", "media", "settings", "continuation"}, "request")
     if raw.get("version") != 2: raise H3RequestError("version must be 2")
@@ -345,7 +366,6 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
     duration = None if duration_fraction is None else _time_value(duration_fraction)
     occurrences: list[dict[str, Any]] = []
     ids: set[str] = set()
-    reference_counts = {"image": 0, "video": 0, "audio": 0}
     for index, raw_item in enumerate(media_raw):
         path = f"media[{index}]"
         item = _object(raw_item, path) or {}
@@ -358,23 +378,26 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
         identifier = _nonblank(item["id"], f"{path}.id") if "id" in item else f"occurrence-{index + 1}"
         if identifier in ids: raise H3RequestError(f"{path}.occurrence_id {identifier!r} is duplicated")
         ids.add(identifier)
-        occurrence: dict[str, Any] = {"occurrence_id": identifier, "asset": asset, "role": role}
+        occurrence: dict[str, Any] = {"occurrence_id": f"occurrence-{index + 1}", "asset": asset, "role": role}
         if "id" in item: occurrence["id"] = identifier
-        if modality is not None: occurrence["modality"] = modality
+        if modality is not None:
+            occurrence["modality"] = modality
+            authored_modality = item.get("modality") or (item["asset"].get("modality") if isinstance(item["asset"], Mapping) else None)
+            if not authored_modality:
+                occurrence["modality_inferred"] = True
         else: occurrence["inspection"] = "deferred"
         if role == "reference":
             if any(key in item for key in ("at", "edit", "hard", "latent_pin")): raise H3RequestError(f"{path} reference entries cannot contain placement or edit fields")
-            if modality in {"image", "video", "audio"}:
-                reference_counts[modality] += 1
-                label = {"image": "Picture", "video": "Video", "audio": "Audio"}[modality]
-                occurrence["model_tag"] = f"<{label} {reference_counts[modality]}>"
             if "audio" in item:
                 if modality != "video" or type(item["audio"]) is not bool: raise H3RequestError(f"{path}.audio is only valid for video references")
                 occurrence["audio"] = item["audio"]
-            elif modality == "video": occurrence["audio"] = True
+            elif modality == "video":
+                occurrence["audio"] = True
+                if occurrence.get("modality_inferred"): occurrence["audio_inferred"] = True
             if "range" in item:
-                if modality != "video": raise H3RequestError(f"{path}.range is unsupported for {modality or 'unresolved'} references")
-                occurrence["range"], occurrence["resolved_range"] = _interval(item["range"], f"{path}.range", FPS)
+                if modality not in {"video", "audio"}: raise H3RequestError(f"{path}.range is unsupported for {modality or 'unresolved'} references")
+                clock = FPS if modality == "video" else Fraction(SAMPLE_RATE)
+                occurrence["range"], occurrence["resolved_range"] = _interval(item["range"], f"{path}.range", clock)
         else:
             if "at" not in item: raise H3RequestError(f"{path}.at is required for timeline media")
             at, at_frame = _at(item["at"], f"{path}.at")
@@ -423,6 +446,7 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
                 occurrence["edit"].append(normalized)
         occurrences.append(occurrence)
     by_id = {item.get("id", item["occurrence_id"]): item for item in occurrences}
+    audio_uses: dict[str, set[str]] = {}
     for item in occurrences:
         if item["role"] != "timeline": continue
         if item["resolved_at"]["value"] in {other["resolved_at"]["value"] for other in occurrences if other is not item and other["role"] == "timeline"}: raise H3RequestError("conflicting hard anchors share the same placement")
@@ -431,6 +455,16 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
                 target = by_id.get(guide)
                 if target is None: raise H3RequestError(f"guide {guide!r} is dangling")
                 if target["role"] != "reference": raise H3RequestError(f"guide {guide!r} points to timeline media, not a reference")
+                if target.get("modality") == "audio":
+                    use = "replacement" if edit["stream"] == "audio" and edit["action"] == "generate" else "conditioning"
+                    audio_uses.setdefault(target["occurrence_id"], set()).add(use)
+    for item in occurrences:
+        if item["role"] == "reference" and item.get("modality") == "audio":
+            uses = audio_uses.get(item["occurrence_id"], set())
+            if len(uses) > 1:
+                raise H3RequestError(f"{item['occurrence_id']} cannot be both conditioning and replacement audio")
+            item["use"] = next(iter(uses), "conditioning")
+    settings = _settings(raw.get("settings", {}))
     if duration_fraction is None:
         ends: list[Fraction] = []
         for item in occurrences:
@@ -448,17 +482,16 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
         duration_fraction = max(ends)
         duration = _time_value(duration_fraction)
     _ticks(duration_fraction, FPS, "duration")
-    settings = _settings(raw.get("settings", {}))
     _validate_character_swap_media(settings, occurrences, continuation)
-    value = {"version": 2, "prompt": prompt, "duration": duration, "media": occurrences, "settings": settings, "continuation": continuation, "profile": PROFILE, "output_count": 1, "model_tags": {item["occurrence_id"]: item["model_tag"] for item in occurrences if "model_tag" in item}}
-    encoded = json.dumps(json_times(value), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    value = {"version": 2, "prompt": prompt, "duration": duration, "media": occurrences, "settings": settings, "continuation": continuation, "profile": PROFILE, "output_count": 1}
+    encoded = json.dumps(json_times(_identity_value(value)), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
     return H3Request(value=value, digest=hashlib.sha256(encoded).hexdigest())
 
 
 def read_prepared_request(raw: Mapping[str, Any], expected_digest: Any, *, require_normalized_v2: bool = False) -> H3Request:
     if not isinstance(expected_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_digest): raise H3RequestError("prepared request digest is missing or malformed")
     if raw.get("version") == 2 and raw.get("profile") == PROFILE and raw.get("output_count") == 1:
-        encoded = json.dumps(json_times(raw), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        encoded = json.dumps(json_times(raw if "model_tags" in raw else _identity_value(raw)), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
         request = H3Request(value=_read_times(raw), digest=hashlib.sha256(encoded).hexdigest())
     else:
         request = normalize_v2(raw) if raw.get("version") == 2 else H3Request(value=dict(raw), digest=expected_digest)
