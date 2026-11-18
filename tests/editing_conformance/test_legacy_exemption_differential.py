@@ -99,14 +99,13 @@ def test_changed_declaration_is_not_exempt():
     assert cv._legacy_exemptions(edited, head) == oracle.old_exemptions(edited, head) == set()
 
 
-def test_unresolved_declaration_on_a_base_carrying_gap_after_s_is_exempt_where_the_probe_never_was():
-    """The one known difference: the probe ran without a baseline, so a base with ``gap_after_s`` made every
-    probe fail with an unmarked error and report 'resolvable' (see test_legacy_probe_gap_after_fault)."""
+def test_unresolved_declaration_on_a_base_carrying_gap_after_s_is_exempt():
+    """The probe once failed on the base's own ``gap_after_s`` and never exempted (see
+    test_legacy_probe_gap_after_fault); it and the pre-pass now agree."""
     head = _declare(CASES["unresolved-cut-anchor"](), 0, gap_after_s=1.5)
     edited = _unrelated(head)
     key = (("shot", SHOT, _child(head, 1)["id"]), "on")
-    assert oracle.old_exemptions(edited, head) == set()
-    assert cv._legacy_exemptions(edited, head) == {key}
+    assert oracle.old_exemptions(edited, head) == cv._legacy_exemptions(edited, head) == {key}
 
 
 def test_a_commit_makes_at_most_two_declaration_passes_and_no_per_declaration_compiles(monkeypatch):
@@ -147,3 +146,12 @@ def test_a_base_with_k_resolve_time_failures_runs_at_most_k_probes(monkeypatch):
     cv.validate_candidate_timing(_unrelated(head), baseline=head)
     assert len(calls) == 2
     assert len(set(calls)) == len(calls)  # each declaration is probed once
+
+
+def test_resolve_time_declaration_is_exempt_on_a_base_carrying_gap_after_s():
+    head = _declare(CASES["resolve-no-beat"](), 0, gap_after_s=1.5)
+    edited = _unrelated(head)
+    assert _accepts(edited, head) is None  # exempt: the probe no longer fails on gap_after_s
+    changed = _unrelated(head)
+    _child(changed, 1)["app"]["astrid"]["on"] = "beat 2 after c1"
+    assert _accepts(changed, head) is not None

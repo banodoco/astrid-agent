@@ -67,7 +67,9 @@ def test_gap_after_s_on_the_base_hides_an_unresolvable_legacy_on_from_the_exempt
     # (b) shows the fault: the gap_after_s declaration makes the probe fail with an unmarked error,
     # so the check says the declaration is resolvable (True) and no exemption is granted.
     assert a is False
-    assert b is True  # FAULT REPRODUCED: an unresolvable declaration is reported as resolvable
+    # The fault was real (the hand-built probe below still fails on gap_after_s), and the probe now drops
+    # the unsupported declarations its base carries, so the unresolvable `on` is no longer hidden.
+    assert b is False
     assert error_b.startswith("TimingCompileError: unsupported timing declaration ")
     assert error_b.endswith(".gap_after_s")
     assert "missing cut anchor" not in error_b

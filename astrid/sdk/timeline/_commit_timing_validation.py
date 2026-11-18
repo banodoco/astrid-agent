@@ -221,6 +221,9 @@ def _legacy_declaration_is_resolvable(
 
     probe = copy.deepcopy(dict(bundle))
     _clear_legacy_declarations(probe, (key, field))
+    # The kernel never evaluates the unsupported declarations the base carries; they must not
+    # decide whether this one declaration resolves.
+    _drop_preexisting_unsupported(probe, probe, probe)
     target = dict(_legacy_rows(probe)).get(key)
     if target is None:
         return False
