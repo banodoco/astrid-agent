@@ -105,3 +105,22 @@ def test_source_handoff_rejects_the_wrong_plan_parent(tmp_path):
     args["plan_base"] = args["required_ancestor"]
     with pytest.raises(ValueError, match="ordered.*parents"):
         validate_sources(**args)
+
+
+def test_followup_retains_published_history_without_changing_either_tuple(tmp_path):
+    args, qualified = graph(tmp_path)
+    previous = args["controller"]
+    run(tmp_path, "checkout", "--detach", qualified)
+    write(tmp_path, "tests/_local_speed_process.py", "qualified follow-up observer\n")
+    source = commit(tmp_path, "follow-up on original tuple")
+    run(tmp_path, "checkout", "--detach", previous)
+    run(tmp_path, "merge", "--no-commit", "--no-ff", source)
+    controller = commit(tmp_path, "retain published controller")
+    args.update(controller=controller, previous_controller=previous)
+    receipt = validate_sources(**args)
+    assert receipt["previous_controller_preserved"] == previous
+    assert receipt["qualification"] == source
+    assert run(tmp_path, "merge-base", previous, controller) == previous
+    args["previous_controller"] = qualified
+    with pytest.raises(ValueError, match="exact published controller"):
+        validate_sources(**args)

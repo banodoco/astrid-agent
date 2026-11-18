@@ -30,11 +30,15 @@ The packet branch integrates accepted plan base `24c68a27` (including `6451821e`
 before final proof. Under the original-tuple and merge rulings, the workflow
 checks the exact clean merge head and ordered parents, reproduces its native
 merge, preserves the accepted Runtime-pin reader, and verifies every shared
-measurement-harness blob. It then selects the clean first parent, whose changes
+measurement-harness blob. It then selects the clean original-tuple parent, whose changes
 from `b18080bc` are confined to the named census/qualification files. That
 parent retains the original product, dependency pins, references and test
 guards. `plan55-qualification.json` records both commits and trees, all harness
 hashes and the two plan-added LS-5 harness files outside this measurement.
+The follow-up for already-exited children merges into published controller
+`d84e7276`, and its qualification source extends that controller's original-tuple
+parent. The checker verifies both identities and the ordinary two-parent merge;
+the published first-parent history is preserved without rebasing.
 The continuation source archive retains the integrated PR head. This source
 handoff does not qualify the newer accepted product/dependency tuple; LS-2.1
 owns that measurement. Any unexpected source or merge difference fails before
@@ -127,6 +131,12 @@ is never shortened. A child already exited may need no wait. Missing results,
 unknown periods, clipped intervals, unrecognized commands and missing or
 ambiguous child identities are rejected. The census sleep total follows from
 those individually checked invocations and has no separate allowance.
+
+When every control child has already exited, the observed sleep total is zero
+and the requested period remains unknown (`null`). Another fully observed
+zero-wait sample passes the same invariants. If a later sample requests a wait,
+comparison fails as incomplete period evidence; an unknown base period never
+becomes zero or authorizes a shorter wait.
 
 Raw totals remain in the observations and calibration `raw_samples`. Only the
 individually guarded census sleeps are removed from the global sleep total,
