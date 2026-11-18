@@ -29,7 +29,7 @@ def test_production_refuses_incomplete_abi1_and_mixed_v2(monkeypatch, legacy, da
     check = commit._check_reservations
     observed = []
 
-    def corrupt(port, plan, current, rejected, base):
+    def corrupt(port, plan, current, rejected, base, *memo):
         bindings = plan.records[0]['bindings']
         collection = bindings[0]
         assert collection['key'] == 'collection.owner:collection.clips'
@@ -63,7 +63,7 @@ def test_production_refuses_incomplete_abi1_and_mixed_v2(monkeypatch, legacy, da
         else:
             bindings.append({'key': 'unknown', 'ref': 'parent', 'policy': 'fixed', 'dependencies': []})
         observed.append(damage)
-        return check(port, plan, current, rejected, base)
+        return check(port, plan, current, rejected, base, *memo)
 
     monkeypatch.setattr(commit, '_check_reservations', corrupt)
     with pytest.raises(CommitRejected):
@@ -78,7 +78,7 @@ def test_authentic_complete_abi1_binding_set_survives_history_and_inverse(monkey
     check = commit._check_reservations
     observed = []
 
-    def observe(port, plan, current, rejected, base):
+    def observe(port, plan, current, rejected, base, *memo):
         record = plan.records[0]
         if record['command']['op'] == 'occurrence.fork':
             assert record['bindings'] == [
@@ -89,7 +89,7 @@ def test_authentic_complete_abi1_binding_set_survives_history_and_inverse(monkey
                     ('fork.source', 'occurrence:occ-0/source'),
                     ('fork.owner', 'occurrence:occ-0'))]
             observed.append(True)
-        return check(port, plan, current, rejected, base)
+        return check(port, plan, current, rejected, base, *memo)
 
     monkeypatch.setattr(commit, '_check_reservations', observe)
     # Omit v2 controls on the real production caller; no rewritten legacy flag.
