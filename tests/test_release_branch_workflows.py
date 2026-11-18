@@ -1,5 +1,8 @@
+import os
+import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 WF = Path(__file__).resolve().parents[1] / ".github" / "workflows"
@@ -20,11 +23,31 @@ def test_pull_requests_into_release_mains_run_only_the_cheap_ci_subset():
             continue
         if name in heavy:
             assert job["if"] == "github.event_name != 'pull_request'", name
+        elif name == "unit":
+            assert job["if"] == "always()", name
         else:
             assert "if" not in job, name
     group = wf["jobs"]["unit-shard"]["strategy"]["matrix"]["group"]
     assert "'[1]'" in group and "pull_request" in group
     assert "github.event.pull_request.number" in wf["concurrency"]["group"]
+
+
+@pytest.mark.parametrize("checks", ["success", "failure", "cancelled", "skipped"])
+@pytest.mark.parametrize("shards", ["success", "failure", "cancelled", "skipped"])
+def test_unit_aggregate_rejects_any_unsuccessful_dependency(checks, shards):
+    job = load("ci.yml")["jobs"]["unit"]
+    assert job["needs"] == ["checks", "unit-shard"]
+    assert job["env"] == {
+        "CHECKS_RESULT": "${{ needs.checks.result }}",
+        "SHARDS_RESULT": "${{ needs.unit-shard.result }}",
+    }
+    result = subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", job["steps"][0]["run"]],
+        env={**os.environ, "CHECKS_RESULT": checks, "SHARDS_RESULT": shards},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == (0 if checks == shards == "success" else 1), result.stdout + result.stderr
 
 
 def test_landing_reference_job_runs_only_for_pull_requests_into_release_branches():

@@ -22,7 +22,6 @@ from astrid.sdk.timeline.units import (
 )
 from astrid.sdk.timeline_checkout import Checkout
 
-
 # Declarations the timing kernel refuses outright; older timelines carry them as authored data.
 UNSUPPORTED_DECLARATIONS = ("sequence", "sequence_fit", "formulas", "orphan", "gap_after_s")
 
@@ -328,6 +327,12 @@ def evaluate(bundle, sources, bindings, policy, legacy_declarations=(), collect=
     # Reuse main's group membership, picture choice, ordering and cut aliases.
     lookup = _ReadLookup(bundle, fps)
     groups = lookup._cut_groups()
+    # The bundle is fixed for this evaluation, so a cut text resolves the same way every time: look each
+    # one up once, and group the clips once, instead of regrouping them for every declaration.
+    lookup._cut_groups = lambda groups=groups: groups
+    resolve_cut, resolved_cuts = lookup._cut_id, {}
+    lookup._cut_id = lambda text: (resolved_cuts[text] if text in resolved_cuts
+                                   else resolved_cuts.setdefault(text, resolve_cut(text)))
     by_clip = {(owner[1], owner[2]): owner for owner in clips if owner[1]}
     bases, local_groups, local_bases = {}, {}, {}
     for group in groups:

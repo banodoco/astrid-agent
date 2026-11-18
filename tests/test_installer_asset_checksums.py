@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import io
+import ssl
 import zipfile
 from pathlib import Path
 
@@ -40,7 +41,9 @@ def test_two_archives_use_distinct_digests_and_extract_both(tmp_path, monkeypatc
     value, archives = asset()
     requested = []
 
-    def response(request, timeout):
+    def response(request, timeout, *, context):
+        assert context.verify_mode == ssl.CERT_REQUIRED
+        assert context.check_hostname is True
         url = request.full_url
         requested.append(url)
         return io.BytesIO(archives[value["urls"].index(url)])
@@ -59,7 +62,12 @@ def test_two_archives_use_distinct_digests_and_extract_both(tmp_path, monkeypatc
 def test_swapped_archive_digests_fail_before_extraction(tmp_path, monkeypatch):
     value, archives = asset()
     value["sha256"].reverse()
-    monkeypatch.setattr(tools.urllib.request, "urlopen", lambda *args, **kwargs: io.BytesIO(archives[0]))
+    def response(request, timeout, *, context):
+        assert context.verify_mode == ssl.CERT_REQUIRED
+        assert context.check_hostname is True
+        return io.BytesIO(archives[0])
+
+    monkeypatch.setattr(tools.urllib.request, "urlopen", response)
     url, checksum = tools.asset_downloads(value)[0]
     with pytest.raises(ValueError, match="checksum mismatch"):
         tools.fetch_archive(url, tmp_path / "ffmpeg", sha256=checksum)
@@ -119,7 +127,9 @@ def test_installed_tools_forward_the_matching_digest_for_every_archive(tmp_path,
     media["urls"] = media["urls"][:2]
     downloads = []
 
-    def response(request, timeout):
+    def response(request, timeout, *, context):
+        assert context.verify_mode == ssl.CERT_REQUIRED
+        assert context.check_hostname is True
         url = request.full_url
         downloads.append(url)
         return io.BytesIO(payloads[url])

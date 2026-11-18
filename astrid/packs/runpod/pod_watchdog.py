@@ -13,11 +13,12 @@ import shlex
 import subprocess
 import sys
 import time
+import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 try:
     import fcntl
@@ -31,10 +32,23 @@ IDENTITY_MARK = "pod_watchdog: identity="
 
 # Filled by the host in the standalone program; the pod imports no package.
 if globals().get("__package__"):
+    from astrid import _tls_policy
     from astrid.packs.runpod.provider_urls import POD_TERMINATE_METHOD, POD_URL_TEMPLATE
+
+    os_trust_ssl_context = _tls_policy.os_trust_ssl_context
 else:
     POD_URL_TEMPLATE = "__POD_URL_TEMPLATE__"
     POD_TERMINATE_METHOD = "__POD_TERMINATE_METHOD__"
+    _tls_namespace: dict[str, Any] = {}
+    exec("__TLS_POLICY_SOURCE__", _tls_namespace)
+    os_trust_ssl_context = _tls_namespace["os_trust_ssl_context"]
+
+
+def urlopen(request: Request, *, timeout: float):
+    """Keep the injectable request seam while using the one verifying policy."""
+    return urllib.request.urlopen(
+        request, timeout=timeout, context=os_trust_ssl_context()
+    )
 
 
 class PodWatchdogError(RuntimeError):
@@ -270,7 +284,9 @@ def write_deadline(ops: Any, deadline: float, generation: int) -> bool:
     _deadline({"deadline": deadline, "generation": generation})
     source_text = (Path(__file__).read_text()
                    .replace('"__POD_URL_TEMPLATE__"', repr(POD_URL_TEMPLATE), 1)
-                   .replace('"__POD_TERMINATE_METHOD__"', repr(POD_TERMINATE_METHOD), 1))
+                   .replace('"__POD_TERMINATE_METHOD__"', repr(POD_TERMINATE_METHOD), 1)
+                   .replace('"__TLS_POLICY_SOURCE__"',
+                            repr(Path(_tls_policy.__file__).read_text()), 1))
     source = base64.b64encode(source_text.encode()).decode("ascii")
     loader = (
         "import base64,pathlib; "

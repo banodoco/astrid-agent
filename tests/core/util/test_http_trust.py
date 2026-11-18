@@ -253,3 +253,51 @@ def test_urllib_default_rejects_the_private_root(private_https_server):
         urllib.request.urlopen(url, timeout=5)
 
     assert _cert_failure_in_chain(raised.value)
+
+
+@pytest.mark.parametrize("platform", ["linux", "win32", "darwin"])
+def test_certifi_supplements_the_os_store_from_the_first_connection(
+    private_https_server, monkeypatch, platform,
+):
+    import certifi
+
+    url, ca_path = private_https_server
+    monkeypatch.setattr(certifi, "where", lambda: str(ca_path))
+    context = os_trust_ssl_context(platform)
+
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.check_hostname is True
+    with urllib.request.urlopen(url, timeout=5, context=context) as response:
+        assert response.read() == b"verified"
+
+
+def test_factory_keeps_the_default_os_roots_when_certifi_is_added(monkeypatch):
+    original = ssl.create_default_context()
+    roots = set(original.get_ca_certs(binary_form=True))
+    monkeypatch.setattr(ssl, "create_default_context", lambda: original)
+
+    context = os_trust_ssl_context("linux")
+
+    assert context is original
+    assert roots <= set(context.get_ca_certs(binary_form=True))
+
+
+@pytest.mark.parametrize("platform", ["linux", "win32", "darwin"])
+def test_dependency_free_bootstrap_keeps_verifying_without_certifi(monkeypatch, platform):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "certifi", None)
+
+    context = os_trust_ssl_context(platform)
+
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.check_hostname is True
+
+
+def test_factory_still_rejects_an_untrusted_private_root(private_https_server):
+    url, _ca_path = private_https_server
+
+    with trusted_httpx_client(trust_env=False, timeout=5) as client, pytest.raises(httpx.ConnectError) as raised:
+        client.get(url)
+
+    assert _cert_failure_in_chain(raised.value)

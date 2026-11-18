@@ -1,7 +1,6 @@
 import _ssl
 import contextlib
 import os
-import platform
 import socket
 import ssl
 import sys
@@ -15,9 +14,11 @@ from ._ssl_constants import (
     _truststore_SSLContext_super_class,
 )
 
-if platform.system() == "Windows":
+# platform.system() can invoke cmd /c ver on Python 3.11 Windows. A cold
+# import must also work inside a pack's native-descendant policy.
+if sys.platform == "win32":
     from ._windows import _configure_context, _verify_peercerts_impl
-elif platform.system() == "Darwin":
+elif sys.platform == "darwin":
     from ._macos import _configure_context, _verify_peercerts_impl
 else:
     from ._openssl import _configure_context, _verify_peercerts_impl

@@ -10,10 +10,15 @@ from astrid.core.timeline import moments
 from astrid.core.timeline.authoring_bundle import compile_authoring_candidate
 from astrid.core.timeline.shot_composition_projection import _placement_speed
 from astrid.sdk import timeline_intent as intent
-from astrid.sdk.timeline._timing_evaluators import (
-    UNSUPPORTED_DECLARATIONS, _fps, _maps, _ReadLookup, legacy_declaration_failures,
-    unsupported_declaration)
 from astrid.sdk.timeline._preexisting import split_findings
+from astrid.sdk.timeline._timing_evaluators import (
+    UNSUPPORTED_DECLARATIONS,
+    _fps,
+    _maps,
+    _ReadLookup,
+    legacy_declaration_failures,
+    unsupported_declaration,
+)
 from astrid.sdk.timeline.compiler import TimingCompileError, TimingInputs, compile_timing
 from astrid.sdk.timeline.native_word_anchor import binding, legacy_binding
 from astrid.sdk.timeline.units import _time_fraction
@@ -51,79 +56,133 @@ def _legacy_declarations(clip: Mapping[str, Any]) -> dict[str, str]:
 
 
 def _reference_shape(clip: Mapping[str, Any]) -> dict[str, Any]:
-    """Keep timing/reference inputs while ignoring unrelated authored params."""
-    value = copy.deepcopy(dict(clip))
-    value.pop("params", None)
+    """Keep timing/reference inputs while ignoring unrelated authored params.
+
+    Read-only: the result shares unchanged values with ``clip`` and nothing mutates it.
+    """
+    value = {name: item for name, item in clip.items() if name != "params"}
     app = value.get("app")
     if isinstance(app, dict):
-        app.pop("opaque", None)
+        app = {name: item for name, item in app.items() if name not in ("opaque", "on", "until")}
         nested = app.get("astrid")
         if isinstance(nested, dict):
-            nested.pop("on", None)
-            nested.pop("until", None)
-            nested.pop("opaque", None)
-            if not nested:
-                app.pop("astrid", None)
-        app.pop("on", None)
-        app.pop("until", None)
-        if not app:
-            value.pop("app", None)
+            nested = {name: item for name, item in nested.items() if name not in ("on", "until", "opaque")}
+            if nested:
+                app["astrid"] = nested
+            else:
+                app.pop("astrid")
+        if app:
+            value["app"] = app
+        else:
+            value.pop("app")
     return value
+
+
+class _BasisReader:
+    """Reference bases of one bundle, built once and looked up per declaration.
+
+    Everything is read-only data shared with the bundle, so a basis costs the declarations that ask
+    for it, not a copy of the document per declaration.
+    """
+
+    def __init__(self, bundle: Mapping[str, Any]):
+        self.bundle = bundle
+        source = bundle.get("source_mapping", {})
+        self.source = source if isinstance(source, Mapping) else {}
+        self._words: dict[str, Any] | None = None
+        self._owners: dict[tuple[str, str], dict[str, Any]] = {}
+        self._text: dict[Any, str] = {}
+
+    def _json(self, name: Any, value: Any) -> str:
+        """The canonical text of one shared part of a basis, built once per bundle."""
+        if name not in self._text:
+            self._text[name] = json.dumps(value, sort_keys=True, default=str)
+        return self._text[name]
+
+    def signature(self, key: tuple[Any, ...], clip: Mapping[str, Any], declaration: str) -> str:
+        """The basis as text, assembled from per-bundle parts so each declaration adds only its own."""
+        basis = self.basis(key, clip, declaration)
+        own = {"clip": basis["clip"]}
+        parts = [json.dumps(own, sort_keys=True, default=str), self._json("documents", basis["documents"])]
+        if "word_sources" in basis:
+            words = self._word_inputs()
+            if key[0] != "parent":  # a shot's own placements replace the whole-film list in a basis
+                words = {name: item for name, item in words.items() if name != "placements"}
+            parts.append(self._json(("words", key[0] != "parent"), words))
+        owner = self._owner_inputs(key[0], key[1])
+        parts.append(self._json(("owner", key[0], key[1]), owner))
+        return json.dumps(parts)
+
+    def _word_inputs(self) -> dict[str, Any]:
+        # Legacy text lookup searches every occurrence. An unresolved word has
+        # no selected binding, so retain the complete search basis and physical
+        # owners rather than guessing which source it meant to reference.
+        if self._words is None:
+            bundle = self.bundle
+            self._words = {
+                "parent_owner": bundle.get("base_parent"),
+                "placements": bundle.get("placements", []),
+                "source_shots": self.source.get("shots", {}),
+                "word_sources": {
+                    shot_id: {
+                        "shot_id": shot.get("shot_id"),
+                        "clips": [{**_reference_shape(row), "declarations": intent._app(row)}
+                                  for row in shot["internal_timeline"]["clips"]],
+                        "inputs": {field: shot["internal_timeline"][field]
+                                   for field in ("tracks", "registry", "output", "source_window",
+                                                 "time_map", "timeMap")
+                                   if field in shot["internal_timeline"]},
+                    }
+                    for shot_id, shot in bundle.get("shots", {}).items()
+                },
+            }
+        return self._words
+
+    def _owner_inputs(self, kind: str, owner: str) -> dict[str, Any]:
+        cached = self._owners.get((kind, owner))
+        if cached is not None:
+            return cached
+        bundle = self.bundle
+        if kind == "parent":
+            parent = bundle.get("parent", {})
+            clips = parent.get("clips", []) if isinstance(parent, Mapping) else []
+            found = {"siblings": [_reference_shape(row) for row in clips if isinstance(row, Mapping)]}
+        else:
+            shots = bundle.get("shots", {})
+            shot = shots.get(owner, {}) if isinstance(shots, Mapping) else {}
+            internal = shot.get("internal_timeline", {}) if isinstance(shot, Mapping) else {}
+            clips = internal.get("clips", []) if isinstance(internal, Mapping) else []
+            source_shots = self.source.get("shots", {})
+            source_shot = source_shots.get(owner) if isinstance(source_shots, Mapping) else None
+            found = {
+                "siblings": [_reference_shape(row) for row in clips if isinstance(row, Mapping)],
+                "placements": [row for row in bundle.get("placements", [])
+                               if isinstance(row, Mapping) and row.get("shot_id") == owner],
+                "source": source_shot,
+            }
+        self._owners[kind, owner] = found
+        return found
+
+    def basis(self, key: tuple[Any, ...], clip: Mapping[str, Any], declaration: str) -> dict[str, Any]:
+        """Identify the authored target of one legacy timing declaration."""
+        kind, owner, _ = key
+        basis: dict[str, Any] = {"clip": _reference_shape(clip)}
+        basis["documents"] = self.source.get("pinned_documents", [])
+        try:
+            word = moments.parse(declaration).kind == "word"
+        except (TypeError, ValueError, moments.MomentError):
+            word = False
+        if word:
+            basis.update(self._word_inputs())
+        basis.update(self._owner_inputs(kind, owner))
+        return basis
 
 
 def _reference_basis(
     bundle: Mapping[str, Any], key: tuple[Any, ...], clip: Mapping[str, Any], declaration: str,
 ) -> dict[str, Any]:
     """Identify the authored target of one legacy timing declaration."""
-    kind, owner, _ = key
-    basis: dict[str, Any] = {"clip": _reference_shape(clip)}
-    source = bundle.get("source_mapping", {})
-    basis["documents"] = copy.deepcopy(
-        source.get("pinned_documents", []) if isinstance(source, Mapping) else []
-    )
-    try:
-        word = moments.parse(declaration).kind == "word"
-    except (TypeError, ValueError, moments.MomentError):
-        word = False
-    if word:
-        # Legacy text lookup searches every occurrence. An unresolved word has
-        # no selected binding, so retain the complete search basis and physical
-        # owners rather than guessing which source it meant to reference.
-        basis["parent_owner"] = copy.deepcopy(bundle.get("base_parent"))
-        basis["placements"] = copy.deepcopy(bundle.get("placements", []))
-        basis["source_shots"] = copy.deepcopy(source.get("shots", {}))
-        basis["word_sources"] = {
-            shot_id: {
-                "shot_id": shot.get("shot_id"),
-                "clips": [{**_reference_shape(row), "declarations": copy.deepcopy(intent._app(row))}
-                          for row in shot["internal_timeline"]["clips"]],
-                "inputs": {field: copy.deepcopy(shot["internal_timeline"][field])
-                           for field in ("tracks", "registry", "output", "source_window", "time_map", "timeMap")
-                           if field in shot["internal_timeline"]},
-            }
-            for shot_id, shot in bundle.get("shots", {}).items()
-        }
-    if kind == "parent":
-        parent = bundle.get("parent", {})
-        clips = parent.get("clips", []) if isinstance(parent, Mapping) else []
-        basis["siblings"] = [_reference_shape(row) for row in clips if isinstance(row, Mapping)]
-        return basis
-
-    shots = bundle.get("shots", {})
-    shot = shots.get(owner, {}) if isinstance(shots, Mapping) else {}
-    internal = shot.get("internal_timeline", {}) if isinstance(shot, Mapping) else {}
-    clips = internal.get("clips", []) if isinstance(internal, Mapping) else []
-    basis["siblings"] = [_reference_shape(row) for row in clips if isinstance(row, Mapping)]
-    placements = bundle.get("placements", [])
-    basis["placements"] = [
-        copy.deepcopy(row)
-        for row in placements
-        if isinstance(row, Mapping) and row.get("shot_id") == owner
-    ]
-    source_shots = source.get("shots", {}) if isinstance(source, Mapping) else {}
-    source_shot = source_shots.get(owner) if isinstance(source_shots, Mapping) else None
-    basis["source"] = copy.deepcopy(source_shot)
-    return basis
+    return _BasisReader(bundle).basis(key, clip, declaration)
 
 
 def _physical_shot_context(bundle: Mapping[str, Any], shot_id: str) -> dict[str, Any] | None:
@@ -317,11 +376,11 @@ def _signed_failures(
 ) -> dict[tuple[Any, ...], str]:
     """Sign each failing declaration by its text and the inputs that decide it."""
     rows = dict(_legacy_rows(bundle))
+    reader = _BasisReader(bundle)
     signed = {}
     for key, field in _declaration_failures(bundle, source_bundles):
         value = _legacy_declarations(rows[key])[field]
-        signed[(key, field)] = json.dumps(
-            [value, _reference_basis(bundle, key, rows[key], value)], sort_keys=True, default=str)
+        signed[(key, field)] = json.dumps([value, reader.signature(key, rows[key], value)])
     return signed
 
 
@@ -652,6 +711,7 @@ def _failing_candidates(
     """Unchanged legacy declarations a resolve-time failure may come from, most specific first."""
     message = str(error)
     before = dict(_legacy_rows(baseline))
+    now, then = _BasisReader(candidate), _BasisReader(baseline)
     found = []
     for key, clip in _legacy_rows(candidate):
         prior = before.get(key)
@@ -660,8 +720,7 @@ def _failing_candidates(
         prior_values = _legacy_declarations(prior)
         for field, value in _legacy_declarations(clip).items():
             if ((key, field) in spent or prior_values.get(field) != value
-                    or _reference_basis(candidate, key, clip, value)
-                    != _reference_basis(baseline, key, prior, value)):
+                    or now.basis(key, clip, value) != then.basis(key, prior, value)):
                 continue
             try:
                 kind = moments.parse(value).kind

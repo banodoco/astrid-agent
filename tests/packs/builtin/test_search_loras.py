@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import ssl
 import urllib.parse
 from pathlib import Path
 
@@ -27,7 +28,9 @@ def test_search_loras_queries_base_model_and_normalizes(monkeypatch) -> None:
     monkeypatch.delenv("HF_TOKEN", raising=False)
     monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
 
-    def fake_urlopen(request, timeout):  # noqa: ANN001
+    def fake_urlopen(request, timeout, *, context):  # noqa: ANN001
+        assert context.verify_mode == ssl.CERT_REQUIRED
+        assert context.check_hostname is True
         seen["url"] = request.full_url
         seen["headers"] = dict(request.header_items())
         seen["timeout"] = timeout
@@ -97,7 +100,9 @@ def test_search_loras_queries_base_model_and_normalizes(monkeypatch) -> None:
 def test_search_loras_applies_local_match_after_broad_fetch(monkeypatch) -> None:
     seen = {}
 
-    def fake_urlopen(request, timeout):  # noqa: ANN001
+    def fake_urlopen(request, timeout, *, context):  # noqa: ANN001
+        assert context.verify_mode == ssl.CERT_REQUIRED
+        assert context.check_hostname is True
         seen["url"] = request.full_url
         return _FakeResponse(
             [
@@ -144,7 +149,9 @@ def test_search_loras_applies_local_match_after_broad_fetch(monkeypatch) -> None
 
 
 def test_search_loras_supports_any_match_mode(monkeypatch) -> None:
-    def fake_urlopen(request, timeout):  # noqa: ANN001
+    def fake_urlopen(request, timeout, *, context):  # noqa: ANN001
+        assert context.verify_mode == ssl.CERT_REQUIRED
+        assert context.check_hostname is True
         return _FakeResponse(
             [
                 {"id": "demo/photo", "tags": ["base_model:demo/base"], "siblings": []},
@@ -168,7 +175,9 @@ def test_search_loras_supports_any_match_mode(monkeypatch) -> None:
 def test_search_loras_falls_back_to_local_query_when_hub_search_is_empty(monkeypatch) -> None:
     seen_urls = []
 
-    def fake_urlopen(request, timeout):  # noqa: ANN001
+    def fake_urlopen(request, timeout, *, context):  # noqa: ANN001
+        assert context.verify_mode == ssl.CERT_REQUIRED
+        assert context.check_hostname is True
         seen_urls.append(request.full_url)
         params = urllib.parse.parse_qs(urllib.parse.urlparse(request.full_url).query)
         if params.get("search") == ["photoreal"]:
@@ -206,7 +215,9 @@ def test_search_loras_falls_back_to_local_query_when_hub_search_is_empty(monkeyp
 
 
 def test_search_loras_guides_empty_results(monkeypatch) -> None:
-    def fake_urlopen(request, timeout):  # noqa: ANN001
+    def fake_urlopen(request, timeout, *, context):  # noqa: ANN001
+        assert context.verify_mode == ssl.CERT_REQUIRED
+        assert context.check_hostname is True
         return _FakeResponse([])
 
     monkeypatch.setattr(search_loras.urllib.request, "urlopen", fake_urlopen)
@@ -226,7 +237,9 @@ def test_search_loras_guides_empty_results(monkeypatch) -> None:
 
 
 def test_search_loras_flags_shorthand_base_model(monkeypatch) -> None:
-    def fake_urlopen(request, timeout):  # noqa: ANN001
+    def fake_urlopen(request, timeout, *, context):  # noqa: ANN001
+        assert context.verify_mode == ssl.CERT_REQUIRED
+        assert context.check_hostname is True
         return _FakeResponse([])
 
     monkeypatch.setattr(search_loras.urllib.request, "urlopen", fake_urlopen)
@@ -243,7 +256,9 @@ def test_search_loras_flags_shorthand_base_model(monkeypatch) -> None:
 
 
 def test_discover_base_models_counts_non_adapter_tags(monkeypatch) -> None:
-    def fake_urlopen(request, timeout):  # noqa: ANN001
+    def fake_urlopen(request, timeout, *, context):  # noqa: ANN001
+        assert context.verify_mode == ssl.CERT_REQUIRED
+        assert context.check_hostname is True
         return _FakeResponse(
             [
                 {
@@ -297,7 +312,9 @@ def test_discover_base_models_counts_non_adapter_tags(monkeypatch) -> None:
 
 
 def test_discover_base_models_can_filter_extracted_model_ids(monkeypatch) -> None:
-    def fake_urlopen(request, timeout):  # noqa: ANN001
+    def fake_urlopen(request, timeout, *, context):  # noqa: ANN001
+        assert context.verify_mode == ssl.CERT_REQUIRED
+        assert context.check_hostname is True
         return _FakeResponse(
             [
                 {
@@ -329,7 +346,9 @@ def test_discover_base_models_can_filter_extracted_model_ids(monkeypatch) -> Non
 
 
 def test_discover_base_models_guides_repo_match_without_model_match(monkeypatch) -> None:
-    def fake_urlopen(request, timeout):  # noqa: ANN001
+    def fake_urlopen(request, timeout, *, context):  # noqa: ANN001
+        assert context.verify_mode == ssl.CERT_REQUIRED
+        assert context.check_hostname is True
         return _FakeResponse(
             [
                 {
