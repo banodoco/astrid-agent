@@ -60,6 +60,7 @@ WAIT_KINDS = ("event_wait", "condition_wait", "asyncio_sleep", "selector_wait")
 RUNTIME_WRITE_CONTEXTS = ("background_lifetime_reaper", "http_lifetime_reap",
                           "http_heartbeat", "http_request", "unattributed_runtime")
 PACK_MODULE = "astrid.packs.vibecomfy.actions.run.run"
+CENSUS_PRODUCER = "astrid.core.execution.process_group:_process_snapshot"
 _UNSEEN = object()
 
 
@@ -197,6 +198,62 @@ class ProcessObserver:
         self.popen_try_wait_code = getattr(getattr(subprocess.Popen, "_try_wait", None), "__code__", None)
         self.sleep_wrapper_code = self.poll_wrapper_code = None
         self.poll_ids = itertools.count()
+        self.run_code = subprocess.run.__code__
+        self.popen_wait_code = subprocess.Popen._wait.__code__
+        self.census_ids = itertools.count()
+        self.census_frames = {}
+        self.census_wait_frames = {}
+
+    def _census_context(self, frame):
+        while frame is not None:
+            invocation = self.census_frames.get(id(frame))
+            if invocation is not None:
+                return invocation
+            frame = frame.f_back
+        return None
+
+    @staticmethod
+    def _child_pid(process):
+        try:
+            value = object.__getattribute__(process, "__dict__").get("pid")
+        except (AttributeError, TypeError):
+            return None
+        return value if type(value) is int and value > 0 else None
+
+    def _census_profile(self, frame, event, arg):
+        """Observe the actual run/_try_wait code, including preinstalled aliases."""
+        code = frame.f_code
+        if code is self.run_code:
+            if event == "call" and frame.f_back is not None and self._site(frame.f_back) == CENSUS_PRODUCER:
+                invocation = next(self.census_ids)
+                self.census_frames[id(frame)] = invocation
+                args = frame.f_locals.get("popenargs", ())
+                command = args[0] if len(args) == 1 else None
+                known = (type(command) in (list, tuple) and len(command) == 3
+                         and all(type(value) is str for value in command)
+                         and command[0] in {"/bin/ps", "/usr/bin/ps", "ps"}
+                         and tuple(command[1:]) == ("-axo", "pid=,ppid=,pgid=,lstart="))
+                self.event("census_start", census_invocation=invocation, command_known=known)
+            elif event == "return":
+                invocation = self.census_frames.pop(id(frame), None)
+                if invocation is not None:
+                    result = vars(arg).get("returncode") if isinstance(arg, subprocess.CompletedProcess) else None
+                    self.event("census_end", census_invocation=invocation,
+                               returncode=result if type(result) is int else None)
+        elif code is self.popen_try_wait_code:
+            if event == "call":
+                invocation = self._census_context(frame)
+                if invocation is not None:
+                    poll_id = next(self.poll_ids)
+                    self.census_wait_frames[id(frame)] = poll_id
+                    self.event("census_wait_start", census_invocation=invocation, poll_id=poll_id,
+                               child_pid=self._child_pid(frame.f_locals.get("self")))
+            elif event == "return":
+                poll_id = self.census_wait_frames.pop(id(frame), None)
+                if poll_id is not None:
+                    known = type(arg) is tuple and len(arg) == 2 and all(type(value) is int for value in arg)
+                    self.event("census_wait_result", poll_id=poll_id, result_known=known,
+                               waited_pid=arg[0] if known else None)
 
     def event(self, kind: str, **fields) -> dict | None:
         with self.lock:
@@ -389,6 +446,8 @@ class ProcessObserver:
         # Reject unrelated Python calls before caching/formatting code metadata.
         # Deep-copy/source-discovery loops produce many calls but none of the
         # compile/emission boundaries. This changes observer work, not coverage.
+        if event in {"call", "return"} and (frame.f_code is self.run_code or frame.f_code is self.popen_try_wait_code):
+            self._census_profile(frame, event, arg)
         if event == "return" and not self.chain_profiles:
             return
         if event == "call":
@@ -455,6 +514,11 @@ class ProcessObserver:
                             if type(value) in (int, float) and 0 <= value <= 9_000_000_000
                             else None)
                     fields.update(self._wait_fields(caller))
+                    if kind == "sleep" and caller.f_code is self.popen_wait_code:
+                        invocation = self._census_context(caller)
+                        if invocation is not None:
+                            fields["census_invocation"] = invocation
+                            fields["census_child_pid"] = self._child_pid(caller.f_locals.get("self"))
                 if kind == "selector_wait":
                     tid = threading.get_native_id()
                     if event == "c_call":
@@ -508,7 +572,8 @@ class ProcessObserver:
             role = classify_command(args)
             observed = instrument_argv(args, owner.hash_source, owner.observer_source, owner.targets, owner.gaps)
             result = original(process, observed, *positional, **kwargs)
-            owner.event("process_start", child_pid=process.pid, child_role=role)
+            owner.event("process_start", child_pid=process.pid, child_role=role,
+                        census_invocation=owner._census_context(sys._getframe(1)))
             return result
 
         self.patches.setattr(subprocess.Popen, "__init__", spawn)
@@ -562,6 +627,7 @@ class ProcessObserver:
                 "poll_wait_maxima": dict(sorted(cycle_maxima.items())),
                 "sleep_requests": self._sleep_requests(wait_rows),
                 "poll_windows": self._poll_windows(rows, since_ns, until_ns),
+                "census_invocations": self._census_invocations(since_ns, until_ns),
                 "write_spans": [row for row in rows if row["kind"] in {
                     "application_sync", "runtime_outer_commit_success", "runtime_outer_commit_error",
                     "platform_write_through_success", "platform_write_through_error",
@@ -590,6 +656,49 @@ class ProcessObserver:
                 item["minimum_ns"] = value if item["minimum_ns"] is None else min(item["minimum_ns"], value)
                 item["maximum_ns"] = value if item["maximum_ns"] is None else max(item["maximum_ns"], value)
         return dict(sorted(result.items()))
+
+    def _census_invocations(self, since_ns, until_ns):
+        """Join each census call to its child and the actual wait results."""
+        endings = {row["census_invocation"]: row for row in self.events if row["kind"] == "census_end"}
+        results = {row["poll_id"]: row for row in self.events if row["kind"] == "census_wait_result"}
+        records = []
+        for start in self.events:
+            if start["kind"] != "census_start":
+                continue
+            invocation = start["census_invocation"]
+            finish = endings.get(invocation)
+            end = finish["at_ns"] if finish is not None else None
+            if ((until_ns is not None and start["at_ns"] > until_ns)
+                    or (since_ns is not None and end is not None and end < since_ns)):
+                continue
+            rows = [row for row in self.events if row.get("census_invocation") == invocation
+                    and row["tid"] == start["tid"]]
+            children = [row["child_pid"] for row in rows if row["kind"] == "process_start"]
+            child = children[0] if len(children) == 1 else None
+            waits = [row for row in rows if row["kind"] == "census_wait_start"]
+            replies = [results.get(row["poll_id"]) for row in waits]
+            sleeps = [row for row in rows if row["kind"] == "sleep_attempt"]
+            known = [reply is not None and reply["result_known"]
+                     and reply["waited_pid"] in {0, child}
+                     and reply["at_ns"] >= wait["at_ns"]
+                     and end is not None and reply["at_ns"] <= end
+                     for wait, reply in zip(waits, replies)]
+            records.append({
+                "invocation_id": invocation, "producer": CENSUS_PRODUCER, "tid": start["tid"],
+                "child_pid": child, "spawned_children": len(children),
+                "start_ns": start["at_ns"], "end_ns": end,
+                "carry_in": since_ns is not None and start["at_ns"] < since_ns,
+                "carry_out": end is None or (until_ns is not None and end > until_ns),
+                "command_known": start["command_known"],
+                "returncode": finish["returncode"] if finish is not None else None,
+                "wait_calls": len(waits), "missing_wait_results": known.count(False),
+                "nonterminal_waits": sum(valid and reply["waited_pid"] == 0 for valid, reply in zip(known, replies)),
+                "terminal_waits": sum(valid and reply["waited_pid"] == child for valid, reply in zip(known, replies)),
+                "sleep_calls": len(sleeps), "sleep_requests": self._sleep_requests(sleeps),
+                "ambiguous_children": (child is None or any(wait["child_pid"] != child for wait in waits)
+                                       or any(sleep.get("census_child_pid") != child for sleep in sleeps)),
+            })
+        return records
 
     def _poll_windows(self, rows, since_ns, until_ns):
         """Retain observed windows; missing results are never completed polls."""

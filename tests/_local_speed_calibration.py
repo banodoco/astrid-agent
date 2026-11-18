@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections import Counter
 
 from tests._local_speed_baseline import CALLERS, compare_baseline, counter_values
+from tests._local_speed_census import CONTAINERS, census_remainder, census_rule, compare_census
 
 SCHEMA = "astrid.local-speed-ambient-calibration.v2"
 PARENT = "parent_runtime_host_sdk"
@@ -290,6 +291,9 @@ def calibration(reference):
         observed = [scoped_values(row, known_counter_names=vocabulary)[0] for row in rows]
         if any(set(values) != vocabulary for values in observed):
             raise ValueError("base counter coverage differs across samples")
+        census, census_samples = census_rule(rows)
+        raw_observed = observed
+        observed = [census_remainder(values, sample) for values, sample in zip(observed, census_samples)]
         polling = set().union(*(sites for _, sites in initial))
         metrics = {}
         for name in sorted(vocabulary):
@@ -302,8 +306,15 @@ def calibration(reference):
                              "limit": maximum + margin, "group": group or "scoped_or_deterministic",
                              "policy": "observed_maximum_plus_range" if margin else "observed_maximum_exact_cap"}
         cadence = _calibrate_host_poll(rows, metrics)
+        if census is not None:
+            for name in CONTAINERS:
+                item = metrics[name]
+                item["raw_samples"] = [values.get(name, 0) for values in raw_observed]
+                item["census_sleep_samples"] = [sample["sleep_calls"] for sample in census_samples]
+                item["remainder_policy"] = item["policy"]
+                item["policy"] = "remainder_after_individually_gated_census_sleeps"
         result["callers"][caller] = {"samples": len(rows), "metrics": metrics,
-                                     "host_poll_cadence": cadence}
+                                     "host_poll_cadence": cadence, "census_invariants": census}
     return result
 
 
@@ -326,6 +337,9 @@ def compare_calibrated(actual, reference, policy):
         initial = [scoped_values(row, known_counter_names=metrics)[0] for row in rows]
         names = set(metrics).union(*(set(values) for values in initial))
         observed = [scoped_values(row, known_counter_names=names)[0] for row in rows]
+        census_failures, census_samples = compare_census(rows, policy["callers"][caller]["census_invariants"], caller)
+        failures.extend(census_failures)
+        observed = [census_remainder(values, sample) for values, sample in zip(observed, census_samples)]
         cadence = policy["callers"][caller]["host_poll_cadence"]
         if cadence is not None:
             failures.extend(_compare_host_poll(rows, cadence, caller))

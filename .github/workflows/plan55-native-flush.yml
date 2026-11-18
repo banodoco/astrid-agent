@@ -57,10 +57,25 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
+      - name: Validate the accepted plan merge and select the original proof tuple
+        if: ${{ github.head_ref == 'p55/ls-2-2' }}
+        shell: bash
+        run: >-
+          python -m tests.local_speed_qualification
+          --controller '${{ github.event.pull_request.head.sha }}'
+          --receipt plan55-qualification.json --checkout
+      - name: Read the pinned Runtime commit
+        id: runtime-pin
+        shell: python
+        run: |
+          import json, os, pathlib
+          commit = json.loads(pathlib.Path("runtime.lock.json").read_text())["source_commit"]
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print("commit=" + commit, file=output)
       - uses: actions/checkout@v4
         with:
           repository: banodoco/astrid-runtime
-          ref: 6855dfa8df65cf8ae4c002b57134d6505493c17c
+          ref: ${{ steps.runtime-pin.outputs.commit }}
           path: runtime
           persist-credentials: false
       - uses: actions/checkout@v4
@@ -89,7 +104,7 @@ jobs:
               raise SystemExit("VibeComfy worktree differs from exact Git bytes (including line endings)")
       - name: Retain this exact task source for continuation
         if: ${{ runner.os == 'Linux' }}
-        run: git archive --format=zip --output=plan55-task-source.zip HEAD
+        run: git archive --format=zip --output=plan55-task-source.zip '${{ github.event.pull_request.head.sha }}'
       - name: Upload exact public task source
         if: ${{ runner.os == 'Linux' }}
         uses: actions/upload-artifact@v4
@@ -124,6 +139,8 @@ jobs:
           tests/core/generation/test_local_speed_ambient_calibration.py
           tests/core/generation/test_local_speed_poll_windows.py
           tests/core/generation/test_local_speed_host_cadence.py
+          tests/core/generation/test_local_speed_census.py
+          tests/core/generation/test_local_speed_qualification.py
           --junitxml=native-reader.xml
       - name: Prove private Runtime directory creation and unsafe-directory refusal
         run: >-
@@ -184,5 +201,6 @@ jobs:
             native-reader.xml
             runtime-support.xml
             local-speed-gate-probes.json
+            plan55-qualification.json
           include-hidden-files: true
           retention-days: 14

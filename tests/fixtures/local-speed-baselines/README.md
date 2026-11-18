@@ -26,6 +26,20 @@ target has since re-pinned VibeComfy; this proof cannot qualify that new tuple.
 LS-2.1 owns its measurement after re-pins. Other branches select their exact PR
 base. The dependency identity guard remains enforced in every comparison.
 
+The packet branch integrates accepted plan base `24c68a27` (including `6451821e`)
+before final proof. Under the original-tuple and merge rulings, the workflow
+checks the exact clean merge head and ordered parents, reproduces its native
+merge, preserves the accepted Runtime-pin reader, and verifies every shared
+measurement-harness blob. It then selects the clean first parent, whose changes
+from `b18080bc` are confined to the named census/qualification files. That
+parent retains the original product, dependency pins, references and test
+guards. `plan55-qualification.json` records both commits and trees, all harness
+hashes and the two plan-added LS-5 harness files outside this measurement.
+The continuation source archive retains the integrated PR head. This source
+handoff does not qualify the newer accepted product/dependency tuple; LS-2.1
+owns that measurement. Any unexpected source or merge difference fails before
+the handoff. The paired runner and all its source/dependency guards are unchanged.
+
 While the saved references are still the original v2 records, the runner also
 retains a separate historical measurement:
 the **same candidate product**, in a separate checked worktree, using the
@@ -95,6 +109,32 @@ incomplete evidence. An observed elimination of the loop remains an improvement.
 Window duration includes guard work and scheduling, so it is not a pure sleep
 duration or an uninstrumented latency measurement. Original failed runs remain
 failed under their recorded policy; the new model requires a new complete pair.
+
+The **process census invocation rule** follows
+[Lead decision 6970432614](https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6970432614).
+It applies only to `astrid.core.execution.process_group:_process_snapshot`.
+The observer follows the actual `subprocess.run` and `Popen._try_wait` code,
+including aliases captured before observation, and joins each call to its
+spawned child, actual wait results and requested `Popen._wait` sleeps. Arguments
+and environment values are not serialized; recognition of the exact census
+command is a boolean.
+
+Five base controls must establish four subprocess invocations per sample,
+at most one nonterminal wait per invocation, one sleep for each such wait and
+one observed positive period. Each held-out base and candidate retains exactly
+four invocations, at most one nonterminal wait per invocation and a period that
+is never shortened. A child already exited may need no wait. Missing results,
+unknown periods, clipped intervals, unrecognized commands and missing or
+ambiguous child identities are rejected. The census sleep total follows from
+those individually checked invocations and has no separate allowance.
+
+Raw totals remain in the observations and calibration `raw_samples`. Only the
+individually guarded census sleeps are removed from the global sleep total,
+the parent sleep total and that parent's `subprocess:Popen._wait` site before
+their remainders are compared with their existing policies. Each subtraction
+is recorded as `census_sleep_samples`; non-census waits cannot use it. Every
+other counter, the host-window rule, timing policy and reference guard remains
+unchanged. Earlier failed runs keep their original outcome.
 
 The held-out base comparison must pass as well as the candidate comparison.
 A failed comparison is retained; it cannot expand its own margin or become a
