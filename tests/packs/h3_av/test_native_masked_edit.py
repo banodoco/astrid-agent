@@ -570,3 +570,22 @@ def test_fixed_audio_is_spliced_into_managed_v2v_source(tmp_path):
     voice_pcm, _ = _decode_exact_pcm(voice)
     prepared_pcm, _ = _decode_exact_pcm(tmp_path / "out" / "source-with-fixed-audio.wav")
     assert prepared_pcm == source_pcm[:24000 * 2] + voice_pcm[:48000 * 2] + source_pcm[72000 * 2:]
+
+
+def test_zero_strength_audio_keeps_source_and_positive_overlap_stays_fail_closed(tmp_path):
+    import copy
+
+    raw = copy.deepcopy(WATERMARK)
+    prepared = _prepare(raw, tmp_path)
+    raw["media"][0]["edit"].append({"stream": "audio", "during": [1, 3], "strength": 0})
+    request = normalize_request(raw)
+    prepared["request"], prepared["request_digest"] = request.value, request.digest
+    manifest = compile_preparation(prepared, out_dir=tmp_path / "zero")
+    assert manifest["status"] == "compiled"
+    block = _v2v_block(manifest)
+    assert "audio_strength=0," in block
+    raw["media"][0]["edit"].append({"stream": "audio", "during": [2, 4], "strength": 0.5})
+    request = normalize_request(raw)
+    prepared["request"], prepared["request_digest"] = request.value, request.digest
+    with pytest.raises(CompilationError, match="managed audio mask producer"):
+        compile_preparation(prepared, out_dir=tmp_path / "overlap")

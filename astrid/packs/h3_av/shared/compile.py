@@ -662,7 +662,7 @@ def _compile_native_masked_edit(
     if request.value.get("version") != 2 and len(passes) != 1:
         raise CompilationError("native masked edit requires exactly one modifying video operation")
     video_passes = [p for p in passes if p.operation.stream == "video"]
-    audio_passes = [p for p in passes if p.operation.stream == "audio"]
+    audio_passes = [p for p in passes if p.operation.stream == "audio" and p.operation.strength > 0]
     references_by_name = {item.name: item for item in spec.refs}
     if any(not p.operation.refs or any(references_by_name[name].use != "replacement" for name in p.operation.refs)
            for p in audio_passes):
