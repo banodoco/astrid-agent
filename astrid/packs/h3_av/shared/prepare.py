@@ -643,18 +643,26 @@ def prepare_request(
     if (width is None) != (height is None):
         raise PreparationError("width and height compatibility inputs must be supplied together")
     resolved_canvas = request.value.get("canvas")
-    if isinstance(resolved_canvas, Mapping):
+    has_resolved_canvas = isinstance(resolved_canvas, Mapping)
+    if has_resolved_canvas:
         effective_width = resolved_canvas.get("width")
         effective_height = resolved_canvas.get("height")
     else:
         effective_width, effective_height = DEFAULT_SIZE
-    # Compatibility for existing internal callers; normalized requests carry the
-    # authoritative canvas and production callers do not pass these overrides.
-    if width is not None and height is not None:
-        effective_width, effective_height = width, height
-    width, height = effective_width, effective_height
     canvas = LIMITS["canvas_dimension"]["value"]
-    if any(value < canvas["min"] or value > canvas["max"] or value % canvas["multiple"] for value in (width, height)):
+    # Compatibility for existing internal callers. Normalized request records
+    # are authoritative: a compatibility argument may confirm, but cannot
+    # replace, their canvas. Unresolved legacy records have no canvas to conflict.
+    if width is not None and height is not None:
+        if any(type(value) is not int or value < canvas["min"] or value > canvas["max"]
+               or value % canvas["multiple"] for value in (width, height)):
+            raise PreparationError(f"width and height 32–16384, multiples of 32: received {width}x{height}")
+        if has_resolved_canvas and (width, height) != (effective_width, effective_height):
+            raise PreparationError("width and height compatibility inputs cannot override the normalized request canvas")
+        if not has_resolved_canvas:
+            effective_width, effective_height = width, height
+    width, height = effective_width, effective_height
+    if any(type(value) is not int or value < canvas["min"] or value > canvas["max"] or value % canvas["multiple"] for value in (width, height)):
         raise PreparationError(f"width and height 32–16384, multiples of 32: received {width}x{height}")
     if fps <= 0 or sample_rate <= 0:
         raise PreparationError("fps and sample_rate must be positive")

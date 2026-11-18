@@ -367,7 +367,8 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
     _unknown(output, {"size"}, "output")
     size = output.get("size", DEFAULT_SIZE)
     size_limits = LIMITS["canvas_dimension"]["value"]
-    if (not isinstance(size, (list, tuple)) or len(size) != 2
+    if (("size" in output and not isinstance(size, list))
+            or not isinstance(size, (list, tuple)) or len(size) != 2
             or any(type(dimension) is not int for dimension in size)):
         raise H3RequestError("output.size must be exactly two JSON integers [width, height]")
     width, height = size

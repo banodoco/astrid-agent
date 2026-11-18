@@ -51,7 +51,7 @@ def test_native_output_size_accepts_per_dimension_limits(size):
 
 @pytest.mark.parametrize("size", [
     [256, 144], [768, 432], [0, 32], [16416, 32], [512.5, 288], ["512", 288],
-    [True, 288], [512], [512, 288, 32],
+    [True, 288], [512], [512, 288, 32], (512, 288),
 ])
 def test_native_output_size_rejects_invalid_sizes_with_rule(size):
     with pytest.raises(H3RequestError, match="output.size"):
@@ -73,6 +73,10 @@ def test_native_output_size_default_identity_and_readback():
     assert restored.value["canvas"] == {"width": 512, "height": 288}
     prepared = prepare.prepare_request(smaller)
     assert (prepared["media"]["width"], prepared["media"]["height"]) == (512, 288)
+    with pytest.raises(prepare.PreparationError, match="cannot override the normalized request canvas"):
+        prepare.prepare_request(smaller, width=768, height=448)
+    confirmed = prepare.prepare_request(smaller, width=512, height=288)
+    assert (confirmed["media"]["width"], confirmed["media"]["height"]) == (512, 288)
     inputs = generation_inputs_from_bindings(
         references=[], prompt="A scene", frames=124, model="model", steps=8, seed=1,
         canvas_size=(restored.value["canvas"]["width"], restored.value["canvas"]["height"]),
