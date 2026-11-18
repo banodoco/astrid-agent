@@ -7074,7 +7074,7 @@ class GenericPackHost:
         """Rollback a pre-export pause only from an observed zero-work state."""
         with self._handoff_condition:
             snapshot = self._handoff_quiescence_locked()
-            if (snapshot["observation_status"] != "known" or not self._handoff_claim_gate_closed
+            if (self._shutdown.is_set() or snapshot["observation_status"] != "known" or not self._handoff_claim_gate_closed
                     or any(snapshot[key] != 0 for key in (
                         "claim_rpc_in_flight", "active_attempts", "pending_settlements",
                         "registration_rpc_in_flight",
@@ -7085,7 +7085,7 @@ class GenericPackHost:
 
     def _handoff_enter_claim_rpc(self) -> bool:
         with self._handoff_condition:
-            if self._handoff_claim_gate_closed or not self._handoff_observation_known:
+            if self._shutdown.is_set() or self._handoff_claim_gate_closed or not self._handoff_observation_known:
                 return False
             self._handoff_claim_rpc_in_flight += 1
             return True
@@ -7116,7 +7116,7 @@ class GenericPackHost:
         with self._handoff_condition:
             if thread_id in self._handoff_attempt_threads:
                 return False
-            if self._handoff_claim_gate_closed or not self._handoff_observation_known:
+            if self._shutdown.is_set() or self._handoff_claim_gate_closed or not self._handoff_observation_known:
                 raise HostError("generic host claim gate is closed or unresolved")
             self._handoff_active_attempts += 1
             self._handoff_attempt_threads.add(thread_id)
@@ -7124,6 +7124,8 @@ class GenericPackHost:
 
     def _handoff_begin_registration(self) -> None:
         with self._handoff_condition:
+            if self._shutdown.is_set():
+                raise HostError("generic host has shut down")
             authorized_fenced = (
                 self._handoff_claim_gate_closed
                 and self._handoff_registration_authorized_thread == threading.get_ident()
@@ -7426,17 +7428,48 @@ class GenericPackHost:
             raise
 
 
-    def shutdown(self) -> None:
-        """Stop the host and every currently owned capability process."""
+    def _begin_shutdown(self) -> None:
+        """Fence admission before waiting for any retained work or cleanup."""
         with self.managed_tool_session._lock:
             self._shutdown.set()
-        self.warm_holds.close()
-        errors: list[BaseException] = []
+            with self._handoff_condition:
+                self._handoff_claim_gate_closed = True
         # Fence every serving slot before any session release can block or
         # report uncertainty. A failed release must not leave a sibling live.
         for slot in self._claim_slots:
             with slot.managed_tool_session._lock:
                 slot._shutdown.set()
+                with slot._handoff_condition:
+                    slot._handoff_claim_gate_closed = True
+
+    def _wait_for_cleanup_quiescence(self, *, attempts: bool = True) -> None:
+        owner = self._handoff_accounting_owner
+        with owner._handoff_condition:
+            while True:
+                if not owner._handoff_observation_known:
+                    raise CleanupUncertainError("host cleanup quiescence is unknown")
+                pending = owner._handoff_claim_rpc_in_flight + owner._handoff_registration_rpc_in_flight
+                if attempts:
+                    pending += owner._handoff_active_attempts + owner._handoff_pending_settlements
+                if pending == 0:
+                    return
+                owner._handoff_condition.wait()
+
+    def _shutdown_for_cleanup(self) -> None:
+        """The control owner may ACK only after admitted work and cleanup end."""
+        self._begin_shutdown()
+        # A registration can still be preparing resources; a claim response
+        # can still introduce an owned attempt. Drain both before cleanup.
+        self._wait_for_cleanup_quiescence(attempts=False)
+        self.shutdown()
+        # A returned claim must finish its cancellation/settlement path too.
+        self._wait_for_cleanup_quiescence()
+
+    def shutdown(self) -> None:
+        """Stop the host and every currently owned capability process."""
+        self._begin_shutdown()
+        self.warm_holds.close()
+        errors: list[BaseException] = []
         if self._handoff_accounting_owner is self:
             self._local_engine_idle.close()
         for slot in self._claim_slots:
@@ -7525,6 +7558,8 @@ class GenericPackHost:
                 self._target_bindings.close()
             except BaseException as exc:
                 errors.append(exc)
+        with self._handoff_condition:
+            self._invalidate_ready_registration()
         if errors:
             self._latch_cleanup_uncertainty("; ".join(str(error) for error in errors))
             raise CleanupUncertainError("host graph cleanup remains unresolved") from errors[0]
@@ -8315,26 +8350,32 @@ class GenericPackHost:
         return tuple(updated[key] for key in sorted(updated) if capability_id is None or key == capability_id)
 
     def _publish_ready_registration(self, registration: Mapping[str, Any] | None) -> None:
-        if self._ready_marker_path is None:
-            return
-        payload = {
-            **self._ready_marker_context,
-            "capability_count": len(self.capabilities),
-            "ready_capabilities": sorted(record.id for record in self.capabilities.values() if record.ready),
-            "unready_capabilities": sorted(record.id for record in self.capabilities.values() if not record.ready),
-            "missing_required_capabilities": list(self.missing_required_capabilities),
-            "gated_checks": _gated_remotion_faults(self.capabilities.values()),
-            "recovery_blocked": list(self.recovery_blocked),
-            "registration": registration,
-            "source_epoch": self.source_epoch,
-            "source_inventory_identity": self.source_inventory_identity,
-            "runtime_instance_id": self.runtime_state.get(
-                "runtime_instance_id", self._ready_marker_context.get("runtime_instance_id")
-            ),
-            "runtime_epoch": self.runtime_state.get("runtime_epoch"),
-            "schema_digest": self.runtime_state.get("schema_digest"),
-        }
-        _write_ready_marker(self._ready_marker_path, payload)
+        # Include the file replacement itself: cleanup cannot ACK while an
+        # already admitted writer can still recreate readiness afterwards.
+        with self._handoff_condition:
+            if self._shutdown.is_set():
+                self._invalidate_ready_registration()
+                return
+            if self._ready_marker_path is None:
+                return
+            payload = {
+                **self._ready_marker_context,
+                "capability_count": len(self.capabilities),
+                "ready_capabilities": sorted(record.id for record in self.capabilities.values() if record.ready),
+                "unready_capabilities": sorted(record.id for record in self.capabilities.values() if not record.ready),
+                "missing_required_capabilities": list(self.missing_required_capabilities),
+                "gated_checks": _gated_remotion_faults(self.capabilities.values()),
+                "recovery_blocked": list(self.recovery_blocked),
+                "registration": registration,
+                "source_epoch": self.source_epoch,
+                "source_inventory_identity": self.source_inventory_identity,
+                "runtime_instance_id": self.runtime_state.get(
+                    "runtime_instance_id", self._ready_marker_context.get("runtime_instance_id")
+                ),
+                "runtime_epoch": self.runtime_state.get("runtime_epoch"),
+                "schema_digest": self.runtime_state.get("schema_digest"),
+            }
+            _write_ready_marker(self._ready_marker_path, payload)
 
     def _invalidate_ready_registration(self) -> None:
         # Some readiness consumers use file existence, so a non-ready payload
@@ -15660,9 +15701,7 @@ class LocalExecutionPreparation:
             journal_ready = self._acquire_handoff_journal(Path(str(self._request["custody_scope"])))
         # Cleanup must either observe this owner or finish before attachment
         # can proceed. Its no-owner observation cannot authorize a later host.
-        if not self._abort_dispatch_lock.acquire(timeout=5):
-            raise CleanupUncertainError("local cleanup is still active; claim owner cannot attach")
-        try:
+        with self._abort_dispatch_lock:
             with self._lock:
                 if self._aborted:
                     raise HostError("local preparation has been aborted")
@@ -15673,8 +15712,13 @@ class LocalExecutionPreparation:
                     with host._handoff_condition:
                         host._handoff_claim_gate_closed = True
                         host._handoff_observation_known = False
-        finally:
-            self._abort_dispatch_lock.release()
+
+    def _shutdown_claim_host(self) -> None:
+        host = self._claim_host
+        if host is not None:
+            # Claim-owning hosts account for in-flight operations. Other
+            # retained owners keep their existing complete-shutdown contract.
+            getattr(host, "_shutdown_for_cleanup", host.shutdown)()
 
     def retain_activation_grant(self, grant: Mapping[str, Any]) -> None:
         """Retain the activation accepted over the private Runtime channel."""
@@ -16884,8 +16928,7 @@ class LocalExecutionPreparation:
                 return json.loads(json.dumps(self._abort_ack))
         try:
             self._control_cleanup_done.clear()
-            if self._claim_host is not None:
-                self._claim_host.shutdown()
+            self._shutdown_claim_host()
             # Positive acknowledgement follows actual owned-child, bridge and
             # managed-session cleanup. No root exit is treated as this proof.
             reply = {**abort_bound, "custody_capabilities": dict(capabilities), "status": "cleaned",
@@ -16971,8 +17014,7 @@ class LocalExecutionPreparation:
                 if self._aborted:
                     return
                 graph = self.graph
-            if (self._request or {}).get("profile", {}).get("execution_mode") == "host_only_cpu" and self._claim_host is not None:
-                self._claim_host.shutdown()
+            self._shutdown_claim_host()
             if graph is not None:
                 graph.abort()
             with self._lock:
@@ -17062,6 +17104,7 @@ class LocalExecutionPreparation:
                     raise HostError("admission cleanup intent changed")
                 self._admission_abort_intent = intent
                 retained = True
+            self._shutdown_claim_host()
             cleanup = self.graph.abort()  # No authority/replay guard spans native waits.
             proofs = self._admission_abort_chains(base)
             current = {role: proof["current_reference"] for role, proof in proofs.items()}
@@ -17157,6 +17200,7 @@ class LocalExecutionPreparation:
                     raise CleanupUncertainError("current-role abort remains in progress")
                 self._current_abort_intent = intent
                 self._current_abort_running = running = True
+            self._shutdown_claim_host()
             cleanup = self.graph.abort()
             proof = self._current_abort_chain(base)  # Cleanup may refresh the listener.
             current = {"engine": base["engine"], "engine_listener": proof["current_reference"]}
@@ -17279,6 +17323,7 @@ class LocalExecutionPreparation:
         try:
             if self.graph is None:
                 raise CleanupUncertainError("local graph preparation is unresolved")
+            self._shutdown_claim_host()
             cleanup = self.graph.abort()
             if not isinstance(cleanup, Mapping) or set(cleanup) != {"engine", "engine_listener"}:
                 raise CleanupUncertainError("whole required native graph cleanup is unproved")
@@ -17307,6 +17352,10 @@ class LocalExecutionPreparation:
                 self._retained_relay_actor = custody_module.AuthenticatedCleanupActor.private_peer(control)
                 while True:
                     frame = _read_activation_frame(control, limit=1024 * 1024)
+                    if frame.get("command") == "abort_local_execution":
+                        # Every cleanup protocol owns the CLI exit barrier,
+                        # including native cleanup before a claim host exists.
+                        self._control_cleanup_done.clear()
                     try:
                         reply = self.dispatch(frame)
                     except BaseException as exc:
@@ -18693,7 +18742,11 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
                 },
             }
             if ready_path is not None and not service_mode:
-                _write_ready_marker(ready_path, failure)
+                with host._handoff_condition:
+                    if host._shutdown.is_set():
+                        ready_path.unlink(missing_ok=True)
+                    else:
+                        _write_ready_marker(ready_path, failure)
             print(json.dumps(failure, sort_keys=True), file=sys.stderr, flush=True)
             if stdin_shutdown is not None:
                 stdin_shutdown.wait_for_shutdown_cleanup()
@@ -18767,6 +18820,8 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
         host._ready_marker_path = ready_path
         host._ready_marker_context = ready_payload
         host._publish_ready_registration(registration)
+        if host._shutdown.is_set():
+            return 1
         _emit_startup_phase("ready_written")
         if stdin_shutdown is not None and stdin_shutdown.shutdown_requested.is_set():
             ready_path.unlink(missing_ok=True)
