@@ -13002,6 +13002,11 @@ class GenericPackHost:
                     job_evidence.finish()
             try:
                 logs = self._log_outputs(output_root, attempt=root, warnings=warnings)
+                if capability_id == "generation.thumbnail_backfill":
+                    # Owner retries keep the task but acquire a new attempt;
+                    # retain each attempt's immutable log associations.
+                    for output in logs:
+                        output["group_key"] = f"thumbnail-attempt:{attempt_id}"
                 task_epoch = task_data.get("runtime_epoch")
                 return self._upload_outputs(
                     logs, project_id=task_data.get("project_id"), run_id=task_data.get("run_id"),
