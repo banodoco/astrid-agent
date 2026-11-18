@@ -62,7 +62,10 @@ class Counters:
         original_argv = generic_host._captured_worker_argv
         # The real isolated bootstrap and captured-source checks still run.
         # No product hook or replacement compilation path participates.
-        startup = ("import os,sys,threading,json\n" + inspect.getsource(category) +
+        startup = ("import os,sys,threading,json,faulthandler\n" + inspect.getsource(category) +
+            "\nif sys.platform=='win32':\n" +
+            f" _ls15_trace=open({str(self.root / 'child-stacks.txt')!r},'w')\n" +
+            " faulthandler.dump_traceback_later(45,repeat=True,file=_ls15_trace)\n" +
             f"\n_ls15_fd=os.open({str(self.child)!r},os.O_WRONLY|os.O_APPEND|os.O_CREAT,0o600)\n" +
             "def _ls15_profile(frame,event,arg):\n"
             " if event=='call':\n"

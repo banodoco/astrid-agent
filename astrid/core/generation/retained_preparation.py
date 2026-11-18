@@ -11,6 +11,7 @@ import copy
 import hashlib
 import os
 import stat
+import time
 from pathlib import Path
 
 from .engine_contracts import CustodyUnresolved, IntegrityError
@@ -22,10 +23,21 @@ def _content_tree(path, check, *, omitted=frozenset()):
     result = hashlib.sha256()
     seen = set()
     size = 0
+    next_check = 0.0
+
+    def checkpoint():
+        nonlocal next_check
+        # The host callback also measures evidence and observes Runtime. Keep
+        # that work bounded while hashing every byte and checking every file
+        # identity below; cancellation is observed at most 50 ms apart during
+        # active traversal, plus the current bounded read/callback duration.
+        if time.monotonic() >= next_check:
+            check()
+            next_check = time.monotonic() + 0.05
 
     def visit(node, label):
         nonlocal size
-        check()
+        checkpoint()
         info = node.lstat()
         result.update(label.encode("utf-8", "surrogatepass"))
         result.update(str(stat.S_IMODE(info.st_mode)).encode())
@@ -57,7 +69,7 @@ def _content_tree(path, check, *, omitted=frozenset()):
             with node.open("rb") as source:
                 before = os.fstat(source.fileno())
                 for block in iter(lambda: source.read(1024 * 1024), b""):
-                    check()
+                    checkpoint()
                     size += len(block)
                     result.update(block)
                 after = os.fstat(source.fileno())
@@ -67,6 +79,7 @@ def _content_tree(path, check, *, omitted=frozenset()):
         else:
             raise IntegrityError("managed generation contains a non-file member")
     visit(Path(path), "")
+    check()
     return result.hexdigest(), size
 
 

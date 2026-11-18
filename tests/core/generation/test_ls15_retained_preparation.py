@@ -5,13 +5,16 @@ import copy
 import hashlib
 import os
 import time
+from concurrent.futures import CancelledError
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
 
-from astrid.core.generation.engine_contracts import CustodyUnresolved
+from astrid.core.generation.engine_contracts import CustodyUnresolved, DeadlineExceeded
 from astrid.core.generation.managed_preparation import (
     ManagedEnginePreparation,
+    digest,
     preparation_scope,
     read_preparation,
 )
@@ -28,7 +31,15 @@ def retained_install(preparation, monkeypatch):
     from astrid.core.generation import engine_recipe, engine_runner, settings
     from astrid.core.generation.backends import vibecomfy_local_server
     report, source = preparation
+    report = copy.deepcopy(report)
     root = Path(report["installation"]["root"])
+    # This unit double represents a Linux managed installation. Its wire
+    # locations stay POSIX even when the backing fixture files live on a
+    # Windows test runner; the real native installation is proved separately.
+    report["installation"]["root"] = "/ls15-managed-install"
+    report["manifest"]["models_root"] = "/ls15-managed-install/models"
+    report["manifest_sha256"] = digest(report["manifest"])
+    report["output_dir"] = "/ls15-managed-install/output"
     members = {"source/code.py": "print('original')\n", "env/package.py": "ORIGINAL = 1\n",
                ".astrid-engine/install.json": "receipt-1", ".astrid-engine/environments/lock": "requirements-1",
                "runtime/out/sessions/comfyui/launch.json": "native-birth-1", ".astrid-engine/install.lock": "job"}
@@ -158,6 +169,42 @@ def test_replaced_install_lock_and_unproved_prompt_drain_keep_custody(retained_i
     with pytest.raises(CustodyUnresolved):
         world.retained.close()
     assert not world.lock.released and id(job) in world.retained.jobs
+
+
+@pytest.mark.parametrize("interruption", ["cancel", "deadline"])
+def test_interruption_while_reading_generation_cannot_reuse_readiness(retained_install, monkeypatch, interruption):
+    from pathlib import Path
+
+    world = retained_install
+    job = world.job(2)
+    cancelled = [False]
+    job.cancelled = lambda: cancelled[0]
+    original_open = Path.open
+
+    @contextmanager
+    def open_during_interruption(path, *args, **kwargs):
+        with original_open(path, *args, **kwargs) as stream:
+            if path == world.root / "source/code.py":
+                class InterruptedRead:
+                    fileno = stream.fileno
+
+                    def read(self, size):
+                        data = stream.read(size)
+                        if interruption == "cancel":
+                            cancelled[0] = True
+                        else:
+                            job.deadline = time.monotonic() - 1
+                        return data
+                yield InterruptedRead()
+            else:
+                yield stream
+
+    monkeypatch.setattr(Path, "open", open_during_interruption)
+    with pytest.raises(CancelledError if interruption == "cancel" else DeadlineExceeded):
+        world.retained.observe(job)
+    assert not world.probes and job.report is None and not world.lock.released
+    assert world.retained.reuse(job, execution_identity="execution", input_digests={}) is None
+    world.retained.close()
 
 
 def test_io_and_unselected_models_do_not_replace_declared_model_verification(retained_install):

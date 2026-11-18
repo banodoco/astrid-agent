@@ -10685,7 +10685,8 @@ class GenericPackHost:
                 raise HostError("command resident dispatch has no admitted resident owner")
             scoped = dict(admission or {})
             env, secrets = self._child_environment(record, attempt, admission=scoped,
-                managed_preparation=scoped.get("managed_engine_preparation"), allow_runtime_connection=False)
+                managed_preparation=scoped.get("managed_engine_preparation"), allow_runtime_connection=False,
+                network_policy=_network_policy(record, inputs))
             try:
                 return self.invoke_capability(capability_kind="executor", capability_id=record.id,
                     request={"out": str(output_root), "inputs": inputs, "project": resident_project,
