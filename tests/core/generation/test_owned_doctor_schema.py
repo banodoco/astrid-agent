@@ -188,6 +188,7 @@ def test_doctor_failure_stops_exact_owned_engine_and_retains_uncertain_lock(tmp_
     prep.deadline = time.monotonic() + 30
     prep.recipe = SimpleNamespace(start=SimpleNamespace(port=8188))
     prep.uncertain = False
+    prep._workflow_classes = ["EmptyLatentImage"]
     prep._alignment_verification = ()
     prep._verify_alignment = lambda: None
     events = []
@@ -196,8 +197,11 @@ def test_doctor_failure_stops_exact_owned_engine_and_retains_uncertain_lock(tmp_
         events.append('health')
         if failure == 'post_health' and events.count('health') >= 2:
             health.object_info_sha256 = 'b' * 64
-    prep._alignment_runner = SimpleNamespace(health=health, start=lambda **kw: events.append('start'), check_health=check_health)
+    prep._alignment_runner = SimpleNamespace(health=health, start=lambda **kw: (events.append('start') or 'executed', {}), check_health=check_health)
     def native(*args, **kwargs):
+        if kwargs['step'] == 'node_probe':
+            events.append('probe')
+            return SimpleNamespace(stdout='[]')
         events.append('doctor')
         assert kwargs['step'] == 'doctor'
         if failure != 'post_health':
@@ -223,7 +227,7 @@ def test_doctor_failure_stops_exact_owned_engine_and_retains_uncertain_lock(tmp_
             prep._command(['doctor', '/workflow.py'])
         prep.close()
         assert events[-2:] == ['stop_exact', 'unlock']
-    assert events[0:3] == ['start', 'health', 'doctor']
+    assert events[:4] == ['start', 'health', 'probe', 'doctor']
     assert events.count('stop_exact') == 1
 
 
@@ -244,3 +248,13 @@ def test_doctor_does_not_stop_a_refused_engine_owner():
     with pytest.raises(EndpointOwnershipError): prep._doctor(['doctor', '/workflow.py'])
     prep.close()
     assert events == ['unlock']
+
+def test_native_node_probe_checks_the_running_registry(schema_server):
+    from astrid.packs.vibecomfy.native_preparation import native_node_probe_program
+
+    request = {'endpoint': schema_server.endpoint, 'request_timeout': 5,
+               'classes': ['SaveLatent', 'VibeComfySaveTranscript']}
+    result = subprocess.run([sys.executable, '-I', '-c', native_node_probe_program(), json.dumps(request)],
+                            check=True, capture_output=True, text=True, timeout=10)
+    assert json.loads(result.stdout) == ['VibeComfySaveTranscript']
+    assert schema_server.requests == ['/object_info']

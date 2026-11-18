@@ -28,7 +28,7 @@ from .engine_local_endpoint import DEFAULT_ENGINE
 SCHEMA = "astrid.managed-engine-preparation.v1"
 _ENGINE_STOP_TIMEOUT_SECONDS = 30.0
 _PREPARATION_CONTEXT = ContextVar("astrid_managed_engine_preparation", default=None)
-_NATIVE_STEPS = frozenset({"runtime_inspect", "nodes_restore", "pip_bootstrap", "fetch", "prepare", "doctor"})
+_NATIVE_STEPS = frozenset({"runtime_inspect", "nodes_restore", "pip_bootstrap", "fetch", "prepare", "doctor", "node_probe"})
 # A preparation can outlive its Python call when a POST may still be accepted
 # and cleanup cannot prove that its command drained. Keep the actual lock owner
 # alive for this process lifetime; dropping the wrapper must not close the fd.
@@ -100,7 +100,8 @@ def native_failure_diagnostic(step: str, stdout: str, stderr: str) -> tuple[str,
     step = step if step in _NATIVE_STEPS else "unknown"
     reason = {"runtime_inspect": "runtime_inspection_failed", "nodes_restore": "node_restore_failed",
               "pip_bootstrap": "pip_bootstrap_failed", "fetch": "model_fetch_failed",
-              "prepare": "native_preparation_failed", "doctor": "workflow_diagnosis_failed"}.get(step, "command_failed")
+              "prepare": "native_preparation_failed", "doctor": "workflow_diagnosis_failed",
+              "node_probe": "node_probe_failed"}.get(step, "command_failed")
     # VibeComfy doctor emits its diagnostic on stdout and returns 1. Only
     # recognize complete fixed headings, never its paths, errors or suggestions.
     if step == "doctor":
@@ -338,6 +339,8 @@ class ManagedEnginePreparation:
         self.verification_attempted = False
         self.engine_start_seconds: float | None = 0.0
         self.engine_start_attempted = False
+        self.checked_classes: list[str] = []
+        self.engine_restarted = False
         self.engine_reused: bool | None = None
         self.evidence_waiting: Any = None
         self.evidence_start: Any = None
@@ -497,6 +500,8 @@ class ManagedEnginePreparation:
         self.check()
         self._alignment_runner = runner
         self._alignment_verification = (canonical_workflow, runner, staged_digests, manifest, receipt)
+        api = canonical_workflow.compile("api", run_inputs=json.loads(inputs.get("workflow_inputs") or "{}"))
+        self._workflow_classes = sorted({node["class_type"] for node in api.values()})
         if self.mode == "align":
             self._preflight_model_storage(manifest)
         callback = getattr(self, "on_phase", None)
@@ -510,12 +515,7 @@ class ManagedEnginePreparation:
         runner.step_id = "start"
         if callback is not None:
             callback("start_engine")
-        start_action, start_facts = self._start_engine(runner)
-        self._preparing_engine = True
-        self.check()
-        runner.step_id = "health"
-        health_action, health_facts = self._time_engine(runner.check_health)
-        self.check()
+        (start_action, start_facts), (health_action, health_facts) = self._start_checked_engine(runner)
         receipt_sha256 = refresh_installed_launch(runner, raw, start_action=start_action, start_facts=start_facts,
                                                   health_action=health_action, health_facts=health_facts, check=self.check)
         self.check()
@@ -536,6 +536,42 @@ class ManagedEnginePreparation:
             if getattr(self, "pip_bootstrap", None) is not None:
                 native_preparation["pip_bootstrap"] = self.pip_bootstrap
         return report
+
+    def _start_checked_engine(self, runner):
+        """Return matching start and health facts from the engine that passed the class check."""
+        while True:
+            start = self._start_engine(runner)
+            self._preparing_engine = True
+            self.check()
+            runner.step_id = "health"
+            health = self._time_engine(runner.check_health)
+            self.check()
+            missing = self._probe_workflow_classes()
+            if not missing:
+                return start, health
+            if not self.engine_reused or self.engine_restarted:
+                raise IntegrityError("managed engine does not load workflow classes even after a fresh start: "
+                                     + ", ".join(missing))
+            self._stop_preparing_engine()
+            # stop_owned retired the supervisor. Bind the next start to its new owner.
+            runner.service_owner = None
+            self.engine_restarted = True
+            runner.step_id = "restart"
+
+    def _probe_workflow_classes(self):
+        from astrid.packs.vibecomfy.native_preparation import native_node_probe_program
+
+        self.checked_classes = self._workflow_classes
+        for attempt in range(2):
+            request = {"endpoint": f"http://127.0.0.1:{self.recipe.start.port}",
+                       "request_timeout": min(20.0, max(0.001, self.deadline - time.monotonic())),
+                       "classes": self.checked_classes}
+            try:
+                result = self._native(native_node_probe_program(), json.dumps(request), step="node_probe")
+                return json.loads(result.stdout)
+            except IntegrityError:
+                if attempt:
+                    raise
 
     def _start_engine(self, runner):
         """Accumulate every supervisor probe/start, preserving its actual reuse decision."""
@@ -874,13 +910,9 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
         try:
             self.check()
             runner.step_id = "doctor-start"
-            start_action, _ = self._start_engine(runner)
-            # A refused foreign owner or mismatched launch never authorizes
-            # stop. Uncertain start responses retain the fence in prepare().
-            if start_action != "skipped":
-                self._preparing_engine = True
-            runner.step_id = "doctor-health"
-            self._time_engine(runner.check_health)
+            (start_action, _), _ = self._start_checked_engine(runner)
+            if start_action == "skipped":
+                self._preparing_engine = False
             expected = runner.health.object_info_sha256
             request = {"argv": argv, "endpoint": f"http://127.0.0.1:{self.recipe.start.port}",
                        "expected_schema_sha256": expected,
@@ -893,6 +925,8 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
                 raise IntegrityError("managed doctor target schema changed during diagnosis")
             return result
         except BaseException:
+            if self.uncertain:
+                raise
             if start_action == "skipped" and not self._preparing_engine:
                 # A bad workflow does not own a healthy warm engine. Only
                 # retain it when a fresh probe proves its schema unchanged.
