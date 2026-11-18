@@ -571,3 +571,62 @@ def test_source_copy_known_refusal_archives_actual_destination(saved_source):
     assert archived[0][1]['data']['head_revision_id'] == destinations[0]['parent_revision']['revision_id']
     assert destinations[0]['parent_revision']['payload']['occurrences'] == []
     assert document('t') == original
+
+
+@pytest.mark.parametrize('deep_link', [False, True])
+def test_duplicate_copies_a_head_that_already_fails_newer_rules(saved_source, deep_link):
+    """A long-lived head with a formulas declaration, a clip past its shot's end and a clip naming an unknown
+    asset is copied as it is: the copy is judged against its source, not against the rules the source fails."""
+    from astrid.sdk.timeline_duplicate import duplicate_timeline
+    from tests.sdk.test_timeline_restructure import flat_film
+
+    source = flat_film()
+    source['parent']['clips'] = []
+    source['parent']['registry'] = {}
+    internal = source['shots']['film']['internal_timeline']
+    internal['registry'] = {'assets': {'picture': {'type': 'image', 'media_id': 'picture'}}}
+    internal['clips'] = [
+        {'id': 'ok', 'clipType': 'image', 'track': 'plate', 'asset': 'picture', 'at': 0, 'hold': 2,
+         'app': {'astrid': {'formulas': {'params.at': {'as': 'clip_frame', 'moment': 'word:line-1:first'}}}}},
+        {'id': 'over', 'clipType': 'image', 'track': 'plate', 'asset': 'picture', 'at': 11.5, 'hold': 2},
+        {'id': 'ghost', 'clipType': 'image', 'track': 'plate', 'asset': 'no-such-asset', 'at': 4, 'hold': 1},
+    ]
+    if deep_link:  # placements that carry a link or output identity make the copy recompile its occurrences
+        source['placements'][0].update(stable_deep_link='link-one', output_identity='identity-one')
+    client, project, document, bodies = saved_source(source)
+    result = duplicate_timeline(project, 't', slug='copy', client=client)
+    copied = document('copy')
+    assert [row['id'] for row in copied['internal_timeline_revisions'][0]['payload']['clips']] == ['ok', 'over', 'ghost']
+    assert result['new_head']
+    assert any('already had problems' in note for note in result['notes'])
+
+
+def test_a_duplicate_of_a_valid_source_passes_the_full_validator_with_the_copy_flag_off(saved_source):
+    """The copy transform is skipped by ``authenticated_copy``; this pins that its output stays fully valid:
+    shot payload items, a parent asset adopted into the child, parent clips and a second placement."""
+    from astrid.sdk.timeline.commit import bundle_from_document
+    from astrid.sdk.timeline.validation import validate_final_candidate
+    from astrid.sdk.timeline_duplicate import duplicate_timeline
+    from tests.sdk.test_timeline_restructure import flat_film
+
+    source = flat_film()
+    source['parent']['registry'] = {'assets': {'shared': {'type': 'image', 'media_id': 'shared'}}}
+    source['parent']['clips'] = [{'id': 'title', 'clipType': 'image', 'track': 'picture', 'asset': 'shared',
+                                  'at': 0, 'hold': 1}]
+    source['shots']['film']['payload']['items'] = [
+        {'item_id': 'source-item', 'media_id': 'picture', 'metadata': {'opaque': [None, False]}},
+        {'item_id': 'shared-item', 'media_id': 'shared'}]
+    internal = source['shots']['film']['internal_timeline']
+    internal['registry'] = {'assets': {'picture': {'type': 'image', 'media_id': 'picture'}}}
+    internal['clips'] = [
+        {'id': 'picture-clip', 'clipType': 'image', 'track': 'plate', 'asset': 'picture', 'at': 0, 'hold': 2},
+        {'id': 'adopted', 'clipType': 'image', 'track': 'plate', 'asset': 'shared', 'at': 3, 'hold': 2}]
+    again = copy.deepcopy(source['placements'][0])
+    again.update(occurrence_id='again', placement={'start_ms': 12000})
+    source['placements'].append(again)
+    client, project, document, bodies = saved_source(source)
+    duplicate_timeline(project, 't', slug='copy', client=client)
+    copied = bundle_from_document(document('copy'))
+    empty = copy.deepcopy(copied)
+    empty['placements'], empty['shots'] = [], {}
+    validate_final_candidate(copied, baseline=empty)
