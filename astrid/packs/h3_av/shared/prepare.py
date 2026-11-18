@@ -326,7 +326,7 @@ def _validate_mask_assets(request: H3Request, assets: list[dict[str, Any]]) -> N
                 for index, frame in enumerate(
                     iter_mask_frames(path, start_frame=0, count=total, width=width, height=height)
                 ):
-                    values = set(frame)
+                    values = set(frame[0::3])  # H3 consumes the red permission channel.
                     if threshold is not None:
                         values = {255 if value >= threshold else 0 for value in values}
                     if not values <= {0, 255}:

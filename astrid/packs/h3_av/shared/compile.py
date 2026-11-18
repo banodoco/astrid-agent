@@ -887,7 +887,7 @@ def _compile_character_swap_v2(
         if item["role"] != "timeline":
             continue
         for edit_index, edit in enumerate(item.get("edit", [])):
-            if "strength" in edit or "seed" in edit:
+            if edit.get("strength", 1) != 1 or "seed" in edit:
                 raise CompilationError("character_swap_v1 does not bind per-operation strength or seed")
             if edit.get("stream") == "video":
                 mask = edit.get("mask", {})

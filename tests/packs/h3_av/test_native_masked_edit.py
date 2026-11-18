@@ -413,3 +413,35 @@ def test_masked_edit_enforces_each_reference_limit(tmp_path, images, videos, aud
             raw["media"].append(item)
     with pytest.raises(CompilationError, match=limit):
         compile_preparation(_prepare(raw, tmp_path), out_dir=tmp_path / "out")
+
+
+@pytest.mark.ffmpeg
+@pytest.mark.parametrize("red_outside", [False, True])
+def test_public_preparation_validates_only_red_mask_channel(tmp_path, red_outside):
+    import subprocess
+    from tests.packs.h3_av.test_moving_masks import _fixtures
+    from astrid.packs.h3_av.shared.prepare import PreparationError, prepare_request
+
+    source, _ = _fixtures(tmp_path)
+    mask = tmp_path / "red-green-mask.mkv"
+    frames = []
+    for index in range(24):
+        if 6 <= index < 18:
+            pixel = b"\xff\x80\x00"  # red permits edits; green is irrelevant
+        elif red_outside and index == 0:
+            pixel = b"\xff\x00\x00"
+        else:
+            pixel = b"\x00\xff\x00"  # green alone grants no permission
+        frames.append(pixel * (1024 * 576))
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "1024x576", "-r", "24", "-i", "-", "-c:v", "ffv1", "-pix_fmt", "gbrp", str(mask)], input=b"".join(frames), check=True, capture_output=True)
+    raw = {"version": 2, "duration": 1, "prompt": "Edit", "media": [{
+        "asset": "source", "role": "timeline", "modality": "video", "at": {"frame": 0}, "range": [0, 1],
+        "edit": [{"stream": "video", "during": [0.25, 0.75], "mask": {"asset": "mask"}}],
+    }]}
+    request = normalize_request(raw)
+    if red_outside:
+        with pytest.raises(PreparationError, match="non-zero outside"):
+            prepare_request(request, asset_map={"source": str(source), "mask": str(mask)})
+    else:
+        prepared = prepare_request(request, asset_map={"source": str(source), "mask": str(mask)})
+        assert prepared["mask_schedule"]["video"]["generated_intervals"] == [[0.25, 0.75]]

@@ -627,6 +627,7 @@ def test_masked_character_swap_requires_bound_video_not_merely_declared(tmp_path
     from astrid.packs.h3_av.shared.compile import _compile_native_v2
     raw = _request(source=True)
     raw["media"][0]["edit"][0].update(mask={"rectangle": [0, 0, 128, 128]}, guides=["replacement"])
+    raw["prompt"] = "Replace the character using <Picture 1>."
     request = normalize_request(raw)
     assets = {}
     for item in raw["media"]:
@@ -645,3 +646,32 @@ def test_character_swap_refuses_differing_full_frame_grant_seeds(tmp_path):
     request = normalize_request(raw)
     with pytest.raises(CompilationError, match="different seeds"):
         _compile_native_v2(request, {"baseline.mp4": tmp_path / "source"}, tmp_path / "out")
+
+
+def test_character_swap_explicit_default_strength_preserves_default_graph(tmp_path):
+    from astrid.packs.h3_av.shared.compile import _compile_native_v2
+    raw = _request(source=True)
+    assets = {}
+    for item in raw["media"]:
+        path = tmp_path / item["asset"]
+        path.write_bytes(b"asset fixture")
+        assets[item["asset"]] = path
+    omitted = _compile_native_v2(normalize_request(raw), assets, tmp_path / "omitted")
+    raw["media"][0]["edit"][0]["strength"] = 1
+    explicit = _compile_native_v2(normalize_request(raw), assets, tmp_path / "explicit")
+    assert omitted["workflow"]["workflow.py"]["sha256"] == explicit["workflow"]["workflow.py"]["sha256"]
+    assert omitted["workflow_inputs"] == explicit["workflow_inputs"]
+
+
+def test_masked_character_swap_refuses_prompt_tag_for_unselected_video(tmp_path):
+    from astrid.packs.h3_av.shared.compile import _compile_native_v2
+    raw = _request(source=True)
+    raw["media"][0]["edit"][0].update(mask={"rectangle": [0, 0, 128, 128]}, guides=["replacement"])
+    request = normalize_request(raw)
+    assets = {}
+    for item in raw["media"]:
+        path = tmp_path / item["asset"]
+        path.write_bytes(b"asset fixture")
+        assets[item["asset"]] = path
+    with pytest.raises(CompilationError, match="prompt reference tag <Video 1> has no effective binding"):
+        _compile_native_v2(request, assets, tmp_path / "out")
