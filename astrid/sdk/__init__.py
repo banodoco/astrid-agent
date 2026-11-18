@@ -11,6 +11,9 @@ from __future__ import annotations
 import importlib
 
 _EXPORTS = {
+    "PackJobContext": ("pack_session", "PackJobContext"),
+    "PackSessionError": ("pack_session", "PackSessionError"),
+    "current_pack_job": ("pack_session", "current_pack_job"),
     "resolve_media_handle": ("media_handles", "resolve_media_handle"),
     "save_media": ("media_handles", "save_media"),
     "Checkout": ("timeline", "Checkout"),
