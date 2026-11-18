@@ -267,3 +267,27 @@ def test_real_heads_verdict_matches_the_frozen_oracle(name, variant, head, edit)
     if new != frozen:  # the only differences are old-refuse to new-accept, each one named
         assert variant != "as-stored"
         assert _carries_unsupported(head) or name in PROBE_BREAKS_ON
+
+
+# --- the basis costs the declarations, not declarations x document --------------------------------------------
+
+def _deep_copies_during_exemptions(monkeypatch, count):
+    head = candidate()
+    for index in range(count):
+        row = copy.deepcopy(_child(head, 0))
+        row["id"] = f"extra-{index}"
+        row.setdefault("app", {}).setdefault("astrid", {}).update(cut="c1", on=f"c9{index}")
+        head["shots"][SHOT]["internal_timeline"]["clips"].append(row)
+    edited = _unrelated(head)
+    real, calls = copy.deepcopy, []
+    with monkeypatch.context() as patch:
+        patch.setattr(copy, "deepcopy", lambda *args, **kwargs: calls.append(1) or real(*args, **kwargs))
+        assert len(cv._legacy_exemptions(edited, head)) == count
+    return len(calls)
+
+
+def test_exemptions_deep_copy_a_constant_number_of_times_whatever_the_declaration_count(monkeypatch):
+    """The two passes copy the bundle a fixed number of times; no basis copies the document per declaration."""
+    at_5 = _deep_copies_during_exemptions(monkeypatch, 5)
+    at_50 = _deep_copies_during_exemptions(monkeypatch, 50)
+    assert at_5 == at_50 <= 60, (at_5, at_50)
