@@ -132,7 +132,22 @@ def _video_mask_prepare(tmp_path: Path, frames: int) -> dict:
 def test_native_masked_edit_video_mask_binding(tmp_path):
     import zipfile
 
-    manifest = compile_preparation(_video_mask_prepare(tmp_path, 120), out_dir=tmp_path / "out")
+    prepared = _video_mask_prepare(tmp_path, 120)
+    # The legacy 12px fixture below vanishes; use visible moving support here.
+    import subprocess
+    mask = tmp_path / "large-moving-mask.mkv"
+    frames = []
+    for index in range(120):
+        pixels = bytearray(1024 * 576)
+        x0 = 2 * index
+        for y in range(8, 40):
+            pixels[y * 1024 + x0:y * 1024 + x0 + 32] = b"\xff" * 32
+        frames.append(bytes(pixels))
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "gray", "-s", "1024x576", "-r", "24", "-i", "-", "-c:v", "ffv1", "-pix_fmt", "gray", str(mask)], input=b"".join(frames), check=True, capture_output=True)
+    for record in prepared["assets"]:
+        if record["asset"] == "pill-mask":
+            record.update(path=str(mask), size=mask.stat().st_size, sha256=hashlib.sha256(mask.read_bytes()).hexdigest())
+    manifest = compile_preparation(prepared, out_dir=tmp_path / "out")
     text = Path(manifest["workflow"]["workflow.py"]["path"]).read_text()
     assert "start_time=0.0" in text and text.count("frame_load_cap=120") == 2
     assert "imagetomask = ImageToMask(" in text
@@ -164,6 +179,12 @@ def test_native_masked_edit_video_mask_binding(tmp_path):
         assert hashlib.sha256(zf.read(row["member"])).hexdigest() == row["sha256"]
 
 
+@pytest.mark.ffmpeg
+def test_legacy_moving_mask_vanishing_grant_is_refused(tmp_path):
+    with pytest.raises(CompilationError, match=r"grant occurrence-1\.edit\[0\] vanishes"):
+        compile_preparation(_video_mask_prepare(tmp_path, 120), out_dir=tmp_path / "out")
+
+
 def _all_files(manifest: dict):
     stack = [manifest]
     while stack:
@@ -180,3 +201,133 @@ def _all_files(manifest: dict):
 def test_native_masked_edit_video_mask_frame_mismatch_raises(tmp_path):
     with pytest.raises(CompilationError, match="frames"):
         compile_preparation(_video_mask_prepare(tmp_path, 100), out_dir=tmp_path / "out")
+
+
+def _multi_grant_request():
+    return {"version": 2, "duration": 1, "prompt": "A scene", "media": [{
+        "id": "source", "asset": "clip", "role": "timeline", "modality": "video",
+        "at": {"frame": 0}, "range": [0, 1], "edit": [
+            {"stream": "video", "during": [0, 1], "mask": {"rectangle": [0, 0, 128, 128]}, "strength": 0.25},
+            {"stream": "video", "during": [0, 1], "mask": {"rectangle": [64, 0, 128, 128]}, "strength": 0.75},
+        ],
+    }]}
+
+
+def test_multiple_grants_emit_independent_sampler_strength_mask(tmp_path):
+    import io
+    import subprocess
+    import zipfile
+    from PIL import Image
+
+    raw = _multi_grant_request()
+    raw["media"][0]["edit"][0]["during"] = [0, 0.75]
+    raw["media"][0]["edit"][1]["during"] = [0.25, 1]
+    compiled = compile_preparation(_prepare(raw, tmp_path), out_dir=tmp_path / "out")
+    assert compiled["capabilities"]["sampler_mask_precision"] == "8-bit"
+    row = next(row for row in compiled["managed_assets"]["manifest"]["assets"] if row["binding"] == "video_mask_0")
+    with zipfile.ZipFile(compiled["managed_assets"]["path"]) as archive:
+        mask = tmp_path / "strength.mkv"
+        mask.write_bytes(archive.read(row["member"]))
+    frame = subprocess.run(["ffmpeg", "-v", "error", "-i", str(mask), "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "-"], check=True, capture_output=True).stdout
+    with Image.open(io.BytesIO(frame)) as image:
+        image = image.convert("L")
+        assert image.getpixel((32, 32)) == 64
+        assert image.getpixel((96, 32)) == 64
+        assert image.getpixel((300, 32)) == 0
+    overlap = subprocess.run(["ffmpeg", "-v", "error", "-i", str(mask), "-vf", "select=eq(n\\,12)", "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "-"], check=True, capture_output=True).stdout
+    with Image.open(io.BytesIO(overlap)) as image:
+        assert image.convert("L").getpixel((96, 32)) == 191
+
+
+def test_zero_strength_keeps_source_but_does_not_suppress_overlap():
+    from astrid.packs.h3_av.shared.prepare import _v2_mask_schedule
+    raw = _multi_grant_request()
+    raw["media"][0]["edit"][0]["strength"] = 0
+    schedule = _v2_mask_schedule(normalize_request(raw))
+    assert len(schedule["video"]["changes"]) == 1
+    assert schedule["video"]["generated_intervals"] == [[0.0, 1.0]]
+    raw["media"][0]["edit"][1]["strength"] = 0
+    schedule = _v2_mask_schedule(normalize_request(raw))
+    assert schedule["video"]["changes"] == []
+    assert schedule["video"]["protected_intervals"] == [[0.0, 1.0]]
+
+
+def test_grant_that_vanishes_on_model_grid_names_the_grant(tmp_path):
+    raw = _multi_grant_request()
+    raw["media"][0]["edit"] = [raw["media"][0]["edit"][0]]
+    raw["media"][0]["edit"][0]["mask"] = {"rectangle": [0, 0, 1, 1]}
+    with pytest.raises(CompilationError, match=r"grant occurrence-1\.edit\[0\] vanishes"):
+        compile_preparation(_prepare(raw, tmp_path), out_dir=tmp_path / "out")
+
+
+@pytest.mark.ffmpeg
+def test_visible_moving_mask_composes_pixels_on_both_sides(tmp_path):
+    import subprocess
+    from tests.packs.h3_av.test_moving_masks import _fixtures, _prepare as prepare_composition
+    from astrid.packs.h3_av.shared.compose import compose_candidate
+
+    source, generated = _fixtures(tmp_path)
+    mask = tmp_path / "visible-mask.mkv"
+    frames = []
+    for index in range(24):
+        frame = bytearray(1024 * 576 * 3)
+        for y in range(8, 40):
+            x = index * 2
+            offset = (y * 1024 + x) * 3
+            frame[offset:offset + 32 * 3] = b"\xff\x00\x00" * 32
+        frames.append(bytes(frame))
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "1024x576", "-r", "24", "-i", "-", "-c:v", "ffv1", "-pix_fmt", "gbrp", str(mask)], input=b"".join(frames), check=True, capture_output=True)
+    preparation = prepare_composition(source, mask)
+    result = compose_candidate(preparation=preparation, generated=generated, source=source, out_dir=tmp_path / "composed")
+    def first_frame(path):
+        return subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-frames:v", "1", "-vf", "scale=1024:576:flags=lanczos,format=gbrp,format=rgb24", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], check=True, capture_output=True).stdout
+    original, replacement, delivered = map(first_frame, (source, generated, result["candidate"]["path"]))
+    def pixel(data, x, y):
+        offset = (y * 1024 + x) * 3
+        return data[offset:offset + 3]
+    assert pixel(delivered, 12, 12) == pixel(replacement, 12, 12)
+    assert pixel(delivered, 80, 12) == pixel(original, 80, 12)
+
+
+@pytest.mark.parametrize("conflict", ["seed", "references"])
+def test_shared_pass_refuses_conflicting_grant_controls(tmp_path, conflict):
+    raw = _multi_grant_request()
+    if conflict == "seed":
+        raw["media"][0]["edit"][0]["seed"] = 1
+        raw["media"][0]["edit"][1]["seed"] = 2
+    else:
+        raw["media"].extend([
+            {"id": "a", "asset": "a", "role": "reference", "modality": "image"},
+            {"id": "b", "asset": "b", "role": "reference", "modality": "image"},
+        ])
+        raw["media"][0]["edit"][0]["guides"] = ["a"]
+        raw["media"][0]["edit"][1]["guides"] = ["b"]
+    with pytest.raises(CompilationError, match="separate sequential passes"):
+        compile_preparation(_prepare(raw, tmp_path), out_dir=tmp_path / "out")
+
+
+@pytest.mark.ffmpeg
+def test_zero_strength_composition_keeps_source_and_positive_overlap_wins(tmp_path):
+    import subprocess
+    from tests.packs.h3_av.test_moving_masks import _fixtures
+    from astrid.packs.h3_av.shared.compose import compose_candidate
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+
+    source, generated = _fixtures(tmp_path)
+    raw = _multi_grant_request()
+    raw["media"][0]["edit"][0]["strength"] = 0
+    def decode(path):
+        return subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-frames:v", "1", "-vf", "scale=1024:576:flags=lanczos,format=gbrp,format=rgb24", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], check=True, capture_output=True).stdout
+    def pixel(data, x, y):
+        offset = (y * 1024 + x) * 3
+        return data[offset:offset + 3]
+    prepared = prepare_request(normalize_request(raw), asset_map={"clip": str(source)})
+    result = compose_candidate(preparation=prepared, generated=generated, source=source, out_dir=tmp_path / "positive")
+    original, replacement, delivered = map(decode, (source, generated, result["candidate"]["path"]))
+    assert pixel(delivered, 32, 32) == pixel(original, 32, 32)
+    assert pixel(delivered, 96, 32) == pixel(replacement, 96, 32)
+    assert pixel(delivered, 300, 32) == pixel(original, 300, 32)
+    raw["media"][0]["edit"][1]["strength"] = 0
+    prepared = prepare_request(normalize_request(raw), asset_map={"clip": str(source)})
+    result = compose_candidate(preparation=prepared, generated=generated, source=source, out_dir=tmp_path / "zero")
+    assert Path(result["candidate"]["path"]).read_bytes() == source.read_bytes()

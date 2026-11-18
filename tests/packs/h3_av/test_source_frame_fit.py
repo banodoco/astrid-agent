@@ -1,6 +1,8 @@
 """CPU regression for the H3 raw-frame rounding tail on source-backed edits."""
 from __future__ import annotations
 
+from astrid.packs.h3_av.shared.generation import generation_inputs_from_bindings
+
 import subprocess
 from pathlib import Path
 
@@ -314,12 +316,12 @@ def test_next_frame_after_native_boundary_keeps_maximum_internal_tail(tmp_path):
     timing = generation_timing(frames / 24)
     assets, source_frames, source_audio, mask_frames = _assets(
         tmp_path, frames, start=0, moving_mask=False)
-    workflow = build_generation_workflow(
+    workflow = build_generation_workflow(generation_inputs_from_bindings(
         references=[], prompt="Synthetic frame boundary.", frames=timing["raw_frames"],
         model="minimax_h3_ref2va_pruned_int8_convrot.safetensors", steps=8, seed=0,
         masked_edit={"source_binding": "source_video", "mask_binding": "mask_0",
                      "mask_channel": "red", "start_time": 0, "frame_load_cap": frames},
-    )
+    ))
     api = workflow.compile("api", run_inputs={"source_video": assets["source.mkv"],
                                              "mask_0": assets["mask.png"]})
     images, audio, _ = _evaluate_padding_graph(

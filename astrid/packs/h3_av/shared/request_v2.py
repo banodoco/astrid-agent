@@ -359,7 +359,7 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
     if raw.get("version") != 2: raise H3RequestError("version must be 2")
     prompt = _nonblank(raw.get("prompt"), "prompt")
     media_raw = raw.get("media")
-    if not isinstance(media_raw, list) or not media_raw: raise H3RequestError("media must be a non-empty array")
+    if not isinstance(media_raw, list): raise H3RequestError("media must be an array")
     continuation = raw.get("continuation", False)
     if type(continuation) is not bool: raise H3RequestError("continuation must be boolean")
     duration_fraction = (

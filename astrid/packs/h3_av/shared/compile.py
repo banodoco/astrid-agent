@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 from fractions import Fraction
@@ -160,6 +161,75 @@ def _asset_bindings(request: H3Request, assets: Mapping[str, Path], *, include_m
     return bindings, asset_binding
 
 
+
+def _conditioning_rows(request: H3Request, assets: Mapping[str, Path], *, selected: set[str] | None = None) -> tuple[list[dict[str, Any]], dict[str, Path]]:
+    """Resolve occurrence identity in the same order as the target node's ports."""
+    references = [item for item in request.value["media"]
+                  if item["role"] == "reference" and item.get("use") != "replacement"
+                  and (selected is None or item["occurrence_id"] in selected)]
+    rows: list[dict[str, Any]] = []
+    bindings: dict[str, Path] = {}
+    audio_number = 0
+    for modality, prefix, label in (("image", "reference", "Picture"), ("video", "video_reference", "Video"), ("audio", "audio_reference", "Audio")):
+        items = [item for item in references if item.get("modality") == modality]
+        for index, item in enumerate(items):
+            binding = f"{prefix}_{index}"
+            asset = str(item["asset"])
+            if asset not in assets:
+                raise CompilationError(f"reference {item['occurrence_id']!r} asset {asset!r} is missing from preparation")
+            bindings[binding] = assets[asset]
+            if modality == "audio":
+                audio_number += 1
+                number = audio_number
+            else:
+                number = index + 1
+            input_binding: dict[str, Any] = {"binding": binding, "port": f"ref_{modality if modality != 'image' else 'image'}s.ref_{modality}_{index}"}
+            row = {"occurrence": item["occurrence_id"], "modality": modality,
+                   "trim": item.get("range"), "input_binding": input_binding,
+                   "tag": f"<{label} {number}>"}
+            if modality == "video":
+                raw = item.get("range")
+                resolved = item.get("resolved_range")
+                input_binding.update(start_time=float(raw[0]) if isinstance(raw, list) else 0.0,
+                           frame_load_cap=int(resolved[1]) - int(resolved[0]) if isinstance(resolved, list) else 0,
+                           audio=item.get("audio", True))
+                if input_binding["audio"]:
+                    audio_number += 1
+                    input_binding["soundtrack"] = {"port": f"ref_video_audios.ref_video_audio_{index}", "tag": f"<Audio {audio_number}>"}
+            elif modality == "audio":
+                input_binding["resolved_range"] = item.get("resolved_range")
+            rows.append(row)
+    labels = {row["tag"] for row in rows} | {row["input_binding"]["soundtrack"]["tag"] for row in rows if "soundtrack" in row["input_binding"]}
+    for tag in re.findall(r"<(?:Picture|Video|Audio) [0-9]+>", request.value["prompt"]):
+        if tag not in labels:
+            raise CompilationError(f"prompt reference tag {tag} has no effective binding")
+    return rows, bindings
+
+
+def _with_v2_intent(inputs: Any, request: H3Request) -> Any:
+    """Attach the normalized placed items and edit grants to the shared record."""
+    from dataclasses import replace
+
+    value = request.value
+    placed = tuple(dict(item) for item in value["media"]
+                   if item.get("role") == "timeline" or item.get("use") == "replacement")
+    grants = []
+    occurrence_by_id = {item.get("id", item["occurrence_id"]): item["occurrence_id"] for item in value["media"]}
+    for item in value["media"]:
+        for edit in item.get("edit", []):
+            if edit.get("action") == "preserve":
+                continue
+            grants.append({"stream": edit["stream"], "interval": edit["during"],
+                           "source_occurrence": item["occurrence_id"], "region_raster": edit.get("mask"),
+                           "strength": float(edit.get("strength", 1)),
+                           "seed": edit.get("seed", inputs.sampling["seed"]),
+                           "references": [occurrence_by_id[name] for name in edit["guides"]] if "guides" in edit else [row["occurrence"] for row in inputs.conditioning]})
+    if not any(item.get("role") == "timeline" for item in value["media"]):
+        grants.append({"stream": "av", "interval": [0, value["duration"]], "source_occurrence": None,
+                       "region_raster": None, "strength": 1, "seed": inputs.sampling["seed"],
+                       "references": [row["occurrence"] for row in inputs.conditioning]})
+    return replace(inputs, placed=placed, grants=tuple(grants))
+
 def _request_dialogue_prompt(request: H3Request) -> str:
     prompt = request.value["content"]["prompt"]
     dialogue = [
@@ -294,12 +364,9 @@ def _compile_manifest(
         raise CompilationError("sealed H3 generation contract must declare at least one public selector")
     frozen = _copy_workflow_bundle(resource_root, destination / "workflow-bundle")
     managed_path = destination / "managed-assets.zip"
-    asset_manifest = _write_asset_bundle(
-        managed_path,
-        asset_bindings,
-        workflow_inputs=workflow_inputs,
-        lineage=asset_lineage,
-    )
+    asset_manifest = (_write_asset_bundle(
+        managed_path, asset_bindings, workflow_inputs=workflow_inputs, lineage=asset_lineage,
+    ) if asset_bindings else None)
     graph_identity = {name: {"path": str(frozen[name]), "sha256": _sha256(frozen[name])} for name in sorted(frozen)}
     manifest: dict[str, Any] = {
         "schema_version": 1,
@@ -309,10 +376,11 @@ def _compile_manifest(
         "request_digest": request.digest,
         "workflow": graph_identity,
         "workflow_inputs": workflow_inputs,
-        "managed_assets": {"path": str(managed_path), "sha256": _sha256(managed_path), "manifest": asset_manifest},
         "capabilities": dict(capabilities),
         "limitations": limitations,
     }
+    if asset_manifest is not None:
+        manifest["managed_assets"] = {"path": str(managed_path), "sha256": _sha256(managed_path), "manifest": asset_manifest}
     if extra_manifest:
         manifest.update(dict(extra_manifest))
     if continuation_timing is not None:
@@ -320,7 +388,7 @@ def _compile_manifest(
     digest_payload = {
         **{key: value for key, value in manifest.items() if key not in {"workflow", "managed_assets", "compilation_digest"}},
         "workflow": {name: {"sha256": value["sha256"]} for name, value in graph_identity.items()},
-        "managed_assets": {"sha256": manifest["managed_assets"]["sha256"], "manifest": asset_manifest},
+        **({"managed_assets": {"sha256": manifest["managed_assets"]["sha256"], "manifest": asset_manifest}} if asset_manifest is not None else {}),
     }
     manifest["compilation_digest"] = hashlib.sha256(_canonical_bytes(digest_payload)).hexdigest()
     manifest_path = destination / "compilation.json"
@@ -462,6 +530,79 @@ def _bounded_edit_mask(path: Path, *, kind: str, frames: int, during: tuple[int,
     return target
 
 
+
+def _combined_strength_mask(grants: list[tuple[Path, str, tuple[int, int], float, str]], *, frames: int, destination: Path) -> Path:
+    """Rasterize max grant strength at 8-bit precision into a lossless video."""
+    from PIL import Image, ImageChops
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise CompilationError("regions per pass: combined masks require ffmpeg")
+    output = destination / "sampler-strength-mask.mkv"
+    readers = []
+    static = []
+    for path, kind, _, _, _ in grants:
+        if kind == "image":
+            with Image.open(path) as image:
+                static.append(image.convert("RGB").getchannel("R"))
+            readers.append(None)
+        else:
+            static.append(None)
+            readers.append(subprocess.Popen([ffmpeg, "-v", "error", "-i", str(path),
+                "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL))
+    writer = None
+    if len(grants) > 1:
+        writer = subprocess.Popen([ffmpeg, "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "gray",
+            "-s", "1024x576", "-r", "24", "-i", "-", "-frames:v", str(frames), "-an", "-c:v", "ffv1",
+            "-threads", "1", "-level", "3", "-pix_fmt", "gray", str(output)], stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    survived = [False] * len(grants)
+    try:
+        for frame in range(frames):
+            combined = Image.new("L", (1024, 576))
+            for index, (path, kind, (start, end), strength, name) in enumerate(grants):
+                if kind == "video":
+                    data = readers[index].stdout.read(1024 * 576 * 3)
+                    if len(data) != 1024 * 576 * 3:
+                        raise CompilationError(f"grant {name} mask video is short or has the wrong dimensions")
+                    support = Image.frombytes("RGB", (1024, 576), data).getchannel("R")
+                else:
+                    support = static[index]
+                if not start <= frame < end or strength == 0:
+                    continue
+                weight = support.point(lambda pixel: round(pixel * strength)) if writer else support
+                if not survived[index]:
+                    # The pinned node samples bilinearly with align_corners=False
+                    # at 16x reduction: each token samples these four centres.
+                    pixels = weight.load()
+                    survived[index] = any(pixels[x + dx, y + dy] for y in range(7, 576, 16)
+                                          for x in range(7, 1024, 16) for dx in (0, 1) for dy in (0, 1))
+                if writer:
+                    combined = ImageChops.lighter(combined, weight)
+            if writer:
+                writer.stdin.write(combined.tobytes())
+            elif survived[0] or grants[0][3] == 0:
+                break
+        if writer:
+            writer.stdin.close()
+            if writer.wait() != 0:
+                raise CompilationError("regions per pass: could not encode sampler strength mask")
+    except (OSError, BrokenPipeError) as exc:
+        raise CompilationError(f"regions per pass: cannot rasterize sampler masks: {exc}") from exc
+    finally:
+        for reader in readers:
+            if reader is not None:
+                if reader.stdout:
+                    reader.stdout.close()
+                reader.terminate()
+                reader.wait()
+        if writer is not None and writer.poll() is None:
+            writer.kill()
+            writer.wait()
+    for index, (_, _, _, strength, name) in enumerate(grants):
+        if strength > 0 and not survived[index]:
+            raise CompilationError(f"grant {name} vanishes on the model grid")
+    return output
+
 def _compile_native_masked_edit(
     request: H3Request, assets: Mapping[str, Path], destination: Path, *, branch: str
 ) -> dict[str, Any]:
@@ -477,7 +618,7 @@ def _compile_native_masked_edit(
     from vibecomfy.workflow_bundle import emit_bundle
 
     from .compose import CompositionError, probe_mask
-    from .generation import build_generation_workflow, generation_timing
+    from .generation import CHARACTER_SWAP_SHA256, build_generation_workflow, generation_inputs_from_bindings, generation_timing
     from .spec import Region, canonical_spec
     from .static_regions import resolve_static_region
 
@@ -486,12 +627,35 @@ def _compile_native_masked_edit(
     except H3RequestError as exc:
         raise CompilationError(str(exc)) from exc
     settings = spec.settings
-    if settings.get("adapter"):
-        raise CompilationError("native masked edit does not combine with an adapter")
+    adapter = settings.get("adapter")
+    if adapter:
+        from .generation import LIMITS, character_swap_asset_sha256
+        if adapter.get("id") != CHARACTER_SWAP_ID or settings["model"] != REF2VA_MODEL:
+            raise CompilationError("Character Swap adapter requires the Ref2VA base model")
+        required = LIMITS["character_swap_references"]["value"]
+        refs = [item for item in request.value["media"] if item.get("role") == "reference" and item.get("use") != "replacement"]
+        if any(sum(item.get("modality") == modality for item in refs) < required[modality] for modality in ("image", "video")):
+            raise CompilationError("Character Swap references: lowering requires at least one video and one image reference")
+        for item in request.value["media"]:
+            for edit in item.get("edit", []):
+                rectangle = edit.get("mask", {}).get("rectangle")
+                if rectangle is not None and any(not float(value).is_integer() for value in rectangle):
+                    raise CompilationError(f"Character Swap mask rectangle requires {LIMITS['character_swap_mask_rectangle']['value']}")
+        adapter_sha256 = character_swap_asset_sha256()
     passes = spec.sampling_passes()
-    if len(passes) != 1 or passes[0].operation.op != "regenerate":
+    if request.value.get("version") != 2 and len(passes) != 1:
         raise CompilationError("native masked edit requires exactly one modifying video operation")
-    operation = passes[0].operation
+    active_passes = [p for p in passes if p.operation.strength > 0]
+    if len(active_passes) > 1:
+        seeds = {p.operation.seed if p.operation.seed is not None else settings["seed"] for p in active_passes}
+        reference_sets = {frozenset(p.operation.refs) for p in active_passes}
+        if len(seeds) > 1:
+            raise CompilationError("regions per pass: grants with different seeds require separate sequential passes, which this lowering cannot execute")
+        if len(reference_sets) > 1:
+            raise CompilationError("regions per pass: grants with different reference sets require separate sequential passes, which this lowering cannot execute")
+    if not passes or any(p.operation.op != "regenerate" or p.operation.stream != "video" for p in passes):
+        raise CompilationError("native masked edit requires modifying video operations")
+    operation = (active_passes or list(passes))[0].operation
     source = spec.source
     if source is None:
         raise CompilationError("native masked edit requires one bounded timeline video")
@@ -504,47 +668,58 @@ def _compile_native_masked_edit(
     # B2 resolves boxes and supplied static masks to the same binary PNG. The
     # graph fixes its output canvas at 1024x576, as source preflight requires.
     regions = {region.name: region for region in spec.regions}
-    region = regions[operation.region] if operation.region else Region("full-frame", box=(0, 0, 1024, 576))
     destination.mkdir(parents=True, exist_ok=True)
-    mask_kind = "image"
-    if region.mask_asset:
-        if region.mask_asset not in assets:
-            raise CompilationError(f"native masked edit mask {region.mask_asset!r} is missing from preparation")
-        try:
-            mask_info = probe_mask(assets[region.mask_asset], mask_id=region.mask_asset)
-        except CompositionError as exc:
-            raise CompilationError(str(exc)) from exc
-        mask_kind = str(mask_info["kind"])
-        if mask_kind == "video":
-            if int(mask_info["frames"]) != frame_load_cap:
-                raise CompilationError(
-                    f"native masked edit mask video {region.mask_asset!r} has {mask_info['frames']} frames; "
-                    f"the source window loads {frame_load_cap}"
-                )
-            mask_path = assets[region.mask_asset]
-    if mask_kind == "image":
-        try:
-            resolved = resolve_static_region(
-                region, width=1024, height=576, assets=assets,
-                polarity="black_preserve_white_edit" if region.mask_asset else None,
-            )
-        except H3RequestError as exc:
-            raise CompilationError(str(exc)) from exc
-        mask_path = destination / "resolved-mask.png"
-        mask_path.write_bytes(resolved.mask_png)
+    grant_masks = []
+    for index, item in enumerate(passes):
+        grant = item.operation
+        region = regions[grant.region] if grant.region else Region("full-frame", box=(0, 0, 1024, 576))
+        mask_kind = "image"
+        if region.mask_asset:
+            if region.mask_asset not in assets:
+                raise CompilationError(f"native masked edit mask {region.mask_asset!r} is missing from preparation")
+            try:
+                mask_info = probe_mask(assets[region.mask_asset], mask_id=region.mask_asset)
+            except CompositionError as exc:
+                raise CompilationError(str(exc)) from exc
+            mask_kind = str(mask_info["kind"])
+            if mask_kind == "video":
+                if int(mask_info["frames"]) != frame_load_cap:
+                    raise CompilationError(f"native masked edit mask video {region.mask_asset!r} has {mask_info['frames']} frames; the source window loads {frame_load_cap}")
+                mask_path = assets[region.mask_asset]
+        if mask_kind == "image":
+            try:
+                resolved = resolve_static_region(region, width=1024, height=576, assets=assets,
+                    polarity="black_preserve_white_edit" if region.mask_asset else None)
+            except H3RequestError as exc:
+                raise CompilationError(str(exc)) from exc
+            mask_path = destination / ("resolved-mask.png" if index == 0 else f"resolved-mask-{index}.png")
+            mask_path.write_bytes(resolved.mask_png)
+        interval = tuple(round(value * 24) for value in grant.during)
+        grant_masks.append((mask_path, mask_kind, interval, grant.strength, f"{source.occurrence_id or source_id}.edit[{index}]"))
+    combined = _combined_strength_mask(grant_masks, frames=frame_load_cap, destination=destination)
     during = tuple(round(value * 24) for value in operation.during)
-    if during != (0, frame_load_cap):
-        mask_path = _bounded_edit_mask(mask_path, kind=mask_kind, frames=frame_load_cap,
-                                       during=during, destination=destination)
-        mask_kind = "video"
+    if len(grant_masks) > 1:
+        mask_path, mask_kind = combined, "video"
+    else:
+        mask_path, mask_kind, _, _, _ = grant_masks[0]
+        if during != (0, frame_load_cap):
+            mask_path = _bounded_edit_mask(mask_path, kind=mask_kind, frames=frame_load_cap,
+                                           during=during, destination=destination)
+            mask_kind = "video"
     mask_binding = "video_mask_0" if mask_kind == "video" else "mask_0"
     bindings: dict[str, Path] = {"source_video": assets[source_id], mask_binding: mask_path}
     references_by_name = {item.name: item for item in spec.refs}
     references = [references_by_name[name] for name in operation.refs]
-    for index, item in enumerate(references):
-        if item.asset not in assets:
-            raise CompilationError(f"native masked edit reference {item.asset!r} is missing from preparation")
-        bindings[f"reference_{index}"] = assets[item.asset]
+    conditioning = None
+    if request.value.get("version") == 2:
+        selected = {item.occurrence_id for item in references}
+        conditioning, reference_bindings = _conditioning_rows(request, assets, selected=selected)
+        bindings.update(reference_bindings)
+    else:
+        for index, item in enumerate(references):
+            if item.asset not in assets:
+                raise CompilationError(f"native masked edit reference {item.asset!r} is missing from preparation")
+            bindings[f"reference_{index}"] = assets[item.asset]
     try:
         timing = generation_timing(spec.duration)
     except ValueError as exc:
@@ -552,17 +727,32 @@ def _compile_native_masked_edit(
     prompt = spec.prompt
     seed = operation.seed if operation.seed is not None else settings["seed"]
     turbo = settings["turbo"]
-    graph = build_generation_workflow(
+    inputs = generation_inputs_from_bindings(
         references=[f"reference_{index}" for index in range(len(references))],
         prompt=prompt, frames=timing["raw_frames"], model=settings["model"],
         steps=settings["steps"], seed=seed, sampler=settings["sampler"],
         scheduler=settings["scheduler"], guidance=turbo["strength"], turbo_enabled=turbo["enabled"],
+        adapter_strength=adapter["strength"] if adapter else None,
+        character_swap_sha256=adapter_sha256 if adapter else CHARACTER_SWAP_SHA256,
         masked_edit={
             "source_binding": "source_video", "mask_binding": mask_binding, "mask_channel": _MASK_CHANNEL,
-            "mask_kind": mask_kind, "strength": operation.strength,
+            "mask_kind": mask_kind, "strength": 1 if len(grant_masks) > 1 else operation.strength,
             "start_time": float(source.range[0]), "frame_load_cap": frame_load_cap,
         },
     )
+    if conditioning is not None:
+        from dataclasses import replace
+        inputs = _with_v2_intent(replace(inputs, conditioning=tuple(conditioning)), request)
+        grant_records = [dict(grant) for grant in inputs.grants]
+        for grant, mask in zip(grant_records, grant_masks, strict=True):
+            grant["region_raster"] = {"path": str(mask[0]), "kind": mask[1], "sampler_kind": mask_kind,
+                                      "input_binding": mask_binding, "channel": _MASK_CHANNEL,
+                                      "sampler_strength": 1.0 if len(grant_masks) > 1 else grant["strength"]}
+        placed = tuple({**item, "input_binding": "source_video", "start_time": float(source.range[0]),
+                        "frame_count": frame_load_cap} if item.get("occurrence_id") == source.occurrence_id else item
+                       for item in inputs.placed)
+        inputs = replace(inputs, grants=tuple(grant_records), placed=placed)
+    graph = build_generation_workflow(inputs)
     active_assets, unresolved = resolve_referenced_assets(graph)
     if unresolved:
         raise CompilationError(f"H3 model requirements are unresolved: {unresolved!r}")
@@ -594,6 +784,8 @@ def _compile_native_masked_edit(
             "audio_binding": "source_audio_from_source_video, audio_strength=0",
             "references": len(references),
             "reference_order": [item.asset for item in references],
+            **({"conditioning": conditioning} if conditioning is not None else {}),
+            "sampler_mask_precision": "8-bit" if len(grant_masks) > 1 else "native",
             "edit_binding": {"during_frames": list(during), "frame_load_cap": frame_load_cap,
                              "strength": operation.strength, "seed": seed, "refs": list(operation.refs)},
             "overrides": ["model", "steps", "seed", "sampler", "guidance"],
@@ -647,6 +839,7 @@ def _compile_character_swap_v2(
         CHARACTER_SWAP_REVISION,
         TURBO_FILENAME,
         build_generation_workflow,
+        generation_inputs_from_bindings,
         character_swap_asset_sha256,
         generation_timing,
     )
@@ -697,35 +890,9 @@ def _compile_character_swap_v2(
     minimum = LIMITS["character_swap_references"]["value"]
     if len(images) < minimum["image"] or len(videos) < minimum["video"]:
         raise CompilationError("Character Swap references: lowering requires at least one video and one image reference")
-    bindings: dict[str, Path] = {}
-    for index, item in enumerate(images):
-        asset_id = str(item["asset"])
-        if asset_id not in assets:
-            raise CompilationError(f"character_swap_v1 image reference {asset_id!r} is missing from preparation")
-        bindings[f"reference_{index}"] = assets[asset_id]
-    video_reference_rows: list[dict[str, Any]] = []
-    for index, item in enumerate(videos):
-        asset_id = str(item["asset"])
-        if asset_id not in assets:
-            raise CompilationError(f"character_swap_v1 video reference {asset_id!r} is missing from preparation")
-        binding = f"video_reference_{index}"
-        bindings[binding] = assets[asset_id]
-        raw_range = item.get("range")
-        resolved_range = item.get("resolved_range")
-        video_reference_rows.append({
-            "binding": binding,
-            "start_time": float(raw_range[0]) if isinstance(raw_range, list) else 0.0,
-            "frame_load_cap": int(resolved_range[1]) - int(resolved_range[0]) if isinstance(resolved_range, list) else 0,
-            "audio": item.get("audio", True),
-        })
-    audio_reference_rows = []
-    for index, item in enumerate(standalone_audio):
-        asset_id = str(item["asset"])
-        if asset_id not in assets:
-            raise CompilationError(f"Character Swap audio reference {asset_id!r} is missing from preparation")
-        binding = f"audio_reference_{index}"
-        bindings[binding] = assets[asset_id]
-        audio_reference_rows.append({"binding": binding, "resolved_range": item.get("resolved_range")})
+    conditioning, bindings = _conditioning_rows(request, assets)
+    video_reference_rows = [row for row in conditioning if row["modality"] == "video"]
+    audio_reference_rows = [row for row in conditioning if row["modality"] == "audio"]
 
     try:
         timing = generation_timing(value["duration"])
@@ -734,7 +901,7 @@ def _compile_character_swap_v2(
     prompt = _native_v2_prompt(request)
     turbo = settings["turbo"]
     adapter = settings["adapter"]
-    graph = build_generation_workflow(
+    inputs = generation_inputs_from_bindings(
         references=[f"reference_{index}" for index in range(len(images))],
         video_references=video_reference_rows,
         audio_references=audio_reference_rows,
@@ -750,6 +917,9 @@ def _compile_character_swap_v2(
         turbo_enabled=turbo["enabled"],
         character_swap_sha256=adapter_sha256,
     )
+    from dataclasses import replace
+    inputs = _with_v2_intent(replace(inputs, conditioning=tuple(conditioning)), request)
+    graph = build_generation_workflow(inputs)
 
     # Reconcile the declaration against connected loaders. This prevents a
     # disabled Turbo node from leaving a stale model download requirement.
@@ -847,7 +1017,8 @@ def _compile_character_swap_v2(
             "references": 2,
             "reference_video": 1,
             "reference_image": 1,
-            "reference_tags": {"video": "<Video 1>", "image": "<Picture 1>"},
+            "reference_tags": {modality: next(row["tag"] for row in conditioning if row["modality"] == modality) for modality in ("video", "image")},
+            "conditioning": conditioning,
             "output_contract": "muxed_av_full_timeline",
             "source_audio": "preserved by existing composition permissions when a timeline video is present",
             "masks": "preserved by normalized native-v2 preparation and existing composition permissions",
@@ -882,46 +1053,17 @@ def _compile_native_v2(
     from .generation import LIMITS
     branch = branch_for(request)
     settings = effective_settings(request)
-    if not assets:
-        raise CompilationError("native-v2 requires resolved media assets")
-
     if settings.get("adapter", {}).get("id") == CHARACTER_SWAP_ID:
+        regional = any(edit.get("stream") == "video" and edit.get("mask", {}).get("full_frame") is not True
+                       for item in request.value["media"] for edit in item.get("edit", []))
+        if branch == "source_backed_v2v" and regional:
+            return _compile_native_masked_edit(request, assets, destination, branch=branch)
         return _compile_character_swap_v2(request, assets, destination, branch=branch)
 
     if branch == "source_free":
-        references = [item for item in request.value["media"] if item["role"] == "reference"]
-        if any(item.get("modality") == "video" and item.get("use") != "replacement" for item in references):
-            raise CompilationError("source-free video references are unsupported by the current lowering")
-        image_references = [item for item in references if item.get("modality") == "image" and item.get("use") != "replacement"]
-        audio_references = [item for item in references if item.get("modality") == "audio" and item.get("use") != "replacement"]
-        if not 1 <= len(image_references) <= LIMITS["builder_slots"]["value"]["image"]:
-            raise CompilationError("source-free builder image slots 9: requires one to nine image references")
-        if len(audio_references) > LIMITS["builder_slots"]["value"]["audio"]:
-            raise CompilationError("source-free builder standalone audio slots 3: exceeded")
-        generation_value = {
-            "version": 1,
-            "operation": "generate",
-            "source": None,
-            "output": {"duration": request.value["duration"]},
-            "content": {"prompt": request.value["prompt"]},
-            "changes": {"video": [], "audio": []},
-            "references": [{"asset": item["asset"], "purpose": "appearance"} for item in image_references],
-            "overrides": {
-                "model": settings["model"],
-                "steps": settings["steps"],
-                "sampler": settings["sampler"],
-                "seed": settings["seed"],
-                "guidance": settings["turbo"]["strength"],
-            },
-        }
         return _compile_generation(
-            H3Request(value=generation_value, digest=request.digest),
-            assets,
-            destination,
-            profile_id="h3_av.native.v2",
-            native_v2_branch=branch,
-            native_settings=settings,
-            audio_references=audio_references,
+            request, assets, destination, profile_id="h3_av.native.v2",
+            native_v2_branch=branch, native_settings=settings,
         )
 
     if branch == "audio_only":
@@ -932,8 +1074,6 @@ def _compile_native_v2(
         )
 
     if branch == "source_backed_v2v":
-        if any(item.get("role") == "reference" and item.get("modality") in {"audio", "video"} and item.get("use") != "replacement" for item in request.value["media"]):
-            raise CompilationError("native masked edit does not bind audio or video conditioning references")
         return _compile_native_masked_edit(request, assets, destination, branch=branch)
 
     destination.mkdir(parents=True, exist_ok=True)
@@ -1089,13 +1229,19 @@ def _compile_generation(
     from vibecomfy.security.provenance import Provenance
     from vibecomfy.workflow_bundle import emit_bundle
 
-    from .generation import IMAGE_REFERENCE_CAPACITY, build_generation_workflow, generation_timing
+    from .generation import IMAGE_REFERENCE_CAPACITY, build_generation_workflow, generation_inputs_from_bindings, generation_timing
 
-    references = request.value["references"]
-    # Keep slots ordered even for repeated assets; the archive deduplicates bytes.
-    audio_references = list(audio_references or [])
-    bindings = {f"reference_{index}": assets[item["asset"]] for index, item in enumerate(references)}
-    bindings.update({f"audio_reference_{index}": assets[item["asset"]] for index, item in enumerate(audio_references)})
+    native_v2 = request.value.get("version") == 2
+    conditioning = None
+    if native_v2:
+        conditioning, bindings = _conditioning_rows(request, assets)
+        references = [item for item in request.value["media"] if item.get("role") == "reference" and item.get("modality") == "image" and item.get("use") != "replacement"]
+        audio_references = [item for item in request.value["media"] if item.get("role") == "reference" and item.get("modality") == "audio" and item.get("use") != "replacement"]
+    else:
+        references = request.value["references"]
+        audio_references = list(audio_references or [])
+        bindings = {f"reference_{index}": assets[item["asset"]] for index, item in enumerate(references)}
+        bindings.update({f"audio_reference_{index}": assets[item["asset"]] for index, item in enumerate(audio_references)})
     for binding, path in bindings.items():
         if not binding.startswith("reference_"):
             continue
@@ -1106,8 +1252,8 @@ def _compile_generation(
                 image.verify()
         except (OSError, ValueError) as exc:
             raise CompilationError(f"{binding} must be a decodable still image") from exc
-    manifest = _write_asset_bundle(destination / "managed-assets.zip", bindings)
-    members = _member_by_binding(manifest)
+    manifest = _write_asset_bundle(destination / "managed-assets.zip", bindings) if bindings else None
+    members = _member_by_binding(manifest) if manifest is not None else {}
     image_members = [members[f"reference_{index}"] for index in range(len(references))]
     audio_members = [members[f"audio_reference_{index}"] for index in range(len(audio_references))]
     if native_settings is None:
@@ -1126,9 +1272,9 @@ def _compile_generation(
         scheduler = native_settings["scheduler"]
         turbo_enabled = native_settings["turbo"]["enabled"]
         adapter_strength = native_settings.get("adapter", {}).get("strength")
-    timing = generation_timing(request.value["output"]["duration"])
-    prompt = request.value["content"]["prompt"]
-    graph = build_generation_workflow(
+    timing = generation_timing(request.value["duration"] if native_v2 else request.value["output"]["duration"])
+    prompt = request.value["prompt"] if native_v2 else request.value["content"]["prompt"]
+    inputs = generation_inputs_from_bindings(
         references=image_members, prompt=prompt,
         audio_references=[{"binding": f"audio_reference_{index}", "resolved_range": item.get("resolved_range")} for index, item in enumerate(audio_references)],
         frames=timing["raw_frames"], model=settings["model"],
@@ -1137,6 +1283,10 @@ def _compile_generation(
         scheduler=scheduler, turbo_enabled=turbo_enabled,
         adapter_strength=adapter_strength,
     )
+    if conditioning is not None:
+        from dataclasses import replace
+        inputs = _with_v2_intent(replace(inputs, conditioning=tuple(conditioning)), request)
+    graph = build_generation_workflow(inputs)
     if len(graph.outputs) != 1 or graph.outputs[0].expected_cardinality != "one":
         raise CompilationError("generation adapter must expose exactly one output")
     resource = destination / "generation-bundle"
@@ -1154,6 +1304,7 @@ def _compile_generation(
         "audio_references": len(audio_references),
         "audio_reference_order": [item["asset"] for item in audio_references],
         "audio_reference_binding": "ordered standalone audio conditioning; Audio 1..N",
+        **({"conditioning": conditioning} if conditioning is not None else {}),
         "generation_timing": timing,
         "output_contract": "muxed_av_full_timeline",
         "public_generation": {"modality": "video", "selectors": [
@@ -1174,7 +1325,7 @@ def _compile_generation(
         request=request, destination=destination, resource_root=resource,
         workflow_inputs=workflow_inputs, asset_bindings=bindings,
         capabilities=capabilities,
-        limitations=["no video references, timed keyframes or source-free masks", "single pass, up to 3592 frames at 24 fps; outside 124–362 frames is untested"],
+        limitations=["no timed keyframes or source-free masks", "single pass, up to 3592 frames at 24 fps; outside 124–362 frames is untested"],
         profile_id=profile_id,
         extra_manifest=extra_manifest,
     )
