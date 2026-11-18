@@ -629,6 +629,14 @@ def _reconstruct_generation_result(result: InvocationResult) -> Any:
         settled_payload = settled.get("payload")
         if isinstance(settled_payload, Mapping):
             payload_candidates.append(settled_payload)
+    task = raw_result.get("task")
+    task = task if isinstance(task, Mapping) else {}
+    task_settled = task.get("result")
+    if isinstance(task_settled, Mapping) and task_settled is not settled:
+        payload_candidates.append(task_settled)
+        task_payload = task_settled.get("payload")
+        if isinstance(task_payload, Mapping):
+            payload_candidates.append(task_payload)
     generation_payload: Any = None
     generation_payload_found = False
     explicit_generation_payload = False
@@ -672,6 +680,26 @@ def _reconstruct_generation_result(result: InvocationResult) -> Any:
         )
     else:
         generation_payload = _normalize_generation_payload(generation_payload)
+    # H3's settled receipt carries the same self-contained reference view that
+    # was sealed at dry run. Project it from the receipt without reopening any
+    # producer scratch path (which may already have been deleted).
+    reference_view = generation_payload.get("reference_view")
+    settled_manifest = generation_payload.get("manifest")
+    if reference_view is None and isinstance(settled_manifest, Mapping):
+        reference_view = settled_manifest.get("reference_view")
+    if reference_view is None:
+        for candidate in payload_candidates:
+            candidate_manifest = candidate.get("manifest")
+            if isinstance(candidate_manifest, Mapping) and isinstance(candidate_manifest.get("reference_view"), Mapping):
+                reference_view = candidate_manifest["reference_view"]
+                break
+            if isinstance(candidate.get("reference_view"), Mapping):
+                reference_view = candidate["reference_view"]
+                break
+    if isinstance(reference_view, Mapping):
+        manifest = dict(settled_manifest) if isinstance(settled_manifest, Mapping) else {}
+        manifest["reference_view"] = _json_safe_mapping(reference_view)
+        generation_payload = {**generation_payload, "manifest": manifest}
     generation_payload = {**generation_payload, **task_refs}
     if task_refs.get('manifest_ref'):
         generation_payload.update(run_dir=None, image_paths=[])

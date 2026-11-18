@@ -65,7 +65,7 @@ def _generation_intent(compilation: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _sealed_plan(compilation: Mapping[str, Any]) -> dict[str, Any]:
+def _sealed_plan(compilation: Mapping[str, Any], *, preparation: Mapping[str, Any] | None = None) -> dict[str, Any]:
     capabilities = compilation.get("capabilities", {})
     contract = capabilities.get("output_contract")
     if contract not in _OUTPUT_CONTRACTS:
@@ -77,9 +77,35 @@ def _sealed_plan(compilation: Mapping[str, Any]) -> dict[str, Any]:
     digest = compilation.get("compilation_digest")
     if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
         raise ValueError("H3 compilation has no sealed identity")
-    return {"compilation_digest": digest, "output_contract": contract, "intent": intent,
+    plan = {"compilation_digest": digest, "output_contract": contract, "intent": intent,
             "workflow_members": {name: row["sha256"] for name, row in compilation["workflow"].items()},
             "workflow_inputs_sha256": stable_digest(compilation["workflow_inputs"])}
+    # The compiler's conditioning list is the single source of reference order,
+    # tags and graph bindings. Keep this projection path-free for dry-run and
+    # settled-result consumers; never copy it into compilation.json.
+    conditioning = capabilities.get("conditioning") if isinstance(capabilities, Mapping) else None
+    if isinstance(conditioning, list):
+        measurements = {}
+        if isinstance(preparation, Mapping):
+            measurements = {row.get("occurrence"): row for row in preparation.get("conditioning_measurements", [])
+                            if isinstance(row, Mapping) and isinstance(row.get("occurrence"), str)}
+        refs = []
+        for row in conditioning:
+            if not isinstance(row, Mapping):
+                raise ValueError("H3 conditioning rows must be objects")
+            reference = {key: row[key] for key in ("occurrence", "modality", "trim", "input_binding", "tag") if key in row}
+            measurement = measurements.get(row.get("occurrence"), {})
+            if row.get("modality") == "video":
+                estimate = measurement.get("retained_picture_frames_estimate")
+                if isinstance(estimate, Mapping):
+                    reference["retained_picture_frames_estimate"] = {
+                        "value": estimate.get("value"), "kind": "metadata_upper_bound", "observed": False,
+                    }
+            if isinstance(measurement.get("effective_size"), Mapping):
+                reference["effective_size"] = dict(measurement["effective_size"])
+            refs.append(reference)
+        plan["reference_view"] = {"references": refs}
+    return plan
 
 
 def materialize_file_map(request: H3Request, files: Mapping[str, Any], destination: Path,

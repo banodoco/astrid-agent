@@ -539,6 +539,42 @@ def test_same_mixed_occurrences_bind_identically_on_source_free_and_masked_route
     assert outputs[0] == outputs[1]
 
 
+def test_sealed_reference_view_uses_compiled_rows_and_labels_video_counts_as_estimates(tmp_path):
+    from astrid.packs.h3_av.shared.compile import _compile_native_v2
+    from astrid.packs.h3_av.shared.request_v2 import normalize_v2
+    from astrid.packs.h3_av.shared.stages import _sealed_plan
+
+    media = [
+        {"asset": "voice", "role": "reference", "modality": "audio"},
+        {"asset": "performance", "role": "reference", "modality": "video", "range": [1, 3], "audio": True},
+        {"asset": "picture", "role": "reference", "modality": "image"},
+    ]
+    image = tmp_path / "picture.png"
+    Image.new("RGB", (32, 32)).save(image)
+    assets = {"picture": image}
+    for name in ("voice", "performance"):
+        assets[name] = tmp_path / name
+        assets[name].write_bytes(b"asset fixture")
+    request = normalize_v2({"version": 2, "prompt": "<Picture 1> <Video 1> <Audio 1> <Audio 2>", "duration": 6, "media": media})
+    compilation = _compile_native_v2(request, assets, tmp_path / "out")
+    rows = compilation["capabilities"]["conditioning"]
+    preparation = {"conditioning_measurements": [{
+        "occurrence": "occurrence-2", "retained_picture_frames_estimate": {
+            "value": 47, "kind": "metadata_upper_bound", "observed": False,
+        }, "effective_size": {"width": 1024, "height": 576}, "bound_file": "/scratch/video.mp4",
+    }]}
+    view = _sealed_plan(compilation, preparation=preparation)["reference_view"]
+
+    assert [{key: row[key] for key in ("occurrence", "modality", "trim", "input_binding", "tag")} for row in view["references"]] == rows
+    video = next(row for row in view["references"] if row["modality"] == "video")
+    assert video["retained_picture_frames_estimate"] == {
+        "value": 47, "kind": "metadata_upper_bound", "observed": False,
+    }
+    assert video["effective_size"] == {"width": 1024, "height": 576}
+    assert "/scratch" not in str(view)
+    assert "retained_picture_frames" not in video
+
+
 def test_fractional_reference_trim_survives_compilation_manifest(tmp_path):
     from astrid.packs.h3_av.shared.compile import _compile_native_v2
     from astrid.packs.h3_av.shared.request_v2 import normalize_v2

@@ -101,3 +101,18 @@ def test_runtime_unprefixed_cas_refs_keep_their_original_identity():
     assert result.result_manifest['object_id'] == 'c' * 64
     assert result.source_ref == fixture.source
     assert result.effective_settings_ref == fixture.settings
+
+
+def test_settled_reference_view_is_reconstructed_without_spool_paths():
+    fixture = terminal()
+    reference_view = {"references": [{"occurrence": "performance", "modality": "video",
+        "trim": [1, 3], "tag": "<Video 1>",
+        "input_binding": {"binding": "video_reference_0", "port": "ref_videos.ref_video_0"},
+        "retained_picture_frames_estimate": {"value": 47, "kind": "metadata_upper_bound", "observed": False}}]}
+    fixture.result.raw_result['task']['result']['manifest'] = {"reference_view": reference_view}
+    fixture.result.raw_result['task']['result']['manifest_path'] = '/deleted/spool/result.json'
+
+    result = _reconstruct_generation_result(fixture.result)
+
+    assert result.manifest["reference_view"] == reference_view
+    assert "/deleted/spool" not in str(result.to_dict())

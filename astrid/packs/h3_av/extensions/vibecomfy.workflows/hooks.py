@@ -135,7 +135,7 @@ def build(inputs, files, out, *, engine=None, check_runtime=False):
     _shared("prepare").write_preparation(work / "preparation.json", preparation)
     bindings = compilation["workflow_inputs"]
     facts.assert_no_unresolved_placeholders(bindings)
-    plan = {**stages._sealed_plan(compilation), "request_digest": request.digest}
+    plan = {**stages._sealed_plan(compilation, preparation=preparation), "request_digest": request.digest}
     source_id = stages._authoritative_source_asset_id(request)
     source = paths[source_id] if source_id else None
     if source is not None and "source_video" in bindings:
@@ -183,5 +183,11 @@ def after_outputs(job_dir, inputs, files, outputs, *, engine=None):
                                     out_dir=work / "compose")
     verification = verify_candidate(preparation=preparation, composition=composition, source=source,
                                     candidate=composition["candidate"]["path"])
+    # Keep the same sealed, path-free reference projection with the settled
+    # verification record, which is retained with the job receipt after scratch
+    # cleanup. Decoded frame counts are added only by a decoder that observes
+    # the actual retained frames; metadata estimates remain explicitly estimates.
+    if isinstance(state["plan"].get("reference_view"), Mapping):
+        verification["reference_view"] = state["plan"]["reference_view"]
     facts.write_json_atomic(work / "verify.json", verification)
     return [composition["candidate"]["path"], *outputs[1:]]
