@@ -10,10 +10,15 @@ from astrid.core.timeline import moments
 from astrid.core.timeline.authoring_bundle import compile_authoring_candidate
 from astrid.core.timeline.shot_composition_projection import _placement_speed
 from astrid.sdk import timeline_intent as intent
-from astrid.sdk.timeline._timing_evaluators import (
-    UNSUPPORTED_DECLARATIONS, _fps, _maps, _ReadLookup, legacy_declaration_failures,
-    unsupported_declaration)
 from astrid.sdk.timeline._preexisting import split_findings
+from astrid.sdk.timeline._timing_evaluators import (
+    UNSUPPORTED_DECLARATIONS,
+    _fps,
+    _maps,
+    _ReadLookup,
+    legacy_declaration_failures,
+    unsupported_declaration,
+)
 from astrid.sdk.timeline.compiler import TimingCompileError, TimingInputs, compile_timing
 from astrid.sdk.timeline.native_word_anchor import binding, legacy_binding
 from astrid.sdk.timeline.units import _time_fraction
