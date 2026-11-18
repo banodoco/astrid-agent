@@ -15,6 +15,11 @@ from astrid.core.generation.managed_preparation import (
 )
 
 
+# Fail-closed contract: preparation resolves node providers for the workflow it is given, so a
+# fixture that reaches that point supplies a workflow (one that uses no nodes) instead of None.
+_NO_NODE_WORKFLOW = SimpleNamespace(compile=lambda *args, **kwargs: {}, runtime_nodes=lambda: {})
+
+
 @pytest.fixture
 def preparation(tmp_path, monkeypatch):
     source = tmp_path / 'workflow.json'
@@ -135,7 +140,7 @@ def test_preparation_keeps_installation_guidance_for_unreadable_receipt(tmp_path
     try:
         with pytest.raises(EngineNotInstalled, match="astrid engines install comfyui") as error:
             preparation.prepare(workflow, execution_identity="execution", inputs={},
-                                canonical_workflow=None, input_digests={})
+                                canonical_workflow=_NO_NODE_WORKFLOW, input_digests={})
         assert error.value.next_action == "astrid engines install comfyui"
     finally:
         preparation.close()
@@ -171,7 +176,7 @@ def test_preparation_failure_remains_primary_when_owned_stop_is_unconfirmed(tmp_
     try:
         with pytest.raises(ValueError) as caught:
             preparation.prepare(tmp_path / "workflow", execution_identity="execution", inputs={},
-                                canonical_workflow=None, input_digests={})
+                                canonical_workflow=_NO_NODE_WORKFLOW, input_digests={})
         assert caught.value is original
         assert any("owned engine stop is unconfirmed" in note for note in caught.value.__notes__)
         from astrid.core.generation import managed_preparation
@@ -238,7 +243,8 @@ def doctor_case():
         prep.context = SimpleNamespace(service_client=SimpleNamespace(stop_owned=stop_owned))
         prep._verify_alignment = lambda *args: None
         prep._alignment_verification = ()
-        prep._owned_classes = ()  # fail-closed contract: the workflow's owned classes are always determined
+        from astrid.core.generation.node_providers import NodePlan
+        prep._node_plan = NodePlan()  # fail-closed contract: every workflow's node providers are resolved
         runner = SimpleNamespace(start=start)
 
         def check_health():
@@ -262,7 +268,7 @@ def doctor_case():
 
     state.preparation = preparation
     state.prepare = lambda prep: prep.prepare(Path('workflow.py'), execution_identity='execution',
-        inputs={}, canonical_workflow=None, input_digests={})
+        inputs={}, canonical_workflow=_NO_NODE_WORKFLOW, input_digests={})
     yield state
     for prep in state.preparations:
         managed_preparation._UNRESOLVED_CUSTODY.pop(id(prep), None)
@@ -813,7 +819,7 @@ def fetch_volume(tmp_path, monkeypatch):
     def fetch():
         try:
             prep._prepare(source, execution_identity='execution', inputs={},
-                          canonical_workflow=None, input_digests={})
+                          canonical_workflow=_NO_NODE_WORKFLOW, input_digests={})
         except AlignmentComplete:
             pass  # Never start an engine in a CPU storage test.
 

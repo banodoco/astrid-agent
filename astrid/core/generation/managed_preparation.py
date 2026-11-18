@@ -96,6 +96,10 @@ def _write_managed_nodes_lock(path: Path, nodes: list[dict[str, str]], recipe: E
     path.write_text("\n".join(lines) + "\n")
 
 
+def _repo_key(url):
+    return str(url or "").rstrip("/").removesuffix(".git").lower()
+
+
 def native_failure_diagnostic(step: str, stdout: str, stderr: str) -> tuple[str, str]:
     """Reduce untrusted output to fixed labels; never forward a remote text tail."""
     step = step if step in _NATIVE_STEPS else "unknown"
@@ -489,13 +493,22 @@ class ManagedEnginePreparation:
                                    for path in native_members if path.is_file()}
         staged_digests.update(self._canonical_members)
         manifest = {**manifest, "engine": DEFAULT_ENGINE, "models_root": configured_models_root(root=self.root)}
-        self._has_declared_nodes = bool((manifest.get("extra") or {}).get("nodes"))
-        # Fail closed: every mode needs to know which owned nodes this workflow uses.
-        self._owned_classes = self._owned_classes_in(canonical_workflow)
+        # Fail closed: every mode resolves every class the workflow uses to a provider, at the
+        # recipe's pins, before anything is installed or started.
+        self._node_plan = self._resolve_node_plan(canonical_workflow)
+        declared = list((manifest.get("extra") or {}).get("nodes", []))
+        known = {_repo_key(node["repo"]) for node in declared}
+        # A locked pack the workflow uses but does not declare is installed too.
+        declared += [{"repo": p.repo, "commit": p.commit} for p in self._node_plan.packs()
+                     if _repo_key(p.repo) not in known]
+        self._has_declared_nodes = bool(declared)
+        # Only an install made after the engine started can leave a warm engine stale.
+        self._installed_after_start = bool(self._node_plan.owned_classes
+                                           or (self.mode == "align" and self._node_plan.packs()))
         commands_type = type(engine).requirements.__globals__["VibeComfyCommands"]
         self.scratch.mkdir(parents=True, exist_ok=True)
         lockfile = self.scratch / "managed-custom-nodes.lock"
-        _write_managed_nodes_lock(lockfile, (manifest.get("extra") or {}).get("nodes", []), self.recipe)
+        _write_managed_nodes_lock(lockfile, declared, self.recipe)
         if engine.commands is None:
             engine.commands = commands_type(str(canonical_path), str(lockfile), runner=self._command)
         self.check()
@@ -511,7 +524,7 @@ class ManagedEnginePreparation:
             raise IntegrityError("managed engine is missing declared models: " + ", ".join(alignment["missing"]))
         self.check()
         self._verify_alignment(*self._alignment_verification)
-        if self._owned_classes:
+        if self._node_plan.owned_classes:
             # check and trust modes never run nodes restore; the link is idempotent.
             self._link_owned_nodes()
         runner.step_id = "start"
@@ -524,7 +537,7 @@ class ManagedEnginePreparation:
         health_action, health_facts = self._time_engine(runner.check_health)
         self.check()
         checked_facts = start_facts
-        start_action, start_facts = self._ensure_owned_nodes(runner, start_action, start_facts)
+        start_action, start_facts = self._ensure_engine_classes(runner, start_action, start_facts)
         if start_facts is not checked_facts:  # the engine was restarted; its health is the new engine's
             runner.step_id = "health"
             health_action, health_facts = self._time_engine(runner.check_health)
@@ -879,11 +892,16 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
                    "link_vibecomfy_custom_node(custom_nodes=Path(sys.argv[2]), package_root=Path(sys.argv[1]))")
         self._native(program, checkout, self.adapter.join(comfy, "custom_nodes"), step="nodes_restore")
 
-    @staticmethod
-    def _owned_classes_in(workflow):
-        """VibeComfy-owned node classes a workflow uses (those linked into custom_nodes)."""
-        from .worker_node_set import owned_node_classes
-        return tuple(sorted({node.class_type for node in workflow.runtime_nodes().values()} & owned_node_classes()))
+    def _resolve_node_plan(self, workflow):
+        """The one plan for this workflow: a provider for every class, or a refusal by name."""
+        from .engine_contracts import IntegrityError
+        from .node_providers import NodeProviderMissing, api_class_types, declared_packs, recipe_source, resolve
+        plan = resolve(api_class_types(workflow), recipe_source(self.recipe), declared_packs(workflow))
+        try:
+            plan.require()
+        except NodeProviderMissing as exc:
+            raise IntegrityError(str(exc)) from exc
+        return plan
 
     def _probe_missing(self, classes):
         from astrid.packs.vibecomfy.native_preparation import native_owned_node_probe_program
@@ -902,8 +920,8 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
         missing = json.loads(result.stdout)["missing"]
         return [name for name in missing if isinstance(name, str) and name in classes]
 
-    def _ensure_owned_nodes(self, runner, start_action, start_facts=None):
-        """Make the engine that diagnoses and runs the workflow actually have its owned nodes.
+    def _ensure_engine_classes(self, runner, start_action, start_facts=None):
+        """Make the engine that diagnoses and runs the workflow actually show every class it uses.
 
         Nodes restore links VibeComfy's own ComfyUI node package into custom_nodes, but
         ComfyUI only reads custom_nodes when it starts.  A warm engine that predates the
@@ -913,13 +931,14 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
         does.  Returns the (action, facts) of the engine start that is now in force.
         """
         from .engine_contracts import IntegrityError
-        needed = getattr(self, "_owned_classes", None)
-        if needed is None:
-            raise IntegrityError("managed preparation did not determine the workflow's owned node classes")
+        plan = getattr(self, "_node_plan", None)
+        if plan is None:
+            raise IntegrityError("managed preparation did not resolve the workflow's node providers")
+        needed = plan.classes
         if not needed:
             return start_action, start_facts
         missing = self._probe_missing(needed)
-        if missing and start_action == "skipped":
+        if missing and start_action == "skipped" and getattr(self, "_installed_after_start", True):
             self._preparing_engine = True
             self._stop_preparing_engine()
             self._engine_stopped = True
@@ -937,8 +956,8 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
             missing = self._probe_missing(needed)
         if missing:
             raise IntegrityError(
-                "managed engine does not load VibeComfy node class(es) " + ", ".join(missing)
-                + " that the workflow uses, even after a fresh start; its custom_nodes link did not load")
+                "managed engine does not load node class(es) " + ", ".join(missing)
+                + " that the workflow uses, even after a fresh start; the node provider's install did not load")
         return start_action, start_facts
 
     def _doctor(self, argv):
@@ -960,7 +979,7 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
                 self._preparing_engine = True
             runner.step_id = "doctor-health"
             self._time_engine(runner.check_health)
-            start_action, _ = self._ensure_owned_nodes(runner, start_action)
+            start_action, _ = self._ensure_engine_classes(runner, start_action)
             expected = runner.health.object_info_sha256
             request = {"argv": argv, "endpoint": f"http://127.0.0.1:{self.recipe.start.port}",
                        "expected_schema_sha256": expected,

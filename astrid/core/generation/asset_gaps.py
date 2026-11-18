@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+from dataclasses import replace
 import shlex
 import shutil
 import subprocess
@@ -136,15 +137,28 @@ def attached_asset_readiness(entry: str | None, *, nodes=(), models=(), lockfile
     """
     from pathlib import Path
 
-    from vibecomfy.node_packs import resolve_node_packs
+    from .node_providers import attached_source, resolve
 
     lock = Path('custom_nodes.lock') if lockfile_path is None else lockfile_path
     issues, fixes = [], []
     fixed_packs: set[str] = set()
+    source = attached_source(lock)
+    inner_lookup = source.pack_lookup
+    source = replace(source, pack_lookup=lambda classes: [pack for pack in inner_lookup(classes)
+                                                          if not _is_comfyui_core_repo(pack.repo)])
+    plan = resolve(nodes, source)  # the one resolver: core, a locked pack, or VibeComfy's own nodes
     for name in nodes:
-        packs = [pack for pack in resolve_node_packs({name}, lockfile_path=lock)
-                 if not _is_comfyui_core_repo(pack.repo)]
+        provider = plan.providers.get(name)
+        packs = [provider] if provider is not None and provider.kind == 'pack' else []
         commands = None
+        if provider is not None and provider.kind == 'owned':
+            action = ("Link VibeComfy's comfy_nodes folder into your ComfyUI's custom_nodes folder "
+                      "(vibecomfy's own ComfyUI node package), then restart ComfyUI yourself and retry.")
+            issues.append({'code': 'missing_node_pack', 'severity': 'error',
+                           'message': f'Your ComfyUI does not have {name}, which is one of VibeComfy\'s own nodes. {action}',
+                           'details': {'node': name, 'pack': 'vibecomfy', 'repository': None}})
+            fixes.append({'scope': 'attached_target', 'details': {'action': action}})
+            continue
         if packs:
             pack = packs[0]
             url = pack.repo if pack.repo.startswith(('http://', 'https://', 'git@')) else None

@@ -409,14 +409,15 @@ def preflight_invocation(
     expected_source_node: str | None = None,
     expected_source_field: str | None = None,
     phase: str = "submission",
-    worker_nodes: Any = None,
+    node_source: Any = None,
 ) -> dict[str, Any]:
     """Validate one exact workflow invocation and return a bound receipt.
 
-    ``worker_nodes`` is the node set a managed worker is provisioned with
-    (``worker_node_set.WorkerNodeSet``).  When given, every class the compiled
-    workflow uses must be in it, so a class the paid worker would lack is refused
-    here, by name, instead of after a machine has been claimed.
+    ``node_source`` is the provider source of a managed worker
+    (``node_providers.ProviderSource``).  When given, every class the compiled workflow
+    uses must have a provider (ComfyUI core, a locked pack, or VibeComfy's own nodes), a
+    class with none is refused here by name, and the receipt carries the plan the worker
+    would run (``node_plan``), so the free check covers the paid path.
     """
     source = Path(workflow_path).expanduser().resolve(strict=True)
     bindings = dict(run_inputs or {})
@@ -481,12 +482,16 @@ def preflight_invocation(
     if not isinstance(api, Mapping):
         raise InvocationPreflightError("VIBECOMFY_API_COMPILE: projection is not an object")
     _assert_no_unresolved_placeholders(api)
-    if worker_nodes is not None:
-        from astrid.core.generation.worker_node_set import WorkerNodeMissing, workflow_class_types
+    node_plan = None
+    if node_source is not None:
+        from astrid.core.generation.node_providers import NodeProviderMissing, declared_packs, resolve
 
+        node_plan = resolve({str(n["class_type"]) for n in api.values()
+                             if isinstance(n, Mapping) and isinstance(n.get("class_type"), str)},
+                            node_source, declared_packs(workflow))
         try:
-            worker_nodes.require(workflow_class_types(api))
-        except WorkerNodeMissing as exc:
+            node_plan.require()
+        except NodeProviderMissing as exc:
             raise InvocationPreflightError(str(exc)) from exc
     if "source_video" in bindings:
         node = api.get(str(source_input.node_id))
@@ -517,6 +522,8 @@ def preflight_invocation(
         "run_inputs": bindings,
         "reachable_nodes": sorted(_reachable_node_ids(workflow)),
     }
+    if node_plan is not None:
+        receipt["node_plan"] = node_plan.steps()
     if expected_prompt is not None:
         receipt["expected_prompt"] = expected_prompt
     if source_video_path is not None and _is_h3_workflow(api):

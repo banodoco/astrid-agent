@@ -333,12 +333,12 @@ LOCAL_REFUSAL_SCOPE = ('refused locally before submission; nothing was sent to a
 
 def _offline_invocation_preflight(workflow: Any, *, plan: Mapping[str, Any] | None,
                                   assets: Mapping[str, Any], comfy_url: str | None,
-                                  lineage: Any, source_video: bool, worker_nodes: bool = False) -> None:
+                                  lineage: Any, source_video: bool, worker_nodes: bool = False) -> list[str]:
     """Run the same invocation preflight a live submission runs, offline, on the emitted bundle.
 
-    ``worker_nodes`` also requires every class the compiled workflow uses to be one the
-    managed worker is provisioned with (recipe packs, the workflow's declared packs, and
-    VibeComfy's own node package), so a class the paid worker lacks is refused here.
+    ``worker_nodes`` also resolves every class the compiled workflow uses to a provider on the
+    managed worker (core, a locked pack, or VibeComfy's own nodes) and refuses a class with none,
+    by name. It returns the plan the worker would run, in plain steps, or [] when not asked.
 
     Every dry run calls this so a request the live path would refuse is refused before a
     machine is required, claimed, or paid for. Refusals name their scope: they happened
@@ -370,24 +370,23 @@ def _offline_invocation_preflight(workflow: Any, *, plan: Mapping[str, Any] | No
             source_digest = 'sha256:' + str(record['sha256'])
     prompt = run_inputs.get('prompt')
     expected_prompt = prompt if isinstance(prompt, str) and prompt.strip() else None
-    node_set = None
+    node_source = None
     if worker_nodes:
-        from astrid.core.generation import entries as workflow_entries
-        from astrid.core.generation.worker_node_set import managed_worker_node_set
-        declared = workflow_entries.engine_table()['comfyui'].workflow_requirements([workflow])
-        node_set = managed_worker_node_set((declared.get('extra') or {}).get('nodes', ()))
+        from astrid.core.generation.node_providers import managed_source
+        node_source = managed_source()
     with TemporaryDirectory(prefix='astrid-dry-preflight-') as scratch:
         capsule = Path(scratch) / 'workflow.py'
         emit_bundle(workflow, capsule, {'operation': 'authored'})
         try:
-            preflight_invocation(
+            receipt = preflight_invocation(
                 capsule, run_inputs=run_inputs, comfy_url=comfy_url or '',
                 expected_prompt=expected_prompt, source_video_path=source_path,
-                expected_source_digest=source_digest, phase='dry-run', worker_nodes=node_set)
+                expected_source_digest=source_digest, phase='dry-run', node_source=node_source)
         except InvocationPreflightError as exc:
             from astrid.core.generation.preflight import generation_error
             raise generation_error(ValueError(f'{exc}. {LOCAL_REFUSAL_SCOPE}.'),
                                    code='input_rejected') from exc
+    return list(receipt.get('node_plan') or [])
 
 
 def offline_request_preflight(entry_id: str, *, mode: str | None, inputs: Mapping[str, Any]) -> None:
@@ -2044,12 +2043,14 @@ class GenerationFacade:
             if entry_id == 'h3' and plan and isinstance(plan.get('build_plan'), Mapping):
                 from astrid.packs.h3_av.shared.stages import source_asset_lineage
                 h3_lineage = source_asset_lineage(plan['build_plan'])
-            _offline_invocation_preflight(
+            node_plan = _offline_invocation_preflight(
                 workflow, plan=plan, assets=assets or {},
                 comfy_url=(target_client.target.url if placement.kind == 'attached' and target_client is not None else None),
                 lineage=h3_lineage, source_video=entry_id != 'h3',
                 worker_nodes=is_managed_target or is_remote_target)
             readiness['entry'].update(preview)
+            if node_plan:
+                readiness['entry']['node_plan'] = {'on_the_worker': node_plan}
             if align == 'trust':
                 readiness['alignment'] = {'mode': 'trust', 'verified': False}
             return readiness
