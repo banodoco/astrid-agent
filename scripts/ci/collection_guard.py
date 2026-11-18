@@ -21,7 +21,16 @@ from _pytest.mark import Expression, KeywordMatcher, MarkMatcher
 
 from scripts.ci.static_inventory import StaticInventory
 
-ENV_ADDOPTS = tuple(shlex.split(os.environ.get("PYTEST_ADDOPTS", "")))
+PARENT_INVOCATION = json.loads(os.environ.get("ASTRID_PYTEST_INVOCATION", "null"))
+
+
+def verify_invocation(config):
+    if not PARENT_INVOCATION:
+        raise pytest.UsageError("collection guard requires a parent-declared invocation")
+    declaration = PARENT_INVOCATION["declared"]
+    if (list(config.invocation_params.args) != PARENT_INVOCATION["child_args"]
+            or str(config.invocation_params.dir) != declaration["cwd"]):
+        raise pytest.UsageError("parent-declared invocation was replaced during collection")
 
 
 def declared_selection(config):
@@ -30,12 +39,13 @@ def declared_selection(config):
     Match pinned pytest's precedence: protected ini, environment, invocation.
     Its parser also preserves quoting, repeated flags, -o and @argument files.
     """
-    arguments = [*ENV_ADDOPTS, *config.invocation_params.args]
+    declaration = PARENT_INVOCATION["declared"]
+    arguments = [*shlex.split(declaration["addopts"]), *declaration["args"]]
     namespace = config._parser.parse_known_args(arguments, namespace=argparse.Namespace())
     _, _, ini, _ = determine_setup(
         inifile=namespace.inifilename, override_ini=namespace.override_ini,
         args=namespace.file_or_dir, rootdir_cmd_arg=namespace.rootdir or None,
-        invocation_dir=config.invocation_params.dir,
+        invocation_dir=Path(declaration["cwd"]),
     )
     addopts = ini["addopts"].value if "addopts" in ini else []
     if isinstance(addopts, str):
@@ -92,6 +102,7 @@ def selected_items(config, items, selectors, selection):
 
 class CollectionEvidence:
     def __init__(self, config):
+        verify_invocation(config)
         self.config = config
         self.selection = declared_selection(config)
         self.items = []
@@ -104,7 +115,7 @@ class CollectionEvidence:
             output = Path(path)
             output.parent.mkdir(parents=True, exist_ok=True)
             self.reports = output.open("w", encoding="utf-8", buffering=1)
-            self.write({"type": "start", "args": list(config.invocation_params.args)})
+            self.write({"type": "start", "args": PARENT_INVOCATION["declared"]["args"]})
 
     def write(self, value):
         if self.reports is not None:
@@ -157,6 +168,7 @@ class CollectionEvidence:
 
     @pytest.hookimpl(trylast=True)
     def pytest_collection_finish(self, session):
+        verify_invocation(self.config)
         if (self.config.option.keyword, self.config.option.markexpr) != self.selection:
             raise pytest.UsageError("declared -k/-m selection was rewritten during collection")
         ignored = getattr(self.config.pluginmanager.get_plugin("skip-guard"), "ignored", {})
@@ -167,6 +179,7 @@ class CollectionEvidence:
         collected = collections.Counter(item.nodeid for item in self.items)
         removed = collections.Counter(self.deselected)
         manifest = {
+            "invocation": PARENT_INVOCATION["declared"],
             "collected": sorted(collected.elements()), "selected": sorted(selected.elements()),
             "deselected": sorted(removed.elements()),
             "ignored": ignored, "static": static,

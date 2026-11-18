@@ -284,3 +284,20 @@ def test_suppression_comments_in_existing_stubs_are_scanned(repository: Path, mo
     _commit(repository)
     monkeypatch.chdir(repository)
     assert identity_gate.main(["controls", "--base-ref", base]) == 1
+
+
+@pytest.mark.parametrize("definition", ["function", "class"])
+def test_type_checking_stub_cannot_hide_a_runtime_definition(repository: Path, monkeypatch, definition: str) -> None:
+    source = ('def victim() -> int:\n    value: int = "wrong"\n    return value\n' if definition == "function"
+              else 'class Victim:\n    value: int = "wrong"\n')
+    stub = "def victim() -> int: ..." if definition == "function" else "class Victim: ..."
+    victim = repository / "astrid/victim.py"
+    victim.write_text(source)
+    (repository / "astrid/remaining.py").write_text('value: int = "also wrong"\n')
+    base = _commit(repository)
+    victim.write_text("from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    " + stub + "\nelse:\n"
+                      + "".join("    " + line + "\n" for line in source.splitlines()))
+    _commit(repository)
+    assert len(identity_gate.diagnostics("mypy", repository)) == 1
+    monkeypatch.chdir(repository)
+    assert identity_gate.main(["controls", "--base-ref", base]) == 1

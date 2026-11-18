@@ -7,6 +7,7 @@
 # These run the SAME scripts CI runs (see .github/workflows/ci.yml), so they stay in lockstep.
 
 PY ?= $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
+GATE_PY = PYTHONPATH="$(CURDIR)/scripts" $(PY) -P
 
 .PHONY: help test check ci preflight structure doc-refs doctor ruff mypy cycles collection remotion-install remotion-typecheck renderer-parity wheel editable lock-build lock-runtime lock-proof lock-validate toolchain-record
 
@@ -37,7 +38,7 @@ preflight:
 	@echo "✓ local gate preflight ($(PY))"
 
 structure:
-	@$(PY) -m scripts.reshape.compare_structure_baseline
+	@$(GATE_PY) -m reshape.compare_structure_baseline
 	@echo "✓ repo structure: no violation beyond the shrink-only baseline"
 
 doc-refs:
@@ -49,19 +50,19 @@ doctor:
 	@echo "✓ doctor (deploy health gate)"
 
 ruff:
-	@$(PY) -m scripts.reshape.identity_gate ruff
+	@$(GATE_PY) -m reshape.identity_gate ruff
 	@echo "✓ ruff baseline (no lint regression)"
 
 mypy:
-	@$(PY) -m scripts.reshape.identity_gate mypy
+	@$(GATE_PY) -m reshape.identity_gate mypy
 	@echo "✓ mypy baseline (no type regression)"
 
 cycles:
-	@$(PY) -m scripts.reshape.import_cycles --baseline scripts/reshape/baselines/import_cycles.json
+	@$(GATE_PY) -m reshape.import_cycles --baseline scripts/reshape/baselines/import_cycles.json
 	@echo "✓ import cycles (no new cross-package cycle)"
 
 collection:
-	@$(PY) -m scripts.check_collection
+	@$(GATE_PY) -m check_collection
 
 remotion-install:
 	@$(PY) scripts/reshape/remotion_gate.py install

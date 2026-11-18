@@ -1,6 +1,8 @@
 """The gate policy is read from trusted code, never from the changed tree."""
 
 import os
+import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -86,6 +88,84 @@ def test_install_time_execution_surfaces_require_owner_approval(repository, path
     result = policy(repository, base)
     assert result.returncode == 1, result.stdout + result.stderr
     assert path in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("module", ["argparse", "tomllib"])
+def test_stdlib_shadow_cannot_turn_make_ruff_green(repository, monkeypatch, module):
+    for name in ("Makefile", "scripts/__init__.py", "scripts/reshape/__init__.py",
+                 "scripts/reshape/identity_gate.py"):
+        target = repository / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / name, target)
+    package = repository / "astrid"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "victim.py").write_text("value = 1\n")
+    base = commit(repository)
+    (repository / f"{module}.py").write_text("import sys\nsys.exit(0)\n")
+    (package / "victim.py").write_text("value = missing\n")
+    commit(repository)
+    monkeypatch.delenv("PYTHONSAFEPATH", raising=False)
+    result = subprocess.run(
+        ["make", "ruff", f"PY={sys.executable}"], cwd=repository,
+        env=dict(os.environ, ASTRID_GATE_BASE=base, PYTHONPATH=str(repository)),
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "new ruff finding" in result.stdout + result.stderr
+
+
+def test_stdlib_shadow_cannot_turn_results_green(repository, monkeypatch):
+    import yaml
+
+    for name in ("scripts/__init__.py", "scripts/ci/check_results.py"):
+        target = repository / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / name, target)
+    (repository / "argparse.py").write_text("import sys\nsys.exit(0)\n")
+    workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
+    step = next(step for step in workflow["jobs"]["unit-shard"]["steps"]
+                if step.get("name") == "Summarize test result XML")
+    command = shlex.split(step["run"].replace("${{ env.TEST_RESULTS_DIR }}", str(repository / "missing")))
+    command[0] = sys.executable
+    monkeypatch.delenv("PYTHONSAFEPATH", raising=False)
+    environment = dict(os.environ, PYTHONPATH=str(repository))
+    if "PYTHONPATH" in step.get("env", {}):
+        environment["PYTHONPATH"] = step["env"]["PYTHONPATH"].replace("${{ github.workspace }}", str(repository))
+    result = subprocess.run(command, cwd=repository, env=environment, capture_output=True, text=True, check=False)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "no XML files" in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("path", ["argparse.py", "tomllib/__init__.py"])
+def test_stdlib_module_requires_owner_approval(repository, path):
+    base = commit(repository)
+    target = repository / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("import sys\nsys.exit(0)\n")
+    commit(repository)
+    result = policy(repository, base)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert path in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("surface", ["backend", "cmdclass", "setup-cfg", "alternate-pytest11"])
+def test_build_and_pytest_startup_metadata_require_owner_approval(repository, surface):
+    base = commit(repository)
+    if surface == "setup-cfg":
+        (repository / "setup.cfg").write_text("[options.entry_points]\npytest11 =\n    weakener = candidate_plugin\n")
+    else:
+        additions = {
+            "backend": '[build-system]\nrequires=[]\nbuild-backend="candidate_backend"\nbackend-path=["."]\n',
+            "cmdclass": '[tool.setuptools.cmdclass]\nbuild_py="candidate_build.Weakener"\n',
+            "alternate-pytest11": '[tool.poetry.plugins.pytest11]\nweakener="candidate_plugin"\n',
+        }
+        config = repository / "pyproject.toml"
+        config.write_text(config.read_text() + additions[surface])
+    commit(repository)
+    result = policy(repository, base)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert ("setup.cfg" if surface == "setup-cfg" else "pyproject.toml") in result.stdout + result.stderr
 
 
 def test_gate_tool_version_pins_require_owner_approval(repository):

@@ -18,6 +18,12 @@ still fail. Missing/zero event SHAs and missing/invalid manual destinations
 fail. The checkout includes history. Both CI and the integration workflow
 cover `release/*/plan-*`, in addition to the existing release/main targets.
 
+The packet's Makefile gates and CI gate/evidence commands start with
+`python -P -m`, with `PYTHONPATH` set to the protected `scripts` directory only.
+Their module names are therefore `reshape.identity_gate`, `ci.run_pytest`, etc.
+The repository root is not on their startup import path: a root `argparse.py`
+or `tomllib.py` cannot exit successfully before a gate checks anything.
+
 The same installed tool scans both source trees. Ruff and mypy run with
 `python -I -m` so neither the working directory nor `PYTHONPATH` can replace the
 installed tool. Task changes cannot add or alter top-level `ruff`, `mypy`,
@@ -44,7 +50,9 @@ side of the comparison. The gate also scans `.py` and `.pyi` suppression comment
 by path, attached statement and symbol, and counts `no_type_check` uses including
 import aliases. A new suppression, or one moved onto another statement, fails.
 New or changed `.pyi` interfaces also fail: a sibling stub can hide an unchecked
-implementation without an explicit ignore comment. Existing structure violations are
+implementation without an explicit ignore comment. A function or class defined
+in both a `TYPE_CHECKING` branch and its `else` is also a suppression: the typed
+stub can replace the runtime body in mypy's view. Existing structure violations are
 still compared with the committed structure baseline by `make structure`; the
 controls gate does not replace or enlarge that baseline.
 
@@ -56,14 +64,16 @@ library, has read-only repository/PR permissions, installs no project code,
 and never checks out or imports the PR tree. It reads Git blobs between the
 PR's merge base and exact head SHA. The following changes require approval:
 
-- `scripts/reshape/**`, `scripts/ci/**`, their top-level package initializer,
-  and the collection-check entrypoint/error allowance;
+- all of `scripts/**`, since that directory supplies gate startup imports;
+- top-level modules/packages named in `sys.stdlib_module_names`, including
+  root `.py`/`.pyi` files and paths inside a matching top-level directory;
 - `tests/lanes.py`, `Makefile`, all workflow files, and CODEOWNERS files;
 - requirement/lock files, the Python version file, and gate-tool dependencies
   in pyproject (Ruff, mypy, pytest/plugins, coverage, YAML stubs and NumPy);
-- `setup.py`, `scripts/ci_install_runtime.py`, `scripts/vibecomfy_pin.py`, and
-  `[project.entry-points.pytest11]`, which can execute code during installation
-  or pytest startup.
+- `setup.py`, both install scripts, `[build-system]`, and
+  `[tool.setuptools.cmdclass]`, which can execute code during installation;
+- any `pytest11` table in a `pyproject.toml` or `pytest11` option in a
+  `setup.cfg`, including declarations made through other packaging tools.
 
 Approval must be a current `APPROVED` GitHub review of the **exact head SHA**
 from an explicit login in the repository variable `ASTRID_GATE_OWNERS`.
@@ -95,8 +105,8 @@ CI's existing test commands run through a wrapper, retaining their selectors,
 timeouts and shard parameters:
 
 ```sh
-python -m scripts.ci.run_pytest -q -rA --junitxml=/tmp/evidence/unit.xml tests/test_example.py
-python -m scripts.ci.check_results /tmp/evidence --expected 1
+PYTHONPATH="$PWD/scripts" python -P -m ci.run_pytest -q -rA --junitxml=/tmp/evidence/unit.xml tests/test_example.py
+PYTHONPATH="$PWD/scripts" python -P -m ci.check_results /tmp/evidence --expected 1
 ```
 
 Both this wrapper and the collection-error gate launch the protected absolute
@@ -119,12 +129,16 @@ deselected inventory. Lane markers must be source-declared; the protected
 registry's `INTEGRATION_FIXTURES` rule remains supported. A hook cannot add a
 lane marker after collection to silently exclude a previously unmarked test.
 Declared `-k` and `-m` come from the protected ini bytes, startup environment
-options and `invocation_params.args`, in pytest's precedence order. Repeated
+options and arguments captured by the parent wrapper before pytest starts,
+in pytest's precedence order. Repeated
 flags, argument files and explicit `-o addopts=` retain their normal meaning.
-The guard never adopts rewritten live `config.option` selectors; a mismatch
-fails even when the lane registry would otherwise omit a whole module.
-The executing
-pass must have exactly the same census. Explicit `--deselect`, `--ignore`,
+The guard checks `config.invocation_params` against the parent-supplied child
+arguments and directory, and never adopts rewritten live `config.option`
+selectors. The parent imports no candidate code, retains its declaration and
+reference manifest in memory, and checks both manifests against those values.
+A mismatch fails even when the lane registry would otherwise omit a whole
+module. The executing pass must have exactly the same census.
+Explicit `--deselect`, `--ignore`,
 `collect_ignore` and `collect_ignore_glob` exclusions are refused. A whole-module
 omission is allowed only through the existing lane registry. Focused file
 selectors do not claim coverage of neighboring files.
@@ -158,6 +172,11 @@ in `pytest_runtest_makereport`, or replaces test execution with a no-op runtest
 hook, can forge internally consistent reports. Protected-path owner review and
 later trusted-runner separation address that deliberate code-execution threat;
 the census and result checks do not claim to prevent it.
+
+Round 3 closes the four variants named in the Lead's review of Agent #397.
+Further variants belong to GL.3's follow-up, including separation into a trusted
+job that runs the gates from the base; this packet does not expand the in-job
+checks into an arbitrary-code sandbox.
 
 Moving a test into a valid, source-declared lane that this CI job does not run is
 legitimate deselection. The gate records that selection but cannot establish

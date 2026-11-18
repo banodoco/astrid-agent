@@ -180,6 +180,19 @@ def diagnostics(tool: str, root: Path) -> list[dict[str, Any]]:
     return findings
 
 
+def branch_definitions(body: list[ast.stmt]) -> dict[str, ast.AST]:
+    """Find definitions bound by a branch without entering their nested scopes."""
+    result: dict[str, ast.AST] = {}
+    pending: list[ast.AST] = list(body)
+    while pending:
+        node = pending.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            result[node.name] = node
+        else:
+            pending.extend(ast.iter_child_nodes(node))
+    return result
+
+
 def suppression_identities(root: Path) -> collections.Counter[Identity]:
     findings = []
     for name in git(root, "ls-files", "--", "*.py", "*.pyi").splitlines():
@@ -197,14 +210,27 @@ def suppression_identities(root: Path) -> collections.Counter[Identity]:
         except SyntaxError:
             tree = ast.Module(body=[], type_ignores=[])
         aliases = {"no_type_check"}
+        type_checking = {"TYPE_CHECKING"}
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module in {"typing", "typing_extensions"}:
                 aliases.update(alias.asname or alias.name for alias in node.names if alias.name == "no_type_check")
+                type_checking.update(alias.asname or alias.name for alias in node.names if alias.name == "TYPE_CHECKING")
         for node in ast.walk(tree):
             if ((isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in aliases)
                     or (isinstance(node, ast.Attribute) and node.attr == "no_type_check")):
                 findings.append({"path": name, "code": "suppression", "message": "no_type_check",
                                  "line": node.lineno, "column": node.col_offset + 1})
+            if isinstance(node, ast.If) and any(
+                (isinstance(test, ast.Name) and test.id in type_checking)
+                or (isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING")
+                for test in ast.walk(node.test)
+            ):
+                typed = branch_definitions(node.body)
+                runtime = branch_definitions(node.orelse)
+                for duplicate in sorted(typed.keys() & runtime.keys()):
+                    findings.append({"path": name, "code": "suppression",
+                                     "message": f"TYPE_CHECKING replaces runtime definition: {duplicate}",
+                                     "line": node.lineno, "column": node.col_offset + 1})
         try:
             for token in tokenize.generate_tokens(io.StringIO(source).readline):
                 if token.type == tokenize.COMMENT and SUPPRESSION.search(token.string):

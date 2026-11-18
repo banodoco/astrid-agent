@@ -50,14 +50,22 @@ jobs:
       - name: Install the pinned Runtime and client
         run: python scripts/ci_install_runtime.py
       - name: Check native PowerShell cleanup exit codes
-        run: python -m scripts.ci.run_pytest -q -rA --junitxml="$env:RUNNER_TEMP/test-results-windows-native-and-installer/installer-windows-tasks.xml" tests/test_installer_windows_tasks.py
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts
+        run: python -P -m ci.run_pytest -q -rA --junitxml="$env:RUNNER_TEMP/test-results-windows-native-and-installer/installer-windows-tasks.xml" tests/test_installer_windows_tasks.py
       - name: Check Windows pack-host identity and service launcher binding
-        run: python -m scripts.ci.run_pytest -q -rA --junitxml="$env:RUNNER_TEMP/test-results-windows-native-and-installer/host-recovery-services.xml" tests/sdk/test_host_recovery.py tests/test_services.py -k windows
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts
+        run: python -P -m ci.run_pytest -q -rA --junitxml="$env:RUNNER_TEMP/test-results-windows-native-and-installer/host-recovery-services.xml" tests/sdk/test_host_recovery.py tests/test_services.py -k windows
       - name: Check Remotion admission and captured source handoff
-        run: python -m scripts.ci.run_pytest -q -rA --junitxml="$env:RUNNER_TEMP/test-results-windows-native-and-installer/remotion-host-regressions.xml" tests/core/rendering/test_remotion_host_regressions.py
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts
+        run: python -P -m ci.run_pytest -q -rA --junitxml="$env:RUNNER_TEMP/test-results-windows-native-and-installer/remotion-host-regressions.xml" tests/core/rendering/test_remotion_host_regressions.py
       - name: Check native Windows process and permission behavior
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts
         run: >-
-          python -m scripts.ci.run_pytest -q -rA --junitxml="$env:RUNNER_TEMP/test-results-windows-native-and-installer/native-windows.xml"
+          python -P -m ci.run_pytest -q -rA --junitxml="$env:RUNNER_TEMP/test-results-windows-native-and-installer/native-windows.xml"
           tests/core/execution/test_platform_helpers.py::test_windows_scope_job_kills_descendants_after_leader_exit
           tests/core/execution/test_platform_helpers.py::test_windows_lock_and_owner_permissions_are_native
           tests/core/execution/test_platform_helpers.py::test_windows_scope_dies_when_owner_process_exits
@@ -69,8 +77,9 @@ jobs:
       - name: Summarize test result XML
         if: always()
         env:
+          PYTHONPATH: ${{ github.workspace }}/scripts
           TEST_RESULTS_DIR: ${{ runner.temp }}/test-results-windows-native-and-installer
-        run: python -m scripts.ci.check_results "${{ env.TEST_RESULTS_DIR }}" --expected 4
+        run: python -P -m ci.check_results "${{ env.TEST_RESULTS_DIR }}" --expected 4
 
       - name: Upload test results
         if: always()
@@ -108,7 +117,9 @@ jobs:
           fetch-depth: 0
 
       - name: Resolve the comparison merge base
-        run: python -I scripts/ci/gate_base.py
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts
+        run: python -P -m ci.gate_base
 
       - name: Read the pinned Runtime commit
         id: runtime-pin
@@ -188,8 +199,10 @@ jobs:
         run: make structure
 
       - name: Baseline and suppression controls gate
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts
         if: ${{ !cancelled() }}
-        run: python -m scripts.reshape.identity_gate controls
+        run: python -P -m reshape.identity_gate controls
 
       - name: Ruff baseline gate
         if: ${{ !cancelled() }}
@@ -216,9 +229,11 @@ jobs:
         run: make collection
 
       - name: Gate regression probes
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts
         if: ${{ !cancelled() }}
         run: >-
-          python -m scripts.ci.run_pytest -q -rA
+          python -P -m ci.run_pytest -q -rA
           --junitxml="${{ runner.temp }}/agent-gate-probes/probes.xml"
           tests/reshape/test_identity_gate.py tests/scripts/test_ci_test_evidence.py
           tests/test_release_branch_workflows.py tests/scripts/test_gate_integrity.py tests/scripts/test_gate_base.py
@@ -384,10 +399,11 @@ jobs:
         # Read the committed baseline for selection; write only this shard's
         # measured tests so the eight artifacts can be merged without stale entries.
         env:
+          PYTHONPATH: ${{ github.workspace }}/scripts
           PYTHONUNBUFFERED: 1
           ASTRID_PYTEST_HARD_EXIT_ON_LEAKED_THREADS: 1
           TEST_RESULTS_DIR: ${{ runner.temp }}/test-results-unit-shard-${{ matrix.group }}-${{ runner.os }}
-        run: mkdir -p "$TEST_RESULTS_DIR" && python -m scripts.ci.run_pytest -v -rA --junitxml="$TEST_RESULTS_DIR/unit-shard.xml" --durations=40 --splits 8 --group ${{ matrix.group }} --durations-path tests/.test_durations --store-durations --clean-durations
+        run: mkdir -p "$TEST_RESULTS_DIR" && python -P -m ci.run_pytest -v -rA --junitxml="$TEST_RESULTS_DIR/unit-shard.xml" --durations=40 --splits 8 --group ${{ matrix.group }} --durations-path tests/.test_durations --store-durations --clean-durations
         shell: bash
 
       - name: Upload measured test durations
@@ -403,8 +419,9 @@ jobs:
       - name: Summarize test result XML
         if: always()
         env:
+          PYTHONPATH: ${{ github.workspace }}/scripts
           TEST_RESULTS_DIR: ${{ runner.temp }}/test-results-unit-shard-${{ matrix.group }}-${{ runner.os }}
-        run: python -m scripts.ci.check_results "${{ env.TEST_RESULTS_DIR }}" --expected 1
+        run: python -P -m ci.check_results "${{ env.TEST_RESULTS_DIR }}" --expected 1
 
       - name: Upload test results
         if: always()
@@ -545,15 +562,17 @@ jobs:
 
       # The lanes the default run deselects and only this job provides: native macOS, the Remotion install, headless Chromium, the Codex CLI.
       - name: Darwin native, Remotion and browser tests
-        run: python -m scripts.ci.run_pytest -q -rA --junitxml="$TEST_RESULTS_DIR/darwin-native.xml" -m "darwin_native or remotion or chrome or codex_cli"
+        run: python -P -m ci.run_pytest -q -rA --junitxml="$TEST_RESULTS_DIR/darwin-native.xml" -m "darwin_native or remotion or chrome or codex_cli"
         shell: bash
         env:
+          PYTHONPATH: ${{ github.workspace }}/scripts
           TEST_RESULTS_DIR: ${{ runner.temp }}/test-results-darwin-native
       - name: Summarize test result XML
         if: always()
         env:
+          PYTHONPATH: ${{ github.workspace }}/scripts
           TEST_RESULTS_DIR: ${{ runner.temp }}/test-results-darwin-native
-        run: python -m scripts.ci.check_results "${{ env.TEST_RESULTS_DIR }}" --expected 1
+        run: python -P -m ci.check_results "${{ env.TEST_RESULTS_DIR }}" --expected 1
 
       - name: Upload test results
         if: always()

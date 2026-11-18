@@ -9,6 +9,7 @@ and pass; the manager can remove them when updating the baseline for a merged ba
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
 import sys
@@ -22,6 +23,17 @@ BASELINE_PATH = REPO_ROOT / "scripts" / "reshape" / "baselines" / "structure_ast
 # sys.path, not the repository root.
 if __package__ in {None, ""}:
     sys.path.insert(0, str(REPO_ROOT))
+
+# The safe module launch exposes only the protected scripts directory. Keep
+# structure.py's existing scripts.reshape import working without adding the
+# repository root (and its potential stdlib shadows) to the import path.
+if __package__ == "reshape" and "scripts" not in sys.modules:
+    spec = importlib.util.spec_from_file_location("scripts", REPO_ROOT / "scripts" / "__init__.py")
+    if spec is None or spec.loader is None:
+        raise RuntimeError("cannot load the protected scripts package")
+    scripts_package = importlib.util.module_from_spec(spec)
+    sys.modules["scripts"] = scripts_package
+    spec.loader.exec_module(scripts_package)
 
 
 def normalise(error: str, root: Path = REPO_ROOT) -> str:

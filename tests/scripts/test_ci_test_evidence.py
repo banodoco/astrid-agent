@@ -19,12 +19,12 @@ LANE_HOOKS = "from tests.lanes import pytest_collection_modifyitems, pytest_conf
 
 
 def run(root, *args, guarded=True, destination="result.xml"):
-    environment = dict(os.environ, PYTHONPATH=str(ROOT))
+    environment = dict(os.environ, PYTHONPATH=str(ROOT / "scripts" if guarded else ROOT))
     for key in ("PYTEST_ADDOPTS", "ASTRID_CI_JOB", "PYTEST_PLUGINS"):
         environment.pop(key, None)
-    module = "scripts.ci.run_pytest" if guarded else "pytest"
+    launch = [sys.executable, "-P", "-m", "ci.run_pytest"] if guarded else [sys.executable, "-m", "pytest"]
     return subprocess.run(
-        [sys.executable, "-m", module, "-q", "-rA", "-o", "addopts=",
+        [*launch, "-q", "-rA", "-o", "addopts=",
          f"--junitxml={root / destination}", *args],
         cwd=root, env=environment, capture_output=True, text=True, check=False, timeout=45,
     )
@@ -140,6 +140,20 @@ def test_conftest_cannot_rewrite_the_declared_selection(tmp_path, option, value)
     assert "selection" in result.stdout + result.stderr
 
 
+def test_conftest_cannot_replace_the_declared_invocation(tmp_path):
+    (tmp_path / "conftest.py").write_text(
+        "from dataclasses import replace\nimport pytest\n"
+        "@pytest.hookimpl(tryfirst=True)\ndef pytest_configure(config):\n"
+        "    config.option.keyword = 'not victim'\n"
+        "    config.invocation_params = replace(config.invocation_params,\n"
+        "        args=(*config.invocation_params.args, '-k', 'not victim'))\n"
+    )
+    (tmp_path / "test_cases.py").write_text("def test_good():\n    pass\ndef test_victim():\n    assert False\n")
+    result = run(tmp_path)
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "declared" in result.stdout + result.stderr
+
+
 @pytest.mark.parametrize("source", ["ini", "environment", "invocation"])
 def test_declared_selection_preserves_ini_environment_and_invocation_precedence(tmp_path, source):
     (tmp_path / "pytest.ini").write_text(
@@ -150,14 +164,14 @@ def test_declared_selection_preserves_ini_environment_and_invocation_precedence(
         "def test_environment():\n    pass\n"
         "@pytest.mark.integration\ndef test_invocation():\n    pass\n"
     )
-    environment = dict(os.environ, PYTHONPATH=str(ROOT))
+    environment = dict(os.environ, PYTHONPATH=str(ROOT / "scripts"))
     for key in ("PYTEST_ADDOPTS", "ASTRID_CI_JOB", "PYTEST_PLUGINS"):
         environment.pop(key, None)
     if source != "ini":
         environment["PYTEST_ADDOPTS"] = "-k environment -m 'not integration'"
     arguments = ["-k", "invocation", "-m", "integration"] if source == "invocation" else []
     result = subprocess.run(
-        [sys.executable, "-m", "scripts.ci.run_pytest", "-q", f"--junitxml={tmp_path / 'result.xml'}", *arguments],
+        [sys.executable, "-P", "-m", "ci.run_pytest", "-q", f"--junitxml={tmp_path / 'result.xml'}", *arguments],
         cwd=tmp_path, env=environment, capture_output=True, text=True, check=False, timeout=45,
     )
     assert result.returncode == 0, result.stdout + result.stderr
