@@ -546,7 +546,7 @@ def _bounded_edit_mask(path: Path, *, kind: str, frames: int, during: tuple[int,
 
 
 
-def _combined_strength_mask(grants: list[tuple[Path, str, tuple[int, int], float, str]], *, frames: int, destination: Path) -> Path:
+def _combined_strength_mask(grants: list[tuple[Path, str, tuple[int, int], float, str]], *, frames: int, destination: Path, size: tuple[int, int] = (1024, 576)) -> Path:
     """Rasterize max grant strength at 8-bit precision into a lossless video."""
     from PIL import Image, ImageChops
 
@@ -554,6 +554,7 @@ def _combined_strength_mask(grants: list[tuple[Path, str, tuple[int, int], float
     if not ffmpeg:
         raise CompilationError("regions per pass: combined masks require ffmpeg")
     output = destination / "sampler-strength-mask.mkv"
+    width, height = size
     readers = []
     static = []
     for path, kind, _, _, _ in grants:
@@ -568,18 +569,18 @@ def _combined_strength_mask(grants: list[tuple[Path, str, tuple[int, int], float
     writer = None
     if len(grants) > 1:
         writer = subprocess.Popen([ffmpeg, "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "gray",
-            "-s", "1024x576", "-r", "24", "-i", "-", "-frames:v", str(frames), "-an", "-c:v", "ffv1",
+            "-s", f"{width}x{height}", "-r", "24", "-i", "-", "-frames:v", str(frames), "-an", "-c:v", "ffv1",
             "-threads", "1", "-level", "3", "-pix_fmt", "gray", str(output)], stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
     survived = [False] * len(grants)
     try:
         for frame in range(frames):
-            combined = Image.new("L", (1024, 576))
+            combined = Image.new("L", size)
             for index, (path, kind, (start, end), strength, name) in enumerate(grants):
                 if kind == "video":
-                    data = readers[index].stdout.read(1024 * 576 * 3)
-                    if len(data) != 1024 * 576 * 3:
+                    data = readers[index].stdout.read(width * height * 3)
+                    if len(data) != width * height * 3:
                         raise CompilationError(f"grant {name} mask video is short or has the wrong dimensions")
-                    support = Image.frombytes("RGB", (1024, 576), data).getchannel("R")
+                    support = Image.frombytes("RGB", size, data).getchannel("R")
                     if any(value not in (0, 255) for _, value in support.getcolors(maxcolors=256)):
                         raise CompilationError(f"grant {name} mask red permission must be binary (0 or 255)")
                 else:
@@ -592,8 +593,8 @@ def _combined_strength_mask(grants: list[tuple[Path, str, tuple[int, int], float
                     # at 16x reduction: each token samples these four centres.
                     pixels = weight.tobytes()
                     survived[index] = any(
-                        any(pixels[(y + dy) * 1024 + 7 + dx:(y + dy) * 1024 + 1024:16])
-                        for y in range(7, 576, 16) for dy in (0, 1) for dx in (0, 1)
+                        any(pixels[(y + dy) * width + 7 + dx:(y + dy + 1) * width:16])
+                        for y in range(7, height - 1, 16) for dy in (0, 1) for dx in (0, 1)
                     )
                 if writer:
                     combined = ImageChops.lighter(combined, weight)
