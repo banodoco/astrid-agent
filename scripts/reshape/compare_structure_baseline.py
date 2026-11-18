@@ -1,9 +1,9 @@
-"""Shrink-only gate for `astrid.core.structure.validate_repo_structure` (testing plan, Owned debt).
+"""Gate for `astrid.core.structure.validate_repo_structure`.
 
 The baseline is the set of known violations, each normalised so it survives unrelated edits
 (no line numbers, no absolute paths, first line of a traceback only). The gate fails on any
-violation not in the baseline, and on any baseline entry that no longer occurs, so a fix must
-also remove its line: the set can only shrink.
+violation not in the baseline. Baseline entries that no longer occur are reported as improvements
+and pass; the manager can remove them when updating the baseline for a merged batch.
 """
 
 from __future__ import annotations
@@ -56,9 +56,9 @@ def main() -> int:
     for line in new:
         print(f"STRUCTURE ERROR (new): {line}", file=sys.stderr)
     for line in fixed:
-        print(f"STRUCTURE baseline entry no longer occurs, remove it: {line}", file=sys.stderr)
+        print(f"STRUCTURE improvement (resolved): {line}")
     print(f"Structure violations: current={len(found)} new={len(new)} fixed={len(fixed)}")
-    return 1 if new or fixed else 0
+    return 1 if new else 0
 
 
 if __name__ == "__main__":

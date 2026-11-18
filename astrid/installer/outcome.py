@@ -46,7 +46,8 @@ HANDOFF_SENTENCE = "Next: set up generation with the astrid-setup skill."
 # With --skills off there is no setup skill to hand off to. The command is on PATH only when
 # --command is on; otherwise the run-astrid launcher in the install folder is the way in.
 SCAN_HINT = "Next: run `astrid generate scan` to find your ComfyUI."
-SCAN_HINT_LAUNCHER = "Next: run `run-astrid generate scan` in Astrid's install folder to find your ComfyUI."
+SCAN_HINT_LAUNCHER = "Next: run `./run-astrid generate scan` in Astrid's install folder to find your ComfyUI."
+SCAN_HINT_LAUNCHER_WINDOWS = "Next: run `.\\run-astrid.cmd generate scan` in Astrid's install folder to find your ComfyUI."
 
 
 def _repair_next() -> str:
@@ -201,7 +202,9 @@ class Outcome:
     def _handoff(self) -> str:
         if self.skills:
             return HANDOFF_SENTENCE
-        return SCAN_HINT if self.command else SCAN_HINT_LAUNCHER
+        if self.command:
+            return SCAN_HINT
+        return SCAN_HINT_LAUNCHER_WINDOWS if sys.platform == "win32" else SCAN_HINT_LAUNCHER
 
     def record(self) -> dict:
         return {"format": FORMAT, **asdict(self), "exit_code": self.exit_code,
