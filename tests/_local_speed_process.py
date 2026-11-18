@@ -61,6 +61,7 @@ RUNTIME_WRITE_CONTEXTS = ("background_lifetime_reaper", "http_lifetime_reap",
                           "http_heartbeat", "http_request", "unattributed_runtime")
 PACK_MODULE = "astrid.packs.vibecomfy.actions.run.run"
 CENSUS_PRODUCER = "astrid.core.execution.process_group:_process_snapshot"
+SDK_PRODUCER = "astrid.sdk.invocation:_wait_for_kernel_task_loop"
 _UNSEEN = object()
 
 
@@ -203,6 +204,37 @@ class ProcessObserver:
         self.census_ids = itertools.count()
         self.census_frames = {}
         self.census_wait_frames = {}
+        self.sdk_frames = {}
+        self.sdk_show_frames = {}
+        self.sdk_sleep_frames = {}
+
+    def _sdk_poll_end(self, frame, context):
+        if context["poll_id"] is not None:
+            state = frame.f_locals.get("state")
+            self.event("sdk_poll_end", sdk_invocation=context["invocation"],
+                       poll_id=context["poll_id"], state=state if type(state) is str else None)
+
+    def _sdk_return(self, frame, arg):
+        poll_id = self.sdk_show_frames.pop(id(frame), None)
+        if poll_id is not None:
+            # A Python exception also produces a return event, with None.
+            # The SDK cannot treat a missing task-status result as a poll.
+            self.event("sdk_show_result", poll_id=poll_id, result_known=arg is not None)
+        context = self.sdk_frames.pop(id(frame), None)
+        if context is not None:
+            self._sdk_poll_end(frame, context)
+            known = type(arg) is tuple and len(arg) == 3 and type(arg[1]) is bool
+            self.event("sdk_wait_end", sdk_invocation=context["invocation"], result_known=known)
+
+    def _sdk_poll_start(self, parent, show_frame):
+        context = self.sdk_frames.get(id(parent))
+        if context is None:
+            return
+        self._sdk_poll_end(parent, context)
+        poll_id = next(self.poll_ids)
+        context["poll_id"] = poll_id
+        self.sdk_show_frames[id(show_frame)] = poll_id
+        self.event("sdk_poll_start", sdk_invocation=context["invocation"], poll_id=poll_id)
 
     def _census_context(self, frame):
         while frame is not None:
@@ -448,6 +480,8 @@ class ProcessObserver:
         # compile/emission boundaries. This changes observer work, not coverage.
         if event in {"call", "return"} and (frame.f_code is self.run_code or frame.f_code is self.popen_try_wait_code):
             self._census_profile(frame, event, arg)
+        if event == "return" and frame.f_code.co_name in {"show", "_wait_for_kernel_task_loop"}:
+            self._sdk_return(frame, arg)
         if event == "return" and not self.chain_profiles:
             return
         if event == "call":
@@ -455,6 +489,13 @@ class ProcessObserver:
             name = code.co_name
             if id(code) in self.wait_codes:
                 self.wait_frames[(id(frame), id(code))] = next(self.invocation_ids)
+            if (name == "_wait_for_kernel_task_loop" and self.role == "parent_runtime_host_sdk"
+                    and self._site(frame) == SDK_PRODUCER):
+                invocation = self._wait_fields(frame)["wait_invocation"]
+                self.sdk_frames[id(frame)] = {"invocation": invocation, "poll_id": None}
+                task_id = frame.f_locals.get("task_id")
+                self.event("sdk_wait_start", sdk_invocation=invocation,
+                           task_id=task_id if type(task_id) is str else None)
             # A poll's work and its wait are different quantities. Record the
             # exact progress boundary so an extra sleep inside one iteration
             # cannot disappear into a whole-workload scheduling allowance.
@@ -469,6 +510,7 @@ class ProcessObserver:
                 show = parent.f_locals.get("show")
                 if code is getattr(getattr(show, "__func__", show), "__code__", None):
                     self._poll_progress(parent)
+                    self._sdk_poll_start(parent, frame)
             elif (name == "_observe_machines" and parent is not None
                   and parent.f_code.co_qualname == "GenericPackHost._run_claim_slots"
                   and frame.f_globals.get("__name__") == "astrid.core.execution.generic_host"):
@@ -514,11 +556,16 @@ class ProcessObserver:
                             if type(value) in (int, float) and 0 <= value <= 9_000_000_000
                             else None)
                     fields.update(self._wait_fields(caller))
+                    if kind == "sleep" and id(caller) in self.sdk_frames:
+                        fields["sdk_sleep_id"] = next(self.wait_ids)
+                        self.sdk_sleep_frames[(threading.get_native_id(), id(frame))] = dict(fields)
                     if kind == "sleep" and caller.f_code is self.popen_wait_code:
                         invocation = self._census_context(caller)
                         if invocation is not None:
                             fields["census_invocation"] = invocation
                             fields["census_child_pid"] = self._child_pid(caller.f_locals.get("self"))
+                if kind == "sleep" and event != "c_call":
+                    fields.update(self.sdk_sleep_frames.pop((threading.get_native_id(), id(frame)), {}))
                 if kind == "selector_wait":
                     tid = threading.get_native_id()
                     if event == "c_call":
@@ -628,6 +675,7 @@ class ProcessObserver:
                 "sleep_requests": self._sleep_requests(wait_rows),
                 "poll_windows": self._poll_windows(rows, since_ns, until_ns),
                 "census_invocations": self._census_invocations(since_ns, until_ns),
+                "sdk_wait_invocations": self._sdk_invocations(since_ns, until_ns),
                 "write_spans": [row for row in rows if row["kind"] in {
                     "application_sync", "runtime_outer_commit_success", "runtime_outer_commit_error",
                     "platform_write_through_success", "platform_write_through_error",
@@ -698,6 +746,55 @@ class ProcessObserver:
                 "ambiguous_children": (child is None or any(wait["child_pid"] != child for wait in waits)
                                        or any(sleep.get("census_child_pid") != child for sleep in sleeps)),
             })
+        return records
+
+    def _sdk_invocations(self, since_ns, until_ns):
+        """Keep each SDK poll and its sleeps, including incomplete boundaries."""
+        records = []
+        for start in self.events:
+            if start["kind"] != "sdk_wait_start":
+                continue
+            invocation, tid = start["sdk_invocation"], start["tid"]
+            rows = [row for row in self.events if row.get("sdk_invocation") == invocation and row["tid"] == tid]
+            endings = [row for row in rows if row["kind"] == "sdk_wait_end"]
+            finish = endings[0] if len(endings) == 1 else None
+            end = finish["at_ns"] if finish is not None else None
+            if ((until_ns is not None and start["at_ns"] > until_ns)
+                    or (since_ns is not None and end is not None and end < since_ns)):
+                continue
+            sleeps = [row for row in self.events if row["kind"] == "sleep_attempt"
+                      and row.get("wait_invocation") == invocation and row["tid"] == tid
+                      and row.get("wait_site") == SDK_PRODUCER]
+            polls = []
+            for call in (row for row in rows if row["kind"] == "sdk_poll_start"):
+                poll_id = call["poll_id"]
+                endings = [row for row in rows if row["kind"] == "sdk_poll_end" and row["poll_id"] == poll_id]
+                ending = endings[0] if len(endings) == 1 else None
+                poll_end = ending["at_ns"] if ending is not None else None
+                results = [row for row in self.events if row["kind"] == "sdk_show_result" and row["poll_id"] == poll_id]
+                known = (len(results) == 1 and results[0]["result_known"]
+                         and results[0]["tid"] == tid and poll_end is not None
+                         and call["at_ns"] <= results[0]["at_ns"] <= poll_end)
+                waits = [row for row in sleeps if row["at_ns"] >= call["at_ns"]
+                         and (poll_end is None or row["at_ns"] <= poll_end)]
+                missing_sleeps = 0
+                for wait in waits:
+                    replies = [row for row in self.events if row["kind"] in {"sleep_success", "sleep_error"}
+                               and row.get("sdk_sleep_id") == wait.get("sdk_sleep_id") and row["tid"] == tid]
+                    if ("sdk_sleep_id" not in wait or len(replies) != 1 or replies[0]["kind"] != "sleep_success"
+                            or poll_end is None or not wait["at_ns"] <= replies[0]["at_ns"] <= poll_end):
+                        missing_sleeps += 1
+                polls.append({"poll_id": poll_id, "start_ns": call["at_ns"], "end_ns": poll_end,
+                              "state": ending["state"] if ending is not None else None,
+                              "result_known": known, "sleep_calls": len(waits),
+                              "sleep_requests": self._sleep_requests(waits),
+                              "missing_sleep_results": missing_sleeps})
+            records.append({"producer": SDK_PRODUCER, "invocation_id": invocation, "tid": tid,
+                            "task_id": start["task_id"], "start_ns": start["at_ns"], "end_ns": end,
+                            "carry_in": since_ns is not None and start["at_ns"] < since_ns,
+                            "carry_out": end is None or (until_ns is not None and end > until_ns),
+                            "result_known": finish is not None and finish["result_known"],
+                            "polls": polls, "sleep_calls": len(sleeps)})
         return records
 
     def _poll_windows(self, rows, since_ns, until_ns):

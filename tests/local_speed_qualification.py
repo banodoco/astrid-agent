@@ -16,12 +16,15 @@ from pathlib import Path
 from tests.local_speed_paired_run import HARNESS_EXACT, HARNESS_PATTERNS
 
 ORIGINAL_HEAD = "b18080bce998b62656cf9f908afd3d0560c9d18f"
-PLAN_BASE = "24c68a2702339583b7be1693d101146bed31cfa6"
+PLAN_BASE = "d0217776fa05c6d55b953d0265ddafd918aafd2f"
+PREVIOUS_PLAN_BASE = "24c68a2702339583b7be1693d101146bed31cfa6"
 REQUIRED_ANCESTOR = "6451821e18bd300484a921a425cafd856095b1a4"
-PREVIOUS_CONTROLLER = "d7f53b0db531b07f9638b54f5837b35d53c4913c"
+PREVIOUS_CONTROLLER = "02add38275b4f155686d9bac3b8a593211c34477"
 WORKFLOW = ".github/workflows/plan55-native-flush.yml"
 PACKET_PATHS = {WORKFLOW, "tests/_local_speed_process.py", "tests/_local_speed_calibration.py",
                 "tests/_local_speed_census.py", "tests/core/generation/test_local_speed_census.py",
+                "tests/_local_speed_sdk_poll.py", "tests/core/generation/test_local_speed_sdk_poll.py",
+                "tests/core/generation/test_local_speed_ambient_calibration.py",
                 "tests/core/generation/test_local_speed_qualification.py",
                 "tests/core/generation/test_local_speed_policy.py", "tests/local_speed_policy.py",
                 "tests/local_speed_qualification.py", "tests/fixtures/local-speed-baselines/README.md"}
@@ -64,36 +67,7 @@ def _published_source(root, controller, plan_base):
     return parents[1]
 
 
-def validate_sources(root, controller, *, original_head=ORIGINAL_HEAD, plan_base=PLAN_BASE,
-                     required_ancestor=REQUIRED_ANCESTOR, previous_controller=PREVIOUS_CONTROLLER):
-    """Prove the merge and harness bytes before touching the worktree."""
-    if git(root, "rev-parse", "HEAD") != controller or git(root, "status", "--porcelain", "--untracked-files=no"):
-        raise ValueError("qualification controller must be the clean exact PR head")
-    parents = git(root, "show", "-s", "--format=%P", controller).split()
-    if len(parents) != 2:
-        raise ValueError("qualification requires the ordered current-plan merge parents")
-    retained_controller = None
-    if parents[1] == plan_base:
-        source = parents[0]
-    elif parents[0] == previous_controller:
-        # Merge an original-tuple follow-up into the published integrated
-        # controller, preserving ordinary first-parent history without rebase.
-        source = parents[1]
-        retained_controller = previous_controller
-        previous_source = _published_source(root, previous_controller, plan_base)
-        if subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor",
-                           previous_source, source], check=False).returncode:
-            raise ValueError("qualification source does not extend the published controller's source")
-    else:
-        raise ValueError("qualification requires ordered current-plan parents or the exact published controller")
-    for earlier, later in ((original_head, source), (required_ancestor, plan_base)):
-        if subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor", earlier, later], check=False).returncode:
-            raise ValueError("qualification is missing a required source ancestor")
-    changed = set(git(root, "diff", "--name-only", original_head, source).splitlines())
-    if not changed <= PACKET_PATHS:
-        raise ValueError("qualification source changes protected product, dependency, reference or test bytes: "
-                         + repr(sorted(changed - PACKET_PATHS)))
-
+def _native_merge(root, controller, parents):
     native = subprocess.run(["git", "-C", str(root), "merge-tree", "--write-tree", "--name-only",
                              "--no-messages", *parents], capture_output=True, text=True, check=False)
     lines = native.stdout.splitlines()
@@ -105,6 +79,58 @@ def validate_sources(root, controller, *, original_head=ORIGINAL_HEAD, plan_base
     differences = set(git(root, "diff", "--name-only", native_tree, controller).splitlines())
     if differences - {WORKFLOW}:
         raise ValueError("integrated product differs from the accepted native merge")
+    return native_tree, conflicts
+
+
+def validate_sources(root, controller, *, original_head=ORIGINAL_HEAD, plan_base=PLAN_BASE,
+                     required_ancestor=REQUIRED_ANCESTOR, previous_controller=PREVIOUS_CONTROLLER,
+                     previous_plan_base=PREVIOUS_PLAN_BASE):
+    """Prove the merge and harness bytes before touching the worktree."""
+    if git(root, "rev-parse", "HEAD") != controller or git(root, "status", "--porcelain", "--untracked-files=no"):
+        raise ValueError("qualification controller must be the clean exact PR head")
+    parents = git(root, "show", "-s", "--format=%P", controller).split()
+    if len(parents) != 2:
+        raise ValueError("qualification requires the ordered current-plan merge parents")
+    retained_controller = None
+    retained_followup = None
+    if parents[1] == plan_base:
+        source = parents[0]
+        followup_parents = git(root, "show", "-s", "--format=%P", parents[0]).split()
+        if len(followup_parents) == 2 and followup_parents[0] == previous_controller:
+            # Lead 6983043853: retain the published controller, merge its
+            # original-tuple fix, then merge the newly accepted plan head.
+            # Both ordinary merges must reproduce; neither tuple is replaced.
+            source = followup_parents[1]
+            retained_controller = previous_controller
+            previous_source = _published_source(root, previous_controller, previous_plan_base)
+            for earlier, later in ((previous_source, source), (previous_plan_base, plan_base)):
+                if subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor",
+                                   earlier, later], check=False).returncode:
+                    raise ValueError("qualification plan/source does not extend its published predecessor")
+            tree, merge_conflicts = _native_merge(root, parents[0], followup_parents)
+            retained_followup = {"controller": parents[0], "native_merge_tree": tree,
+                                 "native_merge_conflicts": sorted(merge_conflicts),
+                                 "previous_plan_base": previous_plan_base}
+    elif parents[0] == previous_controller:
+        # Merge an original-tuple follow-up into the published integrated
+        # controller, preserving ordinary first-parent history without rebase.
+        source = parents[1]
+        retained_controller = previous_controller
+        previous_source = _published_source(root, previous_controller, plan_base)
+        if subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor",
+                           previous_source, source], check=False).returncode:
+            raise ValueError("qualification source does not extend the published controller's source")
+    else:
+        raise ValueError("qualification requires ordered current-plan parents or the exact published controller")
+    for earlier, later in ((original_head, source), (required_ancestor, plan_base), (plan_base, controller)):
+        if subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor", earlier, later], check=False).returncode:
+            raise ValueError("qualification is missing a required source ancestor")
+    changed = set(git(root, "diff", "--name-only", original_head, source).splitlines())
+    if not changed <= PACKET_PATHS:
+        raise ValueError("qualification source changes protected product, dependency, reference or test bytes: "
+                         + repr(sorted(changed - PACKET_PATHS)))
+
+    native_tree, conflicts = _native_merge(root, controller, parents)
 
     workflow = blob(root, source, WORKFLOW)
     accepted = blob(root, plan_base, WORKFLOW)
@@ -134,12 +160,15 @@ def validate_sources(root, controller, *, original_head=ORIGINAL_HEAD, plan_base
             "qualification": source, "qualification_tree": git(root, "rev-parse", source + "^{tree}"),
             "original_head": original_head, "plan_base": plan_base,
             "previous_controller_preserved": retained_controller,
+            "retained_followup_merge": retained_followup,
             "required_plan_ancestor": required_ancestor, "native_merge_tree": native_tree,
             "native_merge_conflicts": sorted(conflicts), "qualification_changed_paths": sorted(changed),
             "measurement_harness_sha256": hashes,
             "plan_added_harness_paths_not_in_original_tuple": sorted(PLAN_HARNESS_ADDITIONS),
             "new_plan_tuple_qualified": False,
-            "decisions": {"census": "6970432614", "original_tuple": "6967421223", "plan_merge": "6968915902"}}
+            "decisions": {"census": "6970432614", "sdk_poll": "6981129059",
+                          "original_tuple": "6967421223", "plan_merge": "6968915902",
+                          "plan_advance": "6983043853"}}
 
 
 def main():

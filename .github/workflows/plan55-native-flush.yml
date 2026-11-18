@@ -162,6 +162,7 @@ jobs:
           tests/core/generation/test_local_speed_poll_windows.py
           tests/core/generation/test_local_speed_host_cadence.py
           tests/core/generation/test_local_speed_census.py
+          tests/core/generation/test_local_speed_sdk_poll.py
           tests/core/generation/test_local_speed_qualification.py
           tests/core/generation/test_local_speed_policy.py
           --junitxml=native-reader.xml
