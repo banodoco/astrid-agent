@@ -27,8 +27,8 @@ Shape (``version`` 1; every other key optional; unknown keys are refused)::
                  "voice": {"media": "sha256:…", "range": [5.0, 8.0]},  # seconds into that voice media
                  "masks": ["sha256:…"]},
       "status": "planned",                       # planned | in_progress | take_ready | approved
-                                                 #   (take_ready/approved need a take, except a K shot)
-      "takes": [{"generation": "run-…", "media": "sha256:…", "note": "…"}]
+                                                 #   (take_ready/approved need one fully checked take, except a K shot)
+      "takes": [{"generation": "run-…", "media": "sha256:…", "note": "…", "covers": ["LM", "R"]}]
     }
 """
 from __future__ import annotations
@@ -47,7 +47,7 @@ STATUSES = ("planned", "in_progress", "take_ready", "approved")
 FIELDS = ("version", "on_screen", "line", "intent", "method", "check", "inputs", "status", "takes")
 INPUT_FIELDS = ("references", "voice", "masks")
 VOICE_FIELDS = ("media", "range")
-TAKE_FIELDS = ("generation", "media", "note", "range")
+TAKE_FIELDS = ("generation", "media", "note", "range", "covers")
 # ``--set`` paths and how their text is read.
 SET_PATHS = {
     "line": "text", "intent": "text", "check": "text", "status": "status",
@@ -89,7 +89,35 @@ def _unknown(value: Mapping[str, Any], allowed: Sequence[str], where: str) -> No
         raise ShotPlanError(f"unknown key(s) under {where}: {', '.join(extra)}; allowed: {', '.join(allowed)}")
 
 
-def validate_plan(plan: Any) -> dict[str, Any]:
+def _missing_methods(plan: Mapping[str, Any]) -> list[str]:
+    return [code for code in plan.get("method", [])
+            if not any(code in take.get("covers", []) for take in plan.get("takes", []))]
+
+
+def _has_complete_take(plan: Mapping[str, Any]) -> bool:
+    methods = set(plan.get("method", []))
+    return any(methods.issubset(take.get("covers", [])) for take in plan.get("takes", []))
+
+
+def _legacy_coverage(plan: Mapping[str, Any]) -> bool:
+    takes = plan.get("takes", [])
+    return bool(takes) and all("covers" not in take for take in takes)
+
+
+def _coverage_label(plan: Any, problem: str | None) -> str:
+    if not plan or problem or plan.get("method") == ["K"]:
+        return ""
+    if plan.get("status") in ("take_ready", "approved") and _legacy_coverage(plan):
+        return "coverage unknown"
+    methods = plan.get("method", [])
+    missing = _missing_methods(plan)
+    parts = [f"{code} {'missing' if code in missing else 'done'}" for code in methods]
+    if methods and not missing and not _has_complete_take(plan):
+        parts.append("no single take covers all methods")
+    return " · ".join(parts)
+
+
+def validate_plan(plan: Any, *, stored: bool = False) -> dict[str, Any]:
     """Return a checked copy of *plan* (``version`` filled in) or raise :class:`ShotPlanError`."""
     if not isinstance(plan, Mapping):
         raise ShotPlanError("plan must be a JSON object")
@@ -155,6 +183,11 @@ def validate_plan(plan: Any) -> dict[str, Any]:
             for key in ("generation", "media", "note"):
                 if key in take:
                     _text(take[key], f"takes[{index}].{key}")
+            if "covers" in take:
+                covers = _texts(take["covers"], f"takes[{index}].covers")
+                for code in covers:
+                    if code not in out.get("method", []):
+                        raise ShotPlanError(f"plan.takes[{index}].covers names {code} outside plan.method")
             if "range" in take:
                 span = take["range"]
                 if (not isinstance(span, list) or len(span) != 2
@@ -162,10 +195,18 @@ def validate_plan(plan: Any) -> dict[str, Any]:
                                    and t >= 0 for t in span) or span[1] <= span[0]):
                     raise ShotPlanError(f"plan.takes[{index}].range must be [start, end] in seconds into that "
                                         "take's media (not timeline time), with end > start >= 0")
-    if (out.get("status") in ("take_ready", "approved") and not out.get("takes")
-            and not (out["status"] == "approved" and out.get("method") == ["K"])):
-        raise ShotPlanError(f"plan.status {out['status']} needs at least one take (--add-take); "
-                            "only a K (keep) shot is approved without one")
+    if out.get("status") in ("take_ready", "approved"):
+        keep = out.get("method") == ["K"]
+        if not out.get("takes") and not (keep and out["status"] == "approved"):
+            missing = ", ".join(_missing_methods(out))
+            detail = f"; {missing} not covered by any take" if missing and not keep else ""
+            raise ShotPlanError(f"plan.status {out['status']} needs at least one take (--add-take){detail}; "
+                                "only a K (keep) shot is approved without one")
+        if not keep and not _has_complete_take(out) and not (stored and _legacy_coverage(out)):
+            missing = ", ".join(_missing_methods(out))
+            gap = (f"{missing} not covered by any take" if missing
+                   else f"no single take covers {'+'.join(out['method'])}")
+            raise ShotPlanError(f"{gap}; leave it in_progress")
     return out
 
 
@@ -273,7 +314,7 @@ def plan_problem(plan: Any) -> str | None:
     if plan is None:
         return None
     try:
-        validate_plan(plan)
+        validate_plan(plan, stored=True)
     except ShotPlanError as exc:
         return str(exc)
     return None
@@ -313,12 +354,14 @@ def plan_rows(bundle: Mapping[str, Any]) -> list[dict[str, Any]]:
         shot = shots.get(sid) or {}
         start = float((row.get("placement") or {}).get("start_ms") or 0) / 1000.0
         bindings = (shot.get("payload") or {}).get("text_bindings") or []
+        plan = read_plan(shot)
+        problem = plan_problem(plan)
         rows.append({"shot_id": sid, "occurrence_id": row.get("occurrence_id"), "name": _shot_name(sid, shot),
                      "start": start, "end": start + float(row.get("duration_ms") or 0) / 1000.0,
                      "shared": sid in seen,
                      "voiceover_script": any(b.get("kind") == "voiceover_script" for b in bindings
                                              if isinstance(b, Mapping)),
-                     "plan": read_plan(shot), "invalid": plan_problem(read_plan(shot))})
+                     "plan": plan, "invalid": problem, "coverage": _coverage_label(plan, problem)})
         seen.add(sid)
     return rows
 
@@ -383,12 +426,14 @@ def show_plan(client: Any, project: str, timeline: str, shot: str, *, revision_i
         return _failure("validation_error", str(exc), {"shot": shot})
     rows = [row for row in plan_rows(bundle) if row["shot_id"] == sid]
     shot_row = bundle["shots"][sid]
+    plan = read_plan(shot_row)
+    problem = plan_problem(plan)
     return DomainResult.success({
         "shot_id": sid, "name": _shot_name(sid, shot_row),
         "occurrences": [{"occurrence_id": r["occurrence_id"], "start": r["start"], "end": r["end"]} for r in rows],
         "voiceover_script": any(r["voiceover_script"] for r in rows),
         "revision_id": (bundle.get("base_parent") or {}).get("revision_id"),
-        "plan": read_plan(shot_row), "invalid": plan_problem(read_plan(shot_row))})
+        "plan": plan, "invalid": problem, "coverage": _coverage_label(plan, problem)})
 
 
 def list_plans(client: Any, project: str, timeline: str, *, revision_id: str | None = None):
@@ -475,7 +520,7 @@ def set_plan(client: Any, project: str, timeline: str, shot: str, *, patch: Mapp
         current = read_plan(bundle["shots"][sid])
         preview = merge_plan(current, patch, replace=replace, unset=unset, add_takes=add_takes)
     except ShotPlanError as exc:
-        return _failure("validation_error", str(exc), {"shot": shot})
+        return _failure("validation_error", f"shot {shot}: {exc}", {"shot": shot})
     if preview == current:
         return DomainResult.success({"shot_id": sid, "revision_id": (bundle.get("base_parent") or {}).get("revision_id"),
                                      "label": None, "unchanged": True, "plan": preview})
@@ -517,7 +562,7 @@ def set_plan(client: Any, project: str, timeline: str, shot: str, *, patch: Mapp
         if isinstance(exc, _ShotGone):
             return _failure("conflict", f"{exc}. {again}", {"shot": sid, "dropped_saved_edits": dropped})
         if isinstance(exc, ShotPlanError):
-            return _failure("validation_error", str(exc), {"shot": sid})
+            return _failure("validation_error", f"shot {shot}: {exc}", {"shot": sid})
         if isinstance(exc, CommitConflict):
             return _failure("conflict", f"timeline {timeline!r} changed while the plan for shot {sid} was being "
                             f"written. {again}", {"shot": sid, "dropped_saved_edits": dropped})
