@@ -14,7 +14,7 @@ with no metric limit. The existing ambient classification identifies them;
 scoped and deterministic counters retain their caps. SDK/host per-poll rules,
 per-request outer-commit caps, exact subprocess counts, dependency identities,
 complete evidence and strict historical comparisons retain their checks.
-No new invariant is introduced. Original failed runs retain their outcomes.
+Original failed runs retain their outcomes.
 
 The duration-following route totals include `POST /v1/executors`: the host
 renews registration every 30 seconds, including during active work. Both its
@@ -22,6 +22,16 @@ HTTP count and scope count are observations. Its per-request commit caps and
 complete request-scope evidence remain gates. Run 44368327839 retained the
 original four base-only registration-count breaches before this classification
 correction; each recorded request still had exactly one outer commit.
+
+[Lead review 6993545799 item 2](https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6993545799)
+also gates consecutive registration starts within each caller's counter sample.
+The floor is the qualified base's `_EXECUTOR_REFRESH_SECONDS = 30.0`, frozen in
+the meter so a candidate cannot lower its own floor. Monotonic timestamps use
+the SDK period floor's integer-nanosecond precision, without an extra scheduling
+allowance. A shorter interval fails; a missing timestamp is incomplete evidence.
+Zero or one registration supplies no consecutive interval. The one-second
+renewal injection fails independently for the SDK and CLI callers. Totals,
+per-request caps and all other calibration rules keep their existing policies.
 
 `counter-calibration.json` retains the controls and observation policy;
 `summary.json` and the Actions step summary record the held-out and candidate
@@ -59,7 +69,7 @@ parent retains the original product, dependency pins, references and test
 guards. `plan55-qualification.json` records both commits and trees, all harness
 hashes and the two plan-added LS-5 harness files outside this measurement.
 Follow-ups retain the preceding published controller as the first parent;
-the current predecessor is `c6ebb697`, which retains `d0834eb6`, `22b5d21e`, `02add382`, `d7f53b0d` and `d84e7276`. Each
+the current predecessor is `61c0ea68`, which retains `c6ebb697`, `d0834eb6`, `22b5d21e`, `02add382`, `d7f53b0d` and `d84e7276`. Each
 qualification source extends its predecessor's original-tuple source. The
 checker follows that published chain back to the accepted plan merge and
 verifies both identities and the ordinary two-parent merge;
