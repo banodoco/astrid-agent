@@ -100,12 +100,14 @@ def test_changed_declaration_is_not_exempt():
 
 
 def test_unresolved_declaration_on_a_base_carrying_gap_after_s_is_exempt():
-    """The probe once failed on the base's own ``gap_after_s`` and never exempted (see
-    test_legacy_probe_gap_after_fault); it and the pre-pass now agree."""
+    """The one expected difference from the frozen oracle: its probe ran with no baseline, so the base's own
+    ``gap_after_s`` made every probe fail with an unmarked error and no exemption was ever granted. Ruled a
+    bug fix by the main session on 18 Nov, consistent with the documented rule of 2ad707b7a."""
     head = _declare(CASES["unresolved-cut-anchor"](), 0, gap_after_s=1.5)
     edited = _unrelated(head)
     key = (("shot", SHOT, _child(head, 1)["id"]), "on")
-    assert oracle.old_exemptions(edited, head) == cv._legacy_exemptions(edited, head) == {key}
+    assert oracle.old_exemptions(edited, head) == set()  # the frozen probe never exempted on such a base
+    assert cv._legacy_exemptions(edited, head) == {key}
 
 
 def test_a_commit_makes_at_most_two_declaration_passes_and_no_per_declaration_compiles(monkeypatch):
@@ -155,3 +157,113 @@ def test_resolve_time_declaration_is_exempt_on_a_base_carrying_gap_after_s():
     changed = _unrelated(head)
     _child(changed, 1)["app"]["astrid"]["on"] = "beat 2 after c1"
     assert _accepts(changed, head) is not None
+
+
+# --- real fixture heads, against the frozen oracle ------------------------------------------------------------
+
+import json
+from pathlib import Path
+
+from astrid.sdk.timeline._timing_evaluators import UNSUPPORTED_DECLARATIONS
+from astrid.sdk.timeline.commit import bundle_from_document
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def _documents():
+    """Every real runtime document the repo's fixtures hold, by name."""
+    found = {}
+    redo = json.loads((ROOT / "tests/fixtures/timeline_redo_media_closure_1338.json").read_text())
+    for name in ("before", "expected_document"):
+        found[f"redo-1338:{name}"] = redo[name]
+    cap = ROOT / "tests/editing_conformance/fixtures/main_image_cap_raw_closure.json"
+    found["main-image-cap-raw"] = json.loads(cap.read_text())
+    corpus = ROOT / "tests/sdk/fixtures/p1_feasibility"
+    for case in json.loads((corpus / "manifest.json").read_text())["cases"]:
+        if not case["fixture"].endswith(".json"):
+            continue
+        fixture = json.loads((corpus / case["fixture"]).read_text())
+        document = fixture.get(case["document"]) if case["document"] == "input" else None
+        if isinstance(document, dict):
+            found[f"p1:{case['id']}"] = document
+    return found
+
+
+def _real_heads():
+    heads = {}
+    for name, document in _documents().items():
+        try:
+            heads[name] = bundle_from_document(document)
+        except Exception:  # noqa: BLE001 - a fixture that is not a loadable document is not a head
+            continue
+    return heads
+
+
+REAL_HEADS = _real_heads()
+
+
+def _moved(bundle):
+    bundle = copy.deepcopy(bundle)
+    for key, clip in cv._legacy_rows(bundle):
+        if isinstance(clip.get("at"), (int, float)):
+            clip["at"] = clip["at"] + 1
+            break
+    return bundle
+
+
+def _carries_unsupported(bundle):
+    return any(intent._app(clip).get(name) is not None
+               for _, clip in cv._legacy_rows(bundle) for name in UNSUPPORTED_DECLARATIONS)
+
+
+def test_the_real_fixture_heads_were_found():
+    assert len(REAL_HEADS) >= 3, sorted(REAL_HEADS)
+
+
+def _declared(bundle, **fields):
+    """The real head with a legacy declaration (and optionally an unsupported one) on its first child clip."""
+    bundle = copy.deepcopy(bundle)
+    for shot in bundle["shots"].values():
+        clips = shot["internal_timeline"]["clips"]
+        if clips:
+            clips[0].setdefault("app", {}).setdefault("astrid", {}).update(fields)
+            return bundle
+    return None
+
+
+VARIANTS = {
+    "as-stored": lambda bundle: bundle,
+    "unresolved-on": lambda bundle: _declared(bundle, on="c999"),
+    "unresolved-on-and-gap-after-s": lambda bundle: _declared(bundle, on="c999", gap_after_s=1.5),
+}
+
+
+def _real_cases():
+    cases = []
+    for name in sorted(REAL_HEADS):
+        for variant in sorted(VARIANTS):
+            head = VARIANTS[variant](REAL_HEADS[name])
+            if head is not None:  # a head with no child clip cannot carry a child declaration
+                cases.extend((name, variant, head, edit) for edit in (_unrelated, _moved))
+    return cases
+
+
+REAL_CASES = _real_cases()
+# Heads whose frozen probe never exempted, for a reason unrelated to the declaration: its own clearing of
+# the other on/until makes these bundles fail authoring validation ("parent clips and config.clips
+# disagree", an unclassified error), so it reported "resolvable". The pre-pass judges the declaration alone.
+PROBE_BREAKS_ON = {"p1:nested-closure-trim", "p1:same-field-conflict"}
+
+
+@pytest.mark.parametrize(
+    ("name", "variant", "head", "edit"), REAL_CASES,
+    ids=[f"{n}-{v}-{e.__name__.strip('_')}" for n, v, _, e in REAL_CASES])
+def test_real_heads_verdict_matches_the_frozen_oracle(name, variant, head, edit):
+    edited = edit(head)
+    old = oracle.old_exemptions(edited, head)
+    new = _accepts(edited, head) is None
+    frozen = _accepts(edited, head, old) is None
+    assert new or not frozen  # nothing that was accepted is refused now
+    if new != frozen:  # the only differences are old-refuse to new-accept, each one named
+        assert variant != "as-stored"
+        assert _carries_unsupported(head) or name in PROBE_BREAKS_ON
