@@ -1,4 +1,4 @@
-"""Keep shipped Agent HTTP openings at their audited trust-policy boundaries.
+"""Keep shipped Agent HTTP/TLS openings at their audited trust-policy boundaries.
 
 The keys name a path, qualified function and API, never a whole-file exemption.
 Fingerprints seal the complete function and its imported/global bindings, so
@@ -19,7 +19,13 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 HTTP_METHODS = {"request", "get", "post", "put", "patch", "delete", "head", "options"}
+NETWORK_MODULES = {"http", "httpx", "requests", "aiohttp", "urllib", "urllib3", "ssl"}
 OPENINGS = {
+    "http.client.HTTPSConnection",
+    "urllib3.PoolManager",
+    "urllib3.poolmanager.PoolManager",
+    "ssl.SSLContext.wrap_socket",
+    "ssl.wrap_socket",
     "urllib.request.urlopen",
     "urllib.request.build_opener",
     "urllib.request.OpenerDirector",
@@ -58,6 +64,13 @@ LOOPBACK_FUNCTIONS = {
 # Explicit source records; refresh only with the affected policy/caller proof.
 # Values are (reference count, SHA-256 of the audited syntax and bindings).
 POLICY_OPENINGS = {
+    # The packaged native verifier must wrap its socket before checking the
+    # peer chain. Seal that one implementation; no module-wide exemption.
+    (
+        "astrid/installer/_tls_truststore/_api.py",
+        "SSLContext.wrap_socket",
+        "ssl.SSLContext.wrap_socket",
+    ): (1, "ec5e52fde9c0c3c6f13d3fbb0230e821f9df9fdfd89f9df0463f9c585ad15d7b"),
     (
         "astrid/core/execution/executor/banodoco_catalog.py",
         "_fetch_catalog_payload",
@@ -216,7 +229,7 @@ def _qualified(node, bindings):
             attribute = node.args[1]
             if prefix and isinstance(attribute, ast.Constant) and isinstance(attribute.value, str):
                 return f"{prefix}.{attribute.value}"
-            if prefix and prefix.split(".")[0] in {"httpx", "requests", "aiohttp", "urllib"}:
+            if prefix and prefix.split(".")[0] in NETWORK_MODULES:
                 return prefix + ".<dynamic>"
     return None
 
@@ -239,7 +252,7 @@ def _bindings(tree):
             if isinstance(node, (ast.Assign, ast.AnnAssign)):
                 value = _qualified(node.value, bindings)
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-                if value and value.split(".")[0] in {"httpx", "requests", "aiohttp", "urllib"}:
+                if value and value.split(".")[0] in NETWORK_MODULES:
                     for target in targets:
                         if isinstance(target, ast.Name) and bindings.get(target.id) != value:
                             bindings[target.id] = value
@@ -305,17 +318,21 @@ def _source_openings(path, source):
                 getattr(node, "ctx", None), ast.Store
             ):
                 api = _qualified(node, bindings)
+                # Contexts may arrive as parameters or arbitrary expressions.
+                # Audit every wrap_socket reference, without assuming that its
+                # receiver was constructed by a trusted context factory.
+                if (isinstance(node, ast.Attribute) and node.attr == "wrap_socket") or (
+                    api and api.endswith(".wrap_socket")
+                ):
+                    api = (
+                        "ssl.wrap_socket" if api == "ssl.wrap_socket" else "ssl.SSLContext.wrap_socket"
+                    )
                 if api in OPENINGS or (api and api.endswith(".<dynamic>")):
                     self.record(api)
             return super().visit(node)
 
         def visit_ImportFrom(self, node):
-            if node.module and node.module.split(".")[0] in {
-                "urllib",
-                "httpx",
-                "requests",
-                "aiohttp",
-            }:
+            if node.module and node.module.split(".")[0] in NETWORK_MODULES:
                 if any(alias.name == "*" for alias in node.names):
                     self.record(node.module + ".*")
 
@@ -386,6 +403,60 @@ def test_agent_http_openings_use_the_audited_policy_or_loopback_contract():
 def test_guard_rejects_injected_openings_and_aliases(source):
     observed = _inventory({"astrid/new_client.py": source})
     assert _violations(observed, {})["new"]
+
+
+@pytest.mark.parametrize(
+    "source,api",
+    [
+        pytest.param(
+            'import http.client\nhttp.client.HTTPSConnection("outside.test")',
+            "http.client.HTTPSConnection",
+            id="https-connection",
+        ),
+        pytest.param(
+            "import urllib3\nurllib3.PoolManager()",
+            "urllib3.PoolManager",
+            id="pool-manager",
+        ),
+        pytest.param(
+            "import ssl\ncontext = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)\n"
+            'context.wrap_socket(sock, server_hostname="outside.test")',
+            "ssl.SSLContext.wrap_socket",
+            id="raw-wrap-socket",
+        ),
+    ],
+)
+def test_guard_rejects_reviewed_raw_tls_openings(source, api):
+    path = "astrid/new_client.py"
+    assert (path, "<module>", api) in _violations(_inventory({path: source}), {})["new"]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'from http.client import HTTPSConnection as C\nopen_connection = C\n'
+        'open_connection("outside.test")',
+        "from urllib3 import PoolManager as P\nP()",
+        "import urllib3.poolmanager as p\np.PoolManager()",
+        "import ssl as s\ns.SSLContext.wrap_socket(context, sock)",
+        "import ssl\nssl.wrap_socket(sock)",
+        "import ssl\nssl.create_default_context().wrap_socket(sock)",
+        'def connect(context, sock):\n    return getattr(context, "wrap_socket")(sock)',
+    ],
+)
+def test_guard_rejects_raw_tls_aliases_and_context_receivers(source):
+    assert _violations(_inventory({"astrid/new_client.py": source}), {})["new"]
+
+
+def test_guard_seals_native_socket_certificate_verification():
+    path = "astrid/installer/_tls_truststore/_api.py"
+    source = (ROOT / path).read_text()
+    original = "_verify_peercerts(ssl_sock, server_hostname=server_hostname)"
+    assert original in source
+    expected = {key: value for key, value in POLICY_OPENINGS.items() if key[0] == path}
+    assert expected and not any(_violations(_inventory({path: source}), expected).values())
+    changed = source.replace(original, "pass", 1)
+    assert _violations(_inventory({path: changed}), expected)["changed"]
 
 
 @pytest.mark.parametrize(

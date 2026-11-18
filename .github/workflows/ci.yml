@@ -183,7 +183,18 @@ jobs:
           tests/test_721_tls_review.py
           tests/test_721_http_policy_guard.py
           tests/test_astrid_error_contract.py
+          --deselect=tests/test_astrid_error_contract.py::test_to_envelope_omits_code_and_source_type_when_none
           --junitxml=tls-policy-regressions.xml
+
+      # The unchanged contract contradiction also fails on the release base.
+      # Execute it separately, even after an earlier failure, with its normal
+      # failing exit. Together these two steps still run every original case.
+      - name: Check independently failing error contract
+        if: ${{ always() }}
+        run: >-
+          python -m pytest -q -rA
+          tests/test_astrid_error_contract.py::test_to_envelope_omits_code_and_source_type_when_none
+          --junitxml=tls-error-contract.xml
 
       - name: Retain TLS policy regression results
         if: ${{ always() && hashFiles('tls-policy-regressions.xml') != '' }}
@@ -191,6 +202,15 @@ jobs:
         with:
           name: tls-policy-regressions
           path: tls-policy-regressions.xml
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Retain independent error contract result
+        if: ${{ always() && hashFiles('tls-error-contract.xml') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: tls-error-contract
+          path: tls-error-contract.xml
           if-no-files-found: error
           retention-days: 30
 
