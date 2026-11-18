@@ -16,7 +16,9 @@ The checkout includes history so an absent base fails instead of silently
 comparing the candidate to itself.
 
 The same installed tool scans both source trees. An identity contains the path,
-diagnostic code, normalized message and enclosing qualified symbol. Duplicate
+diagnostic code, normalized message and enclosing qualified symbol with a
+statement fingerprint. That fingerprint also distinguishes equal-message
+errors in different assignments inside the same function. Duplicate
 identities retain their counts. Line shifts do not create findings; fixing one
 finding cannot pay for a different finding. Every code blocks a new identity.
 The legacy `compare_*_baseline` count commands remain available for debt reports;

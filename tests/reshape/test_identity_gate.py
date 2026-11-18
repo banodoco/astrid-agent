@@ -42,6 +42,9 @@ def repository(tmp_path: Path) -> Path:
     ("ruff", "def old():\n    return missing\n", "def replacement():\n    return missing\n"),
     ("mypy", 'def old() -> None:\n    value: int = "wrong"\n',
      'def replacement() -> None:\n    value: int = "wrong"\n'),
+    ("mypy", 'def same() -> None:\n    old: int = "wrong"\n',
+     'def same() -> None:\n    replacement: int = "wrong"\n'),
+    ("ruff", "def same():\n    return missing\n", "def same():\n    print(missing)\n    return 1\n"),
 ])
 def test_fixed_finding_cannot_pay_for_another_in_the_same_file(
     repository: Path, monkeypatch: pytest.MonkeyPatch, tool: str, old: str, new: str,
@@ -59,6 +62,7 @@ def test_fixed_finding_cannot_pay_for_another_in_the_same_file(
     )
     assert legacy == 0
     assert len(before) == len(after) == 1
+    assert before[0]["message"] == after[0]["message"]
     monkeypatch.chdir(repository)
     assert identity_gate.main([tool, "--base-ref", base]) == 1
 

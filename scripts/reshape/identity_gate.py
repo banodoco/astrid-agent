@@ -10,6 +10,8 @@ from __future__ import annotations
 import argparse
 import ast
 import collections
+import copy
+import hashlib
 import io
 import json
 import os
@@ -25,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 Identity = tuple[str, str, str, str]
+Statement = tuple[int, int, int, int, str]
 MYPY_ERROR = re.compile(r"^(.*?):(\d+):(?:(\d+):)? error: (.*?)\s+\[(.*?)\]$")
 SUPPRESSION = re.compile(r"\bnoqa\b|\btype\s*:\s*ignore\b|\bmypy\s*:", re.IGNORECASE)
 
@@ -77,9 +80,40 @@ def symbol_at(scopes: list[tuple[int, int, str]], line: int) -> str:
                key=lambda name: len(name.split(".")), default="<module>")
 
 
+def statement_ranges(source: str) -> list[Statement]:
+    """Distinguish equal-message findings inside one symbol, without line IDs."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    statements = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.stmt):
+            continue
+        header = copy.copy(node)
+        # An error on a compound statement's header is not re-keyed when an
+        # unrelated statement in its body changes.
+        for field in ("body", "orelse", "finalbody", "handlers", "cases"):
+            if hasattr(header, field):
+                setattr(header, field, [])
+        digest = hashlib.sha256(ast.dump(header, include_attributes=False).encode()).hexdigest()[:16]
+        statements.append((node.lineno, node.col_offset + 1, node.end_lineno or node.lineno,
+                           (node.end_col_offset or 0) + 1, f"{type(node).__name__}:{digest}"))
+    return statements
+
+
+def statement_at(statements: list[Statement], line: int, column: int) -> str:
+    candidates = [entry for entry in statements if entry[:2] <= (line, column) <= entry[2:4]]
+    if not candidates:
+        candidates = [entry for entry in statements if entry[0] <= line <= entry[2]]
+    return min(candidates, key=lambda row: (row[2] - row[0], row[3] - row[1]),
+               default=(0, 0, 0, 0, "<module>"))[4]
+
+
 def identities(findings: list[dict[str, Any]], root: Path) -> collections.Counter[Identity]:
     result: collections.Counter[Identity] = collections.Counter()
     scopes: dict[str, list[tuple[int, int, str]]] = {}
+    statements: dict[str, list[Statement]] = {}
     for finding in findings:
         path = Path(finding["path"])
         if path.is_absolute():
@@ -89,9 +123,13 @@ def identities(findings: list[dict[str, Any]], root: Path) -> collections.Counte
                 raise RuntimeError(f"tool reported a diagnostic outside the source tree: {path}") from exc
         key = path.as_posix()
         if key not in scopes:
-            scopes[key] = symbol_ranges((root / path).read_text(encoding="utf-8"))
+            source = (root / path).read_text(encoding="utf-8")
+            scopes[key] = symbol_ranges(source)
+            statements[key] = statement_ranges(source)
         message = " ".join(str(finding["message"]).replace(str(root) + os.sep, "").split())
-        result[(key, finding["code"], message, symbol_at(scopes[key], finding["line"]))] += 1
+        owner = symbol_at(scopes[key], finding["line"])
+        site = statement_at(statements[key], finding["line"], finding.get("column", 0))
+        result[(key, finding["code"], message, f"{owner} [{site}]")] += 1
     return result
 
 
@@ -102,6 +140,7 @@ def diagnostics(tool: str, root: Path) -> list[dict[str, Any]]:
         command = [
             sys.executable, "-m", "mypy", "astrid", "scripts/reshape",
             "--hide-error-context", "--no-color-output", "--no-pretty", "--show-error-codes",
+            "--show-column-numbers",
             "--no-incremental", "--cache-dir", os.devnull,
         ]
     result = subprocess.run(command, cwd=root, capture_output=True, text=True, check=False)
@@ -111,14 +150,15 @@ def diagnostics(tool: str, root: Path) -> list[dict[str, Any]]:
         rows = json.loads(result.stdout)
         findings = [
             {"path": row["filename"], "code": row["code"], "message": row["message"],
-             "line": row["location"]["row"]} for row in rows
+             "line": row["location"]["row"], "column": row["location"]["column"]} for row in rows
         ]
     else:
         findings = []
         for line in (result.stdout + result.stderr).splitlines():
             match = MYPY_ERROR.match(line)
             if match:
-                findings.append({"path": match[1], "line": int(match[2]), "message": match[4], "code": match[5]})
+                findings.append({"path": match[1], "line": int(match[2]), "column": int(match[3] or 0),
+                                 "message": match[4], "code": match[5]})
     if result.returncode == 1 and not findings:
         raise RuntimeError(f"{tool} failed without diagnostics: {result.stdout}{result.stderr}")
     return findings
