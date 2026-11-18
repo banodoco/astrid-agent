@@ -10,22 +10,6 @@
     "prompt": {"type": "string", "minLength": 1},
     "duration": {"type": ["number", "string"], "exclusiveMinimum": 0},
     "continuation": {"type": "boolean"},
-    "output": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "size": {
-          "type": "array",
-          "prefixItems": [
-            {"type": "integer", "minimum": 32, "maximum": 16384, "multipleOf": 32},
-            {"type": "integer", "minimum": 32, "maximum": 16384, "multipleOf": 32}
-          ],
-          "items": false,
-          "minItems": 2,
-          "maxItems": 2
-        }
-      }
-    },
     "settings": {"$ref": "#/$defs/settings"},
     "media": {"type": "array", "items": {"$ref": "#/$defs/media"}}
   },
