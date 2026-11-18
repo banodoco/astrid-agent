@@ -19,7 +19,7 @@ ORIGINAL_HEAD = "b18080bce998b62656cf9f908afd3d0560c9d18f"
 PLAN_BASE = "d0217776fa05c6d55b953d0265ddafd918aafd2f"
 PREVIOUS_PLAN_BASE = "24c68a2702339583b7be1693d101146bed31cfa6"
 REQUIRED_ANCESTOR = "6451821e18bd300484a921a425cafd856095b1a4"
-PREVIOUS_CONTROLLER = "02add38275b4f155686d9bac3b8a593211c34477"
+PREVIOUS_CONTROLLER = "22b5d21e3ee8cb6eb976361765d5fc4f851d7332"
 WORKFLOW = ".github/workflows/plan55-native-flush.yml"
 PACKET_PATHS = {WORKFLOW, "tests/_local_speed_process.py", "tests/_local_speed_calibration.py",
                 "tests/_local_speed_census.py", "tests/core/generation/test_local_speed_census.py",
@@ -54,13 +54,18 @@ def _harness_paths(root, revision):
             if path in HARNESS_EXACT or any(fnmatch.fnmatchcase(path, pattern) for pattern in HARNESS_PATTERNS)}
 
 
-def _published_source(root, controller, plan_base):
+def _published_source(root, controller, plan_base, previous_plan_base=None):
     parents = git(root, "show", "-s", "--format=%P", controller).split()
     if len(parents) != 2:
         raise ValueError("published controller does not retain its ordered plan merge")
     if parents[1] == plan_base:
+        earlier_parents = git(root, "show", "-s", "--format=%P", parents[0]).split()
+        if (previous_plan_base is not None and len(earlier_parents) == 2
+                and subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor",
+                                    previous_plan_base, parents[0]], capture_output=True, check=False).returncode == 0):
+            return _published_source(root, parents[0], previous_plan_base)
         return parents[0]
-    previous_source = _published_source(root, parents[0], plan_base)
+    previous_source = _published_source(root, parents[0], plan_base, previous_plan_base)
     if subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor",
                        previous_source, parents[1]], check=False).returncode:
         raise ValueError("published controller's original-tuple source did not extend its predecessor")
@@ -116,7 +121,7 @@ def validate_sources(root, controller, *, original_head=ORIGINAL_HEAD, plan_base
         # controller, preserving ordinary first-parent history without rebase.
         source = parents[1]
         retained_controller = previous_controller
-        previous_source = _published_source(root, previous_controller, plan_base)
+        previous_source = _published_source(root, previous_controller, plan_base, previous_plan_base)
         if subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor",
                            previous_source, source], check=False).returncode:
             raise ValueError("qualification source does not extend the published controller's source")

@@ -27,6 +27,7 @@ def _period(requests, count):
 def sdk_sample(row):
     """Reconcile every poll with a complete invocation and the raw sleep map."""
     records, periods, unbalanced, identities, poll_ids = [], [], [], set(), set()
+    measured_task = row.get("proof", {}).get("measured_task_id", row.get("measured_task_id"))
     for process in row["process_observations"]:
         if process["role"] != PARENT:
             continue
@@ -46,7 +47,7 @@ def sdk_sample(row):
             if (any(type(item.get(key)) is not int or item[key] < 0 for key in integers)
                     or item.get("producer") != SDK_PRODUCER or not item["tid"]
                     or type(item.get("task_id")) is not str or not item["task_id"]
-                    or (row.get("measured_task_id") is not None and item["task_id"] != row["measured_task_id"])
+                    or (measured_task is not None and item["task_id"] != measured_task)
                     or item["end_ns"] <= item["start_ns"] or item.get("result_known") is not True
                     or item.get("carry_in") is not False or item.get("carry_out") is not False
                     or not isinstance(item.get("polls"), list) or not item["polls"]):
