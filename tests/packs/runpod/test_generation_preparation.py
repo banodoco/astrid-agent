@@ -210,7 +210,7 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
             lease = c.read()["lease"]
             # Preparation jobs and the machine's generation job are each checkpointed before start.
             # The release-time reset is checkpointed on the lease; the claim-time one on the preparation.
-            custody = (lease["job"] if " generate " in command or ("pod_reset" in command and "--run-dir" in command)
+            custody = (lease["job"] if " generate " in command or ("pod_reset" in command and lease["preparation"]["state"] == "prepared")
                        else lease["preparation"]["job"])
             assert custody == {"id": job_id, "state": "starting"}
             old = super().job_start(command)
