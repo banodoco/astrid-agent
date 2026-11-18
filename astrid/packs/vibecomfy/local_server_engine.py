@@ -274,6 +274,8 @@ def prepare_local_workflow(bundle: Any, bindings: dict[str, Any], provider: Any,
     if executable_hooks:
         return None
     from vibecomfy.prepared import PreparedWorkflowSession, PreparedWorkflowUnavailable
+    from vibecomfy.workflow import WorkflowCompileError
+    from vibecomfy.workflow_bundle import WorkflowBundleError
 
     bundle.require_canonical_authority("prepared attached target execution")
     _capture_live_schemas(bundle, provider)
@@ -283,6 +285,13 @@ def prepare_local_workflow(bundle: Any, bindings: dict[str, Any], provider: Any,
     except PreparedWorkflowUnavailable:
         session.invalidate()
         return None
+    except WorkflowBundleError as exc:
+        session.invalidate()
+        if isinstance(exc.__cause__, WorkflowCompileError):
+            # Admission now uses full approval's compile-error wrapper. The
+            # ordinary caller path still owns the user-visible refusal.
+            return None
+        raise
     return PreparedLocalWorkflow(session, handle, bundle.revision_id, provider)
 
 

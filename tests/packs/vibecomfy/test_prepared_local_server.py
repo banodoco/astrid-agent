@@ -187,7 +187,7 @@ def test_h3_executable_hooks_keep_the_existing_full_path(monkeypatch):
     assert engine.prepare_local_workflow(None, {}, None, context=None, executable_hooks=True) is None
 
 
-@pytest.mark.parametrize("change", ["additional_input", "omitted_input"])
+@pytest.mark.parametrize("change", ["additional_input", "omitted_input", "prefix_colon", "prefix_long"])
 def test_unusable_prepared_fill_uses_full_path_before_upload(comfy, tmp_path, monkeypatch, change):
     from astrid.core.generation.backends import vibecomfy_local_server as backend
 
@@ -200,6 +200,9 @@ def test_unusable_prepared_fill_uses_full_path_before_upload(comfy, tmp_path, mo
     values = {"image": "portrait.png", "prefix": "fresh/name"}
     if change == "omitted_input":
         admitted, values = values, admitted
+    elif change in {"prefix_colon", "prefix_long"}:
+        admitted = {"image": "portrait.png", "prefix": "safe"}
+        values["prefix"] = "run:1" if change == "prefix_colon" else "x" * 300
     held, context = admit(bundle, admitted, comfy, tmp_path)
     events = []
 
@@ -233,3 +236,24 @@ def test_unusable_prepared_fill_uses_full_path_before_upload(comfy, tmp_path, mo
     assert comfy.prompts[0]["1"]["inputs"]["image"] == "astrid/task-1/uploaded.png"
     prefix = values.get("prefix", "astrid")
     assert comfy.prompts[0]["2"]["inputs"]["filename_prefix"] == prefix + "_astrid_attempt-0"
+
+
+def test_wrapped_compile_stage_admission_refusal_returns_to_full_path(comfy, tmp_path):
+    from vibecomfy.workflow import WorkflowCompileError
+
+    bundle = fixture_bundle()
+    held, context = admit(bundle, {"seed": 7}, comfy, tmp_path)
+    bundle.workflow.inputs["seed"].type = "STRING"
+    bundle = load_bundle(bundle.workflow)
+    context = replace(context, source_identity=bundle.revision_id)
+    values = {"seed": "seven"}
+    assert engine.prepare_local_workflow(
+        bundle, values, held.provider, context=context, executable_hooks=False,
+    ) is None
+    with pytest.raises(WorkflowCompileError) as full:
+        engine._live_preflight(bundle, values, comfy.url, tmp_path / "full-reference")
+    with pytest.raises(WorkflowCompileError) as fallback:
+        run_prepared(bundle, None, context, comfy, tmp_path / "attempt" / "outputs", values, 0)
+    assert str(fallback.value) == str(full.value)
+    assert not [call for call in comfy.calls if call[0] == "POST"]
+    assert not comfy.prompts

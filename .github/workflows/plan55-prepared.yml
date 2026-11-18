@@ -88,11 +88,97 @@ jobs:
           python -m pytest -q -m integration \
             tests/packs/vibecomfy/test_prepared_local_server.py \
             --junitxml=proof/prepared.xml 2>&1 | tee proof/prepared.log
+      - name: Record fallback-probe bytes
+        if: always() && matrix.source == 'candidate' && steps.install.outcome == 'success'
+        run: sha256sum tests/packs/vibecomfy/test_prepared_local_server.py > proof/fallback-probe-sha256.txt
       - name: Retain exact-head proof including failures
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: plan55-ls4-agent-${{ matrix.source }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: proof/
+          if-no-files-found: error
+          retention-days: 30
+
+  reviewed-fallbacks:
+    if: github.event_name == 'workflow_dispatch' || github.head_ref == 'p55/ls-4'
+    name: LS-4 fallback probes on reviewed b573470f
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      ASTRID_CI_JOB: lanes-integration
+      ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/runtime-checkout
+      ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/vibecomfy-checkout
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: b573470f3432c403843510d43c11a659780c8a47
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: proof-source
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-runtime
+          ref: 6855dfa8df65cf8ae4c002b57134d6505493c17c
+          path: runtime-checkout
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/VibeComfy
+          ref: 4f6ba9f5508198be0f672f11bedb49e5f7cd51e7
+          path: vibecomfy-checkout
+      - name: Install reviewed tuple and the new fallback probes
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
+          python -m pip install -e '.[dev]'
+          python -m pip install --no-deps -e ./runtime-checkout -e ./runtime-checkout/packages/python
+          python -m pip install -e ./vibecomfy-checkout
+          cp proof-source/tests/packs/vibecomfy/test_prepared_local_server.py tests/packs/vibecomfy/
+          mkdir -p proof
+          git rev-parse HEAD > proof/source.txt
+          git rev-parse 'HEAD^{tree}' >> proof/source.txt
+          git -C vibecomfy-checkout rev-parse HEAD >> proof/source.txt
+          git -C vibecomfy-checkout rev-parse 'HEAD^{tree}' >> proof/source.txt
+          git -C runtime-checkout rev-parse HEAD >> proof/source.txt
+          python -VV >> proof/source.txt
+          python -m pip freeze > proof/dependencies.txt
+          sha256sum tests/packs/vibecomfy/test_prepared_local_server.py > proof/fallback-probe-sha256.txt
+      - name: Retain both prefix failures and the compile-wrapper failure
+        run: |
+          set +e
+          python -m pytest -q -m integration tests/packs/vibecomfy/test_prepared_local_server.py \
+            -k 'prefix_colon or prefix_long or wrapped_compile' \
+            --junitxml=proof/fallback-before.xml > proof/fallback-before.log 2>&1
+          result=$?
+          set -e
+          cat proof/fallback-before.log
+          test "$result" = 1
+          python - <<'PY'
+          from xml.etree import ElementTree as ET
+          cases = list(ET.parse('proof/fallback-before.xml').iter('testcase'))
+          expected = {
+              'test_unusable_prepared_fill_uses_full_path_before_upload[prefix_colon]': 'prepared output prefix',
+              'test_unusable_prepared_fill_uses_full_path_before_upload[prefix_long]': 'finite path bound',
+              'test_wrapped_compile_stage_admission_refusal_returns_to_full_path': 'public_input_incompatible',
+          }
+          assert len(cases) == 3 and {case.get('name') for case in cases} == set(expected)
+          for case in cases:
+              failure = case.find('failure')
+              assert failure is not None and expected[case.get('name')] in failure.get('message', '')
+              assert case.find('error') is None and case.find('skipped') is None
+          PY
+      - name: Retain reviewed-source fallback evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: plan55-ls4-agent-fallback-before-${{ github.run_id }}-${{ github.run_attempt }}
           path: proof/
           if-no-files-found: error
           retention-days: 30
