@@ -16,10 +16,14 @@ from pathlib import Path
 from tests.local_speed_paired_run import HARNESS_EXACT, HARNESS_PATTERNS
 
 ORIGINAL_HEAD = "b18080bce998b62656cf9f908afd3d0560c9d18f"
-PLAN_BASE = "d0217776fa05c6d55b953d0265ddafd918aafd2f"
-PREVIOUS_PLAN_BASE = "24c68a2702339583b7be1693d101146bed31cfa6"
+PLAN_BASE = "91cb4cb499306b2f09686de0fb67b803bcb89077"
+PREVIOUS_PLAN_BASE = "d0217776fa05c6d55b953d0265ddafd918aafd2f"
+PLAN_PREDECESSORS = {
+    PLAN_BASE: PREVIOUS_PLAN_BASE,
+    PREVIOUS_PLAN_BASE: "24c68a2702339583b7be1693d101146bed31cfa6",
+}
 REQUIRED_ANCESTOR = "6451821e18bd300484a921a425cafd856095b1a4"
-PREVIOUS_CONTROLLER = "22b5d21e3ee8cb6eb976361765d5fc4f851d7332"
+PREVIOUS_CONTROLLER = "d0834eb62c9343a54a6f1731ae5e0213a4503644"
 WORKFLOW = ".github/workflows/plan55-native-flush.yml"
 PACKET_PATHS = {WORKFLOW, "tests/_local_speed_process.py", "tests/_local_speed_calibration.py",
                 "tests/_local_speed_census.py", "tests/core/generation/test_local_speed_census.py",
@@ -55,6 +59,10 @@ def _harness_paths(root, revision):
 
 
 def _published_source(root, controller, plan_base, previous_plan_base=None):
+    # Lead 6985581776 adds another accepted native plan boundary. Preserve
+    # each recorded predecessor while following the original-tuple source.
+    if previous_plan_base is None:
+        previous_plan_base = PLAN_PREDECESSORS.get(plan_base)
     parents = git(root, "show", "-s", "--format=%P", controller).split()
     if len(parents) != 2:
         raise ValueError("published controller does not retain its ordered plan merge")
@@ -173,7 +181,7 @@ def validate_sources(root, controller, *, original_head=ORIGINAL_HEAD, plan_base
             "new_plan_tuple_qualified": False,
             "decisions": {"census": "6970432614", "sdk_poll": "6981129059",
                           "original_tuple": "6967421223", "plan_merge": "6968915902",
-                          "plan_advance": "6983043853"}}
+                          "plan_advance": "6985581776", "previous_plan_advance": "6983043853"}}
 
 
 def main():
