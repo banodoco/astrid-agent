@@ -28,6 +28,28 @@ concurrency:
   group: plan55-native-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 jobs:
+  meter-policy:
+    name: Meter policy from accepted base
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Fetch proposed source without executing it
+        env:
+          METER_PROPOSED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: git fetch --no-tags origin "$METER_PROPOSED_SHA"
+      # Standing ruling 5: this introducing PR fails visibly because its base
+      # has no checker. Later PRs run only this accepted-base copy.
+      - name: Check policy and selection with the accepted base checker
+        env:
+          METER_POLICY_BASE: ${{ github.event.pull_request.base.sha }}
+          METER_PROPOSED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: >-
+          python tests/local_speed_policy.py
+          --base "$METER_POLICY_BASE" --head "$METER_PROPOSED_SHA"
   calibrate:
     name: Standing attached meter (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -141,6 +163,7 @@ jobs:
           tests/core/generation/test_local_speed_host_cadence.py
           tests/core/generation/test_local_speed_census.py
           tests/core/generation/test_local_speed_qualification.py
+          tests/core/generation/test_local_speed_policy.py
           --junitxml=native-reader.xml
       - name: Prove private Runtime directory creation and unsafe-directory refusal
         run: >-
