@@ -151,3 +151,23 @@ def test_authored_box_scales_to_non_16_9_canvas():
     assert pixels[112 * 768 + 192] == 255
     assert pixels[111 * 768 + 192] == 0
     assert pixels[112 * 768 + 384] == 0
+
+
+def test_sampler_strength_mask_uses_requested_dimensions(tmp_path):
+    from astrid.packs.h3_av.shared.compile import _combined_strength_mask
+    from astrid.packs.h3_av.shared.compose import iter_mask_frames
+
+    a = tmp_path / "a.png"
+    b = tmp_path / "b.png"
+    image = Image.new("L", (32, 32), 0)
+    for y in (7, 8):
+        for x in (7, 8):
+            image.putpixel((x, y), 255)
+    image.save(a)
+    image.save(b)
+    path = _combined_strength_mask([(a, "image", (0, 2), 0.25, "a"),
+                                    (b, "image", (1, 2), 0.75, "b")],
+                                   frames=2, destination=tmp_path, size=(32, 32))
+    frames = list(iter_mask_frames(path, start_frame=0, count=2, width=32, height=32))
+    assert [frame[(7 * 32 + 7) * 3] for frame in frames] == [64, 191]
+    assert all(frame[0] == 0 for frame in frames)
