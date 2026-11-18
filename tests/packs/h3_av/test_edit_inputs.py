@@ -478,3 +478,29 @@ def test_masked_reference_bindings_are_provisional_and_audio_total_unknown(monke
     assert result["conditioning_measurements"][1]["slot"] is None
     assert result["conditioning_measurements"][1]["binding_status"] == "provisional_until_lowering"
     assert result["resource_estimate"]["reference_raw_audio_bytes"] is None
+
+
+@pytest.mark.parametrize("start, end, accepted", [(1, 49, True), (1, 48, False), (25, 385, True), (25, 386, False)])
+def test_exact_trim_limits_with_nonzero_start(monkeypatch, tmp_path, start, end, accepted):
+    path = tmp_path / "clip"
+    path.touch()
+    monkeypatch.setattr(prepare, "_probe_conditioning", lambda _: {"streams": [{"codec_type": "video", "duration": "20"}]})
+    item = {"occurrence_id": "v", "asset": "v", "role": "reference", "modality": "video", "audio": False, "resolved_range": [start, end]}
+    records = [{"asset": "v", "status": "resolved", "path": str(path)}]
+    if accepted:
+        assert len(prepare._admit_conditioning(_request([item]), records)) == 1
+    else:
+        with pytest.raises(prepare.PreparationError, match="conditioning clip"):
+            prepare._admit_conditioning(_request([item]), records)
+
+
+def test_exact_trim_totals_with_nonzero_starts(monkeypatch, tmp_path):
+    path = tmp_path / "clip"
+    path.touch()
+    monkeypatch.setattr(prepare, "_probe_conditioning", lambda _: {"streams": [{"codec_type": "video", "duration": "20"}]})
+    records = [{"asset": "v", "status": "resolved", "path": str(path)}]
+    def items(end):
+        return [{"occurrence_id": str(i), "asset": "v", "role": "reference", "modality": "video", "audio": False, "resolved_range": [1, end]} for i in range(3)]
+    assert len(prepare._admit_conditioning(_request(items(121)), records)) == 3
+    with pytest.raises(prepare.PreparationError, match="per modality total"):
+        prepare._admit_conditioning(_request(items(122)), records)

@@ -71,8 +71,8 @@ def _admit_conditioning(request: H3Request, assets: list[dict[str, Any]], warnin
                 if row.get("status") == "resolved" and isinstance(row.get("path"), str)}
     refs = [row for row in request.value["media"] if row.get("role") == "reference" and row.get("use") != "replacement"]
     counts = {"image": 0, "video": 0, "audio": 0}
-    totals = {"image": 0.0, "video": 0.0, "audio": 0.0}
-    total_uncertainty = {"video": 0.0, "audio": 0.0}
+    totals = {"image": Fraction(0), "video": Fraction(0), "audio": Fraction(0)}
+    total_uncertainty = {"video": Fraction(0), "audio": Fraction(0)}
     files = 0
     entry = LIMITS["builder_slots"]["value"]
     duration_clock = {"video": 24, "audio": 48000}
@@ -124,22 +124,24 @@ def _admit_conditioning(request: H3Request, assets: list[dict[str, Any]], warnin
             start, end = (float(v) / duration_clock[modality] for v in selected)
             if end > measured + 1e-6:
                 raise PreparationError(f"conditioning clip 2–15 seconds: {item['occurrence_id']} trim ends past measured stream duration")
-            span = end - start
+            span_exact = Fraction(int(selected[1]) - int(selected[0]), duration_clock[modality])
+            span = float(span_exact)
         else:
             span = measured
+            span_exact = Fraction(str(span))
             start = 0.0
             end = measured
         clip_min, clip_max = LIMITS["clip_seconds"]["value"]
         exact_trim = isinstance(selected, list) and len(selected) == 2
-        uncertainty = 0.0 if exact_trim else 1 / duration_clock[modality]
-        if span < clip_min - uncertainty or span > clip_max + uncertainty:
+        uncertainty = Fraction(0) if exact_trim else Fraction(1, duration_clock[modality])
+        if span_exact < Fraction(str(clip_min)) - uncertainty or span_exact > Fraction(str(clip_max)) + uncertainty:
             raise PreparationError(f"conditioning clip 2–15 seconds: {item['occurrence_id']} selects {span:.3f}s")
-        if span <= clip_min + uncertainty or span >= clip_max - uncertainty:
+        if span_exact <= Fraction(str(clip_min)) + uncertainty or span_exact >= Fraction(str(clip_max)) - uncertainty:
             warnings.append({"limit": "clip_seconds", "message": f"{item['occurrence_id']} selects {span:.3f}s near the clip duration limit."})
         video_bound = (int(selected[1]) - int(selected[0])) if modality == "video" and isinstance(selected, list) else (math.ceil(span * 24 - 1e-9) + 1 if modality == "video" else None)
-        totals[modality] += video_bound / 24 if modality == "video" else span
+        totals[modality] += Fraction(video_bound, 24) if modality == "video" else span_exact
         if not exact_trim:
-            total_uncertainty[modality] += 2 / 24 if modality == "video" else 1 / 48000
+            total_uncertainty[modality] += Fraction(2, 24) if modality == "video" else Fraction(1, 48000)
         if modality == "video":
             # Estimate the loader's maximum 24-fps frames from metadata; the
             # actual filter output and node-retained count remain unobserved.
@@ -175,10 +177,10 @@ def _admit_conditioning(request: H3Request, assets: list[dict[str, Any]], warnin
                 raise PreparationError(f"conditioning soundtrack trim: {item['occurrence_id']} trim ends past measured audio stream duration")
             # VHS frame_load_cap=0 extracts the whole soundtrack; capped loads
             # extract the selected span, independent of H3 picture truncation.
-            bound_audio = audio_end - audio_start if isinstance(selected, list) else audio_duration
-            totals["audio"] += bound_audio
+            bound_audio = span if exact_trim else audio_duration
+            totals["audio"] += span_exact if exact_trim else Fraction(str(audio_duration))
             if not exact_trim:
-                total_uncertainty["audio"] += 1 / 48000
+                total_uncertainty["audio"] += Fraction(1, 48000)
             measurement["audio_duration_seconds"] = bound_audio
         elif modality == "audio":
             measurement["audio_duration_seconds"] = span
@@ -207,12 +209,12 @@ def _admit_conditioning(request: H3Request, assets: list[dict[str, Any]], warnin
     if files == LIMITS["conditioning_files"]["value"]:
         warnings.append({"limit": "conditioning_files", "message": "Conditioning references are at the 12-file limit."})
     for modality, total in totals.items():
-        limit = LIMITS["modality_seconds"]["value"]
-        uncertainty = total_uncertainty.get(modality, 0.0)
-        if total > limit + uncertainty + 1e-9:
-            raise PreparationError(f"per modality total 15 seconds: {modality} selects {total:.3f}s")
+        limit = Fraction(str(LIMITS["modality_seconds"]["value"]))
+        uncertainty = total_uncertainty.get(modality, Fraction(0))
+        if total > limit + uncertainty:
+            raise PreparationError(f"per modality total 15 seconds: {modality} selects {float(total):.3f}s")
         if total >= limit - uncertainty:
-            warnings.append({"limit": "modality_seconds", "message": f"{modality} selects {total:.3f}s near the modality duration limit."})
+            warnings.append({"limit": "modality_seconds", "message": f"{modality} selects {float(total):.3f}s near the modality duration limit."})
     continuation = request.value.get("continuation")
     if continuation:
         allowed = LIMITS["continuation_references"]["value"]
