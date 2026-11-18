@@ -256,3 +256,40 @@ def prepared_client(tmp_path):
 
 
 
+
+
+def test_source_free_audio_trim_compiles_to_bound_audio_graph(tmp_path):
+    import subprocess
+    from vibecomfy.cli_loader import load_workflow_any
+    from astrid.packs.h3_av.shared.request_v2 import normalize_v2
+
+    image = tmp_path / "image.png"
+    audio = tmp_path / "audio.wav"
+    Image.new("RGB", (32, 32)).save(image)
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=sample_rate=48000", "-t", "5", str(audio)], check=True)
+    raw = {"version": 2, "prompt": "A scene", "duration": 6, "media": [
+        {"asset": "image", "role": "reference", "modality": "image"},
+        {"asset": "audio", "role": "reference", "modality": "audio", "range": [1, 4]},
+    ]}
+    prepared = prepare_request(normalize_v2(raw), asset_map={"image": str(image), "audio": str(audio)})
+    compiled = compile_preparation(prepared, out_dir=tmp_path / "compiled")
+    workflow = load_workflow_any(compiled["workflow"]["workflow.py"]["path"])
+    api = workflow.compile("api", run_inputs=compiled["workflow_inputs"])
+    target = next(row for row in api.values() if row["class_type"] == "MiniMaxH3ReferenceToVideo")
+    trim = api[target["inputs"]["ref_audios.ref_audio_0"][0]]
+    assert trim["class_type"] == "TrimAudioDuration"
+    assert trim["inputs"]["start_index"] == 1
+    assert trim["inputs"]["duration"] == 3
+    assert api[trim["inputs"]["audio"][0]]["class_type"] == "LoadAudio"
+
+
+def test_source_free_video_reference_fails_closed(tmp_path):
+    from astrid.packs.h3_av.shared.compile import _compile_native_v2
+    from astrid.packs.h3_av.shared.request_v2 import normalize_v2
+
+    request = normalize_v2({"version": 2, "prompt": "A scene", "duration": 6, "media": [
+        {"asset": "image", "role": "reference", "modality": "image"},
+        {"asset": "video", "role": "reference", "modality": "video", "audio": False},
+    ]})
+    with pytest.raises(CompilationError, match="source-free video references are unsupported"):
+        _compile_native_v2(request, {"image": tmp_path / "i", "video": tmp_path / "v"}, tmp_path)

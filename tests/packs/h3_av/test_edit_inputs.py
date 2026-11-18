@@ -236,3 +236,41 @@ def test_enabled_video_soundtrack_must_exist_and_cover_trim(monkeypatch, tmp_pat
     records = [{"asset": "v", "status": "resolved", "path": str(media)}]
     with pytest.raises(prepare.PreparationError, match=message):
         prepare._admit_conditioning(_request([item]), records)
+
+
+def test_audio_tags_follow_graph_order_even_when_authored_first():
+    items = [
+        {"occurrence_id": "a", "asset": "a", "role": "reference", "modality": "audio"},
+        {"occurrence_id": "v", "asset": "v", "role": "reference", "modality": "video", "audio": True},
+    ]
+    rows = prepare._admit_conditioning(_request(items), [])
+    assert rows[0]["tag"] == "<Audio 2>"
+    assert rows[1]["audio_tag"] == "<Audio 1>"
+
+
+def test_untrimmed_soundtrack_uses_video_span_and_requires_stream_coverage(monkeypatch, tmp_path):
+    path = tmp_path / "video.mp4"
+    path.touch()
+    item = {"occurrence_id": "v", "asset": "v", "role": "reference", "modality": "video", "audio": True}
+    records = [{"asset": "v", "status": "resolved", "path": str(path)}]
+    probe = {"streams": [{"codec_type": "video", "duration": "5"}, {"codec_type": "audio", "duration": "10"}], "format": {"duration": "10"}}
+    monkeypatch.setattr(prepare, "_probe_conditioning", lambda _: probe)
+    assert prepare._admit_conditioning(_request([item]), records)[0]["audio_duration_seconds"] == 5
+    probe["streams"][1]["duration"] = "4"
+    with pytest.raises(prepare.PreparationError, match="past measured audio stream duration"):
+        prepare._admit_conditioning(_request([item]), records)
+    del probe["streams"][1]["duration"]
+    with pytest.raises(prepare.PreparationError, match="cannot measure soundtrack"):
+        prepare._admit_conditioning(_request([item]), records)
+
+
+def test_real_video_rejects_shorter_soundtrack(tmp_path):
+    path = tmp_path / "short-audio.mp4"
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-f", "lavfi", "-i", "color=size=32x32:rate=24:duration=5",
+                    "-f", "lavfi", "-i", "sine=sample_rate=48000:duration=3",
+                    "-c:v", "mpeg4", "-c:a", "aac", str(path)], check=True)
+    item = {"occurrence_id": "v", "asset": "v", "role": "reference", "modality": "video", "audio": True}
+    records = [{"asset": "v", "status": "resolved", "path": str(path)}]
+    with pytest.raises(prepare.PreparationError, match="past measured audio stream duration"):
+        prepare._admit_conditioning(_request([item]), records)

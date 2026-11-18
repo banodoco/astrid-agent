@@ -29,7 +29,7 @@ def _probe_conditioning(path: Path) -> dict[str, Any]:
         raise PreparationError("conditioning limits require ffprobe")
     try:
         result = subprocess.run([ffprobe, "-v", "error", "-show_entries",
-            "stream=codec_type,duration,nb_frames,width,height,avg_frame_rate,sample_rate,channels:format=duration", "-of", "json", str(path)],
+            "stream=codec_type,duration,start_time,nb_frames,width,height,avg_frame_rate,sample_rate,channels:format=duration", "-of", "json", str(path)],
             check=False, capture_output=True, text=True, timeout=30)
         payload = json.loads(result.stdout) if result.returncode == 0 else None
     except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
@@ -41,7 +41,7 @@ def _probe_conditioning(path: Path) -> dict[str, Any]:
 
 def _admit_conditioning(request: H3Request, assets: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Apply the shared reference table before scheduling any paid/runtime work."""
-    from .compose import _streams, _duration
+    from .compose import _streams, _number
     resolved = {str(row["asset"]): Path(str(row["path"])) for row in assets
                 if row.get("status") == "resolved" and isinstance(row.get("path"), str)}
     refs = [row for row in request.value["media"] if row.get("role") == "reference" and row.get("use") != "replacement"]
@@ -75,7 +75,7 @@ def _admit_conditioning(request: H3Request, assets: list[dict[str, Any]]) -> lis
         if not streams:
             raise PreparationError(f"conditioning clip 2–15 seconds: {item['occurrence_id']} has no {modality} stream")
         stream = streams[0]
-        measured = _duration(probe, stream)
+        measured = _number(stream.get("duration"))
         size = (stream.get("width"), stream.get("height"))
         if all(isinstance(value, int) and value > 0 for value in size):
             measurement["effective_size"] = {"width": size[0], "height": size[1]}
@@ -114,11 +114,18 @@ def _admit_conditioning(request: H3Request, assets: list[dict[str, Any]]) -> lis
             audio_streams = _streams(probe, "audio")
             if not audio_streams:
                 raise PreparationError(f"conditioning soundtrack trim: {item['occurrence_id']} requests audio but the video has no audio stream")
-            audio_duration = _duration(probe, audio_streams[0])
+            audio_duration = _number(audio_streams[0].get("duration"))
             if audio_duration is None:
                 raise PreparationError(f"conditioning soundtrack trim: cannot measure soundtrack for {item['occurrence_id']}")
-            audio_start, audio_end = (start, end) if isinstance(selected, list) else (0.0, audio_duration)
-            if audio_end > audio_duration + 1e-6:
+            audio_start, audio_end = start, end
+            try:
+                video_origin = float(stream.get("start_time", 0))
+                audio_origin = float(audio_streams[0].get("start_time", 0))
+            except (TypeError, ValueError):
+                raise PreparationError(f"conditioning soundtrack trim: cannot measure stream start for {item['occurrence_id']}") from None
+            if not math.isfinite(video_origin) or not math.isfinite(audio_origin):
+                raise PreparationError(f"conditioning soundtrack trim: cannot measure stream start for {item['occurrence_id']}")
+            if video_origin + audio_start < audio_origin - 1e-6 or video_origin + audio_end > audio_origin + audio_duration + 1e-6:
                 raise PreparationError(f"conditioning soundtrack trim: {item['occurrence_id']} trim ends past measured audio stream duration")
             totals["audio"] += audio_end - audio_start
             measurement["audio_duration_seconds"] = audio_end - audio_start
@@ -128,11 +135,13 @@ def _admit_conditioning(request: H3Request, assets: list[dict[str, Any]]) -> lis
             measurement["resource_estimate"]["raw_bytes"] = round(span * int(stream.get("sample_rate") or 48000) * channels * 4)
     # Audio tags follow node input order: video soundtracks, then standalone clips.
     audio_index = 0
-    for item, measurement in zip([row for row in refs if row.get("modality") in counts], measurements):
+    pairs = list(zip([row for row in refs if row.get("modality") in counts], measurements))
+    for item, measurement in pairs:
         if item.get("modality") == "video" and item.get("audio", True):
             audio_index += 1
             measurement["audio_tag"] = f"<Audio {audio_index}>"
-        elif item.get("modality") == "audio":
+    for item, measurement in pairs:
+        if item.get("modality") == "audio":
             audio_index += 1
             measurement["tag"] = f"<Audio {audio_index}>"
             measurement["input_type"] = "AUDIO"

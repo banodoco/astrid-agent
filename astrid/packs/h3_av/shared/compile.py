@@ -726,7 +726,7 @@ def _compile_character_swap_v2(
             raise CompilationError(f"Character Swap audio reference {asset_id!r} is missing from preparation")
         binding = f"audio_reference_{index}"
         bindings[binding] = assets[asset_id]
-        audio_reference_rows.append({"binding": binding})
+        audio_reference_rows.append({"binding": binding, "resolved_range": item.get("resolved_range")})
 
     try:
         timing = generation_timing(value["duration"])
@@ -891,6 +891,8 @@ def _compile_native_v2(
 
     if branch == "source_free":
         references = [item for item in request.value["media"] if item["role"] == "reference"]
+        if any(item.get("modality") == "video" and item.get("use") != "replacement" for item in references):
+            raise CompilationError("source-free video references are unsupported by the current lowering")
         image_references = [item for item in references if item.get("modality") == "image" and item.get("use") != "replacement"]
         audio_references = [item for item in references if item.get("modality") == "audio" and item.get("use") != "replacement"]
         if not 1 <= len(image_references) <= LIMITS["builder_slots"]["value"]["image"]:
@@ -1094,6 +1096,8 @@ def _compile_generation(
     bindings = {f"reference_{index}": assets[item["asset"]] for index, item in enumerate(references)}
     bindings.update({f"audio_reference_{index}": assets[item["asset"]] for index, item in enumerate(audio_references)})
     for binding, path in bindings.items():
+        if not binding.startswith("reference_"):
+            continue
         try:
             with Image.open(path) as image:
                 if getattr(image, "n_frames", 1) != 1:
@@ -1125,7 +1129,7 @@ def _compile_generation(
     prompt = request.value["content"]["prompt"]
     graph = build_generation_workflow(
         references=image_members, prompt=prompt,
-        audio_references=[{"binding": f"audio_reference_{index}"} for index in range(len(audio_members))],
+        audio_references=[{"binding": f"audio_reference_{index}", "resolved_range": item.get("resolved_range")} for index, item in enumerate(audio_references)],
         frames=timing["raw_frames"], model=settings["model"],
         steps=settings["steps"], seed=settings["seed"],
         sampler=settings["sampler"], guidance=settings["guidance"],

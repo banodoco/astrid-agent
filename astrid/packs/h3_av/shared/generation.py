@@ -238,7 +238,7 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
     from vibecomfy.templates import ModelAsset, OutputSpec, ReadyMetadata, new_workflow, node
     from vibecomfy.nodes.core import (
         AudioConcat, BasicGuider, BasicScheduler, CLIPLoader, EmptyAudio, EmptyImage,
-        ImageBatch, ImageFromBatch, KSamplerSelect, LoadAudio, LoadImage, RepeatImageBatch,
+        ImageBatch, ImageFromBatch, KSamplerSelect, LoadAudio, LoadImage, RepeatImageBatch, TrimAudioDuration,
         LoraLoaderModelOnly, RandomNoise, SamplerCustomAdvanced, UNETLoader,
         VAEDecode, VAEDecodeAudio, VAELoader,
     )
@@ -352,7 +352,11 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
             ident = str(reference.get("binding", f"audio_reference_{index}"))
             loader = LoadAudio(audio="", _id=ident)
             wf.register_input(ident, ident, "audio", "", type="CHOICE", default="", required=True, media_semantics="audio")
-            refs[f"ref_audios.ref_audio_{index}"] = loader.out("audio")
+            audio_output = loader.out("audio")
+            selected = reference.get("resolved_range")
+            if isinstance(selected, list):
+                audio_output = TrimAudioDuration(audio=audio_output, start_index=float(selected[0]) / 48000, duration=float(selected[1] - selected[0]) / 48000).out("AUDIO")
+            refs[f"ref_audios.ref_audio_{index}"] = audio_output
         # Retain the pinned define_schema contract: the offline schema predates
         # this node. Declare only the exact dynamic reference ports used here.
         target_inputs = ["clip", "vae", "audio_vae", "prompt", "width", "height", "length", "ref_image_size", *refs]
