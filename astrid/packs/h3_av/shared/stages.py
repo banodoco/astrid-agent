@@ -9,6 +9,7 @@ import hashlib
 import json
 import re
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -85,6 +86,7 @@ def _sealed_plan(compilation: Mapping[str, Any], *, preparation: Mapping[str, An
     # settled-result consumers; never copy it into compilation.json.
     conditioning = capabilities.get("conditioning") if isinstance(capabilities, Mapping) else None
     if isinstance(conditioning, list):
+        timing = capabilities.get("generation_timing") if isinstance(capabilities, Mapping) else None
         measurements = {}
         if isinstance(preparation, Mapping):
             measurements = {row.get("occurrence"): row for row in preparation.get("conditioning_measurements", [])
@@ -104,7 +106,10 @@ def _sealed_plan(compilation: Mapping[str, Any], *, preparation: Mapping[str, An
             if isinstance(measurement.get("effective_size"), Mapping):
                 reference["effective_size"] = dict(measurement["effective_size"])
             refs.append(reference)
-        plan["reference_view"] = {"references": refs}
+        view = {"references": refs}
+        if isinstance(timing, Mapping) and type(timing.get("raw_frames")) is int:
+            view["target_frame_cap"] = timing["raw_frames"]
+        plan["reference_view"] = view
     return plan
 
 
@@ -151,12 +156,14 @@ _compile_stages = compile_stages
 
 
 def save_build_state(directory: Path, *, request: H3Request, document: Mapping[str, Any], preparation: Mapping[str, Any],
-                     source: str | None, plan: Mapping[str, Any]) -> Path:
+                     source: str | None, plan: Mapping[str, Any],
+                     reference_assets: Mapping[str, Mapping[str, Any]] | None = None) -> Path:
     """What ``after_outputs`` needs, written once by ``build`` into the shared job directory."""
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / STATE_NAME
     path.write_text(json.dumps(json_times({"request": document, "request_digest": request.digest,
-                                "preparation": preparation, "source": source, "plan": plan}),
+                                "preparation": preparation, "source": source, "plan": plan,
+                                "reference_assets": reference_assets or {}}),
                                sort_keys=True), encoding="utf-8")
     return path
 
@@ -177,3 +184,113 @@ def load_build_state(directory: Path) -> dict[str, Any]:
             preparation["request"], preparation["request_digest"], require_normalized_v2=True,
         ).value
     return {**state, "request_object": request}
+
+
+def _vhs_frame_count(path: Path, *, start_time: float, frame_load_cap: int,
+                     ffmpeg: str | None = None) -> int:
+    """Count frames through the pinned VHS FFmpeg seek, fps and cap path.
+
+    Mirrors ComfyUI-VideoHelperSuite ``ffmpeg_frame_generator`` at commit
+    4ee72c065db22c9d96c2427954dc69e7b908444b: input seek plus four-second
+    output seek for starts over 4s, otherwise output seek; ``fps=24`` and the
+    optional ``frame_load_cap``. The framehash muxer counts decoded output
+    frames without retaining temporary media bytes.
+    """
+    executable = ffmpeg or shutil.which("ffmpeg")
+    if not executable:
+        raise FileNotFoundError("ffmpeg is unavailable")
+    args_input = ["-i", str(path)]
+    post_seek: list[str] = []
+    if start_time > 0:
+        if start_time > 4:
+            args_input = ["-ss", str(start_time - 4), *args_input]
+            post_seek = ["-ss", "4"]
+        else:
+            post_seek = ["-ss", str(start_time)]
+    command = [executable, "-v", "error", "-an", *args_input, "-pix_fmt", "rgba64le", *post_seek,
+               "-vf", "fps=fps=24"]
+    if frame_load_cap > 0:
+        command.extend(["-frames:v", str(frame_load_cap)])
+    command.extend(["-f", "framehash", "-"])
+    result = subprocess.run(command, check=True, capture_output=True, text=True, timeout=120)
+    return sum(bool(line.strip()) and not line.lstrip().startswith("#") for line in result.stdout.splitlines())
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _settled_reference_view(reference_view: Mapping[str, Any], *, reference_assets: Mapping[str, Mapping[str, Any]],
+                            workdir: Path, ffmpeg: str | None = None) -> dict[str, Any]:
+    """Return the sealed view plus counts derived by re-decoding its bound bytes.
+
+    Failed path, custody, hash, or decode checks stay explicitly unqualified;
+    a dry-run metadata estimate is never promoted into a settled count.
+    """
+    from copy import deepcopy
+    from .prepare import _retained_video_frames
+
+    settled = deepcopy(dict(reference_view))
+    target = settled.get("target_frame_cap")
+    root = Path(workdir).resolve()
+    managed_root = (root / "managed").resolve()
+    for reference in settled.get("references", []):
+        if not isinstance(reference, dict) or reference.get("modality") != "video":
+            continue
+        input_binding = reference.get("input_binding")
+        input_binding = input_binding if isinstance(input_binding, Mapping) else {}
+        binding = input_binding.get("binding")
+        record = reference_assets.get(binding) if isinstance(binding, str) else None
+        reason = None
+        frame_count = None
+        if not isinstance(record, Mapping) or not isinstance(record.get("member"), str):
+            reason = "managed_reference_asset_unavailable"
+        elif type(target) is not int or target < 1:
+            reason = "h3_target_frame_cap_unavailable"
+        else:
+            candidate = managed_root / record["member"]
+            try:
+                path = candidate.resolve(strict=True)
+                if not path.is_relative_to(managed_root) or candidate.is_symlink() or not path.is_file():
+                    raise ValueError("managed reference asset is outside job custody")
+                digest = _file_sha256(path)
+                if digest != record.get("sha256"):
+                    raise ValueError("managed reference asset hash differs from compilation manifest")
+                frame_count = _vhs_frame_count(path, start_time=float(input_binding.get("start_time", 0.0)),
+                                               frame_load_cap=int(input_binding.get("frame_load_cap", 0)),
+                                               ffmpeg=ffmpeg)
+            except FileNotFoundError:
+                reason = "ffmpeg_unavailable"
+            except subprocess.TimeoutExpired:
+                reason = "ffmpeg_redecode_timeout"
+            except subprocess.CalledProcessError:
+                reason = "ffmpeg_redecode_failed"
+            except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+                # Do not persist command arguments or scratch locators in the
+                # settled result; they can include the local bound-file path.
+                reason = "bound_reference_redecode_unavailable"
+        retained = _retained_video_frames(frame_count, target) if frame_count is not None else None
+        if retained is None:
+            reference["retained_picture_frames_derived"] = {
+                "status": "unqualified", "reason": reason or "decoded_frames_below_h3_minimum",
+                "kind": "derived_pinned_node_rule_unavailable",
+            }
+            continue
+        reference["retained_picture_frames_derived"] = {
+            "value": retained,
+            "status": "derived",
+            "kind": "derived_pinned_node_rule",
+            "input_frame_count": frame_count,
+            "input_sha256": record["sha256"],
+            "basis": "CPU re-decode of the SHA-256 verified managed reference using pinned VHS seek, force_rate=24, and frame_load_cap semantics",
+            "conformance": "not_conformed",
+            "target_frame_cap": target,
+            "alignment": "5 + 17k",
+            "rule_source": "astrid/packs/h3_av/shared/prepare.py:43-46 (_retained_video_frames)",
+            "loader_source": "ComfyUI-VideoHelperSuite@4ee72c065db22c9d96c2427954dc69e7b908444b/videohelpersuite/load_video_nodes.py:1791-1928",
+        }
+    return settled

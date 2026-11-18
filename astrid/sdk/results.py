@@ -552,6 +552,12 @@ def _generation_task_refs(result: InvocationResult) -> dict[str, Any]:
     settled = task.get('result') or raw.get('result')
     settled = settled if isinstance(settled, Mapping) else {}
     refs = {'task_id': task.get('task_id') or result.kernel_task_id}
+    evidence = settled.get("evidence")
+    producer_evidence = evidence.get("producer") if isinstance(evidence, Mapping) else None
+    hook_evidence = producer_evidence.get("workflow_hook") if isinstance(producer_evidence, Mapping) else None
+    reference_view = hook_evidence.get("reference_view") if isinstance(hook_evidence, Mapping) else None
+    if isinstance(reference_view, Mapping):
+        refs["reference_view"] = deepcopy(dict(reference_view))
     rows = settled.get('outputs')
     if isinstance(rows, list):
         refs['logs'] = [deepcopy({key: value for key, value in row.items()
@@ -680,6 +686,7 @@ def _reconstruct_generation_result(result: InvocationResult) -> Any:
         )
     else:
         generation_payload = _normalize_generation_payload(generation_payload)
+    generation_payload = {**generation_payload, **task_refs}
     # H3's settled receipt carries the same self-contained reference view that
     # was sealed at dry run. Project it from the receipt without reopening any
     # producer scratch path (which may already have been deleted).
@@ -700,7 +707,6 @@ def _reconstruct_generation_result(result: InvocationResult) -> Any:
         manifest = dict(settled_manifest) if isinstance(settled_manifest, Mapping) else {}
         manifest["reference_view"] = _json_safe_mapping(reference_view)
         generation_payload = {**generation_payload, "manifest": manifest}
-    generation_payload = {**generation_payload, **task_refs}
     if task_refs.get('manifest_ref'):
         generation_payload.update(run_dir=None, image_paths=[])
     from_dict = getattr(generation_result_type, "from_dict", None)

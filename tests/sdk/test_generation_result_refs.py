@@ -109,7 +109,9 @@ def test_settled_reference_view_is_reconstructed_without_spool_paths():
         "trim": [1, 3], "tag": "<Video 1>",
         "input_binding": {"binding": "video_reference_0", "port": "ref_videos.ref_video_0"},
         "retained_picture_frames_estimate": {"value": 47, "kind": "metadata_upper_bound", "observed": False}}]}
-    fixture.result.raw_result['task']['result']['manifest'] = {"reference_view": reference_view}
+    fixture.result.raw_result['task']['result']['evidence'] = {
+        "producer": {"workflow_hook": {"reference_view": reference_view}}, "transport": {},
+    }
     fixture.result.raw_result['task']['result']['manifest_path'] = '/deleted/spool/result.json'
 
     result = _reconstruct_generation_result(fixture.result)

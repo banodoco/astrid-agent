@@ -575,6 +575,51 @@ def test_sealed_reference_view_uses_compiled_rows_and_labels_video_counts_as_est
     assert "retained_picture_frames" not in video
 
 
+
+def test_settled_reference_count_redecodes_pinned_vhs_path_and_keeps_failures_unqualified(tmp_path):
+    import hashlib
+    import shutil
+    import subprocess
+    from astrid.packs.h3_av.shared.stages import _settled_reference_view
+
+    ffmpeg = shutil.which("ffmpeg")
+    assert ffmpeg
+    video = tmp_path / "managed/assets/clip.mp4"
+    video.parent.mkdir(parents=True)
+    subprocess.run([ffmpeg, "-v", "error", "-f", "lavfi", "-i",
+                    "testsrc=size=64x48:rate=12:duration=6", "-t", "6", "-an",
+                    "-c:v", "mpeg4", "-y", str(video)], check=True, capture_output=True)
+    digest = hashlib.sha256(video.read_bytes()).hexdigest()
+    view = {"target_frame_cap": 120, "references": [{
+        "occurrence": "performance", "modality": "video", "tag": "<Video 1>",
+        "input_binding": {"binding": "video_reference_0", "start_time": 1.0, "frame_load_cap": 65},
+        "retained_picture_frames_estimate": {"value": 56, "kind": "metadata_upper_bound", "observed": False},
+    }]}
+    assets = {"video_reference_0": {"member": "assets/clip.mp4", "sha256": digest}}
+
+    settled = _settled_reference_view(view, reference_assets=assets, workdir=tmp_path)
+    derived = settled["references"][0]["retained_picture_frames_derived"]
+    assert derived["input_frame_count"] == 65
+    assert derived["value"] == 56  # min(65, 120), then the greatest 5+17k value
+    assert derived["kind"] == "derived_pinned_node_rule"
+    assert derived["conformance"] == "not_conformed"
+    assert derived["input_sha256"] == digest
+    assert "/managed/" not in str(settled)
+    assert settled["references"][0]["retained_picture_frames_estimate"] == view["references"][0]["retained_picture_frames_estimate"]
+
+    mutated = _settled_reference_view(view, reference_assets={
+        "video_reference_0": {"member": "assets/clip.mp4", "sha256": "0" * 64},
+    }, workdir=tmp_path)
+    assert mutated["references"][0]["retained_picture_frames_derived"]["status"] == "unqualified"
+    assert mutated["references"][0]["retained_picture_frames_derived"]["reason"] == "bound_reference_redecode_unavailable"
+    assert "/managed/" not in str(mutated)
+
+    unavailable = _settled_reference_view(view, reference_assets=assets, workdir=tmp_path,
+                                          ffmpeg="/missing/ffmpeg")
+    assert unavailable["references"][0]["retained_picture_frames_derived"]["status"] == "unqualified"
+    assert "ffmpeg" in unavailable["references"][0]["retained_picture_frames_derived"]["reason"]
+
+
 def test_fractional_reference_trim_survives_compilation_manifest(tmp_path):
     from astrid.packs.h3_av.shared.compile import _compile_native_v2
     from astrid.packs.h3_av.shared.request_v2 import normalize_v2
