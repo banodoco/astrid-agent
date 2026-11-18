@@ -9,7 +9,6 @@ import copy
 import hashlib
 import json
 import re
-import threading
 from collections.abc import Mapping
 
 from astrid.core.timeline.authoring_bundle import (
@@ -734,32 +733,15 @@ def _reservation_refs(state):
     return refs
 
 
-# Identities reserved by accepted history, per publication. Ancestry is
-# immutable, so reserved(entry) = reserved(previous) + what that entry adds.
-# Only a history scan that finished without error is stored; each commit then
-# reads just the entries newer than the stored one. One newest row per
-# timeline: {(project, timeline, publication, revision): (reserved, recorded)}.
-_RESERVED_HISTORY = {}
-_RESERVED_HISTORY_LOCK = threading.Lock()
+def _check_reservations(port, plan, current, rejected, base, memo):
+    """Refuse a create that claims an identity accepted history reserved.
 
-
-def _warm_reserved(scope):
-    with _RESERVED_HISTORY_LOCK:
-        for key, value in _RESERVED_HISTORY.items():
-            if key[:2] == scope:
-                return key, value
-    return None, None
-
-
-def _remember_reserved(scope, current, reserved, recorded):
-    key = (*scope, current["publication_id"], current["revision_id"])
-    with _RESERVED_HISTORY_LOCK:
-        for old in [old for old in _RESERVED_HISTORY if old[:2] == scope]:
-            del _RESERVED_HISTORY[old]
-        _RESERVED_HISTORY[key] = (frozenset(reserved), recorded)
-
-
-def _check_reservations(port, plan, current, rejected, base):
+    ``memo`` belongs to one provider instance, so one realm run, and maps
+    (project, timeline) to (publication, revision, reserved, recorded) for the
+    newest history this provider has scanned cleanly. Ancestry is immutable,
+    so reserved(head) = reserved(memo head) + what the newer entries add; the
+    scan reads only those entries.
+    """
     from astrid.sdk.timeline.commands import CommandError
 
     from ._command_state import State, equal, one, root_identity
@@ -1031,16 +1013,15 @@ def _check_reservations(port, plan, current, rejected, base):
     def read_history():
         """Entries newer than the stored publication, or all of them."""
         nonlocal reserved, recorded
-        key, value = _warm_reserved(scope)
-        if value is not None:
-            after = {'revision_id': key[3], 'publication_id': key[2]}
+        row = memo.get(scope)
+        if row is not None:
+            after = {'publication_id': row[0], 'revision_id': row[1]}
             try:
-                entries = ([] if after == current
-                           else _history(port, current, after, rejected, base))
-                reserved, recorded = set(value[0]), value[1]
+                entries = _history(port, current, after, rejected, base)
+                reserved, recorded = set(row[2]), row[3]
                 return entries
-            except Exception:
-                pass  # not an ancestor of this head, or unreadable: read it all
+            except rejected:
+                pass  # not an ancestor of this head: read it all
         reserved, recorded = set(), False
         return _history(port, current, None, rejected, base)
 
@@ -1068,7 +1049,7 @@ def _check_reservations(port, plan, current, rejected, base):
     except (AuthoringBundleError, CommandError, KeyError, TypeError, ValueError) as exc:
         raise rejected(_failure('history_unavailable', 'semantic identity history is unavailable',
                                 base, current)) from exc
-    _remember_reserved(scope, current, reserved, recorded)
+    memo[scope] = (current['publication_id'], current['revision_id'], frozenset(reserved), recorded)
     scan(plan.records, boundary(current['revision_id']), ordinary=True, output=plan.bundle,
          accepted_base=current, requested_base=base)
 
@@ -1079,6 +1060,7 @@ class RuntimeCommitService:
 
     def __init__(self, contract_digest):
         self.contract_digest = contract_digest
+        self._reserved = {}
 
     def capture_candidate_inputs(self, document, *, candidate):
         """Pure optional inputs for Runtime's working-copy verification."""
@@ -1446,7 +1428,7 @@ class RuntimeCommitService:
                 for record in plan.records:
                     if record['command']['op'] == 'timeline.inverse' and undo_steps is not None:
                         record['command']['args']['steps'] = copy.deepcopy(undo_steps)
-                _check_reservations(port, plan, current, CommitRejected, base)
+                _check_reservations(port, plan, current, CommitRejected, base, self._reserved)
                 from astrid.sdk.timeline.validation import validate_final_candidate
 
                 validation_bundle = plan.bundle
