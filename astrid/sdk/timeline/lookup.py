@@ -154,7 +154,7 @@ class _LookupMixin:
 
     def track(self, track: str, *, above: str | None = None, kind: str = "visual"):
         """Select or create a parent output track, optionally placing it above another track."""
-        from astrid.core.timeline.track_appearance import stamp_new_track_appearance
+        from astrid.core.timeline.track_appearance import label_track_with_id, stamp_new_track_appearance
         if not isinstance(track, str) or not track.strip():
             raise TimelineEditError("track requires a nonempty ID")
         track = track.strip()
@@ -171,7 +171,7 @@ class _LookupMixin:
             if kind not in {"visual", "audio"}:
                 raise TimelineEditError("track kind must be 'visual' or 'audio'")
             # The timeline schema requires a label; a new track is labelled with its id.
-            row = {"id": track, "kind": kind, "label": track, "role": "output"}
+            row = label_track_with_id({"id": track, "kind": kind, "role": "output"})
             stamp_new_track_appearance(row)
             command = getattr(self, "command", None)
             if callable(command):

@@ -257,13 +257,10 @@ def capture_move(bundle, select, on):
 
 def capture_track_create(bundle, owner, row):
     """Small structural proof: caller allocates the row ID once, before sending."""
-    from astrid.core.timeline.track_appearance import stamp_new_track_appearance
+    from astrid.core.timeline.track_appearance import label_track_with_id, stamp_new_track_appearance
 
     row = copy.deepcopy(row)
-    # The timeline schema requires a label on every track (render refuses
-    # one without); a new track is labelled with its id, as lookup.track does.
-    if not row.get('label') and isinstance(row.get('id'), str) and row['id']:
-        row['label'] = row['id']
+    label_track_with_id(row)
     stamp_new_track_appearance(row)
     return _capture(bundle, {'schema_version': 1, 'op': 'track.create', 'version': '1',
                              'select': owner, 'args': {'row': row}, 'intent': {}})
