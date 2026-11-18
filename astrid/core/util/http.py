@@ -15,7 +15,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
-from astrid._tls_policy import os_trust_ssl_context
+from astrid._tls_policy import os_trust_ssl_context, request_error_host
 from astrid.core.contracts.errors import AstridError
 
 if TYPE_CHECKING:
@@ -149,7 +149,7 @@ def _real_transport(request: Request) -> tuple[int, bytes]:
 
     Returns ``(status, body)``.  Raises ``URLError`` on connection failure.
     """
-    with urlopen(
+    with request_error_host(request.full_url), urlopen(
         request,
         timeout=_extract_timeout(request),
         context=os_trust_ssl_context(),

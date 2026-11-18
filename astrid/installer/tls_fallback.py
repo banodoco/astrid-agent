@@ -14,9 +14,10 @@ from astrid.core.util import http as http_util
 
 def urlopen_with_tls_fallback(request: urllib.request.Request, *, timeout: float):
     """Open once with the same verifying policy as all external HTTP clients."""
-    return urllib.request.urlopen(
-        request, timeout=timeout, context=http_util.os_trust_ssl_context()
-    )
+    with http_util.request_error_host(request.full_url):
+        return urllib.request.urlopen(
+            request, timeout=timeout, context=http_util.os_trust_ssl_context()
+        )
 
 
 def open_with_tls_fallback(request: urllib.request.Request, *, timeout: float, handlers=()):
@@ -24,4 +25,5 @@ def open_with_tls_fallback(request: urllib.request.Request, *, timeout: float, h
     opener = urllib.request.build_opener(
         *handlers, urllib.request.HTTPSHandler(context=http_util.os_trust_ssl_context())
     )
-    return opener.open(request, timeout=timeout)
+    with http_util.request_error_host(request.full_url):
+        return opener.open(request, timeout=timeout)

@@ -29,7 +29,7 @@ from astrid.core.model_setup.manifest import (
     verify_signature,
 )
 from astrid.core.model_setup.preflight import require_disk
-from astrid.core.util.http import os_trust_ssl_context
+from astrid.core.util.http import os_trust_ssl_context, request_error_host
 
 CHUNK_SIZE = 1 << 20
 ARTIFACTS_DIR_NAME = "artifacts"
@@ -178,11 +178,12 @@ def _download(
     request = urllib.request.Request(url)
     if offset:
         request.add_header("Range", f"bytes={offset}-")
-    opened = (
-        urllib.request.urlopen(request, context=os_trust_ssl_context())
-        if urlopen is None
-        else urlopen(request)
-    )
+    with request_error_host(request.full_url):
+        opened = (
+            urllib.request.urlopen(request, context=os_trust_ssl_context())
+            if urlopen is None
+            else urlopen(request)
+        )
     with opened as response:  # type: ignore[attr-defined]
         status = getattr(response, "status", 200)
         if offset and status == 200:

@@ -18,7 +18,7 @@ import urllib.request
 from typing import Any
 
 from astrid.core.contracts.errors import TLS_VERIFICATION_CODE, coerce_astrid_error
-from astrid.core.util.http import os_trust_ssl_context
+from astrid.core.util.http import os_trust_ssl_context, request_error_host
 
 # -- dual-import guard (T5 pattern) -------------------------------------------
 try:
@@ -255,7 +255,7 @@ def load_workflow_from_url(url: str) -> dict[str, Any]:
         },
         method="GET",
     )
-    with urllib.request.urlopen(req, timeout=30, context=os_trust_ssl_context()) as resp:
+    with request_error_host(req.full_url), urllib.request.urlopen(req, timeout=30, context=os_trust_ssl_context()) as resp:
         raw = resp.read().decode("utf-8", errors="replace")
     return json.loads(raw)
 

@@ -52,7 +52,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol, runtime_checkable
 
-from astrid.core.util.http import os_trust_ssl_context
+from astrid.core.util.http import os_trust_ssl_context, request_error_host
 
 # One source of truth: the frozen task-0.8 reference contract owns normalization,
 # hashing, and every version constant. Re-export them so callers import from one
@@ -341,7 +341,7 @@ def _stdlib_transport(
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=30, context=os_trust_ssl_context()) as resp:  # noqa: S310 (provider endpoint)
+        with request_error_host(req.full_url), urllib.request.urlopen(req, timeout=30, context=os_trust_ssl_context()) as resp:  # noqa: S310 (provider endpoint)
             raw = resp.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         # Surface only the status and a generic reason — never the body, which

@@ -220,14 +220,16 @@ class ComfyUIEngine:
         Never raises: a closed port, a timeout, a non-200 or non-JSON answer is {"ready": False, "reason": ...}.
         """
         import json
+        import urllib.parse
         import urllib.request
 
-        from astrid.core.util.http import os_trust_ssl_context
+        from astrid.core.util.http import os_trust_ssl_context, request_error_host
 
         url = str(endpoint).rstrip("/") + "/object_info"
         try:
-            with urllib.request.urlopen(
-                url, timeout=timeout, context=os_trust_ssl_context()
+            context = os_trust_ssl_context() if urllib.parse.urlsplit(url).scheme == "https" else None
+            with request_error_host(url), urllib.request.urlopen(
+                url, timeout=timeout, context=context
             ) as response:  # noqa: S310  (caller-validated endpoint)
                 info = json.loads(response.read().decode("utf-8"))
         except Exception as exc:  # noqa: BLE001  (every failure is a clean not-ready)

@@ -28,7 +28,7 @@ from urllib import request as urllib_request
 
 from astrid.core.generation.engine_contracts import TransportError
 from astrid.core.path_utils import has_url_scheme, is_native_absolute_path
-from astrid.core.util.http import os_trust_ssl_context
+from astrid.core.util.http import os_trust_ssl_context, request_error_host
 
 MAX_JSON_BYTES = 32 * 1024 * 1024
 MAX_DESCRIPTOR_INFO_BYTES = 64 * 1024
@@ -77,7 +77,8 @@ def open_comfy_http(request: urllib_request.Request, *, timeout: float) -> Any:
     host = parsed.hostname or ""
     if host == "localhost" or host.startswith("127.") or host == "::1":
         handlers.append(urllib_request.ProxyHandler({}))
-    return urllib_request.build_opener(*handlers).open(request, timeout=timeout)
+    with request_error_host(request.full_url):
+        return urllib_request.build_opener(*handlers).open(request, timeout=timeout)
 
 
 @dataclass(frozen=True)

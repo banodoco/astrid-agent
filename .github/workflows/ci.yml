@@ -168,6 +168,30 @@ jobs:
       - name: Import cycles gate
         run: make cycles
 
+      # Root-level TLS tests are outside the PR's single unit shard. Keep the
+      # transport inventory and certificate refusal probes on every PR.
+      - name: Check Agent TLS policy and review regressions
+        if: ${{ !cancelled() }}
+        run: >-
+          python -m pytest -q -rA
+          tests/core/util/test_http_trust.py
+          tests/installer/test_tls_fallback.py
+          tests/test_721_remaining_tls_policy.py
+          tests/test_721_urllib_os_tls_policy.py
+          tests/test_721_tls_review.py
+          tests/test_721_http_policy_guard.py
+          tests/test_astrid_error_contract.py
+          --junitxml=tls-policy-regressions.xml
+
+      - name: Retain TLS policy regression results
+        if: ${{ always() && hashFiles('tls-policy-regressions.xml') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: tls-policy-regressions
+          path: tls-policy-regressions.xml
+          if-no-files-found: error
+          retention-days: 30
+
       # Runs even when an earlier gate failed: a collection error stops every shard, and the ruff, mypy and cycle gates
       # being red on this branch must not hide it.
       - name: Collection errors gate

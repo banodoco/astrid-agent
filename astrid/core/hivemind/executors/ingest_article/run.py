@@ -12,7 +12,7 @@ import urllib.request
 from typing import Any
 
 from astrid.core.contracts.errors import TLS_VERIFICATION_CODE, coerce_astrid_error
-from astrid.core.util.http import os_trust_ssl_context
+from astrid.core.util.http import os_trust_ssl_context, request_error_host
 
 # -- dual-import guard (T5 pattern) -------------------------------------------
 try:
@@ -226,7 +226,7 @@ def fetch_html(url: str) -> str:
         },
         method="GET",
     )
-    with urllib.request.urlopen(req, timeout=30, context=os_trust_ssl_context()) as resp:
+    with request_error_host(req.full_url), urllib.request.urlopen(req, timeout=30, context=os_trust_ssl_context()) as resp:
         # Try to read with the encoding from Content-Type, fall back to utf-8
         raw = resp.read()
         content_type = resp.headers.get("Content-Type", "")
