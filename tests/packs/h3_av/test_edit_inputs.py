@@ -415,3 +415,14 @@ def test_file_limit_warns_at_twelve():
     warnings = []
     prepare._admit_conditioning(_request(items), [], warnings)
     assert any(warning["limit"] == "conditioning_files" for warning in warnings)
+
+
+def test_uncapped_video_estimate_includes_timestamp_boundary_frame(monkeypatch, tmp_path):
+    path = tmp_path / "v"
+    path.touch()
+    monkeypatch.setattr(prepare, "_probe_conditioning", lambda _: {"streams": [{"codec_type": "video", "duration": "2.2916666666666665", "width": 96, "height": 64}]})
+    item = {"occurrence_id": "v", "asset": "v", "role": "reference", "modality": "video", "audio": False}
+    row = prepare._admit_conditioning(_request([item]), [{"asset": "v", "status": "resolved", "path": str(path)}])[0]
+    # 55 metadata frames align to 39; one boundary frame aligns to 56.
+    assert row["retained_picture_frames_estimate"]["value"] == 56
+    assert row["retained_picture_frames"] is None

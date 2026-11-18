@@ -132,11 +132,12 @@ def _admit_conditioning(request: H3Request, assets: list[dict[str, Any]], warnin
             raise PreparationError(f"conditioning clip 2–15 seconds: {item['occurrence_id']} selects {span:.3f}s")
         if span <= clip_min + uncertainty or span >= clip_max - uncertainty:
             warnings.append({"limit": "clip_seconds", "message": f"{item['occurrence_id']} selects {span:.3f}s near the clip duration limit; metadata is approximate."})
-        totals[modality] += math.ceil(span * 24 - 1e-9) / 24 if modality == "video" else span
+        video_bound = (int(selected[1]) - int(selected[0])) if modality == "video" and isinstance(selected, list) else (math.ceil(span * 24 - 1e-9) + 1 if modality == "video" else None)
+        totals[modality] += video_bound / 24 if modality == "video" else span
         if modality == "video":
             # Estimate the loader's maximum 24-fps frames from metadata; the
             # actual filter output and node-retained count remain unobserved.
-            bound = (int(selected[1]) - int(selected[0])) if isinstance(selected, list) else math.ceil(span * 24 - 1e-9)
+            bound = video_bound
             duration = request.value.get("duration")
             if duration is not None:
                 from .timing import frame_index, smallest_h3_run_at_least
@@ -199,7 +200,7 @@ def _admit_conditioning(request: H3Request, assets: list[dict[str, Any]], warnin
         warnings.append({"limit": "conditioning_files", "message": "Conditioning references are at the 12-file limit."})
     for modality, total in totals.items():
         limit = LIMITS["modality_seconds"]["value"]
-        uncertainty = (1 / 24 if modality == "video" or (modality == "audio" and counts["video"]) else 1 / 48000)
+        uncertainty = (2 / 24 if modality == "video" else (1 / 24 if modality == "audio" and counts["video"] else 1 / 48000))
         if total > limit + uncertainty + 1e-9:
             raise PreparationError(f"per modality total 15 seconds: {modality} selects {total:.3f}s")
         if total >= limit - uncertainty:
