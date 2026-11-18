@@ -41,6 +41,7 @@ CODES = {
     'command_failed': 'execution', 'generation_failed': 'execution',
     'generation_route_unqualified': 'qualification',
     'comfy_execution_error': 'execution',
+    'host_restarted_during_job': 'execution',
     'executor_failed': 'execution',
     'task_failed': 'execution',
     'history_prompt_mismatch': 'execution',

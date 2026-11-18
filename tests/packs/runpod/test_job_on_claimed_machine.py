@@ -626,3 +626,44 @@ def test_hostwedge_restart_live_job_fences_claim_until_exact_recovery(machine_ca
     assert c.pod.cancelled == [old.job_id]
     assert c.deletes == ["pod-1"] and c.creates == 1
     assert c.read()["state"] == "cleanup_complete"
+
+
+@pytest.mark.parametrize("condition", ["live", "spent", "gone", "stopped", "unknown"])
+def test_restart_settles_only_checkpointed_job(machine_case, monkeypatch, condition):
+    from astrid.packs.runpod import worker_owner
+    from astrid.packs.runpod.worker_preparation import write_target_record
+
+    c = machine_case
+    claim(c)
+    interrupted, *queued = [job(c, n) for n in range(1, 5)]
+    lease = c.machine.claim(interrupted)
+    detached = c.machine.start(lease, interrupted)
+    record = c.read()
+    if condition == "spent":
+        record["paid_limits"]["max_usd"] = 0.00001
+        write_target_record(c.owner.path, record)
+        c.clock.advance(1)
+    c.host.close()
+    replacement = c.fresh()
+    c.adapter.lease_owner = replacement
+    monkeypatch.setattr(worker_owner, "provider_pod_state",
+                        lambda key, pod: "live" if condition == "spent" else condition)
+    forbid_allocation(c, monkeypatch)
+    replacement.recover_job(c.machine.settle_interrupted_job)
+    assert c.read()["paid_limits"] == record["paid_limits"]
+    if condition != "live":
+        assert c.read()["state"] == "cleanup_complete"
+        assert c.deletes == ["pod-1"]
+        return
+    settled = c.read()["lease"]
+    assert settled["state"] == "idle"
+    assert settled["invocation_id"] == interrupted.invocation_id
+    assert settled["paid_expires_at"] == record["lease"]["paid_expires_at"]
+    assert settled["last_job"]["outcome"] == "failed"
+    assert settled["last_job"]["failure"]["code"] == "host_restarted_during_job"
+    assert detached.job_id in c.pod.cancelled
+    assert c.pod.resets[-1]["ok"]
+    for request in queued:
+        run(c, request)
+        assert c.read()["lease"]["last_job"]["outcome"] == "success"
+    assert c.creates == 1 and not c.deletes

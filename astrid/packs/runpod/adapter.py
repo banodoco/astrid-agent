@@ -441,23 +441,23 @@ def build_host_adapter(*, preferences, engine, holds, quiesce, credentials, envi
 
     owner = RunPodLeaseOwner(selection, holds=holds, quiesce=drain,
                              service_environ=environ)
-    try:
-        if fresh_claim:
-            owner.start_fresh_claim()
-        elif job:
-            owner.recover_job()
-        else:
-            owner.recover(**({"expected_machine_id": expected_machine_id} if expected_machine_id is not None else {}))
-    except BaseException:
-        owner.close()
-        raise
-    from astrid.packs.runpod.machine import observe_mounts_with
+    from astrid.packs.runpod.machine import RunPodMachine, observe_mounts_with
 
     adapter = RunPodAdapter(lease_owner=owner,
                             placement=RemotePlacement(None),
                             installation=RunPodInstallation(compatibility.as_mapping(), engine=engine, root=root),
                             validate=_validate_retained_workflow)
     adapter.observe_mounts = observe_mounts_with(credential)
+    try:
+        if fresh_claim:
+            owner.start_fresh_claim()
+        elif expected_machine_id is None:
+            owner.recover_job(RunPodMachine(adapter).settle_interrupted_job)
+        else:
+            owner.recover(expected_machine_id=expected_machine_id)
+    except BaseException:
+        owner.close()
+        raise
     return adapter
 
 
