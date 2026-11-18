@@ -149,3 +149,90 @@ def test_removed_request_is_reported_as_observed_zero_without_losing_its_counter
     candidate = make_baseline(timing, counters, system="Windows", sources={"agent": "reference"}, counter_vocabulary=reference)
     assert candidate["callers"]["resident_sdk"]["counter_maxima"]["comfy_http.GET /history/<prompt>"] == 0
     assert compare_baseline(candidate, reference) == []
+
+
+def transition_cells():
+    old, control, actual = baseline(), baseline(), baseline()
+    old["tolerance"] = dict(LEGACY_TOLERANCE)
+    actual["sources"]["agent"] = control["sources"]["agent"] = "candidate"
+    actual["pair_id"] = control["pair_id"] = "same-runner-pair"
+    actual["measurement"] = {"gate_version": 3, "harness_settings": {
+        "host_poll_seconds": "product_default", "machine_poll_seconds": "product_default",
+        "sdk_poll_seconds": "product_default",
+    }}
+    # Different configured cells are not one timing distribution. The paired
+    # base uses the same defaults/observer as this candidate default cell.
+    for value in actual["callers"].values():
+        value["overhead_seconds"]["median"] = 30
+        value["overhead_seconds"]["slowest"] = 32
+    paired = copy.deepcopy(actual)
+    paired["sources"]["agent"] = "base"
+    return old, control, actual, paired
+
+
+def test_measurement_transition_retains_the_old_gate_and_the_default_pair():
+    from tests._local_speed_baseline import approve_reference
+    old, control, actual, paired = transition_cells()
+    assert compare_baseline(actual, old, coverage_reference=paired)
+    assert approve_reference(actual, old, coverage_reference=paired, historical_control=control) is actual
+    for field in ("median", "slowest"):
+        regressed = copy.deepcopy(control)
+        regressed["callers"]["resident_sdk"]["overhead_seconds"][field] *= 1.2
+        with pytest.raises(ValueError, match="cannot replace"):
+            approve_reference(actual, old, coverage_reference=paired, historical_control=regressed)
+    slower_default = copy.deepcopy(actual)
+    slower_default["callers"]["resident_sdk"]["overhead_seconds"]["median"] *= 1.2
+    with pytest.raises(ValueError, match="contemporaneous"):
+        approve_reference(slower_default, old, coverage_reference=paired, historical_control=control)
+
+
+@pytest.mark.parametrize("field", ["sources", "pair_id", "system", "fixture"])
+def test_historical_control_cannot_qualify_another_candidate_or_measurement(field):
+    from tests._local_speed_baseline import approve_reference
+    old, control, actual, paired = transition_cells()
+    control[field] = {"agent": "base"} if field == "sources" else "different"
+    with pytest.raises(ValueError, match="exact candidate"):
+        approve_reference(actual, old, coverage_reference=paired, historical_control=control)
+
+
+def test_historical_control_cannot_bypass_an_established_default_reference():
+    from tests._local_speed_baseline import approve_reference
+    _, control, actual, paired = transition_cells()
+    with pytest.raises(ValueError, match="original measurement transition"):
+        approve_reference(actual, paired, coverage_reference=paired, historical_control=control)
+
+
+def test_historical_overlay_uses_immutable_harness_and_preserves_candidate_product(tmp_path):
+    import hashlib
+    import subprocess
+
+    from tests.local_speed_paired_run import overlay_harness
+    root, worktree = tmp_path / "repo", tmp_path / "control"
+    root.mkdir()
+    def git(*args):
+        return subprocess.check_output(["git", "-C", str(root), *args], text=True).strip()
+    git("init", "-q")
+    product, harness = root / "astrid/__init__.py", root / "tests/_local_speed_process.py"
+    product.parent.mkdir()
+    harness.parent.mkdir()
+    product.write_text("base product\n", newline="\n")
+    harness.write_text("original observer\n", newline="\n")
+    git("add", ".")
+    identity = ("-c", "user.name=Meter test", "-c", "user.email=meter@example.invalid", "-c", "commit.gpgsign=false")
+    git(*identity, "commit", "-qm", "old")
+    old = git("rev-parse", "HEAD")
+    product.write_text("candidate product\n", newline="\n")
+    harness.write_text("new observer\n", newline="\n")
+    git("add", ".")
+    git(*identity, "commit", "-qm", "candidate")
+    git("worktree", "add", "--detach", str(worktree), "HEAD")
+    try:
+        hashes = overlay_harness(root, worktree, historical_ref=old)
+        assert (worktree / "astrid/__init__.py").read_text() == "candidate product\n"
+        assert (worktree / "tests/_local_speed_process.py").read_text() == "original observer\n"
+        assert hashes == {"tests/_local_speed_process.py": hashlib.sha256(b"original observer\n").hexdigest()}
+        (worktree / "astrid/__init__.py").write_text("tampered\n", newline="\n")
+        with pytest.raises(ValueError, match="non-harness"):
+            overlay_harness(root, worktree, historical_ref=old)
+    finally:
+        git("worktree", "remove", "--force", str(worktree))

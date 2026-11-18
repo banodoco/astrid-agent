@@ -71,18 +71,18 @@ class AttachedMeter:
 
     def local_event(self, kind):
         with self.lock:
-            self.local_events.append((kind, time.monotonic()))
+            self.local_events.append((kind, time.perf_counter()))
 
     def begin(self):
         if self.observer is not None:
             self.sqlite_before = self.runtime.sqlite_mode()
             self.hashes_before = self.observer.snapshot()
         self.wall_start_ns = time.time_ns()
-        self.start_ns = time.monotonic_ns()
+        self.start_ns = time.perf_counter_ns()
         self.start = self.start_ns / 1e9
 
     def finish(self):
-        self.reply_ns = time.monotonic_ns()
+        self.reply_ns = time.perf_counter_ns()
         self.wall_reply_ns = time.time_ns()
         self.reply = self.reply_ns / 1e9
         if self.observer is not None:

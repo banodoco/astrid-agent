@@ -31,8 +31,9 @@ jobs:
   calibrate:
     name: Standing attached meter (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # Two complete products on the same runner; per-test/measurement limits stay.
-    timeout-minutes: 120
+    # The initial v2 transition adds its original control cell to the pair.
+    # Each existing test and measurement-phase timeout stays unchanged.
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
@@ -43,7 +44,7 @@ jobs:
       ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/vibecomfy-checkout
       ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/runpod-lifecycle-checkout
       PYTHONDONTWRITEBYTECODE: "1"
-      PYTEST_ADDOPTS: "-rA"
+      PYTEST_ADDOPTS: "-rA -W error::pytest.PytestUnhandledThreadExceptionWarning"
       GIT_CONFIG_COUNT: "2"
       GIT_CONFIG_KEY_0: core.autocrlf
       GIT_CONFIG_VALUE_0: "false"

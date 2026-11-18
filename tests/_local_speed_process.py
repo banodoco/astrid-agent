@@ -22,6 +22,11 @@ import time
 import zlib
 from typing import Any
 
+if sys.platform == "win32":
+    import _overlapped
+else:
+    _overlapped = None
+
 PREFIX = "PLAN55_PROCESS_OBSERVATION "
 MARKER = "# PLAN55_OBSERVER_INSTALLED_AFTER_ADMISSION"
 MAX_EVENTS = 100000
@@ -148,6 +153,10 @@ class ProcessObserver:
         self.fsync_function = getattr(os, "fsync", None)
         self.fdatasync_function = getattr(os, "fdatasync", None)
         self.select_function = select.select
+        # Default Windows asyncio waits on IOCP. The exact C-call identity
+        # also covers aliases and proactor shutdown/draining polls.
+        self.iocp_wait_function = getattr(_overlapped, "GetQueuedCompletionStatus", None)
+        self.c_wait_ids = {}
         self.wait_state = threading.local()
         self.context = threading.local()
         self.runtime_connection = None
@@ -162,7 +171,9 @@ class ProcessObserver:
             if len(self.events) >= MAX_EVENTS:
                 self.gaps.add("Python observation event limit exceeded")
                 return
-            self.events.append({"at_ns": time.monotonic_ns(), "kind": kind,
+            # perf_counter is a system-wide monotonic clock on supported
+            # Python versions, including Windows 3.11's high-resolution QPC.
+            self.events.append({"at_ns": time.perf_counter_ns(), "kind": kind,
                                 "tid": threading.get_native_id(), **fields})
 
     def _install_waits(self):
@@ -314,9 +325,20 @@ class ProcessObserver:
             kind = ("sleep" if arg is self.sleep_function else
                     "fsync" if arg is self.fsync_function else
                     "fdatasync" if arg is self.fdatasync_function else
-                    "selector_wait" if arg is self.select_function and not getattr(self.wait_state, "depth", 0) else None)
+                    "selector_wait" if (arg is self.select_function or arg is self.iocp_wait_function)
+                    and not getattr(self.wait_state, "depth", 0) else None)
             if kind is not None:
-                self.event(kind + {"c_call": "_attempt", "c_return": "_success", "c_exception": "_error"}[event])
+                fields = {}
+                if kind == "selector_wait":
+                    tid = threading.get_native_id()
+                    if event == "c_call":
+                        self.c_wait_ids[tid] = next(self.wait_ids)
+                    wait_id = self.c_wait_ids.get(tid)
+                    if wait_id is not None:
+                        fields["wait_id"] = wait_id
+                    if event != "c_call":
+                        self.c_wait_ids.pop(tid, None)
+                self.event(kind + {"c_call": "_attempt", "c_return": "_success", "c_exception": "_error"}[event], **fields)
             elif (self.runtime_connection is not None and
                   (self.runtime_commit_code is None or frame.f_code is self.runtime_commit_code) and
                   getattr(arg, "__self__", None) is self.runtime_connection and
@@ -339,7 +361,7 @@ class ProcessObserver:
     def start(self) -> None:
         if self.started is not None:
             raise RuntimeError("process observer already installed")
-        self.started = time.monotonic_ns()
+        self.started = time.perf_counter_ns()
         self.start_thread = threading.get_ident()
         self.previous_profile = sys.getprofile()
         self.previous_thread_profile = threading.getprofile()
@@ -381,7 +403,7 @@ class ProcessObserver:
             hashes = self.hashes.snapshot(since_ns, until_ns)
             return {
                 "schema": "astrid.local-speed-process.v1", "pid": os.getpid(),
-                "role": self.role, "start_ns": self.started, "end_ns": time.monotonic_ns(),
+                "role": self.role, "start_ns": self.started, "end_ns": time.perf_counter_ns(),
                 "interval": {"monotonic_start_ns": since_ns, "monotonic_reply_ns": until_ns},
                 "counts": dict(sorted(counts.items())), "process_starts": processes,
                 "wait_coverage": list(WAIT_KINDS),

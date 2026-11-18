@@ -252,13 +252,34 @@ def compare_baseline(actual, reference, *, coverage_reference=None):
     return failures
 
 
-def approve_reference(actual, old_reference, *, coverage_reference=None):
+def approve_reference(actual, old_reference, *, coverage_reference=None, historical_control=None):
     """The caller must supply the prior reference, never the proposed replacement."""
     if actual.get("measurement", {}).get("gate_version") == 3 and actual["system"] == "Windows":
         if (coverage_reference is None or not actual.get("pair_id")
                 or actual["pair_id"] != coverage_reference.get("pair_id")):
             raise ValueError("Windows reference must be measured in the same runner pair")
-    failures = compare_baseline(actual, old_reference, coverage_reference=coverage_reference)
+    if historical_control is not None:
+        # The v2 references used an accelerated cell and a smaller observer.
+        # A measurement-policy transition must first qualify this same product
+        # in that immutable historical cell. It is not a source-tuple waiver.
+        if (old_reference.get("measurement") is not None or
+                old_reference.get("tolerance") != LEGACY_TOLERANCE or
+                actual.get("measurement", {}).get("gate_version") != 3 or
+                actual.get("measurement", {}).get("harness_settings") != {
+                    "host_poll_seconds": "product_default", "machine_poll_seconds": "product_default",
+                    "sdk_poll_seconds": "product_default"}):
+            raise ValueError("historical control is only valid for the original measurement transition")
+        if (historical_control.get("sources") != actual.get("sources") or
+                historical_control.get("system") != actual.get("system") or
+                historical_control.get("fixture") != actual.get("fixture") or
+                historical_control.get("measurement") is not None or
+                not actual.get("pair_id") or
+                historical_control.get("pair_id") != actual["pair_id"] or
+                coverage_reference is None or coverage_reference.get("pair_id") != actual["pair_id"]):
+            raise ValueError("historical control must measure this exact candidate in the same runner pair")
+        failures = compare_baseline(historical_control, old_reference)
+    else:
+        failures = compare_baseline(actual, old_reference, coverage_reference=coverage_reference)
     if failures:
         raise ValueError("regressed candidate cannot replace the prior reference")
     if coverage_reference is not None and compare_baseline(actual, coverage_reference):

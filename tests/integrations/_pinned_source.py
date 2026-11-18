@@ -75,13 +75,13 @@ def attached_comfy(comfy, port=0):
             self.wfile.write(body)
 
         def do_GET(self):
-            started = time.monotonic()
+            started = time.perf_counter()
             try:
                 self._get()
             finally:
                 observer = getattr(comfy, "request_observer", None)
                 if observer is not None:
-                    observer("GET", urlsplit(self.path).path, started, time.monotonic())
+                    observer("GET", urlsplit(self.path).path, started, time.perf_counter())
 
         def _get(self):
             url = urlsplit(self.path)
@@ -103,13 +103,13 @@ def attached_comfy(comfy, port=0):
             self._send(404, {})
 
         def do_POST(self):
-            started = time.monotonic()
+            started = time.perf_counter()
             try:
                 self._post()
             finally:
                 observer = getattr(comfy, "request_observer", None)
                 if observer is not None:
-                    observer("POST", urlsplit(self.path).path, started, time.monotonic())
+                    observer("POST", urlsplit(self.path).path, started, time.perf_counter())
 
         def _post(self):
             body = self.rfile.read(int(self.headers.get("Content-Length", 0)))

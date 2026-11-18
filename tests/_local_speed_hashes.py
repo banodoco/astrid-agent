@@ -91,7 +91,7 @@ class OutputHashObserver:
             # Copies share consumed-prefix tokens: repeated digest calls and
             # copying a finished hasher do not pretend bytes were hashed again.
             self._matched[(digest, value.tokens)] = value.tokens
-            self._matched_at.setdefault((digest, value.tokens), time.monotonic_ns())
+            self._matched_at.setdefault((digest, value.tokens), time.perf_counter_ns())
 
     def snapshot(self, since_ns=None, until_ns=None):
         with self._lock:

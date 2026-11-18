@@ -35,13 +35,13 @@ class RuntimeObserver:
     def _span(kind, context, route=None):
         return {"kind": kind, "write_context": context, "route": route,
                 "pid": os.getpid(), "tid": threading.get_native_id(),
-                "monotonic_start_ns": time.monotonic_ns(), "monotonic_end_ns": None,
+                "monotonic_start_ns": time.perf_counter_ns(), "monotonic_end_ns": None,
                 "epoch_start_ns": time.time_ns(), "epoch_end_ns": None}
 
     @staticmethod
     def _finish(span):
         span["epoch_end_ns"] = time.time_ns()
-        span["monotonic_end_ns"] = time.monotonic_ns()
+        span["monotonic_end_ns"] = time.perf_counter_ns()
 
     def sqlite_mode(self):
         store = self.daemon.service.store

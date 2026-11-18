@@ -179,6 +179,55 @@ def test_direct_select_wait_is_visible_even_through_an_existing_alias():
     assert row["counts"]["selector_wait_attempt"] == 1
 
 
+def test_completion_port_primitive_is_observed_by_identity_without_a_selector(monkeypatch):
+    from types import SimpleNamespace
+
+    from tests import _local_speed_process as process
+
+    # A real aliased C wait exercises the IOCP identity branch on either OS.
+    # The default asyncio test above exercises GetQueuedCompletionStatus itself
+    # on Windows, without changing its event-loop policy.
+    wait_alias = select.select
+    monkeypatch.setattr(process, "_overlapped", SimpleNamespace(GetQueuedCompletionStatus=wait_alias))
+    meter = observer()
+    meter.select_function = object()
+    reader, writer = socket.socketpair()
+    with reader, writer:
+        meter.start()
+        try:
+            wait_alias([reader], [], [], 0)
+            row = meter.snapshot()
+        finally:
+            meter.stop()
+    assert row["counts"]["selector_wait_attempt"] == 1
+    assert row["counts"]["selector_wait_success"] == 1
+    waits = [event for event in meter.events if event["kind"].startswith("selector_wait_")]
+    assert waits[0]["wait_id"] == waits[1]["wait_id"]
+
+
+def test_job_interval_does_not_use_the_coarse_windows_monotonic_clock(monkeypatch):
+    import hashlib
+
+    from tests.core.generation.test_local_speed_process_observer import DATA
+
+    monkeypatch.setattr(time, "monotonic_ns", lambda: 7)
+    meter = observer()
+    meter.start()
+    try:
+        hashlib.sha256(DATA).digest()
+        threading.Event().wait(0)
+        start = time.perf_counter_ns()
+        hashlib.sha256(DATA).digest()
+        threading.Event().wait(0)
+        reply = time.perf_counter_ns()
+        row = meter.snapshot(start, reply)
+    finally:
+        meter.stop()
+    assert row["start_ns"] < start < reply
+    assert row["counts"]["event_wait_attempt"] == 1
+    assert row["output_hash_streams"] == 1
+
+
 def test_successful_outer_commit_is_not_a_savepoint_or_noop():
     meter = observer()
     connection = sqlite3.connect(":memory:")
@@ -223,7 +272,7 @@ def test_wait_already_in_flight_is_reported_separately_from_new_waits():
         while not any(row.get("tid") == thread.native_id and row["kind"] == "event_wait_attempt" for row in meter.events):
             assert time.monotonic() < deadline
             time.sleep(0.001)
-        start = time.monotonic_ns()
+        start = time.perf_counter_ns()
         row = meter.snapshot(start)
         assert row["wait_carry_in"]["event_wait"] == 1
         assert row["counts"].get("event_wait_attempt", 0) == 0

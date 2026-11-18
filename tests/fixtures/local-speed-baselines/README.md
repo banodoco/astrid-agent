@@ -17,20 +17,43 @@ product and harness identities, dependency freeze and raw results are retained.
 The Windows comparison therefore does not use an unrelated historical runner
 as its only timing control.
 
+The first transition from the original v2 references adds a third measurement:
+the **same candidate product**, in a separate checked worktree, using the
+historical harness copied from the immutable PR base. That control retains the
+original accelerated poll settings and observer, so it can be compared with
+the historical numbers. It still uses the current 15% timing policy and exact
+counter caps. Its separate raw measurements and harness hashes are retained.
+The new product-default pair must also pass before a replacement is eligible.
+This transition cannot qualify a different candidate, dependency tuple, runner
+pair, OS or workload, and cannot bypass an established default-cell reference.
+Each cell keeps five timing/two counter samples per caller and the original
+per-test and per-phase deadlines; the workflow has time for the extra cell.
+
 The current comparison is **15% relative** for both median and slowest overhead,
 with **no absolute floor**. All counter caps remain upper bounds, including
 waits, commits and forced writes. A missing previously observed counter fails.
 The historical JSON files below retain their original values and acquisition
 policy; those policy fields do not select the current comparison tolerance.
 Newly observed counters are compared with the paired base under the same
-observer, while the existing counters also keep the historical caps.
+observer. During the initial transition the historical control keeps all old
+caps; different polling settings and observer costs are never combined into a
+single distribution. Once a default-cell reference is established, that cell
+is compared directly with its prior reference as well as its paired base.
 
 The attached cell leaves host, SDK and machine polling at product defaults.
 It counts `Event.wait`, direct `Condition.wait`, `asyncio.sleep` and selector
 waits as well as `time.sleep`; an Event's internal Condition is not counted a
-second time. Waits already pending when the interval starts are disclosed
+second time. Windows' default asyncio IOCP waits are observed through the exact
+`GetQueuedCompletionStatus` C-call identity, including direct drain/close calls;
+the event-loop policy is unchanged. Waits already pending when the interval starts are disclosed
 separately. Runtime claims, task reads and other requests are counted by method
 and normalized path, without query values or per-job identifiers.
+
+Caller, fake-server, Runtime and child-observer intervals use the same
+high-resolution `perf_counter` clock. On Windows Python 3.11 this avoids coarse
+`monotonic_ns` ticks collapsing a warmup or in-flight-wait boundary. Epoch
+timestamps for native trace matching remain separate. The historical control
+retains its original clock along with the rest of its immutable harness.
 
 Zero worker starts is valid when a worker admitted before the interval supplies
 a complete snapshot for that interval. A whole-lifetime/exit-only report is
@@ -60,7 +83,9 @@ LS-13; Python calls are never represented as a native count.
 `tests.local_speed_paired_run` reads the old reference from the **base Git
 commit**, not the candidate checkout. A proposed replacement cannot grade
 itself. It writes `eligible-reference.json` only after the candidate passes
-both the old-reference and paired-reference comparisons. This is an evidence
+both the old-reference and paired-reference comparisons in their matching
+cells. The historical control cannot be an old product measured in place of
+the candidate. This is an evidence
 artifact, not an automatic repository reference update. The standalone meter's
 `--reference-output` likewise requires and passes the prior reference first.
 
