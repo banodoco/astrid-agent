@@ -78,6 +78,10 @@ def _reference_shape(clip: Mapping[str, Any]) -> dict[str, Any]:
     return value
 
 
+_WORD_TIMING_FIELDS = ("id", "track", "at", "at_ms", "from", "to", "hold", "duration", "speed",
+                       "asset", "asset_id")
+
+
 class _BasisReader:
     """Reference bases of one bundle, built once and looked up per declaration.
 
@@ -107,8 +111,11 @@ class _BasisReader:
             word = False
         if word and key[0] != "parent":
             # A shot clip's word declaration never has an authorized binding, whatever its siblings,
-            # placements or other shots say: the finding depends on this clip alone.
-            return json.dumps({"clip": _reference_shape(clip)}, sort_keys=True, default=str)
+            # placements or other shots say: the finding depends on this clip's timing alone, not on
+            # which element it shows or its params.
+            timing = {name: clip[name] for name in _WORD_TIMING_FIELDS if name in clip}
+            anchors = intent._app(clip).get("word_anchors")
+            return json.dumps({"clip": timing, "word_anchors": anchors}, sort_keys=True, default=str)
         basis = self.basis(key, clip, declaration)
         own = {"clip": basis["clip"]}
         parts = [json.dumps(own, sort_keys=True, default=str), self._json("documents", basis["documents"])]

@@ -422,3 +422,18 @@ def test_unresolved_word_binding_on_an_added_clip_is_refused():
     child_clips(value)[-1].setdefault("app", {}).setdefault("astrid", {})["on"] = "word:hello"
     with pytest.raises(AuthoringBundleError, match="missing exact word binding"):
         validate_final_candidate(value, baseline=baseline)
+
+
+def test_retargeting_the_element_of_a_clip_with_an_unbound_word_declaration_is_accepted():
+    baseline = _unbound_word_head()
+    value = copy.deepcopy(baseline)
+    child_clips(value)[0].update(clipType="text", params={"k": 2})
+    validate_final_candidate(value, baseline=baseline)
+
+
+def test_editing_the_word_declaration_text_is_refused():
+    baseline = _unbound_word_head()
+    value = copy.deepcopy(baseline)
+    child_clips(value)[0]["app"]["astrid"]["on"] = "word:hello again"
+    with pytest.raises(AuthoringBundleError, match="missing exact word binding"):
+        validate_final_candidate(value, baseline=baseline)
