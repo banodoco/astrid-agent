@@ -1,0 +1,122 @@
+name: LS-8 resident pack proof
+
+on:
+  pull_request:
+    branches: [release/14/plan-55]
+    paths:
+      - .github/workflows/ls8-packet.yml
+      - astrid/core/execution/resident_sessions.py
+      - astrid/core/execution/resident_worker.py
+      - astrid/core/execution/generic_host.py
+      - astrid/core/execution/generic_host_worker.py
+      - astrid/core/execution/network_policy.py
+      - astrid/core/pack/imports.py
+      - astrid/core/pack/schemas/v3/pack.json
+      - astrid/sdk/pack_session.py
+      - astrid/sdk/__init__.py
+      - tests/core/execution/test_resident_sessions.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ls8-agent-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  native:
+    name: Resident lifetime (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      GIT_CONFIG_COUNT: "2"
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: "false"
+      GIT_CONFIG_KEY_1: core.eol
+      GIT_CONFIG_VALUE_1: lf
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: head
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha || 'release/14/plan-55' }}
+          path: base
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install and record exact inputs
+        id: inputs
+        run: |
+          python -m pip install -e './head[dev]'
+          python head/scripts/ci_install_runtime.py
+          mkdir -p proof
+          git -C head rev-parse HEAD > proof/head.txt
+          git -C base rev-parse HEAD > proof/base.txt
+          python -m pip freeze > proof/environment.txt
+          python - <<'PY'
+          import json, os, pathlib, tempfile
+          head = json.loads(pathlib.Path('head/runtime.lock.json').read_text())['source_commit']
+          base = json.loads(pathlib.Path('base/runtime.lock.json').read_text())['source_commit']
+          assert head == base, 'dependency identity differs; this pair is not comparable'
+          pathlib.Path('proof/runtime-pin.txt').write_text(head + '\n')
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as output:
+              print('ASTRID_RUNTIME_DATA_ROOT=' + tempfile.mkdtemp(prefix='astrid-ls8-'), file=output)
+          PY
+      - name: Execute unchanged base regressions, including inherited failures
+        if: ${{ !cancelled() && steps.inputs.outcome == 'success' }}
+        working-directory: base
+        env:
+          PYTHONPATH: ${{ github.workspace }}/base
+        run: |
+          python -m pytest --import-mode=importlib -rA --junitxml=../proof/base.xml \
+            tests/core/execution/test_managed_tool_session.py \
+            tests/core/execution/test_warm_hold.py \
+            tests/core/execution/test_generic_host_actions_v3.py \
+            tests/core/execution/test_network_policy_popen_class.py \
+            tests/core/execution/test_private_network_command.py \
+            tests/test_generic_host_child_output.py \
+            tests/packs/test_canonical_pack_v3.py \
+            tests/packs/test_pack_discovery_v3.py 2>&1 | tee ../proof/base.log
+      - name: Execute unchanged candidate regressions, including inherited failures
+        if: ${{ !cancelled() && steps.inputs.outcome == 'success' }}
+        working-directory: head
+        env:
+          PYTHONPATH: ${{ github.workspace }}/head
+        run: |
+          python -m pytest --import-mode=importlib -rA --junitxml=../proof/head.xml \
+            tests/core/execution/test_managed_tool_session.py \
+            tests/core/execution/test_warm_hold.py \
+            tests/core/execution/test_generic_host_actions_v3.py \
+            tests/core/execution/test_network_policy_popen_class.py \
+            tests/core/execution/test_private_network_command.py \
+            tests/test_generic_host_child_output.py \
+            tests/packs/test_canonical_pack_v3.py \
+            tests/packs/test_pack_discovery_v3.py 2>&1 | tee ../proof/head.log
+      - name: Execute resident pack lifecycle proof
+        if: ${{ !cancelled() && steps.inputs.outcome == 'success' }}
+        working-directory: head
+        env:
+          PYTHONPATH: ${{ github.workspace }}/head
+        run: |
+          python -m pytest --import-mode=importlib -rA --junitxml=../proof/resident.xml \
+            tests/core/execution/test_resident_sessions.py 2>&1 | tee ../proof/resident.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ls8-${{ matrix.os }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: proof
+          retention-days: 14

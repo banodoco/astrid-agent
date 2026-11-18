@@ -187,10 +187,11 @@ def install_pack_imports(pack_id: str, root: Path, path_names: Mapping[str, str]
                          *, source_digest: str | None = None,
                          selected_map: Mapping[str, Mapping[str, str]] | None = None,
                          verified_relocations: Mapping[str, Mapping[str, str]] | None = None) -> str:
-    """Bind this single-run worker to one canonical source identity.
+    """Bind this worker to one canonical source identity for its lifetime.
 
-    The host creates a fresh interpreter for each action. Keep imported modules
-    until that interpreter exits; updates never evict live module objects.
+    Ordinary actions use a fresh interpreter. Declared resident actions keep
+    the same immutable captured map until their owner retires the interpreter;
+    updates never evict live module objects or rebind an existing finder.
     The host supplies the complete transitive map for this execution.
     """
     if not re.fullmatch(r"[a-z][a-z0-9_]*", pack_id) or root.name != pack_id:
