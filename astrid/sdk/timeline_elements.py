@@ -399,18 +399,20 @@ def place_element(owner: Any, project: str, timeline: str, *, realm: str, target
                   element: dict[str, str], expected_head: str,
                   idempotency_key: str | None = None,
                   session: TimelineSession | None = None):
-    """Place an admitted project-pack element on an occurrence shot clip.
+    """Place an admitted project-pack effect on one clip.
 
-    First placement supports effect elements on ``am-discord`` clips. If the
-    target already has an element ref, the native command keeps the same id,
-    kind, and pack owner as the existing element-update route.
+    A built-in effect clip (``clipType`` is a built-in element id, with or without media,
+    no element ref yet) is pointed at the admitted effect: ``clipType`` and ``elementRef``
+    are set together and its params, timing and media are kept. If the target already has
+    an element ref, the native command keeps the same id, kind, and pack owner as the
+    existing element-update route.
     """
     key = idempotency_key
     try:
         if not all(isinstance(v, str) and v for v in (project, timeline, realm, target, expected_head)):
             raise ValueError('Explicit project/timeline/realm/target/expected head are required')
-        if not re.fullmatch(r'occurrence:[^/]+/clip:[^/]+', target) or '::' in target:
-            raise ValueError('Target must be an occurrence shot clip: occurrence:<occurrence-id>/clip:<clip-id>')
+        if not re.fullmatch(r'(?:parent|occurrence:[^/]+)/clip:[^/]+', target) or '::' in target:
+            raise ValueError('Target must be a clip: parent/clip:<clip-id> or occurrence:<occurrence-id>/clip:<clip-id>')
         if (not isinstance(element, dict)
                 or set(element) != {'packId', 'id', 'kind', 'revision'}
                 or any(not isinstance(element[name], str) or not element[name]

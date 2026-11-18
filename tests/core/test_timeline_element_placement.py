@@ -98,7 +98,7 @@ def _place(owner, ref, *, target=TARGET, expected_head='head', key='place-key'):
                          element=ref, expected_head=expected_head, idempotency_key=key)
 
 
-@pytest.mark.parametrize('target', ['parent/clip:clip-a', 'occurrence:bad',
+@pytest.mark.parametrize('target', ['clip:clip-a', 'parent/track:clip-a', 'occurrence:bad',
                                     'occurrence:occ-a/clip:', 'occurrence:occ-a::x/clip:clip-a'])
 def test_malformed_occurrence_target_refuses_before_commit(monkeypatch, tmp_path, configured, target):
     owner, ref, _, _ = _setup(monkeypatch, tmp_path, configured)
@@ -141,7 +141,7 @@ def test_native_first_placement_rejects_unsupported_element_kinds(monkeypatch, t
         'select': TARGET,
         'args': {'elementRef': {**ref, 'kind': kind}},
     }
-    with pytest.raises(CommandError, match='effect elements on am-discord clips only'):
+    with pytest.raises(CommandError, match='effect elements on built-in effect clips only'):
         execute(bundle, [command], schema_inputs=owner.schema_inputs, realm_id='realm')
 
 
@@ -173,3 +173,58 @@ def test_placement_writes_exact_admission_pin_and_retries_by_identity(monkeypatc
     retried = _place(owner, ref)
     assert retried == first
     assert owner.commit.call_count == 1
+
+
+# --- pointing an existing built-in effect clip at an admitted project effect ---------------------------------
+
+def _builtin_clip(bundle, clip_type, **fields):
+    clip = State(bundle).entity(TARGET)
+    clip.update(clipType=clip_type, params={'seed': 7, 'author_note': 'keep me'}, **fields)
+    return clip
+
+
+@pytest.mark.parametrize('clip_type', ['am-discord', 'am-footage'])
+def test_builtin_effect_clip_is_pointed_at_the_admitted_effect(monkeypatch, tmp_path, configured, clip_type):
+    from astrid.sdk.timeline.validation import validate_final_candidate
+
+    owner, ref, pin, bundle = _setup(monkeypatch, tmp_path, configured)
+    before = copy.deepcopy(_builtin_clip(bundle, clip_type))  # the fixture clip carries an asset
+    assert before['asset'] == 'picture'
+    baseline = copy.deepcopy(bundle)
+    result = _place(owner, ref)
+    assert result.ok, result.error
+    after = State(owner.last_plan.bundle).entity(TARGET)
+    assert (after['clipType'], after['elementRef']) == (ref['id'], ref)
+    assert {k: v for k, v in after.items() if k not in ('clipType', 'elementRef')} == {
+        k: v for k, v in before.items() if k != 'clipType'}
+    validate_final_candidate(owner.last_plan.bundle, baseline=baseline,
+                             schema_inputs=owner.schema_inputs, realm_id='realm')
+    from tests.editing_conformance.test_recipe_m1_commands import inverse
+    restored = inverse(owner.last_plan.bundle, owner.last_plan.records).bundle
+    assert State(restored).entity(TARGET) == before
+
+
+def test_retarget_refuses_params_the_new_element_cannot_hold(monkeypatch, tmp_path, configured):
+    owner, ref, _, bundle = _setup(monkeypatch, tmp_path, configured)
+    _builtin_clip(bundle, 'am-discord')['params']['seed'] = 'not a number'
+    result = _place(owner, ref)
+    assert not result.ok
+    owner.commit.assert_not_called()
+
+
+@pytest.mark.parametrize('clip_type', ['media'])
+def test_retarget_refuses_a_clip_that_is_not_a_builtin_effect(monkeypatch, tmp_path, configured, clip_type):
+    owner, ref, _, bundle = _setup(monkeypatch, tmp_path, configured)
+    _builtin_clip(bundle, clip_type)
+    result = _place(owner, ref)
+    assert not result.ok and 'built-in effect clip' in result.error.message
+    owner.commit.assert_not_called()
+
+
+def test_retarget_refuses_an_unadmitted_ref_and_a_stale_head(monkeypatch, tmp_path, configured):
+    owner, ref, _, bundle = _setup(monkeypatch, tmp_path, configured)
+    _builtin_clip(bundle, 'am-footage')
+    assert not _place(owner, {**ref, 'id': 'not-admitted'}).ok
+    assert _place(owner, ref, expected_head='stale').error.code == 'conflict'
+    owner.commit.assert_not_called()
+    assert State(bundle).entity(TARGET)['clipType'] == 'am-footage'

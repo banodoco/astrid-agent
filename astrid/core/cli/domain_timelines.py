@@ -773,8 +773,9 @@ def _configure_place_element(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument('--realm', required=True,
                            help='Canonical realm used by the configured project-pack admission.')
     subparser.add_argument('--target', required=True,
-                           help=('Exact occurrence shot clip: occurrence:<occurrence-id>/clip:<clip-id>. '
-                                 'First placement supports effect elements on am-discord clips only.'))
+                           help=('Exact clip: occurrence:<occurrence-id>/clip:<clip-id> or parent/clip:<clip-id>. '
+                                 'A built-in effect clip (e.g. am-discord, am-footage) is pointed at the '
+                                 'admitted effect; its params, timing and media are kept.'))
     subparser.add_argument('--pack', required=True, help='Admitted project-pack owner (packId).')
     subparser.add_argument('--element', required=True, help='Admitted element id.')
     subparser.add_argument('--kind', choices=['effect'], default='effect')
@@ -1501,7 +1502,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
     ),
     CommandSpec("elements",help="Inspect exact saved effect refs, editable pack files and admission/publication commands.",configure=_configure_elements),
     CommandSpec("update-element",help="Update the same parent effect from an admitted file pack using exact-head CAS.",configure=_configure_update_element),
-    CommandSpec("place-element",help="Place an admitted effect on an am-discord occurrence shot clip using exact-head CAS.",configure=_configure_place_element),
+    CommandSpec("place-element",help="Point a built-in effect clip (am-discord, am-footage, ...) at an admitted project effect using exact-head CAS.",configure=_configure_place_element),
     CommandSpec(
         "replace-parent-media",
         help="Atomically replace one clip in an exact canonical parent-composition closure.",
