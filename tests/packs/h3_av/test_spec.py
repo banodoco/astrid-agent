@@ -543,3 +543,41 @@ def test_old_inflight_request_requires_rebuild(tmp_path: Path) -> None:
     (tmp_path / STATE_NAME).write_text(json.dumps({"request": raw, "request_digest": fixture["request_digest"]}))
     with pytest.raises(ValueError, match="rebuild this request"):
         load_build_state(tmp_path)
+
+
+def test_pre_sr1_settled_receipt_returns_existing_result(tmp_path: Path, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from astrid.sdk.invocation import _resume_receipt_invocation
+    from astrid.sdk.recovery import AdmissionReceipt
+    from astrid.sdk.results import _reconstruct_generation_result
+    from astrid.packs.h3_av.shared.request_v2 import read_prepared_request
+    import astrid.packs.h3_av.shared.request as request_module
+
+    sealed = json.loads((Path(__file__).parent / "fixtures/pre_sr1_sealed.json").read_text())
+    # Verify the exact stored pre-break format before attempting result readback.
+    assert read_prepared_request(sealed["request"], sealed["request_digest"]).digest == sealed["request_digest"]
+    saved_result = {"seed_used": 42, "model_actual": "old-h3", "manifest": {"request_digest": sealed["request_digest"], "outputs": []}}
+    task = {"task_id": "old-task", "run_id": "old-run", "state": "succeeded",
+            "capability_id": "h3", "result": {"payload": {"generation_result": saved_result}, "outputs": []}}
+    reads = []
+    def show(task_id):
+        reads.append(task_id)
+        return SimpleNamespace(ok=True, data=task)
+    client = SimpleNamespace(handshake=lambda *_: {"realm_id": "test-realm"},
+                             tasks=SimpleNamespace(show=show))
+    path = tmp_path / "old-receipt.json"
+    admission = {"capability_id": "h3", "idempotency_key": "old-key", "sealed_request": sealed}
+    metadata = {"capability_id": "h3", "capability_type": "executor", "native_kind": "executor"}
+    with AdmissionReceipt(path, request=sealed, client=client, resume=False) as receipt:
+        receipt.freeze(admission, metadata=metadata)
+        receipt.locate(task)
+    # Resuming a settled task must use the stored result rather than rebuild it.
+    monkeypatch.setattr(request_module, "normalize_request", lambda *_a, **_k: pytest.fail("renormalized settled request"))
+    with AdmissionReceipt(path, request=sealed, client=client, resume=True) as receipt:
+        observed = _resume_receipt_invocation(receipt, client=client, wait=False,
+                                             timeout_seconds=1, poll_seconds=0.001)
+    result = _reconstruct_generation_result(observed)
+    assert reads == ["old-task"]
+    assert result.seed_used == 42 and result.model_actual == "old-h3"
+    assert result.manifest == saved_result["manifest"]
