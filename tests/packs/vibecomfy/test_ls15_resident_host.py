@@ -191,6 +191,11 @@ def canonical_inputs(world, root, *, color=0):
                         "source": world[3].workflow}
 
 
+def test_second_closed_python_job_reuses_catalogue(resident_comfy, monkeypatch, tmp_path):
+    canonical_inputs(resident_comfy, tmp_path / "authored-counter")
+    test_second_admitted_job_reuses_worker_template_and_target(resident_comfy, monkeypatch, tmp_path)
+
+
 def wait_posts(peer, count, futures):
     deadline = time.monotonic() + 30
     while (len(peer.posts) < count or len(peer.pending) < count) and time.monotonic() < deadline:

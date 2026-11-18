@@ -123,7 +123,8 @@ jobs:
         run: |
           python head/tests/helpers/ls15_run.py head proof packet-unit \
             tests/core/execution/test_ls15_resident_route.py tests/core/execution/test_ls15_concurrency.py \
-            tests/core/generation/test_ls15_retained_preparation.py
+            tests/core/generation/test_ls15_retained_preparation.py \
+            tests/packs/vibecomfy/test_ls15_catalogue_generation.py
       - name: Candidate actual host zero-work proof
         if: ${{ !cancelled() && steps.install.outcome == 'success' && matrix.suite == 'resident' }}
         env:
@@ -132,6 +133,14 @@ jobs:
           python head/tests/helpers/ls15_run.py head proof packet-counter -m integration \
             -o tmp_path_retention_policy=all --basetemp="$GITHUB_WORKSPACE/proof/counter-tmp" \
             tests/packs/vibecomfy/test_ls15_resident_host.py::test_second_admitted_job_reuses_worker_template_and_target
+      - name: Candidate closed Python zero-work proof
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && matrix.suite == 'resident' }}
+        env:
+          ASTRID_CI_JOB: lanes-integration
+        run: |
+          python head/tests/helpers/ls15_run.py head proof packet-canonical -m integration \
+            -o tmp_path_retention_policy=all --basetemp="$GITHUB_WORKSPACE/proof/canonical-tmp" \
+            tests/packs/vibecomfy/test_ls15_resident_host.py::test_second_closed_python_job_reuses_catalogue
       - uses: actions/upload-artifact@v4
         if: ${{ always() && matrix.suite == 'resident' }}
         with:

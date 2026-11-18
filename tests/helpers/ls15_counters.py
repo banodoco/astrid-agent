@@ -45,7 +45,7 @@ def category(frame):
             return "audits"
         if qualified == "_Runner.execute" and getattr(frame.f_locals.get("step"), "kind", None) in {"source", "environment"}:
             return "audits"
-        if name in {"pack_digest", "_workflow_content_digest"}:
+        if name in {"pack_digest", "_workflow_content_digest", "compiler_content_identity"}:
             return "source_validation"
     return None
 
@@ -72,7 +72,7 @@ class Counters:
             "  kind=category(frame)\n"
             "  if kind:\n"
             "   detail=None\n"
-            "   if kind=='process_starts':\n"
+            "   if kind in {'process_starts','pack_scans'}:\n"
             "    detail={'args':repr(frame.f_locals.get('args')),'stack':[]}\n"
             "    caller=frame.f_back\n"
             "    for _ in range(8):\n"
@@ -104,7 +104,7 @@ class Counters:
     def profile(self, frame, event, arg):
         if event == "call" and (kind := category(frame)):
             detail = None
-            if kind == "process_starts":
+            if kind in {"process_starts", "pack_scans"}:
                 detail = {"args": repr(frame.f_locals.get("args")), "stack": []}
                 caller = frame.f_back
                 for _ in range(7):

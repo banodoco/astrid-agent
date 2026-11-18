@@ -285,20 +285,38 @@ class VibeComfySession(CanonicalCatalogue):
         super().__init__(root)
         from vibecomfy.runtime import session as runtime_session
 
-        from .resident_source import compiler_content_identity
+        from .resident_source import advisory_repository_revision, compiler_content_identity
         self.compiler_generation = compiler_content_identity()
         # The pinned producer's metadata helper probes the ambient cwd on
         # every receipt. This interpreter has one fixed private cwd for its
         # entire lifetime. Resolve that advisory value once; actual compiler
         # and source authority remains content-checked for every job.
         self._git_sha = runtime_session._git_sha
-        revision = self._git_sha()
+        revision = advisory_repository_revision()
         self._revision = lambda: revision
         runtime_session._git_sha = self._revision
         self.lock = threading.RLock()
         self.targets = {}
         self.templates = {}
         self.requirements = {}
+        self.source_declarations = {}
+
+    def source_provenance(self, path):
+        """Retain only static declarations; target observations belong to a job."""
+        from astrid.core.generation.engine_readiness import ComfyProvenance
+
+        from .production_engine import _workflow_content_digest
+        key = _workflow_content_digest(path)
+        with self.lock:
+            if key not in self.source_declarations:
+                if len(self.source_declarations) >= _LIMIT:
+                    raise ValueError("resident source declaration capacity exceeded")
+                provenance = ComfyProvenance()
+                provenance.source(path)
+                self.source_declarations[key] = provenance
+            # No target evidence, model observations or readiness issues from
+            # one job can become the starting evidence of a later job.
+            return copy.deepcopy(self.source_declarations[key])
 
     def entry_manifest(self, entry, values, source):
         if not entry or entry == "workflow":
@@ -397,4 +415,5 @@ class VibeComfySession(CanonicalCatalogue):
         for session in self.targets.values():
             session.close()
         self.targets.clear()
+        self.source_declarations.clear()
         super().close()

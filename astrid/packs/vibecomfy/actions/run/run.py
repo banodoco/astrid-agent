@@ -928,8 +928,11 @@ def _run_and_settle(
         )
     from astrid.core.generation.engine_readiness import ComfyProvenance
 
-    provenance = ComfyProvenance()
-    provenance.source(workflow_path)
+    if resident is not None:
+        provenance = resident.source_provenance(workflow_path)
+    else:
+        provenance = ComfyProvenance()
+        provenance.source(workflow_path)
     producer_run_id = f"astrid-{uuid4().hex}"
     producer_context = {
         "comfy_provenance": provenance,

@@ -57,15 +57,16 @@ def test_managed_second_job_reuses_audited_generation_without_native_preparation
     monkeypatch.setattr(ManagedEnginePreparation, "_command", native_command)
     counters = Counters(monkeypatch, tmp_path)
     with counters.observe():
-        first = test_ls15_resident_host.run_job(resident_comfy, 1, values={"width": 16, "height": 16, "color": 0}, managed=True)
+        first = test_ls15_resident_host.run_job(resident_comfy, 1, values={"width": 16, "height": 16, "color": 0}, managed=True, align="align")
         process = host.managed_tool_session.current_adapter.process
         cold = counters.snapshot()
         requests = (root / "requests.jsonl").read_text().splitlines()
         native_before = list(native)
-        second = test_ls15_resident_host.run_job(resident_comfy, 2, values={"width": 16, "height": 16, "color": 1}, managed=True)
+        second = test_ls15_resident_host.run_job(resident_comfy, 2, values={"width": 16, "height": 16, "color": 1}, managed=True, align="align")
         warm = counters.difference(cold, counters.snapshot())
     (tmp_path / "managed-warm-counters.json").write_text(json.dumps({"cold": cold, "warm": warm}, indent=2))
     assert preparations == ["ls15-attempt-1"] and native == native_before and native_before
+    assert [argv[0] for argv in native_before] == ["nodes", "prepare", "doctor"]
     assert host.managed_tool_session.current_adapter.process is process
     assert first[0]["process_id"] == second[0]["process_id"] == process.pid
     assert not peer.posts, "managed jobs must use the owned endpoint"
@@ -83,7 +84,7 @@ def test_managed_second_job_reuses_audited_generation_without_native_preparation
     # The existing full preparation authority must run again, under a new
     # resident owner, before that job can submit its prompt.
     test_ls15_resident_host.canonical_inputs(resident_comfy, tmp_path / "changed-managed", color=2)
-    third = test_ls15_resident_host.run_job(resident_comfy, 3, values={"color": 2}, managed=True)
+    third = test_ls15_resident_host.run_job(resident_comfy, 3, values={"color": 2}, managed=True, align="align")
     assert preparations == ["ls15-attempt-1", "ls15-attempt-3"]
     assert len(native) > len(native_before) and "managed_readiness_reuse" not in third[0]
     replacement = host.managed_tool_session.current_adapter.process
