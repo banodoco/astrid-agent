@@ -5,13 +5,18 @@ name: CI
 
 on:
   push:
-    branches: [main, release-1, "int/**", "release/*/main", "release/14/plan-39"]
-  # Release 14's plan branch runs on push for qualification. A pull request
+    branches: [main, release-1, "int/**", "release/*/main", "release/*/plan-*"]
+  # Release plan branches run on push for qualification. A pull request
   # runs only the cheap subset: fast checks, unit shard 1 of 8 (and the unit aggregate), and boundary. The heavy jobs
   # (windows, darwin, release wheels, shards 2-8) carry `if: github.event_name != 'pull_request'` and run on the push.
   pull_request:
-    branches: ["release/*/main", "release/14/plan-39"]
+    branches: ["release/*/main", "release/*/plan-*"]
   workflow_dispatch:
+    inputs:
+      target_branch:
+        description: "Destination branch whose merge base covers the whole task"
+        required: true
+        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -92,7 +97,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      ASTRID_GATE_BASE: ${{ github.event.pull_request.base.sha || github.event.before || 'HEAD^1' }}
       ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/astrid-runtime
       ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/vibecomfy-checkout
       ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/runpod-lifecycle-checkout
@@ -102,6 +106,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Resolve the comparison merge base
+        run: python -I scripts/ci/gate_base.py
 
       - name: Read the pinned Runtime commit
         id: runtime-pin
@@ -214,7 +221,7 @@ jobs:
           python -m scripts.ci.run_pytest -q -rA
           --junitxml="${{ runner.temp }}/agent-gate-probes/probes.xml"
           tests/reshape/test_identity_gate.py tests/scripts/test_ci_test_evidence.py
-          tests/test_release_branch_workflows.py
+          tests/test_release_branch_workflows.py tests/scripts/test_gate_integrity.py tests/scripts/test_gate_base.py
 
       - name: Upload gate probe evidence
         if: always()

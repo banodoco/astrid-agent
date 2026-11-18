@@ -15,6 +15,8 @@ import pytest
 from _pytest.junitxml import mangle_test_address
 from _pytest.mark import Expression, KeywordMatcher, MarkMatcher
 
+from scripts.ci.static_inventory import StaticInventory
+
 
 def pytest_addoption(parser):
     group = parser.getgroup("Astrid collection evidence")
@@ -39,15 +41,15 @@ def pytest_plugin_registered(plugin):
                 raise pytest.UsageError(f"undeclared {name} in {plugin.__file__}; use the lane registry")
 
 
-def selected_items(config, items):
+def selected_items(config, items, selectors):
     """Recompute the job's declared -k/-m and shard selection from the census."""
     selected = list(items)
     if config.option.keyword:
         expression = Expression.compile(config.option.keyword.lstrip())
-        selected = [item for item in selected if expression.evaluate(KeywordMatcher.from_item(item))]
+        selected = [item for item in selected if expression.evaluate(selectors[item.nodeid][0])]
     if config.option.markexpr:
         expression = Expression.compile(config.option.markexpr)
-        selected = [item for item in selected if expression.evaluate(MarkMatcher.from_markers(item.iter_markers()))]
+        selected = [item for item in selected if expression.evaluate(selectors[item.nodeid][1])]
     splits = config.getoption("splits", default=None)
     if splits:
         from pytest_split.algorithms import Algorithms
@@ -66,6 +68,8 @@ class CollectionEvidence:
         self.config = config
         self.items = []
         self.deselected = []
+        self.static = StaticInventory(config)
+        self.selectors = {}
         self.reports = None
         path = config.getoption("test_event_log")
         if path:
@@ -81,6 +85,13 @@ class CollectionEvidence:
 
     def pytest_itemcollected(self, item):
         self.items.append(item)
+        fixture_lane = self.static.record(item)
+        markers = list(item.iter_markers())
+        keyword = KeywordMatcher.from_item(item)
+        if fixture_lane:
+            markers.append(pytest.mark.integration.mark)
+            keyword._names.add("integration")
+        self.selectors[item.nodeid] = (keyword, MarkMatcher.from_markers(markers))
 
     def pytest_deselected(self, items):
         self.deselected.extend(item.nodeid for item in items)
@@ -118,14 +129,16 @@ class CollectionEvidence:
 
     @pytest.hookimpl(trylast=True)
     def pytest_collection_finish(self, session):
-        expected = collections.Counter(item.nodeid for item in selected_items(self.config, self.items))
+        ignored = getattr(self.config.pluginmanager.get_plugin("skip-guard"), "ignored", {})
+        static = self.static.verify(ignored)
+        expected = collections.Counter(item.nodeid for item in selected_items(self.config, self.items, self.selectors))
         selected = collections.Counter(item.nodeid for item in session.items)
         collected = collections.Counter(item.nodeid for item in self.items)
         removed = collections.Counter(self.deselected)
         manifest = {
             "collected": sorted(collected.elements()), "selected": sorted(selected.elements()),
             "deselected": sorted(removed.elements()),
-            "ignored": getattr(self.config.pluginmanager.get_plugin("skip-guard"), "ignored", {}),
+            "ignored": ignored, "static": static,
         }
         target = Path(self.config.getoption("collection_manifest"))
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -133,7 +146,7 @@ class CollectionEvidence:
         self.write({"type": "collection", **manifest})
         if selected != expected or selected + removed != collected:
             raise pytest.UsageError(
-                "collection inventory mismatch: "
+                "static/collected selection inventory mismatch (collection inventory mismatch): "
                 f"missing={list((expected - selected).elements())[:20]} "
                 f"unexpected={list((selected - expected).elements())[:20]} "
                 f"unaccounted={list((collected - selected - removed).elements())[:20]}"

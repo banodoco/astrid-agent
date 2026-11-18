@@ -1,0 +1,40 @@
+# Install this workflow and its policy on the trusted default branch, then
+# require this workflow through an organization ruleset for release targets.
+# It never checks out or executes PR code. After exact-head owner approval,
+# rerun the latest PR-triggered job; a manual dispatch is not a required check.
+name: Gate integrity
+
+on:
+  pull_request_target:
+    branches: [main, release-1, "int/**", "release/*/main", "release/*/plan-*"]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: gate-integrity-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  integrity:
+    name: gate integrity
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out trusted default-branch policy only
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Inspect protected Git blobs and exact-head owner review
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ASTRID_GATE_OWNERS: ${{ vars.ASTRID_GATE_OWNERS }}
+          PULL_REQUEST: ${{ github.event.pull_request.number }}
+        run: python -I scripts/ci/protect_gate_paths.py --pull-request "$PULL_REQUEST"

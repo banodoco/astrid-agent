@@ -62,6 +62,70 @@ def test_old_guard_accepts_missing_test_but_collection_gate_rejects_it(tmp_path,
                ("collection inventory mismatch", "undeclared collect_ignore", "undeclared collection exclusion", "undeclared ignored test path"))
 
 
+@pytest.mark.parametrize("poison", ["makeitem", "notest", "injected-lane"])
+def test_static_inventory_refuses_drops_before_itemcollected(tmp_path, poison):
+    source = "def test_good():\n    pass\ndef test_victim():\n    assert False\n"
+    conftest = LANE_HOOKS
+    arguments = []
+    if poison == "makeitem":
+        conftest += "def pytest_pycollect_makeitem(collector, name, obj):\n    if name == 'test_victim':\n        return []\n"
+    elif poison == "notest":
+        source += "test_victim.__test__ = False\n"
+    else:
+        conftest += (
+            "import pytest\n"
+            "def pytest_collection_modifyitems(items):\n"
+            "    for item in items:\n"
+            "        if item.name == 'test_victim':\n"
+            "            item.add_marker(pytest.mark.integration)\n"
+        )
+        arguments = ["-m", "not integration"]
+    (tmp_path / "test_cases.py").write_text(source)
+    (tmp_path / "conftest.py").write_text(conftest)
+    old = run(tmp_path, *arguments, guarded=False, destination="old.xml")
+    assert old.returncode == 0, old.stdout + old.stderr
+    current = run(tmp_path, *arguments)
+    assert current.returncode != 0, current.stdout + current.stderr
+    assert "static" in current.stdout + current.stderr
+
+
+def test_static_definitions_preserve_parameterized_inherited_and_fixture_lane_cases(tmp_path):
+    (tmp_path / "conftest.py").write_text(LANE_HOOKS)
+    (tmp_path / "test_cases.py").write_text(
+        "import pytest, unittest\n"
+        "INTEGRATION_FIXTURES = {'checkout'}\n"
+        "@pytest.fixture\ndef checkout():\n    assert False\n"
+        "def test_fixture_lane(checkout):\n    assert False\n"
+        "CASES = [pytest.param(1), pytest.param(2, marks=pytest.mark.integration)]\n"
+        "@pytest.mark.parametrize('value', CASES)\ndef test_parameter(value):\n    assert value == 1\n"
+        "class BaseCase(unittest.TestCase):\n"
+        "    def test_inherited(self):\n        pass\n"
+        "class DerivedCase(BaseCase):\n    pass\n"
+        "class TestGroup:\n"
+        "    @pytest.mark.parametrize('value', [1, 2])\n"
+        "    def test_method(self, value):\n        pass\n"
+    )
+    result = run(tmp_path, "-m", "not integration")
+    assert result.returncode == 0, result.stdout + result.stderr
+    manifest = json.loads((tmp_path / "result.collection.json").read_text())
+    assert manifest["static"]["definitions"] == 5
+    assert len(manifest["collected"]) == 7
+    assert len(manifest["selected"]) == 5
+
+
+def test_source_inventory_honors_an_explicit_method_selector(tmp_path):
+    (tmp_path / "test_cases.py").write_text(
+        "class TestGroup:\n"
+        "    def test_selected(self):\n        pass\n"
+        "    def test_other(self):\n        assert False\n"
+    )
+    result = run(tmp_path, "test_cases.py::TestGroup::test_selected")
+    assert result.returncode == 0, result.stdout + result.stderr
+    manifest = json.loads((tmp_path / "result.collection.json").read_text())
+    assert manifest["static"]["definitions"] == 1
+    assert manifest["selected"] == ["test_cases.py::TestGroup::test_selected"]
+
+
 def test_declared_lane_filters_and_shards_have_an_exact_independent_census(tmp_path):
     (tmp_path / "conftest.py").write_text(LANE_HOOKS)
     (tmp_path / "test_cases.py").write_text(

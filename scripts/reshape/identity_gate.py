@@ -30,6 +30,8 @@ Identity = tuple[str, str, str, str]
 Statement = tuple[int, int, int, int, str]
 MYPY_ERROR = re.compile(r"^(.*?):(\d+):(?:(\d+):)? error: (.*?)\s+\[(.*?)\]$")
 SUPPRESSION = re.compile(r"\bnoqa\b|\btype\s*:\s*ignore\b|\bmypy\s*:", re.IGNORECASE)
+TOOL_CONFIGS = {"ruff.toml", ".ruff.toml", "pytest.ini", ".pytest.ini", "tox.ini",
+                "setup.cfg", "mypy.ini", ".mypy.ini", "pyproject.toml", "pytest.toml", ".pytest.toml"}
 
 
 def git(root: Path, *args: str) -> str:
@@ -135,7 +137,27 @@ def identities(findings: list[dict[str, Any]], root: Path) -> collections.Counte
 
 def diagnostics(tool: str, root: Path) -> list[dict[str, Any]]:
     if tool == "ruff":
-        command = [sys.executable, "-m", "ruff", "check", ".", "--no-cache", "--output-format", "json"]
+        # Respect Ruff's configured scope, but not Git's ignore list. Intersect
+        # discovery with tracked paths so sibling dependency checkouts cannot
+        # add diagnostics that the clean merge-base worktree does not contain.
+        discovery = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", ".", "--no-respect-gitignore", "--show-files"],
+            cwd=root, capture_output=True, text=True, check=False,
+        )
+        if discovery.returncode:
+            raise RuntimeError(f"Ruff file discovery failed: {discovery.stdout}{discovery.stderr}")
+        tracked = {str(root / path) for path in git(root, "ls-files", "-z", "--", "*.py").split("\0") if path}
+        paths = sorted(tracked & set(discovery.stdout.splitlines()))
+        rows = []
+        for offset in range(0, len(paths), 100):
+            command = [sys.executable, "-m", "ruff", "check", "--no-respect-gitignore", "--no-cache",
+                       "--output-format", "json", *paths[offset:offset + 100]]
+            result = subprocess.run(command, cwd=root, capture_output=True, text=True, check=False)
+            if result.returncode not in (0, 1):
+                raise RuntimeError(f"Ruff failed to execute: {result.stdout}{result.stderr}")
+            rows.extend(json.loads(result.stdout))
+        return [{"path": row["filename"], "code": row["code"], "message": row["message"],
+                 "line": row["location"]["row"], "column": row["location"]["column"]} for row in rows]
     else:
         command = [
             sys.executable, "-m", "mypy", "astrid", "scripts/reshape",
@@ -146,19 +168,12 @@ def diagnostics(tool: str, root: Path) -> list[dict[str, Any]]:
     result = subprocess.run(command, cwd=root, capture_output=True, text=True, check=False)
     if result.returncode not in (0, 1):
         raise RuntimeError(f"{tool} failed to execute (exit {result.returncode}): {result.stdout}{result.stderr}")
-    if tool == "ruff":
-        rows = json.loads(result.stdout)
-        findings = [
-            {"path": row["filename"], "code": row["code"], "message": row["message"],
-             "line": row["location"]["row"], "column": row["location"]["column"]} for row in rows
-        ]
-    else:
-        findings = []
-        for line in (result.stdout + result.stderr).splitlines():
-            match = MYPY_ERROR.match(line)
-            if match:
-                findings.append({"path": match[1], "line": int(match[2]), "column": int(match[3] or 0),
-                                 "message": match[4], "code": match[5]})
+    findings = []
+    for line in (result.stdout + result.stderr).splitlines():
+        match = MYPY_ERROR.match(line)
+        if match:
+            findings.append({"path": match[1], "line": int(match[2]), "column": int(match[3] or 0),
+                             "message": match[4], "code": match[5]})
     if result.returncode == 1 and not findings:
         raise RuntimeError(f"{tool} failed without diagnostics: {result.stdout}{result.stderr}")
     return findings
@@ -195,6 +210,17 @@ def protected_changes(base: Path, candidate: Path) -> list[str]:
         before, after = base / path, candidate / path
         if not before.is_file() or not after.is_file() or before.read_bytes() != after.read_bytes():
             errors.append(f"baseline edited in task PR: {path.as_posix()}")
+    configs: set[Path] = set()
+    for root in (base, candidate):
+        configs.update(Path(path) for path in git(root, "ls-files", "-z").split("\0")
+                       if path and Path(path).name in TOOL_CONFIGS)
+    for path in sorted(configs):
+        if path == Path("pyproject.toml"):
+            continue  # The root's non-tool package metadata is not a lint allowance.
+        before, after = base / path, candidate / path
+        if (not before.is_file() or not after.is_file() or before.is_symlink() or after.is_symlink()
+                or before.read_bytes() != after.read_bytes()):
+            errors.append(f"protected tool configuration changed in task PR: {path.as_posix()}")
     before_config = tomllib.loads((base / "pyproject.toml").read_text())["tool"]
     after_config = tomllib.loads((candidate / "pyproject.toml").read_text())["tool"]
     for tool in ("ruff", "mypy"):

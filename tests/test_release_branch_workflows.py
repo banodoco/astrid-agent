@@ -16,7 +16,7 @@ def load(name):
 
 def test_pull_requests_into_release_mains_run_only_the_cheap_ci_subset():
     wf = load("ci.yml")
-    assert wf["on"]["pull_request"] == {"branches": ["release/*/main", "release/14/plan-39"]}
+    assert wf["on"]["pull_request"] == {"branches": ["release/*/main", "release/*/plan-*"]}
     heavy = {"windows-native-and-installer", "darwin-native", "release"}
     for name, job in wf["jobs"].items():
         if name == "landing-reference":
@@ -59,7 +59,13 @@ def test_fast_checks_run_structure_and_every_gate_after_an_earlier_failure():
         assert steps[name]["if"] == "${{ !cancelled() }}", name
     assert steps["Install mypy stubs and the NumPy that mypy can parse"]["if"] == "${{ !cancelled() }}"
     assert steps["Check out repository"]["with"]["fetch-depth"] == 0
-    assert "github.event.pull_request.base.sha" in job["env"]["ASTRID_GATE_BASE"]
+    assert steps["Resolve the comparison merge base"]["run"] == "python -I scripts/ci/gate_base.py"
+    assert "ASTRID_GATE_BASE" not in job["env"]
+    assert "HEAD^1" not in (WF / "ci.yml").read_text()
+    assert load("ci.yml")["on"]["workflow_dispatch"]["inputs"]["target_branch"]["required"] is True
+    for name in ("ci.yml", "lanes.yml"):
+        assert "release/*/plan-*" in load(name)["on"]["push"]["branches"]
+        assert "release/14/plan-39" not in (WF / name).read_text()
 
 
 @pytest.mark.parametrize(

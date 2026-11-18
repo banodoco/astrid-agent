@@ -183,3 +183,44 @@ def test_missing_comparison_base_is_refused(repository: Path, monkeypatch) -> No
     _commit(repository)
     monkeypatch.chdir(repository)
     assert identity_gate.main(["ruff", "--base-ref", "refs/heads/missing"]) == 2
+
+
+@pytest.mark.parametrize("filename,contents", [
+    ("astrid/ruff.toml", "[lint]\nselect=[]\n"),
+    ("astrid/.ruff.toml", "[lint]\nselect=[]\n"),
+    ("pytest.ini", '[pytest]\naddopts = -k "not victim"\n'),
+    ("mypy.ini", "[mypy]\nignore_errors = True\n"),
+    (".mypy.ini", "[mypy]\nignore_errors = True\n"),
+    ("astrid/tox.ini", "[pytest]\npython_functions = hidden_*\n"),
+    ("astrid/setup.cfg", "[mypy]\nignore_errors = True\n"),
+    ("astrid/pytest.ini", "[pytest]\naddopts = -k not_victim\n"),
+    ("astrid/pyproject.toml", '[tool.ruff.lint]\nselect=[]\n'),
+])
+def test_alternate_and_nested_tool_config_cannot_change_collection_or_findings(
+    repository: Path, monkeypatch, filename: str, contents: str,
+) -> None:
+    base = _commit(repository)
+    (repository / filename).write_text(contents)
+    _commit(repository)
+    monkeypatch.chdir(repository)
+    assert identity_gate.main(["controls", "--base-ref", base]) == 1
+
+
+def test_a_committed_gitignored_file_is_still_linted(repository: Path, monkeypatch) -> None:
+    base = _commit(repository)
+    (repository / ".gitignore").write_text("astrid/victim.py\n")
+    (repository / "astrid/victim.py").write_text("value = missing\n")
+    subprocess.run(["git", "-C", str(repository), "add", "-f", "astrid/victim.py"], check=True)
+    _commit(repository)
+    monkeypatch.chdir(repository)
+    assert identity_gate.main(["ruff", "--base-ref", base]) == 1
+
+
+def test_untracked_dependency_checkout_is_not_part_of_either_lint_tree(repository: Path, monkeypatch) -> None:
+    base = _commit(repository)
+    dependency = repository / "dependency"
+    dependency.mkdir()
+    (dependency / "ruff.toml").write_text('[lint]\nselect=["F"]\n')
+    (dependency / "test_dependency.py").write_text("value = missing\n")
+    monkeypatch.chdir(repository)
+    assert identity_gate.main(["ruff", "--base-ref", base]) == 0
