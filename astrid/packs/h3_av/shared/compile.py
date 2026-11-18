@@ -501,8 +501,6 @@ def _compile_native_masked_edit(
     frame_load_cap = round((source.range[1] - source.range[0]) * 24)
     if frame_load_cap != round(spec.duration * 24):
         raise CompilationError("native masked edit source window must match output duration")
-    if frame_load_cap > 360:
-        raise CompilationError("native masked edit source windows are limited to 15 s")
     # B2 resolves boxes and supplied static masks to the same binary PNG. The
     # graph fixes its output canvas at 1024x576, as source preflight requires.
     regions = {region.name: region for region in spec.regions}
@@ -618,7 +616,7 @@ def _compile_native_masked_edit(
             "one modifying video operation per request; static boxes, image masks or per-frame mask video",
             "audio regeneration, polygon masks and per-operation adapters are unsupported",
             "box-only regions bind in the graph; end-to-end execution still needs resolved mask propagation for composition paste-back",
-            "windows are limited to 15 s with no automatic chunking",
+            "long windows use one pass without automatic chunking",
             "zero-reference requests assume MiniMaxH3ReferenceToVideo accepts no ref images (unverified)",
         ],
         profile_id="h3_av.native.v2" if request.value.get("version") == 2 else _PROFILE_ID,
@@ -643,6 +641,7 @@ def _compile_character_swap_v2(
     from vibecomfy.workflow_bundle import emit_bundle
 
     from .generation import (
+        LIMITS,
         CHARACTER_SWAP_FILENAME,
         CHARACTER_SWAP_REPOSITORY,
         CHARACTER_SWAP_REVISION,
@@ -694,8 +693,10 @@ def _compile_character_swap_v2(
     references = [item for item in value["media"] if item["role"] == "reference"]
     images = [item for item in references if item.get("modality") == "image"]
     videos = [item for item in references if item.get("modality") == "video"]
-    if len(images) != 1 or len(videos) != 1 or len(references) != 2:
-        raise CompilationError("character_swap_v1 requires one typed video reference and one typed replacement image reference")
+    standalone_audio = [item for item in references if item.get("modality") == "audio" and item.get("use") != "replacement"]
+    minimum = LIMITS["character_swap_references"]["value"]
+    if len(images) < minimum["image"] or len(videos) < minimum["video"]:
+        raise CompilationError("Character Swap references: lowering requires at least one video and one image reference")
     bindings: dict[str, Path] = {}
     for index, item in enumerate(images):
         asset_id = str(item["asset"])
@@ -717,6 +718,14 @@ def _compile_character_swap_v2(
             "frame_load_cap": int(resolved_range[1]) - int(resolved_range[0]) if isinstance(resolved_range, list) else 0,
             "audio": item.get("audio", True),
         })
+    audio_reference_rows = []
+    for index, item in enumerate(standalone_audio):
+        asset_id = str(item["asset"])
+        if asset_id not in assets:
+            raise CompilationError(f"Character Swap audio reference {asset_id!r} is missing from preparation")
+        binding = f"audio_reference_{index}"
+        bindings[binding] = assets[asset_id]
+        audio_reference_rows.append({"binding": binding, "resolved_range": item.get("resolved_range")})
 
     try:
         timing = generation_timing(value["duration"])
@@ -728,6 +737,7 @@ def _compile_character_swap_v2(
     graph = build_generation_workflow(
         references=[f"reference_{index}" for index in range(len(images))],
         video_references=video_reference_rows,
+        audio_references=audio_reference_rows,
         prompt=prompt,
         frames=timing["raw_frames"],
         model=settings["model"],
@@ -869,6 +879,7 @@ def _compile_native_v2(
     request: H3Request, assets: Mapping[str, Path], destination: Path
 ) -> dict[str, Any]:
     """Bind native-v2 media semantics to existing declared Vibe inputs."""
+    from .generation import LIMITS
     branch = branch_for(request)
     settings = effective_settings(request)
     if not assets:
@@ -879,10 +890,14 @@ def _compile_native_v2(
 
     if branch == "source_free":
         references = [item for item in request.value["media"] if item["role"] == "reference"]
-        if not 1 <= len(references) <= 9:
-            raise CompilationError("native-v2 source-free generation requires one to nine references")
-        if any(item.get("modality") != "image" for item in references):
-            raise CompilationError("native-v2 source-free generation accepts image references only")
+        if any(item.get("modality") == "video" and item.get("use") != "replacement" for item in references):
+            raise CompilationError("source-free video references are unsupported by the current lowering")
+        image_references = [item for item in references if item.get("modality") == "image" and item.get("use") != "replacement"]
+        audio_references = [item for item in references if item.get("modality") == "audio" and item.get("use") != "replacement"]
+        if not 1 <= len(image_references) <= LIMITS["builder_slots"]["value"]["image"]:
+            raise CompilationError("source-free builder image slots 9: requires one to nine image references")
+        if len(audio_references) > LIMITS["builder_slots"]["value"]["audio"]:
+            raise CompilationError("source-free builder standalone audio slots 3: exceeded")
         generation_value = {
             "version": 1,
             "operation": "generate",
@@ -890,7 +905,7 @@ def _compile_native_v2(
             "output": {"duration": request.value["duration"]},
             "content": {"prompt": request.value["prompt"]},
             "changes": {"video": [], "audio": []},
-            "references": [{"asset": item["asset"], "purpose": "appearance"} for item in references],
+            "references": [{"asset": item["asset"], "purpose": "appearance"} for item in image_references],
             "overrides": {
                 "model": settings["model"],
                 "steps": settings["steps"],
@@ -906,6 +921,7 @@ def _compile_native_v2(
             profile_id="h3_av.native.v2",
             native_v2_branch=branch,
             native_settings=settings,
+            audio_references=audio_references,
         )
 
     if branch == "audio_only":
@@ -916,6 +932,8 @@ def _compile_native_v2(
         )
 
     if branch == "source_backed_v2v":
+        if any(item.get("role") == "reference" and item.get("modality") in {"audio", "video"} and item.get("use") != "replacement" for item in request.value["media"]):
+            raise CompilationError("native masked edit does not bind audio or video conditioning references")
         return _compile_native_masked_edit(request, assets, destination, branch=branch)
 
     destination.mkdir(parents=True, exist_ok=True)
@@ -928,8 +946,9 @@ def _compile_native_v2(
 
     timelines = [item for item in request.value["media"] if item["role"] == "timeline"]
     references = [item for item in request.value["media"] if item["role"] == "reference"]
-    if len(references) > 2:
-        raise CompilationError("native-v2 continuation graph has two image-reference slots")
+    continuation_limits = LIMITS["continuation_references"]["value"]
+    if len(references) > continuation_limits["image"]:
+        raise CompilationError(f"continuation references {continuation_limits}: image-reference slots exceeded")
     if any(item.get("modality") != "image" for item in references):
         raise CompilationError("native-v2 continuation graph reference ports accept image references only")
     video_timelines = [item for item in timelines if item.get("modality") == "video"]
@@ -1064,6 +1083,7 @@ def _compile_generation(
     profile_id: str = _PROFILE_ID,
     native_v2_branch: str | None = None,
     native_settings: Mapping[str, Any] | None = None,
+    audio_references: list[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     from PIL import Image
     from vibecomfy.security.provenance import Provenance
@@ -1073,8 +1093,12 @@ def _compile_generation(
 
     references = request.value["references"]
     # Keep slots ordered even for repeated assets; the archive deduplicates bytes.
+    audio_references = list(audio_references or [])
     bindings = {f"reference_{index}": assets[item["asset"]] for index, item in enumerate(references)}
+    bindings.update({f"audio_reference_{index}": assets[item["asset"]] for index, item in enumerate(audio_references)})
     for binding, path in bindings.items():
+        if not binding.startswith("reference_"):
+            continue
         try:
             with Image.open(path) as image:
                 if getattr(image, "n_frames", 1) != 1:
@@ -1084,6 +1108,8 @@ def _compile_generation(
             raise CompilationError(f"{binding} must be a decodable still image") from exc
     manifest = _write_asset_bundle(destination / "managed-assets.zip", bindings)
     members = _member_by_binding(manifest)
+    image_members = [members[f"reference_{index}"] for index in range(len(references))]
+    audio_members = [members[f"audio_reference_{index}"] for index in range(len(audio_references))]
     if native_settings is None:
         settings = {**_DEFAULTS, **request.value["overrides"]}
         scheduler = "simple"
@@ -1103,7 +1129,8 @@ def _compile_generation(
     timing = generation_timing(request.value["output"]["duration"])
     prompt = request.value["content"]["prompt"]
     graph = build_generation_workflow(
-        references=list(members.values()), prompt=prompt,
+        references=image_members, prompt=prompt,
+        audio_references=[{"binding": f"audio_reference_{index}", "resolved_range": item.get("resolved_range")} for index, item in enumerate(audio_references)],
         frames=timing["raw_frames"], model=settings["model"],
         steps=settings["steps"], seed=settings["seed"],
         sampler=settings["sampler"], guidance=settings["guidance"],
@@ -1124,6 +1151,9 @@ def _compile_generation(
         "references": len(references),
         "reference_order": [item["asset"] for item in references],
         "reference_binding": "ordered image conditioning; Picture 1..N",
+        "audio_references": len(audio_references),
+        "audio_reference_order": [item["asset"] for item in audio_references],
+        "audio_reference_binding": "ordered standalone audio conditioning; Audio 1..N",
         "generation_timing": timing,
         "output_contract": "muxed_av_full_timeline",
         "public_generation": {"modality": "video", "selectors": [
@@ -1144,7 +1174,7 @@ def _compile_generation(
         request=request, destination=destination, resource_root=resource,
         workflow_inputs=workflow_inputs, asset_bindings=bindings,
         capabilities=capabilities,
-        limitations=["image references only; no timed keyframes or source-free masks", "single pass, up to 362 frames at 24 fps"],
+        limitations=["no video references, timed keyframes or source-free masks", "single pass, up to 3592 frames at 24 fps; outside 124–362 frames is untested"],
         profile_id=profile_id,
         extra_manifest=extra_manifest,
     )

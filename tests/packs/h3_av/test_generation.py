@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 from dataclasses import replace
 from pathlib import Path
@@ -51,6 +52,65 @@ def test_generation_assets_use_recipe_lock_revisions():
         f'{row["subdir"]}/{row["name"]}'
         for row in _locked_model_workflow(turbo_enabled=False).metadata["model_assets"]
     }
+
+
+def test_generation_binds_standalone_audio_to_audio_typed_reference_port():
+    workflow = _locked_model_workflow(audio_references=[{"binding": "audio_reference_0"}])
+    target = workflow.nodes["target"]
+    ports = dict(zip(target.native_input_names, target.native_input_types, strict=True))
+    assert ports["ref_audios.ref_audio_0"] == "AUDIO"
+    assert workflow.inputs["audio_reference_0"].media_semantics == "audio"
+
+
+def test_builder_reference_port_counts_match_the_limits_table():
+    from astrid.packs.h3_av.shared.generation import LIMITS, build_generation_workflow
+
+    capacities = LIMITS["builder_slots"]["value"]
+    workflow = build_generation_workflow(
+        references=[f"image-{index}" for index in range(capacities["image"])],
+        video_references=[{"binding": f"video-{index}"} for index in range(capacities["video"])],
+        audio_references=[{"binding": f"audio-{index}"} for index in range(capacities["audio"])],
+        prompt="A scene", frames=24, model="minimax_h3_ref2va_pruned_int8_convrot.safetensors", steps=8, seed=1,
+    )
+    target = workflow.nodes["target"]
+    ports = dict(zip(target.native_input_names, target.native_input_types, strict=True))
+    assert sum(name.startswith("ref_images.") for name in ports) == capacities["image"]
+    assert sum(name.startswith("ref_videos.") for name in ports) == capacities["video"]
+    assert sum(name.startswith("ref_audios.") for name in ports) == capacities["audio"]
+    assert all(ports[f"ref_audios.ref_audio_{index}"] == "AUDIO" for index in range(capacities["audio"]))
+    dimensions = LIMITS["canvas_dimension"]["value"]
+    assert (dimensions["min"], dimensions["max"], dimensions["multiple"]) == (32, 16384, 32)
+
+
+def test_builder_rejects_one_past_standalone_audio_slots():
+    from astrid.packs.h3_av.shared.generation import LIMITS, build_generation_workflow
+
+    with pytest.raises(ValueError, match="at most three standalone audio references"):
+        build_generation_workflow(references=["image-0"], audio_references=[
+            {"binding": f"audio-{index}"} for index in range(LIMITS["builder_slots"]["value"]["audio"] + 1)
+        ], prompt="A scene", frames=24, model="minimax_h3_ref2va_pruned_int8_convrot.safetensors", steps=8, seed=1)
+
+
+def test_limits_match_the_pinned_cached_h3_node_schema():
+    from astrid.packs.h3_av.shared.generation import LIMITS
+
+    cache = Path(os.environ["VIBECOMFY_SOURCE"]) / "vibecomfy/porting/cache/object_info/comfy_core@cpu-runtime.json"
+    classes = json.loads(cache.read_text())
+    schema = classes["MiniMaxH3ReferenceToVideo"]
+    assert schema["git_commit"] == "6bfaacc67c2103481e5f0c84d75257cd0581d86a"
+    optional = schema["inputs"]["optional"]
+    slots = LIMITS["builder_slots"]["value"]
+    assert optional["ref_images"][1]["template"]["max"] == slots["image"]
+    assert optional["ref_videos"][1]["template"]["max"] == slots["video"]
+    assert optional["ref_audios"][1]["template"]["max"] == slots["audio"]
+    width = schema["inputs"]["required"]["width"][1]
+    height = schema["inputs"]["required"]["height"][1]
+    for dim in (width, height):
+        assert (dim["min"], dim["max"], dim["step"]) == (
+            LIMITS["canvas_dimension"]["value"]["min"],
+            LIMITS["canvas_dimension"]["value"]["max"],
+            LIMITS["canvas_dimension"]["value"]["multiple"],
+        )
 
 
 @pytest.mark.parametrize("invalid", [
@@ -106,7 +166,8 @@ def request(count=4, **updates):
     ({"references": [{"asset": "a", "purpose": "audio"}]}, "image guidance"),
     ({"references": [{"asset": "a", "purpose": "keyframe"}]}, "timed keyframes"),
     ({"output": {"duration": 15.01}}, "24 fps"),
-    ({"output": {"duration": 16}}, "5..362"),
+    ({"output": {"duration": 4 / 24}}, "job length frames"),
+    ({"output": {"duration": 3593 / 24}}, "job length frames"),
     ({"output": {"duration": float("inf")}}, "finite"),
     ({"references": [{"asset": "a", "purpose": "style"}] * 10}, "nine"),
     ({"changes": {"video": [], "audio": [{"during": [0, 1], "action": "preserve"}]}}, "changes/masks"),
@@ -196,3 +257,73 @@ def prepared_client(tmp_path):
 
 
 
+
+
+def test_source_free_audio_trim_compiles_to_bound_audio_graph(tmp_path):
+    import subprocess
+    from vibecomfy.cli_loader import load_workflow_any
+    from astrid.packs.h3_av.shared.request_v2 import normalize_v2
+
+    image = tmp_path / "image.png"
+    audio = tmp_path / "audio.wav"
+    Image.new("RGB", (32, 32)).save(image)
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=sample_rate=48000", "-t", "5", str(audio)], check=True)
+    raw = {"version": 2, "prompt": "A scene", "duration": 6, "media": [
+        {"asset": "image", "role": "reference", "modality": "image"},
+        {"asset": "audio", "role": "reference", "modality": "audio", "range": [1, 4]},
+    ]}
+    prepared = prepare_request(normalize_v2(raw), asset_map={"image": str(image), "audio": str(audio)})
+    compiled = compile_preparation(prepared, out_dir=tmp_path / "compiled")
+    capabilities = compiled["capabilities"]
+    assert capabilities["references"] == 1
+    assert capabilities["reference_order"] == ["image"]
+    assert capabilities["audio_references"] == 1
+    assert capabilities["audio_reference_order"] == ["audio"]
+    assert not any("image references only" in text for text in compiled["limitations"])
+    assert prepared["resource_estimate"]["requested_target_rows"] == 144
+    assert prepared["resource_estimate"]["target_rows"] == 158
+    assert prepared["resource_estimate"]["target_raw_rgb_bytes"] == 158 * 1024 * 576 * 3
+    workflow = load_workflow_any(compiled["workflow"]["workflow.py"]["path"])
+    api = workflow.compile("api", run_inputs=compiled["workflow_inputs"])
+    target = next(row for row in api.values() if row["class_type"] == "MiniMaxH3ReferenceToVideo")
+    trim = api[target["inputs"]["ref_audios.ref_audio_0"][0]]
+    assert trim["class_type"] == "TrimAudioDuration"
+    assert trim["inputs"]["start_index"] == 1
+    assert trim["inputs"]["duration"] == 3
+    assert api[trim["inputs"]["audio"][0]]["class_type"] == "LoadAudio"
+
+
+def test_source_free_video_reference_fails_closed(tmp_path):
+    from astrid.packs.h3_av.shared.compile import _compile_native_v2
+    from astrid.packs.h3_av.shared.request_v2 import normalize_v2
+
+    request = normalize_v2({"version": 2, "prompt": "A scene", "duration": 6, "media": [
+        {"asset": "image", "role": "reference", "modality": "image"},
+        {"asset": "video", "role": "reference", "modality": "video", "audio": False},
+    ]})
+    with pytest.raises(CompilationError, match="source-free video references are unsupported"):
+        _compile_native_v2(request, {"image": tmp_path / "i", "video": tmp_path / "v"}, tmp_path)
+
+
+def test_sixteen_seconds_compiles_and_warns(tmp_path):
+    from vibecomfy.cli_loader import load_workflow_any
+    image = tmp_path / "reference.png"
+    Image.new("RGB", (32, 32)).save(image)
+    prepared = prepare_request(request(1, output={"duration": 16}), asset_map={"image-0": str(image)})
+    assert prepared["warnings"][0]["limit"] == "job_duration_seconds"
+    compiled = compile_preparation(prepared, out_dir=tmp_path / "compiled-16")
+    workflow = load_workflow_any(compiled["workflow"]["workflow.py"]["path"])
+    api = workflow.compile("api", run_inputs=compiled["workflow_inputs"])
+    target = next(row for row in api.values() if row["class_type"] == "MiniMaxH3ReferenceToVideo")
+    assert target["inputs"]["length"] == 396
+
+
+def test_node_frame_grid_maximum():
+    assert generation_timing(3592 / 24)["raw_frames"] == 3592
+    with pytest.raises(ValueError, match="job length frames"):
+        generation_timing(3593 / 24)
+    with pytest.raises(ValueError, match="job length frames"):
+        generation_timing(4 / 24)
+    from astrid.packs.h3_av.shared.generation import build_generation_workflow
+    with pytest.raises(ValueError, match="job length frames"):
+        build_generation_workflow(references=["i"], prompt="scene", frames=3593, model="minimax_h3_ref2va_pruned_int8_convrot.safetensors", steps=8, seed=1)

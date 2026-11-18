@@ -304,8 +304,11 @@ def _validate_character_swap_media(settings: Mapping[str, Any], media: list[dict
     if not isinstance(media, list) or any(not isinstance(item, Mapping) for item in media):
         raise H3RequestError("character_swap_v1 requires normalized v2 media")
     references = [item for item in media if item.get("role") == "reference"]
-    if len(references) != 2 or sorted(str(item.get("modality")) for item in references) != ["image", "video"]:
-        raise H3RequestError("character_swap_v1 requires exactly one typed video reference and one typed replacement image reference")
+    modalities = [str(item.get("modality")) for item in references]
+    from .generation import LIMITS
+    minimum = LIMITS["character_swap_references"]["value"]
+    if any(modalities.count(kind) < minimum[kind] for kind in ("image", "video")):
+        raise H3RequestError("character_swap_v1 references: lowering requires at least one video (<Video 1>) and one image (<Picture 1>); further references are allowed but untested")
     if continuation:
         raise H3RequestError("character_swap_v1 does not support continuation")
     timeline = [item for item in media if item.get("role") == "timeline"]
