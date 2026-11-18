@@ -35,7 +35,6 @@ ARTIFACT_ENV = "ASTRID_ELEMENT_ARTIFACT_ROOT"
 DOCUMENT_KIND = "astrid.project-pack"
 DOCUMENT_SCHEMA = "astrid.project-pack/v1"
 SOURCE_BINDING = "project-packs"
-BUILD_ENV = "ASTRID_ELEMENT_BUILD_COMMAND"
 _ALLOWED_IMPORTS = {"react", "react/jsx-runtime", "remotion"}
 _SOURCE_EXTENSIONS = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".css"}
 
@@ -279,28 +278,15 @@ def _atomic_bytes(path: Path, data: bytes) -> None:
         if os.path.exists(temporary):os.unlink(temporary)
 
 
-def _verify_build(selection: dict[str,Any], path: Path) -> dict[str,Any]:
-    configured=os.environ.get(BUILD_ENV)
-    if not configured:raise ValueError(f'Native element build verifier is not configured; set {BUILD_ENV} through the explicit native host setup')
-    try:command=json.loads(configured)
-    except json.JSONDecodeError as exc:raise ValueError('Element build command must be a JSON argv array') from exc
-    if not isinstance(command,list) or not command or any(not isinstance(arg,str) or not arg for arg in command):raise ValueError('Element build command must be a nonempty JSON argv array')
-    fd,name=tempfile.mkstemp(prefix='build-candidate-',suffix='.json',dir=path.parent)
-    candidate=Path(name)
-    try:
-        with os.fdopen(fd,'w') as stream:json.dump(selection,stream,indent=2,sort_keys=True);stream.write('\n')
-        try:result=subprocess.run([*command,str(candidate)],stdin=subprocess.DEVNULL,capture_output=True,text=True,timeout=60,check=False)
-        except (OSError,subprocess.TimeoutExpired) as exc:raise ValueError(f'Element build verifier could not finish: {exc}') from exc
-        if result.returncode!=0:raise ValueError('Element build verification failed: '+(result.stderr or result.stdout)[-4096:])
-        try:receipt=json.loads(result.stdout)
-        except json.JSONDecodeError as exc:raise ValueError('Element build verifier omitted its structured receipt') from exc
-        digest='sha256:'+hashlib.sha256(candidate.read_bytes()).hexdigest()
-        if receipt.get('schema')!='astrid.element-build/v1' or receipt.get('selectionDigest')!=digest:raise ValueError('Element build receipt does not match captured selection')
-        expected={(e['projectId'],*(e['descriptor'][k] for k in ('packId','id','kind','revision'))) for e in selection['elements']}
-        actual={(e.get('projectId'),*(e.get(k) for k in ('packId','id','kind','revision'))) for e in receipt.get('elements',[]) if isinstance(e,dict)}
-        if expected!=actual:raise ValueError('Element build receipt has missing or unexpected exact revisions')
-        return receipt
-    finally:candidate.unlink(missing_ok=True)
+def _build_receipt(selection: dict[str,Any]) -> dict[str,Any]:
+    """The build record stored with the snapshot: the exact selection every element compiled under.
+
+    The compile is the verification (``_compile_components`` runs before this), so nothing else is checked.
+    """
+    data = (json.dumps(selection,indent=2,sort_keys=True)+'\n').encode('utf-8')
+    return {'schema':'astrid.element-build/v1','selectionDigest':'sha256:'+hashlib.sha256(data).hexdigest(),
+            'elements':[{'projectId':e['projectId'],**{k:e['descriptor'][k] for k in ('packId','id','kind','revision')}}
+                        for e in selection['elements']]}
 
 
 def init_project_pack(realm: str, project: str, *, client=None, collection='default') -> dict[str, Any]:
@@ -323,8 +309,6 @@ def init_project_pack(realm: str, project: str, *, client=None, collection='defa
     validate_canonical_pack(root,expected_pack_id=content['pack_id'])
     if row is None:
         path=Path(location['manifestPath']);path.parent.mkdir(parents=True,exist_ok=True)
-        candidate=_index(realm,project,document_id,1,content,[])
-        _verify_build(candidate,path)
         committed=_publish_document(client,project,document_id,None,content)
         _atomic_json(path,_index(realm,project,document_id,committed['version'],content,[]))
     return inspect_project_pack(realm,project,client=client,collection=collection)
@@ -397,22 +381,54 @@ def _compiled_ref(files, component: str) -> dict[str,str]:
     return {'path':name,'sha256':next(item['sha256'] for item in files if item['path']==name)}
 
 
-def _element_toolchain() -> dict[str,Any]:
-    from astrid.core.pack.cli_manage import _toolchain
-    from astrid.core.pack.install import PackInstallError
+_REPAIR = "Repair the install: run the Astrid install command again without --update."
+
+
+def _esbuild_pin(project: Path) -> str:
+    """The exact esbuild version the Remotion project pins in its own package.json."""
+    package = project/'package.json'
     try:
-        return _toolchain(None)
-    except PackInstallError as exc:
-        raise ValueError('Project element admission needs the pinned esbuild toolchain (Node and esbuild 0.27.7 from the installed Astrid release). '
-                         f'Set ASTRID_PACK_TOOLCHAIN to its pack-build/toolchain.json, then admit again. Detail: {exc}') from exc
+        pinned = json.loads(package.read_text(encoding='utf-8'))['dependencies']['esbuild']
+    except (OSError,ValueError,KeyError,TypeError) as exc:
+        raise ValueError(f'Project element admission needs the Remotion esbuild pin, but {package} does not declare esbuild. {_REPAIR}') from exc
+    if not isinstance(pinned,str) or not re.fullmatch(r'\d+\.\d+\.\d+',pinned):
+        raise ValueError(f'{package} must pin esbuild to one exact version, not {pinned!r}')
+    return pinned
+
+
+def _renderer_compiler() -> tuple[Path,Path]:
+    """The renderer's own Node and Remotion esbuild, resolved the way the render path resolves them.
+
+    Node follows the Remotion project's engines pin (``ASTRID_NODE_EXECUTABLE`` must match it when set).
+    esbuild is the project's own pinned package, checked against its exact version. No separate lock.
+    """
+    from astrid.core.env_vars import ASTRID_NODE_EXECUTABLE
+    from astrid.core.rendering.node_pin import resolve_pinned_node
+    from astrid.core.rendering.remotion_runtime import resolve_remotion_project_dir
+    project = resolve_remotion_project_dir()
+    node = resolve_pinned_node(project,override=(os.environ.get(ASTRID_NODE_EXECUTABLE) or '').strip() or None)
+    if not node.ok:
+        raise ValueError(f'Project element admission needs the renderer Node: {node.problem}')
+    pin = _esbuild_pin(project)
+    binary = project/'node_modules'/'esbuild'/'bin'/'esbuild'
+    if not binary.is_file() or not (binary.parent.parent/'lib'/'main.js').is_file():
+        raise ValueError(f'Project element admission needs the Remotion esbuild {pin}, but {binary} is missing. {_REPAIR}')
+    env = {'PATH':'','LANG':'C.UTF-8','ESBUILD_BINARY_PATH':str(binary)}
+    try:
+        observed = subprocess.run([str(binary),'--version'],capture_output=True,text=True,env=env,timeout=15,check=False).stdout.strip()
+    except (OSError,subprocess.SubprocessError) as exc:
+        raise ValueError(f'The Remotion esbuild {binary} cannot run ({exc}). {_REPAIR}') from exc
+    if observed != pin:
+        raise ValueError(f'The Remotion esbuild {binary} reports {observed or "nothing"}, but {project/"package.json"} pins {pin}. {_REPAIR}')
+    return node.path, binary
 
 
 def _compile_components(staging: Path, components) -> None:
     from astrid.pack_build import compile_element_module
-    toolchain=_element_toolchain()
+    node, esbuild = _renderer_compiler()
     for component in sorted(set(components)):
         target=staging/_compiled_path(component);target.parent.mkdir(parents=True,exist_ok=True)
-        target.write_bytes(compile_element_module(toolchain,staging,component))
+        target.write_bytes(compile_element_module(node,esbuild,staging,component))
 
 
 def _selected_index(realm,project,document_id,row):
@@ -531,7 +547,7 @@ def admit_project_pack(realm: str, project: str, *, client=None, collection='def
             {k:v for k,v in a.items() if k!='snapshot_object'}
             if (a['id'],a['kind'],a['revision']) in selected_keys else a for a in admissions]}
         build_candidate=_index(realm,project,document_id,row['version']+1,build_content,build_records)
-        build_receipt=_verify_build(build_candidate,path)
+        build_receipt=_build_receipt(build_candidate)
         existing=[a['snapshot_object'] for a in admissions
                   if (a['id'],a['kind'],a['revision']) in selected_keys and 'snapshot_object' in a]
         receipt_path=snapshot_root/'.build-receipt.json'

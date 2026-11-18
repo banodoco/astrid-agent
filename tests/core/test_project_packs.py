@@ -14,8 +14,6 @@ import os
 import subprocess
 
 from astrid.core.element import project_packs as packs
-from astrid.core.pack.cli_manage import TOOLCHAIN_ENV
-from astrid.pack_build import _SINGLETONS
 
 # Wire grammar of Runtime's Idempotency-Key (runtime_protocol/service.py: IDEMPOTENCY_KEY_RE,
 # enforced by validate_idempotency_key). Mirrored here so the fake client needs no runtime checkout.
@@ -67,39 +65,10 @@ def _sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def pinned_toolchain(tmp_path):
-    """Write the release lock for the locally pinned Node and esbuild 0.27.7.
-
-    ASTRID_BUILD_TEST_NODE and ASTRID_BUILD_TEST_ESBUILD name the binaries; the esbuild
-    binary must sit beside the installer layout's lib/main.js (bin/ and lib/ siblings).
-    Admission compiles every element for real, so these tests cannot run without them.
-    """
-    node = os.environ.get('ASTRID_BUILD_TEST_NODE')
-    esbuild = os.environ.get('ASTRID_BUILD_TEST_ESBUILD')
-    if not node or not esbuild:
-        raise RuntimeError('Project element admission tests need the pinned toolchain: set ASTRID_BUILD_TEST_NODE '
-                           'and ASTRID_BUILD_TEST_ESBUILD (see tests/lanes.py, pack_build_tools)')
-    node, esbuild = Path(node).resolve(), Path(esbuild).absolute()
-    env = {'PATH': '', 'LANG': 'C.UTF-8', 'ESBUILD_BINARY_PATH': str(esbuild)}
-    node_version = subprocess.run([str(node), '--version'], capture_output=True, text=True, env=env,
-                                  check=True).stdout.strip().removeprefix('v')
-    shared = tmp_path / 'shared-modules.json'
-    shared.write_text(json.dumps({'shared_modules': {name: {'url': f'/assets/{i}.js', 'sha256': hashlib.sha256(name.encode()).hexdigest(), 'version': '1.0.0'} for i, name in enumerate(sorted(_SINGLETONS))}}))
-    lock = tmp_path / 'toolchain.json'
-    lock.write_text(json.dumps({'version': 1, 'node_path': str(node), 'node_version': node_version, 'node_sha256': _sha(node),
-                                'esbuild_path': str(esbuild), 'esbuild_version': '0.27.7', 'esbuild_sha256': _sha(esbuild),
-                                'shared_modules_lock': str(shared)}))
-    return lock
-
-
 @pytest.fixture(autouse=True)
 def configured(tmp_path,monkeypatch):
     monkeypatch.setenv(packs.ROOT_ENV,str(tmp_path/'user-data'))
     monkeypatch.setenv(packs.ARTIFACT_ENV,str(tmp_path/'build-cache'))
-    verifier=tmp_path/'test-build-verifier.py'
-    verifier.write_text("import json,sys,hashlib\nfrom pathlib import Path\np=Path(sys.argv[1]);x=json.loads(p.read_text());print(json.dumps({'schema':'astrid.element-build/v1','selectionDigest':'sha256:'+hashlib.sha256(p.read_bytes()).hexdigest(),'elements':[{'projectId':e['projectId'],**{k:e['descriptor'][k] for k in ('packId','id','kind','revision')}} for e in x['elements']]}))")
-    monkeypatch.setenv(packs.BUILD_ENV,json.dumps([sys.executable,str(verifier)]))
-    monkeypatch.setenv(TOOLCHAIN_ENV,str(pinned_toolchain(tmp_path)))
     documents=FakeDocuments()
     documents.media=FakeMedia()
     client=SimpleNamespace(documents=documents,media=documents.media)
@@ -236,13 +205,15 @@ def test_canonical_paths_and_commands_on_timeline_inspection():
     assert packs.timeline_element_authoring('realm','project','timeline',bundle)['elements'][0]['status']=='legacy-migration-required'
 
 
-def test_missing_or_failed_compiler_never_advances_selection(monkeypatch):
-    seed();first=packs.admit_project_pack('realm','project');selection=Path(first['manifestPath']);before=selection.read_bytes()
-    monkeypatch.delenv(packs.BUILD_ENV)
-    with pytest.raises(ValueError,match='not configured'):packs.admit_project_pack('realm','project')
+def test_missing_or_failed_compiler_never_advances_selection(monkeypatch, tmp_path):
+    root, directory, _ = seed();first=packs.admit_project_pack('realm','project');selection=Path(first['manifestPath']);before=selection.read_bytes()
+    bare=tmp_path/'bare-remotion';bare.mkdir();(bare/'package.json').write_text(json.dumps({'dependencies':{'esbuild':'0.27.7'}}))
+    with monkeypatch.context() as remote:
+        remote.setenv('ASTRID_REMOTION_PROJECT_DIR',str(bare))
+        with pytest.raises(ValueError,match='Remotion esbuild.*is missing'):packs.admit_project_pack('realm','project')
     assert selection.read_bytes()==before
-    monkeypatch.setenv(packs.BUILD_ENV,json.dumps([sys.executable,'-c','import sys;sys.exit(1)']))
-    with pytest.raises(ValueError,match='build verification failed'):packs.admit_project_pack('realm','project')
+    (directory/'component.tsx').write_text('export default function Reveal( {\n')
+    with pytest.raises(ValueError,match='component.tsx.*failed to compile'):packs.admit_project_pack('realm','project')
     assert selection.read_bytes()==before
 
 
@@ -287,15 +258,6 @@ def test_missing_derived_index_reconstructs_from_selected_document_and_snapshot(
     assert packs.resolve_admitted_element('realm','project',ref)['descriptor']==record['descriptor']
     rebuilt=packs.materialize_project_pack('realm','project')
     assert Path(rebuilt['manifestPath']).is_file() and len(configured.writes)==before
-
-
-def test_failed_init_build_does_not_create_authority_document(configured,monkeypatch):
-    monkeypatch.delenv(packs.BUILD_ENV)
-    with pytest.raises(ValueError,match='not configured'):packs.init_project_pack('realm','project')
-    assert configured.rows=={}
-    context=packs.inspect_project_pack('realm','project')
-    assert context['documentVersion']==0
-    assert (Path(context['packRoot'])/'pack.yaml').is_file()
 
 
 def test_read_wrong_realm_does_not_create_or_write(configured):

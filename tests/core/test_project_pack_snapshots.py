@@ -13,7 +13,6 @@ import pytest
 import yaml
 
 from astrid.core.element import project_packs as packs
-from astrid.core.pack.cli_manage import TOOLCHAIN_ENV
 from tests.core import test_project_packs
 from tests.core.test_project_pack_inputs import capture_input
 
@@ -176,14 +175,13 @@ def test_failed_mixed_admission_keeps_old_selection(configured, monkeypatch, fai
     index = Path(first['manifestPath'])
     index_bytes = index.read_bytes()
     component = other / 'component.tsx'
-    component.write_text(component.read_text() + '\n// B only\n')
-    with monkeypatch.context() as build:
-        if failure == 'build':
-            build.setenv(packs.BUILD_ENV, json.dumps([sys.executable, '-c', 'raise SystemExit(1)']))
-        configured.media.reject = failure == 'upload'
-        configured.reject_update = failure == 'document_cas'
-        with pytest.raises(ValueError, match='build verification failed|ingest failed|CAS rejected'):
-            packs.admit_project_pack('realm', 'project')
+    good = component.read_text() + '\n// B only\n'
+    component.write_text('export default function Reveal( {\n' if failure == 'build' else good)
+    configured.media.reject = failure == 'upload'
+    configured.reject_update = failure == 'document_cas'
+    with pytest.raises(ValueError, match='failed to compile|ingest failed|CAS rejected'):
+        packs.admit_project_pack('realm', 'project')
+    component.write_text(good)
     assert configured.rows == before and index.read_bytes() == index_bytes
     assert all(configured.media.objects[key] == raw for key, raw in objects.items())
     configured.media.reject = configured.reject_update = False
@@ -393,11 +391,14 @@ def test_render_snapshot_checks_accept_compiled_bundle_and_raw_tsx(admitted):
     assert files[record['snapshot']['componentPath']].startswith(b"import React from 'react';")
 
 
-def test_missing_toolchain_is_a_plain_error_naming_the_fix(configured, monkeypatch):
+def test_missing_renderer_esbuild_is_a_plain_error_naming_the_fix(configured, tmp_path, monkeypatch):
     test_project_packs.seed()
     before = copy.deepcopy(configured.rows)
-    monkeypatch.delenv(TOOLCHAIN_ENV)
-    with pytest.raises(ValueError, match='pinned esbuild toolchain.*ASTRID_PACK_TOOLCHAIN'):
+    bare = tmp_path / 'bare-remotion'
+    bare.mkdir()
+    (bare / 'package.json').write_text(json.dumps({'dependencies': {'esbuild': '0.27.7'}}))
+    monkeypatch.setenv('ASTRID_REMOTION_PROJECT_DIR', str(bare))
+    with pytest.raises(ValueError, match=r'Remotion esbuild.*is missing.*Repair the install'):
         packs.admit_project_pack('realm', 'project')
     assert configured.rows == before
 
