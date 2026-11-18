@@ -1107,7 +1107,10 @@ def _decode_exact_pcm(path: Path, *, expected_channels: int | None = None, gener
         rate, channels = int(stream["sample_rate"]), int(stream["channels"])
     except (KeyError, TypeError, ValueError):
         raise CompositionError(f"{path.name}: audio sample rate and channel layout must be measurable") from None
-    if channels not in (1, 2) or (expected_channels is not None and channels != expected_channels):
+    layout = stream.get("channel_layout")
+    allowed_layout = "mono" if channels == 1 else "stereo" if channels == 2 else None
+    if (allowed_layout is None or layout not in (None, "unknown", allowed_layout)
+            or (expected_channels is not None and channels != expected_channels)):
         raise CompositionError(f"{path.name}: audio layout must match the source mono or stereo layout")
     if rate != 48000 and not generated:
         raise CompositionError(f"{path.name}: kept and supplied audio must be 48000 Hz; prepare a 48000 Hz source")

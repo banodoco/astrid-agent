@@ -622,6 +622,70 @@ def _combined_strength_mask(grants: list[tuple[Path, str, tuple[int, int], float
             raise CompilationError(f"grant {name} vanishes on the model grid")
     return output
 
+
+def _audio_time_mask(grants: list[tuple[int, int, float]], fixed: list[tuple[int, int]], *,
+                     frames: int, destination: Path) -> tuple[Path, list[float], list[float]]:
+    """Encode per-frame mean strengths as lossless 16-bit RGB FFV1.
+
+    Each 24 fps frame covers exactly 2000 samples at 48 kHz. Fixed audio has
+    priority, generated overlaps use the maximum strength, and the internal
+    H3 padding has zero generation weight. Quantization is 1/65535.
+    """
+    import struct
+    requested = []
+    quantized = []
+    raw = bytearray()
+    for frame in range(frames):
+        first, last = frame * 2000, (frame + 1) * 2000
+        edges = {first, last}
+        for start, end, *_ in (*grants, *fixed):
+            if start < last and end > first:
+                edges.update((max(first, start), min(last, end)))
+        ordered = sorted(edges)
+        weighted = 0.0
+        for start, end in zip(ordered, ordered[1:]):
+            if any(a < end and b > start for a, b in fixed):
+                continue
+            weight = max((strength for a, b, strength in grants if a < end and b > start), default=0.0)
+            weighted += (end - start) * weight
+        value = weighted / 2000
+        code = round(value * 65535)
+        requested.append(value)
+        quantized.append(code / 65535)
+        raw.extend(struct.pack("<HHH", code, code, code) * 64)
+    output = destination / "audio-time-mask.mkv"
+    command = ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pixel_format", "rgb48le",
+               "-video_size", "8x8", "-framerate", "24", "-i", "-", "-fflags", "+bitexact",
+               "-flags:v", "+bitexact", "-c:v", "ffv1",
+               "-pix_fmt", "gbrp16le", str(output)]
+    try:
+        subprocess.run(command, input=bytes(raw), check=True, capture_output=True)
+        decoded = subprocess.run(["ffmpeg", "-v", "error", "-i", str(output), "-pix_fmt", "rgba64le",
+                                  "-f", "rawvideo", "-"], check=True, capture_output=True).stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise CompilationError(f"could not encode or decode the managed audio mask: {exc}") from exc
+    if len(decoded) != frames * 8 * 8 * 8:
+        raise CompilationError("managed audio mask frame count does not match the target")
+    for frame, value in enumerate(quantized):
+        pixels = decoded[frame * 512:(frame + 1) * 512]
+        expected = round(value * 65535)
+        if any(struct.unpack_from("<H", pixels, pixel * 8)[0] != expected for pixel in range(64)):
+            raise CompilationError(f"managed audio mask frame {frame} failed lossless red-channel verification")
+    return output, requested, quantized
+
+
+def _resample_audio_mask(values: list[float], ticks: int) -> list[float]:
+    """Match torch linear interpolation with align_corners=False."""
+    result = []
+    for tick in range(ticks):
+        position = max(0.0, min(len(values) - 1, (tick + 0.5) * len(values) / ticks - 0.5))
+        left = int(position)
+        right = min(left + 1, len(values) - 1)
+        weight = position - left
+        result.append(values[left] * (1 - weight) + values[right] * weight)
+    return result
+
+
 def _compile_native_masked_edit(
     request: H3Request, assets: Mapping[str, Path], destination: Path, *, branch: str
 ) -> dict[str, Any]:
@@ -664,9 +728,6 @@ def _compile_native_masked_edit(
     video_passes = [p for p in passes if p.operation.stream == "video"]
     audio_passes = [p for p in passes if p.operation.stream == "audio" and p.operation.strength > 0]
     references_by_name = {item.name: item for item in spec.refs}
-    if any(not p.operation.refs or any(references_by_name[name].use != "replacement" for name in p.operation.refs)
-           for p in audio_passes):
-        raise CompilationError("generated audio windows require a managed audio mask producer")
     active_passes = [p for p in video_passes if p.operation.strength > 0]
     if len(active_passes) > 1:
         seeds = {p.operation.seed if p.operation.seed is not None else settings["seed"] for p in active_passes}
@@ -733,6 +794,30 @@ def _compile_native_masked_edit(
                                     frames=frame_load_cap, destination=destination)
     mask_binding = "video_mask_0" if mask_kind == "video" else "mask_0"
     bindings: dict[str, Path] = {"source_video": assets[source_id], mask_binding: mask_path}
+    generated_audio = []
+    fixed_audio_spans = []
+    for item in audio_passes:
+        audio_op = item.operation
+        span = tuple(int(value * 48000) for value in audio_op.during)
+        if audio_op.refs:
+            if len(audio_op.refs) != 1 or references_by_name[audio_op.refs[0]].use != "replacement":
+                raise CompilationError("an audio guide must identify exactly one fixed replacement occurrence")
+            fixed_audio_spans.append(span)
+        else:
+            generated_audio.append((*span, audio_op.strength))
+    audio_mask_values = None
+    if generated_audio:
+        try:
+            raw_frames = generation_timing(spec.duration)["raw_frames"]
+        except ValueError as exc:
+            raise CompilationError(str(exc)) from exc
+        path, requested_mask, decoded_mask = _audio_time_mask(generated_audio, fixed_audio_spans,
+                                                               frames=raw_frames, destination=destination)
+        bindings["audio_time_mask"] = path
+        audio_mask_values = {"format": "FFV1 gbrp16le 8x8 uniform RGB, red channel", "precision": "1/65535",
+                             "requested_frame_values": requested_mask, "decoded_frame_values": decoded_mask,
+                             "resampled_40hz": _resample_audio_mask(decoded_mask, round(raw_frames * 40 / 24)),
+                             "padding": "keep"}
     fixed_audio = request.value.get("version") == 2 and any(
         item.get("use") == "replacement" for item in request.value["media"]
     )
@@ -795,7 +880,8 @@ def _compile_native_masked_edit(
                                       "sampler_strength": 1.0 if len(grant_masks) > 1 else grant["strength"]}
         placed = tuple({**item, "input_binding": "source_video", "start_time": float(source.range[0]),
                         "frame_count": frame_load_cap,
-                        **({"audio_input_binding": "source_audio_prepared"} if "source_audio_prepared" in bindings else {})}
+                        **({"audio_input_binding": "source_audio_prepared"} if "source_audio_prepared" in bindings else {}),
+                        **({"audio_mask_binding": "audio_time_mask"} if "audio_time_mask" in bindings else {})}
                        if item.get("occurrence_id") == source.occurrence_id else item
                        for item in inputs.placed)
         inputs = replace(inputs, grants=tuple(grant_records), placed=placed)
@@ -828,7 +914,9 @@ def _compile_native_masked_edit(
                 "per-frame video mask"
                 if mask_kind == "video"
                 else "mask_0 (static image, spatial, crop disabled, channel " + _MASK_CHANNEL + ")"),
-            "audio_binding": "source_audio_from_source_video, audio_strength=0",
+            "audio_binding": ("prepared source with fixed PCM, audio_strength=0" if "source_audio_prepared" in bindings
+                              else "source_audio_from_source_video, audio_strength=0"),
+            **({"audio_time_mask": audio_mask_values} if audio_mask_values is not None else {}),
             "references": len(conditioning) if conditioning is not None else len(references),
             "reference_order": ([next(item["asset"] for item in request.value["media"] if item["occurrence_id"] == row["occurrence"]) for row in conditioning] if conditioning is not None else [item.asset for item in references]),
             **({"conditioning": conditioning, **_conditioning_summary(conditioning)} if conditioning is not None else {}),
@@ -853,7 +941,7 @@ def _compile_native_masked_edit(
         limitations=[
             "native masked edit is CPU-verified only; spatial mode on ref2va plus Turbo is unproven on GPU",
             "one modifying video operation per request; static boxes, image masks or per-frame mask video",
-            "audio regeneration, polygon masks and per-operation adapters are unsupported",
+            "polygon masks and per-operation adapters are unsupported",
             "box-only regions bind in the graph; end-to-end execution still needs resolved mask propagation for composition paste-back",
             "long windows use one pass without automatic chunking",
             "zero-reference requests assume MiniMaxH3ReferenceToVideo accepts no ref images (unverified)",

@@ -313,10 +313,11 @@ def build_generation_workflow(inputs: GenerationInputs):
                        "frame_load_cap": source["frame_count"], "mask_binding": raster["input_binding"],
                        "mask_channel": raster["channel"], "mask_kind": raster.get("sampler_kind", raster["kind"]),
                        "strength": raster["sampler_strength"],
-                       **({"audio_source_binding": source["audio_input_binding"]} if source.get("audio_input_binding") else {})}
+                       **({"audio_source_binding": source["audio_input_binding"]} if source.get("audio_input_binding") else {}),
+                       **({"audio_mask_binding": source["audio_mask_binding"]} if source.get("audio_mask_binding") else {})}
     from vibecomfy.templates import ModelAsset, OutputSpec, ReadyMetadata, new_workflow, node
     from vibecomfy.nodes.core import (
-        AudioConcat, BasicGuider, BasicScheduler, CLIPLoader, EmptyAudio, EmptyImage,
+        AudioConcat, BasicGuider, BasicScheduler, CLIPLoader, CropMask, EmptyAudio, EmptyImage,
         ImageBatch, ImageFromBatch, KSamplerSelect, LoadAudio, LoadImage, RepeatImageBatch, TrimAudioDuration,
         LoraLoaderModelOnly, RandomNoise, SamplerCustomAdvanced, UNETLoader,
         VAEDecode, VAEDecodeAudio, VAELoader,
@@ -375,7 +376,8 @@ def build_generation_workflow(inputs: GenerationInputs):
                  "url": motion.repository,
                  "commit": motion.revision,
                  "classes": ["MiniMaxH3AudioVAECompatibility"]
-                            + (["H3V2VGranularFractionalDenoise"] if masked_edit else [])},
+                            + (["H3V2VGranularFractionalDenoise"] if masked_edit else [])
+                            + (["MiniMaxH3SetAVNoiseMask"] if masked_edit and masked_edit.get("audio_mask_binding") else [])},
                 {"slug": "ComfyUI-VideoHelperSuite", "source": "git",
                  "url": video_helper.repository,
                  "commit": video_helper.revision,
@@ -533,6 +535,21 @@ def build_generation_workflow(inputs: GenerationInputs):
                        source_mask=mask.out("MASK"))
             sampling_model = v2v.out("MODEL")
             sampling_latent = v2v.out("LATENT")
+            if masked_edit.get("audio_mask_binding"):
+                ident = masked_edit["audio_mask_binding"]
+                audio_mask_loader = VHS_LoadVideoFFmpeg(
+                    custom_height=0, custom_width=0, force_rate=24, format="AnimateDiff",
+                    frame_load_cap=frames, start_time=0.0, video="",
+                    videopreview={"hidden": False, "paused": False, "params": {}, "muted": False}, _id=ident)
+                wf.register_input(ident, ident, "video", "", type="CHOICE", default="", required=True, media_semantics="video")
+                red = node("ImageToMask", _outputs=("MASK",), image=audio_mask_loader.out("IMAGE"), channel="red")
+                scalar = CropMask(mask=red.out("MASK"), x=0, y=0, width=1, height=1)
+                av_mask = node("MiniMaxH3SetAVNoiseMask", _id="audio_time_mask_apply", _outputs=("latent",),
+                               _native_ports={"native_input_names": ["latent", "audio_mask"],
+                                              "native_input_types": ["LATENT", "MASK"],
+                                              "native_output_names": ["latent"], "native_output_types": ["LATENT"]},
+                               latent=v2v.out("LATENT"), audio_mask=scalar.out("MASK"))
+                sampling_latent = av_mask.out("latent")
         schedule = BasicScheduler(model=sampling_model, scheduler=scheduler, steps=steps, denoise=1.0, _id="schedule")
         selected = KSamplerSelect(sampler_name=sampler, _id="sampler")
         noise = RandomNoise(noise_seed=seed, _id="noise")

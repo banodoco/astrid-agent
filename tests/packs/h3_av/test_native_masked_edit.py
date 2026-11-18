@@ -572,7 +572,7 @@ def test_fixed_audio_is_spliced_into_managed_v2v_source(tmp_path):
     assert prepared_pcm == source_pcm[:24000 * 2] + voice_pcm[:48000 * 2] + source_pcm[72000 * 2:]
 
 
-def test_zero_strength_audio_keeps_source_and_positive_overlap_stays_fail_closed(tmp_path):
+def test_zero_strength_audio_keeps_source_and_positive_overlap_wins(tmp_path):
     import copy
 
     raw = copy.deepcopy(WATERMARK)
@@ -587,5 +587,121 @@ def test_zero_strength_audio_keeps_source_and_positive_overlap_stays_fail_closed
     raw["media"][0]["edit"].append({"stream": "audio", "during": [2, 4], "strength": 0.5})
     request = normalize_request(raw)
     prepared["request"], prepared["request_digest"] = request.value, request.digest
-    with pytest.raises(CompilationError, match="managed audio mask producer"):
-        compile_preparation(prepared, out_dir=tmp_path / "overlap")
+    manifest = compile_preparation(prepared, out_dir=tmp_path / "overlap")
+    requested = manifest["capabilities"]["audio_time_mask"]["requested_frame_values"]
+    assert requested[24:48] == [0] * 24
+    assert requested[48:96] == [0.5] * 48
+    from vibecomfy.cli_loader import load_workflow_any
+    api = load_workflow_any(manifest["workflow"]["workflow.py"]["path"]).compile("api", run_inputs=manifest["workflow_inputs"])
+    setter = next(row["inputs"] for row in api.values() if row["class_type"] == "MiniMaxH3SetAVNoiseMask")
+    assert "video_mask" not in setter
+    assert api[setter["latent"][0]]["class_type"] == "H3V2VGranularFractionalDenoise"
+    sampler = next(row["inputs"] for row in api.values() if row["class_type"] == "SamplerCustomAdvanced")
+    assert sampler["latent_image"][0] == next(key for key, row in api.items() if row["class_type"] == "MiniMaxH3SetAVNoiseMask")
+
+
+def test_audio_mask_sample_overlap_and_managed_binding(tmp_path):
+    import copy
+    import struct
+    import subprocess
+    import zipfile
+    from vibecomfy.cli_loader import load_workflow_any
+
+    raw = copy.deepcopy(WATERMARK)
+    prepared = _prepare(raw, tmp_path)
+    raw["media"][0]["edit"].append({"stream": "audio", "during": ["2001/48000", "3999/48000"], "strength": 0.5})
+    request = normalize_request(raw)
+    prepared["request"], prepared["request_digest"] = request.value, request.digest
+    output = tmp_path / "compiled"
+    manifest = compile_preparation(prepared, out_dir=output)
+    values = manifest["capabilities"]["audio_time_mask"]
+    assert values["requested_frame_values"][:3] == [0, pytest.approx(1998 * 0.5 / 2000), 0]
+    assert values["decoded_frame_values"][1] == pytest.approx(values["requested_frame_values"][1], abs=0.5 / 65535)
+    binding = next(row for row in manifest["managed_assets"]["manifest"]["assets"] if row["binding"] == "audio_time_mask")
+    member = binding["member"]
+    graph_filename = manifest["workflow_inputs"]["audio_time_mask"]
+    assert Path(member).name == graph_filename
+    with zipfile.ZipFile(manifest["managed_assets"]["path"]) as archive:
+        packaged = archive.read(member)
+        assert packaged == (output / "audio-time-mask.mkv").read_bytes()
+        assert hashlib.sha256(packaged).hexdigest() == binding["sha256"]
+    api = load_workflow_any(manifest["workflow"]["workflow.py"]["path"]).compile("api", run_inputs=manifest["workflow_inputs"])
+    loader_id, loader = next((key, row) for key, row in api.items() if row["class_type"] == "VHS_LoadVideoFFmpeg" and row["inputs"].get("video") == graph_filename)
+    converter_id, converter = next((key, row) for key, row in api.items() if row["class_type"] == "ImageToMask" and row["inputs"].get("image") == [loader_id, 0])
+    assert converter["inputs"]["channel"] == "red"
+    crop_id, crop = next((key, row) for key, row in api.items() if row["class_type"] == "CropMask" and row["inputs"].get("mask") == [converter_id, 0])
+    assert (crop["inputs"]["width"], crop["inputs"]["height"]) == (1, 1)
+    setter = next(row for row in api.values() if row["class_type"] == "MiniMaxH3SetAVNoiseMask")
+    assert setter["inputs"]["audio_mask"] == [crop_id, 0]
+    assert "video_mask" not in setter["inputs"]
+    raw_bytes = subprocess.run(["ffmpeg", "-v", "error", "-i", str(output / "audio-time-mask.mkv"),
+                                "-pix_fmt", "rgba64le", "-f", "rawvideo", "-"], check=True, capture_output=True).stdout
+    assert len(raw_bytes) == len(values["decoded_frame_values"]) * 512
+    observed = [struct.unpack_from("<H", raw_bytes, index * 512)[0] / 65535 for index in range(len(values["decoded_frame_values"]))]
+    assert observed == values["decoded_frame_values"]
+
+
+@pytest.mark.ffmpeg
+def test_mixed_fixed_and_generated_audio_delivers_exact_pcm_and_masked_picture(tmp_path):
+    import subprocess
+    from astrid.packs.h3_av.shared.compose import compose_candidate, _decode_exact_pcm
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+    from tests.packs.h3_av.test_moving_masks import _fixtures
+
+    source, generated = _fixtures(tmp_path)
+    distinct_source = tmp_path / "distinct-source.mkv"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(source), "-f", "lavfi", "-i",
+                    "sine=frequency=440:sample_rate=48000:duration=0.5", "-f", "lavfi", "-i",
+                    "sine=frequency=550:sample_rate=48000:duration=0.5", "-filter_complex", "[1:a][2:a]concat=n=2:v=0:a=1[a]",
+                    "-map", "0:v:0", "-map", "[a]", "-c:v", "copy", "-c:a", "pcm_s16le", str(distinct_source)], check=True)
+    source = distinct_source
+    voice = tmp_path / "voice.wav"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "sine=frequency=660:sample_rate=48000:duration=4", "-c:a", "pcm_s16le", str(voice)], check=True)
+    raw = {"version": 2, "duration": 1, "prompt": "Edit the mouth", "media": [
+        {"id": "source", "asset": "scene", "role": "timeline", "modality": "video", "at": {"frame": 0},
+         "range": [0, 1], "edit": [
+             {"stream": "video", "during": [0, 1], "mask": {"rectangle": [0, 0, 128, 128]}, "guides": ["speaker"]},
+             {"stream": "audio", "during": ["5000/48000", "15001/48000"], "guides": ["fixed"]},
+             {"stream": "audio", "during": ["25001/48000", "35003/48000"]},
+         ]},
+        {"id": "fixed", "asset": "voice", "role": "reference", "modality": "audio", "range": ["1/48000", "10002/48000"]},
+        {"id": "speaker", "asset": "voice", "role": "reference", "modality": "audio", "range": [2, 4]},
+    ]}
+    request = normalize_request(raw)
+    preparation = prepare_request(request, asset_map={"scene": str(source), "voice": str(voice)})
+    manifest = compile_preparation(preparation, out_dir=tmp_path / "compiled")
+    assert manifest["capabilities"]["reference_modality_counts"]["audio"] == 1
+    mask = manifest["capabilities"]["audio_time_mask"]
+    assert mask["requested_frame_values"][5] == 0
+    assert mask["requested_frame_values"][12] == pytest.approx(999 / 2000)
+    result = compose_candidate(preparation=preparation, generated=generated, source=source, out_dir=tmp_path / "composed")
+    source_pcm, channels = _decode_exact_pcm(source)
+    generated_pcm, _ = _decode_exact_pcm(generated, expected_channels=channels, generated=True)
+    voice_pcm, _ = _decode_exact_pcm(voice, expected_channels=channels)
+    delivered, _ = _decode_exact_pcm(Path(result["candidate"]["path"]), expected_channels=channels)
+    stride = channels * 2
+    expected = (source_pcm[:5000 * stride] + voice_pcm[1 * stride:10002 * stride] +
+                source_pcm[15001 * stride:25001 * stride] + generated_pcm[25001 * stride:35003 * stride] +
+                source_pcm[35003 * stride:48000 * stride])
+    assert delivered == expected
+    assert [row["source"] for row in result["composition"]["exact_audio"]["delivered_spans"]] == ["source", "fixed", "source", "generated", "source"]
+    def first_frame(path):
+        return subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-frames:v", "1", "-vf",
+                               "scale=1024:576:flags=lanczos,format=gbrp,format=rgb24", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                              check=True, capture_output=True).stdout
+    original, standin, actual = map(first_frame, (source, generated, result["candidate"]["path"]))
+    def pixel(frame, x, y):
+        offset = (y * 1024 + x) * 3
+        return frame[offset:offset + 3]
+    assert pixel(actual, 64, 64) == pixel(standin, 64, 64)
+    assert pixel(actual, 300, 64) == pixel(original, 300, 64)
+
+
+def test_audio_mask_fixed_pcm_wins_over_fractional_generated_overlap(tmp_path):
+    from astrid.packs.h3_av.shared.compile import _audio_time_mask
+    path, requested, decoded = _audio_time_mask([(2001, 3999, 0.5), (4000, 6000, 1.0)],
+                                                 [(3000, 3500)], frames=5, destination=tmp_path)
+    assert path.is_file()
+    assert requested == [0, pytest.approx(1498 * 0.5 / 2000), 1, 0, 0]
+    assert decoded[1] == pytest.approx(requested[1], abs=0.5 / 65535)
