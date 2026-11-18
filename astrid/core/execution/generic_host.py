@@ -10684,9 +10684,22 @@ class GenericPackHost:
             if not isinstance(self.managed_tool_session.adapter_for(resident_token), ResidentPackAdapter):
                 raise HostError("command resident dispatch has no admitted resident owner")
             scoped = dict(admission or {})
+            # Keep the ordinary command's per-dispatch environment contract.
+            # Resident startup is separately constructed by _environment,
+            # which removes Runtime credentials and binds explicit job policy.
             env, secrets = self._child_environment(record, attempt, admission=scoped,
-                managed_preparation=scoped.get("managed_engine_preparation"), allow_runtime_connection=False,
-                network_policy=_network_policy(record, inputs))
+                authority_context=authority_context, network_broker=network_broker,
+                managed_preparation=scoped.get("managed_engine_preparation"),
+                align=scoped.get("align"), generation_entry=scoped.get("entry"),
+                allow_runtime_connection=allow_runtime_connection and child_bridge is None,
+                network_policy=_network_policy(record, inputs),
+                explicit_env={
+                    **({} if os.environ.get('ASTRID_HOST_EXECUTION_PROFILE') == 'installed' else {
+                        "PYTHONPATH": os.pathsep.join((str(Path(__file__).resolve().parents[3]), *_dependency_pythonpath())),
+                    }),
+                    ASTRID_INTERNAL_INVOCATION: "1",
+                    "ASTRID_PROGRESS_PATH": str(attempt / ".astrid-progress.json"),
+                })
             try:
                 return self.invoke_capability(capability_kind="executor", capability_id=record.id,
                     request={"out": str(output_root), "inputs": inputs, "project": resident_project,
