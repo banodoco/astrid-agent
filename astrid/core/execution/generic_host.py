@@ -7541,12 +7541,16 @@ class GenericPackHost:
                     errors.append(exc)
                     self._latch_cleanup_uncertainty(str(exc))
         adapter = self.managed_tool_session.current_adapter
-        if isinstance(adapter, _ManagedTaskAdapter):
+        if isinstance(adapter, (_ManagedTaskAdapter, ResidentPackAdapter)):
             # The current CPU attempt retains its admission token until its
             # own finally has stopped and verified the original command and
             # released its session. Closing MTS here would clear that token
             # while release still correctly rejects a live command census.
-            adapter.fence(reason="host_shutdown")
+            if isinstance(adapter, _ManagedTaskAdapter):
+                adapter.fence(reason="host_shutdown")
+            # Resident dispatch observes _shutdown through its existing job
+            # cancellation guard. Let its finalizer retain the token until
+            # native stop and cancellation are proved, then close the owner.
             owner = self._handoff_accounting_owner
             deadline = time.monotonic() + 5.0
             with owner._handoff_condition:

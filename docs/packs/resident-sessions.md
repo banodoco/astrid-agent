@@ -73,12 +73,23 @@ hot-reloaded into it. Development trees receive full content checks at dispatch
 and during execution. This implementation makes no watcher-only or constant-time
 fast-lane claim for mutable trees.
 
+Installation identity includes every selected pack's root and validated `PIN`,
+which is deliberately excluded from the pack content digest. Reinstalling the
+same bytes with another PIN therefore retires the old interpreter. Captured and
+current PINs must agree before launch. The parent also compares the current
+manifest-scoped credentials and Runtime authority at dispatch, while executing,
+and immediately before consuming the successful admission token. A detected
+rotation or revocation fences the old job instead of accepting its result.
+
 Every protocol frame is limited to 1 MiB and names the managed token and Runtime attempt/fence.
 The parent checks the returned identity again before settling. A crash, malformed
 frame, stale fence, or uncertain result is never automatically replayed. A failed
 release leaves the existing custody slot poisoned and occupied. Cancellation
 sends the exact current token, then proves termination of the helper's owned
 scope before reporting stop; it does not control an attached external server.
+Active host shutdown lets the current attempt finish this owned cancellation
+and cleanup before closing the session manager. A successful condition skip
+retains its explicit skip receipt; an incomplete success frame is refused.
 
 ## Initial limits
 
@@ -88,6 +99,17 @@ routes retain their existing disposable execution path. A declaration grants no
 additional permission. Direct Python networking uses the existing network hook,
 bound to each live job; idle and expired contexts cannot borrow a later job's
 routes. Existing native-network limitations still apply.
+
+An admitted route override that differs from the manifest policy uses the
+disposable route until LS-15. The resident worker does not reconstruct that
+dynamic authority from the static manifest.
+
+[Follow-up #896](https://github.com/banodoco/astrid-dev/issues/896) tracks the
+remaining lifetime work: cancellation during a stalled pipe
+write and Runtime status-poll cadence, durable redacted log tails across worker
+death, and owner-based recovery of captures/session directories after host
+death. Those follow-ups do not change this protocol or the current custody
+owner.
 
 The VibeComfy integration and removal of its process-global job state belong to
 LS-15. This core contract does not enable concurrent execution or implement

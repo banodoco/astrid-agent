@@ -15,6 +15,7 @@ on:
       - astrid/sdk/pack_session.py
       - astrid/sdk/__init__.py
       - tests/core/execution/test_resident_sessions.py
+      - tests/core/execution/test_resident_session_lifetime.py
   workflow_dispatch:
 
 permissions:
@@ -113,7 +114,8 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/head
         run: |
           python -m pytest --import-mode=importlib -rA --junitxml=../proof/resident.xml \
-            tests/core/execution/test_resident_sessions.py 2>&1 | tee ../proof/resident.log
+            tests/core/execution/test_resident_sessions.py \
+            tests/core/execution/test_resident_session_lifetime.py 2>&1 | tee ../proof/resident.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:

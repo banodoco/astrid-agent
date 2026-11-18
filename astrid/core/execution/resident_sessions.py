@@ -106,7 +106,33 @@ def decode_frame(raw: bytes) -> dict[str, Any]:
     return value
 
 
-def installation_identity(host: Any) -> dict[str, Any]:
+def _pack_installations(selected: Mapping[str, Any]) -> dict[str, Any]:
+    """Read the selected root/PIN association using the existing capture rules."""
+    from astrid.core.pack.identity import read_pin
+
+    from . import generic_host as core
+
+    installations = {}
+    try:
+        for name, entry in selected.items():
+            record = SimpleNamespace(definition=SimpleNamespace(metadata={
+                "source_pack": name, "pack_root": entry["root"],
+            }))
+            generation = core._selected_pack_generation(record)
+            if generation is None:
+                raise StaleAdmissionError("resident installation has no selected root")
+            _, _, root, root_identity, pin_identity = generation
+            pin = read_pin(root / "PIN") if pin_identity is not None else None
+            if core._selected_pack_generation(record) != generation:
+                raise StaleAdmissionError("resident installation changed during observation")
+            installations[name] = {"root": str(root), "root_identity": root_identity,
+                                   "pin_identity": pin_identity, "pin": pin}
+    except (OSError, ValueError, core.HostError) as exc:
+        raise StaleAdmissionError("resident installation could not be verified") from exc
+    return installations
+
+
+def installation_identity(host: Any, selected: Mapping[str, Any]) -> dict[str, Any]:
     """Existing verified install/launch generations, with interpreter identity.
 
     These are invalidation inputs, not a replacement for Runtime install custody.
@@ -127,7 +153,33 @@ def installation_identity(host: Any) -> dict[str, Any]:
         "source_inventory": host.source_inventory_identity,
         "launch_generation": host.runtime_state.get("launch_generation"),
         "worker_context": dict(host._child_import_host_context),
+        "selected_packs": _pack_installations(selected),
     }
+
+
+def _authority_generation(host: Any, record: Any, *, resolved_secrets=None) -> str:
+    """Private comparison of current host authority; never sent to the worker.
+
+    The ordinary host resolver is authoritative for manifest-scoped secrets.
+    At construction, bind the actual values supplied to the child environment;
+    observations resolve them again, rather than caching old credentials.
+    """
+    from . import generic_host as core
+
+    if host._registration_admission_reason():
+        raise StaleAdmissionError("resident authority registration was revoked")
+    values = {name: (resolved_secrets.get(name) if resolved_secrets is not None
+                     else core._resolve_credential_value(
+                         host.credential_source, name, explicit=host._credential_source_is_explicit))
+              for name in core._required_secret_names(record)}
+    try:
+        return _digest({"secrets": values,
+                        "runtime_credential": getattr(host.client, "credential", None),
+                        "endpoint": getattr(host.client, "endpoint", None),
+                        "runtime": {key: host.runtime_state.get(key) for key in (
+                            "runtime_instance_id", "runtime_session_id", "runtime_epoch", "coordinator_epoch")}})
+    finally:
+        values.clear()
 
 
 def _environment(host: Any, record: Any, attempt: Path, admission: Mapping[str, Any]):
@@ -135,7 +187,10 @@ def _environment(host: Any, record: Any, attempt: Path, admission: Mapping[str, 
 
     env, secrets = host._child_environment(record, attempt, admission=admission,
                                             allow_runtime_connection=False)
-    secrets.clear()
+    try:
+        authority = _authority_generation(host, record, resolved_secrets=secrets)
+    finally:
+        secrets.clear()
     # Startup imports are supplied by the existing isolated worker bootstrap.
     # Per-job network evidence/nonce never becomes process-lifetime state.
     for name in tuple(env):
@@ -152,7 +207,7 @@ def _environment(host: Any, record: Any, attempt: Path, admission: Mapping[str, 
     from astrid.sdk.storage_root import resolve_runtime_data_root
     env["ASTRID_RUNTIME_DATA_ROOT"] = str(resolve_runtime_data_root())
     policy = core._network_policy(record)
-    return env, dict(policy) if policy is not None else None
+    return env, dict(policy) if policy is not None else None, authority
 
 
 def open_resident_task(host: Any, *, record: Any, task: Mapping[str, Any],
@@ -169,6 +224,8 @@ def open_resident_task(host: Any, *, record: Any, task: Mapping[str, Any],
     if not declared_resident(record) or private_runtime_context or machine_policy is not None:
         return None
     policy = core._network_policy(record)
+    if admission.get("allowed_routes", []) != list((policy or {}).get("allowed_routes", (policy or {}).get("allowed_destinations", ()))):
+        return None  # Admitted route overrides remain disposable until LS-15.
     if (policy is not None and (policy.get("broker") or policy.get("proxy"))
             or record.adapter.family in {"provider", "render"}):
         return None
@@ -180,8 +237,12 @@ def open_resident_task(host: Any, *, record: Any, task: Mapping[str, Any],
     originals = {name: {"root": relocations[name]["original_root"], "source_digest": entry["source_digest"]}
                  for name, entry in selected.items()}
     original_record = getattr(record, "captured_from", None) or record
-    environment, policy = _environment(host, record, terminal["root"], admission)
-    installation = installation_identity(host)
+    installation = installation_identity(host, originals)
+    captured_installations = _pack_installations(selected)
+    if any(captured_installations[name]["pin"] != entry["pin"]
+           for name, entry in installation["selected_packs"].items()):
+        raise StaleAdmissionError("resident captured installation differs from the selected installation")
+    environment, policy, authority = _environment(host, record, terminal["root"], admission)
     scope = {"project_id": task.get("project_id"), "realm_id": task.get("realm_id"),
              "runtime_instance_id": binding.runtime_instance_id, "endpoint": binding.endpoint,
              "runtime_epoch": binding.runtime_epoch,
@@ -190,7 +251,8 @@ def open_resident_task(host: Any, *, record: Any, task: Mapping[str, Any],
              "data_root": environment.get("ASTRID_RUNTIME_DATA_ROOT")}
     key = _digest({"definition": original_record.definition.to_dict(), "source": originals,
                    "dependency": record.dependency_digest, "installation": installation,
-                   "scope": scope, "environment": environment, "network_policy": policy})
+                   "scope": scope, "environment": environment, "network_policy": policy,
+                   "authority_generation": authority})
     manager = host.managed_tool_session
     adapter = manager.current_adapter
     if isinstance(adapter, ResidentPackAdapter) and adapter.key == key and manager.active:
@@ -210,6 +272,7 @@ def open_resident_task(host: Any, *, record: Any, task: Mapping[str, Any],
     adapter = ResidentPackAdapter(host=host, key=key, binding=session_binding,
                                   record=record, admission=admission, environment=environment,
                                   policy=policy, originals=originals, installation=installation,
+                                  authority=authority,
                                   captures=terminal["pack_captures"])
     # open establishes custody *before* start allocates the process or takes
     # the capture stack. A refused replacement leaves captures task-owned.
@@ -235,16 +298,38 @@ def retire_changed_session(host: Any) -> None:
             manager.release(reason="resident_observation_changed")
 
 
+def _success_returncode(result: Mapping[str, Any], capability_id: str) -> int:
+    """Validate the ordinary worker's complete success or explicit skip shape."""
+    if (not {"ok", "returncode", "outputs", "payload", "error", "stdout", "stderr"} <= result.keys()
+            or result["ok"] is not True or result["error"] is not None
+            or not isinstance(result["payload"], dict)
+            or not isinstance(result["outputs"], (dict, list))
+            or not isinstance(result["stdout"], str) or not isinstance(result["stderr"], str)):
+        raise ResidentProtocolError("resident terminal evidence is incomplete or invalid")
+    code, payload = result["returncode"], result["payload"]
+    if type(code) is int and code == 0:
+        return code
+    if (code is None and payload.get("skipped") is True
+            and payload.get("executor_id") == capability_id
+            and isinstance(payload.get("skipped_reason"), str) and payload["skipped_reason"]
+            and not result["outputs"]):
+        # The existing runner explicitly skipped the action. Its successful
+        # job exchange has code zero even though no action return code exists.
+        return 0
+    raise ResidentProtocolError("resident terminal evidence has no valid success or skip returncode")
+
+
 class ResidentPackAdapter:
     """A serial, retained child; all admission authority stays in MTS."""
 
     def __init__(self, *, host, key, binding, record, admission, environment, policy,
-                 originals, installation, captures) -> None:
+                 originals, installation, authority, captures) -> None:
         self.host, self.key, self.binding, self.record = host, key, binding, record
         self.admission = json.loads(json.dumps({key: value for key, value in admission.items()
             if key not in {"task_id", "attempt_id", "fence", "runtime_epoch", "network_nonce", "allowed_routes"}}))
         self.environment, self.policy = environment, policy
         self.originals, self.installation = originals, installation
+        self._authority = authority
         self._pending_captures, self._captures = captures, None
         self.process: subprocess.Popen | None = None
         self._birth = ""
@@ -271,8 +356,10 @@ class ResidentPackAdapter:
 
         if self._fenced.is_set():
             raise StaleAdmissionError("resident session is fenced")
-        if installation_identity(self.host) != self.installation:
+        if installation_identity(self.host, self.originals) != self.installation:
             raise StaleAdmissionError("resident installation changed")
+        if _authority_generation(self.host, self.record) != self._authority:
+            raise StaleAdmissionError("resident authority generation changed")
         # This deliberately remains a content check, including on development
         # trees. It is never an mtime-only claim of source immutability.
         try:
@@ -416,6 +503,7 @@ class ResidentPackAdapter:
                 self._write(frame, deadline)
                 result = self._read(deadline, guard)
                 guard()
+                self.assert_current()
                 if (set(result) != {"protocol", "kind", "identity", "job", "result"}
                         or result["kind"] != "result" or result["identity"] != identity
                         or result["job"] != job or not isinstance(result["result"], dict)):
@@ -423,6 +511,7 @@ class ResidentPackAdapter:
                 payload = result["result"]
                 if payload.get("ok") is not True:
                     raise core.HostError(str(payload.get("error") or "resident action failed"))
+                returncode = _success_returncode(payload, self.record.id)
                 self._completed_identity = identity
             finally:
                 self._active_identity = None
@@ -451,9 +540,9 @@ class ResidentPackAdapter:
         self.host.managed_tool_session.adapter_for(token)
         assert self.process is not None  # The wire guard proved native liveness for this result.
         child_payload = dict(payload.get("payload") or {})
-        child_payload.update(process_id=self.process.pid, returncode=payload.get("returncode", 0),
+        child_payload.update(process_id=self.process.pid, returncode=returncode,
                              resident_session={"protocol": PROTOCOL, "session_id": self.binding.session_id})
-        return SimpleNamespace(ok=True, returncode=payload.get("returncode", 0),
+        return SimpleNamespace(ok=True, returncode=returncode,
                                outputs=payload.get("outputs") or [], payload=child_payload,
                                process_id=self.process.pid, stdout=payload.get("stdout", ""),
                                stderr=payload.get("stderr", ""),
