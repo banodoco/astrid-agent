@@ -174,17 +174,17 @@ def test_second_admitted_job_reuses_worker_template_and_target(resident_comfy, m
     assert all(f"ls15-attempt-{index}" in prefix for index, prefix in enumerate(prefixes, 1))
 
 
-def canonical_inputs(world, root):
+def canonical_inputs(world, root, *, color=0):
     from vibecomfy.nodes.core import EmptyImage, SaveImage
     from vibecomfy.security.provenance import Provenance
     from vibecomfy.templates import InputSpec, OutputSpec, ReadyMetadata, new_workflow
     from vibecomfy.workflow_bundle import emit_bundle_with_candidate
     root.mkdir()
     with new_workflow(ReadyMetadata.build(template_id="ls15-isolation", capability="image")) as workflow:
-        image = EmptyImage(_id="1", width=16, height=16, batch_size=1, color=0)
+        image = EmptyImage(_id="1", width=16, height=16, batch_size=1, color=color)
         saved = SaveImage(_id="2", images=image.out("IMAGE"), filename_prefix="ls15")
         workflow.finalize({name: InputSpec(node=image, field=name, default=value, type="INT")
-                           for name, value in (("width", 16), ("height", 16), ("color", 0))},
+                           for name, value in (("width", 16), ("height", 16), ("color", color))},
                           outputs=[OutputSpec(node=saved)])
     emit_bundle_with_candidate(workflow, root / "workflow.py", Provenance.USER_CONFIRMED, None)
     world[3].members = {"python": root / "workflow.py", "companion": root / "workflow.vibe.json",

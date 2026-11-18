@@ -79,5 +79,15 @@ def test_managed_second_job_reuses_audited_generation_without_native_preparation
         report = result[0]["managed_engine_preparation"]
         assert (report["task_id"], report["attempt_id"]) == (f"ls15-task-{number}", f"ls15-attempt-{number}")
         assert report["placement"] == "managed" and report["health"]["healthy"]
+    # A changed closed workflow has a different requirement/source identity.
+    # The existing full preparation authority must run again, under a new
+    # resident owner, before that job can submit its prompt.
+    test_ls15_resident_host.canonical_inputs(resident_comfy, tmp_path / "changed-managed", color=2)
+    third = test_ls15_resident_host.run_job(resident_comfy, 3, values={"color": 2}, managed=True)
+    assert preparations == ["ls15-attempt-1", "ls15-attempt-3"]
+    assert len(native) > len(native_before) and "managed_readiness_reuse" not in third[0]
+    replacement = host.managed_tool_session.current_adapter.process
+    assert replacement is not process and process.poll() is not None
+    assert third[0]["managed_engine_preparation"]["task_id"] == "ls15-task-3"
     host.shutdown()
-    assert process.poll() is not None
+    assert replacement.poll() is not None

@@ -395,7 +395,7 @@ class ResidentPackAdapter:
         self._released = False
         self._root: Path | None = None
         self.ready = False
-        self.retained_resources = []
+        self.retained_resources: list[Any] = []
 
     def assert_current(self) -> None:
         from astrid.core.pack.imports import validate_selected_pack_map

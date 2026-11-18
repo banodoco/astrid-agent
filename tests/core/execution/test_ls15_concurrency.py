@@ -4,8 +4,11 @@ from __future__ import annotations
 import json
 from concurrent.futures import ThreadPoolExecutor
 
-from tests.core.execution.test_resident_sessions import install_action, run_job
-from tests.core.execution.test_resident_sessions import resident_host as resident_host
+from tests.core.execution import test_resident_sessions
+
+install_action = test_resident_sessions.install_action
+run_job = test_resident_sessions.run_job
+resident_host = test_resident_sessions.resident_host
 
 
 def test_two_resident_dispatches_overlap_with_separate_contexts(resident_host, tmp_path):
@@ -55,5 +58,7 @@ def run(value='default'):
         path = Path(result["output"])
         assert path.read_text() == result["value"]
         assert f"resident-task-{index}-attempt-{index}" in str(path)
+        assert f"resident-task-{index}-attempt-{index}" in result["environment"]["ASTRID_PROGRESS_PATH"]
         assert not any(name.startswith("ASTRID_RUNTIME_CREDENTIAL") for name in result["environment"])
+    assert left["environment"]["ASTRID_PROGRESS_PATH"] != right["environment"]["ASTRID_PROGRESS_PATH"]
     assert host.managed_tool_session.active

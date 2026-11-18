@@ -189,6 +189,7 @@ jobs:
         run: |
           python -m pytest --import-mode=importlib -m integration -rA -o tmp_path_retention_policy=all --basetemp=../proof/packet-tmp \
             --junitxml=../proof/packet-host.xml tests/packs/vibecomfy/test_ls15_resident_host.py \
+            tests/integrations/test_ls15_runtime_resident.py \
             2>&1 | tee ../proof/packet-host.log
       - name: Unchanged Linux managed preparation on both sides
         if: ${{ !cancelled() && steps.install.outcome == 'success' && runner.os == 'Linux' }}
@@ -231,6 +232,7 @@ jobs:
             proof/*.log
             proof/*.xml
             proof/packet-tmp/**/warm-counters.json
+            proof/packet-tmp/**/runtime-records.json
             proof/packet-tmp/**/child-counters.jsonl
             proof/packet-tmp/**/result.json
             proof/packet-tmp/**/manifest.json

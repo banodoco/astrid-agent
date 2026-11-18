@@ -61,6 +61,7 @@ from runtime_protocol.errors import ConflictError
 from runtime_protocol.storage import free_disk_floor_bytes
 
 from astrid.core.execution.pipe_io import PipeReader, PipeWriter, close_pipe_workers
+from astrid.core.execution.resident_concurrency import ConcurrentResidentAdapter
 from astrid.core.execution.resident_sessions import (
     ResidentPackAdapter, declared_resident, open_resident_task, retire_changed_session,
 )
@@ -13602,7 +13603,7 @@ class GenericPackHost:
                 capability_id=capability_id,
                 invocation_id=f"{task_id}:{attempt_id}:{fence}",
             )
-            if getattr(managed_adapter, "concurrent", False):
+            if isinstance(managed_adapter, ConcurrentResidentAdapter):
                 managed_adapter.bind_admission(managed_token, per_job_adapter)
             if record.adapter.family == "provider" and record.definition.isolation.network:
                 policy = _network_policy(record)
@@ -13732,6 +13733,11 @@ class GenericPackHost:
                     worker_env, worker_secrets = self._child_environment(
                         record, root, admission=network_admission, network_broker=network_broker,
                         allow_runtime_connection=not private_runtime_context and not isinstance(managed_adapter, ResidentPackAdapter))
+                    worker_options: dict[str, Any] = {}
+                    if isinstance(managed_adapter, ResidentPackAdapter):
+                        worker_options.update(resident_token=managed_token, concurrent_resident_dispatch=True)
+                    if captured_record is not None:
+                        worker_options["captured_record"] = captured_record
                     try:
                         result = self.invoke_capability(
                             capability_kind="executor",
@@ -13755,9 +13761,7 @@ class GenericPackHost:
                             network_broker_required=network_broker is not None,
                             storage_estimate=storage_estimate,
                             child_bridge=child_bridge,
-                            **({"resident_token": managed_token, "concurrent_resident_dispatch": True}
-                               if isinstance(managed_adapter, ResidentPackAdapter) else {}),
-                            **({"captured_record": captured_record} if captured_record is not None else {}),
+                            **worker_options,
                         )
                     finally:
                         worker_env.clear()
@@ -13964,8 +13968,9 @@ class GenericPackHost:
                 payload["machine"] = dict(_terminal["machine"])
             if _terminal.get("managed_engine_preparation") is not None:
                 payload["managed_engine_preparation"] = _terminal["managed_engine_preparation"]
-                if getattr(engine_preparation, "readiness_reuse", None) is not None:
-                    payload["managed_readiness_reuse"] = engine_preparation.readiness_reuse
+                readiness_reuse = getattr(engine_preparation, "readiness_reuse", None)
+                if readiness_reuse is not None:
+                    payload["managed_readiness_reuse"] = readiness_reuse
             if self.attempt_root is not None:
                 scratch_disposition = "caller_owned_pending"
                 retained_owner = "caller"
@@ -14199,7 +14204,7 @@ class GenericPackHost:
                             self.managed_tool_session.fence(reason="cancel_unconfirmed")
                         except Exception as fence_exc:
                             cleanup_errors.append(f"managed fence: {fence_exc}")
-                elif getattr(managed_adapter, "concurrent", False) and managed_adapter.has_completed(managed_token):
+                elif isinstance(managed_adapter, ConcurrentResidentAdapter) and managed_adapter.has_completed(managed_token):
                     # This job returned complete failure evidence. Consume its
                     # lifecycle token without revoking another live admission.
                     from .resident_sessions import token_identity
@@ -14215,7 +14220,7 @@ class GenericPackHost:
                 retain_persistent_session = (
                     isinstance(managed_adapter, tuple(_WARM_SESSION_ADAPTERS))
                     and ((managed_settled and settled)
-                         or (getattr(managed_adapter, "concurrent", False)
+                         or (isinstance(managed_adapter, ConcurrentResidentAdapter)
                              and self.managed_tool_session.active
                              and not managed_adapter.has_token(managed_token)))
                 )

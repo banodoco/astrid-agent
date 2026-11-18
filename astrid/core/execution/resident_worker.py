@@ -19,10 +19,10 @@ from .resident_sessions import (
     PROTOCOL,
     ResidentJobContext,
     ResidentProtocolError,
-    resident_capacity,
-    resident_invocation,
     decode_frame,
     encode_frame,
+    resident_capacity,
+    resident_invocation,
 )
 
 
