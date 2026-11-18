@@ -451,6 +451,23 @@ def _configure_relate(subparser: argparse.ArgumentParser) -> None:
     subparser.set_defaults(handler=_cmd_relate)
 
 
+def _cmd_hold(parsed: argparse.Namespace) -> int:
+    from astrid.core.media_hold import hold_media
+
+    result = hold_media(parsed.client, project=parsed.project, ref=parsed.ref,
+                        duration=parsed.duration, fps=parsed.fps)
+    return print_result(result, as_json=parsed.json)
+
+
+def _configure_hold(subparser: argparse.ArgumentParser) -> None:
+    _add_project_arg(subparser)
+    subparser.add_argument("ref", help="Project media id of the still image.")
+    subparser.add_argument("--duration", type=float, required=True, metavar="SECONDS")
+    subparser.add_argument("--fps", type=int, default=24, help="Frames per second (default 24).")
+    _add_json_flag(subparser)
+    subparser.set_defaults(handler=_cmd_hold)
+
+
 def _cmd_trim(parsed: argparse.Namespace) -> int:
     from astrid.core.media_trim import parse_range, trim_media
 
@@ -663,6 +680,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
         "(--box X,Y,W,H or --remove-bars; source untouched).",
         configure=_configure_crop,
     ),
+    CommandSpec("hold", help="Hold a still image as a silent video.", configure=_configure_hold),
     CommandSpec(
         "trim",
         help="Trim one video to a frame-exact time range into a new media item "

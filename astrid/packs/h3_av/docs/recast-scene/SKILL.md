@@ -96,6 +96,8 @@ Also open: how the edges of the masked span join the real footage in sound and p
 
 ## Stage 5 - Picture passes, shot by shot
 
+- For method V/M reaction shots of a silent or listening character, start with [Silent reaction from a still](../SKILL.md#silent-reaction-from-a-still).
+
 - For a masked edit, make the mask with `astrid media mask`, check `--preview-on` over the shot you will edit, and put the media ID in `edit[].mask.asset`. See the [02c lens example](../SKILL.md#make-a-mask).
 
 - Order: the riskiest, most reused method first, on its best shot. One paid run proves a method; then repeat it across shots.

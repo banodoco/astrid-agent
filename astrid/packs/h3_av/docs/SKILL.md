@@ -298,6 +298,30 @@ changes:
 overrides: {steps: 8, seed: 42}
 ```
 
+### Silent reaction from a still
+
+Run `astrid media hold STILL_ID --project P --duration 2.5 --json`. Put the returned
+video's `media.object_id` in place of `HOLD_ID` below. Keep the first four frames
+at 24 fps and regenerate the full picture for the rest of the take.
+
+```json
+{
+  "version": 2,
+  "prompt": "Locked-off close-up of the seated man. He holds a relaxed, closed-mouth expression, lips gently together and jaw at rest. His gaze shifts slightly and he blinks once. Preserve his face, chair and framing.",
+  "duration": 2.5,
+  "media": [{
+    "asset": "HOLD_ID", "role": "timeline", "modality": "video",
+    "at": {"frame": 0}, "range": [0, 2.5],
+    "edit": [{"stream": "video", "during": ["1/6", 2.5],
+              "mask": {"full_frame": true}, "action": "generate"}]
+  }],
+  "settings": {"steps": 8, "seed": 7, "turbo": {"enabled": true}}
+}
+```
+
+With no audio edit, H3 keeps the silent source track and uses it as conditioning,
+so the mouth can still move. Run two seeds and watch the mouth throughout each take.
+
 ## Edit inputs: reference images and replacement audio
 
 A v2 source-backed edit takes three independent parts. Each is optional, and

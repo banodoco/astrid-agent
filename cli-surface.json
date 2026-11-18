@@ -134,6 +134,26 @@
           ],
           "verbs": {}
         },
+        "hold": {
+          "flags": {
+            "--duration": {
+              "required": true
+            },
+            "--fps": {
+              "required": false
+            },
+            "--json": {
+              "required": false
+            },
+            "--project": {
+              "required": true
+            }
+          },
+          "positionals": [
+            "ref"
+          ],
+          "verbs": {}
+        },
         "import": {
           "flags": {
             "--idempotency-key": {
