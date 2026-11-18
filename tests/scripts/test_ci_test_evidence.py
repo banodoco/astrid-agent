@@ -89,6 +89,82 @@ def test_static_inventory_refuses_drops_before_itemcollected(tmp_path, poison):
     assert "static" in current.stdout + current.stderr
 
 
+def test_project_pytest_package_cannot_rewrite_the_tool_invocation(tmp_path, monkeypatch):
+    monkeypatch.delenv("PYTHONSAFEPATH", raising=False)
+    (tmp_path / "test_cases.py").write_text("def test_good():\n    pass\ndef test_victim():\n    assert False\n")
+    package = tmp_path / "pytest"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "__main__.py").write_text(
+        "import os, runpy, sys\nfrom pathlib import Path\n"
+        "sys.path[:] = [p for p in sys.path if Path(p or os.curdir).resolve() != Path.cwd()]\n"
+        "sys.modules.pop('pytest', None)\n"
+        "sys.argv.extend(['-k', 'not victim'])\n"
+        "runpy.run_module('pytest', run_name='__main__')\n"
+    )
+    result = run(tmp_path)
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "test_victim" in result.stdout + result.stderr
+
+
+def test_project_pytest_package_cannot_forge_the_collection_count(tmp_path, monkeypatch):
+    monkeypatch.delenv("PYTHONSAFEPATH", raising=False)
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_cases.py").write_text("import missing_collection_dependency\n")
+    package = tmp_path / "pytest"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "__main__.py").write_text("print('1 test collected')\n")
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts/check_collection.py")], cwd=tmp_path,
+        env=dict(os.environ, PYTHONPATH=str(tmp_path)), capture_output=True, text=True, check=False, timeout=45,
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "missing_collection_dependency" in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("option,value", [("keyword", "not victim"), ("markexpr", "not victim")])
+def test_conftest_cannot_rewrite_the_declared_selection(tmp_path, option, value):
+    (tmp_path / "conftest.py").write_text(
+        "def pytest_configure(config):\n"
+        "    config.addinivalue_line('markers', 'victim: injected case')\n"
+        f"    config.option.{option} = {value!r}\n"
+    )
+    (tmp_path / "test_cases.py").write_text(
+        "import pytest\ndef test_good():\n    pass\n"
+        "@pytest.mark.victim\ndef test_victim():\n    assert False\n"
+    )
+    result = run(tmp_path)
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "selection" in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("source", ["ini", "environment", "invocation"])
+def test_declared_selection_preserves_ini_environment_and_invocation_precedence(tmp_path, source):
+    (tmp_path / "pytest.ini").write_text(
+        "[pytest]\nmarkers = integration: declared lane\naddopts = -k ini -m integration\n"
+    )
+    (tmp_path / "test_cases.py").write_text(
+        "import pytest\n@pytest.mark.integration\ndef test_ini():\n    pass\n"
+        "def test_environment():\n    pass\n"
+        "@pytest.mark.integration\ndef test_invocation():\n    pass\n"
+    )
+    environment = dict(os.environ, PYTHONPATH=str(ROOT))
+    for key in ("PYTEST_ADDOPTS", "ASTRID_CI_JOB", "PYTEST_PLUGINS"):
+        environment.pop(key, None)
+    if source != "ini":
+        environment["PYTEST_ADDOPTS"] = "-k environment -m 'not integration'"
+    arguments = ["-k", "invocation", "-m", "integration"] if source == "invocation" else []
+    result = subprocess.run(
+        [sys.executable, "-m", "scripts.ci.run_pytest", "-q", f"--junitxml={tmp_path / 'result.xml'}", *arguments],
+        cwd=tmp_path, env=environment, capture_output=True, text=True, check=False, timeout=45,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    manifest = json.loads((tmp_path / "result.collection.json").read_text())
+    assert manifest["selected"] == [f"test_cases.py::test_{source}"]
+
+
 def test_static_definitions_preserve_parameterized_inherited_and_fixture_lane_cases(tmp_path):
     (tmp_path / "conftest.py").write_text(LANE_HOOKS)
     (tmp_path / "test_cases.py").write_text(

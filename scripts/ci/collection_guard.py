@@ -6,16 +6,42 @@ The existing lane registry remains the only source of intentional module hiding.
 
 from __future__ import annotations
 
+import argparse
 import collections
 import fnmatch
 import json
+import os
+import shlex
 from pathlib import Path
 
 import pytest
+from _pytest.config.findpaths import determine_setup
 from _pytest.junitxml import mangle_test_address
 from _pytest.mark import Expression, KeywordMatcher, MarkMatcher
 
 from scripts.ci.static_inventory import StaticInventory
+
+ENV_ADDOPTS = tuple(shlex.split(os.environ.get("PYTEST_ADDOPTS", "")))
+
+
+def declared_selection(config):
+    """Parse declared inputs afresh, without using candidate-mutated options.
+
+    Match pinned pytest's precedence: protected ini, environment, invocation.
+    Its parser also preserves quoting, repeated flags, -o and @argument files.
+    """
+    arguments = [*ENV_ADDOPTS, *config.invocation_params.args]
+    namespace = config._parser.parse_known_args(arguments, namespace=argparse.Namespace())
+    _, _, ini, _ = determine_setup(
+        inifile=namespace.inifilename, override_ini=namespace.override_ini,
+        args=namespace.file_or_dir, rootdir_cmd_arg=namespace.rootdir or None,
+        invocation_dir=config.invocation_params.dir,
+    )
+    addopts = ini["addopts"].value if "addopts" in ini else []
+    if isinstance(addopts, str):
+        addopts = shlex.split(addopts)
+    declared = config._parser.parse_known_args([*addopts, *arguments], namespace=argparse.Namespace())
+    return declared.keyword, declared.markexpr
 
 
 def pytest_addoption(parser):
@@ -41,14 +67,15 @@ def pytest_plugin_registered(plugin):
                 raise pytest.UsageError(f"undeclared {name} in {plugin.__file__}; use the lane registry")
 
 
-def selected_items(config, items, selectors):
+def selected_items(config, items, selectors, selection):
     """Recompute the job's declared -k/-m and shard selection from the census."""
     selected = list(items)
-    if config.option.keyword:
-        expression = Expression.compile(config.option.keyword.lstrip())
+    keyword, markexpr = selection
+    if keyword:
+        expression = Expression.compile(keyword.lstrip())
         selected = [item for item in selected if expression.evaluate(selectors[item.nodeid][0])]
-    if config.option.markexpr:
-        expression = Expression.compile(config.option.markexpr)
+    if markexpr:
+        expression = Expression.compile(markexpr)
         selected = [item for item in selected if expression.evaluate(selectors[item.nodeid][1])]
     splits = config.getoption("splits", default=None)
     if splits:
@@ -66,6 +93,7 @@ def selected_items(config, items, selectors):
 class CollectionEvidence:
     def __init__(self, config):
         self.config = config
+        self.selection = declared_selection(config)
         self.items = []
         self.deselected = []
         self.static = StaticInventory(config)
@@ -129,9 +157,12 @@ class CollectionEvidence:
 
     @pytest.hookimpl(trylast=True)
     def pytest_collection_finish(self, session):
+        if (self.config.option.keyword, self.config.option.markexpr) != self.selection:
+            raise pytest.UsageError("declared -k/-m selection was rewritten during collection")
         ignored = getattr(self.config.pluginmanager.get_plugin("skip-guard"), "ignored", {})
         static = self.static.verify(ignored)
-        expected = collections.Counter(item.nodeid for item in selected_items(self.config, self.items, self.selectors))
+        expected = collections.Counter(item.nodeid for item in selected_items(
+            self.config, self.items, self.selectors, self.selection))
         selected = collections.Counter(item.nodeid for item in session.items)
         collected = collections.Counter(item.nodeid for item in self.items)
         removed = collections.Counter(self.deselected)

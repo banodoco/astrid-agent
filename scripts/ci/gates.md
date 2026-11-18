@@ -18,7 +18,12 @@ still fail. Missing/zero event SHAs and missing/invalid manual destinations
 fail. The checkout includes history. Both CI and the integration workflow
 cover `release/*/plan-*`, in addition to the existing release/main targets.
 
-The same installed tool scans both source trees. An identity contains the path,
+The same installed tool scans both source trees. Ruff and mypy run with
+`python -I -m` so neither the working directory nor `PYTHONPATH` can replace the
+installed tool. Task changes cannot add or alter top-level `ruff`, `mypy`,
+`pytest` or `_pytest` packages/modules. A nonzero base followed by zero candidate
+findings fails closed and requires scope review, even for an intended complete
+cleanup. An identity contains the path,
 diagnostic code, normalized message and enclosing qualified symbol with a
 statement fingerprint. That fingerprint also distinguishes equal-message
 errors in different assignments inside the same function. Duplicate
@@ -35,9 +40,11 @@ protected as well. Root pyproject package metadata can still change; its tool
 controls remain protected. Ruff discovers its configured scope with Git ignores
 disabled, then checks committed paths in that scope. A committed ignored file is
 linted, while an untracked dependency checkout cannot add findings to only one
-side of the comparison. The gate also counts
-suppression comments by path, attached statement and symbol. A new suppression,
-or one moved onto another statement, fails. Existing structure violations are
+side of the comparison. The gate also scans `.py` and `.pyi` suppression comments
+by path, attached statement and symbol, and counts `no_type_check` uses including
+import aliases. A new suppression, or one moved onto another statement, fails.
+New or changed `.pyi` interfaces also fail: a sibling stub can hide an unchecked
+implementation without an explicit ignore comment. Existing structure violations are
 still compared with the committed structure baseline by `make structure`; the
 controls gate does not replace or enlarge that baseline.
 
@@ -53,7 +60,10 @@ PR's merge base and exact head SHA. The following changes require approval:
   and the collection-check entrypoint/error allowance;
 - `tests/lanes.py`, `Makefile`, all workflow files, and CODEOWNERS files;
 - requirement/lock files, the Python version file, and gate-tool dependencies
-  in pyproject (Ruff, mypy, pytest/plugins, coverage, YAML stubs and NumPy).
+  in pyproject (Ruff, mypy, pytest/plugins, coverage, YAML stubs and NumPy);
+- `setup.py`, `scripts/ci_install_runtime.py`, `scripts/vibecomfy_pin.py`, and
+  `[project.entry-points.pytest11]`, which can execute code during installation
+  or pytest startup.
 
 Approval must be a current `APPROVED` GitHub review of the **exact head SHA**
 from an explicit login in the repository variable `ASTRID_GATE_OWNERS`.
@@ -89,6 +99,12 @@ python -m scripts.ci.run_pytest -q -rA --junitxml=/tmp/evidence/unit.xml tests/t
 python -m scripts.ci.check_results /tmp/evidence --expected 1
 ```
 
+Both this wrapper and the collection-error gate launch the protected absolute
+`pytest_entrypoint.py` with `python -I -u`. It imports installed pytest before
+restoring project/dependency paths for tests. A checkout's `pytest/__main__.py`
+cannot rewrite the command before pytest captures its arguments. `-u` keeps
+output unbuffered even though isolated Python ignores `PYTHONUNBUFFERED`.
+
 Before imports, the collection guard parses the requested test source files.
 It counts module/class test definitions (including local inherited methods),
 respects configured naming and explicit file/method selectors, and compares
@@ -102,6 +118,11 @@ the declared marker, keyword and shard selection, and verifies the selected and
 deselected inventory. Lane markers must be source-declared; the protected
 registry's `INTEGRATION_FIXTURES` rule remains supported. A hook cannot add a
 lane marker after collection to silently exclude a previously unmarked test.
+Declared `-k` and `-m` come from the protected ini bytes, startup environment
+options and `invocation_params.args`, in pytest's precedence order. Repeated
+flags, argument files and explicit `-o addopts=` retain their normal meaning.
+The guard never adopts rewritten live `config.option` selectors; a mismatch
+fails even when the lane registry would otherwise omit a whole module.
 The executing
 pass must have exactly the same census. Explicit `--deselect`, `--ignore`,
 `collect_ignore` and `collect_ignore_glob` exclusions are refused. A whole-module
@@ -126,3 +147,18 @@ equal its testcase count in those cases. Headers must agree with those reports,
 so an inflated header cannot conceal missing cases. Missing, empty, malformed,
 truncated or incomplete result sets fail. All four artifact types are uploaded
 even when tests fail, under the existing artifact names and retention period.
+
+## Threat model and limits
+
+These in-job checks detect weakening through configuration, suppressions,
+markers, collection, selection and inconsistent result evidence. They fail
+closed on those paths. They do not isolate arbitrary code executing inside the
+same Python process. In particular, a candidate conftest that rewrites outcomes
+in `pytest_runtest_makereport`, or replaces test execution with a no-op runtest
+hook, can forge internally consistent reports. Protected-path owner review and
+later trusted-runner separation address that deliberate code-execution threat;
+the census and result checks do not claim to prevent it.
+
+Moving a test into a valid, source-declared lane that this CI job does not run is
+legitimate deselection. The gate records that selection but cannot establish
+that another job covers the lane. K1a's lane rows own that coverage obligation.

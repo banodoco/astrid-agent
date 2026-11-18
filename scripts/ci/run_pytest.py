@@ -40,10 +40,8 @@ def main(argv=None):
         if path.exists():
             raise ValueError(f"refusing to overwrite existing test evidence: {path}")
     environment = dict(os.environ)
-    root = str(Path(__file__).resolve().parents[2])
-    environment["PYTHONPATH"] = os.pathsep.join(filter(None, (root, environment.get("PYTHONPATH"))))
-    environment["PYTHONUNBUFFERED"] = "1"
-    command = [sys.executable, "-m", "pytest", "-p", "scripts.ci.collection_guard"]
+    entrypoint = Path(__file__).with_name("pytest_entrypoint.py").resolve()
+    command = [sys.executable, "-I", "-u", str(entrypoint), "-p", "scripts.ci.collection_guard"]
     census_args = [arg for arg in selection_args if arg not in ("--store-durations", "--clean-durations")]
     with reference_log.open("w", encoding="utf-8") as output:
         census = subprocess.run(

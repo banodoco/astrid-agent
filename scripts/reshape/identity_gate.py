@@ -32,6 +32,7 @@ MYPY_ERROR = re.compile(r"^(.*?):(\d+):(?:(\d+):)? error: (.*?)\s+\[(.*?)\]$")
 SUPPRESSION = re.compile(r"\bnoqa\b|\btype\s*:\s*ignore\b|\bmypy\s*:", re.IGNORECASE)
 TOOL_CONFIGS = {"ruff.toml", ".ruff.toml", "pytest.ini", ".pytest.ini", "tox.ini",
                 "setup.cfg", "mypy.ini", ".mypy.ini", "pyproject.toml", "pytest.toml", ".pytest.toml"}
+TOOL_MODULES = {"ruff", "mypy", "pytest", "_pytest"}
 
 
 def git(root: Path, *args: str) -> str:
@@ -141,7 +142,7 @@ def diagnostics(tool: str, root: Path) -> list[dict[str, Any]]:
         # discovery with tracked paths so sibling dependency checkouts cannot
         # add diagnostics that the clean merge-base worktree does not contain.
         discovery = subprocess.run(
-            [sys.executable, "-m", "ruff", "check", ".", "--no-respect-gitignore", "--show-files"],
+            [sys.executable, "-I", "-m", "ruff", "check", ".", "--no-respect-gitignore", "--show-files"],
             cwd=root, capture_output=True, text=True, check=False,
         )
         if discovery.returncode:
@@ -150,7 +151,7 @@ def diagnostics(tool: str, root: Path) -> list[dict[str, Any]]:
         paths = sorted(tracked & set(discovery.stdout.splitlines()))
         rows = []
         for offset in range(0, len(paths), 100):
-            command = [sys.executable, "-m", "ruff", "check", "--no-respect-gitignore", "--no-cache",
+            command = [sys.executable, "-I", "-m", "ruff", "check", "--no-respect-gitignore", "--no-cache",
                        "--output-format", "json", *paths[offset:offset + 100]]
             result = subprocess.run(command, cwd=root, capture_output=True, text=True, check=False)
             if result.returncode not in (0, 1):
@@ -160,7 +161,7 @@ def diagnostics(tool: str, root: Path) -> list[dict[str, Any]]:
                  "line": row["location"]["row"], "column": row["location"]["column"]} for row in rows]
     else:
         command = [
-            sys.executable, "-m", "mypy", "astrid", "scripts/reshape",
+            sys.executable, "-I", "-m", "mypy", "astrid", "scripts/reshape",
             "--hide-error-context", "--no-color-output", "--no-pretty", "--show-error-codes",
             "--show-column-numbers",
             "--no-incremental", "--cache-dir", os.devnull,
@@ -181,11 +182,29 @@ def diagnostics(tool: str, root: Path) -> list[dict[str, Any]]:
 
 def suppression_identities(root: Path) -> collections.Counter[Identity]:
     findings = []
-    for name in git(root, "ls-files", "--", "*.py").splitlines():
+    for name in git(root, "ls-files", "--", "*.py", "*.pyi").splitlines():
         path = root / name
         if not path.is_file():
             continue
         source = path.read_text(encoding="utf-8")
+        if path.suffix == ".pyi":
+            # A new or changed stub can replace the implementation mypy sees,
+            # even without an explicit ignore directive inside the interface.
+            findings.append({"path": name, "code": "stub-interface", "line": 1,
+                             "message": hashlib.sha256(source.encode()).hexdigest()})
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            tree = ast.Module(body=[], type_ignores=[])
+        aliases = {"no_type_check"}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module in {"typing", "typing_extensions"}:
+                aliases.update(alias.asname or alias.name for alias in node.names if alias.name == "no_type_check")
+        for node in ast.walk(tree):
+            if ((isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in aliases)
+                    or (isinstance(node, ast.Attribute) and node.attr == "no_type_check")):
+                findings.append({"path": name, "code": "suppression", "message": "no_type_check",
+                                 "line": node.lineno, "column": node.col_offset + 1})
         try:
             for token in tokenize.generate_tokens(io.StringIO(source).readline):
                 if token.type == tokenize.COMMENT and SUPPRESSION.search(token.string):
@@ -211,9 +230,17 @@ def protected_changes(base: Path, candidate: Path) -> list[str]:
         if not before.is_file() or not after.is_file() or before.read_bytes() != after.read_bytes():
             errors.append(f"baseline edited in task PR: {path.as_posix()}")
     configs: set[Path] = set()
+    tool_paths: set[Path] = set()
     for root in (base, candidate):
-        configs.update(Path(path) for path in git(root, "ls-files", "-z").split("\0")
-                       if path and Path(path).name in TOOL_CONFIGS)
+        tracked = [Path(path) for path in git(root, "ls-files", "-z").split("\0") if path]
+        configs.update(path for path in tracked if path.name in TOOL_CONFIGS)
+        tool_paths.update(path for path in tracked if path.parts[0] in TOOL_MODULES
+                          or (len(path.parts) == 1 and path.suffix in {".py", ".pyi"} and path.stem in TOOL_MODULES))
+    for path in sorted(tool_paths):
+        before, after = base / path, candidate / path
+        if (not before.is_file() or not after.is_file() or before.is_symlink() or after.is_symlink()
+                or before.read_bytes() != after.read_bytes()):
+            errors.append(f"gate tool package changed in task PR: {path.as_posix()}")
     for path in sorted(configs):
         if path == Path("pyproject.toml"):
             continue  # The root's non-tool package metadata is not a lint allowance.
@@ -251,6 +278,8 @@ def main(argv: list[str] | None = None) -> int:
             if args.tool != "controls":
                 before = identities(diagnostics(args.tool, base), base)
                 after = identities(diagnostics(args.tool, root), root)
+                if before and not after:
+                    errors.append(f"{args.tool} findings collapsed from a nonzero base to zero; review the tool scope")
                 for identity, count in sorted((after - before).items()):
                     errors.append(f"new {args.tool} finding ({count}): {' | '.join(identity)}")
                 print(f"{args.tool}: base={sum(before.values())} current={sum(after.values())} "

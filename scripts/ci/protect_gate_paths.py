@@ -20,7 +20,8 @@ import urllib.request
 PREFIXES = ("scripts/reshape/", "scripts/ci/", ".github/workflows/", "requirements/")
 FILES = {"scripts/__init__.py", "scripts/check_collection.py", "scripts/known_collection_errors.txt",
          "tests/lanes.py", "Makefile", "uv.lock", "poetry.lock", "Pipfile", "Pipfile.lock",
-         "requirements.txt", ".python-version", "CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS"}
+         "requirements.txt", ".python-version", "CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS",
+         "setup.py", "scripts/ci_install_runtime.py", "scripts/vibecomfy_pin.py"}
 TOOLS = {"ruff", "mypy", "pytest", "coverage", "types-pyyaml", "numpy"}
 
 
@@ -48,8 +49,13 @@ def tool_pins(revision):
 def protected_changes(base, head):
     names = git("diff", "--no-renames", "--name-only", "-z", base, head).split("\0")
     protected = [name for name in names if name in FILES or name.startswith(PREFIXES)]
-    if "pyproject.toml" in names and tool_pins(base) != tool_pins(head):
-        protected.append("pyproject.toml (gate tool version pins)")
+    if "pyproject.toml" in names:
+        if tool_pins(base) != tool_pins(head):
+            protected.append("pyproject.toml (gate tool version pins)")
+        entrypoints = [tomllib.loads(git("show", f"{revision}:pyproject.toml")).get("project", {})
+                       .get("entry-points", {}).get("pytest11", {}) for revision in (base, head)]
+        if entrypoints[0] != entrypoints[1]:
+            protected.append("pyproject.toml (pytest11 entry points)")
     return sorted(protected)
 
 

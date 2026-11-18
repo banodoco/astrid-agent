@@ -171,6 +171,7 @@ def test_identity_survives_line_shifts_but_preserves_message_and_multiplicity(tm
 def test_resolving_findings_passes_without_rewriting_a_baseline(repository: Path, monkeypatch) -> None:
     path = repository / "astrid/example.py"
     path.write_text("value = missing\n")
+    (repository / "astrid/remaining.py").write_text("remaining = still_missing\n")
     base = _commit(repository)
     path.write_text("value = 1\n")
     _commit(repository)
@@ -224,3 +225,62 @@ def test_untracked_dependency_checkout_is_not_part_of_either_lint_tree(repositor
     (dependency / "test_dependency.py").write_text("value = missing\n")
     monkeypatch.chdir(repository)
     assert identity_gate.main(["ruff", "--base-ref", base]) == 0
+
+
+@pytest.mark.parametrize("tool", ["ruff", "mypy"])
+def test_project_package_cannot_replace_the_installed_gate_tool(repository: Path, monkeypatch, tool: str) -> None:
+    source = "value = missing\n" if tool == "ruff" else 'value: int = "wrong"\n'
+    (repository / "astrid/victim.py").write_text(source)
+    base = _commit(repository)
+    package = repository / tool
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "__main__.py").write_text("print('[]')\n" if tool == "ruff" else "print('Success: no issues found')\n")
+    _commit(repository)
+    monkeypatch.delenv("PYTHONSAFEPATH", raising=False)
+    monkeypatch.chdir(repository)
+    assert identity_gate.main([tool, "--base-ref", base]) == 1
+    # Isolation must also work if a caller explicitly includes the checkout.
+    monkeypatch.setenv("PYTHONPATH", str(repository))
+    assert identity_gate.diagnostics(tool, repository)
+
+
+@pytest.mark.parametrize("tool", ["ruff", "mypy"])
+def test_a_nonzero_base_cannot_collapse_to_zero_findings(repository: Path, monkeypatch, tool: str) -> None:
+    source = "value = missing\n" if tool == "ruff" else 'value: int = "wrong"\n'
+    path = repository / "astrid/example.py"
+    path.write_text(source)
+    base = _commit(repository)
+    path.write_text("value = 1\n")
+    _commit(repository)
+    monkeypatch.chdir(repository)
+    assert identity_gate.main([tool, "--base-ref", base]) == 1
+
+
+@pytest.mark.parametrize("poison", ["stub", "decorator", "decorator-alias"])
+def test_stub_and_no_type_check_cannot_hide_a_typed_body(repository: Path, monkeypatch, poison: str) -> None:
+    source = 'def victim() -> int:\n    value: int = "wrong"\n    return value\n'
+    victim = repository / "astrid/victim.py"
+    victim.write_text(source)
+    (repository / "astrid/remaining.py").write_text('value: int = "also wrong"\n')
+    base = _commit(repository)
+    if poison == "stub":
+        (repository / "astrid/victim.pyi").write_text("def victim() -> int: ...\n")
+    elif poison == "decorator":
+        victim.write_text("import typing\n@typing.no_type_check\n" + source)
+    else:
+        victim.write_text("from typing import no_type_check as unchecked\n@unchecked\n" + source)
+    _commit(repository)
+    assert len(identity_gate.diagnostics("mypy", repository)) == 1
+    monkeypatch.chdir(repository)
+    assert identity_gate.main(["controls", "--base-ref", base]) == 1
+
+
+def test_suppression_comments_in_existing_stubs_are_scanned(repository: Path, monkeypatch) -> None:
+    stub = repository / "astrid/interface.pyi"
+    stub.write_text("value: int\n")
+    base = _commit(repository)
+    stub.write_text("value: int  # type: ignore[assignment]\n")
+    _commit(repository)
+    monkeypatch.chdir(repository)
+    assert identity_gate.main(["controls", "--base-ref", base]) == 1

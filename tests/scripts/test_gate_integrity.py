@@ -72,6 +72,22 @@ def test_unchanged_policy_allows_ordinary_source_changes(repository):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+@pytest.mark.parametrize("path", ["setup.py", "scripts/ci_install_runtime.py", "scripts/vibecomfy_pin.py", "pytest11"])
+def test_install_time_execution_surfaces_require_owner_approval(repository, path):
+    base = commit(repository)
+    if path == "pytest11":
+        config = repository / "pyproject.toml"
+        config.write_text(config.read_text() + '[project.entry-points.pytest11]\nweakener="candidate_plugin"\n')
+    else:
+        target = repository / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("print('candidate install code')\n")
+    commit(repository)
+    result = policy(repository, base)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert path in result.stdout + result.stderr
+
+
 def test_gate_tool_version_pins_require_owner_approval(repository):
     config = repository / "pyproject.toml"
     config.write_text(config.read_text() + '[project.optional-dependencies]\ndev=["ruff==0.12.0"]\n')
