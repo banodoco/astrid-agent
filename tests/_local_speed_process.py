@@ -6,21 +6,21 @@ is widened. Telemetry contains counts and process identities, never argv/env.
 """
 from __future__ import annotations
 
-from collections import Counter
 import asyncio
 import base64
 import ctypes
 import itertools
 import json
 import os
-from pathlib import Path
-import subprocess
 import select
 import selectors
+import subprocess
 import sys
 import threading
 import time
 import zlib
+from collections import Counter
+from pathlib import Path
 from typing import Any
 
 if sys.platform == "win32":
@@ -195,6 +195,8 @@ class ProcessObserver:
         self.invocation_ids = itertools.count()
         self.popen_poll_code = subprocess.Popen.poll.__code__
         self.popen_try_wait_code = getattr(getattr(subprocess.Popen, "_try_wait", None), "__code__", None)
+        self.sleep_wrapper_code = self.poll_wrapper_code = None
+        self.poll_ids = itertools.count()
 
     def event(self, kind: str, **fields) -> dict | None:
         with self.lock:
@@ -227,6 +229,43 @@ class ProcessObserver:
 
     def _install_waits(self):
         owner = self
+
+        def sleep(*args, **kwargs):
+            # The C-call profile hook still records the actual operation. This
+            # transparent frame exposes its argument without evaluating a
+            # caller's conversion hooks or changing the underlying sleep.
+            return owner.sleep_function(*args, **kwargs)
+
+        self.sleep_wrapper_code = sleep.__code__
+        self.patches.setattr(time, "sleep", sleep)
+
+        original_poll = subprocess.Popen.poll
+
+        def poll(process, *args, **kwargs):
+            caller = sys._getframe(1)
+            fields = owner._wait_fields(caller)
+            del caller
+            try:
+                child_pid = object.__getattribute__(process, "__dict__").get("pid")
+            except AttributeError:
+                child_pid = None
+            if type(child_pid) is not int or child_pid <= 0:
+                child_pid = None
+            poll_id = next(owner.poll_ids)
+            owner.event("poll_progress", poll_id=poll_id, child_pid=child_pid, **fields)
+            try:
+                result = original_poll(process, *args, **kwargs)
+            except BaseException:
+                owner.event("poll_error", poll_id=poll_id)
+                raise
+            else:
+                known = result is None or type(result) is int
+                owner.event("poll_result", poll_id=poll_id,
+                            result_known=known, returncode=result if known else None)
+                return result
+
+        self.poll_wrapper_code = poll.__code__
+        self.patches.setattr(subprocess.Popen, "poll", poll)
 
         def wrap(function, kind):
             def wait(*args, **kwargs):
@@ -362,7 +401,11 @@ class ProcessObserver:
             # cannot disappear into a whole-workload scheduling allowance.
             parent = frame.f_back if name in {"poll", "show", "_try_wait", "_observe_machines", "service_actions"} else None
             if (code is self.popen_poll_code or code is self.popen_try_wait_code) and parent is not None:
-                self._poll_progress(parent)
+                # The wrapper supplies the original caller and one result.
+                # Aliases captured before installation still retain the
+                # original code-identity progress observation here.
+                if parent.f_code is not self.poll_wrapper_code:
+                    self._poll_progress(parent)
             elif name == "show" and parent is not None and parent.f_code.co_name == "_wait_for_kernel_task_loop":
                 show = parent.f_locals.get("show")
                 if code is getattr(getattr(show, "__func__", show), "__code__", None):
@@ -399,7 +442,19 @@ class ProcessObserver:
             if kind is not None:
                 fields = {}
                 if event == "c_call" and kind in {"sleep", "selector_wait"}:
-                    fields.update(self._wait_fields(frame))
+                    caller = frame
+                    if kind == "sleep" and frame.f_code is self.sleep_wrapper_code:
+                        caller = frame.f_back or frame
+                        args = frame.f_locals.get("args", ())
+                        kwargs = frame.f_locals.get("kwargs", {})
+                        value = args[0] if len(args) == 1 and not kwargs else None
+                        # Unsupported values remain unknown; delegate all
+                        # validation/conversion/exception behavior to sleep.
+                        fields["requested_sleep_ns"] = (
+                            round(value * 1_000_000_000)
+                            if type(value) in (int, float) and 0 <= value <= 9_000_000_000
+                            else None)
+                    fields.update(self._wait_fields(caller))
                 if kind == "selector_wait":
                     tid = threading.get_native_id()
                     if event == "c_call":
@@ -505,6 +560,8 @@ class ProcessObserver:
                 "wait_invocation_maxima": dict(sorted(invocation_maxima.items())),
                 "poll_sites": sorted(poll_sites),
                 "poll_wait_maxima": dict(sorted(cycle_maxima.items())),
+                "sleep_requests": self._sleep_requests(wait_rows),
+                "poll_windows": self._poll_windows(rows, since_ns, until_ns),
                 "write_spans": [row for row in rows if row["kind"] in {
                     "application_sync", "runtime_outer_commit_success", "runtime_outer_commit_error",
                     "platform_write_through_success", "platform_write_through_error",
@@ -514,6 +571,75 @@ class ProcessObserver:
                 "coverage_gaps": sorted(self.gaps | set(hashes.coverage_gaps)),
                 "native_flushes": None,
             }
+
+    @staticmethod
+    def _sleep_requests(rows):
+        result = {}
+        for row in rows:
+            if row["kind"] != "sleep_attempt" or "wait_site" not in row:
+                continue
+            key = "sleep_attempt|" + row["wait_site"]
+            item = result.setdefault(key, {"calls": 0, "observed_calls": 0,
+                                           "unknown_calls": 0, "minimum_ns": None, "maximum_ns": None})
+            item["calls"] += 1
+            value = row.get("requested_sleep_ns")
+            if value is None:
+                item["unknown_calls"] += 1
+            else:
+                item["observed_calls"] += 1
+                item["minimum_ns"] = value if item["minimum_ns"] is None else min(item["minimum_ns"], value)
+                item["maximum_ns"] = value if item["maximum_ns"] is None else max(item["maximum_ns"], value)
+        return dict(sorted(result.items()))
+
+    def _poll_windows(self, rows, since_ns, until_ns):
+        """Retain observed windows; missing results are never completed polls."""
+        results = {row["poll_id"]: row for row in self.events
+                   if row["kind"] in {"poll_result", "poll_error"}}
+        groups = {}
+        for row in self.events:
+            if row["kind"] == "poll_progress" and "poll_id" in row:
+                key = (row["tid"], row["wait_invocation"], row["child_pid"])
+                groups.setdefault(key, []).append(row)
+        peers = Counter((tid, invocation) for tid, invocation, _ in groups)
+        windows = []
+        for (tid, invocation, pid), calls in groups.items():
+            replies = [results.get(call["poll_id"]) for call in calls]
+            terminals = [reply for reply in replies if reply is not None and reply["kind"] == "poll_result"
+                         and reply["result_known"] and reply["returncode"] is not None]
+            start = calls[0]["at_ns"]
+            end = terminals[-1]["at_ns"] if terminals else None
+            if (until_ns is not None and start > until_ns) or (since_ns is not None and end is not None and end < since_ns):
+                continue
+            interval_start = max(start, since_ns) if since_ns is not None else start
+            interval_end = min(end, until_ns) if end is not None and until_ns is not None else end or until_ns
+            interval_calls = [call for call in calls if call["at_ns"] >= interval_start
+                              and (interval_end is None or call["at_ns"] <= interval_end)]
+            interval_replies = [results.get(call["poll_id"]) for call in interval_calls]
+            interval_replies = [reply if reply is not None and (interval_end is None or reply["at_ns"] <= interval_end)
+                                else None for reply in interval_replies]
+            sleeps = [row for row in rows if row["kind"] == "sleep_attempt"
+                      and row.get("wait_invocation") == invocation and row["tid"] == tid
+                      and row["at_ns"] >= interval_start and (interval_end is None or row["at_ns"] <= interval_end)]
+            missing = sum(reply is None or reply["kind"] != "poll_result" or not reply.get("result_known")
+                          for reply in interval_replies)
+            overlap = peers[(tid, invocation)] != 1
+            windows.append({
+                "wait_site": calls[0]["wait_site"], "wait_invocation": invocation,
+                "pid": pid, "tid": tid, "poll_start_ns": start, "poll_end_ns": end,
+                "interval_start_ns": interval_start, "interval_end_ns": interval_end,
+                "duration_ns": interval_end - interval_start if interval_end is not None else None,
+                "carry_in": since_ns is not None and start < since_ns,
+                "carry_out": end is None or (until_ns is not None and end > until_ns),
+                "poll_calls": len(interval_calls), "missing_results": missing,
+                "nonterminal_polls": sum(reply is not None and reply["kind"] == "poll_result"
+                                          and reply["result_known"] and reply["returncode"] is None for reply in interval_replies),
+                "terminal_polls": sum(reply is not None and reply["kind"] == "poll_result"
+                                      and reply["result_known"] and reply["returncode"] is not None for reply in interval_replies),
+                "ambiguous_children": overlap,
+                "sleep_calls": None if overlap else len(sleeps),
+                "sleep_requests": None if overlap else self._sleep_requests(sleeps),
+            })
+        return windows
 
     def stop(self) -> None:
         sys.setprofile(self.previous_profile)

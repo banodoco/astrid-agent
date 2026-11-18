@@ -8,8 +8,8 @@ two distinct succeeded task records.
 
 ## LS-2.2 gate
 
-The standing workflow measures the exact PR base, an independent repeat of that
-base, and the exact candidate on one runner with one Python/dependency
+The standing workflow measures the exact comparison base, an independent repeat
+of that base, and the exact candidate on one runner with one Python/dependency
 environment. Each of those cells has five uninstrumented samples and five
 separate counter samples per caller. The base
 has only a byte-checked copy of the current test harness; its product, packs,
@@ -17,6 +17,14 @@ vendored client and source authority remain the base commit. Import locations,
 product and harness identities, dependency freeze and raw results are retained.
 The Windows comparison therefore does not use an unrelated historical runner
 as its only timing control.
+
+For the `p55/ls-2-2` packet only, the comparison base remains
+`19103ea6acbc030b3379e840ccc03491e47f1a0e`, under the Lead's
+[original-tuple ruling](https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6967421223).
+The log names both that comparison base and the actual PR target base. The
+target has since re-pinned VibeComfy; this proof cannot qualify that new tuple.
+LS-2.1 owns its measurement after re-pins. Other branches select their exact PR
+base. The dependency identity guard remains enforced in every comparison.
 
 While the saved references are still the original v2 records, the runner also
 retains a separate historical measurement:
@@ -47,7 +55,8 @@ comparison follows the Release 14 Lead's
   spread, margin, group and final limit for each caller/counter.
 - The stated margin is **one observed base range (maximum minus minimum)**,
   only for the explicit ambient allowlist in `_local_speed_calibration.py`.
-  Stable counters and counters outside that list have zero margin.
+  Stable counters and counters outside that list have zero margin, apart from
+  the named host polling cadence model below.
 - Ambient groups cover whole-workload/parent wait volume, observed polling
   wait producers, Runtime poll/reaper invocation volume, aggregate associated
   commits and native operations. The named lease-pump and parent pipe-readiness
@@ -60,6 +69,32 @@ comparison follows the Release 14 Lead's
   must reconcile with observed routes. Scoped commits must reconcile with the
   SQL-trace and process totals. Carry-in requests remain explicit and are not
   counted as new requests. Lost partial observations fail those checks.
+
+The **base-control host polling window cadence model** follows the Lead's
+[cadence ruling](https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6968415737).
+It applies only to the parent producer
+`astrid.core.execution.generic_host:GenericPackHost._run_command_definition`.
+Actual `Popen.poll` calls retain their child PID, invocation, start and result;
+actual `time.sleep` calls retain the requested period. For each of the five
+base controls, complete windows reconcile every producer sleep with the raw
+wait totals. The controls must show one sleep per nonterminal poll and one
+common positive requested period. The nominal count budget is the floor of
+the largest control's total polling-window duration divided by that period.
+The producer's final cap is the larger of that budget and its existing
+maximum-plus-range cap. Only the additional increment reaches the parent and
+whole-workload sleep totals, once; every other producer, worker and per-request
+limit stays unchanged. The policy records all five window durations, poll and
+sleep counts, the common period, both bounds and the propagated increment.
+
+Every holdout and candidate still requires exactly one sleep per nonterminal
+poll, a per-poll maximum of one, and a requested period at least as long as the
+base period. Neither a longer candidate window nor a new requested period can
+expand the base-derived count cap. Missing poll results, unknown sleep periods,
+ambiguous child identity, clipped windows and unaccounted producer sleeps are
+incomplete evidence. An observed elimination of the loop remains an improvement.
+Window duration includes guard work and scheduling, so it is not a pure sleep
+duration or an uninstrumented latency measurement. Original failed runs remain
+failed under their recorded policy; the new model requires a new complete pair.
 
 The held-out base comparison must pass as well as the candidate comparison.
 A failed comparison is retained; it cannot expand its own margin or become a
@@ -130,7 +165,8 @@ also records transitive versions; this constraints file is not claimed to be
 a fully resolved lock for every package.
 
 Focused proof lives in `test_local_speed_gate.py`, `test_local_speed_waits.py`,
-`test_local_speed_write_attribution.py`, `test_local_speed_ambient_calibration.py`
+`test_local_speed_write_attribution.py`, `test_local_speed_ambient_calibration.py`,
+`test_local_speed_poll_windows.py`, `test_local_speed_host_cadence.py`
 and the resident-process probe, alongside
 all original observer/collector tests. `tests.local_speed_gate_probes` retains
 old-accept/new-reject results against Agent `19103ea6` in each hosted artifact,

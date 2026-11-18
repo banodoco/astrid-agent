@@ -1,8 +1,9 @@
 """Base-only calibration of ambient work, with independent scoped guards.
 
-The Release 14 Lead's decision 6965824641 requires five same-byte controls.
-Candidate measurements never set a limit. A margin is one observed base range,
-only for named ambient counters; stable counters receive no margin. Saved
+The Release 14 Lead's decisions 6965824641 and 6968415737 require five
+same-byte controls. Candidate measurements never set a limit. Named ambient
+counters use one observed base range. The named host poll loop additionally
+uses its base-only window/period budget, with exact cadence guards. Saved
 references and the strict reference-replacement gate are not changed here.
 """
 
@@ -12,8 +13,12 @@ from collections import Counter
 
 from tests._local_speed_baseline import CALLERS, compare_baseline, counter_values
 
-SCHEMA = "astrid.local-speed-ambient-calibration.v1"
+SCHEMA = "astrid.local-speed-ambient-calibration.v2"
 PARENT = "parent_runtime_host_sdk"
+HOST_PRODUCER = "astrid.core.execution.generic_host:GenericPackHost._run_command_definition"
+HOST_SLEEP_SITE = "sleep_attempt|" + HOST_PRODUCER
+HOST_SLEEP_METRIC = f"waitsite.{PARENT}.{HOST_SLEEP_SITE}"
+HOST_CADENCE_METRIC = f"cadence.{PARENT}.{HOST_PRODUCER}"
 OPERATIONS = ("sleep_attempt", "event_wait_attempt", "condition_wait_attempt",
               "asyncio_sleep_attempt", "selector_wait_attempt", "fsync_attempt",
               "fsync_success", "fdatasync_attempt", "fdatasync_success",
@@ -141,13 +146,140 @@ def ambient_group(name, polling_metrics):
     return None
 
 
+def _requested_period(summary, count):
+    if count == 0 and summary is None:
+        return None
+    if (not isinstance(summary, dict)
+            or any(type(summary.get(key)) is not int for key in
+                   ("calls", "observed_calls", "unknown_calls", "minimum_ns", "maximum_ns"))
+            or summary["calls"] != count or summary["observed_calls"] != count
+            or summary["unknown_calls"] != 0
+            or not 0 < summary["minimum_ns"] <= summary["maximum_ns"]):
+        raise ValueError("host polling requested-period coverage is incomplete")
+    return summary["minimum_ns"], summary["maximum_ns"]
+
+
+def _host_poll_sample(row, *, required=False):
+    """Reconcile raw host sleeps with complete, actually observed poll windows."""
+    periods, windows, seen = [], [], set()
+    maximum_per_poll = 0
+    for process in row["process_observations"]:
+        if process["role"] != PARENT:
+            continue
+        count = process["wait_sites"].get(HOST_SLEEP_SITE, 0)
+        if not required and not count and "poll_windows" not in process:
+            continue
+        if not isinstance(process.get("poll_windows"), list) or not isinstance(process.get("sleep_requests"), dict):
+            raise ValueError("host polling window/period coverage is incomplete")
+        requested = _requested_period(process["sleep_requests"].get(HOST_SLEEP_SITE), count)
+        if requested is not None:
+            periods.append(requested)
+        selected = [item for item in process["poll_windows"] if item["wait_site"] == HOST_PRODUCER]
+        covered = 0
+        for window in selected:
+            integer_fields = ("pid", "tid", "wait_invocation", "poll_start_ns", "poll_end_ns",
+                              "interval_start_ns", "interval_end_ns", "duration_ns", "poll_calls",
+                              "missing_results", "nonterminal_polls", "terminal_polls", "sleep_calls")
+            if (any(type(window.get(key)) is not int or window[key] < 0 for key in integer_fields)
+                    or window["pid"] == 0 or window["tid"] == 0
+                    or window.get("carry_in") is not False or window.get("carry_out") is not False
+                    or window.get("ambiguous_children") is not False or window["missing_results"]
+                    or window["terminal_polls"] != 1
+                    or window["poll_calls"] != window["nonterminal_polls"] + 1
+                    or window["poll_start_ns"] != window["interval_start_ns"]
+                    or window["poll_end_ns"] != window["interval_end_ns"]
+                    or window["duration_ns"] != window["poll_end_ns"] - window["poll_start_ns"]
+                    or window["duration_ns"] <= 0):
+                raise ValueError("host polling completed-window coverage is incomplete")
+            interval = process["interval"]
+            if (interval["monotonic_start_ns"] is not None and window["poll_start_ns"] < interval["monotonic_start_ns"]
+                    or interval["monotonic_reply_ns"] is not None and window["poll_end_ns"] > interval["monotonic_reply_ns"]):
+                raise ValueError("host polling interval coverage is incomplete")
+            identity = (window["pid"], window["tid"], window["wait_invocation"])
+            if identity in seen:
+                raise ValueError("host polling window coverage contains duplicates")
+            seen.add(identity)
+            requests = window.get("sleep_requests")
+            if not isinstance(requests, dict) or set(requests) != ({HOST_SLEEP_SITE} if window["sleep_calls"] else set()):
+                raise ValueError("host polling window period coverage is incomplete")
+            period = _requested_period(requests.get(HOST_SLEEP_SITE), window["sleep_calls"])
+            if period is not None:
+                if requested is None or not requested[0] <= period[0] <= period[1] <= requested[1]:
+                    raise ValueError("host polling window period coverage differs from raw sleeps")
+            covered += window["sleep_calls"]
+        if covered != count:
+            raise ValueError("host polling windows do not cover the raw producer sleeps")
+        maximum_per_poll = max(maximum_per_poll, process["poll_wait_maxima"].get(HOST_SLEEP_SITE, 0))
+        windows.extend(selected)
+    return {"duration_ns": sum(window["duration_ns"] for window in windows),
+            "nonterminal_polls": sum(window["nonterminal_polls"] for window in windows),
+            "sleep_calls": sum(window["sleep_calls"] for window in windows),
+            "minimum_requested_sleep_ns": min((period[0] for period in periods), default=None),
+            "maximum_requested_sleep_ns": max((period[1] for period in periods), default=None),
+            "maximum_sleep_per_poll": maximum_per_poll,
+            "unbalanced_windows": sum(window["sleep_calls"] != window["nonterminal_polls"] for window in windows)}
+
+
+def _calibrate_host_poll(rows, metrics):
+    samples = [_host_poll_sample(row) for row in rows]
+    if not any(sample["sleep_calls"] for sample in samples):
+        return None
+    # A zero-work control still needs a complete observer enumeration.
+    samples = [_host_poll_sample(row, required=True) for row in rows]
+    periods = {sample["minimum_requested_sleep_ns"] for sample in samples if sample["sleep_calls"]}
+    if (len(periods) != 1 or any(sample["unbalanced_windows"] or
+            sample["maximum_sleep_per_poll"] != (1 if sample["sleep_calls"] else 0) or
+            (sample["sleep_calls"] and sample["maximum_requested_sleep_ns"] not in periods) for sample in samples)):
+        raise ValueError("base host polling controls do not establish one sleep per poll at one constant period")
+    period = periods.pop()
+    durations = [sample["duration_ns"] for sample in samples]
+    nominal = max(durations) // period
+    original_limit = metrics[HOST_SLEEP_METRIC]["limit"]
+    increment = max(0, nominal - original_limit)
+    # Only the named producer earns this allowance. Propagate its incremental
+    # budget once to the two totals that contain it; every other cap is intact.
+    for name in (HOST_SLEEP_METRIC, f"process.{PARENT}.sleep_attempt", "python.sleep_attempt"):
+        item = metrics[name]
+        item["range_limit"] = item["limit"]
+        item["cadence_increment"] = increment
+        item["limit"] += increment
+        item["margin"] = item["limit"] - item["maximum"]
+        item["policy"] = ("base_control_host_poll_window_cadence" if name == HOST_SLEEP_METRIC
+                          else "host_poll_cadence_increment_in_containing_total")
+    return {"model": "base_control_host_poll_window_cadence.v1", "decision": "6968415737",
+            "producer": HOST_PRODUCER, "requested_period_ns": period,
+            "base_window_duration_ns": durations,
+            "base_nonterminal_polls": [sample["nonterminal_polls"] for sample in samples],
+            "base_sleep_calls": [sample["sleep_calls"] for sample in samples],
+            "nominal_poll_limit": nominal, "range_limit": original_limit,
+            "limit": metrics[HOST_SLEEP_METRIC]["limit"], "propagated_increment": increment}
+
+
+def _compare_host_poll(rows, cadence, caller):
+    failures = []
+    for row in rows:
+        sample = _host_poll_sample(row, required=True)
+        if sample["unbalanced_windows"]:
+            failures.append({"caller": caller, "sample_index": row["sample_index"],
+                             "metric": HOST_CADENCE_METRIC + ".unbalanced_windows",
+                             "actual": sample["unbalanced_windows"], "limit": 0,
+                             "reason": "each nonterminal host poll must have exactly one sleep"})
+        minimum = sample["minimum_requested_sleep_ns"]
+        if minimum is not None and minimum < cadence["requested_period_ns"]:
+            failures.append({"caller": caller, "sample_index": row["sample_index"],
+                             "metric": HOST_CADENCE_METRIC + ".minimum_requested_sleep_ns",
+                             "actual": minimum, "limit": cadence["requested_period_ns"],
+                             "comparison": "at least", "reason": "host polling requested sleep period was shortened"})
+    return failures
+
+
 def calibration(reference):
     baseline = reference["baseline"]
     if not baseline.get("pair_id") or baseline.get("measurement", {}).get("gate_version") != 3:
         raise ValueError("calibration needs a current paired product-default measurement")
     result = {"schema": SCHEMA, "pair_id": baseline["pair_id"], "sources": baseline["sources"],
               "system": baseline["system"], "measurement": baseline["measurement"],
-              "margin_rule": "one observed base range (maximum minus minimum); zero for stable or nonambient counters",
+              "margin_rule": "one observed base range for named ambient counters; named host polling additionally uses the base-only window/period budget with exact cadence guards",
               "minimum_control_samples": 5, "callers": {}, "reference_eligible": False}
     for caller in CALLERS:
         rows = [row for row in reference["counters"] if row["caller"] == caller]
@@ -169,7 +301,9 @@ def calibration(reference):
                              "spread": maximum - minimum, "margin": margin,
                              "limit": maximum + margin, "group": group or "scoped_or_deterministic",
                              "policy": "observed_maximum_plus_range" if margin else "observed_maximum_exact_cap"}
-        result["callers"][caller] = {"samples": len(rows), "metrics": metrics}
+        cadence = _calibrate_host_poll(rows, metrics)
+        result["callers"][caller] = {"samples": len(rows), "metrics": metrics,
+                                     "host_poll_cadence": cadence}
     return result
 
 
@@ -192,6 +326,9 @@ def compare_calibrated(actual, reference, policy):
         initial = [scoped_values(row, known_counter_names=metrics)[0] for row in rows]
         names = set(metrics).union(*(set(values) for values in initial))
         observed = [scoped_values(row, known_counter_names=names)[0] for row in rows]
+        cadence = policy["callers"][caller]["host_poll_cadence"]
+        if cadence is not None:
+            failures.extend(_compare_host_poll(rows, cadence, caller))
         for name in sorted(names):
             limits = metrics.get(name, {"maximum": 0, "limit": 0, "margin": 0, "spread": 0})
             samples = [values.get(name) for values in observed]

@@ -122,6 +122,8 @@ jobs:
           tests/core/generation/test_local_speed_write_attribution.py
           tests/core/generation/test_local_speed_resident_observer.py
           tests/core/generation/test_local_speed_ambient_calibration.py
+          tests/core/generation/test_local_speed_poll_windows.py
+          tests/core/generation/test_local_speed_host_cadence.py
           --junitxml=native-reader.xml
       - name: Prove private Runtime directory creation and unsafe-directory refusal
         run: >-
@@ -140,10 +142,18 @@ jobs:
       # separately; neither is represented as an OS flush count.
       - name: Compare exact base and candidate on the same runner
         env:
-          METER_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # Lead6967421223 confines LS-2.2 qualification to its original tuple.
+          # The target has since re-pinned VibeComfy; LS-2.1 owns that new tuple.
+          # Other packets still select their exact PR base, with the dependency
+          # identity guard unchanged. This is not a cross-tuple comparison.
+          METER_BASE_SHA: ${{ github.head_ref == 'p55/ls-2-2' && '19103ea6acbc030b3379e840ccc03491e47f1a0e' || github.event.pull_request.base.sha }}
+          METER_PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         shell: python
         run: |
-          import os, subprocess, sys
+          import json, os, subprocess, sys
+          print(json.dumps({"comparison_base": os.environ["METER_BASE_SHA"],
+                            "pr_target_base": os.environ["METER_PR_BASE_SHA"],
+                            "original_tuple_ruling": "6967421223"}), flush=True)
           command = [
               sys.executable, "-m", "tests.local_speed_paired_run",
               "--output", "plan55-meter-proof", "--base", os.environ["METER_BASE_SHA"],
