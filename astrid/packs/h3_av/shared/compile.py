@@ -501,8 +501,6 @@ def _compile_native_masked_edit(
     frame_load_cap = round((source.range[1] - source.range[0]) * 24)
     if frame_load_cap != round(spec.duration * 24):
         raise CompilationError("native masked edit source window must match output duration")
-    if frame_load_cap > 360:
-        raise CompilationError("native masked edit source windows are limited to 15 s")
     # B2 resolves boxes and supplied static masks to the same binary PNG. The
     # graph fixes its output canvas at 1024x576, as source preflight requires.
     regions = {region.name: region for region in spec.regions}
@@ -618,7 +616,7 @@ def _compile_native_masked_edit(
             "one modifying video operation per request; static boxes, image masks or per-frame mask video",
             "audio regeneration, polygon masks and per-operation adapters are unsupported",
             "box-only regions bind in the graph; end-to-end execution still needs resolved mask propagation for composition paste-back",
-            "windows are limited to 15 s with no automatic chunking",
+            "long windows use one pass without automatic chunking",
             "zero-reference requests assume MiniMaxH3ReferenceToVideo accepts no ref images (unverified)",
         ],
         profile_id="h3_av.native.v2" if request.value.get("version") == 2 else _PROFILE_ID,
@@ -1171,7 +1169,7 @@ def _compile_generation(
         request=request, destination=destination, resource_root=resource,
         workflow_inputs=workflow_inputs, asset_bindings=bindings,
         capabilities=capabilities,
-        limitations=["image references only; no timed keyframes or source-free masks", "single pass, up to 362 frames at 24 fps"],
+        limitations=["image references only; no timed keyframes or source-free masks", "single pass, up to 3592 frames at 24 fps; outside 124–362 frames is untested"],
         profile_id=profile_id,
         extra_manifest=extra_manifest,
     )

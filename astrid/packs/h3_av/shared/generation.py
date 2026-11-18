@@ -24,6 +24,7 @@ LIMITS = {
     "canvas_dimension": {"value": {"min": 32, "max": 16384, "multiple": 32}, "source": "node"},
     # SR-5 owns enforcement of audio grant strength; it is not enforced here.
     "audio_grant_strength": {"value": [0, 1], "source": "node"},
+    "job_length_frames": {"value": {"min": 5, "max": 3600, "stride": 17}, "source": "node"},
     "job_duration_seconds": {"value": [124 / 24, 362 / 24], "source": "node", "warning": "Outside 124–362 frames is outside the tested range."},
     # Current lowering limits. SR-3 owns shared seed/reference-set validation;
     # the regions-per-pass row is not enforced here.
@@ -211,9 +212,9 @@ def _required_locked_url(models: Mapping[str, Any], destination: str) -> str:
 def generation_timing(duration: float) -> dict[str, Any]:
     frames = frame_index(duration, "output.duration")
     raw = smallest_h3_run_at_least(frames)
-    # Bound this adapter to the upstream documented training range.
-    if frames < 5 or raw > 362:
-        raise ValueError("source-free duration must request 5..362 frames at 24 fps")
+    length = LIMITS["job_length_frames"]["value"]
+    if frames < length["min"] or raw > length["max"]:
+        raise ValueError("job length frames 5..3600: requested duration exceeds the node grid")
     return {"fps": 24, "requested_frames": frames, "raw_frames": raw,
             "trim_tail_frames": raw - frames, "duration": frames / 24}
 
@@ -251,6 +252,9 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
     if not (0 if masked_edit else 1) <= len(references) <= IMAGE_REFERENCE_CAPACITY:
         raise ValueError("this adapter requires one to nine image references")
     video_references = list(video_references or [])
+    length = LIMITS["job_length_frames"]["value"]
+    if frames < length["min"] or smallest_h3_run_at_least(frames) > length["max"]:
+        raise ValueError("job length frames 5..3600: requested length exceeds the node grid")
     audio_references = list(audio_references or [])
     if len(video_references) > VIDEO_REFERENCE_CAPACITY:
         raise ValueError("this adapter requires at most three video references")

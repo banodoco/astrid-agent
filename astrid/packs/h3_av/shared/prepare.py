@@ -39,6 +39,48 @@ def _probe_conditioning(path: Path) -> dict[str, Any]:
     return dict(payload)
 
 
+
+def _loaded_video_frames(path: Path, start: float, cap: int) -> int | None:
+    """Count the same 24-fps decoded frames the pinned VHS loader supplies."""
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        return None
+    command = [ffmpeg, "-v", "error", "-an"]
+    if start > 4:
+        command += ["-ss", str(start - 4)]
+    command += ["-i", str(path)]
+    if start > 0:
+        command += ["-ss", str(4 if start > 4 else start)]
+    command += ["-vf", "fps=fps=24"]
+    if cap:
+        command += ["-frames:v", str(cap)]
+    command += ["-f", "framemd5", "-"]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=120, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode:
+        return None
+    return sum(1 for line in result.stdout.splitlines() if line and not line.startswith("#"))
+
+
+def _reference_size(modality: str, width: int, height: int) -> dict[str, int]:
+    # MiniMaxH3ReferenceToVideo pinned execute: graph binds 1024x576 and match.
+    if modality == "image":
+        scale = min(1.0, math.sqrt((1024 * 576) / (width * height)))
+        w, h = width * scale, height * scale
+    else:
+        ratio = width / height
+        w, h = (768 * ratio, 768) if ratio >= 1 else (768, 768 / ratio)
+        if w * h > 768 * 1344:
+            scale = math.sqrt((768 * 1344) / (w * h))
+            w, h = w * scale, h * scale
+        cw, ch = max(32, round(w / 32) * 32), max(32, round(h / 32) * 32)
+        if width * height >= cw * ch:
+            return {"width": cw, "height": ch}
+        w, h = width, height
+    return {"width": max(32, round(w / 32) * 32), "height": max(32, round(h / 32) * 32)}
+
 def _admit_conditioning(request: H3Request, assets: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Apply the shared reference table before scheduling any paid/runtime work."""
     from .compose import _streams, _number
@@ -78,7 +120,7 @@ def _admit_conditioning(request: H3Request, assets: list[dict[str, Any]]) -> lis
         measured = _number(stream.get("duration"))
         size = (stream.get("width"), stream.get("height"))
         if all(isinstance(value, int) and value > 0 for value in size):
-            measurement["effective_size"] = {"width": size[0], "height": size[1]}
+            measurement["effective_size"] = _reference_size(modality, size[0], size[1]) if modality in {"image", "video"} else None
         if modality == "image":
             try:
                 from PIL import Image
@@ -87,7 +129,7 @@ def _admit_conditioning(request: H3Request, assets: list[dict[str, Any]]) -> lis
             except Exception as exc:
                 raise PreparationError(f"conditioning image metadata is unreadable: {item['occurrence_id']}") from exc
             measurement["retained_picture_frames"] = 1
-            measurement["resource_estimate"].update({"schema_valid": True, "raw_bytes": size[0] * size[1] * 3 if measurement["effective_size"] else None})
+            measurement["resource_estimate"].update({"schema_valid": True, "raw_bytes": measurement["effective_size"]["width"] * measurement["effective_size"]["height"] * 3 if measurement["effective_size"] else None})
             continue
         if measured is None:
             raise PreparationError(f"conditioning clip 2–15 seconds: cannot measure {item['occurrence_id']} duration")
@@ -105,12 +147,21 @@ def _admit_conditioning(request: H3Request, assets: list[dict[str, Any]]) -> lis
         if span < clip_min or span > clip_max:
             raise PreparationError(f"conditioning clip 2–15 seconds: {item['occurrence_id']} selects {span:.3f}s")
         totals[modality] += span
-        measurement["retained_picture_frames"] = (int(selected[1]) - int(selected[0])) if modality == "video" and isinstance(selected, list) else (int(stream["nb_frames"]) if modality == "video" and str(stream.get("nb_frames", "")).isdigit() else None)
-        if modality == "video" and measurement["retained_picture_frames"] is None and stream.get("avg_frame_rate"):
-            rate = _rate_fraction(stream["avg_frame_rate"])
-            if rate:
-                measurement["retained_picture_frames"] = round(span * float(rate))
-        measurement["resource_estimate"].update({"schema_valid": True, "raw_bytes": (measurement["retained_picture_frames"] * size[0] * size[1] * 3) if modality == "video" and measurement["retained_picture_frames"] is not None and measurement["effective_size"] else None})
+        if modality == "video":
+            cap = int(selected[1]) - int(selected[0]) if isinstance(selected, list) else 0
+            loaded = _loaded_video_frames(path, start, cap)
+            duration = request.value.get("duration")
+            if loaded is not None and duration is not None:
+                from .timing import frame_index, smallest_h3_run_at_least
+                target = smallest_h3_run_at_least(frame_index(float(duration), "duration"))
+                retained = min(loaded, target)
+                if retained >= 5:
+                    measurement["retained_picture_frames"] = retained - ((retained - 5) % 17)
+            effective = measurement["effective_size"]
+            frames = measurement["retained_picture_frames"]
+            measurement["resource_estimate"].update({"schema_valid": True, "raw_bytes": frames * effective["width"] * effective["height"] * 3 if frames is not None and effective else None})
+        else:
+            measurement["resource_estimate"]["schema_valid"] = True
         if modality == "video" and item.get("audio", True):
             audio_streams = _streams(probe, "audio")
             if not audio_streams:
@@ -128,8 +179,11 @@ def _admit_conditioning(request: H3Request, assets: list[dict[str, Any]]) -> lis
                 raise PreparationError(f"conditioning soundtrack trim: cannot measure stream start for {item['occurrence_id']}")
             if video_origin + audio_start < audio_origin - 1e-6 or video_origin + audio_end > audio_origin + audio_duration + 1e-6:
                 raise PreparationError(f"conditioning soundtrack trim: {item['occurrence_id']} trim ends past measured audio stream duration")
-            totals["audio"] += audio_end - audio_start
-            measurement["audio_duration_seconds"] = audio_end - audio_start
+            # VHS frame_load_cap=0 extracts the whole soundtrack; capped loads
+            # extract the selected span, independent of H3 picture truncation.
+            bound_audio = audio_end - audio_start if isinstance(selected, list) else audio_duration
+            totals["audio"] += bound_audio
+            measurement["audio_duration_seconds"] = bound_audio
         elif modality == "audio":
             measurement["audio_duration_seconds"] = span
             channels = int(stream.get("channels") or 1)

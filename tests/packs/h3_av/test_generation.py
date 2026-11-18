@@ -166,7 +166,8 @@ def request(count=4, **updates):
     ({"references": [{"asset": "a", "purpose": "audio"}]}, "image guidance"),
     ({"references": [{"asset": "a", "purpose": "keyframe"}]}, "timed keyframes"),
     ({"output": {"duration": 15.01}}, "24 fps"),
-    ({"output": {"duration": 16}}, "5..362"),
+    ({"output": {"duration": 4 / 24}}, "job length frames"),
+    ({"output": {"duration": 3593 / 24}}, "job length frames"),
     ({"output": {"duration": float("inf")}}, "finite"),
     ({"references": [{"asset": "a", "purpose": "style"}] * 10}, "nine"),
     ({"changes": {"video": [], "audio": [{"during": [0, 1], "action": "preserve"}]}}, "changes/masks"),
@@ -293,3 +294,27 @@ def test_source_free_video_reference_fails_closed(tmp_path):
     ]})
     with pytest.raises(CompilationError, match="source-free video references are unsupported"):
         _compile_native_v2(request, {"image": tmp_path / "i", "video": tmp_path / "v"}, tmp_path)
+
+
+def test_sixteen_seconds_compiles_and_warns(tmp_path):
+    from vibecomfy.cli_loader import load_workflow_any
+    image = tmp_path / "reference.png"
+    Image.new("RGB", (32, 32)).save(image)
+    prepared = prepare_request(request(1, output={"duration": 16}), asset_map={"image-0": str(image)})
+    assert prepared["warnings"][0]["limit"] == "job_duration_seconds"
+    compiled = compile_preparation(prepared, out_dir=tmp_path / "compiled-16")
+    workflow = load_workflow_any(compiled["workflow"]["workflow.py"]["path"])
+    api = workflow.compile("api", run_inputs=compiled["workflow_inputs"])
+    target = next(row for row in api.values() if row["class_type"] == "MiniMaxH3ReferenceToVideo")
+    assert target["inputs"]["length"] == 396
+
+
+def test_node_frame_grid_maximum():
+    assert generation_timing(3592 / 24)["raw_frames"] == 3592
+    with pytest.raises(ValueError, match="job length frames"):
+        generation_timing(3593 / 24)
+    with pytest.raises(ValueError, match="job length frames"):
+        generation_timing(4 / 24)
+    from astrid.packs.h3_av.shared.generation import build_generation_workflow
+    with pytest.raises(ValueError, match="job length frames"):
+        build_generation_workflow(references=["i"], prompt="scene", frames=3593, model="minimax_h3_ref2va_pruned_int8_convrot.safetensors", steps=8, seed=1)
