@@ -344,11 +344,9 @@ def _offline_invocation_preflight(workflow: Any, *, plan: Mapping[str, Any] | No
 
     from vibecomfy.workflow_bundle import emit_bundle
 
+    from astrid.core.generation.backends.comfy_target import managed_media_type
     from astrid.packs.vibecomfy.asset_manifest import build_asset_manifest, resolve_inputs
-    from astrid.packs.vibecomfy.invocation_preflight import (
-        InvocationPreflightError,
-        preflight_invocation,
-    )
+    from astrid.packs.vibecomfy.invocation_preflight import preflight_invocation
 
     # Mirror the live submission: run inputs come from the staged asset manifest, and a
     # workflow without managed assets compiles with none (its bindings are already sealed).
@@ -370,11 +368,14 @@ def _offline_invocation_preflight(workflow: Any, *, plan: Mapping[str, Any] | No
         capsule = Path(scratch) / 'workflow.py'
         emit_bundle(workflow, capsule, {'operation': 'authored'})
         try:
+            for name, path in assets.items():
+                if getattr(workflow.inputs.get(name), 'media_semantics', None) == 'audio':
+                    managed_media_type(Path(path).expanduser(), 'audio')
             preflight_invocation(
                 capsule, run_inputs=run_inputs, comfy_url=comfy_url or '',
                 expected_prompt=expected_prompt, source_video_path=source_path,
                 expected_source_digest=source_digest, phase='dry-run')
-        except InvocationPreflightError as exc:
+        except ValueError as exc:
             from astrid.core.generation.preflight import generation_error
             raise generation_error(ValueError(f'{exc}. {LOCAL_REFUSAL_SCOPE}.'),
                                    code='input_rejected') from exc

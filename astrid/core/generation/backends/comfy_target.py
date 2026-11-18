@@ -27,6 +27,7 @@ from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
 from astrid.core.generation.engine_contracts import TransportError
+from astrid.core.media import MediaProbeError, ffprobe_metadata_strict
 from astrid.core.path_utils import has_url_scheme, is_native_absolute_path
 from astrid.core.util.http import os_trust_ssl_context, request_error_host
 
@@ -46,6 +47,23 @@ _MANAGED_KIND_RULES: dict[str, dict[str, Any]] = {
     "video": {"hash_required": True},
     "audio": {"hash_required": True},
 }
+
+
+def managed_media_type(source: Path, kind: str) -> str:
+    """Validate a managed workflow input and retain its upload content type."""
+    media_type = mimetypes.guess_type(source.name)[0] or ""
+    if media_type.startswith(f"{kind}/"):
+        return media_type
+    if kind == "audio" and media_type.startswith("video/"):
+        try:
+            probe = ffprobe_metadata_strict(source.resolve())
+        except MediaProbeError as exc:
+            raise ValueError(f"could not inspect {source.name} for an audio stream: {exc}") from exc
+        if probe.has_audio_stream:
+            return media_type
+        raise ValueError(f"video {source.name} has no audio stream for the audio input")
+    raise ValueError(_MANAGED_KIND_RULES[kind].get("media_error")
+                     or f"local_server managed {kind} asset must have a {kind}/* media type")
 
 
 def validate_attached_url(value: str) -> str:
@@ -332,9 +350,7 @@ class ComfyTargetClient:
         subfolder = f"astrid/{validate_identity(task_id)}"
         if source.is_symlink() or not source.is_file():
             raise ValueError(f"managed {kind} is not a regular file: {source}")
-        media_type = mimetypes.guess_type(source.name)[0] or ""
-        if not media_type.startswith(f"{kind}/"):
-            raise ValueError(rule.get("media_error") or f"local_server managed {kind} asset must have a {kind}/* media type")
+        media_type = managed_media_type(source, kind)
         with source.open("rb") as handle:
             data = handle.read(MAX_UPLOAD_BYTES + 1)
         if len(data) > MAX_UPLOAD_BYTES:
