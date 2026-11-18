@@ -390,3 +390,13 @@ def _h3_engine_facts():
     from astrid.core.generation.engine_facts import comfyui_facts
     from astrid.packs.h3_av.shared import engine_facts
     engine_facts.install(comfyui_facts())
+
+
+@pytest.fixture(autouse=True)
+def _fresh_reservation_memo():
+    """The reserved-identity memo is process-level; tests reuse ids, so each starts cold."""
+    from astrid.sdk.timeline import commit
+
+    commit._RESERVED_HISTORY.clear()
+    yield
+    commit._RESERVED_HISTORY.clear()

@@ -9,6 +9,7 @@ import copy
 import hashlib
 import json
 import re
+import threading
 from collections.abc import Mapping
 
 from astrid.core.timeline.authoring_bundle import (
@@ -429,13 +430,19 @@ def _failure(reason, message, base, current=None, *, conflicts=None, path=(),
                    status=status)
 
 
-def _load(port, context, revision):
-    document = port.revision_closure(revision)
-    request = context["request"]
-    _require(document.get("project_id") == request["project_id"]
-             and document.get("timeline_id") == request["timeline_id"]
-             and document.get("parent_revision", {}).get("revision_id") == revision,
-             "Runtime returned a different revision or project/timeline scope")
+def _load(port, context, revision, memo=None):
+    """Load one revision closure. A memo keeps only the verified document;
+    every use still opens a fresh bundle, because scans mutate bundles."""
+    document = memo.get(revision) if memo is not None else None
+    if document is None:
+        document = port.revision_closure(revision)
+        request = context["request"]
+        _require(document.get("project_id") == request["project_id"]
+                 and document.get("timeline_id") == request["timeline_id"]
+                 and document.get("parent_revision", {}).get("revision_id") == revision,
+                 "Runtime returned a different revision or project/timeline scope")
+        if memo is not None:
+            document = memo[revision] = copy.deepcopy(document)
     return bundle_from_document(document)
 
 
@@ -727,6 +734,31 @@ def _reservation_refs(state):
     return refs
 
 
+# Identities reserved by accepted history, per publication. Ancestry is
+# immutable, so reserved(entry) = reserved(previous) + what that entry adds.
+# Only a history scan that finished without error is stored; each commit then
+# reads just the entries newer than the stored one. One newest row per
+# timeline: {(project, timeline, publication, revision): (reserved, recorded)}.
+_RESERVED_HISTORY = {}
+_RESERVED_HISTORY_LOCK = threading.Lock()
+
+
+def _warm_reserved(scope):
+    with _RESERVED_HISTORY_LOCK:
+        for key, value in _RESERVED_HISTORY.items():
+            if key[:2] == scope:
+                return key, value
+    return None, None
+
+
+def _remember_reserved(scope, current, reserved, recorded):
+    key = (*scope, current["publication_id"], current["revision_id"])
+    with _RESERVED_HISTORY_LOCK:
+        for old in [old for old in _RESERVED_HISTORY if old[:2] == scope]:
+            del _RESERVED_HISTORY[old]
+        _RESERVED_HISTORY[key] = (frozenset(reserved), recorded)
+
+
 def _check_reservations(port, plan, current, rejected, base):
     from astrid.sdk.timeline.commands import CommandError
 
@@ -763,9 +795,11 @@ def _check_reservations(port, plan, current, rejected, base):
         return
     reserved, recorded = set(), False
     context = {'request': {key: plan.bundle[key] for key in ('project_id', 'timeline_id')}}
+    documents = {}
+    scope = (plan.bundle['project_id'], plan.bundle['timeline_id'])
 
     def boundary(revision):
-        return _load(port, context, revision)
+        return _load(port, context, revision, documents)
 
     def restore_native_fork(state, record, write, accepted_base, requested_base, recorder_abi):
         """Retain the native fork proof while replaying an accepted birth."""
@@ -994,8 +1028,24 @@ def _check_reservations(port, plan, current, rejected, base):
             for write in record['derived_writes']:
                 state.set(write['ref'], write['path'], write['after'])
 
+    def read_history():
+        """Entries newer than the stored publication, or all of them."""
+        nonlocal reserved, recorded
+        key, value = _warm_reserved(scope)
+        if value is not None:
+            after = {'revision_id': key[3], 'publication_id': key[2]}
+            try:
+                entries = ([] if after == current
+                           else _history(port, current, after, rejected, base))
+                reserved, recorded = set(value[0]), value[1]
+                return entries
+            except Exception:
+                pass  # not an ancestor of this head, or unreadable: read it all
+        reserved, recorded = set(), False
+        return _history(port, current, None, rejected, base)
+
     try:
-        for entry in _history(port, current, None, rejected, base):
+        for entry in read_history():
             if (not recorded and entry.get('intent') in {'bootstrap', 'legacy_unknown'}
                     and entry.get('records') is None):
                 # Unknown legacy intent is not allocation proof. The first
@@ -1018,6 +1068,7 @@ def _check_reservations(port, plan, current, rejected, base):
     except (AuthoringBundleError, CommandError, KeyError, TypeError, ValueError) as exc:
         raise rejected(_failure('history_unavailable', 'semantic identity history is unavailable',
                                 base, current)) from exc
+    _remember_reserved(scope, current, reserved, recorded)
     scan(plan.records, boundary(current['revision_id']), ordinary=True, output=plan.bundle,
          accepted_base=current, requested_base=base)
 
