@@ -241,6 +241,10 @@ def error_from_result(result: object) -> AstridError | None:
 
 TLS_VERIFICATION_CODE = "tls_verification_failed"
 _URL_HOST = re.compile(r"https?://[^\s<>\"']+")
+# OpenSSL hostname/IP mismatch; Windows CERT_E_CN_NO_MATCH (DWORD or signed
+# HRESULT); macOS errSecHostNameMismatch and errSSLHostNameMismatch. Native
+# verify_message strings can be localized, so prefer their stable error codes.
+_TLS_HOSTNAME_MISMATCH_CODES = (62, 64, 0x800B010F, 0x800B010F - (1 << 32), -67602, -9843)
 
 
 def _tls_verification_failure(value: BaseException) -> ssl.SSLCertVerificationError | None:
@@ -321,7 +325,7 @@ def _tls_verification_error(
     failure = _tls_verification_failure(value)
     detail = str(getattr(failure, "verify_message", None) or failure).casefold()
     hostname_mismatch = (
-        getattr(failure, "verify_code", None) in (62, 64)
+        getattr(failure, "verify_code", None) in _TLS_HOSTNAME_MISMATCH_CODES
         or "hostname mismatch" in detail or "ip address mismatch" in detail
         or ("hostname" in detail and ("doesn't match" in detail or "does not match" in detail))
     )

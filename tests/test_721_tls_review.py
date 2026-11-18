@@ -171,6 +171,18 @@ def test_installer_urllib_failure_retains_only_the_host(monkeypatch, opener):
     assert "secret" not in rendered and "/private" not in rendered and "user:" not in rendered
 
 
+@pytest.mark.parametrize("code", [0x800B010F, 0x800B010F - (1 << 32), -67602, -9843])
+def test_native_hostname_mismatch_codes_do_not_depend_on_localized_messages(monkeypatch, code):
+    for name in ("SSL_CERT_FILE", "SSL_CERT_DIR"):
+        monkeypatch.delenv(name, raising=False)
+    error = errors.coerce_astrid_error(_certificate_failure("Localized certificate error", code))
+    guidance = (error.cause + " " + error.fix + " " + error.recovery_command).lower()
+
+    assert error.code == errors.TLS_VERIFICATION_CODE and error.degraded is False
+    assert "hostname" in guidance
+    assert "antivirus" not in guidance and "https scanning" not in guidance
+
+
 @pytest.mark.parametrize(
     "seam",
     [
