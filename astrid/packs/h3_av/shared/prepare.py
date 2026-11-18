@@ -20,6 +20,207 @@ from .masks import (
 )
 from .request import H3Request, H3RequestError, _asset_ids
 from .request_v2 import branch_for
+from .generation import LIMITS
+
+
+def _probe_conditioning(path: Path) -> dict[str, Any]:
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe is None:
+        raise PreparationError("conditioning limits require ffprobe")
+    try:
+        result = subprocess.run([ffprobe, "-v", "error", "-show_entries",
+            "stream=codec_type,duration,start_time,nb_frames,width,height,avg_frame_rate,sample_rate,channels:format=duration", "-of", "json", str(path)],
+            check=False, capture_output=True, text=True, timeout=30)
+        payload = json.loads(result.stdout) if result.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+        raise PreparationError(f"cannot measure conditioning media {path.name!r}: {exc}") from exc
+    if not isinstance(payload, Mapping) or not isinstance(payload.get("streams"), list):
+        raise PreparationError(f"conditioning media {path.name!r} is unreadable (conditioning clip 2–15 seconds)")
+    return dict(payload)
+
+
+
+def _retained_video_frames(loaded: int, target: int) -> int | None:
+    """Apply the pinned H3 node's target cap and 5+17k alignment."""
+    frames = min(loaded, target)
+    return frames - ((frames - 5) % 17) if frames >= 5 else None
+
+
+def _reference_size(modality: str, width: int, height: int) -> dict[str, int]:
+    # MiniMaxH3ReferenceToVideo pinned execute: graph binds 1024x576 and match.
+    if modality == "image":
+        scale = min(1.0, math.sqrt((1024 * 576) / (width * height)))
+        w, h = width * scale, height * scale
+    else:
+        ratio = width / height
+        w, h = (768 * ratio, 768) if ratio >= 1 else (768, 768 / ratio)
+        if w * h > 768 * 1344:
+            scale = math.sqrt((768 * 1344) / (w * h))
+            w, h = w * scale, h * scale
+        cw, ch = max(32, round(w / 32) * 32), max(32, round(h / 32) * 32)
+        if width * height >= cw * ch:
+            return {"width": cw, "height": ch}
+        w, h = width, height
+    return {"width": max(32, round(w / 32) * 32), "height": max(32, round(h / 32) * 32)}
+
+def _admit_conditioning(request: H3Request, assets: list[dict[str, Any]], warnings: list[dict[str, str]] | None = None) -> list[dict[str, Any]]:
+    """Apply the shared reference table before scheduling any paid/runtime work."""
+    from .compose import _streams, _number
+    warnings = warnings if warnings is not None else []
+    resolved = {str(row["asset"]): Path(str(row["path"])) for row in assets
+                if row.get("status") == "resolved" and isinstance(row.get("path"), str)}
+    refs = [row for row in request.value["media"] if row.get("role") == "reference" and row.get("use") != "replacement"]
+    counts = {"image": 0, "video": 0, "audio": 0}
+    totals = {"image": Fraction(0), "video": Fraction(0), "audio": Fraction(0)}
+    total_uncertainty = {"video": Fraction(0), "audio": Fraction(0)}
+    files = 0
+    entry = LIMITS["builder_slots"]["value"]
+    duration_clock = {"video": 24, "audio": 48000}
+    measurements: list[dict[str, Any]] = []
+    for item in refs:
+        modality = item.get("modality")
+        if modality not in counts:
+            raise PreparationError(f"conditioning occurrence {item['occurrence_id']!r} has unresolved modality; declare image, video, or audio")
+        counts[modality] += 1
+        files += 1
+        ordinal = counts[modality]
+        slot = {"image": f"ref_images.ref_image_{ordinal - 1}", "video": f"ref_videos.ref_video_{ordinal - 1}", "audio": f"ref_audios.ref_audio_{ordinal - 1}"}[modality]
+        tag = {"image": f"<Picture {ordinal}>", "video": f"<Video {ordinal}>", "audio": None}[modality]
+        measurement: dict[str, Any] = {"occurrence": item["occurrence_id"], "modality": modality,
+            "trim": item.get("range"), "bound_file": None, "tracks": [], "retained_picture_frames": None,
+            "audio_duration_seconds": None, "slot": slot, "tag": tag, "effective_size": None,
+            "resource_estimate": {"schema_valid": False, "qualified": False, "observed": False, "raw_bytes": None}}
+        if modality == "video":
+            measurement["audio_enabled"] = item.get("audio", True)
+        measurements.append(measurement)
+        path = resolved.get(str(item["asset"]))
+        if path is None:
+            continue
+        measurement["bound_file"] = str(path)
+        probe = _probe_conditioning(path)
+        measurement["tracks"] = [str(row.get("codec_type")) for row in probe.get("streams", []) if isinstance(row, Mapping)]
+        streams = _streams(probe, "video" if modality == "image" else modality)
+        if not streams:
+            raise PreparationError(f"conditioning clip 2–15 seconds: {item['occurrence_id']} has no {modality} stream")
+        stream = streams[0]
+        measured = _number(stream.get("duration"))
+        size = (stream.get("width"), stream.get("height"))
+        if all(isinstance(value, int) and value > 0 for value in size):
+            measurement["effective_size"] = _reference_size(modality, size[0], size[1]) if modality in {"image", "video"} else None
+        if modality == "image":
+            try:
+                from PIL import Image
+                with Image.open(path) as image:
+                    image.verify()
+            except Exception as exc:
+                raise PreparationError(f"conditioning image metadata is unreadable: {item['occurrence_id']}") from exc
+            measurement["retained_picture_frames"] = 1
+            measurement["resource_estimate"].update({"schema_valid": True, "raw_bytes": measurement["effective_size"]["width"] * measurement["effective_size"]["height"] * 3 if measurement["effective_size"] else None})
+            continue
+        if measured is None:
+            raise PreparationError(f"conditioning clip 2–15 seconds: cannot measure {item['occurrence_id']} duration")
+        selected = item.get("resolved_range")
+        if isinstance(selected, list) and len(selected) == 2:
+            start, end = (float(v) / duration_clock[modality] for v in selected)
+            if end > measured + 1e-6:
+                raise PreparationError(f"conditioning clip 2–15 seconds: {item['occurrence_id']} trim ends past measured stream duration")
+            span_exact = Fraction(int(selected[1]) - int(selected[0]), duration_clock[modality])
+            span = float(span_exact)
+        else:
+            span = measured
+            span_exact = Fraction(str(span))
+            start = 0.0
+            end = measured
+        clip_min, clip_max = LIMITS["clip_seconds"]["value"]
+        exact_trim = isinstance(selected, list) and len(selected) == 2
+        uncertainty = Fraction(0) if exact_trim else Fraction(1, duration_clock[modality])
+        if span_exact < Fraction(str(clip_min)) - uncertainty or span_exact > Fraction(str(clip_max)) + uncertainty:
+            raise PreparationError(f"conditioning clip 2–15 seconds: {item['occurrence_id']} selects {span:.3f}s")
+        if span_exact <= Fraction(str(clip_min)) + uncertainty or span_exact >= Fraction(str(clip_max)) - uncertainty:
+            warnings.append({"limit": "clip_seconds", "message": f"{item['occurrence_id']} selects {span:.3f}s near the clip duration limit."})
+        video_bound = (int(selected[1]) - int(selected[0])) if modality == "video" and isinstance(selected, list) else (math.ceil(span * 24 - 1e-9) + 1 if modality == "video" else None)
+        totals[modality] += Fraction(video_bound, 24) if modality == "video" else span_exact
+        if not exact_trim:
+            total_uncertainty[modality] += Fraction(2, 24) if modality == "video" else Fraction(1, 48000)
+        if modality == "video":
+            # Estimate the loader's maximum 24-fps frames from metadata; the
+            # actual filter output and node-retained count remain unobserved.
+            bound = video_bound
+            duration = request.value.get("duration")
+            if duration is not None:
+                from .timing import frame_index, smallest_h3_run_at_least
+                target = smallest_h3_run_at_least(frame_index(float(duration), "duration"))
+            else:
+                target = bound
+            estimate = _retained_video_frames(bound, target)
+            measurement["retained_picture_frames_estimate"] = {"value": estimate, "kind": "metadata_upper_bound", "observed": False}
+            effective = measurement["effective_size"]
+            measurement["resource_estimate"].update({"schema_valid": True, "raw_bytes_upper_bound": estimate * effective["width"] * effective["height"] * 3 if estimate is not None and effective else None})
+        else:
+            measurement["resource_estimate"]["schema_valid"] = True
+        if modality == "video" and item.get("audio", True):
+            audio_streams = _streams(probe, "audio")
+            if not audio_streams:
+                raise PreparationError(f"conditioning soundtrack trim: {item['occurrence_id']} requests audio but the video has no audio stream")
+            audio_duration = _number(audio_streams[0].get("duration"))
+            if audio_duration is None:
+                raise PreparationError(f"conditioning soundtrack trim: cannot measure soundtrack for {item['occurrence_id']}")
+            audio_start, audio_end = start, end
+            try:
+                video_origin = float(stream.get("start_time", 0))
+                audio_origin = float(audio_streams[0].get("start_time", 0))
+            except (TypeError, ValueError):
+                raise PreparationError(f"conditioning soundtrack trim: cannot measure stream start for {item['occurrence_id']}") from None
+            if not math.isfinite(video_origin) or not math.isfinite(audio_origin):
+                raise PreparationError(f"conditioning soundtrack trim: cannot measure stream start for {item['occurrence_id']}")
+            if video_origin + audio_start < audio_origin - 1e-6 or video_origin + audio_end > audio_origin + audio_duration + 1e-6:
+                raise PreparationError(f"conditioning soundtrack trim: {item['occurrence_id']} trim ends past measured audio stream duration")
+            # VHS frame_load_cap=0 extracts the whole soundtrack; capped loads
+            # extract the selected span, independent of H3 picture truncation.
+            bound_audio = span if exact_trim else audio_duration
+            totals["audio"] += span_exact if exact_trim else Fraction(str(audio_duration))
+            if not exact_trim:
+                total_uncertainty["audio"] += Fraction(1, 48000)
+            measurement["audio_duration_seconds"] = bound_audio
+        elif modality == "audio":
+            measurement["audio_duration_seconds"] = span
+            channels = int(stream.get("channels") or 1)
+            measurement["resource_estimate"]["raw_bytes"] = round(span * int(stream.get("sample_rate") or 48000) * channels * 4)
+    # Audio tags follow node input order: video soundtracks, then standalone clips.
+    audio_index = 0
+    pairs = list(zip([row for row in refs if row.get("modality") in counts], measurements))
+    for item, measurement in pairs:
+        if item.get("modality") == "video" and item.get("audio", True):
+            audio_index += 1
+            measurement["audio_tag"] = f"<Audio {audio_index}>"
+    for item, measurement in pairs:
+        if item.get("modality") == "audio":
+            audio_index += 1
+            measurement["tag"] = f"<Audio {audio_index}>"
+            measurement["input_type"] = "AUDIO"
+    for row in measurements:
+        estimate = row["resource_estimate"]["raw_bytes"]
+        row["resource_estimate"].update({"qualified": estimate is not None, "unit": "bytes"})
+    for modality, limit in entry.items():
+        if counts[modality] > limit:
+            raise PreparationError(f"builder slots {entry}: {modality} has {counts[modality]} references (limit {limit})")
+    if files > LIMITS["conditioning_files"]["value"]:
+        raise PreparationError("conditioning files 12: supplied conditioning occurrences exceed 12")
+    if files == LIMITS["conditioning_files"]["value"]:
+        warnings.append({"limit": "conditioning_files", "message": "Conditioning references are at the 12-file limit."})
+    for modality, total in totals.items():
+        limit = Fraction(str(LIMITS["modality_seconds"]["value"]))
+        uncertainty = total_uncertainty.get(modality, Fraction(0))
+        if total > limit + uncertainty:
+            raise PreparationError(f"per modality total 15 seconds: {modality} selects {float(total):.3f}s")
+        if total >= limit - uncertainty:
+            warnings.append({"limit": "modality_seconds", "message": f"{modality} selects {float(total):.3f}s near the modality duration limit."})
+    continuation = request.value.get("continuation")
+    if continuation:
+        allowed = LIMITS["continuation_references"]["value"]
+        if counts["image"] > allowed["image"] or counts["video"] > allowed["video"] or counts["audio"] > allowed["audio"]:
+            raise PreparationError(f"continuation references {allowed}: supplied references exceed lowering slots")
+    return measurements
 
 
 class _SourceAVError(H3RequestError, PreparationError):
@@ -125,7 +326,7 @@ def _validate_mask_assets(request: H3Request, assets: list[dict[str, Any]]) -> N
                 for index, frame in enumerate(
                     iter_mask_frames(path, start_frame=0, count=total, width=width, height=height)
                 ):
-                    values = set(frame)
+                    values = set(frame[0::3])  # H3 consumes the red permission channel.
                     if threshold is not None:
                         values = {255 if value >= threshold else 0 for value in values}
                     if not values <= {0, 255}:
@@ -343,6 +544,10 @@ def _v2_mask_schedule(
                     baselines["audio"].append([start, end])
 
         for edit_index, edit in enumerate(item.get("edit", [])):
+            # A zero-strength generation grant keeps the source. Other active
+            # grants still contribute their own independent permissions.
+            if edit.get("action") == "generate" and edit.get("strength", 1) == 0:
+                continue
             stream = str(edit["stream"])
             start, end = map(float, edit["during"])
             if end > duration:
@@ -435,10 +640,45 @@ def prepare_request(
 ) -> dict[str, Any]:
     """Create a deterministic preparation manifest without touching a runtime."""
 
-    if fps <= 0 or width <= 0 or height <= 0 or sample_rate <= 0:
-        raise PreparationError("fps, width, height, and sample_rate must be positive")
+    canvas = LIMITS["canvas_dimension"]["value"]
+    if any(value < canvas["min"] or value > canvas["max"] or value % canvas["multiple"] for value in (width, height)):
+        raise PreparationError(f"width and height 32–16384, multiples of 32: received {width}x{height}")
+    if fps <= 0 or sample_rate <= 0:
+        raise PreparationError("fps and sample_rate must be positive")
+    duration = request.value.get("duration") if request.value.get("version") == 2 else request.value.get("output", {}).get("duration")
+    duration_limits = LIMITS["job_duration_seconds"]
+    warnings = []
+    if duration is not None and not duration_limits["value"][0] <= float(duration) <= duration_limits["value"][1]:
+        warnings.append({"limit": "job_duration_seconds", "message": duration_limits["warning"]})
     if request.value.get("version") == 2:
         assets = _resolve_assets(request, asset_map)
+        conditioning_measurements = _admit_conditioning(request, assets, warnings)
+        if branch_for(request) == "source_free" and not request.value["media"]:
+            warnings.append({"limit": "text_only_documented_use", "message": "Text-only generation is outside the documented use of the Ref2VA checkpoint."})
+        adapter_id = (request.value.get("settings", {}).get("adapter") or {}).get("id")
+        if branch_for(request) == "source_backed_v2v" and adapter_id != "character_swap_v1":
+            for row in conditioning_measurements:
+                row.update({"slot": None, "tag": None, "binding_status": "provisional_until_lowering"})
+                row.pop("audio_tag", None)
+        from .generation import generation_timing
+        if branch_for(request) in {"source_free", "source_backed_v2v"}:
+            try:
+                target_timing = generation_timing(float(request.value["duration"]))
+            except ValueError as exc:
+                raise PreparationError(str(exc)) from exc
+        else:
+            target_timing = {"requested_frames": round(float(request.value["duration"]) * 24), "raw_frames": None}
+            if branch_for(request) == "extension_context":
+                from .timing import ContinuationTimingError, plan_continuation
+                timeline = next((item for item in request.value["media"] if item.get("role") == "timeline" and item.get("modality") == "video"), None)
+                selected = timeline.get("resolved_range") if timeline else None
+                if isinstance(selected, list) and len(selected) == 2:
+                    try:
+                        continuation = plan_continuation(source_end=Fraction(int(selected[1]) - int(selected[0]), 24), output_duration=request.value["duration"])
+                    except ContinuationTimingError:
+                        pass  # The continuation lowering reports its own unsupported timing.
+                    else:
+                        target_timing["raw_frames"] = continuation.raw_extension_frames
         unresolved = [record["asset"] for record in assets if record["status"] != "resolved"]
         timeline_audio_presence: dict[str, bool] = {}
         adapter = request.value.get("settings", {}).get("adapter")
@@ -464,6 +704,10 @@ def prepare_request(
             schedule = _v2_mask_schedule(request, timeline_audio_presence=timeline_audio_presence)
         except MaskScheduleError as exc:
             raise PreparationError(str(exc)) from exc
+        guide_occurrences = {
+            guide for item in request.value["media"] if item.get("role") == "timeline"
+            for edit in item.get("edit", []) for guide in edit.get("guides", [])
+        }
         return {
             "schema_version": 2,
             "kind": "h3_av_preparation",
@@ -471,6 +715,22 @@ def prepare_request(
             "request": request.value,
             "media": {"fps": float(fps), "width": int(width), "height": int(height), "sample_rate": int(sample_rate)},
             "assets": assets,
+            "conditioning_measurements": conditioning_measurements,
+            "warnings": warnings,
+            "resource_estimate": {
+                "schema_valid": True,
+                "qualified": all(row["resource_estimate"]["qualified"] for row in conditioning_measurements),
+                "observed": False,
+                "target_rows": target_timing["raw_frames"],
+                "requested_target_rows": target_timing["requested_frames"],
+                "target_raw_rgb_bytes": (target_timing["raw_frames"] * int(width) * int(height) * 3 if target_timing["raw_frames"] is not None else None),
+                "reference_rows": len(conditioning_measurements),
+                "reference_raw_rgb_bytes": (sum(row["resource_estimate"]["raw_bytes"] for row in conditioning_measurements if row["modality"] in {"image", "video"}) if all(row["resource_estimate"]["raw_bytes"] is not None for row in conditioning_measurements if row["modality"] in {"image", "video"}) else None),
+                "reference_raw_rgb_bytes_upper_bound": (sum((row["resource_estimate"].get("raw_bytes_upper_bound") if row["modality"] == "video" else row["resource_estimate"]["raw_bytes"]) for row in conditioning_measurements if row["modality"] in {"image", "video"}) if all((row["resource_estimate"].get("raw_bytes_upper_bound") if row["modality"] == "video" else row["resource_estimate"]["raw_bytes"]) is not None for row in conditioning_measurements if row["modality"] in {"image", "video"}) else None),
+                "reference_raw_audio_bytes": (None if any(row.get("audio_enabled") for row in conditioning_measurements) or any(row["resource_estimate"]["raw_bytes"] is None for row in conditioning_measurements if row["modality"] == "audio") else sum(row["resource_estimate"]["raw_bytes"] for row in conditioning_measurements if row["modality"] == "audio")),
+                "guide_rows": len(guide_occurrences),
+                "unit": "bytes",
+            },
             "unresolved_assets": unresolved,
             "mask_schedule": schedule,
             "status": "prepared" if not unresolved else "requires_resolution",
@@ -487,6 +747,7 @@ def prepare_request(
     # local asset map must never silently contain a missing path.
     return {
         "schema_version": 1,
+        "warnings": warnings,
         "kind": "h3_av_preparation",
         "request_digest": request.digest,
         "request": request.value,

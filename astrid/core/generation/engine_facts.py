@@ -27,6 +27,7 @@ class EngineFacts:
     measure_source_av: Callable[[Any], Mapping[str, Any]]
     astrid_error: Callable[[Exception], Any]
     run_logs: ModuleType
+    custom_node_sources: Callable[[], Mapping[str, Any]] | None = None
 
 
 def comfyui_facts() -> EngineFacts:
@@ -40,6 +41,13 @@ def comfyui_facts() -> EngineFacts:
     def locked_models() -> Mapping[str, Any]:
         from astrid.core.generation.engine_recipe import load_recipe_model_lock
         return {model.destination: model for model in load_recipe_model_lock("comfyui", PLATFORM).models}
+
+    def custom_node_sources() -> Mapping[str, Any]:
+        from pathlib import PurePosixPath
+        from astrid.core.generation.engine_recipe import load_recipe
+        return {PurePosixPath(source.relative_path).name: source.pin
+                for source in load_recipe("comfyui", PLATFORM).sources
+                if PurePosixPath(source.relative_path).parent.name == "custom_nodes"}
 
     def bind_model_root(model_root: Mapping[str, Any]) -> Any:
         from astrid.core.generation.model_root import (
@@ -79,4 +87,4 @@ def comfyui_facts() -> EngineFacts:
 
     return EngineFacts(comfy_commit, locked_models, bind_model_root, build_asset_manifest, read_archive,
                        write_json_atomic, assert_no_unresolved_placeholders, measure_source_av, astrid_error,
-                       run_logs)
+                       run_logs, custom_node_sources)

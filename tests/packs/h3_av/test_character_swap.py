@@ -26,7 +26,7 @@ SCHEMA = Draft202012Validator(json.loads((PACK / "schemas/request.v2.json").read
 
 def _request(*, adapter: bool = True, turbo: bool = True, source: bool = False) -> dict:
     media = [
-        {"id": "performance", "asset": "performance.mp4", "role": "reference", "modality": "video", "range": [1, 2], "audio": False},
+        {"id": "performance", "asset": "performance.mp4", "role": "reference", "modality": "video", "range": [1, 3], "audio": False},
         {"id": "replacement", "asset": "replacement.png", "role": "reference", "modality": "image"},
     ]
     if source:
@@ -73,11 +73,18 @@ def _files(tmp_path: Path, *, source: bool = False) -> dict[str, Path]:
         "performance.mp4": tmp_path / "performance.mp4",
         "replacement.png": tmp_path / "replacement.png",
     }
-    files["performance.mp4"].write_bytes(b"reference video fixture")
-    files["replacement.png"].write_bytes(b"reference image fixture")
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+                    "-i", "color=c=green:s=64x64:r=24:d=4", "-an", "-c:v", "libx264",
+                    "-pix_fmt", "yuv420p", str(files["performance.mp4"])], check=True, capture_output=True)
+    from PIL import Image
+    Image.new("RGB", (64, 64), color="red").save(files["replacement.png"])
     if source:
         files["baseline.mp4"] = tmp_path / "baseline.mp4"
-        files["baseline.mp4"].write_bytes(b"timeline baseline fixture")
+        subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+                        "-i", "color=c=blue:s=1024x576:r=24:d=1", "-f", "lavfi",
+                        "-i", "sine=frequency=440:sample_rate=48000:duration=1", "-map", "0:v:0",
+                        "-map", "1:a:0", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                        "-c:a", "aac", "-shortest", str(files["baseline.mp4"])], check=True, capture_output=True)
     return files
 
 
@@ -93,7 +100,11 @@ def test_adapter_defaults_aliases_and_legacy_replay_are_canonical_without_mutati
         "turbo": {"enabled": True, "strength": 0.95},
         "adapter": {"id": "character_swap_v1", "strength": 1.0},
     }
-    assert normalized.value["model_tags"] == {"performance": "<Video 1>", "replacement": "<Picture 1>"}
+    assert [(row["id"], row["occurrence_id"], row["modality"]) for row in normalized.value["media"]] == [
+        ("performance", "occurrence-1", "video"), ("replacement", "occurrence-2", "image"),
+    ]
+    assert "model_tags" not in normalized.value
+    assert all("model_tag" not in row for row in normalized.value["media"])
     SCHEMA.validate(raw)
 
     alias = copy.deepcopy(raw)
@@ -134,7 +145,26 @@ def test_adapter_defaults_aliases_and_legacy_replay_are_canonical_without_mutati
 
     tampered_replay = copy.deepcopy(normalize_request(raw).value)
     tampered_replay["continuation"] = True
-    tampered_payload = json.dumps(tampered_replay, sort_keys=True, separators=(",", ":")).encode()
+    # Construct the identity document from this fixture's authored intent and
+    # normalized sampling defaults, independently of the identity helper.
+    tampered_identity = {
+        "version": 2, "prompt": raw["prompt"], "duration": 1,
+        "media": [
+            {"occurrence_id": "occurrence-1", "id": "performance", "asset": "performance.mp4",
+             "role": "reference", "modality": "video", "range": [1, 3], "audio": False},
+            {"occurrence_id": "occurrence-2", "id": "replacement", "asset": "replacement.png",
+             "role": "reference", "modality": "image"},
+        ],
+        "settings": {
+            "model": REF2VA_MODEL, "steps": 8, "sampler": "res_multistep", "scheduler": "simple",
+            "seed": 123456789, "turbo": {"enabled": True, "strength": 0.95},
+            "adapter": {"id": "character_swap_v1", "strength": 1.0},
+        },
+        "continuation": True,
+    }
+    tampered_payload = json.dumps(tampered_identity, sort_keys=True, separators=(",", ":")).encode()
+    with pytest.raises(H3RequestError, match="digest does not match"):
+        read_prepared_request(tampered_replay, "0" * 64, require_normalized_v2=True)
     with pytest.raises(H3RequestError, match="does not support continuation"):
         read_prepared_request(
             tampered_replay,
@@ -154,7 +184,11 @@ def test_request_document_loader_preserves_raw_v2_payload_for_child_handoff(tmp_
     assert original == raw
     assert normalized == normalize_request(raw)
     assert "model_tags" not in original
-    assert "model_tags" in normalized.value
+    assert [(row["id"], row["occurrence_id"], row["modality"]) for row in normalized.value["media"]] == [
+        ("performance", "occurrence-1", "video"), ("replacement", "occurrence-2", "image"),
+    ]
+    assert "model_tags" not in normalized.value
+    assert all("model_tag" not in row for row in normalized.value["media"])
     # A child reading the handed-off document re-normalizes the original input
     # instead of rejecting derived fields from the parent's normalized value.
     assert normalize_request(original) == normalized
@@ -219,8 +253,12 @@ def test_adapter_media_and_branch_limits_fail_before_compile(case: str) -> None:
         raw["media"].insert(0, {"asset": "voice.wav", "role": "timeline", "modality": "audio", "at": {"frame": 0}, "range": [0, 1]})
     elif case == "separate_audio":
         raw["media"].insert(0, {"asset": "voice.wav", "role": "timeline", "modality": "audio", "at": {"frame": 1}, "range": [0, 1]})
-    with pytest.raises(H3RequestError, match="character_swap_v1"):
+    if case in {"extra_picture", "extra_video", "audio_reference"}:
+        # The shared limits table allows further references but marks them untested.
         normalize_request(raw)
+    else:
+        with pytest.raises(H3RequestError, match="character_swap_v1"):
+            normalize_request(raw)
 
 
 @pytest.mark.parametrize("turbo_enabled", [True, False])
@@ -283,7 +321,7 @@ def test_native_v2_compile_binds_exact_references_and_connected_lora_chain(
     video_loader = api[target["inputs"]["ref_videos.ref_video_0"][0]]
     assert video_loader["class_type"] == "VHS_LoadVideoFFmpeg"
     assert video_loader["inputs"]["start_time"] == 1
-    assert video_loader["inputs"]["frame_load_cap"] == 24
+    assert video_loader["inputs"]["frame_load_cap"] == 48
     by_class = {row["class_type"]: row["inputs"] for row in api.values()}
     assert by_class["ModelAttentionBackend"]["attention"] == "comfy kitchen attention"
     loras = [row["inputs"]["lora_name"] for row in api.values() if row["class_type"] == "LoraLoaderModelOnly"]
@@ -333,7 +371,7 @@ def test_character_swap_rejects_spatial_and_channel_specific_composition_before_
     import vibecomfy  # noqa: F401  (a sibling checkout; compile loads it lazily)
     raw = _request(source=True)
     raw["media"][0]["edit"][0]["mask"] = {"rectangle": [0, 0, 0.5, 0.5]}
-    with pytest.raises(CompilationError, match="not rasterized"):
+    with pytest.raises(CompilationError, match="integer pixel coordinates"):
         compile_preparation(_preparation(raw, _files(tmp_path, source=True)), out_dir=tmp_path / "regional")
 
     raw = _request(source=True)
@@ -466,3 +504,174 @@ def test_character_swap_inspection_requires_available_probe(monkeypatch, tmp_pat
     monkeypatch.setattr(prepare_module.shutil, "which", lambda _name: None)
     with pytest.raises(PreparationError, match="requires ffprobe"):
         prepare_module._video_stream_types(tmp_path / "source.mp4")
+
+
+def test_masked_route_binds_mixed_reference_occurrences(tmp_path):
+    from vibecomfy.cli_loader import load_workflow_any
+    from astrid.packs.h3_av.shared.compile import _compile_native_v2
+    raw = _request(adapter=False, source=True)
+    raw["prompt"] = "Use <Picture 1>, <Video 1>, <Audio 1>, and <Audio 2>."
+    raw["media"][1]["audio"] = True
+    raw["media"].append({"id": "voice", "asset": "voice.wav", "role": "reference", "modality": "audio"})
+    request = normalize_request(raw)
+    files = {}
+    for item in raw["media"]:
+        path = tmp_path / item["asset"]
+        path.write_bytes(b"reference fixture")
+        files[item["asset"]] = path
+    compiled = _compile_native_v2(request, files, tmp_path / "out")
+    rows = compiled["capabilities"]["conditioning"]
+    assert [(row["occurrence"], row["tag"]) for row in rows] == [
+        (request.value["media"][2]["occurrence_id"], "<Picture 1>"),
+        (request.value["media"][1]["occurrence_id"], "<Video 1>"),
+        (request.value["media"][3]["occurrence_id"], "<Audio 2>"),
+    ]
+    assert rows[1]["input_binding"]["soundtrack"]["tag"] == "<Audio 1>"
+    workflow = load_workflow_any(compiled["workflow"]["workflow.py"]["path"])
+    api = workflow.compile("api", run_inputs=compiled["workflow_inputs"])
+    target = next(node for node in api.values() if node["class_type"] == "MiniMaxH3ReferenceToVideo")
+    assert target["inputs"]["ref_video_audios.ref_video_audio_0"] == [target["inputs"]["ref_videos.ref_video_0"][0], 2]
+    for port, cls, binding, field in (("ref_images.ref_image_0", "LoadImage", "reference_0", "image"),
+                                      ("ref_videos.ref_video_0", "VHS_LoadVideoFFmpeg", "video_reference_0", "video"),
+                                      ("ref_audios.ref_audio_0", "LoadAudio", "audio_reference_0", "audio")):
+        loader = api[target["inputs"][port][0]]
+        assert loader["class_type"] == cls
+        assert loader["inputs"][field] == compiled["workflow_inputs"][binding]
+    assert target["inputs"]["prompt"] == raw["prompt"]
+
+
+def test_masked_route_missing_reference_fails_closed(tmp_path):
+    from astrid.packs.h3_av.shared.compile import _compile_native_v2
+    request = normalize_request(_request(adapter=False, source=True))
+    with pytest.raises(CompilationError, match="missing from preparation"):
+        _compile_native_v2(request, {"baseline.mp4": tmp_path / "source"}, tmp_path)
+
+
+def test_character_swap_with_pixel_rectangle_binds_adapter_and_mask(tmp_path, monkeypatch):
+    from vibecomfy.cli_loader import load_workflow_any
+    from astrid.packs.h3_av.shared import generation
+    from astrid.packs.h3_av.shared.compile import _compile_native_v2
+    raw = _request(source=True)
+    raw["media"][0]["edit"][0]["mask"] = {"rectangle": [0, 0, 128, 128]}
+    request = normalize_request(raw)
+    files = {}
+    for item in raw["media"]:
+        path = tmp_path / item["asset"]
+        path.write_bytes(b"asset fixture")
+        files[item["asset"]] = path
+    seen = []
+    original = generation.build_generation_workflow
+    def capture(inputs):
+        seen.append(inputs)
+        return original(inputs)
+    monkeypatch.setattr(generation, "build_generation_workflow", capture)
+    compiled = _compile_native_v2(request, files, tmp_path / "out")
+    job = seen[0]
+    assert job.model["adapter"]["id"] == "character_swap_v1"
+    assert job.model["adapter"]["strength"] == 1
+    assert job.placed[0]["occurrence_id"] == request.value["media"][0]["occurrence_id"]
+    assert job.grants[0]["stream"] == "video"
+    assert job.grants[0]["interval"] == [0, 1]
+    assert job.grants[0]["source_occurrence"] == job.placed[0]["occurrence_id"]
+    assert job.grants[0]["region_raster"]["input_binding"] == "mask_0"
+    assert job.grants[0]["strength"] == 1
+    assert job.grants[0]["seed"] == request.value["settings"]["seed"]
+    assert set(job.grants[0]["references"]) == {request.value["media"][1]["occurrence_id"], request.value["media"][2]["occurrence_id"]}
+    workflow = load_workflow_any(compiled["workflow"]["workflow.py"]["path"])
+    api = workflow.compile("api", run_inputs=compiled["workflow_inputs"])
+    adapter = next(node for node in api.values() if node["class_type"] == "LoraLoaderModelOnly" and node["inputs"]["lora_name"] == CHARACTER_SWAP_FILENAME)
+    mask = next(node for node in api.values() if node["class_type"] == "H3V2VGranularFractionalDenoise")
+    assert adapter["inputs"]["strength_model"] == 1.0
+    assert api[mask["inputs"]["source_mask"][0]]["class_type"] == "LoadImageMask"
+    assert compiled["workflow_inputs"]["mask_0"]
+
+
+def test_full_frame_character_swap_uses_only_selected_guides(tmp_path):
+    from vibecomfy.cli_loader import load_workflow_any
+    from astrid.packs.h3_av.shared.compile import _compile_native_v2
+    raw = _request(source=True)
+    raw["media"][0]["edit"][0]["guides"] = ["performance", "replacement"]
+    raw["media"].append({"id": "unused", "asset": "unused.png", "role": "reference", "modality": "image"})
+    request = normalize_request(raw)
+    assets = {}
+    for item in raw["media"]:
+        path = tmp_path / item["asset"]
+        path.write_bytes(b"asset fixture")
+        assets[item["asset"]] = path
+    compiled = _compile_native_v2(request, assets, tmp_path / "out")
+    caps = compiled["capabilities"]
+    assert caps["references"] == 2
+    assert caps["reference_modality_counts"] == {"image": 1, "video": 1, "audio": 0}
+    assert [row["occurrence"] for row in caps["conditioning"]] == [request.value["media"][2]["occurrence_id"], request.value["media"][1]["occurrence_id"]]
+    assert "reference_1" not in compiled["workflow_inputs"]
+    workflow = load_workflow_any(compiled["workflow"]["workflow.py"]["path"])
+    api = workflow.compile("api", run_inputs=compiled["workflow_inputs"])
+    target = next(node for node in api.values() if node["class_type"] == "MiniMaxH3ReferenceToVideo")
+    assert "ref_images.ref_image_0" in target["inputs"]
+    assert "ref_images.ref_image_1" not in target["inputs"]
+    assert "ref_videos.ref_video_0" in target["inputs"]
+
+
+def test_character_swap_refuses_differing_full_frame_guide_sets(tmp_path):
+    from astrid.packs.h3_av.shared.compile import _compile_native_v2
+    raw = _request(source=True)
+    raw["media"][0]["edit"][0]["guides"] = ["performance", "replacement"]
+    raw["media"].append({"id": "unused", "asset": "unused.png", "role": "reference", "modality": "image"})
+    raw["media"][0]["edit"].append({"stream": "video", "during": [0, 1], "mask": {"full_frame": True}, "guides": ["performance", "unused"]})
+    request = normalize_request(raw)
+    with pytest.raises(CompilationError, match="different reference sets"):
+        _compile_native_v2(request, {"baseline.mp4": tmp_path / "source"}, tmp_path / "out")
+
+
+def test_masked_character_swap_requires_bound_video_not_merely_declared(tmp_path):
+    from astrid.packs.h3_av.shared.compile import _compile_native_v2
+    raw = _request(source=True)
+    raw["media"][0]["edit"][0].update(mask={"rectangle": [0, 0, 128, 128]}, guides=["replacement"])
+    raw["prompt"] = "Replace the character using <Picture 1>."
+    request = normalize_request(raw)
+    assets = {}
+    for item in raw["media"]:
+        path = tmp_path / item["asset"]
+        path.write_bytes(b"asset fixture")
+        assets[item["asset"]] = path
+    with pytest.raises(CompilationError, match="effective references.*video.*image"):
+        _compile_native_v2(request, assets, tmp_path / "out")
+
+
+def test_character_swap_refuses_differing_full_frame_grant_seeds(tmp_path):
+    from astrid.packs.h3_av.shared.compile import _compile_native_v2
+    raw = _request(source=True)
+    raw["media"][0]["edit"][0]["seed"] = 1
+    raw["media"][0]["edit"].append({"stream": "video", "during": [0, 1], "mask": {"full_frame": True}, "seed": 2})
+    request = normalize_request(raw)
+    with pytest.raises(CompilationError, match="different seeds"):
+        _compile_native_v2(request, {"baseline.mp4": tmp_path / "source"}, tmp_path / "out")
+
+
+def test_character_swap_explicit_default_strength_preserves_default_graph(tmp_path):
+    from astrid.packs.h3_av.shared.compile import _compile_native_v2
+    raw = _request(source=True)
+    assets = {}
+    for item in raw["media"]:
+        path = tmp_path / item["asset"]
+        path.write_bytes(b"asset fixture")
+        assets[item["asset"]] = path
+    omitted = _compile_native_v2(normalize_request(raw), assets, tmp_path / "omitted")
+    raw["media"][0]["edit"][0]["strength"] = 1
+    explicit = _compile_native_v2(normalize_request(raw), assets, tmp_path / "explicit")
+    assert omitted["workflow"]["workflow.py"]["sha256"] == explicit["workflow"]["workflow.py"]["sha256"]
+    assert omitted["workflow_inputs"] == explicit["workflow_inputs"]
+
+
+def test_masked_character_swap_refuses_prompt_tag_for_unselected_video(tmp_path):
+    from astrid.packs.h3_av.shared.compile import _compile_native_v2
+    raw = _request(source=True)
+    raw["media"][0]["edit"][0].update(mask={"rectangle": [0, 0, 128, 128]}, guides=["replacement"])
+    request = normalize_request(raw)
+    assets = {}
+    for item in raw["media"]:
+        path = tmp_path / item["asset"]
+        path.write_bytes(b"asset fixture")
+        assets[item["asset"]] = path
+    with pytest.raises(CompilationError, match="prompt reference tag <Video 1> has no effective binding"):
+        _compile_native_v2(request, assets, tmp_path / "out")

@@ -1,0 +1,35 @@
+{
+  "request": {
+    "version": 2,
+    "prompt": "A speaker",
+    "duration": 2,
+    "media": [
+      {
+        "occurrence_id": "voice",
+        "asset": "voice.wav",
+        "role": "reference",
+        "id": "voice",
+        "modality": "audio",
+        "model_tag": "<Audio 1>"
+      }
+    ],
+    "settings": {
+      "model": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+      "steps": 8,
+      "sampler": "res_multistep",
+      "scheduler": "simple",
+      "seed": 123456789,
+      "turbo": {
+        "enabled": true,
+        "strength": 0.95
+      }
+    },
+    "continuation": false,
+    "profile": "h3_av.native.v2",
+    "output_count": 1,
+    "model_tags": {
+      "voice": "<Audio 1>"
+    }
+  },
+  "request_digest": "76511ab0ca0061ae453e28ca48b703c56f6b30c6429606a46b1cb1eeeb4d723f"
+}

@@ -30,20 +30,20 @@ CASES = json.loads((Path(__file__).parent / "fixtures/spec_min.json").read_text(
 LEGACY_DIGESTS = {
     "source_free_generate": (
         "de3ab4d9992d03c5b5005fa6134810f878a8f2e9d259d08d6e8e0f08f9bb4b12",
-        "cf04863d1a24e127553eb718b6c456e55368c60fb9795dbc6b110cc3758bda0b",
+        "df1bd16fded401d947cc6e0d69458ac93d2459aaeef2188811cd28e07f4579dc",
     ),
     "source_backed_regenerate": (
         "c5017b87fe2a1fba981c067cfe3d57b70824f7f9268a3cd094e27aa257d3919e",
-        "cc6f04c3bc780933687a0e5e39ad7c472185d70a7842bf1964609aeb7e47ad0d",
+        "7d6c252432fba64ad588afdd3682b2e8f4abce7cfc39b0699364154dbbf3561f",
     ),
     "source_backed_extend": (
         "0207316b50a13d1e573cd0f5dc13c9d8a963688076b226d272020a6f6e97009b",
-        "ca502f4cc8da4ef03435a75dc64e21e748b22c3115dac5086fbd5588a6ca1698",
+        "064de8642a2e89faaad2e9f4a3dd6712574c105931960e1ae673c4e94a01d645",
     ),
 }
 SCHEMA_DIGESTS = {
     1: "3eb17c74f0c9788f4077896603c7918918aa62cf321dc26e394c31e4aca65403",
-    2: "ee22c452912dfe56c29b101dc7c6facd5a16508d352a791a23d1cf375c7b136e",
+    2: "ad8cd5f5d0dc31c6692b258d2d938136f4f132bf8cb2adcf9f8183f86d304f24",
 }
 
 
@@ -486,3 +486,98 @@ def test_sampling_request_retains_v2_controls_and_rebinds_only_verified_source_w
     assert len(first.sampling_passes()[0].preserves) == 1
     assert len(first.sampling_passes()) == len(second.sampling_passes()) == 1
     assert request.digest == digest
+
+
+def test_reference_occurrences_preserve_trims_and_uses() -> None:
+    from astrid.packs.h3_av.shared.spec import canonical_spec, sampling_request_document
+
+    raw = {"version": 2, "prompt": "Replace a line", "duration": 4, "media": [
+        {"id": "clip", "asset": "scene", "role": "timeline", "modality": "video",
+         "at": {"frame": 0}, "range": [0, 4], "edit": [
+             {"stream": "audio", "during": [0, 2], "guides": ["replacement"]}]},
+        {"id": "replacement", "asset": "voice", "role": "reference", "modality": "audio", "range": [0, 2]},
+        {"id": "speaker", "asset": "voice", "role": "reference", "modality": "audio", "range": [2, 4]},
+        {"id": "performance", "asset": "movie", "role": "reference", "modality": "video", "audio": False, "range": [0, 2]},
+    ]}
+    request = normalize_request(raw)
+    rows = request.value["media"]
+    assert [r["occurrence_id"] for r in rows] == [f"occurrence-{i}" for i in range(1, 5)]
+    assert [rows[1]["use"], rows[2]["use"]] == ["replacement", "conditioning"]
+    assert rows[1]["range"] != rows[2]["range"]
+    assert rows[3]["audio"] is False
+    assert "model_tags" not in request.value and all("model_tag" not in row for row in rows)
+    spec = canonical_spec(request)
+    assert [(r.modality, r.range, r.use, r.audio) for r in spec.refs] == [
+        ("audio", (0, 2), "replacement", None), ("audio", (2, 4), "conditioning", None),
+        ("video", (0, 2), None, False)]
+    rebuilt = normalize_request(sampling_request_document(request, 0))
+    assert [(r.get("range"), r.get("use"), r.get("audio")) for r in rebuilt.value["media"][1:]] == [
+        (r.get("range"), r.get("use"), r.get("audio")) for r in rows[1:]]
+
+
+def test_pre_sr1_sealed_request_verifies_original_bytes() -> None:
+    from astrid.packs.h3_av.shared.request_v2 import read_prepared_request
+    fixture = json.loads((Path(__file__).parent / "fixtures/pre_sr1_sealed.json").read_text())
+    result = read_prepared_request(fixture["request"], fixture["request_digest"])
+    assert result.digest == fixture["request_digest"]
+    assert result.value["media"][0]["model_tag"] == "<Audio 1>"
+    fixture["request"]["prompt"] = "tampered"
+    with pytest.raises(H3RequestError, match="digest"):
+        read_prepared_request(fixture["request"], fixture["request_digest"])
+
+
+def test_identity_ignores_inspection_but_keeps_authored_intent() -> None:
+    raw = {"version": 2, "prompt": "A speaker", "duration": 2,
+           "media": [{"asset": "voice", "role": "reference"}]}
+    assert normalize_request(raw).digest == normalize_request(raw, asset_modalities={"voice": "audio"}).digest
+    changed = copy.deepcopy(raw)
+    changed["media"][0]["modality"] = "audio"
+    assert normalize_request(raw).digest != normalize_request(changed).digest
+
+
+def test_old_inflight_request_requires_rebuild(tmp_path: Path) -> None:
+    from astrid.packs.h3_av.shared.stages import STATE_NAME, load_build_state
+    fixture = json.loads((Path(__file__).parent / "fixtures/pre_sr1_sealed.json").read_text())
+    raw = {"version": 2, "prompt": "A speaker", "duration": 2,
+           "media": [{"id": "voice", "asset": "voice.wav", "role": "reference", "modality": "audio"}]}
+    (tmp_path / STATE_NAME).write_text(json.dumps({"request": raw, "request_digest": fixture["request_digest"]}))
+    with pytest.raises(ValueError, match="rebuild this request"):
+        load_build_state(tmp_path)
+
+
+def test_pre_sr1_settled_receipt_returns_existing_result(tmp_path: Path, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from astrid.sdk.invocation import _resume_receipt_invocation
+    from astrid.sdk.recovery import AdmissionReceipt
+    from astrid.sdk.results import _reconstruct_generation_result
+    from astrid.packs.h3_av.shared.request_v2 import read_prepared_request
+    import astrid.packs.h3_av.shared.request as request_module
+
+    sealed = json.loads((Path(__file__).parent / "fixtures/pre_sr1_sealed.json").read_text())
+    # Verify the exact stored pre-break format before attempting result readback.
+    assert read_prepared_request(sealed["request"], sealed["request_digest"]).digest == sealed["request_digest"]
+    saved_result = {"seed_used": 42, "model_actual": "old-h3", "manifest": {"request_digest": sealed["request_digest"], "outputs": []}}
+    task = {"task_id": "old-task", "run_id": "old-run", "state": "succeeded",
+            "capability_id": "h3", "result": {"payload": {"generation_result": saved_result}, "outputs": []}}
+    reads = []
+    def show(task_id):
+        reads.append(task_id)
+        return SimpleNamespace(ok=True, data=task)
+    client = SimpleNamespace(handshake=lambda *_: {"realm_id": "test-realm"},
+                             tasks=SimpleNamespace(show=show))
+    path = tmp_path / "old-receipt.json"
+    admission = {"capability_id": "h3", "idempotency_key": "old-key", "sealed_request": sealed}
+    metadata = {"capability_id": "h3", "capability_type": "executor", "native_kind": "executor"}
+    with AdmissionReceipt(path, request=sealed, client=client, resume=False) as receipt:
+        receipt.freeze(admission, metadata=metadata)
+        receipt.locate(task)
+    # Resuming a settled task must use the stored result rather than rebuild it.
+    monkeypatch.setattr(request_module, "normalize_request", lambda *_a, **_k: pytest.fail("renormalized settled request"))
+    with AdmissionReceipt(path, request=sealed, client=client, resume=True) as receipt:
+        observed = _resume_receipt_invocation(receipt, client=client, wait=False,
+                                             timeout_seconds=1, poll_seconds=0.001)
+    result = _reconstruct_generation_result(observed)
+    assert reads == ["old-task"]
+    assert result.seed_used == 42 and result.model_actual == "old-h3"
+    assert result.manifest == saved_result["manifest"]

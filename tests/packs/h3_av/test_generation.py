@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from astrid.packs.h3_av.shared.generation import generation_inputs_from_bindings
+
 import hashlib
 import json
+import os
 import shutil
 from dataclasses import replace
 from pathlib import Path
@@ -19,11 +22,11 @@ from astrid.packs.h3_av.shared.stages import _generation_intent
 def _locked_model_workflow(**kwargs):
     from astrid.packs.h3_av.shared.generation import build_generation_workflow
 
-    return build_generation_workflow(
+    return build_generation_workflow(generation_inputs_from_bindings(
         references=["reference.png"], prompt="A scene.", frames=24,
         model="minimax_h3_ref2va_pruned_int8_convrot.safetensors", steps=8, seed=1,
         **kwargs,
-    )
+    ))
 
 
 def test_generation_assets_use_recipe_lock_revisions():
@@ -51,6 +54,65 @@ def test_generation_assets_use_recipe_lock_revisions():
         f'{row["subdir"]}/{row["name"]}'
         for row in _locked_model_workflow(turbo_enabled=False).metadata["model_assets"]
     }
+
+
+def test_generation_binds_standalone_audio_to_audio_typed_reference_port():
+    workflow = _locked_model_workflow(audio_references=[{"binding": "audio_reference_0"}])
+    target = workflow.nodes["target"]
+    ports = dict(zip(target.native_input_names, target.native_input_types, strict=True))
+    assert ports["ref_audios.ref_audio_0"] == "AUDIO"
+    assert workflow.inputs["audio_reference_0"].media_semantics == "audio"
+
+
+def test_builder_reference_port_counts_match_the_limits_table():
+    from astrid.packs.h3_av.shared.generation import LIMITS, build_generation_workflow
+
+    capacities = LIMITS["builder_slots"]["value"]
+    workflow = build_generation_workflow(generation_inputs_from_bindings(
+        references=[f"image-{index}" for index in range(capacities["image"])],
+        video_references=[{"binding": f"video-{index}"} for index in range(capacities["video"])],
+        audio_references=[{"binding": f"audio-{index}"} for index in range(capacities["audio"])],
+        prompt="A scene", frames=24, model="minimax_h3_ref2va_pruned_int8_convrot.safetensors", steps=8, seed=1,
+    ))
+    target = workflow.nodes["target"]
+    ports = dict(zip(target.native_input_names, target.native_input_types, strict=True))
+    assert sum(name.startswith("ref_images.") for name in ports) == capacities["image"]
+    assert sum(name.startswith("ref_videos.") for name in ports) == capacities["video"]
+    assert sum(name.startswith("ref_audios.") for name in ports) == capacities["audio"]
+    assert all(ports[f"ref_audios.ref_audio_{index}"] == "AUDIO" for index in range(capacities["audio"]))
+    dimensions = LIMITS["canvas_dimension"]["value"]
+    assert (dimensions["min"], dimensions["max"], dimensions["multiple"]) == (32, 16384, 32)
+
+
+def test_builder_rejects_one_past_standalone_audio_slots():
+    from astrid.packs.h3_av.shared.generation import LIMITS, build_generation_workflow
+
+    with pytest.raises(ValueError, match="at most three standalone audio references"):
+        build_generation_workflow(generation_inputs_from_bindings(references=["image-0"], audio_references=[
+            {"binding": f"audio-{index}"} for index in range(LIMITS["builder_slots"]["value"]["audio"] + 1)
+        ], prompt="A scene", frames=24, model="minimax_h3_ref2va_pruned_int8_convrot.safetensors", steps=8, seed=1))
+
+
+def test_limits_match_the_pinned_cached_h3_node_schema():
+    from astrid.packs.h3_av.shared.generation import LIMITS
+
+    cache = Path(os.environ["VIBECOMFY_SOURCE"]) / "vibecomfy/porting/cache/object_info/comfy_core@cpu-runtime.json"
+    classes = json.loads(cache.read_text())
+    schema = classes["MiniMaxH3ReferenceToVideo"]
+    assert schema["git_commit"] == "6bfaacc67c2103481e5f0c84d75257cd0581d86a"
+    optional = schema["inputs"]["optional"]
+    slots = LIMITS["builder_slots"]["value"]
+    assert optional["ref_images"][1]["template"]["max"] == slots["image"]
+    assert optional["ref_videos"][1]["template"]["max"] == slots["video"]
+    assert optional["ref_audios"][1]["template"]["max"] == slots["audio"]
+    width = schema["inputs"]["required"]["width"][1]
+    height = schema["inputs"]["required"]["height"][1]
+    for dim in (width, height):
+        assert (dim["min"], dim["max"], dim["step"]) == (
+            LIMITS["canvas_dimension"]["value"]["min"],
+            LIMITS["canvas_dimension"]["value"]["max"],
+            LIMITS["canvas_dimension"]["value"]["multiple"],
+        )
 
 
 @pytest.mark.parametrize("invalid", [
@@ -106,7 +168,8 @@ def request(count=4, **updates):
     ({"references": [{"asset": "a", "purpose": "audio"}]}, "image guidance"),
     ({"references": [{"asset": "a", "purpose": "keyframe"}]}, "timed keyframes"),
     ({"output": {"duration": 15.01}}, "24 fps"),
-    ({"output": {"duration": 16}}, "5..362"),
+    ({"output": {"duration": 4 / 24}}, "job length frames"),
+    ({"output": {"duration": 3593 / 24}}, "job length frames"),
     ({"output": {"duration": float("inf")}}, "finite"),
     ({"references": [{"asset": "a", "purpose": "style"}] * 10}, "nine"),
     ({"changes": {"video": [], "audio": [{"during": [0, 1], "action": "preserve"}]}}, "changes/masks"),
@@ -196,3 +259,318 @@ def prepared_client(tmp_path):
 
 
 
+
+
+def test_source_free_audio_trim_compiles_to_bound_audio_graph(tmp_path):
+    import subprocess
+    from vibecomfy.cli_loader import load_workflow_any
+    from astrid.packs.h3_av.shared.request_v2 import normalize_v2
+
+    image = tmp_path / "image.png"
+    audio = tmp_path / "audio.wav"
+    Image.new("RGB", (32, 32)).save(image)
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=sample_rate=48000", "-t", "5", str(audio)], check=True)
+    raw = {"version": 2, "prompt": "A scene", "duration": 6, "media": [
+        {"asset": "image", "role": "reference", "modality": "image"},
+        {"asset": "audio", "role": "reference", "modality": "audio", "range": [1, 4]},
+    ]}
+    prepared = prepare_request(normalize_v2(raw), asset_map={"image": str(image), "audio": str(audio)})
+    compiled = compile_preparation(prepared, out_dir=tmp_path / "compiled")
+    capabilities = compiled["capabilities"]
+    assert capabilities["references"] == 1
+    assert capabilities["reference_order"] == ["image"]
+    assert capabilities["audio_references"] == 1
+    assert capabilities["audio_reference_order"] == ["audio"]
+    assert not any("image references only" in text for text in compiled["limitations"])
+    assert prepared["resource_estimate"]["requested_target_rows"] == 144
+    assert prepared["resource_estimate"]["target_rows"] == 158
+    assert prepared["resource_estimate"]["target_raw_rgb_bytes"] == 158 * 1024 * 576 * 3
+    workflow = load_workflow_any(compiled["workflow"]["workflow.py"]["path"])
+    api = workflow.compile("api", run_inputs=compiled["workflow_inputs"])
+    target = next(row for row in api.values() if row["class_type"] == "MiniMaxH3ReferenceToVideo")
+    trim = api[target["inputs"]["ref_audios.ref_audio_0"][0]]
+    assert trim["class_type"] == "TrimAudioDuration"
+    assert trim["inputs"]["start_index"] == 1
+    assert trim["inputs"]["duration"] == 3
+    assert api[trim["inputs"]["audio"][0]]["class_type"] == "LoadAudio"
+
+
+def test_source_free_video_reference_binds_occurrence_and_prompt_tag(tmp_path):
+    from vibecomfy.cli_loader import load_workflow_any
+    from astrid.packs.h3_av.shared.compile import _compile_native_v2
+    from astrid.packs.h3_av.shared.request_v2 import normalize_v2
+
+    image = tmp_path / "image.png"
+    video = tmp_path / "video.mp4"
+    Image.new("RGB", (32, 32)).save(image)
+    video.write_bytes(b"video binding fixture")
+    request = normalize_v2({"version": 2, "prompt": "A scene with <Video 1>", "duration": 6, "media": [
+        {"asset": "image", "role": "reference", "modality": "image"},
+        {"asset": "video", "role": "reference", "modality": "video", "audio": False},
+    ]})
+    compiled = _compile_native_v2(request, {"image": image, "video": video}, tmp_path / "out")
+    row = compiled["capabilities"]["conditioning"][1]
+    assert row["occurrence"] == request.value["media"][1]["occurrence_id"]
+    assert row["input_binding"]["binding"] == "video_reference_0"
+    assert row["tag"] == "<Video 1>"
+    workflow = load_workflow_any(compiled["workflow"]["workflow.py"]["path"])
+    api = workflow.compile("api", run_inputs=compiled["workflow_inputs"])
+    target = next(node for node in api.values() if node["class_type"] == "MiniMaxH3ReferenceToVideo")
+    assert target["inputs"]["prompt"] == "A scene with <Video 1>"
+    loader = api[target["inputs"]["ref_videos.ref_video_0"][0]]
+    assert loader["class_type"] == "VHS_LoadVideoFFmpeg"
+    assert loader["inputs"]["video"] == compiled["workflow_inputs"]["video_reference_0"]
+
+
+def test_sixteen_seconds_compiles_and_warns(tmp_path):
+    from vibecomfy.cli_loader import load_workflow_any
+    image = tmp_path / "reference.png"
+    Image.new("RGB", (32, 32)).save(image)
+    prepared = prepare_request(request(1, output={"duration": 16}), asset_map={"image-0": str(image)})
+    assert prepared["warnings"][0]["limit"] == "job_duration_seconds"
+    compiled = compile_preparation(prepared, out_dir=tmp_path / "compiled-16")
+    workflow = load_workflow_any(compiled["workflow"]["workflow.py"]["path"])
+    api = workflow.compile("api", run_inputs=compiled["workflow_inputs"])
+    target = next(row for row in api.values() if row["class_type"] == "MiniMaxH3ReferenceToVideo")
+    assert target["inputs"]["length"] == 396
+
+
+def test_node_frame_grid_maximum():
+    assert generation_timing(3592 / 24)["raw_frames"] == 3592
+    with pytest.raises(ValueError, match="job length frames"):
+        generation_timing(3593 / 24)
+    with pytest.raises(ValueError, match="job length frames"):
+        generation_timing(4 / 24)
+    from astrid.packs.h3_av.shared.generation import build_generation_workflow
+    with pytest.raises(ValueError, match="job length frames"):
+        build_generation_workflow(generation_inputs_from_bindings(references=["i"], prompt="scene", frames=3593, model="minimax_h3_ref2va_pruned_int8_convrot.safetensors", steps=8, seed=1))
+
+
+def test_source_free_mixed_reference_tags_follow_connected_soundtracks(tmp_path):
+    from vibecomfy.cli_loader import load_workflow_any
+    from astrid.packs.h3_av.shared.compile import _compile_native_v2
+    from astrid.packs.h3_av.shared.request_v2 import normalize_v2
+
+    image, video, audio = (tmp_path / name for name in ("image.png", "video.mp4", "voice.wav"))
+    Image.new("RGB", (32, 32)).save(image)
+    video.write_bytes(b"video fixture")
+    audio.write_bytes(b"audio fixture")
+    request = normalize_v2({"version": 2, "prompt": "<Picture 1> <Video 1> <Audio 1> <Audio 2>", "duration": 6, "media": [
+        {"asset": "voice", "role": "reference", "modality": "audio"},
+        {"asset": "video", "role": "reference", "modality": "video", "audio": True},
+        {"asset": "image", "role": "reference", "modality": "image"},
+    ]})
+    compiled = _compile_native_v2(request, {"image": image, "video": video, "voice": audio}, tmp_path / "out")
+    rows = compiled["capabilities"]["conditioning"]
+    assert [(row["occurrence"], row["tag"]) for row in rows] == [
+        (request.value["media"][2]["occurrence_id"], "<Picture 1>"),
+        (request.value["media"][1]["occurrence_id"], "<Video 1>"),
+        (request.value["media"][0]["occurrence_id"], "<Audio 2>"),
+    ]
+    assert rows[1]["input_binding"]["soundtrack"]["tag"] == "<Audio 1>"
+    caps = compiled["capabilities"]
+    assert caps["references"] == 1 and caps["reference_count_modality"] == "image"
+    assert caps["effective_reference_count"] == 3
+    assert caps["reference_modality_counts"] == {"image": 1, "video": 1, "audio": 1}
+    assert caps["effective_audio_tags"] == ["<Audio 1>", "<Audio 2>"]
+    assert caps["effective_reference_order"] == [row["occurrence"] for row in rows]
+    workflow = load_workflow_any(compiled["workflow"]["workflow.py"]["path"])
+    api = workflow.compile("api", run_inputs=compiled["workflow_inputs"])
+    target = next(node for node in api.values() if node["class_type"] == "MiniMaxH3ReferenceToVideo")
+    video_port = target["inputs"]["ref_videos.ref_video_0"]
+    assert target["inputs"]["ref_video_audios.ref_video_audio_0"] == [video_port[0], 2]
+    audio_port = target["inputs"]["ref_audios.ref_audio_0"]
+    assert api[audio_port[0]]["inputs"]["audio"] == compiled["workflow_inputs"]["audio_reference_0"]
+
+
+def test_unbound_generated_reference_tag_is_refused(tmp_path):
+    from astrid.packs.h3_av.shared.compile import _compile_native_v2
+    from astrid.packs.h3_av.shared.request_v2 import normalize_v2
+    image = tmp_path / "image.png"
+    Image.new("RGB", (32, 32)).save(image)
+    request = normalize_v2({"version": 2, "prompt": "<Audio 1> and <ordinary text>", "duration": 6, "media": [
+        {"asset": "image", "role": "reference", "modality": "image"},
+    ]})
+    with pytest.raises(CompilationError, match="prompt reference tag <Audio 1> has no effective binding"):
+        _compile_native_v2(request, {"image": image}, tmp_path / "out")
+    allowed = normalize_v2({"version": 2, "prompt": "A scene with <ordinary text>", "duration": 6, "media": [
+        {"asset": "image", "role": "reference", "modality": "image"},
+    ]})
+    assert _compile_native_v2(allowed, {"image": image}, tmp_path / "allowed")["status"] == "compiled"
+
+
+@pytest.mark.parametrize("location", ["request", "occurrence"])
+def test_forged_request_reference_tags_are_refused(location):
+    raw = {"version": 2, "prompt": "A scene", "duration": 6, "media": [
+        {"asset": "image", "role": "reference", "modality": "image"},
+    ]}
+    if location == "request":
+        raw["model_tags"] = {"image": "<Picture 42>"}
+    else:
+        raw["media"][0]["model_tag"] = "<Picture 42>"
+    with pytest.raises(H3RequestError, match="unsupported field"):
+        normalize_request(raw)
+
+
+def test_graph_custom_node_requirements_follow_used_lowerings_and_pins():
+    from astrid.core.generation.engine_facts import comfyui_facts
+    pins = comfyui_facts().custom_node_sources()
+    plain = _locked_model_workflow()
+    with_video = _locked_model_workflow(video_references=[{"binding": "video_reference_0", "audio": False}])
+    def rows(workflow):
+        return {row["slug"]: row for row in workflow.requirements.custom_node_refs}
+    plain_rows, video_rows = rows(plain), rows(with_video)
+    for name, pin in pins.items():
+        if name in plain_rows:
+            assert plain_rows[name]["url"] == pin.repository
+            assert plain_rows[name]["commit"] == pin.revision
+    assert "VHS_LoadVideoFFmpeg" not in plain_rows["ComfyUI-VideoHelperSuite"]["classes"]
+    assert "VHS_LoadVideoFFmpeg" in video_rows["ComfyUI-VideoHelperSuite"]["classes"]
+
+
+@pytest.mark.parametrize("media", [[],
+    [{"asset": "video", "role": "reference", "modality": "video", "audio": False}],
+    [{"asset": "audio", "role": "reference", "modality": "audio"}],
+    [{"asset": "video", "role": "reference", "modality": "video", "audio": False},
+     {"asset": "audio", "role": "reference", "modality": "audio"}],
+])
+def test_source_free_without_image_compiles_with_correct_documented_use_note(monkeypatch, tmp_path, media):
+    from vibecomfy.cli_loader import load_workflow_any
+    from astrid.packs.h3_av.shared import generation, prepare
+    from astrid.packs.h3_av.shared.compile import _compile_native_v2
+    from astrid.packs.h3_av.shared.request_v2 import normalize_v2
+
+    request = normalize_v2({"version": 2, "prompt": "A scene", "duration": 6, "media": media})
+    monkeypatch.setattr(prepare, "_resolve_assets", lambda *_: [])
+    monkeypatch.setattr(prepare, "_admit_conditioning", lambda *_: [])
+    monkeypatch.setattr(prepare, "_validate_mask_assets", lambda *_: None)
+    monkeypatch.setattr(prepare, "_check_source_av_rates", lambda *_: None)
+    monkeypatch.setattr(prepare, "_v2_mask_schedule", lambda *_args, **_kwargs: {"status": "ready"})
+    dry_run = prepare.prepare_request(request)
+    notes = [row for row in dry_run["warnings"] if row["limit"] == "text_only_documented_use"]
+    assert bool(notes) is (not media)
+    if notes:
+        assert "outside the documented use of the Ref2VA checkpoint" in notes[0]["message"]
+    assets = {}
+    for item in media:
+        path = tmp_path / item["asset"]
+        path.write_bytes(b"asset fixture")
+        assets[item["asset"]] = path
+    seen = []
+    original = generation.build_generation_workflow
+    def capture(inputs):
+        seen.append(inputs)
+        return original(inputs)
+    monkeypatch.setattr(generation, "build_generation_workflow", capture)
+    compiled = _compile_native_v2(request, assets, tmp_path / "out")
+    assert seen[0].canvas == {"width": 1024, "height": 576, "frames": 158}
+    assert seen[0].placed == ()
+    assert seen[0].grants[0]["stream"] == "av"
+    assert seen[0].grants[0]["interval"] == [0, 6]
+    assert seen[0].model["base"] == request.value["settings"]["model"]
+    assert seen[0].model["adapter"] is None
+    assert seen[0].sampling["seed"] == request.value["settings"]["seed"]
+    assert all(set(row) == {"occurrence", "modality", "trim", "input_binding", "tag"} for row in seen[0].conditioning)
+    workflow = load_workflow_any(compiled["workflow"]["workflow.py"]["path"])
+    api = workflow.compile("api", run_inputs=compiled["workflow_inputs"])
+    target = next(node for node in api.values() if node["class_type"] == "MiniMaxH3ReferenceToVideo")
+    assert not any(key.startswith("ref_images.") for key in target["inputs"])
+    assert ("ref_videos.ref_video_0" in target["inputs"]) == any(item["modality"] == "video" for item in media)
+    assert ("ref_audios.ref_audio_0" in target["inputs"]) == any(item["modality"] == "audio" for item in media)
+
+
+def test_text_only_request_runs_public_hook_without_fabricated_assets(tmp_path):
+    import importlib.util
+    from astrid.core.generation.engine_facts import comfyui_facts
+
+    path = Path(__file__).parents[3] / "astrid/packs/h3_av/extensions/vibecomfy.workflows/hooks.py"
+    spec = importlib.util.spec_from_file_location("h3_text_only_test_hooks", path)
+    hooks = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hooks)
+    request_file = tmp_path / "request.json"
+    request_file.write_text(json.dumps({"version": 2, "prompt": "A scene", "duration": 6, "media": []}))
+    results = []
+    for name in ("one", "two"):
+        out = tmp_path / name
+        result = hooks.build({"request": str(request_file)}, {}, out, engine=comfyui_facts())
+        preparation = json.loads((out / "h3/preparation.json").read_text())
+        compilation = json.loads((out / "h3/plan/compile/compilation.json").read_text())
+        assert result["assets"] == {}
+        assert "managed_assets" not in compilation
+        assert not (out / "h3/plan/compile/managed-assets.zip").exists()
+        assert any(row["limit"] == "text_only_documented_use" and "outside the documented use" in row["message"] for row in preparation["warnings"])
+        results.append((compilation["request_digest"], compilation["compilation_digest"]))
+    assert results[0] == results[1]
+
+
+def test_same_mixed_occurrences_bind_identically_on_source_free_and_masked_routes(tmp_path):
+    from vibecomfy.cli_loader import load_workflow_any
+    from astrid.packs.h3_av.shared.compile import _compile_native_v2
+    from astrid.packs.h3_av.shared.request_v2 import normalize_v2
+
+    references = [
+        {"id": "voice", "asset": "voice", "role": "reference", "modality": "audio"},
+        {"id": "performance", "asset": "performance", "role": "reference", "modality": "video", "range": [1, 3], "audio": True},
+        {"id": "picture", "asset": "picture", "role": "reference", "modality": "image"},
+    ]
+    image = tmp_path / "image.png"
+    Image.new("RGB", (32, 32)).save(image)
+    assets = {"picture": image}
+    for name in ("voice", "performance", "source"):
+        assets[name] = tmp_path / name
+        assets[name].write_bytes(b"asset fixture")
+    timeline = {"id": "source", "asset": "source", "role": "timeline", "modality": "video", "at": {"frame": 0}, "range": [0, 6],
+                "edit": [{"stream": "video", "during": [0, 6], "mask": {"full_frame": True}}]}
+    prompt = "<Picture 1> <Video 1> <Audio 1> <Audio 2>"
+    outputs = []
+    for name, media in (("free", references), ("masked", [*references, timeline])):
+        request = normalize_v2({"version": 2, "prompt": prompt, "duration": 6, "media": media})
+        compilation = _compile_native_v2(request, assets, tmp_path / name)
+        rows = compilation["capabilities"]["conditioning"]
+        workflow = load_workflow_any(compilation["workflow"]["workflow.py"]["path"])
+        api = workflow.compile("api", run_inputs=compilation["workflow_inputs"])
+        target = next(node for node in api.values() if node["class_type"] == "MiniMaxH3ReferenceToVideo")
+        assert target["inputs"]["prompt"] == prompt
+        for row in rows:
+            assert row["input_binding"]["port"] in target["inputs"]
+            if "soundtrack" in row["input_binding"]:
+                assert row["input_binding"]["soundtrack"]["port"] in target["inputs"]
+        outputs.append(rows)
+    assert outputs[0] == outputs[1]
+
+
+def test_fractional_reference_trim_survives_compilation_manifest(tmp_path):
+    from astrid.packs.h3_av.shared.compile import _compile_native_v2
+    from astrid.packs.h3_av.shared.request_v2 import normalize_v2
+
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"video fixture")
+    request = normalize_v2({"version": 2, "prompt": "<Video 1>", "duration": 6, "media": [
+        {"asset": "video", "role": "reference", "modality": "video", "range": ["1/24", "49/24"], "audio": False},
+    ]})
+    compilation = _compile_native_v2(request, {"video": video}, tmp_path / "out")
+    manifest = json.loads(Path(compilation["manifest_path"]).read_text())
+    assert manifest["capabilities"]["conditioning"][0]["trim"] == ["1/24", "49/24"]
+
+
+@pytest.mark.parametrize("with_typed", [False, True])
+def test_public_hook_refuses_untyped_image_occurrence_before_claim(tmp_path, with_typed):
+    import importlib.util
+    from astrid.core.generation.engine_facts import comfyui_facts
+
+    hook_path = Path(__file__).parents[3] / "astrid/packs/h3_av/extensions/vibecomfy.workflows/hooks.py"
+    spec = importlib.util.spec_from_file_location("h3_untyped_test_hooks", hook_path)
+    hooks = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hooks)
+    image = tmp_path / "image.png"
+    Image.new("RGB", (32, 32)).save(image)
+    media = [{"asset": "untyped", "role": "reference"}]
+    asset_map = {"untyped": str(image)}
+    if with_typed:
+        media.append({"asset": "typed", "role": "reference", "modality": "image"})
+        asset_map["typed"] = str(image)
+    request_file = tmp_path / "request.json"
+    request_file.write_text(json.dumps({"version": 2, "prompt": "A scene", "duration": 6, "media": media}))
+    with pytest.raises(ValueError, match=r"occurrence-1.*unresolved modality.*declare image, video, or audio"):
+        hooks.build({"request": str(request_file), "asset_map": asset_map}, {}, tmp_path / "out", engine=comfyui_facts())
+    assert not (tmp_path / "out/h3/plan/compile/compilation.json").exists()

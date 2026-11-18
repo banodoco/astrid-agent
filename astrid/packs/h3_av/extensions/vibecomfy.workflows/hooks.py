@@ -49,8 +49,12 @@ def _path(inputs: Mapping[str, Any], files: Mapping[str, Any], name: str) -> Pat
 
 
 def _file_map(inputs: Mapping[str, Any], files: Mapping[str, Any]) -> dict[str, str]:
-    value = (files or {}).get("asset_map") or (inputs or {}).get("asset_map")
-    if not isinstance(value, Mapping) or not value:
+    value = (files or {}).get("asset_map")
+    if value is None:
+        value = (inputs or {}).get("asset_map")
+    if value is None:
+        value = {}
+    if not isinstance(value, Mapping):
         raise ValueError("h3 needs the 'asset_map' file map ({asset id: file path})")
     return {str(key): str(path) for key, path in value.items()}
 
@@ -139,13 +143,14 @@ def build(inputs, files, out, *, engine=None, check_runtime=False):
     stages.save_build_state(work, request=request, document=document, preparation=preparation, source=source, plan=plan)
     trio = Path(compilation["workflow"]["workflow.py"]["path"]).parent
     # The media the graph binds, unpacked from compile's managed-assets archive: {binding: path}.
-    resolved = facts.read_archive(compilation["managed_assets"]["path"])
     assets = {}
-    for record in resolved.manifest["assets"]:
-        target = work / "managed" / record["member"]
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(resolved.members[record["member"]])
-        assets[record["binding"]] = target
+    if "managed_assets" in compilation:
+        resolved = facts.read_archive(compilation["managed_assets"]["path"])
+        for record in resolved.manifest["assets"]:
+            target = work / "managed" / record["member"]
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(resolved.members[record["member"]])
+            assets[record["binding"]] = target
     return {"workflow": _load_graph(trio), "bindings": bindings, "plan": plan, "assets": assets,
             "bundle": str(trio)}
 
