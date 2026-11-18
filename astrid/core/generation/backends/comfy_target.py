@@ -18,7 +18,7 @@ import threading
 import time
 import uuid
 from collections.abc import Mapping
-from contextlib import nullcontext
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -113,6 +113,10 @@ class ComfyRequestNotStarted(TransportError):
     prompt_id = None
     prompt_not_started = False
 
+    def __init__(self, message: str, *, prompt_not_started: bool = False):
+        super().__init__(message)
+        self.prompt_not_started = prompt_not_started
+
 
 class ComfyTargetClient:
     """Bounded HTTP and custody for one attempt, with no lifecycle ownership.
@@ -144,8 +148,30 @@ class ComfyTargetClient:
         self._folder_paths_read = False
         self._folder_paths: Any = None
 
-    def _generation_guard(self):
-        return self.generation.guard() if self.generation is not None else nullcontext()
+    @contextmanager
+    def _generation_guard(self, *, request_not_started=False):
+        if self.generation is None:
+            yield
+            return
+        with self.generation.lock:
+            if self.generation.retired:
+                with self._prompt_lock:
+                    if not self._prompt_attempted:
+                        raise ComfyRequestNotStarted(
+                            "Comfy target generation retired before prompt; prepare a fresh target client",
+                            prompt_not_started=True)
+            with self.generation.guard(request_not_started=request_not_started):
+                yield
+
+    def _open(self, request, *, timeout):
+        try:
+            return self._opener(request, timeout=timeout)
+        except ComfyRequestNotStarted as exc:
+            # Preparation can restart only before this client reserves a POST.
+            # A POST's own pre-wire refusal is classified by its submit path.
+            with self._prompt_lock:
+                exc.prompt_not_started = not self._prompt_attempted
+            raise
 
     def _current(self, value):
         with self._generation_guard():
@@ -196,7 +222,8 @@ class ComfyTargetClient:
 
     def _json(self, path, payload=None, *, timeout=10.0, response_limit=64 * 1024,
               acknowledge_empty=True):
-        self._current(None)
+        with self._generation_guard(request_not_started=True):
+            pass
         timeout = float(timeout)
         if not math.isfinite(timeout) or not 0 < timeout <= LOCAL_HTTP_SECONDS:
             raise ValueError("Comfy request timeout must be finite and at most 30 seconds")
@@ -211,7 +238,7 @@ class ComfyTargetClient:
             method="GET" if body is None else "POST",
         )
         deadline = time.monotonic() + timeout
-        with self._opener(request, timeout=timeout) as response:
+        with self._open(request, timeout=timeout) as response:
             status = getattr(response, "status", 200)
             # A bounded error body must also be consumed before reusing a
             # held connection (for example an optional endpoint's 404).
@@ -273,6 +300,8 @@ class ComfyTargetClient:
             self._folder_paths_read = True
             try:
                 self._folder_paths = self.request_json("/internal/folder_paths", timeout=5, response_limit=64 * 1024)
+            except ComfyRequestNotStarted:
+                raise
             except (ValueError, OSError, TransportError):
                 self._folder_paths = None
         return self._current(self._folder_paths)
@@ -433,7 +462,7 @@ class ComfyTargetClient:
                                         headers={"Content-Type": f"multipart/form-data; boundary={boundary}",
                                                  "Accept-Encoding": "identity"})
         deadline = time.monotonic() + HTTP_TRANSFER_SECONDS
-        with self._opener(request, timeout=HTTP_TRANSFER_SECONDS) as response:
+        with self._open(request, timeout=HTTP_TRANSFER_SECONDS) as response:
             if not 200 <= getattr(response, "status", 200) < 300:
                 raise ValueError("Comfy upload returned a non-2xx status")
             result = json.loads(self._read_bounded(response, 64 * 1024, deadline))
@@ -451,7 +480,7 @@ class ComfyTargetClient:
         request = urllib_request.Request(self.http_origin + "/view?" + query, method="HEAD",
                                         headers={"Accept-Encoding": "identity"})
         try:
-            with self._opener(request, timeout=HTTP_TRANSFER_SECONDS) as response:
+            with self._open(request, timeout=HTTP_TRANSFER_SECONDS) as response:
                 status = getattr(response, "status", 200)
                 if status == 404:
                     return "missing", None
@@ -509,7 +538,7 @@ class ComfyTargetClient:
                 request = urllib_request.Request(self.http_origin + "/view?" + query,
                                                  headers={"Accept-Encoding": "identity"}, method="GET")
                 deadline = time.monotonic() + LOCAL_HTTP_SECONDS
-                with self._opener(request, timeout=LOCAL_HTTP_SECONDS) as response, temporary_path.open("wb") as temporary:
+                with self._open(request, timeout=LOCAL_HTTP_SECONDS) as response, temporary_path.open("wb") as temporary:
                     if getattr(response, "status", 200) != 200:
                         raise ValueError("comfy target /view returned a non-200 status")
                     headers = getattr(response, "headers", {})

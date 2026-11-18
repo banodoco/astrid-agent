@@ -15,11 +15,14 @@ on:
       - "tests/core/generation/backends/test_comfy*.py"
       - "tests/helpers/ls5_comfy_peer.py"
       - "tests/packs/vibecomfy/test_ls5_rework_run.py"
+      - "tests/packs/vibecomfy/test_ls5_preparation_run.py"
       - "tests/integrations/test_ls5_meter.py"
       - "tests/ls5_meter_run.py"
       - "tests/ls5_meter_compare.py"
       - "tests/ls5_rework_proof.py"
+      - "tests/ls5_preparation_proof.py"
       - "tests/ls5_windows_baseline.py"
+      - "tests/test_ls5_windows_baseline.py"
       - "tests/_ls5_meter_observer.py"
       - ".github/workflows/plan55-ls5.yml"
 permissions:
@@ -121,17 +124,21 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          python -m pytest -q -rA tests/core/generation/backends/test_comfy_target.py tests/core/generation/backends/test_comfy_held_transport.py tests/core/generation/backends/test_comfy_held_rework.py --junitxml=plan55-ls5-proof/agent-transport.xml 2>&1 | tee plan55-ls5-proof/agent-transport.log
+          python -m pytest -q -rA tests/core/generation/backends/test_comfy_target.py tests/core/generation/backends/test_comfy_held_transport.py tests/core/generation/backends/test_comfy_held_rework.py tests/core/generation/backends/test_comfy_preparation_rework.py tests/test_ls5_windows_baseline.py --junitxml=plan55-ls5-proof/agent-transport.xml 2>&1 | tee plan55-ls5-proof/agent-transport.log
           rc=${PIPESTATUS[0]}; echo "$rc" > plan55-ls5-proof/agent-transport.exit; exit "$rc"
       - name: Reproduce Lead regression probes at unchanged 0a49ce48
         shell: bash
         run: |
           python -m tests.ls5_rework_proof --output plan55-ls5-proof/review-baseline --vibe vibe --runtime runtime --lifecycle lifecycle
+      - name: Reproduce unsent preparation probes at unchanged 04539d38
+        shell: bash
+        run: |
+          python -m tests.ls5_preparation_proof --output plan55-ls5-proof/preparation-baseline --vibe vibe --runtime runtime --lifecycle lifecycle
       - name: Prove the unchanged attached pack integration cases
         shell: bash
         run: |
           set -o pipefail
-          python -m pytest -q -rA -m integration tests/packs/vibecomfy/test_local_server_run.py tests/packs/vibecomfy/test_local_server_mask_preflight.py tests/packs/vibecomfy/test_local_server_media.py tests/packs/vibecomfy/test_ls5_rework_run.py --junitxml=plan55-ls5-proof/agent-integration.xml 2>&1 | tee plan55-ls5-proof/agent-integration.log
+          python -m pytest -q -rA -m integration tests/packs/vibecomfy/test_local_server_run.py tests/packs/vibecomfy/test_local_server_mask_preflight.py tests/packs/vibecomfy/test_local_server_media.py tests/packs/vibecomfy/test_ls5_rework_run.py tests/packs/vibecomfy/test_ls5_preparation_run.py --junitxml=plan55-ls5-proof/agent-integration.xml 2>&1 | tee plan55-ls5-proof/agent-integration.log
           rc=${PIPESTATUS[0]}; echo "$rc" > plan55-ls5-proof/agent-integration.exit; exit "$rc"
       - name: Install native observation tools
         shell: bash
@@ -222,7 +229,7 @@ jobs:
           python -m pip install -e '.[dev]'
           python -m pip install --no-deps -e ./runtime -e ./runtime/packages/python -e ./lifecycle
           python -m pip install -e ./vibe
-      - name: Prove real held websocket, custody, and review fixes on Windows
+      - name: Gate the 61 packet websocket and review cases on Windows
         id: transport
         env:
           PYTHONSAFEPATH: "1"
@@ -230,8 +237,17 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          python -m pytest -q -rA tests/core/generation/backends/test_comfy_target.py tests/core/generation/backends/test_comfy_held_transport.py tests/core/generation/backends/test_comfy_held_rework.py --junitxml=plan55-ls5-windows-proof/agent-transport.xml 2>&1 | tee plan55-ls5-windows-proof/agent-transport.log
+          python -m pytest -q -rA tests/core/generation/backends/test_comfy_held_transport.py tests/core/generation/backends/test_comfy_held_rework.py --junitxml=plan55-ls5-windows-proof/agent-transport.xml 2>&1 | tee plan55-ls5-windows-proof/agent-transport.log
           rc=${PIPESTATUS[0]}; echo "$rc" > plan55-ls5-windows-proof/agent-transport.exit; exit "$rc"
+      - name: Gate the new unsent-prompt and comparison-drift probes on Windows
+        env:
+          PYTHONSAFEPATH: "1"
+          PYTHONPATH: ${{ github.workspace }}/vibe
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q -rA tests/core/generation/backends/test_comfy_preparation_rework.py tests/test_ls5_windows_baseline.py --junitxml=plan55-ls5-windows-proof/preparation.xml 2>&1 | tee plan55-ls5-windows-proof/preparation.log
+          rc=${PIPESTATUS[0]}; echo "$rc" > plan55-ls5-windows-proof/preparation.exit; exit "$rc"
       - name: Retain exact-base outcomes for unchanged Windows target cases
         if: ${{ always() && steps.transport.outcome != 'skipped' }}
         shell: bash

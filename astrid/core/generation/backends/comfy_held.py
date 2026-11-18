@@ -58,9 +58,11 @@ class TargetGeneration:
             return self.reason is not None
 
     @contextmanager
-    def guard(self):
+    def guard(self, *, request_not_started=False):
         with self.lock:
             if self.reason is not None:
+                if request_not_started:
+                    raise ComfyRequestNotStarted("Comfy target generation retired before request; prepare a fresh target client")
                 raise TransportError("Comfy target generation retired; reconcile the original attempt")
             yield
 
@@ -126,14 +128,14 @@ class _HeldHTTP:
 
     def connect(self):
         with self.dispatch:
-            with self.generation.guard():
+            with self.generation.guard(request_not_started=True):
                 if self.connected:
                     return
             try:
                 self.connection.connect()
                 self.connected = True
                 self.last_used = time.monotonic()
-                with self.generation.guard():
+                with self.generation.guard(request_not_started=True):
                     pass
             except OSError as exc:
                 self.generation.retire("HTTP connect failed")
@@ -175,7 +177,7 @@ class _HeldHTTP:
             raise ValueError("held Comfy HTTP request escaped its selected origin")
         self.dispatch.acquire()
         try:
-            with self.generation.guard():
+            with self.generation.guard(request_not_started=True):
                 stale = self._stale_reason()
                 if stale is not None:
                     self.generation.retire(stale)
@@ -396,7 +398,7 @@ class ComfyTargetSession:
                 raise ValueError("held Comfy websocket escaped its selected origin")
             socket = None
             try:
-                with generation.guard():
+                with generation.guard(request_not_started=True):
                     pass
                 socket = await connect(
                     url, create_protocol=GuardedProtocol, open_timeout=HTTP_TRANSFER_SECONDS,
@@ -410,7 +412,7 @@ class ComfyTargetSession:
                         self._loop.call_soon_threadsafe(lambda: asyncio.create_task(wrapped.close()))
 
                 generation._on_retire.append(retired)
-                with generation.guard():
+                with generation.guard(request_not_started=True):
                     pass
                 return wrapped
             except BaseException:
@@ -454,7 +456,7 @@ class ComfyTargetSession:
                                  generation=self.generation, held_session=self)
 
     async def attempt(self, client):
-        with client._generation_guard():
+        with client._generation_guard(request_not_started=True):
             if client.held_session is not self or client.generation is not self.generation:
                 raise TransportError("Comfy attempt belongs to another target generation")
             return self.transport.attempt()
