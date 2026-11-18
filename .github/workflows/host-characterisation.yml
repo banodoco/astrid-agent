@@ -1,0 +1,77 @@
+name: HM2 characterization
+
+on:
+  pull_request:
+    branches: [release/14/plan-13]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  hm2:
+    name: HM2 characterization (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTEST_ADDOPTS: -rA
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Set up pinned uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.32"
+
+      - name: Install system media tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Prepare pinned HM2 test environment
+        id: environment
+        run: |
+          bash scripts/worker-env/agent-setup.sh
+          mkdir -p "$RUNNER_TEMP/hm2-results"
+
+      - name: HM2 passing characterization (eight files)
+        id: hm2-passing
+        run: >-
+          bash scripts/worker-env/agent-pytest.sh -q -rA
+          --junitxml="$RUNNER_TEMP/hm2-results/passing.xml"
+          tests/core/execution/test_host_characterisation_attempt_lifecycle.py
+          tests/core/execution/test_host_characterisation_cancel_handoff.py
+          tests/core/execution/test_host_characterisation_delegated_claim.py
+          tests/core/execution/test_host_characterisation_diagnostics.py
+          tests/core/execution/test_host_characterisation_discovery.py
+          tests/core/execution/test_host_characterisation_managed_sessions.py
+          tests/core/execution/test_host_characterisation_preparation.py
+          tests/core/execution/test_host_characterisation_slots.py
+
+      # Keep #905 visible even if another HM2 case fails. The launcher execs
+      # pytest, so its failing exit remains this step's failing exit.
+      - name: "HM2 known failure #905"
+        id: hm2-905
+        if: ${{ !cancelled() && steps.environment.outcome == 'success' }}
+        run: >-
+          bash scripts/worker-env/agent-pytest.sh -q -rA
+          --junitxml="$RUNNER_TEMP/hm2-results/issue-905.xml"
+          tests/core/execution/test_host_characterisation_activation_abort.py::test_r12_r14_cleanup_ack_during_activation_prevents_later_readiness
+
+      - name: Retain HM2 JUnit reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hm2-junit-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/hm2-results/*.xml
+          retention-days: 14
+          if-no-files-found: error
