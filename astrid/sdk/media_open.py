@@ -145,14 +145,15 @@ def _materialize(data: bytes, *, filename: str, media_type: str, cache_root: str
         extension = mimetypes.guess_extension(media_type, strict=False)
         if extension:
             clean_name += extension
-    target = root / (f"{hashlib.sha256(data).hexdigest()[:12]}-{clean_name}" if default_cache else clean_name)
+    digest = hashlib.sha256(data).hexdigest()
+    target = root / (f"{digest[:12]}-{clean_name}" if default_cache else clean_name)
     # Never overwrite a caller's existing path.  The digest suffix makes the
     # disposable delivery deterministic enough to identify while preserving
     # ordinary filename extensions for host readers.
     strategy = "verified-copy"
-    digest = hashlib.sha256(data).hexdigest()
     if target.exists():
-        if target.is_file() and hashlib.sha256(target.read_bytes()).hexdigest() == digest:
+        if (not target.is_symlink() and target.is_file() and target.stat().st_nlink == 1
+                and hashlib.sha256(target.read_bytes()).hexdigest() == digest):
             if source is not None:
                 try:
                     if os.path.samefile(target, source):
@@ -175,9 +176,18 @@ def _materialize(data: bytes, *, filename: str, media_type: str, cache_root: str
 
         strategy = clone_or_copy(source, target, digest=digest)
     else:
-        temporary = target.with_name(f".{target.name}.tmp")
-        temporary.write_bytes(data)
-        os.replace(temporary, target)
+        # A predictable temporary name or a reused hardlink can expose the
+        # store's inode for writing. Create an owned, independent file instead.
+        fd, raw = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+        temporary = Path(raw)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
     return str(target), strategy
 
 
