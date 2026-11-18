@@ -386,7 +386,7 @@ def _fps_text(rate: Fraction | None) -> str:
 
 
 def _check_source_av_rate(
-    asset_id: str, path: Path, *, expected_size: tuple[int, int] = (1024, 576),
+    asset_id: str, path: Path, *, expected_size: tuple[int, int] = DEFAULT_SIZE,
 ) -> None:
     """Reject a source-backed video that is not exactly 24/1 CFR or whose audio and video diverge."""
     ffprobe = shutil.which("ffprobe")
@@ -499,7 +499,7 @@ def _check_source_av_rates(request: H3Request, assets: list[dict[str, Any]]) -> 
         for record in assets
         if record.get("status") == "resolved" and isinstance(record.get("path"), str)
     }
-    expected_size = (1024, 576)
+    expected_size = DEFAULT_SIZE
     if value.get("version") == 2:
         canvas = value.get("canvas")
         if isinstance(canvas, Mapping):
