@@ -243,3 +243,40 @@ def test_unrelated_runner_or_dependency_cannot_use_the_calibration():
             actual["baseline"]["sources"][field] = "new-runtime"
         with pytest.raises(ValueError, match="same runner|dependency mismatch"):
             compare_calibrated(actual, base, calibration(base))
+
+
+@pytest.mark.parametrize("caller", CALLERS)
+def test_one_second_executor_renewal_is_rejected_per_caller(caller):
+    from astrid.core.execution.generic_host import _EXECUTOR_REFRESH_SECONDS
+
+    period_ns = round(_EXECUTOR_REFRESH_SECONDS * 1_000_000_000)
+    assert period_ns == 30_000_000_000
+    base = proof((2, 2, 2, 2, 2))
+    route = "POST /v1/executors"
+    for row in base["counters"]:
+        registrations = [scope for scope in row["runtime_operation_scopes"]
+                         if scope["route"] == "POST /v1/tasks/claim"]
+        assert len(registrations) == 2
+        row["runtime_http_paths"][route] = row["runtime_http_paths"].pop("POST /v1/tasks/claim")
+        for scope in registrations:
+            scope["route"] = route
+        first, second = registrations
+        for clock in ("monotonic", "epoch"):
+            duration = second[clock + "_end_ns"] - second[clock + "_start_ns"]
+            second[clock + "_start_ns"] = first[clock + "_start_ns"] + period_ns
+            second[clock + "_end_ns"] = second[clock + "_start_ns"] + duration
+    policy = calibration(base)
+    assert compare_calibrated(base, base, policy) == []
+
+    actual = copy.deepcopy(base)
+    row = next(row for row in actual["counters"] if row["caller"] == caller and row["sample_index"] == 0)
+    first, second = [scope for scope in row["runtime_operation_scopes"] if scope["route"] == route]
+    for clock in ("monotonic", "epoch"):
+        duration = second[clock + "_end_ns"] - second[clock + "_start_ns"]
+        second[clock + "_start_ns"] = first[clock + "_start_ns"] + 1_000_000_000
+        second[clock + "_end_ns"] = second[clock + "_start_ns"] + duration
+    failures = compare_calibrated(actual, base, policy)
+    assert len(failures) == 1
+    assert failures[0] == {"caller": caller, "sample_index": 0,
+                           "metric": "cadence.runtime.POST /v1/executors.minimum_interval_ns",
+                           "actual": 1_000_000_000, "limit": period_ns, "comparison": "at least"}

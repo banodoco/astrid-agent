@@ -33,6 +33,9 @@ OPERATIONS = ("sleep_attempt", "event_wait_attempt", "condition_wait_attempt",
 # active work. Its request total follows duration; per-request caps stay separate.
 AMBIENT_ROUTES = {"GET /v1/health", "GET /v1/tasks/<task>", "POST /v1/tasks/claim",
                   "POST /v1/attempts/<attempt>/heartbeat", "POST /v1/executors"}
+# Frozen from generic_host._EXECUTOR_REFRESH_SECONDS on the qualified base.
+# A proposed product cannot lower its own renewal floor by changing that value.
+EXECUTOR_RENEWAL_PERIOD_NS = round(30.0 * 1_000_000_000)
 
 
 def scoped_values(row, *, known_counter_names=()):
@@ -277,6 +280,27 @@ def _compare_host_poll(rows, cadence, caller):
     return failures
 
 
+def _compare_executor_renewals(rows, rule, caller):
+    """Gate consecutive registration starts within each caller's sample."""
+    failures = []
+    for row in rows:
+        starts = [scope.get("monotonic_start_ns") for scope in row["runtime_operation_scopes"]
+                  if scope["kind"] == "runtime_request_span" and scope["route"] == rule["route"]]
+        if any(type(start) is not int or start < 0 for start in starts):
+            raise ValueError("executor registration timestamp coverage is incomplete")
+        starts.sort()
+        for previous, current in zip(starts, starts[1:]):
+            interval = current - previous
+            # Match the SDK floor's integer-nanosecond comparison; its
+            # requested seconds are rounded to this same clock precision.
+            if interval < rule["minimum_interval_ns"]:
+                failures.append({"caller": caller, "sample_index": row["sample_index"],
+                                 "metric": "cadence.runtime." + rule["route"] + ".minimum_interval_ns",
+                                 "actual": interval, "limit": rule["minimum_interval_ns"],
+                                 "comparison": "at least"})
+    return failures
+
+
 def calibration(reference):
     baseline = reference["baseline"]
     if not baseline.get("pair_id") or baseline.get("measurement", {}).get("gate_version") != 3:
@@ -313,6 +337,10 @@ def calibration(reference):
                              "policy": "observed_maximum_plus_range" if margin else "observed_maximum_exact_cap"}
         cadence = _calibrate_host_poll(rows, metrics)
         sdk = sdk_rule(rows) if caller == "resident_sdk" else None
+        renewal = {"route": "POST /v1/executors", "minimum_interval_ns": EXECUTOR_RENEWAL_PERIOD_NS,
+                   "decision": "6993545799"}
+        if _compare_executor_renewals(rows, renewal, caller):
+            raise ValueError("base executor registration renewal period was shortened")
         if sdk is not None:
             # Preserve the earlier named SDK ruling and its complete
             # invocation/poll evidence independently of the total policy.
@@ -346,7 +374,7 @@ def calibration(reference):
                     item["remainder_policy"] = "observation_only"
         result["callers"][caller] = {"samples": len(rows), "metrics": metrics,
                                      "host_poll_cadence": cadence, "census_invariants": census,
-                                     "sdk_poll_invariants": sdk}
+                                     "sdk_poll_invariants": sdk, "executor_renewal_invariants": renewal}
     return result
 
 
@@ -378,6 +406,7 @@ def compare_calibrated(actual, reference, policy, *, observations=None):
         sdk = policy["callers"][caller]["sdk_poll_invariants"]
         if sdk is not None:
             failures.extend(compare_sdk(rows, sdk, caller))
+        failures.extend(_compare_executor_renewals(rows, policy["callers"][caller]["executor_renewal_invariants"], caller))
         for name in sorted(names):
             limits = metrics.get(name, {"maximum": 0, "limit": 0, "margin": 0, "spread": 0})
             samples = [values.get(name) for values in observed]

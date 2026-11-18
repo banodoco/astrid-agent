@@ -23,7 +23,7 @@ PLAN_PREDECESSORS = {
     PREVIOUS_PLAN_BASE: "24c68a2702339583b7be1693d101146bed31cfa6",
 }
 REQUIRED_ANCESTOR = "6451821e18bd300484a921a425cafd856095b1a4"
-PREVIOUS_CONTROLLER = "c6ebb69774e3b9415253de82cac95de627f79147"
+PREVIOUS_CONTROLLER = "61c0ea684d3275982b3b79aff8f6a7fdaa72984c"
 WORKFLOW = ".github/workflows/plan55-native-flush.yml"
 PACKET_PATHS = {WORKFLOW, "tests/_local_speed_process.py", "tests/_local_speed_calibration.py",
                 "tests/_local_speed_census.py", "tests/core/generation/test_local_speed_census.py",
@@ -183,6 +183,7 @@ def validate_sources(root, controller, *, original_head=ORIGINAL_HEAD, plan_base
             "new_plan_tuple_qualified": False,
             "decisions": {"census": "6970432614", "sdk_poll": "6981129059",
                           "duration_totals": "6987905451",
+                          "executor_renewal": "6993545799",
                           "original_tuple": "6967421223", "plan_merge": "6968915902",
                           "plan_advance": "6985581776", "previous_plan_advance": "6983043853"}}
 
