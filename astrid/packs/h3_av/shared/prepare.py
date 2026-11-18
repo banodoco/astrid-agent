@@ -40,28 +40,10 @@ def _probe_conditioning(path: Path) -> dict[str, Any]:
 
 
 
-def _loaded_video_frames(path: Path, start: float, cap: int) -> int | None:
-    """Count the same 24-fps decoded frames the pinned VHS loader supplies."""
-    ffmpeg = shutil.which("ffmpeg")
-    if ffmpeg is None:
-        return None
-    command = [ffmpeg, "-v", "error", "-an"]
-    if start > 4:
-        command += ["-ss", str(start - 4)]
-    command += ["-i", str(path)]
-    if start > 0:
-        command += ["-ss", str(4 if start > 4 else start)]
-    command += ["-vf", "fps=fps=24"]
-    if cap:
-        command += ["-frames:v", str(cap)]
-    command += ["-f", "framemd5", "-"]
-    try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=120, check=False)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if result.returncode:
-        return None
-    return sum(1 for line in result.stdout.splitlines() if line and not line.startswith("#"))
+def _retained_video_frames(loaded: int, target: int) -> int | None:
+    """Apply the pinned H3 node's target cap and 5+17k alignment."""
+    frames = min(loaded, target)
+    return frames - ((frames - 5) % 17) if frames >= 5 else None
 
 
 def _reference_size(modality: str, width: int, height: int) -> dict[str, int]:
@@ -148,18 +130,10 @@ def _admit_conditioning(request: H3Request, assets: list[dict[str, Any]]) -> lis
             raise PreparationError(f"conditioning clip 2–15 seconds: {item['occurrence_id']} selects {span:.3f}s")
         totals[modality] += span
         if modality == "video":
-            cap = int(selected[1]) - int(selected[0]) if isinstance(selected, list) else 0
-            loaded = _loaded_video_frames(path, start, cap)
-            duration = request.value.get("duration")
-            if loaded is not None and duration is not None:
-                from .timing import frame_index, smallest_h3_run_at_least
-                target = smallest_h3_run_at_least(frame_index(float(duration), "duration"))
-                retained = min(loaded, target)
-                if retained >= 5:
-                    measurement["retained_picture_frames"] = retained - ((retained - 5) % 17)
-            effective = measurement["effective_size"]
-            frames = measurement["retained_picture_frames"]
-            measurement["resource_estimate"].update({"schema_valid": True, "raw_bytes": frames * effective["width"] * effective["height"] * 3 if frames is not None and effective else None})
+            # ffprobe's average/rate/stream counts do not establish the output
+            # of VHS's 24-fps filter, especially for variable-rate timestamps,
+            # seeking, and truncated streams. Do not decode during preparation.
+            measurement["resource_estimate"]["schema_valid"] = True
         else:
             measurement["resource_estimate"]["schema_valid"] = True
         if modality == "video" and item.get("audio", True):
@@ -690,7 +664,7 @@ def prepare_request(
                 "target_rows": round(float(request.value.get("duration") or 0) * float(fps)),
                 "target_raw_rgb_bytes": round(float(request.value.get("duration") or 0) * float(fps)) * int(width) * int(height) * 3,
                 "reference_rows": len(conditioning_measurements),
-                "reference_raw_rgb_bytes": sum(row["resource_estimate"]["raw_bytes"] or 0 for row in conditioning_measurements if row["modality"] in {"image", "video"}),
+                "reference_raw_rgb_bytes": (sum(row["resource_estimate"]["raw_bytes"] for row in conditioning_measurements if row["modality"] in {"image", "video"}) if all(row["resource_estimate"]["raw_bytes"] is not None for row in conditioning_measurements if row["modality"] in {"image", "video"}) else None),
                 "reference_raw_audio_bytes": sum(row["resource_estimate"]["raw_bytes"] or 0 for row in conditioning_measurements if row["modality"] == "audio"),
                 "guide_rows": len(guide_occurrences),
                 "unit": "bytes",

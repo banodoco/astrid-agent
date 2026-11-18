@@ -57,20 +57,20 @@ def test_preclaim_measures_each_occurrence_and_sums_video_soundtrack(monkeypatch
         {"streams": [{"codec_type": "video", "width": 8, "height": 8}], "format": {}},
     ])
     monkeypatch.setattr(prepare, "_probe_conditioning", lambda path: next(probes))
-    monkeypatch.setattr(prepare, "_loaded_video_frames", lambda path, start, cap: cap or 120)
     records = [
         {"asset": "v", "status": "resolved", "path": str(video)},
         {"asset": "i", "status": "resolved", "path": str(image)},
     ]
     measured = prepare._admit_conditioning(_request(items), records)
-    assert [row["retained_picture_frames"] for row in measured[:2]] == [107, 158]
+    assert [row["retained_picture_frames"] for row in measured[:2]] == [None, None]
     assert measured[0]["audio_tag"] == "<Audio 1>"
     assert measured[0]["slot"] == "ref_videos.ref_video_0"
     assert measured[0]["tag"] == "<Video 1>"
     assert measured[2]["tag"] == "<Picture 1>"
     assert measured[0]["audio_duration_seconds"] == 5
     assert measured[0]["effective_size"] == {"width": 64, "height": 32}
-    assert measured[1]["resource_estimate"]["raw_bytes"] == 158 * 64 * 32 * 3
+    assert measured[1]["resource_estimate"]["raw_bytes"] is None
+    assert measured[1]["resource_estimate"]["qualified"] is False
     assert measured[2]["effective_size"] == {"width": 32, "height": 32}
     assert measured[2]["resource_estimate"]["raw_bytes"] == 32 * 32 * 3
     assert measured[2]["slot"] == "ref_images.ref_image_0"
@@ -355,10 +355,11 @@ def test_real_reference_frames_follow_loader_and_node_truncation(tmp_path):
             "resolved_range": [0, 48]}
     records = [{"asset": "v", "status": "resolved", "path": str(path)}]
     row = prepare._admit_conditioning(_request([item]), records)[0]
-    assert prepare._loaded_video_frames(path, 0, 48) == 48
-    assert row["retained_picture_frames"] == 39
+    assert prepare._retained_video_frames(48, 158) == 39
+    assert row["retained_picture_frames"] is None
     assert row["effective_size"] == {"width": 96, "height": 64}
-    assert row["resource_estimate"]["raw_bytes"] == 39 * 96 * 64 * 3
+    assert row["resource_estimate"]["raw_bytes"] is None
+    assert row["resource_estimate"]["qualified"] is False
 
 
 def test_reference_size_matches_pinned_node_resize_rules():
@@ -371,8 +372,20 @@ def test_unmeasurable_video_frame_count_is_not_reported_as_retained(monkeypatch,
     path = tmp_path / "v"
     path.touch()
     monkeypatch.setattr(prepare, "_probe_conditioning", lambda _: {"streams": [{"codec_type": "video", "duration": "3", "width": 64, "height": 64}]})
-    monkeypatch.setattr(prepare, "_loaded_video_frames", lambda *_: None)
     item = {"occurrence_id": "v", "asset": "v", "role": "reference", "modality": "video", "audio": False}
     row = prepare._admit_conditioning(_request([item]), [{"asset": "v", "status": "resolved", "path": str(path)}])[0]
     assert row["retained_picture_frames"] is None
     assert row["resource_estimate"]["qualified"] is False
+
+
+@pytest.mark.parametrize("avg_rate, nominal_rate", [("24/1", "24/1"), ("24000/1001", "30/1")])
+def test_video_metadata_does_not_claim_resampled_count_or_decode(monkeypatch, tmp_path, avg_rate, nominal_rate):
+    path = tmp_path / "video.mp4"
+    path.touch()
+    monkeypatch.setattr(prepare, "_probe_conditioning", lambda _: {"streams": [{"codec_type": "video", "duration": "3", "nb_frames": "72", "avg_frame_rate": avg_rate, "r_frame_rate": nominal_rate, "width": 96, "height": 64}]})
+    monkeypatch.setattr(prepare.subprocess, "run", lambda *args, **kwargs: pytest.fail("preparation must not decode video"))
+    item = {"occurrence_id": "v", "asset": "v", "role": "reference", "modality": "video", "audio": False, "resolved_range": [0, 48]}
+    row = prepare._admit_conditioning(_request([item]), [{"asset": "v", "status": "resolved", "path": str(path)}])[0]
+    assert row["retained_picture_frames"] is None
+    assert row["resource_estimate"]["raw_bytes"] is None
+    assert not row["resource_estimate"]["qualified"]
