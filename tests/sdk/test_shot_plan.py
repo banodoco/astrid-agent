@@ -69,7 +69,7 @@ def test_invalid_plans_are_refused_with_a_clear_message(plan, message):
 
 def test_take_range_is_optional_and_validated_as_seconds_into_the_take():
     plan = {"method": ["LC"], "status": "take_ready",
-            "takes": [{"media": "m", "range": [3.25, 6.5], "note": "LC take, new line only"}, {"media": "n"}]}
+            "takes": [{"media": "m", "range": [3.25, 6.5], "covers": ["LC"], "note": "LC take, new line only"}, {"media": "n"}]}
     assert validate_plan(plan)["takes"][0]["range"] == [3.25, 6.5]
     assert "range" not in validate_plan(plan)["takes"][1]
 
@@ -85,8 +85,8 @@ def test_merge_keeps_other_fields_merges_inputs_unsets_and_appends_takes():
     assert combine_patches({"inputs": {"voice": {"media": "v"}, "references": ["r"]}},
                            {"inputs": {"voice": {"range": [1, 2]}}}) == {
         "inputs": {"voice": {"media": "v", "range": [1, 2]}, "references": ["r"]}}
-    taken = merge_plan(merged, {"status": "take_ready"}, add_takes=[{"generation": "g1"}])
-    assert merge_plan(taken, add_takes=[{"media": "m2"}])["takes"] == [{"generation": "g1"}, {"media": "m2"}]
+    taken = merge_plan(merged, {"status": "take_ready"}, add_takes=[{"generation": "g1", "covers": ["LM"]}])
+    assert merge_plan(taken, add_takes=[{"media": "m2"}])["takes"] == [{"generation": "g1", "covers": ["LM"]}, {"media": "m2"}]
     assert merge_plan(merged, {"method": ["K"]}, replace=True) == {"version": 1, "method": ["K"]}
     assert current == {"version": 1, "method": ["LM"], "inputs": {"references": ["r1"]}, "status": "planned"}
     with pytest.raises(ShotPlanError, match="unknown key"):
@@ -203,11 +203,11 @@ def test_cli_sets_merges_shows_and_lists_plans_through_timeline_revisions(restru
     assert code == 0, out
     assert out["data"]["plan"]["inputs"]["voice"] == {"media": "sha256:" + "b" * 64, "range": [5.0, 8.0]}
     code, out = _run(parser, ["plan", "set", "occ-film", *base, "--set", "status=take_ready",
-                              "--add-take", '{"generation": "run-1", "note": "first"}'], capsys)
+                              "--add-take", '{"generation": "run-1", "note": "first", "covers": ["LM", "R"]}'], capsys)
     assert code == 0
     assert out["data"]["plan"]["inputs"] == {"references": ["sha256:" + "a" * 64],
                                              "voice": {"media": "sha256:" + "b" * 64, "range": [5.0, 8.0]}}
-    assert out["data"]["plan"]["takes"] == [{"generation": "run-1", "note": "first"}]
+    assert out["data"]["plan"]["takes"] == [{"generation": "run-1", "note": "first", "covers": ["LM", "R"]}]
 
     # Refused before anything is committed.
     head = env.client.timelines.history(env.project, "t", limit=1).data["head"]
