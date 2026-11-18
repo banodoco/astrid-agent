@@ -362,12 +362,21 @@ jobs:
 
   unit:
     name: unit
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     needs: [checks, unit-shard]
+    env:
+      CHECKS_RESULT: ${{ needs.checks.result }}
+      SHARDS_RESULT: ${{ needs.unit-shard.result }}
     steps:
-      - name: All unit shards and fast checks passed
-        run: echo "unit passed"
+      - name: Require all unit shards and fast checks to pass
+        run: |
+          if [[ "$CHECKS_RESULT" != success || "$SHARDS_RESULT" != success ]]; then
+            echo "::error::unit requires successful dependencies: fast checks=$CHECKS_RESULT, unit shards=$SHARDS_RESULT"
+            exit 1
+          fi
+          echo "unit passed"
 
   darwin-native:
     name: darwin native

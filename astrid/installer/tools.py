@@ -261,13 +261,13 @@ def extract(archive: Path, destination: Path, *, reject_links: bool = False,
     with tarfile.open(archive) as bundle:
         tar_members = bundle.getmembers()
         if vibecomfy_source:
-            for member in tar_members:
-                path = _archive_relative_path(member.name, strip_root)
+            for tar_entry in tar_members:
+                path = _archive_relative_path(tar_entry.name, strip_root)
                 excluded = not _keep_vibecomfy_source_path(path)
-                if excluded and (member.issym() or member.islnk()):
-                    raise ValueError(f"Source archive contains a link: {member.name}")
-                if excluded and not (member.isdir() or member.isfile()):
-                    raise ValueError(f"Archive contains a special entry: {member.name}")
+                if excluded and (tar_entry.issym() or tar_entry.islnk()):
+                    raise ValueError(f"Source archive contains a link: {tar_entry.name}")
+                if excluded and not (tar_entry.isdir() or tar_entry.isfile()):
+                    raise ValueError(f"Archive contains a special entry: {tar_entry.name}")
         targets = archive_destinations([(m.name, m.isdir()) for m in tar_members], destination,
                                        platform_name=platform_name, strip_root=strip_root,
                                        vibecomfy_source=vibecomfy_source)

@@ -22,7 +22,6 @@ from astrid.sdk.timeline.units import (
 )
 from astrid.sdk.timeline_checkout import Checkout
 
-
 # Declarations the timing kernel refuses outright; older timelines carry them as authored data.
 UNSUPPORTED_DECLARATIONS = ("sequence", "sequence_fit", "formulas", "orphan", "gap_after_s")
 
