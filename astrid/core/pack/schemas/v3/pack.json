@@ -217,6 +217,16 @@
           "description": {
             "$ref": "#/$defs/non_blank"
           },
+          "session": {
+            "description": "Opt into the serial, host-owned resident Python action protocol; grants no additional authority.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "protocol"],
+            "properties": {
+              "kind": {"const": "resident"},
+              "protocol": {"const": "astrid.pack-session.v1"}
+            }
+          },
           "secrets": {
             "type": "array",
             "uniqueItems": true,

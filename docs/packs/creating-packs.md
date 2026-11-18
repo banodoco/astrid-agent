@@ -11,6 +11,9 @@ placement, aliases, and in-place edits, use the contract at
 [When and how to create a pack](../guides/create-a-pack.md). This guide is the
 reference for the layout and the manifest fields.
 
+For an action that explicitly retains a Python interpreter between jobs, see
+[Resident Python actions](resident-sessions.md) and its serial lifetime contract.
+
 Capability packs are not database schema packs. Do not add `schema-pack.yaml`,
 SQL migrations, or a local schema registry; a `database` field fails
 validation. The workspace Runtime owns product and project state, including a
