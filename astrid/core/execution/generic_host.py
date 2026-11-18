@@ -61,6 +61,9 @@ from runtime_protocol.errors import ConflictError
 from runtime_protocol.storage import free_disk_floor_bytes
 
 from astrid.core.execution.pipe_io import PipeReader, PipeWriter, close_pipe_workers
+from astrid.core.execution.resident_sessions import (
+    ResidentPackAdapter, declared_resident, open_resident_task, retire_changed_session,
+)
 from astrid.core.execution.task_waits import AttemptWait, renewal_delay, renewal_margin, settlement_progress
 from astrid.core.execution.platform_helpers import (
     PROCESS_CONTROL_SUPPORT_ENV,
@@ -1235,6 +1238,7 @@ class _ManagedWanChildAdapter:
 # release does to each; every other session is released when its task ends.
 _WARM_SESSION_ADAPTERS = {
     _ManagedWanChildAdapter: "child process ended",
+    ResidentPackAdapter: "resident pack process ended",
 }
 
 
@@ -7537,12 +7541,16 @@ class GenericPackHost:
                     errors.append(exc)
                     self._latch_cleanup_uncertainty(str(exc))
         adapter = self.managed_tool_session.current_adapter
-        if isinstance(adapter, _ManagedTaskAdapter):
+        if isinstance(adapter, (_ManagedTaskAdapter, ResidentPackAdapter)):
             # The current CPU attempt retains its admission token until its
             # own finally has stopped and verified the original command and
             # released its session. Closing MTS here would clear that token
             # while release still correctly rejects a live command census.
-            adapter.fence(reason="host_shutdown")
+            if isinstance(adapter, _ManagedTaskAdapter):
+                adapter.fence(reason="host_shutdown")
+            # Resident dispatch observes _shutdown through its existing job
+            # cancellation guard. Let its finalizer retain the token until
+            # native stop and cancellation are proved, then close the owner.
             owner = self._handoff_accounting_owner
             deadline = time.monotonic() + 5.0
             with owner._handoff_condition:
@@ -11170,6 +11178,7 @@ class GenericPackHost:
         storage_estimate: Mapping[str, int] | None = None,
         child_bridge: Any | None = None,
         captured_record: CapabilityRecord | None = None,
+        resident_token: AdmissionToken | None = None,
     ) -> Any:
         """Run one pack capability in a dedicated child process.
 
@@ -11210,6 +11219,17 @@ class GenericPackHost:
             _verify_action_admission(definition, admission or {})
         if admission is not None:
             _verify_admitted_source(admission)
+        if resident_token is not None:
+            adapter = self.managed_tool_session.adapter_for(resident_token)
+            if not isinstance(adapter, ResidentPackAdapter):
+                raise StaleAdmissionError("resident admission has another adapter")
+            return adapter.invoke(
+                resident_token, request=request, admission=admission or {}, attempt=attempt_path,
+                cancelled=cancelled,
+                storage_guard=lambda: _assert_live_storage_envelope(
+                    storage_estimate, attempt_path, attempt_path / "outputs",
+                    storage_floor_exempt=storage_floor_exempt),
+            )
         request_path = attempt_path / ".astrid-capability-request.json"
         result_path = attempt_path / ".astrid-capability-result.json"
         remotion_lease = None
@@ -12534,6 +12554,7 @@ class GenericPackHost:
         _terminal.update(task=task_data, attempt_id=attempt_id)
         if self._shutdown.is_set():
             raise HostCancelled("generic host is shutting down")
+        retire_changed_session(self)
         record = self.capabilities.get(capability_id)
         if record is None:
             self.discover()
@@ -12595,9 +12616,10 @@ class GenericPackHost:
         captured_pack_map = None
         verified_pack_relocations = {}
         execution_source_digest = None
+        pack_capture = _portable_pack_capture if declared_resident(record) else self._pack_capture
         try:
             selected_generation = _selected_pack_generation(record)
-            if self._pack_capture is _portable_pack_capture and selected_generation is not None:
+            if pack_capture is _portable_pack_capture and selected_generation is not None:
                 from astrid.core.pack.identity import pack_digest
 
                 source = selected_generation[2]
@@ -12607,7 +12629,7 @@ class GenericPackHost:
                 pack_id = selected_generation[0]
                 expected = selected.get(pack_id, {}).get("source_digest") or pack_digest(source)
                 selected_generation = _terminal["pack_captures"].enter_context(
-                    self._pack_capture(selected_generation, expected_digest=expected))
+                    pack_capture(selected_generation, expected_digest=expected))
                 snapshot = selected_generation[2]
                 relocated_roots = {path: snapshot / path.relative_to(source) for path in source_roots}
                 if _source_digest_for_roots(source_roots, captured_roots=relocated_roots) != run_source_digest:
@@ -12624,7 +12646,7 @@ class GenericPackHost:
                         }))
                         dependency_generation = _selected_pack_generation(dependency_record)
                         captured = _terminal["pack_captures"].enter_context(
-                            self._pack_capture(dependency_generation, expected_digest=selection["source_digest"]))
+                            pack_capture(dependency_generation, expected_digest=selection["source_digest"]))
                         dependency_snapshot = captured[2]
                     captured_pack_map[dependency] = {**selection, "root": str(dependency_snapshot)}
                     # Only successful digest-authenticated capture grants this
@@ -12638,7 +12660,7 @@ class GenericPackHost:
                 # original admission digest, including legacy root labels.
                 execution_source_digest = _source_digest_for_roots(
                     _admitted_source_roots(record.source_root, record.definition))
-            with (nullcontext() if captured_record is not None else self._pack_capture(selected_generation)):
+            with (nullcontext() if captured_record is not None else pack_capture(selected_generation)):
                 if captured_record is None:
                     run_source_digest = _run_source_digest(record)
                 # A delegated child carries the digest its parent bridge admitted.
@@ -12666,7 +12688,7 @@ class GenericPackHost:
                 if provenance is not None else None
             )
         except Exception as exc:
-            if (self._pack_capture is _portable_pack_capture
+            if (pack_capture is _portable_pack_capture
                     and record.definition.metadata.get("pack_root")
                     and not isinstance(exc, PackCaptureError)):
                 exc = PackCaptureError(f"selected pack snapshot capture refused: {exc}")
@@ -13468,7 +13490,14 @@ class GenericPackHost:
                     # workflow switch stays in the same owned session.
                     execution_identity=stable_session_identity,
                 )
-            if capability_id == "wan2gp.generate_video":
+            resident = open_resident_task(
+                self, record=record, task=task_data, admission=network_admission,
+                terminal=_terminal, binding=managed_binding,
+                private_runtime_context=private_runtime_context, machine_policy=machine_policy,
+            )
+            if resident is not None:
+                managed_capability, managed_binding, managed_adapter = resident
+            elif capability_id == "wan2gp.generate_video":
                 managed_binding = self.prepare_wan_session(**self._wan_session_context(task_data))
                 managed_adapter = self.managed_tool_session.current_adapter
                 managed_capability = CapabilityDescriptor(
@@ -13606,12 +13635,14 @@ class GenericPackHost:
                     # admitted definition is serialized for the child so a
                     # registry reload cannot silently select a different pack.
                     worker_admission = network_admission
+                    if isinstance(managed_adapter, ResidentPackAdapter):
+                        worker_admission = {**network_admission, "runtime_epoch": claim_epoch}
                     if private_runtime_context:
                         worker_admission = {key: value for key, value in network_admission.items()
                                             if key not in {"task_id", "attempt_id", "fence", "network_nonce", "allowed_routes"}}
                     worker_env, worker_secrets = self._child_environment(
                         record, root, admission=network_admission, network_broker=network_broker,
-                        allow_runtime_connection=not private_runtime_context)
+                        allow_runtime_connection=not private_runtime_context and not isinstance(managed_adapter, ResidentPackAdapter))
                     try:
                         result = self.invoke_capability(
                             capability_kind="executor",
@@ -13635,6 +13666,7 @@ class GenericPackHost:
                             network_broker_required=network_broker is not None,
                             storage_estimate=storage_estimate,
                             child_bridge=child_bridge,
+                            **({"resident_token": managed_token} if isinstance(managed_adapter, ResidentPackAdapter) else {}),
                             **({"captured_record": captured_record} if captured_record is not None else {}),
                         )
                     finally:
@@ -13892,14 +13924,18 @@ class GenericPackHost:
             managed_envelope = self.managed_tool_session.settle(
                 managed_token,
                 result_evidence={
-                    "token_id": managed_token.token_id,
-                    "invocation_id": managed_token.invocation_id,
-                    "generation": managed_token.generation,
-                    "binding_identity": list(managed_token.binding_identity),
+                    **(dict(result.resident_evidence) if isinstance(managed_adapter, ResidentPackAdapter) else {
+                        "token_id": managed_token.token_id,
+                        "invocation_id": managed_token.invocation_id,
+                        "generation": managed_token.generation,
+                        "binding_identity": list(managed_token.binding_identity),
+                    }),
                     "outputs": outputs,
                 },
             )
             managed_settled = True
+            if isinstance(managed_adapter, ResidentPackAdapter):
+                managed_adapter.finish_admission(managed_token)
             payload["managed_tool_session"] = managed_envelope.to_dict()
             lifetime.assert_deadline()
             _terminal["stage"] = "settlement"
