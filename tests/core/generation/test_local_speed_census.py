@@ -108,6 +108,22 @@ def test_an_unrelated_subprocess_wait_keeps_its_existing_exact_cap():
                and failure["limit"] == 0 for failure in failures)
 
 
+def test_zero_wait_controls_accept_zero_wait_repeats_without_inventing_a_period():
+    base, repeat = census_proof((0, 0, 0, 0, 0)), census_proof((0, 0, 0, 0, 0))
+    policy = calibration(base)
+    assert compare_calibrated(repeat, base, policy) == []
+    for caller in CALLERS:
+        assert policy["callers"][caller]["census_invariants"]["minimum_requested_sleep_ns"] is None
+        assert policy["callers"][caller]["census_invariants"]["invocations"] == 4
+
+
+def test_an_unobserved_base_period_cannot_authorize_a_new_wait():
+    base = census_proof((0, 0, 0, 0, 0))
+    policy = calibration(base)
+    with pytest.raises(ValueError, match="census.*period.*unobserved"):
+        compare_calibrated(census_proof((1, 1, 1, 1, 1)), base, policy)
+
+
 @pytest.mark.parametrize("loss", ["map", "missing_result", "unknown_command", "ambiguous_child",
                                   "child_pid", "duplicate", "carry_in", "carry_out", "period",
                                   "spawn", "raw_count"])

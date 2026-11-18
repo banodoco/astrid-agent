@@ -18,6 +18,7 @@ from tests.local_speed_paired_run import HARNESS_EXACT, HARNESS_PATTERNS
 ORIGINAL_HEAD = "b18080bce998b62656cf9f908afd3d0560c9d18f"
 PLAN_BASE = "24c68a2702339583b7be1693d101146bed31cfa6"
 REQUIRED_ANCESTOR = "6451821e18bd300484a921a425cafd856095b1a4"
+PREVIOUS_CONTROLLER = "d84e72760086c60f51a2874d5e46ddea3be8e37b"
 WORKFLOW = ".github/workflows/plan55-native-flush.yml"
 PACKET_PATHS = {WORKFLOW, "tests/_local_speed_process.py", "tests/_local_speed_calibration.py",
                 "tests/_local_speed_census.py", "tests/core/generation/test_local_speed_census.py",
@@ -50,14 +51,28 @@ def _harness_paths(root, revision):
 
 
 def validate_sources(root, controller, *, original_head=ORIGINAL_HEAD, plan_base=PLAN_BASE,
-                     required_ancestor=REQUIRED_ANCESTOR):
+                     required_ancestor=REQUIRED_ANCESTOR, previous_controller=PREVIOUS_CONTROLLER):
     """Prove the merge and harness bytes before touching the worktree."""
     if git(root, "rev-parse", "HEAD") != controller or git(root, "status", "--porcelain", "--untracked-files=no"):
         raise ValueError("qualification controller must be the clean exact PR head")
     parents = git(root, "show", "-s", "--format=%P", controller).split()
-    if len(parents) != 2 or parents[1] != plan_base:
+    if len(parents) != 2:
         raise ValueError("qualification requires the ordered current-plan merge parents")
-    source = parents[0]
+    retained_controller = None
+    if parents[1] == plan_base:
+        source = parents[0]
+    elif parents[0] == previous_controller:
+        # Merge an original-tuple follow-up into the published integrated
+        # controller, preserving ordinary first-parent history without rebase.
+        source = parents[1]
+        retained_controller = previous_controller
+        previous = git(root, "show", "-s", "--format=%P", previous_controller).split()
+        if (len(previous) != 2 or previous[1] != plan_base
+                or subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor",
+                                   previous[0], source], check=False).returncode):
+            raise ValueError("qualification source does not extend the published controller's source")
+    else:
+        raise ValueError("qualification requires ordered current-plan parents or the exact published controller")
     for earlier, later in ((original_head, source), (required_ancestor, plan_base)):
         if subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor", earlier, later], check=False).returncode:
             raise ValueError("qualification is missing a required source ancestor")
@@ -67,7 +82,7 @@ def validate_sources(root, controller, *, original_head=ORIGINAL_HEAD, plan_base
                          + repr(sorted(changed - PACKET_PATHS)))
 
     native = subprocess.run(["git", "-C", str(root), "merge-tree", "--write-tree", "--name-only",
-                             "--no-messages", source, plan_base], capture_output=True, text=True, check=False)
+                             "--no-messages", *parents], capture_output=True, text=True, check=False)
     lines = native.stdout.splitlines()
     if native.returncode not in (0, 1) or not lines:
         raise ValueError("native merge cannot be reproduced: " + native.stderr)
@@ -105,6 +120,7 @@ def validate_sources(root, controller, *, original_head=ORIGINAL_HEAD, plan_base
             "controller_tree": git(root, "rev-parse", controller + "^{tree}"),
             "qualification": source, "qualification_tree": git(root, "rev-parse", source + "^{tree}"),
             "original_head": original_head, "plan_base": plan_base,
+            "previous_controller_preserved": retained_controller,
             "required_plan_ancestor": required_ancestor, "native_merge_tree": native_tree,
             "native_merge_conflicts": sorted(conflicts), "qualification_changed_paths": sorted(changed),
             "measurement_harness_sha256": hashes,

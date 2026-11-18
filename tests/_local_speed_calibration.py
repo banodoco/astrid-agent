@@ -294,6 +294,9 @@ def calibration(reference):
         census, census_samples = census_rule(rows)
         raw_observed = observed
         observed = [census_remainder(values, sample) for values, sample in zip(observed, census_samples)]
+        # Four observed already-exited children establish zero census waits,
+        # even when the containing Popen sleep site never occurred at all.
+        vocabulary.update(name for values in observed for name in values)
         polling = set().union(*(sites for _, sites in initial))
         metrics = {}
         for name in sorted(vocabulary):

@@ -91,12 +91,12 @@ def census_rule(rows):
         return None, samples
     samples = [census_sample(row, required=True) for row in rows]
     periods = {sample["minimum_requested_sleep_ns"] for sample in samples if sample["sleep_calls"]}
-    if (len(periods) != 1 or any(sample["invocations"] != 4 or sample["maximum_nonterminal_waits"] > 1
+    if (len(periods) > 1 or any(sample["invocations"] != 4 or sample["maximum_nonterminal_waits"] > 1
             or sample["unbalanced_waits"] or (sample["sleep_calls"] and sample["maximum_requested_sleep_ns"] not in periods)
             for sample in samples)):
         raise ValueError("base census controls must establish four calls and at most one wait at one observed period")
     return {"producer": CENSUS_PRODUCER, "decision": "6970432614", "invocations": 4,
-            "maximum_nonterminal_waits": 1, "minimum_requested_sleep_ns": periods.pop(),
+            "maximum_nonterminal_waits": 1, "minimum_requested_sleep_ns": next(iter(periods), None),
             "base_sleep_calls": [sample["sleep_calls"] for sample in samples],
             "total_policy": "derived_from_individually_gated_invocations"}, samples
 
@@ -125,6 +125,8 @@ def compare_census(rows, rule, caller):
                                  "metric": METRIC + "." + name, "actual": sample[name], "limit": limit,
                                  "comparison": "exact" if name == "invocations" else "at most"})
         period = sample["minimum_requested_sleep_ns"]
+        if rule is not None and period is not None and rule["minimum_requested_sleep_ns"] is None:
+            raise ValueError("census requested period is unobserved in base controls")
         if rule is not None and period is not None and period < rule["minimum_requested_sleep_ns"]:
             failures.append({"caller": caller, "sample_index": row["sample_index"],
                              "metric": METRIC + ".minimum_requested_sleep_ns", "actual": period,
