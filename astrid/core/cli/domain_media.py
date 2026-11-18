@@ -428,6 +428,55 @@ def _configure_relate(subparser: argparse.ArgumentParser) -> None:
     subparser.set_defaults(handler=_cmd_relate)
 
 
+def _cmd_trim(parsed: argparse.Namespace) -> int:
+    from astrid.core.media_trim import parse_range, trim_media
+
+    try:
+        start, end = parse_range(parsed.range)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    result = trim_media(
+        parsed.client,
+        project=parsed.project,
+        ref=parsed.ref,
+        start=start,
+        end=end,
+        dry_run=parsed.dry_run,
+        idempotency_key=parsed.idempotency_key,
+    )
+    return print_result(result, as_json=parsed.json)
+
+
+def _configure_trim(subparser: argparse.ArgumentParser) -> None:
+    subparser.description = (
+        "Trim one managed video to a time range into a NEW media item. The cut is "
+        "frame-exact (video by frame, audio by sample). The source is untouched; the "
+        "result is imported like 'media import' and linked to the source by a "
+        "derived_from relation carrying the range."
+    )
+    _add_project_arg(subparser)
+    subparser.add_argument("ref", help="Exact project-scoped source media id.")
+    subparser.add_argument(
+        "--range",
+        dest="range",
+        required=True,
+        metavar="START,END",
+        help="Seconds into the source: keep [START, END). END must be after START; "
+        "both must fall on a frame at the source's frame rate.",
+    )
+    subparser.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        default=False,
+        help="Print the frame and sample bounds; import nothing.",
+    )
+    _add_idempotency_key(subparser)
+    _add_json_flag(subparser)
+    subparser.set_defaults(handler=_cmd_trim)
+
+
 def _configure_crop(subparser: argparse.ArgumentParser) -> None:
     subparser.description = (
         "Crop one managed still image or video into a NEW media item. The source "
@@ -572,6 +621,12 @@ COMMANDS: tuple[CommandSpec, ...] = (
         help="Crop one still image or video into a new media item "
         "(--box X,Y,W,H or --remove-bars; source untouched).",
         configure=_configure_crop,
+    ),
+    CommandSpec(
+        "trim",
+        help="Trim one video to a frame-exact time range into a new media item "
+        "(--range START,END; source untouched).",
+        configure=_configure_trim,
     ),
     CommandSpec(
         "thumbnails",

@@ -47,7 +47,7 @@ STATUSES = ("planned", "in_progress", "take_ready", "approved")
 FIELDS = ("version", "on_screen", "line", "intent", "method", "check", "inputs", "status", "takes")
 INPUT_FIELDS = ("references", "voice", "masks")
 VOICE_FIELDS = ("media", "range")
-TAKE_FIELDS = ("generation", "media", "note")
+TAKE_FIELDS = ("generation", "media", "note", "range")
 # ``--set`` paths and how their text is read.
 SET_PATHS = {
     "line": "text", "intent": "text", "check": "text", "status": "status",
@@ -152,9 +152,16 @@ def validate_plan(plan: Any) -> dict[str, Any]:
             _unknown(take, TAKE_FIELDS, f"plan.takes[{index}]")
             if not take.get("generation") and not take.get("media"):
                 raise ShotPlanError(f"plan.takes[{index}] needs a generation or a media id")
-            for key in TAKE_FIELDS:
+            for key in ("generation", "media", "note"):
                 if key in take:
                     _text(take[key], f"takes[{index}].{key}")
+            if "range" in take:
+                span = take["range"]
+                if (not isinstance(span, list) or len(span) != 2
+                        or not all(isinstance(t, (int, float)) and not isinstance(t, bool) and math.isfinite(t)
+                                   and t >= 0 for t in span) or span[1] <= span[0]):
+                    raise ShotPlanError(f"plan.takes[{index}].range must be [start, end] in seconds into that "
+                                        "take's media (not timeline time), with end > start >= 0")
     if (out.get("status") in ("take_ready", "approved") and not out.get("takes")
             and not (out["status"] == "approved" and out.get("method") == ["K"])):
         raise ShotPlanError(f"plan.status {out['status']} needs at least one take (--add-take); "

@@ -225,4 +225,40 @@ def after_outputs(job_dir, inputs, files, outputs, *, engine=None):
     verification = verify_candidate(preparation=preparation, composition=composition, source=source,
                                     candidate=composition["candidate"]["path"])
     facts.write_json_atomic(work / "verify.json", verification)
-    return [composition["candidate"]["path"], *outputs[1:]]
+    extra = _continuation_take(work, state, composition, facts)
+    return [composition["candidate"]["path"], *outputs[1:], *extra]
+
+
+def _continuation_take(work, state, composition, facts) -> list[str]:
+    """For a continuation: write ``take.json`` (the take's range); with ``output.clip_lead_in``, also a clip.
+
+    Runs after verification, on the full take, which stays whole and stays the
+    result. The range comes from ``take.take_range`` (drop or keep). The report is
+    informational: any failure here (an ambiguous span, an off-frame bound, an
+    ffmpeg error) is recorded in ``take.json`` and never fails a verified job.
+    """
+    take = _shared("take")
+    request = state["request_object"].value
+    if not take.is_continuation(request):
+        return []
+    candidate = Path(composition["candidate"]["path"])
+    mode = take.lead_in_of(request)
+    report: dict[str, Any] = {"lead_in": mode, "full_take": str(candidate)}
+    extra: list[str] = []
+    try:
+        probe = facts.probe_media(candidate)
+        span = take.take_range(composition, lead_in=mode, media_duration=take.video_duration(probe))
+        report["range"] = span
+        if take.clip_requested(request):
+            clip = work / "take-clip.mp4"
+            bounds = take.clip_take(facts, candidate, clip, start=span[0], end=span[1], probe=probe)
+            report["clip"] = {"path": str(clip), **bounds}
+            extra.append(str(clip))
+    except Exception as exc:  # noqa: BLE001 - the take is verified; the range/clip is best effort
+        report["error"] = f"{type(exc).__name__}: {exc}"
+        report.pop("clip", None)
+        (work / "take-clip.mp4").unlink(missing_ok=True)
+        extra = []
+    take.write_take_report(work, report)
+    facts.run_logs.declare(work.parent, facts.run_logs.LogDecl("h3.take", "run", str(Path("h3") / "take.json")))
+    return extra

@@ -172,6 +172,25 @@ The top-level families are `projects`, `timelines`, `media`, `tasks`, `runs`,
 mounts. Packs and capabilities are invoked through the SDK, not as extra
 gateway verbs.
 
+### Trim video to a frame-exact range
+
+Use `media trim` to cut a video to `[START, END)` seconds. It creates a NEW
+managed media item and never changes the source, the same way `media crop` does:
+
+```bash
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" media trim SOURCE_MEDIA_ID --project <project> --range 3.25,6.5 --dry-run --json
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" media trim SOURCE_MEDIA_ID --project <project> --range 3.25,6.5 --json
+```
+
+The cut is frame-exact: both ends must fall on a frame at the source's frame rate,
+the first output frame is the source frame at `START`, and the audio is cut at the
+matching sample. The video and audio are re-encoded (stream copy cannot cut on
+arbitrary frames). `--dry-run` prints the frame and sample bounds and imports
+nothing. The new item is imported like `media import` and linked to the source by
+a `derived_from` relation whose metadata records the range, the bounds, and the
+source digest. An H3 continuation can request the same clip for its take with
+`output.clip_lead_in: true`.
+
 ### Crop still images and video
 
 Use `media crop` when a source has black letterbox bars baked into its pixels,

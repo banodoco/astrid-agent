@@ -56,12 +56,22 @@ def test_full_plan_validates_and_version_is_filled_in():
     ({"inputs": {"voice": {"clip": "x"}}}, "unknown key(s) under plan.inputs.voice: clip"),
     ({"takes": [{"note": "no media"}]}, "needs a generation or a media id"),
     ({"takes": [{"media": "m", "score": 3}]}, "unknown key(s) under plan.takes[0]: score"),
+    ({"takes": [{"media": "m", "range": [6.5, 3.25]}]}, "plan.takes[0].range must be [start, end]"),
+    ({"takes": [{"media": "m", "range": [-1, 2]}]}, "plan.takes[0].range must be [start, end]"),
+    ({"takes": [{"media": "m", "range": "3.25,6.5"}]}, "plan.takes[0].range must be [start, end]"),
     ({"line": 3}, "plan.line must be a string"),
     ([], "plan must be a JSON object"),
 ])
 def test_invalid_plans_are_refused_with_a_clear_message(plan, message):
     with pytest.raises(ShotPlanError, match=re.escape(message)):
         validate_plan(plan)
+
+
+def test_take_range_is_optional_and_validated_as_seconds_into_the_take():
+    plan = {"method": ["LC"], "status": "take_ready",
+            "takes": [{"media": "m", "range": [3.25, 6.5], "note": "LC take, new line only"}, {"media": "n"}]}
+    assert validate_plan(plan)["takes"][0]["range"] == [3.25, 6.5]
+    assert "range" not in validate_plan(plan)["takes"][1]
 
 
 def test_merge_keeps_other_fields_merges_inputs_unsets_and_appends_takes():

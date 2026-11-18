@@ -56,6 +56,18 @@ class H3Request:
 
 
 _OPERATIONS = {"edit", "continue", "generate"}
+
+#: What a continuation's take uses of its file. The file is always stored whole
+#: (the lead-in is the source frames it continued from); see take.py.
+LEAD_IN_MODES = ("drop", "keep")
+DEFAULT_LEAD_IN = "drop"
+
+
+def lead_in_mode(value: Any, path: str) -> str:
+    """Validate ``output.lead_in``: ``"drop"`` or ``"keep"``."""
+    if not isinstance(value, str) or value not in LEAD_IN_MODES:
+        raise H3RequestError(f"{path} must be one of {list(LEAD_IN_MODES)}")
+    return value
 _ACTIONS = {"generate", "preserve"}
 _PURPOSES = {"appearance", "motion", "pose", "keyframe", "audio", "style"}
 _STEMS = {"mix", "voice", "effects", "music"}
@@ -228,10 +240,23 @@ def _normalize_v1(raw: Mapping[str, Any]) -> H3Request:
     if operation == "generate" and source is not None:
         raise H3RequestError("source must be omitted or null for generate")
     output_raw = _object(raw.get("output", {}), "output") or {}
-    _unknown(output_raw, {"duration"}, "output")
+    _unknown(output_raw, {"duration", "lead_in", "clip_lead_in"}, "output")
     output: dict[str, Any] = {}
     if "duration" in output_raw:
         output["duration"] = _number(output_raw["duration"], "output.duration", minimum=0, exclusive=True)
+    if "lead_in" in output_raw:
+        if operation != "continue":
+            raise H3RequestError("output.lead_in is valid only for operation continue")
+        # The default is not digested: an explicit "drop" is the same request as none.
+        if lead_in_mode(output_raw["lead_in"], "output.lead_in") != DEFAULT_LEAD_IN:
+            output["lead_in"] = output_raw["lead_in"]
+    if "clip_lead_in" in output_raw:
+        if operation != "continue":
+            raise H3RequestError("output.clip_lead_in is valid only for operation continue")
+        if type(output_raw["clip_lead_in"]) is not bool:
+            raise H3RequestError("output.clip_lead_in must be boolean")
+        if output_raw["clip_lead_in"]:
+            output["clip_lead_in"] = True
 
     content_raw = _object(raw.get("content"), "content") or {}
     _unknown(content_raw, {"prompt"}, "content")
