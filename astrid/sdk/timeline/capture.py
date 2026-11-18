@@ -257,9 +257,10 @@ def capture_move(bundle, select, on):
 
 def capture_track_create(bundle, owner, row):
     """Small structural proof: caller allocates the row ID once, before sending."""
-    from astrid.core.timeline.track_appearance import stamp_new_track_appearance
+    from astrid.core.timeline.track_appearance import label_track_with_id, stamp_new_track_appearance
 
     row = copy.deepcopy(row)
+    label_track_with_id(row)
     stamp_new_track_appearance(row)
     return _capture(bundle, {'schema_version': 1, 'op': 'track.create', 'version': '1',
                              'select': owner, 'args': {'row': row}, 'intent': {}})

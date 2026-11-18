@@ -10,6 +10,18 @@ CLIP_PLACEMENT_VERSION = "clipPlacementVersion"
 CLIP_PLACEMENT_VERSION_CURRENT = 1
 
 
+def label_track_with_id(track: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
+    """Give a track without a label its id as label.
+
+    The timeline schema requires a label on every track and render refuses one
+    without. This is the single rule for every path that introduces a track.
+    """
+    track_id = track.get("id")
+    if not track.get("label") and isinstance(track_id, str) and track_id:
+        track["label"] = track_id
+    return track
+
+
 def stamp_new_track_appearance(track: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
     """Stamp placement migrations on a newly authored track, preserving its app bag.
 

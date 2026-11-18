@@ -369,3 +369,21 @@ def test_commit_gate_view_matches_what_render_reads():
 
     assert without_annotations(reader_view(config, registry)) == without_annotations(
         _render_compatible_projection(config, registry))
+
+
+def test_created_track_without_a_label_is_labelled_with_its_id_and_passes_the_gate():
+    from astrid.sdk.timeline.capture import capture_track_create
+
+    service = create_runtime_commit_service()
+    captured = capture_track_create(readable_bundle(), "parent", {"id": "overlay", "kind": "visual"})
+    assert '"label": "overlay"' in json.dumps(captured, default=str)
+    named = capture_track_create(readable_bundle(), "parent",
+                                 {"id": "named", "kind": "visual", "label": "Named"})
+    assert '"label": "Named"' in json.dumps(named, default=str)
+
+    # The result the commit produces: the new track as the writer labelled it.
+    payload = readable_payload()
+    payload["config"]["tracks"].append({"id": "overlay", "kind": "visual", "label": "overlay"})
+    assert reader_problem(service, _document_of(payload)) is None
+    payload["config"]["tracks"][-1].pop("label")
+    assert "label" in reader_problem(service, _document_of(payload))
