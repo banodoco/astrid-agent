@@ -135,6 +135,8 @@ def _mask(region: Region, path: str) -> dict[str, Any]:
     # permission constraint (a zero or negative box cannot authorize pixels).
     from .request_v2 import _mask as normalize_mask
 
+    if region.canvas is not None and (not isinstance(region.canvas, (tuple, list)) or len(region.canvas) != 2 or any(type(n) is not int or n <= 0 for n in region.canvas)):
+        _fail("region", "canvas must contain two positive integers", path, "Correct the authored canvas")
     mask = normalize_mask({"rectangle": list(box), **({"canvas": list(region.canvas)} if region.canvas is not None else {})}, path, None)
     x, y, width, height = mask["rectangle"]
     canvas_w, canvas_h = mask.get("canvas", (1024, 576))

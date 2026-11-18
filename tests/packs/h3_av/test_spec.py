@@ -590,3 +590,10 @@ def test_rectangle_authored_canvas_survives_request_and_typed_round_trip():
     request = normalize_request(document)
     assert request.canonical.regions[0].canvas == (640, 360)
     assert normalize_spec(request.canonical).regions[0].canvas == (640, 360)
+
+
+@pytest.mark.parametrize("canvas", [42, (0, 10), (10, True), (10, 1.5)])
+def test_typed_rectangle_rejects_invalid_canvas(canvas):
+    with pytest.raises(H3RequestError):
+        normalize_spec(_edit(Operation("regenerate", (0, 1), region="r"),
+                             regions=(Region("r", box=(0, 0, 1, 1), canvas=canvas),)))
