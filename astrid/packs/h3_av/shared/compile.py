@@ -696,7 +696,8 @@ def _compile_character_swap_v2(
     images = [item for item in references if item.get("modality") == "image"]
     videos = [item for item in references if item.get("modality") == "video"]
     standalone_audio = [item for item in references if item.get("modality") == "audio" and item.get("use") != "replacement"]
-    if not images or not videos:
+    minimum = LIMITS["character_swap_references"]["value"]
+    if len(images) < minimum["image"] or len(videos) < minimum["video"]:
         raise CompilationError("Character Swap references: lowering requires at least one video and one image reference")
     bindings: dict[str, Path] = {}
     for index, item in enumerate(images):

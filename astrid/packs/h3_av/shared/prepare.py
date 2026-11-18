@@ -101,7 +101,8 @@ def _admit_conditioning(request: H3Request, assets: list[dict[str, Any]]) -> lis
             span = measured
             start = 0.0
             end = measured
-        if span < 2 or span > 15:
+        clip_min, clip_max = LIMITS["clip_seconds"]["value"]
+        if span < clip_min or span > clip_max:
             raise PreparationError(f"conditioning clip 2–15 seconds: {item['occurrence_id']} selects {span:.3f}s")
         totals[modality] += span
         measurement["retained_picture_frames"] = (int(selected[1]) - int(selected[0])) if modality == "video" and isinstance(selected, list) else (int(stream["nb_frames"]) if modality == "video" and str(stream.get("nb_frames", "")).isdigit() else None)
@@ -582,6 +583,11 @@ def prepare_request(
         raise PreparationError(f"width and height 32–16384, multiples of 32: received {width}x{height}")
     if fps <= 0 or sample_rate <= 0:
         raise PreparationError("fps and sample_rate must be positive")
+    duration = request.value.get("duration") if request.value.get("version") == 2 else request.value.get("output", {}).get("duration")
+    duration_limits = LIMITS["job_duration_seconds"]
+    warnings = []
+    if duration is not None and not duration_limits["value"][0] <= float(duration) <= duration_limits["value"][1]:
+        warnings.append({"limit": "job_duration_seconds", "message": duration_limits["warning"]})
     if request.value.get("version") == 2:
         assets = _resolve_assets(request, asset_map)
         conditioning_measurements = _admit_conditioning(request, assets)
@@ -622,6 +628,7 @@ def prepare_request(
             "media": {"fps": float(fps), "width": int(width), "height": int(height), "sample_rate": int(sample_rate)},
             "assets": assets,
             "conditioning_measurements": conditioning_measurements,
+            "warnings": warnings,
             "resource_estimate": {
                 "schema_valid": True,
                 "qualified": all(row["resource_estimate"]["qualified"] for row in conditioning_measurements),
@@ -650,6 +657,7 @@ def prepare_request(
     # local asset map must never silently contain a missing path.
     return {
         "schema_version": 1,
+        "warnings": warnings,
         "kind": "h3_av_preparation",
         "request_digest": request.digest,
         "request": request.value,

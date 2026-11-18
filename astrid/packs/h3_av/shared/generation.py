@@ -16,16 +16,20 @@ from .engine_facts import facts
 from .timing import frame_index, smallest_h3_run_at_least
 
 LIMITS = {
+    # Model facts.
     "builder_slots": {"value": {"image": 9, "video": 3, "audio": 3}, "source": "node"},
     "clip_seconds": {"value": [2, 15], "source": "model card"},
     "modality_seconds": {"value": 15, "source": "model card"},
     "conditioning_files": {"value": 12, "source": "model card"},
     "canvas_dimension": {"value": {"min": 32, "max": 16384, "multiple": 32}, "source": "node"},
+    # SR-5 owns enforcement of audio grant strength; it is not enforced here.
+    "audio_grant_strength": {"value": [0, 1], "source": "node"},
+    "job_duration_seconds": {"value": [124 / 24, 362 / 24], "source": "node", "warning": "Outside 124–362 frames is outside the tested range."},
+    # Current lowering limits. SR-3 owns shared seed/reference-set validation;
+    # the regions-per-pass row is not enforced here.
     "character_swap_references": {"value": {"video": 1, "image": 1, "additional": "allowed but untested"}, "source": "Astrid lowering"},
     "continuation_references": {"value": {"image": 2, "video": 0, "audio": 0}, "source": "Astrid lowering"},
-    "audio_grant_strength": {"value": [0, 1], "source": "node"},
     "regions_per_pass": {"value": {"seeds": 1, "reference_sets": 1}, "source": "Astrid lowering"},
-    "job_duration_seconds": {"value": [124 / 24, 362 / 24], "source": "node", "warning": "Outside 124–362 frames is outside the tested range."},
 }
 IMAGE_REFERENCE_CAPACITY = LIMITS["builder_slots"]["value"]["image"]
 VIDEO_REFERENCE_CAPACITY = LIMITS["builder_slots"]["value"]["video"]

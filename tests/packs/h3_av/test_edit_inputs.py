@@ -274,3 +274,73 @@ def test_real_video_rejects_shorter_soundtrack(tmp_path):
     records = [{"asset": "v", "status": "resolved", "path": str(path)}]
     with pytest.raises(prepare.PreparationError, match="past measured audio stream duration"):
         prepare._admit_conditioning(_request([item]), records)
+
+
+@pytest.mark.parametrize("modality", ["video", "audio"])
+@pytest.mark.parametrize("count, accepted", [(3, True), (4, False)])
+def test_reference_slot_boundaries(modality, count, accepted):
+    items = [{"occurrence_id": str(i), "asset": str(i), "role": "reference", "modality": modality} for i in range(count)]
+    if accepted:
+        assert len(prepare._admit_conditioning(_request(items), [])) == count
+    else:
+        with pytest.raises(prepare.PreparationError, match="builder slots"):
+            prepare._admit_conditioning(_request(items), [])
+
+
+@pytest.mark.parametrize("extra, accepted", [(0, True), (1, False)])
+def test_conditioning_file_boundary(extra, accepted):
+    items = [{"occurrence_id": f"{kind}{i}", "asset": f"{kind}{i}", "role": "reference", "modality": kind}
+             for kind, count in [("image", 9), ("video", 3), ("audio", extra)] for i in range(count)]
+    if accepted:
+        assert len(prepare._admit_conditioning(_request(items), [])) == 12
+    else:
+        with pytest.raises(prepare.PreparationError, match="conditioning files 12"):
+            prepare._admit_conditioning(_request(items), [])
+
+
+@pytest.mark.parametrize("modality, count, accepted", [("image", 2, True), ("image", 3, False), ("video", 0, True), ("video", 1, False), ("audio", 0, True), ("audio", 1, False)])
+def test_continuation_reference_boundaries(modality, count, accepted):
+    items = [{"occurrence_id": str(i), "asset": str(i), "role": "reference", "modality": modality} for i in range(count)]
+    req = H3Request({"version": 2, "media": items, "continuation": True}, "test")
+    if accepted:
+        assert len(prepare._admit_conditioning(req, [])) == count
+    else:
+        with pytest.raises(prepare.PreparationError, match="continuation references"):
+            prepare._admit_conditioning(req, [])
+
+
+@pytest.mark.parametrize("frames, warned", [(123, True), (124, False), (362, False), (363, True)])
+def test_preparation_reports_duration_warning(monkeypatch, frames, warned):
+    req = H3Request({"version": 2, "media": [], "continuation": False, "duration": frames / 24}, "test")
+    monkeypatch.setattr(prepare, "_resolve_assets", lambda *_: [])
+    monkeypatch.setattr(prepare, "_validate_mask_assets", lambda *_: None)
+    monkeypatch.setattr(prepare, "_check_source_av_rates", lambda *_: None)
+    monkeypatch.setattr(prepare, "_v2_mask_schedule", lambda *_args, **_kwargs: {"status": "ready"})
+    warnings = prepare.prepare_request(req)["warnings"]
+    assert bool(warnings) is warned
+    if warned:
+        assert warnings[0]["limit"] == "job_duration_seconds"
+
+
+def test_character_swap_requires_each_minimum_reference():
+    settings = {"adapter": {"id": "character_swap_v1"}}
+    for missing in ("image", "video"):
+        refs = [{"role": "reference", "modality": kind} for kind in ("image", "video") if kind != missing]
+        with pytest.raises(H3RequestError, match="references"):
+            _validate_character_swap_media(settings, refs, False)
+    _validate_character_swap_media(settings, [{"role": "reference", "modality": kind} for kind in ("image", "video")], False)
+
+
+@pytest.mark.parametrize("modality", ["video", "audio"])
+@pytest.mark.parametrize("seconds, accepted", [(15, True), (15.01, False)])
+def test_modality_total_boundary(monkeypatch, tmp_path, modality, seconds, accepted):
+    path = tmp_path / "clip"
+    path.touch()
+    monkeypatch.setattr(prepare, "_probe_conditioning", lambda _: {"streams": [{"codec_type": modality, "duration": str(seconds / 2)}]})
+    items = [{"occurrence_id": str(i), "asset": "x", "role": "reference", "modality": modality, "audio": False} for i in range(2)]
+    records = [{"asset": "x", "status": "resolved", "path": str(path)}]
+    if accepted:
+        assert len(prepare._admit_conditioning(_request(items), records)) == 2
+    else:
+        with pytest.raises(prepare.PreparationError, match="per modality total 15 seconds"):
+            prepare._admit_conditioning(_request(items), records)
