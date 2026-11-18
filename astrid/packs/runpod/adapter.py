@@ -400,6 +400,7 @@ def build_host_adapter(*, preferences, engine, holds, quiesce, credentials, envi
     from runpod_lifecycle.config import RunPodConfig
 
     from astrid.core.generation import engine_recipe, engine_runner
+    from astrid.packs.runpod.machine import RunPodMachine, observe_mounts_with
     from astrid.packs.runpod.remote_placement import (
         ENGINE_BASE,
         RemotePlacement,
@@ -441,14 +442,11 @@ def build_host_adapter(*, preferences, engine, holds, quiesce, credentials, envi
 
     owner = RunPodLeaseOwner(selection, holds=holds, quiesce=drain,
                              service_environ=environ)
-    from astrid.packs.runpod.machine import RunPodMachine, observe_mounts_with
-
-    adapter = RunPodAdapter(lease_owner=owner,
-                            placement=RemotePlacement(None),
-                            installation=RunPodInstallation(compatibility.as_mapping(), engine=engine, root=root),
-                            validate=_validate_retained_workflow)
-    adapter.observe_mounts = observe_mounts_with(credential)
     try:
+        adapter = RunPodAdapter(lease_owner=owner, placement=RemotePlacement(None),
+                                installation=RunPodInstallation(compatibility.as_mapping(), engine=engine, root=root),
+                                validate=_validate_retained_workflow)
+        adapter.observe_mounts = observe_mounts_with(credential)
         if fresh_claim:
             owner.start_fresh_claim()
         elif expected_machine_id is None:
@@ -567,7 +565,9 @@ class TargetProviderBindings:
                     pending = self.constructing
                     break
                 pending = self.constructing
-            if not pending.wait(timeout=30):
+            # A bounded detached-job verification and reset can exceed 30 seconds.
+            # A queued job shares the construction barrier until its owner finishes.
+            if not pending.wait(timeout=None if job else 30):
                 raise ValueError("target provider initialization remains unresolved")
         try:
             if kind != "runpod":

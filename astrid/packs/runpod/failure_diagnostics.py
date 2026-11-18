@@ -185,6 +185,8 @@ def safe_stored_summary(value, *, node_ids=frozenset(), node_names=frozenset(), 
     name = value.get('exception')
     if isinstance(name, str) and name in EXCEPTIONS:
         result['exception'] = name
+    if result['code'] == 'host_restarted_during_job':
+        result['issue_message'] = 'host restarted during the job'
     return result
 
 

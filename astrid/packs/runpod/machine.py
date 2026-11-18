@@ -1385,7 +1385,8 @@ class RunPodMachine:
             if observer_key is not None:
                 owner.end_failure_observation(observer_key)
 
-    def settle_interrupted_job(self, invocation):
+    def settle_interrupted_job(self, invocation) -> None:
+        """Reconnect the original invocation for failed-job verification and reset."""
         from .remote_placement import connect_claimed_for_preparation
 
         adapter = self._require()

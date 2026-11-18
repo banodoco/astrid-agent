@@ -324,7 +324,8 @@ class RunPodLeaseOwner:
                         self.expiry_retry_timer.cancel()
                     self.expiry_retry_timer = self.timer(self._provider_retry_delay(), lambda: self._expire(reason, generation, operation))
 
-    def recover(self, *, expected_machine_id: str | None = None, adopt=False, settle_job=None) -> None:
+    def recover(self, *, expected_machine_id: str | None = None, adopt: bool = False,
+                settle_job: Callable[[RunPodLease], None] | None = None) -> None:
         """Reconcile exact custody before opening admission."""
         with self.lock:
             if self._release_inflight:
@@ -364,8 +365,8 @@ class RunPodLeaseOwner:
         self.release(reason=reason, _expected_operation=record["operation_id"],
                      expected_machine_id=expected_machine_id)
 
-    def _adopt_claim(self, record, settle_job):
-        from .target_selection import _require_allocation_bound, _utc
+    def _adopt_claim(self, record: Mapping[str, Any], settle_job: Callable[[RunPodLease], None] | None) -> bool:
+        from .target_selection import _number, _require_allocation_bound, _utc
 
         with self.lock:
             if self._read() != record or self._release_inflight:
@@ -373,15 +374,19 @@ class RunPodLeaseOwner:
             lease = record["lease"]
             paid = record["paid_limits"]
             now = self.clock()
+            if lease["state"] not in {"idle", "active"}:
+                return False
+            authorized = _utc(paid["authorized_at"]).timestamp()
+            rate = _number(paid["hourly_usd"], "hourly USD rate")
+            cap = _number(paid["max_usd"], "USD cap")
             expiry = min(lease["paid_expires_at"], _utc(paid["deadline"]).timestamp(),
-                         _utc(paid["expires_at"]).timestamp(), _utc(paid["authorized_at"]).timestamp()
-                         + paid["max_usd"] / paid["hourly_usd"] * 3600)
-            if now >= expiry:
+                         _utc(paid["expires_at"]).timestamp(), authorized + cap / rate * 3600)
+            if not authorized <= now < expiry:
                 return False
             if lease["state"] == "idle":
                 if now >= lease["idle_expires_at"]:
                     return False
-            elif not (lease["state"] == "active" and settle_job and lease.get("job")
+            elif not (settle_job and lease.get("job")
                       and (lease.get("preparation") or {}).get("state") == "prepared"):
                 return False
             _require_allocation_bound(record)
@@ -393,12 +398,13 @@ class RunPodLeaseOwner:
             self._machine_identity = (record["operation_id"], record["pod_id"])
             self._arm(record)
         if lease["state"] == "active":
+            assert settle_job is not None
             settle_job(RunPodLease(record["operation_id"], self.epoch, lease["generation"],
                                    lease["invocation_id"], record))
         self.started = True
         return True
 
-    def recover_job(self, settle_job=None) -> None:
+    def recover_job(self, settle_job: Callable[[RunPodLease], None] | None = None) -> None:
         """Keep admission closed until the prior invocation is reconciled."""
         try:
             self.recover(adopt=True, settle_job=settle_job)
