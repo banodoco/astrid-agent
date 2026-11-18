@@ -86,7 +86,7 @@ def authoring_commit_request(candidate: Mapping[str, Any], writer: Any, *,
     from ._command_state import equal
     from .commands import execute
     from .emitter import emit_document_commands
-    from .native_media_admission import registry_selections
+    from .native_media_admission import check_registry_associations, registry_selections
 
     if compilation is None:
         compilation = compile_authoring_candidate(candidate)
@@ -142,6 +142,7 @@ def authoring_commit_request(candidate: Mapping[str, Any], writer: Any, *,
     source = base['source_mapping']['_runtime_document']
     inputs = [{'pin': copy.deepcopy(pin)} for pin in compilation.publication['dependency_manifest']['media']
               if pin not in source['dependency_manifest']['media']]
+    check_registry_associations(work, base)
     old_selections = list(registry_selections(base))
     for association in registry_selections(work):
         if association in old_selections:
