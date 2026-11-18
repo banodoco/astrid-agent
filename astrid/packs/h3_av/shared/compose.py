@@ -459,6 +459,12 @@ def _spatial_video_masks(
         selector = selector if isinstance(selector, Mapping) else area
         mask_id = change.get("mask_asset") or selector.get("mask_asset") or selector.get("asset")
         derived = False
+        prepared_id = change.get("prepared_mask_asset")
+        prepared_path = resolved.get(prepared_id) if isinstance(prepared_id, str) else None
+        if prepared_id is not None:
+            if prepared_path is None:
+                raise CompositionError("prepared static permission mask is missing")
+            mask_id = prepared_id
         if not mask_id and selector.get("full_frame") is True and not has_regional:
             continue
         if not mask_id and ("rectangle" in selector or selector.get("full_frame") is True):
@@ -493,6 +499,11 @@ def _spatial_video_masks(
             source=source,
             duration=schedule_duration,
         )
+        if prepared_path is not None and source is not None:
+            from PIL import Image
+            with Image.open(mask_path) as prepared_image:
+                if prepared_image.size != _video_dimensions(_probe(source), role="source"):
+                    raise CompositionError("prepared static permission dimensions do not match the source")
         during = change.get("during")
         if not isinstance(during, (list, tuple)) or len(during) != 2:
             raise CompositionError("regional video mask has a malformed edit interval")
@@ -502,6 +513,7 @@ def _spatial_video_masks(
         result.append({
             "during": [start, end], "asset": mask_id, "path": mask_path,
             "kind": mask_info["kind"], "frames": mask_info["frames"],
+            **({"prepared": True} if prepared_path is not None else {}),
             **({"derived_box": list(box)} if derived else {}),
         })
     return result
@@ -612,7 +624,8 @@ def _verify_spatial_mask_complement(
                 ))
             else:
                 with Image.open(mask_path) as opened:
-                    static_pixels.append(opened.convert("RGB").getchannel("R").resize((width, height), resampling).tobytes())
+                    channel = opened.convert("RGB").getchannel("R")
+                    static_pixels.append((channel if member.get("prepared") else channel.resize((width, height), resampling)).tobytes())
         protected_pixels = [
             index for index in range(width * height)
             if all(pixels[index] == 0 for pixels in static_pixels)
@@ -920,7 +933,7 @@ def _compose_media(
                         else:
                             mask_filter = (
                                 f"[{mask_index}:v:0]"
-                                f"scale={output_width}:{output_height}:flags=neighbor,fps={mask_fps},format=gbrp,"
+                                f"{'' if member.get('prepared') else f'scale={output_width}:{output_height}:flags=neighbor,'}fps={mask_fps},format=gbrp,"
                                 f"extractplanes=r,format=gray,format=gbrp,trim=duration={end - start},setpts=PTS-STARTPTS[{member_label}]"
                             )
                         mask_filters.append(mask_filter)

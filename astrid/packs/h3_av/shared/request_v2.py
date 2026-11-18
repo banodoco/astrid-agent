@@ -180,7 +180,7 @@ def _mask(value: Any, path: str, modalities: Mapping[str, str] | None) -> dict[s
             raise H3RequestError(f"{path} must reference an image/video mask")
         return {"asset": asset, "polarity": "black_preserve_white_edit"}
     item = _object(value, path) or {}
-    _unknown(item, {"asset", "full_frame", "rectangle", "polygon", "range", "polarity", "shape", "edge", "track", "threshold"}, path)
+    _unknown(item, {"asset", "full_frame", "rectangle", "polygon", "range", "polarity", "shape", "edge", "track", "threshold", "canvas"}, path)
     geometry = [key for key in ("full_frame", "rectangle", "polygon") if key in item]
     if "asset" in item and geometry:
         raise H3RequestError(f"{path} cannot combine an asset with geometry")
@@ -210,6 +210,11 @@ def _mask(value: Any, path: str, modalities: Mapping[str, str] | None) -> dict[s
         if not isinstance(points, list) or len(points) < 3:
             raise H3RequestError(f"{path}.polygon must contain at least three points")
         result["polygon"] = [[_number(coord, f"{path}.polygon[{i}][{axis}]") for axis, coord in enumerate(point)] for i, point in enumerate(points)]
+    if "canvas" in item:
+        canvas = item["canvas"]
+        if "rectangle" not in item or not isinstance(canvas, list) or len(canvas) != 2 or any(type(n) is not int or n <= 0 for n in canvas):
+            raise H3RequestError(f"{path}.canvas must be two positive integers on a rectangle mask")
+        result["canvas"] = list(canvas)
     if "edge" in item and "asset" not in item:
         raise H3RequestError(f"{path}.edge is allowed only with an asset mask")
     if "threshold" in item and "asset" not in item:

@@ -132,7 +132,6 @@ def build(inputs, files, out, *, engine=None, check_runtime=False):
     }.items():
         run_logs.declare(work.parent, run_logs.LogDecl(name, "run", str(Path("h3") / relative)))
     paths, preparation, compilation = stages.compile_stages(request, asset_map, work / "plan")
-    _shared("prepare").write_preparation(work / "preparation.json", preparation)
     bindings = compilation["workflow_inputs"]
     facts.assert_no_unresolved_placeholders(bindings)
     plan = {**stages._sealed_plan(compilation), "request_digest": request.digest}
@@ -140,7 +139,6 @@ def build(inputs, files, out, *, engine=None, check_runtime=False):
     source = paths[source_id] if source_id else None
     if source is not None and "source_video" in bindings:
         plan["source_av"] = dict(facts.measure_source_av(source))
-    stages.save_build_state(work, request=request, document=document, preparation=preparation, source=source, plan=plan)
     trio = Path(compilation["workflow"]["workflow.py"]["path"]).parent
     # The media the graph binds, unpacked from compile's managed-assets archive: {binding: path}.
     assets = {}
@@ -151,6 +149,14 @@ def build(inputs, files, out, *, engine=None, check_runtime=False):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(resolved.members[record["member"]])
             assets[record["binding"]] = target
+    for record in preparation.get("assets", []):
+        binding = record.get("binding")
+        if isinstance(binding, str) and binding.startswith("permission_mask_"):
+            if binding not in assets:
+                raise ValueError(f"managed permission mask {binding} is missing")
+            record["path"] = str(assets[binding])
+    _shared("prepare").write_preparation(work / "preparation.json", preparation)
+    stages.save_build_state(work, request=request, document=document, preparation=preparation, source=source, plan=plan)
     return {"workflow": _load_graph(trio), "bindings": bindings, "plan": plan, "assets": assets,
             "bundle": str(trio)}
 

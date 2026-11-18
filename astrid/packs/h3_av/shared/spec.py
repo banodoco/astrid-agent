@@ -47,6 +47,8 @@ class Region:
     name: str
     mask_asset: str | None = None
     box: tuple[float, float, float, float] | None = None
+    canvas: tuple[int, int] | None = None
+    threshold: int | None = None
 
 
 @dataclass(frozen=True)
@@ -124,7 +126,16 @@ def _mask(region: Region, path: str) -> dict[str, Any]:
             "Supply mask_asset or box [x, y, width, height]",
         )
     if region.mask_asset is not None:
-        return {"asset": _nonblank(region.mask_asset, f"{path}.mask_asset")}
+        if region.canvas is not None:
+            _fail("region", "canvas is only valid on a box", path, "Remove canvas from the image mask")
+        value = {"asset": _nonblank(region.mask_asset, f"{path}.mask_asset")}
+        if region.threshold is not None:
+            value["threshold"] = region.threshold
+        from .request_v2 import _mask as normalize_mask
+        normalized = normalize_mask(value, path, None)
+        return {key: normalized[key] for key in ("asset", "threshold") if key in normalized}
+    if region.threshold is not None:
+        _fail("region", "threshold is only valid on an image mask", path, "Remove threshold from the box")
     box = region.box
     if not isinstance(box, (tuple, list)) or len(box) != 4:
         _fail("region", "box must be [x, y, width, height]", path, "Supply four pixel coordinates")
@@ -132,16 +143,19 @@ def _mask(region: Region, path: str) -> dict[str, Any]:
     # permission constraint (a zero or negative box cannot authorize pixels).
     from .request_v2 import _mask as normalize_mask
 
-    mask = normalize_mask({"rectangle": list(box)}, path, None)
+    if region.canvas is not None and (not isinstance(region.canvas, (tuple, list)) or len(region.canvas) != 2 or any(type(n) is not int or n <= 0 for n in region.canvas)):
+        _fail("region", "canvas must contain two positive integers", path, "Correct the authored canvas")
+    mask = normalize_mask({"rectangle": list(box), **({"canvas": list(region.canvas)} if region.canvas is not None else {})}, path, None)
     x, y, width, height = mask["rectangle"]
-    if min(x, y) < 0 or min(width, height) <= 0:
+    canvas_w, canvas_h = mask.get("canvas", (1024, 576))
+    if min(x, y) < 0 or min(width, height) <= 0 or x + width > canvas_w or y + height > canvas_h:
         _fail(
             "region",
             "box needs nonnegative origin and positive size",
             path,
             "Correct the box coordinates",
         )
-    return {"rectangle": mask["rectangle"]}
+    return {"rectangle": mask["rectangle"], **({"canvas": mask["canvas"]} if "canvas" in mask else {})}
 
 
 def _overlap(a: Operation, b: Operation, regions: Mapping[str, Region]) -> bool:
@@ -155,6 +169,10 @@ def _overlap(a: Operation, b: Operation, regions: Mapping[str, Region]) -> bool:
     if left.box is not None and right.box is not None:
         x, y, w, h = left.box
         xx, yy, ww, hh = right.box
+        lw, lh = left.canvas or (1024, 576)
+        rw, rh = right.canvas or (1024, 576)
+        x, y, w, h = x / lw, y / lh, w / lw, h / lh
+        xx, yy, ww, hh = xx / rw, yy / rh, ww / rw, hh / rh
         return max(x, xx) < min(x + w, xx + ww) and max(y, yy) < min(y + h, yy + hh)
     # No pixel inspection in normalization: distinct files are not proof of
     # disjointness. Refuse ambiguous edit/preserve permission combinations.
@@ -460,7 +478,7 @@ def sampling_request_document(
 def _region(mask: Mapping, regions: list[Region]) -> str | None:
     if mask.get("full_frame") is True and set(mask) <= {"full_frame", "polarity"}:
         return None
-    if set(mask) - {"asset", "rectangle", "polarity", "edge"} or mask.get("edge", {}) not in (
+    if set(mask) - {"asset", "rectangle", "polarity", "edge", "canvas", "threshold"} or mask.get("edge", {}) not in (
         {},
         {"dilate": 0, "feather": 0},
     ):
@@ -474,6 +492,8 @@ def _region(mask: Mapping, regions: list[Region]) -> str | None:
         "",
         mask_asset=mask.get("asset"),
         box=tuple(mask["rectangle"]) if "rectangle" in mask else None,
+        canvas=tuple(mask["canvas"]) if "canvas" in mask else None,
+        threshold=mask.get("threshold"),
     )
     for region in regions:
         if replace(region, name="") == candidate:
