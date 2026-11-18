@@ -2,7 +2,8 @@
 # Source: truststore-0.10.4-py3-none-any.whl from PyPI.
 # SHA256: adaeaecf1cbb5f4de3b1959b42d41f6fab57b2b1666adb59e89cb0b53361d981
 # The installer bootstrap uses --no-deps: keep this stdlib-only fallback bundled.
-# Local changes: import ordering only, plus this provenance/license header.
+# Local changes: import ordering and sys.platform backend selection (no native
+# subprocess during import), plus this provenance/license header.
 # Use SSLContext directly; never inject this into the process-wide ssl module.
 #
 # The MIT License (MIT)

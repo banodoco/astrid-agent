@@ -12,6 +12,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from astrid.core.contracts.errors import (
+    TLS_VERIFICATION_CODE,
+    coerce_astrid_error,
+    render_astrid_error,
+)
+
 from . import update_job
 from .backend import Backend
 from .choices import (
@@ -1011,7 +1017,10 @@ def main(argv: list[str] | None = None) -> int:
             run.log = None  # the log became unusable: Details points at this window instead
             traceback.print_exc()
         print(FAILURE_MESSAGE)
-        if isinstance(failure, (BackupSpaceError, ValueError, RuntimeOperationError)):
+        structured = coerce_astrid_error(failure)
+        if structured.code == TLS_VERIFICATION_CODE:
+            render_astrid_error(structured)
+        elif isinstance(failure, (BackupSpaceError, ValueError, RuntimeOperationError)):
             print(str(failure))
             if isinstance(failure, RuntimeOperationError) and failure.details is not None:
                 # Detail goes to install.log; the Details line points there.

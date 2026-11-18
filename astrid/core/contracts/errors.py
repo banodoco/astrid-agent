@@ -18,6 +18,7 @@ objects such as ``ExecError``-bearing dataclasses.
 from __future__ import annotations
 
 import json
+import os
 import re
 import ssl
 import sys
@@ -26,6 +27,7 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 from urllib.error import URLError
+from urllib.parse import urlsplit
 
 from astrid.core.audit.util import SECRET_VALUE_RE, redact
 
@@ -238,7 +240,11 @@ def error_from_result(result: object) -> AstridError | None:
 
 
 TLS_VERIFICATION_CODE = "tls_verification_failed"
-_URL_HOST = re.compile(r"https?://([A-Za-z0-9.-]+|\[[0-9A-Fa-f:]+\])")
+_URL_HOST = re.compile(r"https?://[^\s<>\"']+")
+# OpenSSL hostname/IP mismatch; Windows CERT_E_CN_NO_MATCH (DWORD or signed
+# HRESULT); macOS errSecHostNameMismatch and errSSLHostNameMismatch. Native
+# verify_message strings can be localized, so prefer their stable error codes.
+_TLS_HOSTNAME_MISMATCH_CODES = (62, 64, 0x800B010F, 0x800B010F - (1 << 32), -67602, -9843)
 
 
 def _tls_verification_failure(value: BaseException) -> ssl.SSLCertVerificationError | None:
@@ -273,18 +279,34 @@ def _tls_failure_host(value: BaseException) -> str | None:
         if id(current) in seen:
             continue
         seen.add(id(current))
+        host = getattr(current, "_astrid_request_host", None)
+        if isinstance(host, str) and host:
+            return host
         try:
-            url = getattr(getattr(current, "request", None), "url", None)
+            request = getattr(current, "request", None)
+            url = getattr(request, "url", None) or getattr(request, "full_url", None)
         except RuntimeError:  # httpx raises when no request was attached
             url = None
         host = getattr(url, "host", None)
         if isinstance(host, str) and host:
             return host
+        candidates = [url, getattr(current, "url", None)]
+        candidates.extend(match.group(0) for match in _URL_HOST.finditer(str(current)))
+        for candidate in candidates:
+            if not isinstance(candidate, str):
+                continue
+            try:
+                parsed = urlsplit(candidate)
+                if parsed.scheme in ("http", "https") and parsed.hostname:
+                    return parsed.hostname
+            except ValueError:
+                continue
+        if isinstance(current, URLError) and isinstance(current.reason, BaseException):
+            pending.append(current.reason)
         for linked in (current.__cause__, current.__context__):
             if isinstance(linked, BaseException):
                 pending.append(linked)
-    match = _URL_HOST.search(str(value))
-    return match.group(1) if match else None
+    return None
 
 
 def _tls_verification_error(
@@ -299,16 +321,41 @@ def _tls_verification_error(
     snapshot = build_state_snapshot(getattr(value, "state_snapshot", None))
     if state_snapshot is not None:
         snapshot.update(build_state_snapshot(state_snapshot))
-    return AstridError(
-        f"The secure connection{where} could not be verified, most likely because "
-        "a program on this computer (antivirus or a company proxy) is inspecting HTTPS.",
-        recovery_command="allow Astrid through the HTTPS inspection, then retry",
-        state_snapshot=snapshot,
-        code=TLS_VERIFICATION_CODE,
-        fix=(
+    selected_stores = [name for name in ("SSL_CERT_FILE", "SSL_CERT_DIR") if os.environ.get(name)]
+    failure = _tls_verification_failure(value)
+    detail = str(getattr(failure, "verify_message", None) or failure).casefold()
+    hostname_mismatch = (
+        getattr(failure, "verify_code", None) in _TLS_HOSTNAME_MISMATCH_CODES
+        or "hostname mismatch" in detail or "ip address mismatch" in detail
+        or ("hostname" in detail and ("doesn't match" in detail or "does not match" in detail))
+    )
+    if hostname_mismatch:
+        cause = f"The secure connection{where} could not be verified: the certificate does not match the requested hostname."
+        recovery = "check the server address and its certificate, then retry"
+        fix = "use the intended server hostname and a certificate valid for that hostname, then retry"
+        if selected_stores:
+            fix += "; certificate trust is configured by " + " and ".join(selected_stores)
+    elif selected_stores:
+        names = " and ".join(selected_stores)
+        cause = f"The secure connection{where} could not be verified using the certificate store selected by {names}."
+        recovery = f"check the certificate store configured by {names}, then retry"
+        fix = f"check {names} and add the intended server's trusted root to that configured store, then retry"
+    else:
+        cause = (
+            f"The secure connection{where} could not be verified, most likely because "
+            "a program on this computer (antivirus or a company proxy) is inspecting HTTPS."
+        )
+        recovery = "allow Astrid through the HTTPS inspection, then retry"
+        fix = (
             "turn off HTTPS scanning for this host in the antivirus or proxy, or install "
             "its root certificate in the system certificate store, then retry"
-        ),
+        )
+    return AstridError(
+        cause,
+        recovery_command=recovery,
+        state_snapshot=snapshot,
+        code=TLS_VERIFICATION_CODE,
+        fix=fix,
         degraded=False,
         source_type=type(value).__name__,
     )

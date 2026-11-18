@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import ssl
 from io import BytesIO
 from pathlib import Path
 
@@ -126,7 +127,9 @@ def test_real_adapter_uses_fixed_endpoint_and_retains_ordered_edit_bytes(tmp_pat
     normalized = openai.normalize_request(_request(count=2, **refs))
     calls = []
     output = base64.b64encode(_png("green")).decode()
-    def fake_urlopen(request, *, timeout):
+    def fake_urlopen(request, *, timeout, context):
+        assert context.verify_mode == ssl.CERT_REQUIRED
+        assert context.check_hostname is True
         calls.append(request)
         assert timeout == 180
         assert request.get_header("Authorization") == "Bearer fake"

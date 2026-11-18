@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from astrid.core.env_vars import ASTRID_RUNTIME_CATALOG_URL
-from astrid.core.util.http import os_trust_ssl_context
+from astrid.core.util.http import os_trust_ssl_context, request_error_host
 
 from .catalog_source import GitExecutorSource, fetch_git_executor_manifest
 from .schema import ExecutorDefinition, ExecutorValidationError, validate_executor_definition
@@ -67,7 +67,7 @@ def load_banodoco_catalog_executors(config: BanodocoCatalogConfig) -> tuple[Exec
 def _fetch_catalog_payload(config: BanodocoCatalogConfig) -> dict[str, Any]:
     request = urllib.request.Request(config.catalog_url or "", headers={"Accept": "application/json"})
     try:
-        with urllib.request.urlopen(request, timeout=config.timeout_seconds, context=os_trust_ssl_context()) as response:
+        with request_error_host(request.full_url), urllib.request.urlopen(request, timeout=config.timeout_seconds, context=os_trust_ssl_context()) as response:
             raw = response.read().decode("utf-8")
     except urllib.error.URLError as exc:
         raise BanodocoCatalogError(f"failed to fetch Banodoco agent executor catalog: {exc}") from exc

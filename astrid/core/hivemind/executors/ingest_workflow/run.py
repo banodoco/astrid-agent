@@ -17,6 +17,9 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+from astrid.core.contracts.errors import TLS_VERIFICATION_CODE, coerce_astrid_error
+from astrid.core.util.http import os_trust_ssl_context, request_error_host
+
 # -- dual-import guard (T5 pattern) -------------------------------------------
 try:
     from ..workflow_semantics import enrich_resource_data
@@ -252,7 +255,7 @@ def load_workflow_from_url(url: str) -> dict[str, Any]:
         },
         method="GET",
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with request_error_host(req.full_url), urllib.request.urlopen(req, timeout=30, context=os_trust_ssl_context()) as resp:
         raw = resp.read().decode("utf-8", errors="replace")
     return json.loads(raw)
 
@@ -378,6 +381,10 @@ def main(argv: list[str] | None = None) -> int:
         output_json({"error": f"file not found: {args.path}"}, args.out)
         return 1
     except (OSError, urllib.error.URLError) as exc:
+        error = coerce_astrid_error(exc)
+        if error.code == TLS_VERIFICATION_CODE:
+            output_json({"error": error.to_envelope()}, args.out)
+            return 1
         output_json({"error": f"failed to read workflow: {exc}"}, args.out)
         return 1
     except json.JSONDecodeError as exc:

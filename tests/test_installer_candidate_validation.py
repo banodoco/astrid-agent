@@ -5,6 +5,7 @@ import io
 import json
 import shutil
 import sqlite3
+import ssl
 import stat
 import subprocess
 import sys
@@ -320,7 +321,9 @@ def test_real_preparation_failure_leaves_old_owner_pointer_and_workspace(candida
     for name in ("stop", "backup", "upgrade", "register"):
         monkeypatch.setattr(backend, name, Mock(side_effect=AssertionError(f"{name} before admission")))
 
-    def response(*_args, **_kwargs):
+    def response(request, *, timeout, context):
+        assert context.verify_mode == ssl.CERT_REQUIRED
+        assert context.check_hostname is True
         if failure == "download":
             raise OSError("download interrupted")
         return io.BytesIO(b"tampered candidate archive")
