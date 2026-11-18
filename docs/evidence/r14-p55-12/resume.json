@@ -1648,12 +1648,20 @@
     "agent_local": "585cc048e90787d354358e22f90b9645116611f7",
     "agent_published_equal_tree": "2fdf06a903b0fecaf9f70f1453e993119dccfd5e",
     "runtime": "1a28101869bffcdb84cc2271307a7f55978def7b",
-    "vibecomfy": "08b770d9493a1d1c567b2c4d2166c2b1d794784b"
+    "vibecomfy": {
+      "authority_commit": "2fdf06a903b0fecaf9f70f1453e993119dccfd5e",
+      "authority_path": "astrid/packs/vibecomfy/pins.json",
+      "authority_repository": "banodoco/astrid-agent",
+      "authority_sha256": "3bd3c40448ad42b3283da5869cf5e549a51e29c5072305d426ba90a92f7d2b10",
+      "json_pointer": "/sources/vibecomfy/revision"
+    }
   },
   "packet": "R14-P55-12",
   "pins_proposed_for_lead_review": {
     "runtime": "1a28101869bffcdb84cc2271307a7f55978def7b",
-    "vibecomfy": "08b770d9493a1d1c567b2c4d2166c2b1d794784b"
+    "vibecomfy": {
+      "authority_ref": "#/observed_candidate_product_commits/vibecomfy"
+    }
   },
   "schema_version": 1,
   "session": "r14-P55-12-1",
