@@ -171,6 +171,34 @@ def translate_media_selectors(
     return normalized_config, normalized_registry
 
 
+def reader_view(config: Mapping[str, Any], registry: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return what render reads from a projection, without importing the renderer.
+
+    Media selectors are translated, editor-only registry metadata is dropped,
+    and the ``rect`` placement alias becomes ordinary clip geometry. Anything
+    that cannot be normalized is left as written for the strict check.
+    """
+    from .banodoco_schema import EDITOR_ASSET_METADATA_KEYS
+
+    view_config, view_registry = translate_media_selectors(config, registry, strict=False)
+    assets = view_registry.get("assets")
+    if isinstance(assets, dict):
+        for entry in assets.values():
+            if isinstance(entry, dict):
+                for key in EDITOR_ASSET_METADATA_KEYS & set(entry):
+                    del entry[key]
+                entry.pop("media_type", None)
+                if entry.get("origin") == "managed-local":
+                    entry["origin"] = "opaque-foreign"
+    for clip in view_config.get("clips") or []:
+        rect = clip.get("rect") if isinstance(clip, dict) else None
+        if (isinstance(rect, Mapping) and set(rect) <= {"x", "y", "width", "height"}
+                and all(clip.get(key, rect[key]) == rect[key] for key in rect)):
+            del clip["rect"]
+            clip.update(copy.deepcopy(dict(rect)))
+    return view_config, view_registry
+
+
 def check_reader_projection(config: Mapping[str, Any], registry: Mapping[str, Any]) -> None:
     """Raise ``ReaderProjectionError`` unless render and visualize can open this projection.
 
@@ -212,5 +240,6 @@ __all__ = [
     "ReaderProjectionError",
     "check_reader_projection",
     "media_identity",
+    "reader_view",
     "translate_media_selectors",
 ]

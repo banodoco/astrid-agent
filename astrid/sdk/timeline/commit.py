@@ -1026,22 +1026,21 @@ def reader_problem(service, document):
     """Why render and visualize could not open this exact closure, or ``None``.
 
     The closure goes through the readers' shared parent-composition projection
-    and render's normalization, then the readers' own strict timeline and
-    registry schemas.
+    and render's normalization (``reader_view``), then the readers' own strict
+    timeline and registry schemas. The renderer itself is never imported.
     """
-    from astrid.core.timeline.reader_projection import ReaderProjectionError, check_reader_projection
-    from astrid.packs.rendering.actions.render.managed_timeline import (
-        ManagedRenderValidationError,
-        _render_compatible_projection,
+    from astrid.core.timeline.reader_projection import (
+        ReaderProjectionError,
+        check_reader_projection,
+        reader_view,
     )
 
     try:
         # Appearance normalization (the Node placement package) only resolves
         # canvas geometry; skipping it keeps this check free of a subprocess.
         projected = service.project_capture(document, normalize_appearance=False)
-        config, registry = _render_compatible_projection(projected["config"], projected["registry"])
-        check_reader_projection(config, registry)
-    except (ReaderProjectionError, ManagedRenderValidationError) as exc:
+        check_reader_projection(*reader_view(projected["config"], projected["registry"]))
+    except ReaderProjectionError as exc:
         return str(exc)
     except Exception as exc:  # noqa: BLE001 - the readers run this same projection
         return f"render and visualize cannot project the result: {exc}"

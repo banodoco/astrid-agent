@@ -351,3 +351,21 @@ def test_commit_gate_refusal_has_readable_wording():
                                  "details": {"status": "invalid", "reason": "unreadable_result"}})
     assert presented["headline"].startswith("Render and visualize could not open the timeline")
     assert "clip.asset" in presented["fix"]
+
+
+def test_commit_gate_view_matches_what_render_reads():
+    from astrid.core.timeline.reader_projection import reader_view
+    from astrid.packs.rendering.actions.render.managed_timeline import _render_compatible_projection
+
+    config = {"clips": [
+        {"id": "a", "asset": "pic", "rect": {"x": 0.1, "y": 0.2, "width": 0.3, "height": 0.4}},
+        {"id": "b", "media_id": TAKE},
+    ]}
+    registry = {"assets": {"pic": {"media_id": PICTURE, "media_type": "video/mp4", "origin": "managed-local"}}}
+    def without_annotations(view):
+        view_config, view_registry = view
+        return [{key: value for key, value in clip.items() if key != "app"}
+                for clip in view_config["clips"]], view_registry
+
+    assert without_annotations(reader_view(config, registry)) == without_annotations(
+        _render_compatible_projection(config, registry))
