@@ -341,6 +341,11 @@ def _validate_character_swap_media(settings: Mapping[str, Any], media: list[dict
 def _identity_value(value: Mapping[str, Any]) -> dict[str, Any]:
     """Identity covers authored intent, not inspection or clock projections."""
     result = {key: val for key, val in value.items() if key not in {"profile", "output_count"}}
+    # Preserve the pre-canvas v2 identity for requests using the historical
+    # default. Non-default canvases are authored intent and remain digestible.
+    from .generation import DEFAULT_SIZE
+    if result.get("canvas") == {"width": DEFAULT_SIZE[0], "height": DEFAULT_SIZE[1]}:
+        result.pop("canvas")
     media = []
     for item in value["media"]:
         row = {key: val for key, val in item.items()

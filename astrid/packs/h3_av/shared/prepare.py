@@ -385,7 +385,9 @@ def _fps_text(rate: Fraction | None) -> str:
     return f"{float(rate):.3f} fps" if rate is not None else "unknown fps"
 
 
-def _check_source_av_rate(asset_id: str, path: Path) -> None:
+def _check_source_av_rate(
+    asset_id: str, path: Path, *, expected_size: tuple[int, int] = DEFAULT_SIZE,
+) -> None:
     """Reject a source-backed video that is not exactly 24/1 CFR or whose audio and video diverge."""
     ffprobe = shutil.which("ffprobe")
     if ffprobe is None:
@@ -439,8 +441,8 @@ def _check_source_av_rate(asset_id: str, path: Path) -> None:
     problems: list[str] = []
     if r_rate != _SOURCE_AV_RATE or avg_rate != _SOURCE_AV_RATE:
         problems.append("video is not exactly 24/1 CFR")
-    if (video.get("width"), video.get("height")) != (1024, 576):
-        problems.append("video dimensions are not 1024x576")
+    if (video.get("width"), video.get("height")) != expected_size:
+        problems.append(f"video dimensions are not {expected_size[0]}x{expected_size[1]}")
     if video_duration is None or (audio is not None and audio_duration is None):
         problems.append("durations could not be measured")
     elif audio is not None and abs(audio_duration - video_duration) > _SOURCE_AV_TOLERANCE_SECONDS:
@@ -458,18 +460,21 @@ def _check_source_av_rate(asset_id: str, path: Path) -> None:
         f"dimensions {video.get('width')}x{video.get('height')}; "
         f"video duration {video_text}, audio duration {audio_text}"
     )
-    hint = SOURCE_AV_CONFORM_HINT
+    conform_command = SOURCE_AV_CONFORM_COMMAND.replace(
+        "scale=1024:576", f"scale={expected_size[0]}:{expected_size[1]}"
+    )
+    hint = f"conform with: {conform_command}"
     codec = audio.get("codec_name") if audio is not None else None
     if audio is not None and codec != "aac":
         hint += f" (audio codec is {codec}: the audio must be re-encoded to aac, as the command does)"
     code = SOURCE_AV_RATE_CODE if r_rate != _SOURCE_AV_RATE or avg_rate != _SOURCE_AV_RATE else (
-        "H3_SOURCE_AV_SIZE" if (video.get("width"), video.get("height")) != (1024, 576)
+        "H3_SOURCE_AV_SIZE" if (video.get("width"), video.get("height")) != expected_size
         else SOURCE_AV_RATE_CODE
     )
     raise _SourceAVError(
         f"{SOURCE_AV_RATE_CODE}: source {asset_id!r} rejected before any pod is held: "
         f"{'; '.join(problems)}. Measured {measured}. {hint}",
-        code=code, field="source.asset", fix=SOURCE_AV_CONFORM_COMMAND,
+        code=code, field="source.asset", fix=conform_command,
     )
 
 
@@ -494,11 +499,16 @@ def _check_source_av_rates(request: H3Request, assets: list[dict[str, Any]]) -> 
         for record in assets
         if record.get("status") == "resolved" and isinstance(record.get("path"), str)
     }
+    expected_size = DEFAULT_SIZE
+    if value.get("version") == 2:
+        canvas = value.get("canvas")
+        if isinstance(canvas, Mapping):
+            expected_size = (int(canvas["width"]), int(canvas["height"]))
     for asset_id in dict.fromkeys(targets):
         path = resolved.get(asset_id)
         # An unresolved source is blocked_until_resolution, so no pod can be held for it.
         if path is not None:
-            _check_source_av_rate(asset_id, path)
+            _check_source_av_rate(asset_id, path, expected_size=expected_size)
 
 
 def _v2_mask_schedule(
