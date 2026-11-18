@@ -196,16 +196,18 @@ class ProcessObserver:
         self.popen_poll_code = subprocess.Popen.poll.__code__
         self.popen_try_wait_code = getattr(getattr(subprocess.Popen, "_try_wait", None), "__code__", None)
 
-    def event(self, kind: str, **fields) -> None:
+    def event(self, kind: str, **fields) -> dict | None:
         with self.lock:
             if len(self.events) >= MAX_EVENTS:
                 self.gaps.add("Python observation event limit exceeded")
                 return
             # perf_counter is a system-wide monotonic clock on supported
             # Python versions, including Windows 3.11's high-resolution QPC.
-            self.events.append({"at_ns": time.perf_counter_ns(), "kind": kind,
-                                "tid": threading.get_native_id(),
-                                "runtime_scope": getattr(self.context, "scope", None), **fields})
+            row = {"at_ns": time.perf_counter_ns(), "kind": kind,
+                   "tid": threading.get_native_id(),
+                   "runtime_scope": getattr(self.context, "scope", None), **fields}
+            self.events.append(row)
+            return row
 
     @staticmethod
     def _site(frame):

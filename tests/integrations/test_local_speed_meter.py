@@ -71,9 +71,9 @@ class AttachedMeter:
         with self.lock:
             self.timeline.append((prompt_id, queued, started, ended))
 
-    def local_event(self, kind):
+    def local_event(self, kind, *, at_ns=None):
         with self.lock:
-            self.local_events.append((kind, time.perf_counter()))
+            self.local_events.append((kind, time.perf_counter() if at_ns is None else at_ns / 1e9))
 
     def begin(self):
         if self.observer is not None:
@@ -201,9 +201,9 @@ def test_attached_caller_observation(
 
         def trace(statement):
             if statement.strip().upper().startswith("COMMIT"):
-                meter.local_event("sqlite_commit")
                 context = meter.observer.runtime_write_context(sys._getframe(1))
-                meter.observer.event("runtime_commit_statement", write_context=context)
+                event = meter.observer.event("runtime_commit_statement", write_context=context)
+                meter.local_event("sqlite_commit", at_ns=event["at_ns"] if event is not None else None)
                 if context == "unattributed_runtime":
                     meter.observer.event("runtime_commit_statement_unattributed")
 
@@ -369,7 +369,7 @@ def test_attached_caller_observation(
             report["wait_coverage"] = sorted(set.intersection(*(set(row.get("wait_coverage", [])) for row in rows)))
             report["wait_carry_in"] = dict(sum((Counter(row.get("wait_carry_in", {})) for row in rows), Counter()))
             report["runtime_http_paths"] = meter.runtime.report(meter.start_ns, meter.reply_ns)
-            report["runtime_operation_scopes"] = meter.runtime.operation_scopes(meter.start_ns, meter.reply_ns)
+            report["runtime_operation_scopes"] = meter.runtime.operation_scopes(meter.start_ns, meter.reply_ns, meter.wall_reply_ns)
             report["sqlite"] = {"before": meter.sqlite_before, "after": meter.sqlite_after,
                                 "database": meter.runtime.database}
             report["write_spans"] = [dict(span, pid=row["pid"]) for row in rows for span in row.get("write_spans", [])]

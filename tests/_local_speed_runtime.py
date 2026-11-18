@@ -127,14 +127,23 @@ class RuntimeObserver:
             spans.append(span)
         return spans
 
-    def operation_scopes(self, start_ns, reply_ns):
+    def operation_scopes(self, start_ns, reply_ns, epoch_reply_ns=None):
         """Retain per-request/reaper counts separately from invocation volume."""
         counts = {}
         for event in self.process.events:
             scope = event.get("runtime_scope")
             if scope is not None and start_ns <= event["at_ns"] <= reply_ns:
                 counts.setdefault(scope, Counter())[event["kind"]] += 1
-        return [{**span, "counts": dict(sorted(counts.get(span["scope"], {}).items())),
-                 "complete": span["monotonic_end_ns"] is not None and span["monotonic_end_ns"] <= reply_ns}
-                for span in [*self.requests, *self.background]
-                if start_ns <= span["monotonic_start_ns"] <= reply_ns]
+        spans = []
+        for original in [*self.requests, *self.background]:
+            if (original["monotonic_start_ns"] > reply_ns or
+                    (original["monotonic_end_ns"] is not None and original["monotonic_end_ns"] < start_ns)):
+                continue
+            span = {**original, "counts": dict(sorted(counts.get(original["scope"], {}).items())),
+                    "carry_in": original["monotonic_start_ns"] < start_ns,
+                    "complete": original["monotonic_end_ns"] is not None and original["monotonic_end_ns"] <= reply_ns}
+            if epoch_reply_ns is not None and (span["epoch_end_ns"] is None or span["epoch_end_ns"] > epoch_reply_ns):
+                span["epoch_end_ns"] = epoch_reply_ns
+                span["clipped_at_reply"] = True
+            spans.append(span)
+        return spans

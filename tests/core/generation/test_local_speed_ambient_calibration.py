@@ -156,8 +156,16 @@ def test_three_job_route_commits_remain_three_while_claim_poll_volume_varies():
 def test_stable_worker_counter_has_no_margin_and_one_extra_still_fails():
     base = proof()
     actual = copy.deepcopy(base)
+    meter = observer()
+    meter.role = "pack_worker"
+    meter.start()
+    try:
+        time.sleep(0)
+        worker = meter.snapshot()
+    finally:
+        meter.stop()
     for row in actual["counters"]:
-        row["process_observations"][1]["counts"]["sleep_attempt"] = 1
+        row["process_observations"][1] = worker
     policy = calibration(base)
     assert policy["callers"]["resident_sdk"]["metrics"]["process.pack_worker.sleep_attempt"]["margin"] == 0
     assert any(failure["metric"] == "process.pack_worker.sleep_attempt" for failure in compare_calibrated(actual, base, policy))
@@ -180,6 +188,39 @@ def test_lost_wait_coverage_is_not_an_observed_zero(field):
     actual["counters"][0]["process_observations"][0].pop(field)
     with pytest.raises(ValueError, match="coverage is incomplete"):
         compare_calibrated(actual, base, calibration(base))
+
+
+@pytest.mark.parametrize("loss", ["wait_site", "request_scope", "commit_scope", "sql_statement"])
+def test_partially_dropped_observations_fail_against_the_independent_totals(loss):
+    base = proof()
+    actual = copy.deepcopy(base)
+    row = actual["counters"][0]
+    if loss == "wait_site":
+        row["process_observations"][0]["wait_sites"].clear()
+    elif loss == "request_scope":
+        row["runtime_operation_scopes"].pop()
+    elif loss == "commit_scope":
+        row["runtime_operation_scopes"][0]["counts"].pop("runtime_outer_commit_success")
+    else:
+        row["python_counts"].pop("runtime_commit_statement")
+    with pytest.raises(ValueError, match="coverage is incomplete|do not cover"):
+        compare_calibrated(actual, base, calibration(base))
+
+
+def test_runtime_operation_scope_retains_a_carry_in_commit_without_counting_a_new_request():
+    meter = observer()
+    runtime = RuntimeObserver.__new__(RuntimeObserver)
+    runtime.process = meter
+    runtime.requests = [{"kind": "runtime_request_span", "route": "POST /v1/tasks/claim", "scope": 1,
+                         "monotonic_start_ns": 10, "monotonic_end_ns": None,
+                         "epoch_start_ns": 110, "epoch_end_ns": None}]
+    runtime.background = []
+    meter.events = [{"runtime_scope": 1, "at_ns": 25, "kind": "runtime_outer_commit_success"}]
+    result = runtime.operation_scopes(20, 30, 130)
+    assert len(result) == 1 and result[0]["carry_in"] is True and result[0]["complete"] is False
+    assert result[0]["epoch_end_ns"] == 130 and result[0]["clipped_at_reply"] is True
+    assert result[0]["counts"] == {"runtime_outer_commit_success": 1}
+    assert runtime.requests[0]["epoch_end_ns"] is None
 
 
 def test_unrelated_runner_or_dependency_cannot_use_the_calibration():

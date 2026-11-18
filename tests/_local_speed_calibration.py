@@ -8,6 +8,8 @@ references and the strict reference-replacement gate are not changed here.
 
 from __future__ import annotations
 
+from collections import Counter
+
 from tests._local_speed_baseline import CALLERS, compare_baseline, counter_values
 
 SCHEMA = "astrid.local-speed-ambient-calibration.v1"
@@ -34,6 +36,18 @@ def scoped_values(row, *, known_counter_names=()):
     observed_roles = {process["role"] for process in row["process_observations"]}
     if not observed_roles <= roles or PARENT not in observed_roles or "pack_worker" not in observed_roles:
         raise ValueError("unexpected or missing process role coverage")
+    request_counts = Counter(scope["route"] for scope in scopes
+                             if scope["kind"] == "runtime_request_span" and not scope.get("carry_in"))
+    if request_counts != Counter(row["runtime_http_paths"]):
+        raise ValueError("Runtime request scope coverage is incomplete")
+    if row["python_counts"].get("runtime_commit_statement_unattributed", 0):
+        raise ValueError("an SQL COMMIT statement lacks Runtime scope")
+    if row["python_counts"].get("runtime_commit_statement", 0) != row["runtime_main_connection_commit_statements"]:
+        raise ValueError("SQL COMMIT statement coverage is incomplete")
+    for operation in ("runtime_outer_commit_attempt", "runtime_outer_commit_success", "runtime_commit_call_attempt",
+                      "runtime_commit_without_transaction", "runtime_commit_statement"):
+        if sum(scope["counts"].get(operation, 0) for scope in scopes) != row["python_counts"].get(operation, 0):
+            raise ValueError("Runtime commit scope coverage is incomplete: " + operation)
     poll_metrics = set()
     for role in sorted(roles):
         processes = [process for process in row["process_observations"] if process["role"] == role]
@@ -44,6 +58,12 @@ def scoped_values(row, *, known_counter_names=()):
             for field in ("wait_sites", "wait_invocation_maxima", "poll_sites", "poll_wait_maxima"):
                 if field not in process:
                     raise ValueError("wait producer/cycle coverage is incomplete")
+            for kind in ("sleep", "event_wait", "condition_wait", "asyncio_sleep", "selector_wait"):
+                operation = kind + "_attempt"
+                if sum(count for site, count in process["wait_sites"].items() if site.startswith(operation + "|")) != process["counts"].get(operation, 0):
+                    raise ValueError("wait producer counts do not cover the observed waits")
+            if set(process["wait_invocation_maxima"]) != set(process["wait_sites"]):
+                raise ValueError("wait invocation coverage is incomplete")
             for site, count in process["wait_sites"].items():
                 key = f"waitsite.{role}.{site}"
                 values[key] = values.get(key, 0) + count
@@ -60,7 +80,7 @@ def scoped_values(row, *, known_counter_names=()):
     for scope in scopes:
         route = scope["route"] or scope["write_context"]
         prefix = "runtime_scope_count." + route
-        values[prefix] = values.get(prefix, 0) + 1
+        values[prefix] = values.get(prefix, 0) + (0 if scope.get("carry_in") else 1)
         for operation in OPERATIONS:
             key = f"per_request.{route}.{operation}"
             values[key] = max(values.get(key, 0), scope["counts"].get(operation, 0))
