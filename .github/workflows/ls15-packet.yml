@@ -198,7 +198,7 @@ jobs:
             -o tmp_path_retention_policy=all --basetemp="$GITHUB_WORKSPACE/proof/managed-tmp" \
             tests/integrations/test_ls15_managed_resident.py
       - name: Windows unchanged personal relocation in three isolated runs per source
-        if: ${{ !cancelled() && steps.install.outcome == 'success' && runner.os == 'Windows' }}
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && runner.os == 'Windows' && matrix.suite == 'resident' }}
         run: |
           outcome=0
           for source in base head; do
