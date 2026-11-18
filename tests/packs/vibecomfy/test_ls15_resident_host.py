@@ -15,9 +15,10 @@ import pytest
 from astrid.core.execution.generic_host import GenericPackHost
 from astrid.core.generation.backends.comfy_target import open_comfy_http
 from tests.helpers.ls5_comfy_peer import ComfyPeer
-from tests.packs.vibecomfy.test_local_server_run import comfy as comfy
+from tests.packs.vibecomfy import test_local_server_run
 from tests.test_generic_host import FakeRuntime
 
+comfy = test_local_server_run.comfy
 pytestmark = pytest.mark.integration
 
 
@@ -103,7 +104,7 @@ def resident_comfy(comfy, tmp_path, monkeypatch):
             host.shutdown()
 
 
-def run_job(world, number, *, values=None, expected_status="completed", align=None):
+def run_job(world, number, *, values=None, expected_status="completed", align=None, managed=False):
     host, runtime, peer, comfy = world
     sources = getattr(comfy, "members", {"workflow": comfy.workflow})
     descriptors = {}
@@ -116,7 +117,7 @@ def run_job(world, number, *, values=None, expected_status="completed", align=No
         "capability": "vibecomfy.run", "project_id": "ls15-project", "runtime_epoch": 1,
         "status": "running", "input_object_ids": ["sha256:" + row["digest"] for row in descriptors.values()],
         "spec": {"spec": {"inputs": {**descriptors,
-                "workflow_inputs": json.dumps(values or {}), "comfy_url": peer.url}}}}}
+                "workflow_inputs": json.dumps(values or {}), "comfy_url": "" if managed else peer.url}}}}}
     if align is not None:
         task["task"]["spec"]["spec"]["metadata"] = {"align": align}
     runtime.tasks[task_id] = task

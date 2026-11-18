@@ -68,7 +68,11 @@ class CanonicalCatalogue:
         self.loaded = OrderedDict()
 
     def load(self, path, *, url, generation=""):
-        from .production_engine import _workflow_content_digest, load_workflow_path, workflow_members
+        from .production_engine import (
+            _workflow_content_digest,
+            load_workflow_path,
+            workflow_members,
+        )
         identity = _workflow_content_digest(path)
         key = _digest([identity, url, generation])
         if key in self.loaded:
@@ -121,9 +125,15 @@ class HostPreparationCache(CanonicalCatalogue):
         """Prove freezability before dispatch; no custom code joins on failure."""
         from vibecomfy.prepared import PreparedWorkflowContext
         from vibecomfy.schema.cache import object_info_payload_checksum
-        from .local_server_engine import _live_preflight, local_server_bundle, prepare_local_workflow
-        from .production_engine import _canonical_bundle_value, _validate_workflow_input_bindings
+
         from astrid.core.generation.target_inventory import declared_rows
+
+        from .local_server_engine import (
+            _live_preflight,
+            local_server_bundle,
+            prepare_local_workflow,
+        )
+        from .production_engine import _canonical_bundle_value, _validate_workflow_input_bindings
 
         loaded = self.last_loaded
         values = json.loads(inputs.get("workflow_inputs") or "{}")
@@ -210,6 +220,7 @@ def host_cache(host, record, task, inputs, *, align, entry):
         if described is None or described.get("hooks_declared"):
             return None
     from runtime_protocol import platform
+
     from astrid.sdk.storage_root import resolve_runtime_data_root
     area = resolve_runtime_data_root() / "runtime" / "pack-preparations"
     platform.private_directory(area)
@@ -233,8 +244,10 @@ def current_session():
 def run_cancellable(*args, **kwargs):
     """Cancellation belongs to this attempt's async task, never process signals."""
     import asyncio
-    from astrid.sdk import current_pack_job
+
     from vibecomfy.runtime.run import run
+
+    from astrid.sdk import current_pack_job
     job = current_pack_job()
 
     async def execute():
@@ -256,8 +269,9 @@ class VibeComfySession(CanonicalCatalogue):
     """One captured catalogue, target pair and bounded prepared-template map."""
     def __init__(self, root):
         super().__init__(root)
-        from .resident_source import compiler_content_identity
         from vibecomfy.runtime import session as runtime_session
+
+        from .resident_source import compiler_content_identity
         self.compiler_generation = compiler_content_identity()
         # The pinned producer's metadata helper probes the ambient cwd on
         # every receipt. This interpreter has one fixed private cwd for its
@@ -275,8 +289,8 @@ class VibeComfySession(CanonicalCatalogue):
     def entry_manifest(self, entry, values, source):
         if not entry or entry == "workflow":
             return None
-        from .production_engine import _workflow_content_digest
         from .actions.run.run import _entry_manifest
+        from .production_engine import _workflow_content_digest
         key = _digest([entry, _workflow_content_digest(source), _shape(values)])
         with self.lock:
             if key not in self.requirements:
@@ -287,15 +301,25 @@ class VibeComfySession(CanonicalCatalogue):
             attempt_identity=None, expected_execution_identity=None, workflow_input_bindings=None):
         from vibecomfy.prepared import PreparedWorkflowContext
         from vibecomfy.schema.cache import object_info_payload_checksum
-        from astrid.sdk import current_pack_job
+
         from astrid.core.generation.backends.comfy_held import ComfyTargetSession
         from astrid.core.generation.backends.comfy_target import ComfyTarget
         from astrid.core.generation.entries import prepare_execution_bindings
         from astrid.core.generation.managed_preparation import read_preparation
         from astrid.core.generation.target_inventory import declared_rows
-        from .local_server_engine import _live_preflight, local_server_bundle, prepare_local_workflow, run_local_server
-        from .production_engine import (_canonical_bundle_value, _validate_workflow_input_bindings,
-                                        loaded_workflow_execution_identity)
+        from astrid.sdk import current_pack_job
+
+        from .local_server_engine import (
+            _live_preflight,
+            local_server_bundle,
+            prepare_local_workflow,
+            run_local_server,
+        )
+        from .production_engine import (
+            _canonical_bundle_value,
+            _validate_workflow_input_bindings,
+            loaded_workflow_execution_identity,
+        )
 
         job = current_pack_job()
         from .resident_source import compiler_content_identity

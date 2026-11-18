@@ -15,7 +15,7 @@ from collections import deque
 from contextvars import ContextVar
 from types import MappingProxyType
 
-from .resident_sessions import PROTOCOL, ResidentJobContext, ResidentProtocolError, _JOB
+from .resident_sessions import _JOB, PROTOCOL, ResidentJobContext, ResidentProtocolError
 
 _OUTPUT: ContextVar[object | None] = ContextVar("resident_output", default=None)
 _CLEANUPS: list = []

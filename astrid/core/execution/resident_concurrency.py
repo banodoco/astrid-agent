@@ -11,8 +11,13 @@ from types import MappingProxyType, SimpleNamespace
 
 from .managed_tool_session import StaleAdmissionError
 from .resident_sessions import (
-    PROTOCOL, ResidentPackAdapter, ResidentProtocolError, _success_returncode,
-    encode_frame, resident_capacity, token_identity,
+    PROTOCOL,
+    ResidentPackAdapter,
+    ResidentProtocolError,
+    _success_returncode,
+    encode_frame,
+    resident_capacity,
+    token_identity,
 )
 
 
