@@ -1482,8 +1482,15 @@ class RuntimeCommitService:
                                                 inverse_records=inverse_records)
                 # What a commit accepts, every reader must be able to open.
                 reader_baseline = (bundle if current == base else head_bundle)
-                _check_readers(self, document, reader_baseline["source_mapping"]["_runtime_document"],
-                               base, current)
+                baseline_document = reader_baseline["source_mapping"]["_runtime_document"]
+                if len(plan.records) == 1 and plan.records[0]['command']['op'] == 'timeline.duplicate':
+                    # A copy is as readable as its source, not as the empty
+                    # destination: copying an unreadable timeline (to repair
+                    # it) is no readable-to-unreadable change, while a copy of
+                    # a readable source that comes out unreadable is refused.
+                    baseline_document = port.revision_closure(
+                        copy.deepcopy(plan.records[0]['command']['args']['source_ref']))
+                _check_readers(self, document, baseline_document, base, current)
                 from ._commit_preview import capture_sequential_execution, prepared_records
 
                 records = prepared_records(plan, undo_of=undo_of,
