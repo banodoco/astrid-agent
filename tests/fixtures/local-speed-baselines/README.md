@@ -37,17 +37,20 @@ parent retains the original product, dependency pins, references and test
 guards. `plan55-qualification.json` records both commits and trees, all harness
 hashes and the two plan-added LS-5 harness files outside this measurement.
 Follow-ups retain the preceding published controller as the first parent;
-the current predecessor is `02add382`, which retains `d7f53b0d` and `d84e7276`. Each
+the current predecessor is `22b5d21e`, which retains `02add382`, `d7f53b0d` and `d84e7276`. Each
 qualification source extends its predecessor's original-tuple source. The
 checker follows that published chain back to the accepted plan merge and
 verifies both identities and the ordinary two-parent merge;
 the published first-parent history is preserved without rebasing.
 Under [Lead 6983043853](https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6983043853),
-the SDK fix first merges into that retained controller, then the new accepted
+the SDK fix first merged into `02add382`, then the new accepted
 plan merges into the result. The checker reproduces both ordinary merges and
 requires the current plan as an ancestor; the original-tuple source still
 extends the preceding original source. The newly accepted LS-8 product bytes
 stay in the integrated head and are not substituted into the original proof.
+The final evidence-field correction extends the same qualification source and
+merges into `22b5d21e`. Source selection follows both recorded plan bases to
+retain the original tuple across that already verified plan advance.
 The continuation source archive retains the integrated PR head. This source
 handoff does not qualify the newer accepted product/dependency tuple; LS-2.1
 owns that measurement. Any unexpected source or merge difference fails before

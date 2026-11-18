@@ -154,6 +154,19 @@ def test_followup_then_new_plan_merge_keeps_both_native_merges_and_original_tupl
     assert run(tmp_path, "show", source + ":astrid/product.py") == "original product"
     assert run(tmp_path, "show", source + ":runtime.lock.json") == '{"source_commit": "original-runtime"}'
     assert receipt["new_plan_tuple_qualified"] is False
+    run(tmp_path, "checkout", "--detach", source)
+    write(tmp_path, "tests/_local_speed_process.py", "final SDK evidence correction\n")
+    corrected_source = commit(tmp_path, "correct original-tuple evidence")
+    run(tmp_path, "checkout", "--detach", controller)
+    run(tmp_path, "merge", "--no-commit", "--no-ff", corrected_source)
+    corrected = commit(tmp_path, "preserve both accepted plan merges")
+    args.update(controller=corrected, previous_controller=controller)
+    receipt = validate_sources(**args)
+    assert receipt["qualification"] == corrected_source
+    assert receipt["previous_controller_preserved"] == controller
+    assert run(tmp_path, "merge-base", controller, corrected) == controller
+    assert run(tmp_path, "show", corrected + ":astrid/product.py") == "new accepted plan product"
+    assert receipt["new_plan_tuple_qualified"] is False
 
 
 def test_fixture_preserves_exact_lf_bytes_with_windows_text_defaults(tmp_path, monkeypatch):

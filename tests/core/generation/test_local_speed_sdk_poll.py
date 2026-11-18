@@ -175,7 +175,7 @@ def test_missing_clipped_or_ambiguous_sdk_evidence_fails_closed(loss):
     elif loss == "raw_count":
         process["counts"]["sdk_poll_start"] += 1
     elif loss == "task":
-        row["measured_task_id"] = "another-task"
+        row["proof"] = {"measured_task_id": "another-task"}
     elif loss == "gap":
         process["coverage_gaps"] = ["Python observation event limit exceeded"]
     else:
