@@ -48,6 +48,7 @@ class Region:
     mask_asset: str | None = None
     box: tuple[float, float, float, float] | None = None
     canvas: tuple[int, int] | None = None
+    threshold: int | None = None
 
 
 @dataclass(frozen=True)
@@ -127,7 +128,14 @@ def _mask(region: Region, path: str) -> dict[str, Any]:
     if region.mask_asset is not None:
         if region.canvas is not None:
             _fail("region", "canvas is only valid on a box", path, "Remove canvas from the image mask")
-        return {"asset": _nonblank(region.mask_asset, f"{path}.mask_asset")}
+        value = {"asset": _nonblank(region.mask_asset, f"{path}.mask_asset")}
+        if region.threshold is not None:
+            value["threshold"] = region.threshold
+        from .request_v2 import _mask as normalize_mask
+        normalized = normalize_mask(value, path, None)
+        return {key: normalized[key] for key in ("asset", "threshold") if key in normalized}
+    if region.threshold is not None:
+        _fail("region", "threshold is only valid on an image mask", path, "Remove threshold from the box")
     box = region.box
     if not isinstance(box, (tuple, list)) or len(box) != 4:
         _fail("region", "box must be [x, y, width, height]", path, "Supply four pixel coordinates")
@@ -470,7 +478,7 @@ def sampling_request_document(
 def _region(mask: Mapping, regions: list[Region]) -> str | None:
     if mask.get("full_frame") is True and set(mask) <= {"full_frame", "polarity"}:
         return None
-    if set(mask) - {"asset", "rectangle", "polarity", "edge", "canvas"} or mask.get("edge", {}) not in (
+    if set(mask) - {"asset", "rectangle", "polarity", "edge", "canvas", "threshold"} or mask.get("edge", {}) not in (
         {},
         {"dilate": 0, "feather": 0},
     ):
@@ -485,6 +493,7 @@ def _region(mask: Mapping, regions: list[Region]) -> str | None:
         mask_asset=mask.get("asset"),
         box=tuple(mask["rectangle"]) if "rectangle" in mask else None,
         canvas=tuple(mask["canvas"]) if "canvas" in mask else None,
+        threshold=mask.get("threshold"),
     )
     for region in regions:
         if replace(region, name="") == candidate:

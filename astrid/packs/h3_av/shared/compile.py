@@ -702,13 +702,15 @@ def _compile_native_masked_edit(
                 raise CompilationError(str(exc)) from exc
             mask_kind = str(mask_info["kind"])
             if mask_kind == "video":
+                if region.threshold is not None:
+                    raise CompilationError("thresholded moving masks are not supported by native masked edit")
                 if int(mask_info["frames"]) != frame_load_cap:
                     raise CompilationError(f"native masked edit mask video {region.mask_asset!r} has {mask_info['frames']} frames; the source window loads {frame_load_cap}")
                 mask_path = assets[region.mask_asset]
         if mask_kind == "image":
             try:
                 resolved = resolve_static_region(region, width=canvas_size[0], height=canvas_size[1], assets=assets, authored_canvas=True,
-                    polarity="black_preserve_white_edit" if region.mask_asset else None)
+                    polarity="black_preserve_white_edit" if region.mask_asset else None, threshold=region.threshold)
             except H3RequestError as exc:
                 raise CompilationError(str(exc)) from exc
             mask_path = destination / ("resolved-mask.png" if index == 0 else f"resolved-mask-{index}.png")
