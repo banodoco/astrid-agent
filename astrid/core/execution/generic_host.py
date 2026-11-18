@@ -15658,14 +15658,23 @@ class LocalExecutionPreparation:
         journal_ready = False
         if self._request is not None:
             journal_ready = self._acquire_handoff_journal(Path(str(self._request["custody_scope"])))
-        with self._lock:
-            if self._claim_host is not None and self._claim_host is not host:
-                raise HostError("local execution control already has a claim owner")
-            self._claim_host = host
-            if not journal_ready:
-                with host._handoff_condition:
-                    host._handoff_claim_gate_closed = True
-                    host._handoff_observation_known = False
+        # Cleanup must either observe this owner or finish before attachment
+        # can proceed. Its no-owner observation cannot authorize a later host.
+        if not self._abort_dispatch_lock.acquire(timeout=5):
+            raise CleanupUncertainError("local cleanup is still active; claim owner cannot attach")
+        try:
+            with self._lock:
+                if self._aborted:
+                    raise HostError("local preparation has been aborted")
+                if self._claim_host is not None and self._claim_host is not host:
+                    raise HostError("local execution control already has a claim owner")
+                self._claim_host = host
+                if not journal_ready:
+                    with host._handoff_condition:
+                        host._handoff_claim_gate_closed = True
+                        host._handoff_observation_known = False
+        finally:
+            self._abort_dispatch_lock.release()
 
     def retain_activation_grant(self, grant: Mapping[str, Any]) -> None:
         """Retain the activation accepted over the private Runtime channel."""
@@ -15678,6 +15687,10 @@ class LocalExecutionPreparation:
             raise HostError("accepted activation grant cannot be retained for handoff")
         accepted = json.loads(json.dumps(dict(grant), sort_keys=True, allow_nan=False))
         with self._lock:
+            # The CLI precheck precedes this call. Recheck the terminal state
+            # under the same lock that publishes the cleanup acknowledgement.
+            if self._aborted:
+                raise HostError("local preparation has been aborted")
             if self._activation_grant is not None and self._activation_grant != accepted:
                 raise HostError("retained activation grant changed")
             self._activation_grant = accepted
