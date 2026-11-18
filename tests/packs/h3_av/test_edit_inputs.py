@@ -35,7 +35,7 @@ def test_shared_limits_table_has_node_and_lowering_sources():
 
 
 def _request(items):
-    return H3Request({"version": 2, "media": items, "continuation": False}, "test")
+    return H3Request({"version": 2, "media": items, "continuation": False, "duration": 6}, "test")
 
 
 def test_preclaim_measures_each_occurrence_and_sums_video_soundtrack(monkeypatch, tmp_path: Path):
@@ -62,16 +62,17 @@ def test_preclaim_measures_each_occurrence_and_sums_video_soundtrack(monkeypatch
         {"asset": "i", "status": "resolved", "path": str(image)},
     ]
     measured = prepare._admit_conditioning(_request(items), records)
-    assert [row["retained_picture_frames"] for row in measured[:2]] == [120, 240]
+    assert [row["retained_picture_frames"] for row in measured[:2]] == [None, None]
     assert measured[0]["audio_tag"] == "<Audio 1>"
     assert measured[0]["slot"] == "ref_videos.ref_video_0"
     assert measured[0]["tag"] == "<Video 1>"
     assert measured[2]["tag"] == "<Picture 1>"
     assert measured[0]["audio_duration_seconds"] == 5
     assert measured[0]["effective_size"] == {"width": 64, "height": 32}
-    assert measured[1]["resource_estimate"]["raw_bytes"] == 240 * 64 * 32 * 3
-    assert measured[2]["effective_size"] == {"width": 8, "height": 8}
-    assert measured[2]["resource_estimate"]["raw_bytes"] == 8 * 8 * 3
+    assert measured[1]["resource_estimate"]["raw_bytes"] is None
+    assert measured[1]["resource_estimate"]["qualified"] is False
+    assert measured[2]["effective_size"] == {"width": 32, "height": 32}
+    assert measured[2]["resource_estimate"]["raw_bytes"] == 32 * 32 * 3
     assert measured[2]["slot"] == "ref_images.ref_image_0"
 
 
@@ -236,3 +237,270 @@ def test_enabled_video_soundtrack_must_exist_and_cover_trim(monkeypatch, tmp_pat
     records = [{"asset": "v", "status": "resolved", "path": str(media)}]
     with pytest.raises(prepare.PreparationError, match=message):
         prepare._admit_conditioning(_request([item]), records)
+
+
+def test_audio_tags_follow_graph_order_even_when_authored_first():
+    items = [
+        {"occurrence_id": "a", "asset": "a", "role": "reference", "modality": "audio"},
+        {"occurrence_id": "v", "asset": "v", "role": "reference", "modality": "video", "audio": True},
+    ]
+    rows = prepare._admit_conditioning(_request(items), [])
+    assert rows[0]["tag"] == "<Audio 2>"
+    assert rows[1]["audio_tag"] == "<Audio 1>"
+
+
+def test_untrimmed_soundtrack_uses_video_span_and_requires_stream_coverage(monkeypatch, tmp_path):
+    path = tmp_path / "video.mp4"
+    path.touch()
+    item = {"occurrence_id": "v", "asset": "v", "role": "reference", "modality": "video", "audio": True}
+    records = [{"asset": "v", "status": "resolved", "path": str(path)}]
+    probe = {"streams": [{"codec_type": "video", "duration": "5"}, {"codec_type": "audio", "duration": "10"}], "format": {"duration": "10"}}
+    monkeypatch.setattr(prepare, "_probe_conditioning", lambda _: probe)
+    assert prepare._admit_conditioning(_request([item]), records)[0]["audio_duration_seconds"] == 10
+    probe["streams"][1]["duration"] = "4"
+    with pytest.raises(prepare.PreparationError, match="past measured audio stream duration"):
+        prepare._admit_conditioning(_request([item]), records)
+    del probe["streams"][1]["duration"]
+    with pytest.raises(prepare.PreparationError, match="cannot measure soundtrack"):
+        prepare._admit_conditioning(_request([item]), records)
+
+
+def test_real_video_rejects_shorter_soundtrack(tmp_path):
+    path = tmp_path / "short-audio.mp4"
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-f", "lavfi", "-i", "color=size=32x32:rate=24:duration=5",
+                    "-f", "lavfi", "-i", "sine=sample_rate=48000:duration=3",
+                    "-c:v", "mpeg4", "-c:a", "aac", str(path)], check=True)
+    item = {"occurrence_id": "v", "asset": "v", "role": "reference", "modality": "video", "audio": True}
+    records = [{"asset": "v", "status": "resolved", "path": str(path)}]
+    with pytest.raises(prepare.PreparationError, match="past measured audio stream duration"):
+        prepare._admit_conditioning(_request([item]), records)
+
+
+@pytest.mark.parametrize("modality", ["video", "audio"])
+@pytest.mark.parametrize("count, accepted", [(3, True), (4, False)])
+def test_reference_slot_boundaries(modality, count, accepted):
+    items = [{"occurrence_id": str(i), "asset": str(i), "role": "reference", "modality": modality} for i in range(count)]
+    if accepted:
+        assert len(prepare._admit_conditioning(_request(items), [])) == count
+    else:
+        with pytest.raises(prepare.PreparationError, match="builder slots"):
+            prepare._admit_conditioning(_request(items), [])
+
+
+@pytest.mark.parametrize("extra, accepted", [(0, True), (1, False)])
+def test_conditioning_file_boundary(extra, accepted):
+    items = [{"occurrence_id": f"{kind}{i}", "asset": f"{kind}{i}", "role": "reference", "modality": kind}
+             for kind, count in [("image", 9), ("video", 3), ("audio", extra)] for i in range(count)]
+    if accepted:
+        assert len(prepare._admit_conditioning(_request(items), [])) == 12
+    else:
+        with pytest.raises(prepare.PreparationError, match="conditioning files 12"):
+            prepare._admit_conditioning(_request(items), [])
+
+
+@pytest.mark.parametrize("modality, count, accepted", [("image", 2, True), ("image", 3, False), ("video", 0, True), ("video", 1, False), ("audio", 0, True), ("audio", 1, False)])
+def test_continuation_reference_boundaries(modality, count, accepted):
+    items = [{"occurrence_id": str(i), "asset": str(i), "role": "reference", "modality": modality} for i in range(count)]
+    req = H3Request({"version": 2, "media": items, "continuation": True}, "test")
+    if accepted:
+        assert len(prepare._admit_conditioning(req, [])) == count
+    else:
+        with pytest.raises(prepare.PreparationError, match="continuation references"):
+            prepare._admit_conditioning(req, [])
+
+
+@pytest.mark.parametrize("frames, warned", [(123, True), (124, False), (362, False), (363, True)])
+def test_preparation_reports_duration_warning(monkeypatch, frames, warned):
+    req = H3Request({"version": 2, "media": [], "continuation": False, "duration": frames / 24}, "test")
+    monkeypatch.setattr(prepare, "_resolve_assets", lambda *_: [])
+    monkeypatch.setattr(prepare, "_validate_mask_assets", lambda *_: None)
+    monkeypatch.setattr(prepare, "_check_source_av_rates", lambda *_: None)
+    monkeypatch.setattr(prepare, "_v2_mask_schedule", lambda *_args, **_kwargs: {"status": "ready"})
+    warnings = prepare.prepare_request(req)["warnings"]
+    assert bool(warnings) is warned
+    if warned:
+        assert warnings[0]["limit"] == "job_duration_seconds"
+
+
+def test_character_swap_requires_each_minimum_reference():
+    settings = {"adapter": {"id": "character_swap_v1"}}
+    for missing in ("image", "video"):
+        refs = [{"role": "reference", "modality": kind} for kind in ("image", "video") if kind != missing]
+        with pytest.raises(H3RequestError, match="references"):
+            _validate_character_swap_media(settings, refs, False)
+    _validate_character_swap_media(settings, [{"role": "reference", "modality": kind} for kind in ("image", "video")], False)
+
+
+@pytest.mark.parametrize("modality", ["video", "audio"])
+@pytest.mark.parametrize("seconds, accepted", [(15, True), (15.01, False)])
+def test_modality_total_boundary(monkeypatch, tmp_path, modality, seconds, accepted):
+    path = tmp_path / "clip"
+    path.touch()
+    if modality == "video" and not accepted:
+        seconds = 15.1  # More than one 24-fps frame beyond the limit.
+    monkeypatch.setattr(prepare, "_probe_conditioning", lambda _: {"streams": [{"codec_type": modality, "duration": str(seconds / 2)}]})
+    items = [{"occurrence_id": str(i), "asset": "x", "role": "reference", "modality": modality, "audio": False} for i in range(2)]
+    records = [{"asset": "x", "status": "resolved", "path": str(path)}]
+    if accepted:
+        assert len(prepare._admit_conditioning(_request(items), records)) == 2
+    else:
+        with pytest.raises(prepare.PreparationError, match="per modality total 15 seconds"):
+            prepare._admit_conditioning(_request(items), records)
+
+
+def test_real_reference_frames_follow_loader_and_node_truncation(tmp_path):
+    path = tmp_path / "thirty-fps.mp4"
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+                    "-i", "color=size=96x64:rate=30:duration=3", "-c:v", "mpeg4", str(path)], check=True)
+    item = {"occurrence_id": "v", "asset": "v", "role": "reference", "modality": "video", "audio": False,
+            "resolved_range": [0, 48]}
+    records = [{"asset": "v", "status": "resolved", "path": str(path)}]
+    row = prepare._admit_conditioning(_request([item]), records)[0]
+    assert row["retained_picture_frames_estimate"] == {"value": 39, "kind": "metadata_upper_bound", "observed": False}
+    assert row["retained_picture_frames"] is None
+    assert row["effective_size"] == {"width": 96, "height": 64}
+    assert row["resource_estimate"]["raw_bytes"] is None
+    assert row["resource_estimate"]["raw_bytes_upper_bound"] == 39 * 96 * 64 * 3
+    assert row["resource_estimate"]["qualified"] is False
+
+
+def test_reference_size_matches_pinned_node_resize_rules():
+    assert prepare._reference_size("image", 2048, 2048) == {"width": 768, "height": 768}
+    assert prepare._reference_size("video", 3840, 2160) == {"width": 1344, "height": 768}
+    assert prepare._reference_size("video", 320, 200) == {"width": 320, "height": 192}
+
+
+def test_unmeasurable_video_frame_count_is_not_reported_as_retained(monkeypatch, tmp_path):
+    path = tmp_path / "v"
+    path.touch()
+    monkeypatch.setattr(prepare, "_probe_conditioning", lambda _: {"streams": [{"codec_type": "video", "duration": "3", "width": 64, "height": 64}]})
+    item = {"occurrence_id": "v", "asset": "v", "role": "reference", "modality": "video", "audio": False}
+    row = prepare._admit_conditioning(_request([item]), [{"asset": "v", "status": "resolved", "path": str(path)}])[0]
+    assert row["retained_picture_frames"] is None
+    assert row["resource_estimate"]["qualified"] is False
+
+
+@pytest.mark.parametrize("avg_rate, nominal_rate", [("24/1", "24/1"), ("24000/1001", "30/1")])
+def test_video_metadata_does_not_claim_resampled_count_or_decode(monkeypatch, tmp_path, avg_rate, nominal_rate):
+    path = tmp_path / "video.mp4"
+    path.touch()
+    monkeypatch.setattr(prepare, "_probe_conditioning", lambda _: {"streams": [{"codec_type": "video", "duration": "3", "nb_frames": "72", "avg_frame_rate": avg_rate, "r_frame_rate": nominal_rate, "width": 96, "height": 64}]})
+    monkeypatch.setattr(prepare.subprocess, "run", lambda *args, **kwargs: pytest.fail("preparation must not decode video"))
+    item = {"occurrence_id": "v", "asset": "v", "role": "reference", "modality": "video", "audio": False, "resolved_range": [0, 48]}
+    row = prepare._admit_conditioning(_request([item]), [{"asset": "v", "status": "resolved", "path": str(path)}])[0]
+    assert row["retained_picture_frames"] is None
+    assert row["resource_estimate"]["raw_bytes"] is None
+    assert not row["resource_estimate"]["qualified"]
+
+
+def test_video_duration_near_limit_warns_and_clear_excess_fails(monkeypatch, tmp_path):
+    path = tmp_path / "clip"
+    path.touch()
+    duration = [15.01]
+    monkeypatch.setattr(prepare, "_probe_conditioning", lambda _: {"streams": [{"codec_type": "video", "duration": str(duration[0]), "width": 96, "height": 64}]})
+    item = {"occurrence_id": "v", "asset": "v", "role": "reference", "modality": "video", "audio": False}
+    records = [{"asset": "v", "status": "resolved", "path": str(path)}]
+    warnings = []
+    row = prepare._admit_conditioning(_request([item]), records, warnings)[0]
+    assert {warning["limit"] for warning in warnings} == {"clip_seconds", "modality_seconds"}
+    assert row["retained_picture_frames"] is None
+    duration[0] = 15.1
+    with pytest.raises(prepare.PreparationError, match="conditioning clip"):
+        prepare._admit_conditioning(_request([item]), records, [])
+
+
+def test_file_limit_warns_at_twelve():
+    items = [{"occurrence_id": f"{kind}{i}", "asset": f"{kind}{i}", "role": "reference", "modality": kind} for kind, count in [("image", 9), ("video", 3)] for i in range(count)]
+    warnings = []
+    prepare._admit_conditioning(_request(items), [], warnings)
+    assert any(warning["limit"] == "conditioning_files" for warning in warnings)
+
+
+def test_uncapped_video_estimate_includes_timestamp_boundary_frame(monkeypatch, tmp_path):
+    path = tmp_path / "v"
+    path.touch()
+    monkeypatch.setattr(prepare, "_probe_conditioning", lambda _: {"streams": [{"codec_type": "video", "duration": "2.2916666666666665", "width": 96, "height": 64}]})
+    item = {"occurrence_id": "v", "asset": "v", "role": "reference", "modality": "video", "audio": False}
+    row = prepare._admit_conditioning(_request([item]), [{"asset": "v", "status": "resolved", "path": str(path)}])[0]
+    # 55 metadata frames align to 39; one boundary frame aligns to 56.
+    assert row["retained_picture_frames_estimate"]["value"] == 56
+    assert row["retained_picture_frames"] is None
+
+
+def test_exact_trim_ticks_refuse_short_clip_and_excess_total(monkeypatch, tmp_path):
+    path = tmp_path / "clip"
+    path.touch()
+    monkeypatch.setattr(prepare, "_probe_conditioning", lambda _: {"streams": [{"codec_type": "video", "duration": "10"}]})
+    records = [{"asset": "v", "status": "resolved", "path": str(path)}]
+    def item(i, end):
+        return {"occurrence_id": str(i), "asset": "v", "role": "reference", "modality": "video", "audio": False, "resolved_range": [0, end]}
+    with pytest.raises(prepare.PreparationError, match="conditioning clip"):
+        prepare._admit_conditioning(_request([item(0, 47)]), records)
+    with pytest.raises(prepare.PreparationError, match="per modality total"):
+        prepare._admit_conditioning(_request([item(i, 122) for i in range(3)]), records)
+
+
+@pytest.mark.parametrize("frames, accepted", [(3592, True), (3593, False), (3600, False)])
+def test_preparation_rejects_lengths_outside_node_grid(monkeypatch, frames, accepted):
+    req = H3Request({"version": 2, "media": [], "continuation": False, "duration": frames / 24}, "test")
+    monkeypatch.setattr(prepare, "_resolve_assets", lambda *_: [])
+    monkeypatch.setattr(prepare, "_validate_mask_assets", lambda *_: None)
+    monkeypatch.setattr(prepare, "_check_source_av_rates", lambda *_: None)
+    monkeypatch.setattr(prepare, "_v2_mask_schedule", lambda *_args, **_kwargs: {"status": "ready"})
+    if accepted:
+        assert prepare.prepare_request(req)["resource_estimate"]["target_rows"] == 3592
+    else:
+        with pytest.raises(prepare.PreparationError, match="job length frames"):
+            prepare.prepare_request(req)
+
+
+def test_masked_reference_bindings_are_provisional_and_audio_total_unknown(monkeypatch, tmp_path):
+    from PIL import Image
+    image = tmp_path / "image.png"
+    Image.new("RGB", (32, 32)).save(image)
+    video = tmp_path / "reference.mp4"
+    video.touch()
+    items = [
+        {"occurrence_id": "a", "asset": "a", "role": "reference", "modality": "image"},
+        {"occurrence_id": "b", "asset": "b", "role": "reference", "modality": "image"},
+        {"occurrence_id": "v", "asset": "v", "role": "reference", "modality": "video", "audio": True},
+        {"occurrence_id": "source", "asset": "s", "role": "timeline", "modality": "video", "edit": [{"guides": ["b"]}]},
+    ]
+    records = [{"asset": name, "status": "resolved", "path": str(path)} for name, path in [("a", image), ("b", image), ("v", video), ("s", video)]]
+    monkeypatch.setattr(prepare, "_resolve_assets", lambda *_: records)
+    monkeypatch.setattr(prepare, "_probe_conditioning", lambda path: {"streams": [{"codec_type": "video", "width": 32, "height": 32}] if path == image else [{"codec_type": "video", "duration": "3"}, {"codec_type": "audio", "duration": "3"}]})
+    monkeypatch.setattr(prepare, "_validate_mask_assets", lambda *_: None)
+    monkeypatch.setattr(prepare, "_check_source_av_rates", lambda *_: None)
+    monkeypatch.setattr(prepare, "_v2_mask_schedule", lambda *_args, **_kwargs: {"status": "ready"})
+    result = prepare.prepare_request(H3Request({"version": 2, "media": items, "continuation": False, "duration": 6}, "test"))
+    assert result["conditioning_measurements"][1]["tag"] is None
+    assert result["conditioning_measurements"][1]["slot"] is None
+    assert result["conditioning_measurements"][1]["binding_status"] == "provisional_until_lowering"
+    assert result["resource_estimate"]["reference_raw_audio_bytes"] is None
+
+
+@pytest.mark.parametrize("start, end, accepted", [(1, 49, True), (1, 48, False), (25, 385, True), (25, 386, False)])
+def test_exact_trim_limits_with_nonzero_start(monkeypatch, tmp_path, start, end, accepted):
+    path = tmp_path / "clip"
+    path.touch()
+    monkeypatch.setattr(prepare, "_probe_conditioning", lambda _: {"streams": [{"codec_type": "video", "duration": "20"}]})
+    item = {"occurrence_id": "v", "asset": "v", "role": "reference", "modality": "video", "audio": False, "resolved_range": [start, end]}
+    records = [{"asset": "v", "status": "resolved", "path": str(path)}]
+    if accepted:
+        assert len(prepare._admit_conditioning(_request([item]), records)) == 1
+    else:
+        with pytest.raises(prepare.PreparationError, match="conditioning clip"):
+            prepare._admit_conditioning(_request([item]), records)
+
+
+def test_exact_trim_totals_with_nonzero_starts(monkeypatch, tmp_path):
+    path = tmp_path / "clip"
+    path.touch()
+    monkeypatch.setattr(prepare, "_probe_conditioning", lambda _: {"streams": [{"codec_type": "video", "duration": "20"}]})
+    records = [{"asset": "v", "status": "resolved", "path": str(path)}]
+    def items(end):
+        return [{"occurrence_id": str(i), "asset": "v", "role": "reference", "modality": "video", "audio": False, "resolved_range": [1, end]} for i in range(3)]
+    assert len(prepare._admit_conditioning(_request(items(121)), records)) == 3
+    with pytest.raises(prepare.PreparationError, match="per modality total"):
+        prepare._admit_conditioning(_request(items(122)), records)

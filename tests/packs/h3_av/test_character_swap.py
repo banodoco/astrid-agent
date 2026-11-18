@@ -504,3 +504,15 @@ def test_character_swap_inspection_requires_available_probe(monkeypatch, tmp_pat
     monkeypatch.setattr(prepare_module.shutil, "which", lambda _name: None)
     with pytest.raises(PreparationError, match="requires ffprobe"):
         prepare_module._video_stream_types(tmp_path / "source.mp4")
+
+
+@pytest.mark.parametrize("modality", ["audio", "video"])
+def test_masked_route_refuses_unbound_nonimage_references(tmp_path, modality):
+    from astrid.packs.h3_av.shared.compile import _compile_native_v2
+    raw = _request(adapter=False, source=True)
+    raw["media"][1]["modality"] = modality
+    if modality == "audio":
+        raw["media"][1].pop("audio", None)
+    req = normalize_request(raw)
+    with pytest.raises(CompilationError, match="does not bind audio or video conditioning"):
+        _compile_native_v2(req, {"baseline.mp4": tmp_path / "source"}, tmp_path)

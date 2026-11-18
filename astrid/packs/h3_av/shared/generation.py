@@ -16,16 +16,21 @@ from .engine_facts import facts
 from .timing import frame_index, smallest_h3_run_at_least
 
 LIMITS = {
+    # Model facts.
     "builder_slots": {"value": {"image": 9, "video": 3, "audio": 3}, "source": "node"},
     "clip_seconds": {"value": [2, 15], "source": "model card"},
     "modality_seconds": {"value": 15, "source": "model card"},
     "conditioning_files": {"value": 12, "source": "model card"},
     "canvas_dimension": {"value": {"min": 32, "max": 16384, "multiple": 32}, "source": "node"},
+    # SR-5 owns enforcement of audio grant strength; it is not enforced here.
+    "audio_grant_strength": {"value": [0, 1], "source": "node"},
+    "job_length_frames": {"value": {"min": 5, "max": 3600, "stride": 17}, "source": "node"},
+    "job_duration_seconds": {"value": [124 / 24, 362 / 24], "source": "node", "warning": "Outside 124–362 frames is outside the tested range."},
+    # Current lowering limits. SR-3 owns shared seed/reference-set validation;
+    # the regions-per-pass row is not enforced here.
     "character_swap_references": {"value": {"video": 1, "image": 1, "additional": "allowed but untested"}, "source": "Astrid lowering"},
     "continuation_references": {"value": {"image": 2, "video": 0, "audio": 0}, "source": "Astrid lowering"},
-    "audio_grant_strength": {"value": [0, 1], "source": "node"},
     "regions_per_pass": {"value": {"seeds": 1, "reference_sets": 1}, "source": "Astrid lowering"},
-    "job_duration_seconds": {"value": [124 / 24, 362 / 24], "source": "node", "warning": "Outside 124–362 frames is outside the tested range."},
 }
 IMAGE_REFERENCE_CAPACITY = LIMITS["builder_slots"]["value"]["image"]
 VIDEO_REFERENCE_CAPACITY = LIMITS["builder_slots"]["value"]["video"]
@@ -207,9 +212,9 @@ def _required_locked_url(models: Mapping[str, Any], destination: str) -> str:
 def generation_timing(duration: float) -> dict[str, Any]:
     frames = frame_index(duration, "output.duration")
     raw = smallest_h3_run_at_least(frames)
-    # Bound this adapter to the upstream documented training range.
-    if frames < 5 or raw > 362:
-        raise ValueError("source-free duration must request 5..362 frames at 24 fps")
+    length = LIMITS["job_length_frames"]["value"]
+    if frames < length["min"] or raw > length["max"]:
+        raise ValueError("job length frames 5..3600: requested duration exceeds the node grid")
     return {"fps": 24, "requested_frames": frames, "raw_frames": raw,
             "trim_tail_frames": raw - frames, "duration": frames / 24}
 
@@ -238,7 +243,7 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
     from vibecomfy.templates import ModelAsset, OutputSpec, ReadyMetadata, new_workflow, node
     from vibecomfy.nodes.core import (
         AudioConcat, BasicGuider, BasicScheduler, CLIPLoader, EmptyAudio, EmptyImage,
-        ImageBatch, ImageFromBatch, KSamplerSelect, LoadAudio, LoadImage, RepeatImageBatch,
+        ImageBatch, ImageFromBatch, KSamplerSelect, LoadAudio, LoadImage, RepeatImageBatch, TrimAudioDuration,
         LoraLoaderModelOnly, RandomNoise, SamplerCustomAdvanced, UNETLoader,
         VAEDecode, VAEDecodeAudio, VAELoader,
     )
@@ -247,6 +252,9 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
     if not (0 if masked_edit else 1) <= len(references) <= IMAGE_REFERENCE_CAPACITY:
         raise ValueError("this adapter requires one to nine image references")
     video_references = list(video_references or [])
+    length = LIMITS["job_length_frames"]["value"]
+    if frames < length["min"] or smallest_h3_run_at_least(frames) > length["max"]:
+        raise ValueError("job length frames 5..3600: requested length exceeds the node grid")
     audio_references = list(audio_references or [])
     if len(video_references) > VIDEO_REFERENCE_CAPACITY:
         raise ValueError("this adapter requires at most three video references")
@@ -352,7 +360,11 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
             ident = str(reference.get("binding", f"audio_reference_{index}"))
             loader = LoadAudio(audio="", _id=ident)
             wf.register_input(ident, ident, "audio", "", type="CHOICE", default="", required=True, media_semantics="audio")
-            refs[f"ref_audios.ref_audio_{index}"] = loader.out("audio")
+            audio_output = loader.out("audio")
+            selected = reference.get("resolved_range")
+            if isinstance(selected, list):
+                audio_output = TrimAudioDuration(audio=audio_output, start_index=float(selected[0]) / 48000, duration=float(selected[1] - selected[0]) / 48000).out("AUDIO")
+            refs[f"ref_audios.ref_audio_{index}"] = audio_output
         # Retain the pinned define_schema contract: the offline schema predates
         # this node. Declare only the exact dynamic reference ports used here.
         target_inputs = ["clip", "vae", "audio_vae", "prompt", "width", "height", "length", "ref_image_size", *refs]

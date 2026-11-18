@@ -501,8 +501,6 @@ def _compile_native_masked_edit(
     frame_load_cap = round((source.range[1] - source.range[0]) * 24)
     if frame_load_cap != round(spec.duration * 24):
         raise CompilationError("native masked edit source window must match output duration")
-    if frame_load_cap > 360:
-        raise CompilationError("native masked edit source windows are limited to 15 s")
     # B2 resolves boxes and supplied static masks to the same binary PNG. The
     # graph fixes its output canvas at 1024x576, as source preflight requires.
     regions = {region.name: region for region in spec.regions}
@@ -618,7 +616,7 @@ def _compile_native_masked_edit(
             "one modifying video operation per request; static boxes, image masks or per-frame mask video",
             "audio regeneration, polygon masks and per-operation adapters are unsupported",
             "box-only regions bind in the graph; end-to-end execution still needs resolved mask propagation for composition paste-back",
-            "windows are limited to 15 s with no automatic chunking",
+            "long windows use one pass without automatic chunking",
             "zero-reference requests assume MiniMaxH3ReferenceToVideo accepts no ref images (unverified)",
         ],
         profile_id="h3_av.native.v2" if request.value.get("version") == 2 else _PROFILE_ID,
@@ -696,7 +694,8 @@ def _compile_character_swap_v2(
     images = [item for item in references if item.get("modality") == "image"]
     videos = [item for item in references if item.get("modality") == "video"]
     standalone_audio = [item for item in references if item.get("modality") == "audio" and item.get("use") != "replacement"]
-    if not images or not videos:
+    minimum = LIMITS["character_swap_references"]["value"]
+    if len(images) < minimum["image"] or len(videos) < minimum["video"]:
         raise CompilationError("Character Swap references: lowering requires at least one video and one image reference")
     bindings: dict[str, Path] = {}
     for index, item in enumerate(images):
@@ -726,7 +725,7 @@ def _compile_character_swap_v2(
             raise CompilationError(f"Character Swap audio reference {asset_id!r} is missing from preparation")
         binding = f"audio_reference_{index}"
         bindings[binding] = assets[asset_id]
-        audio_reference_rows.append({"binding": binding})
+        audio_reference_rows.append({"binding": binding, "resolved_range": item.get("resolved_range")})
 
     try:
         timing = generation_timing(value["duration"])
@@ -891,6 +890,8 @@ def _compile_native_v2(
 
     if branch == "source_free":
         references = [item for item in request.value["media"] if item["role"] == "reference"]
+        if any(item.get("modality") == "video" and item.get("use") != "replacement" for item in references):
+            raise CompilationError("source-free video references are unsupported by the current lowering")
         image_references = [item for item in references if item.get("modality") == "image" and item.get("use") != "replacement"]
         audio_references = [item for item in references if item.get("modality") == "audio" and item.get("use") != "replacement"]
         if not 1 <= len(image_references) <= LIMITS["builder_slots"]["value"]["image"]:
@@ -931,6 +932,8 @@ def _compile_native_v2(
         )
 
     if branch == "source_backed_v2v":
+        if any(item.get("role") == "reference" and item.get("modality") in {"audio", "video"} and item.get("use") != "replacement" for item in request.value["media"]):
+            raise CompilationError("native masked edit does not bind audio or video conditioning references")
         return _compile_native_masked_edit(request, assets, destination, branch=branch)
 
     destination.mkdir(parents=True, exist_ok=True)
@@ -1094,6 +1097,8 @@ def _compile_generation(
     bindings = {f"reference_{index}": assets[item["asset"]] for index, item in enumerate(references)}
     bindings.update({f"audio_reference_{index}": assets[item["asset"]] for index, item in enumerate(audio_references)})
     for binding, path in bindings.items():
+        if not binding.startswith("reference_"):
+            continue
         try:
             with Image.open(path) as image:
                 if getattr(image, "n_frames", 1) != 1:
@@ -1125,7 +1130,7 @@ def _compile_generation(
     prompt = request.value["content"]["prompt"]
     graph = build_generation_workflow(
         references=image_members, prompt=prompt,
-        audio_references=[{"binding": f"audio_reference_{index}"} for index in range(len(audio_members))],
+        audio_references=[{"binding": f"audio_reference_{index}", "resolved_range": item.get("resolved_range")} for index, item in enumerate(audio_references)],
         frames=timing["raw_frames"], model=settings["model"],
         steps=settings["steps"], seed=settings["seed"],
         sampler=settings["sampler"], guidance=settings["guidance"],
@@ -1146,6 +1151,9 @@ def _compile_generation(
         "references": len(references),
         "reference_order": [item["asset"] for item in references],
         "reference_binding": "ordered image conditioning; Picture 1..N",
+        "audio_references": len(audio_references),
+        "audio_reference_order": [item["asset"] for item in audio_references],
+        "audio_reference_binding": "ordered standalone audio conditioning; Audio 1..N",
         "generation_timing": timing,
         "output_contract": "muxed_av_full_timeline",
         "public_generation": {"modality": "video", "selectors": [
@@ -1166,7 +1174,7 @@ def _compile_generation(
         request=request, destination=destination, resource_root=resource,
         workflow_inputs=workflow_inputs, asset_bindings=bindings,
         capabilities=capabilities,
-        limitations=["image references only; no timed keyframes or source-free masks", "single pass, up to 362 frames at 24 fps"],
+        limitations=["no video references, timed keyframes or source-free masks", "single pass, up to 3592 frames at 24 fps; outside 124–362 frames is untested"],
         profile_id=profile_id,
         extra_manifest=extra_manifest,
     )
