@@ -154,7 +154,8 @@ def _run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_
         if evidence is None:
             declare_engine_log(out, preparation.root, preparation.recipe.engine)
         try:
-            report = preparation.prepare(workflow, execution_identity=identity, inputs=members,
+            preparation_inputs = {**members, "workflow_inputs": kwargs.get("workflow_inputs")}
+            report = preparation.prepare(workflow, execution_identity=identity, inputs=preparation_inputs,
                                          canonical_workflow=canonical, input_digests=digests)
         except DeadlineExceeded as exc:
             exc.message = ("managed preparation deadline exceeded; rerun to retry preparation; "
