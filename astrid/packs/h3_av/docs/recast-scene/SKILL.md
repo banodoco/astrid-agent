@@ -96,6 +96,8 @@ Also open: how the edges of the masked span join the real footage in sound and p
 
 ## Stage 5 - Picture passes, shot by shot
 
+- For a masked edit, make the mask with `astrid media mask`, check `--preview-on` over the shot you will edit, and put the media ID in `edit[].mask.asset`. See the [02c lens example](../SKILL.md#make-a-mask).
+
 - Order: the riskiest, most reused method first, on its best shot. One paid run proves a method; then repeat it across shots.
 - Each pass: a dry run that is the real path stopped before the GPU; one waiting claim with a spend cap and deadline; submit; read back; release.
 - Reference images with black letterbox bars baked into the pixels are cleaned before generation: `astrid media crop <media> --project P --remove-bars` (dry run first, see [media crop](../../../_core/docs/SKILL.md#crop-still-images-and-video)); use the cleaned item as the reference, never the barred original.

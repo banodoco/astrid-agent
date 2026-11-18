@@ -23,7 +23,7 @@ def _digest(path: Path) -> str:
 def _probe(path: Path) -> dict:
     try:
         proc = subprocess.run(['ffprobe', '-v', 'error', '-show_entries',
-            'stream=codec_type,start_time,start_pts,duration,duration_ts,time_base,sample_rate,nb_frames,sample_aspect_ratio:format=start_time,duration',
+            'stream=codec_type,start_time,start_pts,duration,duration_ts,time_base,sample_rate,nb_frames,sample_aspect_ratio,avg_frame_rate:format=start_time,duration',
             '-of', 'json', str(path)], capture_output=True, text=True, check=True, timeout=30)
         return json.loads(proc.stdout)
     except (OSError, subprocess.SubprocessError, ValueError) as exc:
@@ -72,6 +72,15 @@ def _decoded_audio_coverage(path: Path, stream: dict, start: Fraction, end: Frac
         return coverage_start, coverage_end
     except (OSError, subprocess.SubprocessError, KeyError, TypeError, ValueError, ZeroDivisionError) as exc:
         raise PreparationError(f'cannot verify decoded source audio coverage: {exc}') from exc
+
+
+def fill_filter(width: int, height: int, *, square_default: bool) -> str:
+    """Center crop in source pixels using display aspect, then scale to square pixels."""
+    ratio = Fraction(width, height)
+    w, h = ratio.numerator, ratio.denominator
+    prefix = 'setsar=1,' if square_default else ''
+    return (f"{prefix}crop=w='if(gt(dar,{w}/{h}),ih*{w}/({h}*sar),iw)':"
+            f"h='if(gt(dar,{w}/{h}),ih,iw*sar*{h}/{w})',scale={width}:{height},setsar=1")
 
 
 def conform_source(source: Path, destination: Path, *, start: str, end: str, fit: str, validate) -> dict:
@@ -167,17 +176,14 @@ def conform_source(source: Path, destination: Path, *, start: str, end: str, fit
     with tempfile.TemporaryDirectory(prefix='.h3-conform-', dir=destination.parent) as temporary:
         work = Path(temporary)
         output = work / 'source.mp4'
-        # dar includes the input sample aspect ratio. Crop in source pixel
-        # coordinates or fit by display shape before declaring square pixels.
         if fit == 'fill':
-            scale = ("crop=w='if(gt(dar,16/9),ih*16/(9*sar),iw)':"
-                     "h='if(gt(dar,16/9),ih,iw*sar*9/16)',scale=1024:576,setsar=1")
+            scale = fill_filter(1024, 576, square_default=square_default)
         else:
             scale = ("scale=w='if(gt(dar,16/9),1024,max(2,trunc(576*dar/2)*2))':"
                      "h='if(gt(dar,16/9),max(2,trunc(1024/dar/2)*2),576)',"
                      "setsar=1,pad=1024:576:(ow-iw)/2:(oh-ih)/2")
-        if square_default:
-            scale = 'setsar=1,' + scale
+            if square_default:
+                scale = 'setsar=1,' + scale
         start_time = format(float(anchor), '.15f')
         end_time = format(float(requested_end), '.15f')
         audio_end_time = format(float(min(requested_end, target_end)), '.15f')

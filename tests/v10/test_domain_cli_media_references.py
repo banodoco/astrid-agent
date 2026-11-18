@@ -409,6 +409,8 @@ def test_media_parser_has_thumbnail_backfill_and_references_mount() -> None:
         "verify",
         "relate",
         "crop",
+        "trim",
+        "mask",
         "thumbnails",
     )
     assert all(spec.aliases == () for spec in COMMANDS)
@@ -424,6 +426,8 @@ def test_media_parser_has_thumbnail_backfill_and_references_mount() -> None:
         "verify",
         "relate",
         "crop",
+        "trim",
+        "mask",
         "thumbnails",
         "references",
     }
