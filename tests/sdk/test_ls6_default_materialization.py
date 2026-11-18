@@ -89,6 +89,10 @@ def test_materialization_does_not_reuse_a_hardlink_without_a_location_resolver(
 def test_materialization_sync_failure_preserves_the_existing_destination(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # The repository autouse fixtures create support roots under tmp_path.
+    # Keep this operation's destination and cleanup census in their own root.
+    tmp_path = tmp_path / "views"
+    tmp_path.mkdir()
     target = tmp_path / "output.bin"
     target.write_bytes(b"prior caller bytes")
 
