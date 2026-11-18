@@ -190,6 +190,11 @@ class ProcessObserver:
         self.runtime_reap_code = self.runtime_reap_owner = None
         self.commit_starts = {}
         self.wait_ids = itertools.count()
+        self.wait_frames = {}
+        self.wait_codes = {}
+        self.invocation_ids = itertools.count()
+        self.popen_poll_code = subprocess.Popen.poll.__code__
+        self.popen_try_wait_code = getattr(getattr(subprocess.Popen, "_try_wait", None), "__code__", None)
 
     def event(self, kind: str, **fields) -> None:
         with self.lock:
@@ -199,7 +204,24 @@ class ProcessObserver:
             # perf_counter is a system-wide monotonic clock on supported
             # Python versions, including Windows 3.11's high-resolution QPC.
             self.events.append({"at_ns": time.perf_counter_ns(), "kind": kind,
-                                "tid": threading.get_native_id(), **fields})
+                                "tid": threading.get_native_id(),
+                                "runtime_scope": getattr(self.context, "scope", None), **fields})
+
+    @staticmethod
+    def _site(frame):
+        return frame.f_globals.get("__name__", "<unknown>") + ":" + frame.f_code.co_qualname
+
+    def _wait_fields(self, frame):
+        code_id = id(frame.f_code)
+        self.wait_codes[code_id] = frame.f_code
+        key = (id(frame), code_id)
+        if key not in self.wait_frames:
+            self.wait_frames[key] = next(self.invocation_ids)
+        return {"wait_site": self._site(frame), "wait_frame": id(frame),
+                "wait_invocation": self.wait_frames[key]}
+
+    def _poll_progress(self, frame):
+        self.event("poll_progress", **self._wait_fields(frame))
 
     def _install_waits(self):
         owner = self
@@ -211,7 +233,7 @@ class ProcessObserver:
                 owner.wait_state.depth = nested + 1
                 wait_id = next(owner.wait_ids)
                 if not nested:
-                    owner.event(kind + "_attempt", wait_id=wait_id)
+                    owner.event(kind + "_attempt", wait_id=wait_id, **owner._wait_fields(sys._getframe(1)))
                 try:
                     result = function(*args, **kwargs)
                 except BaseException:
@@ -238,7 +260,7 @@ class ProcessObserver:
         async def async_sleep(*args, **kwargs):
             # No thread-local depth survives an await: unrelated tasks share it.
             wait_id = next(owner.wait_ids)
-            owner.event("asyncio_sleep_attempt", wait_id=wait_id)
+            owner.event("asyncio_sleep_attempt", wait_id=wait_id, **owner._wait_fields(sys._getframe(1)))
             try:
                 result = await original_sleep(*args, **kwargs)
             except BaseException:
@@ -331,6 +353,26 @@ class ProcessObserver:
         if event == "call":
             code = frame.f_code
             name = code.co_name
+            if id(code) in self.wait_codes:
+                self.wait_frames[(id(frame), id(code))] = next(self.invocation_ids)
+            # A poll's work and its wait are different quantities. Record the
+            # exact progress boundary so an extra sleep inside one iteration
+            # cannot disappear into a whole-workload scheduling allowance.
+            parent = frame.f_back if name in {"poll", "show", "_try_wait", "_observe_machines", "service_actions"} else None
+            if (code is self.popen_poll_code or code is self.popen_try_wait_code) and parent is not None:
+                self._poll_progress(parent)
+            elif name == "show" and parent is not None and parent.f_code.co_name == "_wait_for_kernel_task_loop":
+                show = parent.f_locals.get("show")
+                if code is getattr(getattr(show, "__func__", show), "__code__", None):
+                    self._poll_progress(parent)
+            elif (name == "_observe_machines" and parent is not None
+                  and parent.f_code.co_qualname == "GenericPackHost._run_claim_slots"
+                  and frame.f_globals.get("__name__") == "astrid.core.execution.generic_host"):
+                self._poll_progress(parent)
+            elif (name == "service_actions" and parent is not None
+                  and parent.f_code.co_qualname == "BaseServer.serve_forever"
+                  and parent.f_globals.get("__name__") == "socketserver"):
+                self._poll_progress(parent)
             if name in ("compile", "emit_bundle", "emit_bundle_with_candidate"):
                 # Retain code identity: equality ignores filenames.
                 cached = self.code_kinds.get(id(code))
@@ -354,6 +396,8 @@ class ProcessObserver:
                     and not getattr(self.wait_state, "depth", 0) else None)
             if kind is not None:
                 fields = {}
+                if event == "c_call" and kind in {"sleep", "selector_wait"}:
+                    fields.update(self._wait_fields(frame))
                 if kind == "selector_wait":
                     tid = threading.get_native_id()
                     if event == "c_call":
@@ -365,10 +409,13 @@ class ProcessObserver:
                         self.c_wait_ids.pop(tid, None)
                 self.event(kind + {"c_call": "_attempt", "c_return": "_success", "c_exception": "_error"}[event], **fields)
             elif (self.runtime_connection is not None and
-                  (self.runtime_commit_code is None or frame.f_code is self.runtime_commit_code) and
                   getattr(arg, "__self__", None) is self.runtime_connection and
                   getattr(arg, "__name__", None) == "commit"):
                 tid = threading.get_native_id()
+                if event == "c_call":
+                    self.event("runtime_commit_call_attempt")
+                    if not self.runtime_connection.in_transaction:
+                        self.event("runtime_commit_without_transaction")
                 if event == "c_call" and self.runtime_connection.in_transaction:
                     self.commit_starts[tid] = epoch_time_ns()
                     self.event("runtime_outer_commit_attempt")
@@ -425,6 +472,24 @@ class ProcessObserver:
             carry = Counter(row["kind"].removesuffix("_attempt") for key, row in starts.items()
                             if since_ns is not None and row["at_ns"] < since_ns <= ends.get(key, 2**64))
             processes = [row for row in rows if row["kind"] == "process_start"]
+            wait_rows = [row for row in rows if "wait_site" in row and row["kind"].endswith("_attempt")]
+            wait_sites = Counter(row["kind"] + "|" + row["wait_site"] for row in wait_rows)
+            per_invocation = Counter((row["wait_invocation"], row["kind"] + "|" + row["wait_site"]) for row in wait_rows)
+            invocation_maxima = {}
+            for (_, site), count in per_invocation.items():
+                invocation_maxima[site] = max(invocation_maxima.get(site, 0), count)
+            cycles, cycle_maxima, poll_sites = {}, {}, set()
+            for row in rows:
+                if row["kind"] == "poll_progress":
+                    key = (row["tid"], row["wait_frame"])
+                    cycles[key] = Counter()
+                    poll_sites.add(row["wait_site"])
+                elif "wait_site" in row and row["kind"].endswith("_attempt"):
+                    key = (row["tid"], row["wait_frame"])
+                    if key in cycles:
+                        site = row["kind"] + "|" + row["wait_site"]
+                        cycles[key][site] += 1
+                        cycle_maxima[site] = max(cycle_maxima.get(site, 0), cycles[key][site])
             hashes = self.hashes.snapshot(since_ns, until_ns)
             return {
                 "schema": "astrid.local-speed-process.v1", "pid": os.getpid(),
@@ -434,6 +499,10 @@ class ProcessObserver:
                 "counts": dict(sorted(counts.items())), "process_starts": processes,
                 "wait_coverage": list(WAIT_KINDS),
                 "wait_carry_in": {name: carry[name] for name in WAIT_KINDS},
+                "wait_sites": dict(sorted(wait_sites.items())),
+                "wait_invocation_maxima": dict(sorted(invocation_maxima.items())),
+                "poll_sites": sorted(poll_sites),
+                "poll_wait_maxima": dict(sorted(cycle_maxima.items())),
                 "write_spans": [row for row in rows if row["kind"] in {
                     "application_sync", "runtime_outer_commit_success", "runtime_outer_commit_error",
                     "platform_write_through_success", "platform_write_through_error",

@@ -20,7 +20,8 @@ import time
 import uuid
 from pathlib import Path
 
-from tests._local_speed_baseline import LEGACY_TOLERANCE, approve_reference, compare_baseline
+from tests._local_speed_baseline import LEGACY_TOLERANCE, compare_baseline
+from tests._local_speed_calibration import calibration, compare_calibrated
 
 HARNESS_PATTERNS = ("tests/_local_speed*.py", "tests/local_speed*.py", "tests/local_speed_native.wprp",
                    "tests/core/generation/test_local_speed*.py", "tests/integrations/*.py", "tests/helpers/*.py")
@@ -65,7 +66,7 @@ def immutable_reference(root, base, system):
 
 def measure(root, output, native, vocabulary, *, historical=False):
     command = [sys.executable, "-m", "tests.local_speed_meter_run", "--output", str(output),
-               "--samples", "5", "--counter-samples", "2", "--timeout", "1800", "--native", native]
+               "--samples", "5", "--counter-samples", "2" if historical else "5", "--timeout", "1800", "--native", native]
     if not historical:
         command.extend(["--counter-vocabulary", str(vocabulary)])
     # The current directory, not an installed editable package, must supply the
@@ -78,7 +79,7 @@ def measure(root, output, native, vocabulary, *, historical=False):
     summary = json.loads((output / "summary.json").read_text(encoding="utf-8"))
     if summary.get("status") != "PASS":
         raise ValueError("incomplete paired measurement")
-    return summary["baseline"]
+    return summary
 
 
 def main():
@@ -89,6 +90,7 @@ def main():
     root, output = Path.cwd().resolve(), args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     summary = {"schema": "astrid.local-speed-pair.v1", "status": "NO-RESULT", "budget_certified": False,
+               "reference_eligible": False,
                "python": sys.version, "platform": platform.platform(), "base": args.base,
                "candidate": git(root, "rev-parse", "HEAD"),
                "runner": {name: os.environ.get(name) for name in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "RUNNER_NAME", "ImageOS", "ImageVersion")}}
@@ -120,26 +122,38 @@ def main():
             worktrees.append(control_root)
             summary["historical_harness_source"] = base_sha
             summary["historical_harness_sha256"] = overlay_harness(root, control_root, historical_ref=base_sha)
-            historical_control = measure(control_root, output / "historical-control", native, None, historical=True)
+            historical_control = measure(control_root, output / "historical-control", native, None, historical=True)["baseline"]
             # Added by this orchestrator after the actual run, not claimed as a
             # field the old observer knew. All raw observations stay unchanged.
             historical_control["pair_id"] = summary["pair_id"]
             summary["historical_control"] = historical_control
         paired = measure(base_root, output / "reference", native, output / "old-reference.json")
+        policy = calibration(paired)
+        (output / "counter-calibration.json").write_text(json.dumps(policy, indent=2) + "\n")
+        # Fresh fixtures with the exact same base bytes are held out of limit
+        # construction. Their failures remain failures, never recalibration.
+        validation = measure(base_root, output / "base-validation", native, output / "reference/baseline.json")
         actual = measure(root, output / "candidate", native, output / "reference/baseline.json")
         if subprocess.check_output([sys.executable, "-m", "pip", "freeze", "--all"], text=True) != freeze:
             raise ValueError("dependency environment changed between paired measurements")
         summary["historical_regressions"] = (compare_baseline(historical_control, old) if historical_control is not None
-                                             else compare_baseline(actual, old, coverage_reference=paired))
-        summary["paired_regressions"] = compare_baseline(actual, paired)
-        summary["reference_product"] = paired["sources"]
-        summary["candidate_product"] = actual["sources"]
-        if paired["sources"]["agent"] != base_sha or actual["sources"]["agent"] != summary["candidate"]:
+                                             else compare_baseline(actual["baseline"], old, coverage_reference=paired["baseline"]))
+        summary["historical_reference_status"] = "FAIL; not eligible for replacement" if summary["historical_regressions"] else "PASS; replacement not requested"
+        summary["uncalibrated_base_regressions"] = compare_baseline(validation["baseline"], paired["baseline"])
+        summary["uncalibrated_paired_regressions"] = compare_baseline(actual["baseline"], paired["baseline"])
+        summary["base_validation_regressions"] = compare_calibrated(validation, paired, policy)
+        summary["paired_regressions"] = compare_calibrated(actual, paired, policy)
+        summary["reference_product"] = paired["baseline"]["sources"]
+        summary["validation_product"] = validation["baseline"]["sources"]
+        summary["candidate_product"] = actual["baseline"]["sources"]
+        if (paired["baseline"]["sources"]["agent"] != base_sha or validation["baseline"]["sources"] != paired["baseline"]["sources"]
+                or actual["baseline"]["sources"]["agent"] != summary["candidate"]):
             raise ValueError("measured product source differs from the requested pair")
-        # A proposed replacement can never become the reference for its own run.
-        # Historical comparison has already happened against immutable base Git.
-        approved = approve_reference(actual, old, coverage_reference=paired, historical_control=historical_control)
-        (output / "eligible-reference.json").write_text(json.dumps(approved, indent=2) + "\n")
+        if summary["base_validation_regressions"] or summary["paired_regressions"]:
+            raise ValueError("base validation or candidate exceeded the independently calibrated gate")
+        # Decision6965824641: this packet establishes a calibrated comparison;
+        # it does not approve or replace any saved reference. Historical strict
+        # failures remain visible, and approve_reference retains its old gate.
         summary["status"] = "PASS"
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         summary["error"] = f"{type(error).__name__}: {error}"

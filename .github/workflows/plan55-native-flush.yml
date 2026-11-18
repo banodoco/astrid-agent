@@ -31,7 +31,8 @@ jobs:
   calibrate:
     name: Standing attached meter (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # The initial v2 transition adds its original control cell to the pair.
+    # Historical control, five base controls, five held-out base samples and
+    # five candidate samples retain separate timing/counter phases.
     # Each existing test and measurement-phase timeout stays unchanged.
     timeout-minutes: 180
     strategy:
@@ -120,6 +121,7 @@ jobs:
           tests/core/generation/test_local_speed_waits.py
           tests/core/generation/test_local_speed_write_attribution.py
           tests/core/generation/test_local_speed_resident_observer.py
+          tests/core/generation/test_local_speed_ambient_calibration.py
           --junitxml=native-reader.xml
       - name: Prove private Runtime directory creation and unsafe-directory refusal
         run: >-

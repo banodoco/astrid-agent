@@ -119,6 +119,22 @@ def main():
         probes.append({"probe": "unattributed_native_write", "old": "PASS", "new": "FAIL"})
     else:
         raise AssertionError("unattributed forced write accepted")
+    from tests._local_speed_calibration import calibration, compare_calibrated
+    from tests.core.generation.test_local_speed_ambient_calibration import proof
+    controls = proof()
+    limits = calibration(controls)
+    base_holdout = proof((3, 4, 5, 6, 7))
+    assert compare_calibrated(base_holdout, controls, limits) == []
+    probes.append({"probe": "independent_base_variation", "new": "PASS",
+                   "control_samples_per_caller": 5, "holdout_samples_per_caller": 5,
+                   "scope": "real sleep/SQLite mechanism probe; full workload controls remain separate hosted evidence"})
+    for injection in ("extra_sleep", "extra_commit"):
+        injected = proof((3, 3, 3, 3, 3), **{injection: True})
+        rejections = compare_calibrated(injected, controls, limits)
+        assert rejections and any(row["metric"].startswith(("per_poll.", "per_request.")) for row in rejections)
+        assert not any(row["metric"] in {"python.sleep_attempt", "runtime_commit_statements"} for row in rejections)
+        probes.append({"probe": "per_job_" + injection + "_inside_ambient_margin", "new": "FAIL",
+                       "rejections": rejections})
     result = {"schema": "astrid.ls2-adversarial-probes.v1", "old_sha": OLD_SHA,
               "candidate_sha": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
               "probes": probes, "status": "PASS"}

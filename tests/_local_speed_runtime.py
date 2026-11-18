@@ -62,14 +62,18 @@ class RuntimeObserver:
                 return original(handler)
             route = request_path(handler.command, handler.path)
             span = owner._span("runtime_request_span", "http_heartbeat" if route.endswith("/heartbeat") else "http_request", route)
+            span["scope"] = id(span)
             owner.requests.append(span)
             previous = getattr(owner.process.context, "route", None)
+            previous_scope = getattr(owner.process.context, "scope", None)
             owner.process.context.route = route
+            owner.process.context.scope = span["scope"]
             try:
                 return original(handler)
             finally:
                 owner._finish(span)
                 owner.process.context.route = previous
+                owner.process.context.scope = previous_scope
 
         self.process.patches.setattr(RuntimeHandler, "_dispatch", dispatch)
         reap = RuntimeHTTPServer._reap_task_lifetimes
@@ -78,11 +82,15 @@ class RuntimeObserver:
             if server is not owner.daemon.httpd:
                 return reap(server, *args, **kwargs)
             span = owner._span("runtime_background_span", "background_lifetime_reaper")
+            span["scope"] = id(span)
             owner.background.append(span)
+            previous_scope = getattr(owner.process.context, "scope", None)
+            owner.process.context.scope = span["scope"]
             try:
                 return reap(server, *args, **kwargs)
             finally:
                 owner._finish(span)
+                owner.process.context.scope = previous_scope
         self.process.patches.setattr(RuntimeHTTPServer, "_reap_task_lifetimes", background_reap)
         if hasattr(platform, "_move_file_write_through"):
             move = platform._move_file_write_through
@@ -118,3 +126,15 @@ class RuntimeObserver:
                 span["clipped_at_reply"] = True
             spans.append(span)
         return spans
+
+    def operation_scopes(self, start_ns, reply_ns):
+        """Retain per-request/reaper counts separately from invocation volume."""
+        counts = {}
+        for event in self.process.events:
+            scope = event.get("runtime_scope")
+            if scope is not None and start_ns <= event["at_ns"] <= reply_ns:
+                counts.setdefault(scope, Counter())[event["kind"]] += 1
+        return [{**span, "counts": dict(sorted(counts.get(span["scope"], {}).items())),
+                 "complete": span["monotonic_end_ns"] is not None and span["monotonic_end_ns"] <= reply_ns}
+                for span in [*self.requests, *self.background]
+                if start_ns <= span["monotonic_start_ns"] <= reply_ns]
