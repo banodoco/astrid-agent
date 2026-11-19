@@ -1,0 +1,2230 @@
+{
+  "additional_checks": {
+    "producer_and_consumer_manifest_check": {
+      "bytes": 1000,
+      "member": "rework-runtime-pin-generation.json",
+      "sha256": "a1b91d59af8e01effae4785b58ca813cb29beebddb4574abc4f6f04f174f0b66"
+    },
+    "runtime_pin_guard_comparison": {
+      "bytes": 9483,
+      "member": "rework-agent-pin-guards-comparison.json",
+      "sha256": "32240e6884ec694c99d0e98680d1fb0e47213729434b64461ea012abbd316fdb"
+    },
+    "runtime_pin_guards_after": {
+      "counts": {
+        "errors": 0,
+        "failed": 2,
+        "passed": 15,
+        "skipped": 0
+      },
+      "junit": {
+        "bytes": 5027,
+        "member": "rework-agent-pin-guards-after.xml",
+        "sha256": "fe4eb7010c50680857a97fca71753dba5f7816363621ee484d267f8192bdaed6"
+      }
+    },
+    "runtime_pin_guards_before": {
+      "counts": {
+        "errors": 0,
+        "failed": 2,
+        "passed": 15,
+        "skipped": 0
+      },
+      "junit": {
+        "bytes": 5027,
+        "member": "rework-agent-pin-guards-before.xml",
+        "sha256": "b3c895f97d9dd211dc73f4be4322fb050245ab61c8885c06eb6dd6f7ffb57ba2"
+      }
+    },
+    "schema_equality_and_no_observed_job": {
+      "counts": {
+        "errors": 0,
+        "failed": 0,
+        "passed": 1,
+        "skipped": 0
+      },
+      "junit": {
+        "bytes": 377,
+        "member": "rework-schema-equality-623.xml",
+        "sha256": "ddee946f6120166925a1abc5a1436ac274287e94b54094a80d83998089210ac2"
+      }
+    },
+    "vibe_pin": {
+      "counts": {
+        "errors": 0,
+        "failed": 0,
+        "passed": 14,
+        "skipped": 0
+      },
+      "junit": {
+        "bytes": 2050,
+        "member": "rework-final-vibe-pin14.xml",
+        "sha256": "bde345f988205302d5c866de40f6293a7d83d253a798c32552386a9488b067f6"
+      }
+    }
+  },
+  "archive": {
+    "bytes": 2737488,
+    "inventory": [
+      {
+        "bytes": 8235,
+        "path": "frozen-source/VibeComfy/tests/test_descriptorless_output_receipts.py",
+        "sha256": "30d644c678b0f633ceac4b500423969dff8e2227ad6690ebca9a828a26e22b99"
+      },
+      {
+        "bytes": 5626,
+        "path": "frozen-source/astrid-agent/tests/_local_speed_hashes.py",
+        "sha256": "e4109ee119242daed4574f2757e0a3a5063b3bd5cda10e33524e9764085fe9a0"
+      },
+      {
+        "bytes": 9717,
+        "path": "frozen-source/astrid-agent/tests/core/execution/test_ls6_image_thumbnail_readiness.py",
+        "sha256": "98e79f4468331f654717facf7071f49b4ec09e870b143090addf26bc0438eb0f"
+      },
+      {
+        "bytes": 17574,
+        "path": "frozen-source/astrid-agent/tests/core/execution/test_ls6_thumbnail_recovery.py",
+        "sha256": "25cbc33f4e0527279f6e1598df9b8d4873ecb4f43f98e53b907b33c69d9514ac"
+      },
+      {
+        "bytes": 8062,
+        "path": "frozen-source/astrid-agent/tests/core/execution/test_ls6_variant_thumbnail_recovery.py",
+        "sha256": "dd98270eb9fbb9e27c438f52f7d18b1bdb97271bbd4bf86e86fafe0e29003a84"
+      },
+      {
+        "bytes": 5391,
+        "path": "frozen-source/astrid-agent/tests/core/generation/test_ls6_export_permissions.py",
+        "sha256": "880201faae2c1b17daff510e2598d4648f8b323a161abeb1482d68be53fa1c03"
+      },
+      {
+        "bytes": 18312,
+        "path": "frozen-source/astrid-agent/tests/core/generation/test_output_delivery.py",
+        "sha256": "e27565db8ad210f5a9dc9776d14218d9da8fa217d3214982da830868e05da53b"
+      },
+      {
+        "bytes": 19896,
+        "path": "frozen-source/astrid-agent/tests/ls6_output_counters.py",
+        "sha256": "4d6d67f4006d6351d5fce79ab488abae2c060c5f6bd6ce8d9ff403a73aede1e6"
+      },
+      {
+        "bytes": 3910,
+        "path": "frozen-source/astrid-runtime/tests/test_thumbnail_intent_upgrade.py",
+        "sha256": "165829be95768aceed6045829fc63cd7b76a110b84027feffabd8106f1cfd4a7"
+      },
+      {
+        "bytes": 15989,
+        "path": "frozen-source/astrid-runtime/tests/test_thumbnail_variant_recovery.py",
+        "sha256": "537748c095d7c3b4b570dff699123c861aec043672de54ecc004893edb5e63ab"
+      },
+      {
+        "bytes": 13125,
+        "path": "launchers-and-probes/build_rework_final_evidence.py",
+        "sha256": "d29138846b497b6adc6fa0d297d747a9bb020d1eac0f46a8e12c6dac1e95cd10"
+      },
+      {
+        "bytes": 2883,
+        "path": "launchers-and-probes/run_focused.py",
+        "sha256": "fb7c57d814d33106d15c9440b23625146d4297f60c42a421c05084286764edb3"
+      },
+      {
+        "bytes": 3848,
+        "path": "launchers-and-probes/run_runtime_rework_proof.py",
+        "sha256": "23a92c40b960b5cb99a12bd3a9c99d7a8c502d59374f01af9b5b70e9d63e4699"
+      },
+      {
+        "bytes": 11107,
+        "path": "launchers-and-probes/test_general_log_retry_probe.py",
+        "sha256": "671648e5b9287ead292f2ded239d0af64fd64e6aeaa0e4a541bfcb59192a1e22"
+      },
+      {
+        "bytes": 2274,
+        "path": "launchers-and-probes/test_legacy_creative_log_settlement.py",
+        "sha256": "3411653634742ccc440bc7c6ead0bdd36b0876bf05265dca6807cc67d6960b53"
+      },
+      {
+        "bytes": 14935,
+        "path": "recovered-retry-scope/general-log-retry-base.log",
+        "sha256": "fef49641dbc324c03b48559cfd6ac12f32b6141cc67b9a337e953b8d2eb075e7"
+      },
+      {
+        "bytes": 13788,
+        "path": "recovered-retry-scope/general-log-retry-base.xml",
+        "sha256": "7bb583bc0d66f9d5955b8a7585154ffc75de21ce77b67fb763f9532fdf52c56d"
+      },
+      {
+        "bytes": 68609,
+        "path": "recovered-retry-scope/ls6-full-path-base-1.json",
+        "sha256": "8a4265204f7a6a3421a0c683e1470a76159640969408d5a10207f31e01cb581d"
+      },
+      {
+        "bytes": 12611,
+        "path": "rework-agent-crosspacket-analyze.py",
+        "sha256": "adf748e2898287ecbd5078517c06c129fb376ae7fdffb1641d42a8cc678152d4"
+      },
+      {
+        "bytes": 120755,
+        "path": "rework-agent-crosspacket-api.json",
+        "sha256": "cb411c25609730526b82bd1113bfa2c4ef9ab2b681e4646569690dc928706ba0"
+      },
+      {
+        "bytes": 318028,
+        "path": "rework-agent-crosspacket-classification.json",
+        "sha256": "f95e87e23bc2b745da2f8c26206f9a702082ef4786143850975ad975741342e0"
+      },
+      {
+        "bytes": 67783,
+        "path": "rework-agent-crosspacket-ls5-api.json",
+        "sha256": "251ab686fde34f6483fd31730a40d0c703a80de2838500cbcb4fa9a086353c64"
+      },
+      {
+        "bytes": 841701,
+        "path": "rework-agent-crosspacket-ls5_current-job135258969671.log",
+        "sha256": "cd3e2718df2e56371568fbbe617ca5aa0aefaaa88f060b9b74e9ac97e277c647"
+      },
+      {
+        "bytes": 841196,
+        "path": "rework-agent-crosspacket-ls5_prior419-job135245874618.log",
+        "sha256": "b85ec3f7d7d6ec78f68b91d6c17619a287dac4c0046bf0df7b890e64228c73b3"
+      },
+      {
+        "bytes": 183700,
+        "path": "rework-agent-crosspacket-ls7_current-job135258969504.log",
+        "sha256": "c4e1eb84fc2aec0f24bdf0d40e6d097189af25c56c3a421cee8111b4a22ee9b3"
+      },
+      {
+        "bytes": 183707,
+        "path": "rework-agent-crosspacket-ls7_prior419-job135245874304.log",
+        "sha256": "6f63b9196db50da233679f948a257f61ab57ef0f65c138f4f923847c0aab1c2f"
+      },
+      {
+        "bytes": 97124,
+        "path": "rework-agent-crosspacket-ls8_current_macos-job135258968711.log",
+        "sha256": "f01c1f0c7c6989191d97d12a902936f774becfe8a2663e7103593563e595b201"
+      },
+      {
+        "bytes": 99374,
+        "path": "rework-agent-crosspacket-ls8_current_ubuntu-job135258968996.log",
+        "sha256": "eede188c84021e4f1560e7682a2af24289835cdd8d485aa9986d527596e946ab"
+      },
+      {
+        "bytes": 99316,
+        "path": "rework-agent-crosspacket-ls8_current_windows-job135258969064.log",
+        "sha256": "6ff1f9fb86080739d9396cfc22b067a098ee4d8bfb52b388e720602d32b6d1c6"
+      },
+      {
+        "bytes": 94640,
+        "path": "rework-agent-crosspacket-ls8_prior419_macos-job135245874562.log",
+        "sha256": "3ffb3c0bdf3d9d73a0f29a226cd7f52248c2bd47e0c0185c9e89df1c88b9f25e"
+      },
+      {
+        "bytes": 99220,
+        "path": "rework-agent-crosspacket-ls8_prior419_ubuntu-job135245875300.log",
+        "sha256": "e9757d95c7ece4ed221060732224efd241c11f507ef9c22d146ca51390b4d1dc"
+      },
+      {
+        "bytes": 96289,
+        "path": "rework-agent-crosspacket-ls8_prior419_windows-job135245875436.log",
+        "sha256": "eb4eb10117b30ca495e6d2b5d010b91f2292bf44c926d8d69a5e5d55de3733eb"
+      },
+      {
+        "bytes": 5735,
+        "path": "rework-agent-crosspacket-manifest.json",
+        "sha256": "4f250af1849a9a799568d633b3c2b95381dd23d8b82f64dad102a67725d29dd5"
+      },
+      {
+        "bytes": 3800,
+        "path": "rework-agent-crosspacket-sources/493616c1cfc7a83f18894dc81773571e977f26ef/runtime.lock.json",
+        "sha256": "47c5af26f165e9d4ae28639fd248e2ea42e0edf81850d824d8e635e3ec9bb7f3"
+      },
+      {
+        "bytes": 3296,
+        "path": "rework-agent-crosspacket-sources/8243ef8f97ee2022fba0d95d54deb8a89aa2e5a9/.github/workflows/ls7-packet.yml",
+        "sha256": "2d1a31e3cd3555450719344f72e078eb5d0ada0816f963741c78da2a46801a26"
+      },
+      {
+        "bytes": 5147,
+        "path": "rework-agent-crosspacket-sources/8243ef8f97ee2022fba0d95d54deb8a89aa2e5a9/.github/workflows/ls8-packet.yml",
+        "sha256": "39daf771154cf6c14930e8516f2c45d6763cb2f910c76b774fd28acf481ef81a"
+      },
+      {
+        "bytes": 13625,
+        "path": "rework-agent-crosspacket-sources/8243ef8f97ee2022fba0d95d54deb8a89aa2e5a9/.github/workflows/plan55-ls5.yml",
+        "sha256": "b5d96b8604f797387ad58825469d8f9494c511964c5ba22a4b2368237fe8c413"
+      },
+      {
+        "bytes": 3800,
+        "path": "rework-agent-crosspacket-sources/8243ef8f97ee2022fba0d95d54deb8a89aa2e5a9/runtime.lock.json",
+        "sha256": "e8a788f8f4da300aebf105ac12510ae53c7d36bd69d485c2ac7fcd404b173fb4"
+      },
+      {
+        "bytes": 74635,
+        "path": "rework-agent-crosspacket-sources/8243ef8f97ee2022fba0d95d54deb8a89aa2e5a9/tests/core/execution/test_fail_closed_g28.py",
+        "sha256": "9af80e75633bdc4067984fa79da9785da6fe4b566be87d5d79ba9c92fe67518c"
+      },
+      {
+        "bytes": 8322,
+        "path": "rework-agent-crosspacket-sources/8243ef8f97ee2022fba0d95d54deb8a89aa2e5a9/tests/ls5_meter_compare.py",
+        "sha256": "e67cf78011d14bcaf213ccc594c459f6ee9f0dd1e78397a077e864b265e25606"
+      },
+      {
+        "bytes": 3989,
+        "path": "rework-agent-crosspacket-summary.txt",
+        "sha256": "ba342034dedbfd24545006c8d7274106a991203a365d5f60c9b9e7569ab648eb"
+      },
+      {
+        "bytes": 1202617,
+        "path": "rework-agent-focused41-after-1.before.json",
+        "sha256": "ae2b050d9f073c72974aa26200558e82629d3e7ec35cbed78aaf4f28dcab5cf7"
+      },
+      {
+        "bytes": 2401176,
+        "path": "rework-agent-focused41-after-1.json",
+        "sha256": "9770578dbccdb21b50181c8250089488e61f35026ca51b82ce78d6b8b0e32aca"
+      },
+      {
+        "bytes": 11287,
+        "path": "rework-agent-focused41-after-1.log",
+        "sha256": "796cd3a7b8c6e5d68889cdba5c54bf986691cdebbfad546b58d4688f1e1d7f07"
+      },
+      {
+        "bytes": 6179,
+        "path": "rework-agent-focused41-after-1.xml",
+        "sha256": "a6ee23bcd79246a200e69ec5031489d1ab58a28791971df20a978d435e75b996"
+      },
+      {
+        "bytes": 17325,
+        "path": "rework-agent-focused41-after-plan.json",
+        "sha256": "d73b18215c20152cbb55670394b566d3e2ddf17054480a18a54872f8bda4cf48"
+      },
+      {
+        "bytes": 9583,
+        "path": "rework-agent-focused41-after-runner.py",
+        "sha256": "79c77f7ce31e47132854d75cb3a08a4e089afe9937040c9435cdfddb232a2eb3"
+      },
+      {
+        "bytes": 9026,
+        "path": "rework-agent-focused41-before-1.before.json",
+        "sha256": "6b91c9de68b5b3b882ad4780b7338c238c02cbe7496ec6f0983d8f6fd1174b40"
+      },
+      {
+        "bytes": 19594,
+        "path": "rework-agent-focused41-before-1.json",
+        "sha256": "068299075f4de932aaa07a99846618f8baf98baf4782ee8641947427e7f91fe0"
+      },
+      {
+        "bytes": 15393,
+        "path": "rework-agent-focused41-before-1.log",
+        "sha256": "89e95a292ef233ed7a45276ed0b9011d1b9753f4c1c5572c4d708ab1687c16a5"
+      },
+      {
+        "bytes": 10851,
+        "path": "rework-agent-focused41-before-1.xml",
+        "sha256": "a39bcf812d84bee1773351ea160709d4c67813dd7813cfb0051993583f2ae2bc"
+      },
+      {
+        "bytes": 3030,
+        "path": "rework-agent-focused41-before-summary.json",
+        "sha256": "69f55ceeb39a9ca7613da3beb4c4f9073431f5d7d08029952be698e40204e515"
+      },
+      {
+        "bytes": 10853,
+        "path": "rework-agent-focused41-collection.json",
+        "sha256": "89e9664d9c8eae3cc95525e22e84687001e5f8bb90e1fc87335095b4f55e69c2"
+      },
+      {
+        "bytes": 4318,
+        "path": "rework-agent-focused41-collection.log",
+        "sha256": "684fa5ca994f64af47aad22da992a78aa78eee9bd3f3c8bb9c8766bad293428b"
+      },
+      {
+        "bytes": 30502,
+        "path": "rework-agent-focused41-comparison.json",
+        "sha256": "4609296c4c9e1204332a4eff106faf6caa3525f8e71811ad8255b018a674bf2c"
+      },
+      {
+        "bytes": 529,
+        "path": "rework-agent-focused41-imports.log",
+        "sha256": "207c7fc3cd7f7113ff475dc0e074a5d1ddac067b64731fcede5241b32513eba2"
+      },
+      {
+        "bytes": 18403,
+        "path": "rework-agent-focused41-plan.json",
+        "sha256": "447e8ab12d99b77a4e20b1059828eb4ba65fc8a83e6391c257b812b94773eedf"
+      },
+      {
+        "bytes": 640181,
+        "path": "rework-agent-hosted-419-meter-ubuntu-job.log",
+        "sha256": "d4453ebaca641cf84e84db1fe4084b845a5fa7e4d0bfe5978059697496497a61"
+      },
+      {
+        "bytes": 112394,
+        "path": "rework-agent-hosted-8243-close-snapshot.json",
+        "sha256": "9889e55e1dafe75d20926dad2c4498a45923292109ea86a7bd4fcc252fc1efc3"
+      },
+      {
+        "bytes": 56353,
+        "path": "rework-agent-hosted-8243-meter-api.json",
+        "sha256": "c92cb998a06d34046787fa3cae8901acdfdec122f926d5616a80b38ef86844c3"
+      },
+      {
+        "bytes": 199443,
+        "path": "rework-agent-hosted-8243-meter-classification.json",
+        "sha256": "ddc098f8488029388dc5913b20b4185f251b1e6771b2cc025ce9274af0ef04dc"
+      },
+      {
+        "bytes": 3177,
+        "path": "rework-agent-hosted-8243-meter-summary.txt",
+        "sha256": "05939381730d3f26602a0dfcacb4a6dd74dfc4890dcf946dcd0cc903eed00a0f"
+      },
+      {
+        "bytes": 640614,
+        "path": "rework-agent-hosted-8243-meter-ubuntu-job.log",
+        "sha256": "9fe4440ff380a9f069e40b52ad93f4ce2043137be61fe41e29bd11d71a4abd15"
+      },
+      {
+        "bytes": 629390,
+        "path": "rework-agent-hosted-8243-meter-windows-job.log",
+        "sha256": "bd4ec96c6bb6714214cf08fc37e923975e84b03e077fd04f3aea71c6072cf070"
+      },
+      {
+        "bytes": 53106,
+        "path": "rework-agent-hosted-8243-windows-guard-job.log",
+        "sha256": "442066cb00c15dbf82f5a040931c81222e9329303b6d01454f6011d5f276c8ff"
+      },
+      {
+        "bytes": 820,
+        "path": "rework-agent-hosted-extracted/419-meter-ubuntu/SHA256SUMS",
+        "sha256": "03887e019f5fe88b327b62c327acf0a91c011d217681c423f4c202f494805218"
+      },
+      {
+        "bytes": 342,
+        "path": "rework-agent-hosted-extracted/419-meter-ubuntu/historical-control/latency-command.json",
+        "sha256": "31617f596d5bff9f38d594bc599757d609ac7bbad967f600f3f3266e1345181c"
+      },
+      {
+        "bytes": 2,
+        "path": "rework-agent-hosted-extracted/419-meter-ubuntu/historical-control/latency.exit",
+        "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+      },
+      {
+        "bytes": 108497,
+        "path": "rework-agent-hosted-extracted/419-meter-ubuntu/historical-control/latency.log",
+        "sha256": "326a36877fa23d02ed5daecf84ce2f94f34f570b7f07a66d13afd3fdce79739a"
+      },
+      {
+        "bytes": 97913,
+        "path": "rework-agent-hosted-extracted/419-meter-ubuntu/historical-control/latency.xml",
+        "sha256": "1af12dfb19bb4b5a9614e36465f9476e53ad56ddf3c0c286133b4876f0902d7a"
+      },
+      {
+        "bytes": 529,
+        "path": "rework-agent-hosted-extracted/419-meter-ubuntu/historical-control/summary.json",
+        "sha256": "d4e2baf2e3bcd0812b7809037bc3883420c37fe6f71d788ae6ccec3274b29a17"
+      },
+      {
+        "bytes": 3754,
+        "path": "rework-agent-hosted-extracted/419-meter-ubuntu/old-reference.json",
+        "sha256": "d71091e2671aaadbec083bd658d37a268a6f1aa7cbcbbdf69338d007265c34c2"
+      },
+      {
+        "bytes": 3679,
+        "path": "rework-agent-hosted-extracted/419-meter-ubuntu/pip-freeze.txt",
+        "sha256": "58fad2da06be95bf17b6a20109a8c525136250a5b182abd09b3ca670f44ba655"
+      },
+      {
+        "bytes": 233,
+        "path": "rework-agent-hosted-extracted/419-meter-ubuntu/sources.json",
+        "sha256": "6af134e84b1faedd7d081a63e2651f7c1b39a0edee60e4c422f72bf584f823d2"
+      },
+      {
+        "bytes": 26257,
+        "path": "rework-agent-hosted-extracted/419-meter-ubuntu/summary.json",
+        "sha256": "932535bf9d6be4f7c6864da9cf98126e5a692f86a545b4f806e5e7c94c92f68d"
+      },
+      {
+        "bytes": 829,
+        "path": "rework-agent-hosted-extracted/419-meter-windows/SHA256SUMS",
+        "sha256": "d7cfe789ec99d3483cfa89e6636700699703eab1e8b6fbe6c620d5d6a250fa11"
+      },
+      {
+        "bytes": 349,
+        "path": "rework-agent-hosted-extracted/419-meter-windows/historical-control/latency-command.json",
+        "sha256": "1219a4790104bc4d352e0cd56c405376c3f8e0580cda5774521645fef5184921"
+      },
+      {
+        "bytes": 3,
+        "path": "rework-agent-hosted-extracted/419-meter-windows/historical-control/latency.exit",
+        "sha256": "f1b2f662800122bed0ff255693df89c4487fbdcf453d3524a42d4ec20c3d9c04"
+      },
+      {
+        "bytes": 276363,
+        "path": "rework-agent-hosted-extracted/419-meter-windows/historical-control/latency.log",
+        "sha256": "8f2997d8308b26d2dce430cc4de82f15b2328b6900c035aa8cdaae7f2c3826bb"
+      },
+      {
+        "bytes": 257458,
+        "path": "rework-agent-hosted-extracted/419-meter-windows/historical-control/latency.xml",
+        "sha256": "cc0bbc5b8dbdb06b334292ec32c87bef30cabd6ba885b1fbfea6f58caef26ce0"
+      },
+      {
+        "bytes": 553,
+        "path": "rework-agent-hosted-extracted/419-meter-windows/historical-control/summary.json",
+        "sha256": "342d2642050823eb70475d9149585b07e2c878afbb70dfa6e67c92a62aaef24a"
+      },
+      {
+        "bytes": 3563,
+        "path": "rework-agent-hosted-extracted/419-meter-windows/old-reference.json",
+        "sha256": "a193f4af4f7bddb35dcfbc8c6d8913c27e576b1107f3bb38ebdb4d04e0f68122"
+      },
+      {
+        "bytes": 3825,
+        "path": "rework-agent-hosted-extracted/419-meter-windows/pip-freeze.txt",
+        "sha256": "4c7fc8701f3d4e035d6069b7a7ed144df36c37f4646f80a2a7fd3a425282f967"
+      },
+      {
+        "bytes": 239,
+        "path": "rework-agent-hosted-extracted/419-meter-windows/sources.json",
+        "sha256": "e9630f66c2e56d2381e9f8685a0e5566cd9b09e3efb2d8ffcc962a137b3f3610"
+      },
+      {
+        "bytes": 26504,
+        "path": "rework-agent-hosted-extracted/419-meter-windows/summary.json",
+        "sha256": "2eab19c642210cb79e3676c60424a9be5021f0a3fff707347580de84e2f98ea0"
+      },
+      {
+        "bytes": 820,
+        "path": "rework-agent-hosted-extracted/8243-meter-ubuntu/SHA256SUMS",
+        "sha256": "c324552dad7f24851de634d8d23028494913d19596abef75b4afb4d0b7d01ecb"
+      },
+      {
+        "bytes": 342,
+        "path": "rework-agent-hosted-extracted/8243-meter-ubuntu/historical-control/latency-command.json",
+        "sha256": "ed6e262beded6be276ceebf80befed876e31e92e3fceb6a478b05c41e08f7341"
+      },
+      {
+        "bytes": 2,
+        "path": "rework-agent-hosted-extracted/8243-meter-ubuntu/historical-control/latency.exit",
+        "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+      },
+      {
+        "bytes": 115015,
+        "path": "rework-agent-hosted-extracted/8243-meter-ubuntu/historical-control/latency.log",
+        "sha256": "be19fe5a1da4e7b8533763b3f2fb6831c56ea721c78db0a8b474fc5754c83e55"
+      },
+      {
+        "bytes": 97913,
+        "path": "rework-agent-hosted-extracted/8243-meter-ubuntu/historical-control/latency.xml",
+        "sha256": "d9e6831f75a19eb5b5286a96ab8d3796bcda79d7a6d9ee3ecf0cf0f58683907c"
+      },
+      {
+        "bytes": 529,
+        "path": "rework-agent-hosted-extracted/8243-meter-ubuntu/historical-control/summary.json",
+        "sha256": "da37d178391a81d23103f613a6d98e36e17278dd5d1f2423dffc120b5f3dc9ef"
+      },
+      {
+        "bytes": 3754,
+        "path": "rework-agent-hosted-extracted/8243-meter-ubuntu/old-reference.json",
+        "sha256": "d71091e2671aaadbec083bd658d37a268a6f1aa7cbcbbdf69338d007265c34c2"
+      },
+      {
+        "bytes": 3679,
+        "path": "rework-agent-hosted-extracted/8243-meter-ubuntu/pip-freeze.txt",
+        "sha256": "0bda55fab36e6ee91ffa863d16e7a1f89bbc67d50fe6f98a5a8c40dc52c5261b"
+      },
+      {
+        "bytes": 233,
+        "path": "rework-agent-hosted-extracted/8243-meter-ubuntu/sources.json",
+        "sha256": "18e21a0fdfb5925d3edd499c5e50d48e870710317749058dc796eebfb466c997"
+      },
+      {
+        "bytes": 26257,
+        "path": "rework-agent-hosted-extracted/8243-meter-ubuntu/summary.json",
+        "sha256": "eb77eadaf9024eb9647793db48525ec8ee31f64a48b16af9fd511020f2beb9e4"
+      },
+      {
+        "bytes": 829,
+        "path": "rework-agent-hosted-extracted/8243-meter-windows/SHA256SUMS",
+        "sha256": "fec18d7189400188b20d915e6919f41f841e465ac647f56f7e01f079b5fc89bb"
+      },
+      {
+        "bytes": 349,
+        "path": "rework-agent-hosted-extracted/8243-meter-windows/historical-control/latency-command.json",
+        "sha256": "63b412b1dc5f86a2802ebcd353728c5a405e93ce144941d74a02ce8c882fb413"
+      },
+      {
+        "bytes": 3,
+        "path": "rework-agent-hosted-extracted/8243-meter-windows/historical-control/latency.exit",
+        "sha256": "f1b2f662800122bed0ff255693df89c4487fbdcf453d3524a42d4ec20c3d9c04"
+      },
+      {
+        "bytes": 276696,
+        "path": "rework-agent-hosted-extracted/8243-meter-windows/historical-control/latency.log",
+        "sha256": "d467131bc3fbd3ce6c2dfb10ad34409deb2719abd17c980b2f39171cecc4fef1"
+      },
+      {
+        "bytes": 257458,
+        "path": "rework-agent-hosted-extracted/8243-meter-windows/historical-control/latency.xml",
+        "sha256": "7e3111f9203c20aabf2b7046ca445b08c88502af6d1d1864ca32ebd29b4ea08b"
+      },
+      {
+        "bytes": 553,
+        "path": "rework-agent-hosted-extracted/8243-meter-windows/historical-control/summary.json",
+        "sha256": "b5b87857eb82477d692e2f9d38439dc3646ca32293d657e82bf6ab378c493524"
+      },
+      {
+        "bytes": 3563,
+        "path": "rework-agent-hosted-extracted/8243-meter-windows/old-reference.json",
+        "sha256": "a193f4af4f7bddb35dcfbc8c6d8913c27e576b1107f3bb38ebdb4d04e0f68122"
+      },
+      {
+        "bytes": 3825,
+        "path": "rework-agent-hosted-extracted/8243-meter-windows/pip-freeze.txt",
+        "sha256": "cbb60ffe4f69190302031900fec49dbe3b22127cac3fc3fcd20050fcbccf8752"
+      },
+      {
+        "bytes": 239,
+        "path": "rework-agent-hosted-extracted/8243-meter-windows/sources.json",
+        "sha256": "d4a7b27372a7789721a715729790a9dc951010efe02ea1e4bb15168c9f0e9c9f"
+      },
+      {
+        "bytes": 26504,
+        "path": "rework-agent-hosted-extracted/8243-meter-windows/summary.json",
+        "sha256": "6b0878d99a7da00f727f8fcdf5757d04aeb0ca73ed4bac7afd872144a0010d28"
+      },
+      {
+        "bytes": 37256,
+        "path": "rework-agent-hosted-extracted/manifest.json",
+        "sha256": "4c60a801c6bf95a6f50b55d32ae38da8512ca82fc99b8c9317877bcd017df2ac"
+      },
+      {
+        "bytes": 11254,
+        "path": "rework-agent-hosted-extracted/source-files/8243ef8f97ee2022fba0d95d54deb8a89aa2e5a9/.github/workflows/plan55-native-flush.yml",
+        "sha256": "87694fed599f64ce2eea1feede88e58a001a94102d8b591b43b0175f7236bb60"
+      },
+      {
+        "bytes": 7130,
+        "path": "rework-agent-hosted-extracted/source-files/8243ef8f97ee2022fba0d95d54deb8a89aa2e5a9/astrid/core/generation/vibecomfy_dependency.py",
+        "sha256": "01fac7036f9172d0d6425fef64119f7e9747f724f55e01f8e443a89d95401382"
+      },
+      {
+        "bytes": 723,
+        "path": "rework-agent-hosted-extracted/source-files/8243ef8f97ee2022fba0d95d54deb8a89aa2e5a9/astrid/packs/vibecomfy/pins.json",
+        "sha256": "3bd3c40448ad42b3283da5869cf5e549a51e29c5072305d426ba90a92f7d2b10"
+      },
+      {
+        "bytes": 11751,
+        "path": "rework-agent-hosted-extracted/source-files/8243ef8f97ee2022fba0d95d54deb8a89aa2e5a9/tests/local_speed_paired_run.py",
+        "sha256": "68df72392b3d53c02f6acb74bd0bf7636f69a2529e50a9b4a86a6bd100f85f66"
+      },
+      {
+        "bytes": 9724,
+        "path": "rework-agent-hosted-meter-analysis.py",
+        "sha256": "34105ac4bf0905f247212c4145ab25b4d72c440fc98033b6e740bd0f48bb50c3"
+      },
+      {
+        "bytes": 1174596,
+        "path": "rework-agent-pin-guards-after.before.json",
+        "sha256": "ce13e8b7b4b2a7a8b30660e48bc9eb1669c64aa527df7f51051233a3e298b652"
+      },
+      {
+        "bytes": 2352526,
+        "path": "rework-agent-pin-guards-after.json",
+        "sha256": "39df87b56662186fd4ee3a04ac65fbbfb884fb48f9a72df6ab4bac7df1d2fb87"
+      },
+      {
+        "bytes": 4216,
+        "path": "rework-agent-pin-guards-after.log",
+        "sha256": "4caf3ea1afedd13822ed11b3a7ee45218f1cb75b3796027731f4699fdd3c4fdf"
+      },
+      {
+        "bytes": 5027,
+        "path": "rework-agent-pin-guards-after.xml",
+        "sha256": "fe4eb7010c50680857a97fca71753dba5f7816363621ee484d267f8192bdaed6"
+      },
+      {
+        "bytes": 1174273,
+        "path": "rework-agent-pin-guards-before.before.json",
+        "sha256": "3cf27048fa677c5af77661513aad3549fa3f1b43dd8011f1140f161b856ced7c"
+      },
+      {
+        "bytes": 2351853,
+        "path": "rework-agent-pin-guards-before.json",
+        "sha256": "93b15924e904547e9eacef3a2cd0f4445c224a5a5aba99f7b0982e5020c3d367"
+      },
+      {
+        "bytes": 4216,
+        "path": "rework-agent-pin-guards-before.log",
+        "sha256": "355b4b0bddf7d99f5400ac4a63882fb55427657be99cbbc89186bd10250eded7"
+      },
+      {
+        "bytes": 5027,
+        "path": "rework-agent-pin-guards-before.xml",
+        "sha256": "b3c895f97d9dd211dc73f4be4322fb050245ab61c8885c06eb6dd6f7ffb57ba2"
+      },
+      {
+        "bytes": 9483,
+        "path": "rework-agent-pin-guards-comparison.json",
+        "sha256": "32240e6884ec694c99d0e98680d1fb0e47213729434b64461ea012abbd316fdb"
+      },
+      {
+        "bytes": 9973,
+        "path": "rework-agent-pin-guards-runner.py",
+        "sha256": "fc641440fd5c4b2c251c1a20990167fdc8e5278d79239626f7eb5329a56f1e3f"
+      },
+      {
+        "bytes": 2556,
+        "path": "rework-agent-variants-before-1.before.json",
+        "sha256": "8581de6d5975cfb087dfd35be0bec7bafe54eab0fd0d458fe3a1491923d631a5"
+      },
+      {
+        "bytes": 4525,
+        "path": "rework-agent-variants-before-1.json",
+        "sha256": "6ab52c49578a5aeb11d83fe800a0dd05f768c0ababb9cd426208da1659da183b"
+      },
+      {
+        "bytes": 13793,
+        "path": "rework-agent-variants-before-1.log",
+        "sha256": "e87c788bab4cb946fe29cac43ea496eaa8fc8437aebf1a9d6fc7922612fcdbb5"
+      },
+      {
+        "bytes": 13112,
+        "path": "rework-agent-variants-before-1.xml",
+        "sha256": "0b8da555822dfd710805bc2a80b33027befad6a753120ab47cf97af45a410810"
+      },
+      {
+        "bytes": 5472,
+        "path": "rework-checkpoint-VibeComfy-product.patch",
+        "sha256": "52fc985f2928e57c3ed2284e9fed763d0aed6e1bdc2c7bff99025e09cdc25ae2"
+      },
+      {
+        "bytes": 1614,
+        "path": "rework-checkpoint-astrid-agent-product.patch",
+        "sha256": "7ee9a52f3465cecc65ed587e69ef84ef9bd8f4efb38422c8af76a50d5bff61fa"
+      },
+      {
+        "bytes": 6557,
+        "path": "rework-checkpoint-astrid-runtime-product.patch",
+        "sha256": "9509e8ce0899e4b86ea25e9eec97ae40d4c49893a6337a81325a787b6a5fe926"
+      },
+      {
+        "bytes": 581,
+        "path": "rework-checkpoint-created-commits.json",
+        "sha256": "f53433adf6bda39a79c2814df51f9a2f48d2f1a58f5160b5f5dcc4b757ed9743"
+      },
+      {
+        "bytes": 560,
+        "path": "rework-checkpoint-final-readback.json",
+        "sha256": "1360961b9b60e15ed96c610857ff9d8de0e6a503c49ad401e9b5cf51780518b2"
+      },
+      {
+        "bytes": 2962,
+        "path": "rework-checkpoint-protected-recovery.before.json",
+        "sha256": "28c6b75c770822e9cdee91ccbba4360bd7447e9cd0becc3c02f2c21adb4722d2"
+      },
+      {
+        "bytes": 5333,
+        "path": "rework-checkpoint-protected-recovery.json",
+        "sha256": "3eee1eb2ebc5ae07edd8df7136e1446341effa14e006568e64f12906d5787c18"
+      },
+      {
+        "bytes": 2453,
+        "path": "rework-checkpoint-protected-recovery.log",
+        "sha256": "443e2b17b546e700abce3e7e561e07b9692d44dea9da4cf7dd277a05037a0647"
+      },
+      {
+        "bytes": 573,
+        "path": "rework-checkpoint-protected-recovery.xml",
+        "sha256": "e34e2e53b5b9c0cd40f7df66f77020a89781e9251ff30520c1082d433a2504ed"
+      },
+      {
+        "bytes": 5686,
+        "path": "rework-checkpoint-publication-input.json",
+        "sha256": "4fec9110726ba67fe682135d0ee438cadb3af7fa0888c628cf65b528d78fabab"
+      },
+      {
+        "bytes": 7819,
+        "path": "rework-checkpoint-scope-audit.json",
+        "sha256": "ae372ed0306c9c15a2e1d0c4777563bb0213c4ebef0e632106a232d5c7a16672"
+      },
+      {
+        "bytes": 1823,
+        "path": "rework-checkpoint-staged-pin-copy.before.json",
+        "sha256": "d8281977feae433200ff3278b2178c8750bc16c2c60f1d55a669c807aeae1981"
+      },
+      {
+        "bytes": 3071,
+        "path": "rework-checkpoint-staged-pin-copy.json",
+        "sha256": "7bc5be83176d29a72e62fb36f386cbb8b732cfd3a279d3316d6f312832b56a90"
+      },
+      {
+        "bytes": 338,
+        "path": "rework-checkpoint-staged-pin-copy.log",
+        "sha256": "27d0d9d3a2ba5ba41106c99f5076fd7633d9624ea4e5ace4f903166d55cdc6e6"
+      },
+      {
+        "bytes": 359,
+        "path": "rework-checkpoint-staged-pin-copy.xml",
+        "sha256": "5a6c3e24f9d4795016be5e805bf717cbc18f2466eac04b51cf3cef1803a84bf5"
+      },
+      {
+        "bytes": 2889,
+        "path": "rework-checkpoint-vibe-pin.before.json",
+        "sha256": "b3e5c583ae8edf2647227d32f5ba3e6f084e165c28dcb22c33e5f992ac5e6e89"
+      },
+      {
+        "bytes": 5260,
+        "path": "rework-checkpoint-vibe-pin.json",
+        "sha256": "2b0d7e3a3f2763547f597e7031f2f39395e94c28b2e20c3b3ae8be5e89533c87"
+      },
+      {
+        "bytes": 2296,
+        "path": "rework-checkpoint-vibe-pin.log",
+        "sha256": "096b2ce9d77b73f12ca044e4c0c90017cb985f60984c7dd03911be7296b59cd2"
+      },
+      {
+        "bytes": 2050,
+        "path": "rework-checkpoint-vibe-pin.xml",
+        "sha256": "14546b3cdaeb77c431e3ea7b11fa7533b3f9a2fff91558e4ec245b30358cbea4"
+      },
+      {
+        "bytes": 1100,
+        "path": "rework-counter-after-1-environment.txt",
+        "sha256": "9a78e2799465c2b310d30c20edfc05c1d028929ca3e90fa0ac50f90e91e6feb2"
+      },
+      {
+        "bytes": 6743,
+        "path": "rework-counter-after-1-launch.py",
+        "sha256": "a798cd7f9937029eaf6719d5d0d713d17f0212e98797276ad886310e62522f40"
+      },
+      {
+        "bytes": 4784,
+        "path": "rework-counter-after-1-plan.json",
+        "sha256": "2f0998ebaa9de18c025e43654a41f618f86648e36114f7c7414f788ea8efa210"
+      },
+      {
+        "bytes": 8832,
+        "path": "rework-counter-after-1-run.json",
+        "sha256": "5fcbb32f158dc1934245fa0b7b954ba5c9f6ef8fd86a4dc5e7815d23e207216a"
+      },
+      {
+        "bytes": 70783,
+        "path": "rework-counter-after-1.json",
+        "sha256": "f21d2e317cd450c44f232a629b01fee2fa79a31709222dba92d13b1f9e868c0b"
+      },
+      {
+        "bytes": 4388,
+        "path": "rework-counter-after-1.log",
+        "sha256": "2a8e1dc170004bcf796c6e5648f1fd312635ba896e5e5caed22fc63c7118a6a7"
+      },
+      {
+        "bytes": 5078,
+        "path": "rework-counter-before-1-comparison.json",
+        "sha256": "4155899d2715374c3d7a2a8e8bbdffa41b7575f80f7acc92817155abec42bcf8"
+      },
+      {
+        "bytes": 1100,
+        "path": "rework-counter-before-1-environment.txt",
+        "sha256": "9a78e2799465c2b310d30c20edfc05c1d028929ca3e90fa0ac50f90e91e6feb2"
+      },
+      {
+        "bytes": 7091,
+        "path": "rework-counter-before-1-run.json",
+        "sha256": "faacf679cada63385b9e05219508a218d783ebfe45383be4831f085b9b9dbcce"
+      },
+      {
+        "bytes": 70107,
+        "path": "rework-counter-before-1.json",
+        "sha256": "5d25be822fb18347e70925fe9d34f87676d79eb42713ad77a1f7876c91916fdc"
+      },
+      {
+        "bytes": 4338,
+        "path": "rework-counter-before-1.log",
+        "sha256": "ea9d534d15f8615c8fe79d550ee8d27e6e1fac4bb80818600bc030a02f10cca8"
+      },
+      {
+        "bytes": 4433,
+        "path": "rework-counter-before-launch.py",
+        "sha256": "f71a74553392ac66e045ca6d22efbb32f4723006d32404caebde7cfe9991b7dc"
+      },
+      {
+        "bytes": 1588,
+        "path": "rework-counter-final-SHA256SUMS",
+        "sha256": "bc088bca58206c4344857cde49327ec9cab247d203fdff7b9934ca0b18426e04"
+      },
+      {
+        "bytes": 23745,
+        "path": "rework-counter-final-comparison.json",
+        "sha256": "8b4892bbb00847c403fe58cf561a2e655687bb396411d6a66de709eb0f8a228d"
+      },
+      {
+        "bytes": 6362,
+        "path": "rework-counter-final-plan.json",
+        "sha256": "fa72082cc890b2983955ab18603cb3309d3d801c659158bb84d026584da90d3c"
+      },
+      {
+        "bytes": 1322,
+        "path": "rework-counter-observer-audit.json",
+        "sha256": "3927ae0a56d13a1a69a6d24164da6e83d6bc617055ebafaabe38c05b4be06dec"
+      },
+      {
+        "bytes": 1814,
+        "path": "rework-counter-observer-diff.patch",
+        "sha256": "65eacad9a8fa239ca2d4acd2f69ee7e03bc3ae50b3f18a5bfb9de06e15f06626"
+      },
+      {
+        "bytes": 1100,
+        "path": "rework-environment-pip-freeze.txt",
+        "sha256": "9a78e2799465c2b310d30c20edfc05c1d028929ca3e90fa0ac50f90e91e6feb2"
+      },
+      {
+        "bytes": 49581,
+        "path": "rework-final-prior-run-census.json",
+        "sha256": "7f1c8b229b90c9f534147b1c886d3089e2778ec75067d2ffcc9555e85d790da6"
+      },
+      {
+        "bytes": 11851,
+        "path": "rework-final-scope-audit.json",
+        "sha256": "af632955c9b4a5c9ede8bd67d1662b1aa3fecad73c4fdb7c5c5cb562747dea6b"
+      },
+      {
+        "bytes": 2472,
+        "path": "rework-final-staged-pin-copy.before.json",
+        "sha256": "21f3b8d4f17d26b5e668a1cf81d498b6433168cdc60ee990eef1b268a23be62f"
+      },
+      {
+        "bytes": 4395,
+        "path": "rework-final-staged-pin-copy.json",
+        "sha256": "41926a3ab77006da89290e76b93cc8c3bc4c32b509dd6b36f36ff4bc43591d02"
+      },
+      {
+        "bytes": 338,
+        "path": "rework-final-staged-pin-copy.log",
+        "sha256": "9174b5d845af22ddd3ca29f04845841f282d7aa6033898381899799ba6869f90"
+      },
+      {
+        "bytes": 359,
+        "path": "rework-final-staged-pin-copy.xml",
+        "sha256": "e55efad6e5f487e4eee00970105fb9aa7432e9cdc53550ab870824bd5ec9461b"
+      },
+      {
+        "bytes": 1831,
+        "path": "rework-final-vibe-pin14.before.json",
+        "sha256": "5854ea2ac675ab2646b701e60dae643a1b130fa5edea24794759078cf6dcfde5"
+      },
+      {
+        "bytes": 3148,
+        "path": "rework-final-vibe-pin14.json",
+        "sha256": "5de1ee0cb235d5ed4007b5967194d1c0e316c91199468516c45df0f4ce8162ca"
+      },
+      {
+        "bytes": 2305,
+        "path": "rework-final-vibe-pin14.log",
+        "sha256": "8e57a77b6d4b5c1fdd09f8f77589a74f9f8f384084cbdcad023f8d8e643a14dd"
+      },
+      {
+        "bytes": 2050,
+        "path": "rework-final-vibe-pin14.xml",
+        "sha256": "bde345f988205302d5c866de40f6293a7d83d253a798c32552386a9488b067f6"
+      },
+      {
+        "bytes": 6979,
+        "path": "rework-general-log-retry-68-selected-evidence.json",
+        "sha256": "e0b5394a64a41224f538131c195ed6fb4aaa287304e7a12dcb64f4f66692e0c1"
+      },
+      {
+        "bytes": 1909,
+        "path": "rework-general-log-retry-68.before.json",
+        "sha256": "75d1420ad0020e952d9e5c076f2223685d02c16171c1f52168b0b14703ff52ff"
+      },
+      {
+        "bytes": 3108,
+        "path": "rework-general-log-retry-68.json",
+        "sha256": "709882cfa81c8629bb0b355d6860df61f8ba8f39faeb6c56fddc4392adecc3c9"
+      },
+      {
+        "bytes": 15420,
+        "path": "rework-general-log-retry-68.log",
+        "sha256": "f03a3533acc1cbc0990c2ba21f915f93dabddd34d23f4e7ee26c9f629383034a"
+      },
+      {
+        "bytes": 14011,
+        "path": "rework-general-log-retry-68.xml",
+        "sha256": "59bb030fe45d757d84544d168201089e26a5858083204bc533fc088f064a6bf7"
+      },
+      {
+        "bytes": 183,
+        "path": "rework-general-log-retry-comparison.log",
+        "sha256": "80d48106a47295cac47df4a29c93ea56c226e530abd631bfae974968bde22994"
+      },
+      {
+        "bytes": 0,
+        "path": "rework-general-log-retry-comparison/fixed.txt",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "bytes": 0,
+        "path": "rework-general-log-retry-comparison/missing.txt",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "bytes": 0,
+        "path": "rework-general-log-retry-comparison/no-baseline.txt",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "bytes": 56,
+        "path": "rework-general-log-retry-comparison/preexisting.txt",
+        "sha256": "f380c611d18ca781250269bc168fe7cf341fea458f6842bd7b731b062549419d"
+      },
+      {
+        "bytes": 0,
+        "path": "rework-general-log-retry-comparison/regression.txt",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "bytes": 183,
+        "path": "rework-general-log-retry-comparison/summary.md",
+        "sha256": "80d48106a47295cac47df4a29c93ea56c226e530abd631bfae974968bde22994"
+      },
+      {
+        "bytes": 2322,
+        "path": "rework-image-after-1.before.json",
+        "sha256": "339c83b5ba283b7aef232c8ce4873075f83a2eea7ec258055342558cffd74a40"
+      },
+      {
+        "bytes": 4078,
+        "path": "rework-image-after-1.json",
+        "sha256": "95a1fbb6559ce763ba1c1064d5d0e43141a95e6e795b5342f7e884b929ddf547"
+      },
+      {
+        "bytes": 9922,
+        "path": "rework-image-after-1.log",
+        "sha256": "a50f06e04aae993686f64ae9249e690446542f27ceb7e7a0fdd90f248cdf3bd1"
+      },
+      {
+        "bytes": 10081,
+        "path": "rework-image-after-1.xml",
+        "sha256": "3466a8bf3dd0d711f9c5875de3c77db50bd16309914f8e82452ddf7a7ea83006"
+      },
+      {
+        "bytes": 2322,
+        "path": "rework-image-after-2.before.json",
+        "sha256": "5afe2bf2645976933d8138676ad50db14b36ccf74e06d0b1f6c1b91ea181d2d5"
+      },
+      {
+        "bytes": 4078,
+        "path": "rework-image-after-2.json",
+        "sha256": "3f0110bffd7a681230594d4b8221acbec916e1e2df63024340f7b587ff2969c9"
+      },
+      {
+        "bytes": 1040,
+        "path": "rework-image-after-2.log",
+        "sha256": "c9f6f29ab1a1deb99ea54f03bf5e6f33f47f321ca10cd2abe5dbadaa40cde758"
+      },
+      {
+        "bytes": 391,
+        "path": "rework-image-after-2.xml",
+        "sha256": "abe9b34b188fb673ab4f1c4347878f7c4373bea7a0dd6768d815d0ce75a35d32"
+      },
+      {
+        "bytes": 1970,
+        "path": "rework-image-before-1.before.json",
+        "sha256": "0cea5f9889d56e4e6dc803e1b7ded7f93a346ef1244577101ecc08dfa37e3308"
+      },
+      {
+        "bytes": 3372,
+        "path": "rework-image-before-1.json",
+        "sha256": "c1fb7332e6032d8717680e3dbce322635207462f66d5a36da445356173322404"
+      },
+      {
+        "bytes": 2616,
+        "path": "rework-image-before-1.log",
+        "sha256": "3ed93d18b87c045607e950a5028c538f82944b5480b5b12c0074bcced24b068b"
+      },
+      {
+        "bytes": 3060,
+        "path": "rework-image-before-1.xml",
+        "sha256": "2532db1594f4fe2bba4b0811d6324f585dc28c843d397cbe858731f0bfe51b3d"
+      },
+      {
+        "bytes": 1792,
+        "path": "rework-image-before-2.before.json",
+        "sha256": "58a6d199181de2287544ec272ebaff663604e63c472630ecf64784b27f9a3e96"
+      },
+      {
+        "bytes": 3002,
+        "path": "rework-image-before-2.json",
+        "sha256": "1e7dd37b4ddc614043f3ba3e96ec623f1d975d28219fa646f4c5b134c37873a6"
+      },
+      {
+        "bytes": 2616,
+        "path": "rework-image-before-2.log",
+        "sha256": "18155b3502a2820f2f42cb17540033eaeca2d5e1803cccd115a8ebb39e194b78"
+      },
+      {
+        "bytes": 3060,
+        "path": "rework-image-before-2.xml",
+        "sha256": "554a5544a733fd3308deb8caab79ff44677779e7539d90666d47d4ef8af9c7b0"
+      },
+      {
+        "bytes": 1194,
+        "path": "rework-image-summary.json",
+        "sha256": "bd67c39ae6a2e33224799155c561d2660766fe3f60da823417c6d9ce12497634"
+      },
+      {
+        "bytes": 3798,
+        "path": "rework-installed-diagnostics-comparison.json",
+        "sha256": "d524a772508dc9a5e6080aafc0a459f392bf83b77aaf4c3714568a6941679fc2"
+      },
+      {
+        "bytes": 2100,
+        "path": "rework-installed-variants-68.before.json",
+        "sha256": "8d3bfb34fe043b13c8ceaa1f6b2f883f2c1110681b4093081fff08c41ab932f7"
+      },
+      {
+        "bytes": 3633,
+        "path": "rework-installed-variants-68.json",
+        "sha256": "237dd31c20c3c0ee8db1a4fbd331fd60ddd9e72216966483556e7c2067f91884"
+      },
+      {
+        "bytes": 13791,
+        "path": "rework-installed-variants-68.log",
+        "sha256": "4fe91ddc7c422a077eef5d6f0c238cdaedf2141c3678fa1bbba4cb1fbdb6752c"
+      },
+      {
+        "bytes": 13110,
+        "path": "rework-installed-variants-68.xml",
+        "sha256": "a98d6aab90586ec6a4ee9808306dba88909195f3afecedcb09685116ac227cb5"
+      },
+      {
+        "bytes": 183,
+        "path": "rework-installed-variants-comparison.log",
+        "sha256": "97742b6951762e18fd6815c47c2e92825b4818f2968166287d4ce1e514148906"
+      },
+      {
+        "bytes": 0,
+        "path": "rework-installed-variants-comparison/fixed.txt",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "bytes": 0,
+        "path": "rework-installed-variants-comparison/missing.txt",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "bytes": 0,
+        "path": "rework-installed-variants-comparison/no-baseline.txt",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "bytes": 264,
+        "path": "rework-installed-variants-comparison/preexisting.txt",
+        "sha256": "622ebe998653af1628026ac995ef1a7dde58440bb25f2735d20a21c447f96667"
+      },
+      {
+        "bytes": 0,
+        "path": "rework-installed-variants-comparison/regression.txt",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "bytes": 183,
+        "path": "rework-installed-variants-comparison/summary.md",
+        "sha256": "97742b6951762e18fd6815c47c2e92825b4818f2968166287d4ce1e514148906"
+      },
+      {
+        "bytes": 78771,
+        "path": "rework-legacy-logs-623.before.json",
+        "sha256": "b95488e453314a1802f01eee13a864dd29d8f28a0e419d48ef0f85cf06202788"
+      },
+      {
+        "bytes": 159620,
+        "path": "rework-legacy-logs-623.json",
+        "sha256": "6a8d683671459392d5b28a1bb197955ff38de6284cefbc0b7b15e1bf782bbfbb"
+      },
+      {
+        "bytes": 18481,
+        "path": "rework-legacy-logs-623.log",
+        "sha256": "00a0fd3eb03a543f17c0941f04b825bd83236bf9a7bb29a7ced53edec18acfbf"
+      },
+      {
+        "bytes": 18759,
+        "path": "rework-legacy-logs-623.xml",
+        "sha256": "757be4252ef4fdda10f5457f320e5ef1fd8750c033ef0966060c782b30a2824c"
+      },
+      {
+        "bytes": 1044,
+        "path": "rework-legacy-logs-base.before.json",
+        "sha256": "0e1175862018cdd659fb7d5c93ecfba43a4c9726ab08437b25795413aab27413"
+      },
+      {
+        "bytes": 1679,
+        "path": "rework-legacy-logs-base.json",
+        "sha256": "05199a565b954c1adabf5951cd23baba084495dd79a909f1e1ba428ae116661c"
+      },
+      {
+        "bytes": 18483,
+        "path": "rework-legacy-logs-base.log",
+        "sha256": "4660b658029510f6bf452b06b8a6daf389486bfb8018fca81f4805274f334dae"
+      },
+      {
+        "bytes": 18761,
+        "path": "rework-legacy-logs-base.xml",
+        "sha256": "51379122168d9c47e070d7d4e0f104179e7a57154a1b30c09825356265fba179"
+      },
+      {
+        "bytes": 1093,
+        "path": "rework-legacy-logs-before.before.json",
+        "sha256": "eb1e2f52452e503ae5d95dda160789101601b0e3d45b785a7c90e235149088f4"
+      },
+      {
+        "bytes": 1737,
+        "path": "rework-legacy-logs-before.json",
+        "sha256": "6e52e9f4eb1108fe6b93ba099e783801ada65bce33fd43daf4b9240682df721c"
+      },
+      {
+        "bytes": 18487,
+        "path": "rework-legacy-logs-before.log",
+        "sha256": "4057e2924f944fd787e9c2fa1073876f130fa4acd21e929eff9d161cb954c757"
+      },
+      {
+        "bytes": 18765,
+        "path": "rework-legacy-logs-before.xml",
+        "sha256": "4fc19bc8c9dacad088542594ad85a682fcf7cf265d9726230af0352700be0890"
+      },
+      {
+        "bytes": 0,
+        "path": "rework-legacy-logs-comparison/fixed.txt",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "bytes": 0,
+        "path": "rework-legacy-logs-comparison/missing.txt",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "bytes": 0,
+        "path": "rework-legacy-logs-comparison/no-baseline.txt",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "bytes": 253,
+        "path": "rework-legacy-logs-comparison/preexisting.txt",
+        "sha256": "ed48c21bf3c3177aef937308f17ac4bcb740ae5c8b043d0dbd1ef61667a9c4b4"
+      },
+      {
+        "bytes": 0,
+        "path": "rework-legacy-logs-comparison/regression.txt",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "bytes": 193,
+        "path": "rework-legacy-logs-comparison/summary.md",
+        "sha256": "f7465441904681e1359351bf85eb60ad33cd7430e7d1122385002fd9c815643f"
+      },
+      {
+        "bytes": 5101,
+        "path": "rework-legacy-validators-623-parity.json",
+        "sha256": "6cab68fc1d830cdec4d9495864b9246d402a258a2d4d90310f989629dd53b50e"
+      },
+      {
+        "bytes": 716,
+        "path": "rework-legacy-validators-source-parity.json",
+        "sha256": "8917ac587dad160bebf0cf22a662d968be6d02bf545453241525598bf29b9920"
+      },
+      {
+        "bytes": 13548,
+        "path": "rework-permissions-after-diagnostic.json",
+        "sha256": "bce799d4384d84fbd221aa3a7e740b0bf3423803f3a8443006120c9549987c8a"
+      },
+      {
+        "bytes": 3413,
+        "path": "rework-permissions-after-diagnostic.log",
+        "sha256": "610ecb69c93120e44c83bcbb964f387eb0e57b3f766bea2e9f432c018d68e8b4"
+      },
+      {
+        "bytes": 692,
+        "path": "rework-permissions-after-diagnostic.xml",
+        "sha256": "5389c352950feeec56887a9bd5bce8e8226d55e6987d24153952f9d045020940"
+      },
+      {
+        "bytes": 5773,
+        "path": "rework-permissions-agent-test.patch",
+        "sha256": "55119b553a10d6e6ce064b31e00d5469ff6640a8aa4557e0be1b0b458e6fb891"
+      },
+      {
+        "bytes": 117,
+        "path": "rework-permissions-artifact-manifest.log",
+        "sha256": "2699d953ff4fedb45e2452265e5c6f65e7b052f64951ec9352aebd94e67725c5"
+      },
+      {
+        "bytes": 13472,
+        "path": "rework-permissions-before.json",
+        "sha256": "af0d3ffd6ec95222a93d9be43ceb6988e1a9df10f1f00b4a5c550adf28bb0dd0"
+      },
+      {
+        "bytes": 7450,
+        "path": "rework-permissions-before.log",
+        "sha256": "754dc91ac96411285db984053c4c23d634e8f5d2481ab57a607f4b70496bfa4a"
+      },
+      {
+        "bytes": 5352,
+        "path": "rework-permissions-before.xml",
+        "sha256": "caa14227ce7d3dc7a8a016f5f882a53e843af8a7c7df80f3dd39e4bc75776cc2"
+      },
+      {
+        "bytes": 9105,
+        "path": "rework-permissions-checkpoint.json",
+        "sha256": "e2bb639b78f5611c17a565df1a06c4fd5aeab35d0787dceb0feef11424fb195a"
+      },
+      {
+        "bytes": 589,
+        "path": "rework-permissions-generate.log",
+        "sha256": "367cf4bb1e4d590ff140d046ebe5726c45a1174e37cbcc76cbd410976e7c13e2"
+      },
+      {
+        "bytes": 11791,
+        "path": "rework-permissions-generation.json",
+        "sha256": "b4215b216dcf9800672094568006632c38c82bf4aacdde20dc87f106a8a8b076"
+      },
+      {
+        "bytes": 20014,
+        "path": "rework-permissions-runtime-after.json",
+        "sha256": "f768156da7a25d7a8ab79e3c209473189184b405ec92a23fabcf4e853f5a5410"
+      },
+      {
+        "bytes": 5686,
+        "path": "rework-permissions-runtime-after.log",
+        "sha256": "5237f13aaadb5da73c7baa18fd44d261e0e21a8a5a23463f1e9046ddf2683139"
+      },
+      {
+        "bytes": 5232,
+        "path": "rework-permissions-runtime-after.xml",
+        "sha256": "48ea3208a7737f5abd268c3cf027d92893c2b947031054034a4195b392e758d5"
+      },
+      {
+        "bytes": 6557,
+        "path": "rework-permissions-runtime.patch",
+        "sha256": "9509e8ce0899e4b86ea25e9eec97ae40d4c49893a6337a81325a787b6a5fe926"
+      },
+      {
+        "bytes": 38978,
+        "path": "rework-precheckpoint-workflows.json",
+        "sha256": "80356889758f453fc7bd27580aa11aa87b9d03291b021f9a5179593e4fd64c5e"
+      },
+      {
+        "bytes": 8798,
+        "path": "rework-runtime-after-1-association-guard.py",
+        "sha256": "6a155b6817f74ae7540f8975c2dcf00358e13a544fb0da3e8a22151d3af25f2f"
+      },
+      {
+        "bytes": 1649,
+        "path": "rework-runtime-after-1.before.json",
+        "sha256": "0d1cf09e37c80eeef2d84eefd5f064524c673ad1a664937c9da4b2080b9b73b0"
+      },
+      {
+        "bytes": 4399,
+        "path": "rework-runtime-after-1.json",
+        "sha256": "f1a50602c88a5e34de5a4701b7cbde4b5bcc1d622e890ce7657d3cb89cfff826"
+      },
+      {
+        "bytes": 1204,
+        "path": "rework-runtime-after-1.log",
+        "sha256": "6f7c54c97c13584cbd42e807dcc521ac945aad049d9e861bf3b60f8a2c5471e2"
+      },
+      {
+        "bytes": 1456,
+        "path": "rework-runtime-after-1.xml",
+        "sha256": "1cc23ca492ff83d09c5d67a4b6e61c3116a3965c460eeeb6b62207999b9c164d"
+      },
+      {
+        "bytes": 8798,
+        "path": "rework-runtime-before-1-association-guard.py",
+        "sha256": "6a155b6817f74ae7540f8975c2dcf00358e13a544fb0da3e8a22151d3af25f2f"
+      },
+      {
+        "bytes": 1503,
+        "path": "rework-runtime-before-1.before.json",
+        "sha256": "ee16a82c79864d0bc5f97a83d7363d239cb19a100f788afb707dc4730d469611"
+      },
+      {
+        "bytes": 4781,
+        "path": "rework-runtime-before-1.json",
+        "sha256": "1baa6b35f219a70be36aced5bb86b188eb706592501ab615c69b6557b3db863c"
+      },
+      {
+        "bytes": 26896,
+        "path": "rework-runtime-before-1.log",
+        "sha256": "807a8cca51aa1b8a8f5deb4bcd650853c2b1533fa697280af3e2cfa19a619f46"
+      },
+      {
+        "bytes": 27755,
+        "path": "rework-runtime-before-1.xml",
+        "sha256": "a893c79b23d920d6613eb5c8ad8b16a3d6f7ec4604eedda9e44ade44f2c8df80"
+      },
+      {
+        "bytes": 117931,
+        "path": "rework-runtime-focused159-after.before.json",
+        "sha256": "ab07f5e36700210fcc996e80f4fde1f9fa10ee20f420e975e1c77f9d57afcf1b"
+      },
+      {
+        "bytes": 226493,
+        "path": "rework-runtime-focused159-after.json",
+        "sha256": "57116aa82db64a83937a4a9085b580f828343ab13a2dd89e762523096940c910"
+      },
+      {
+        "bytes": 19886,
+        "path": "rework-runtime-focused159-after.log",
+        "sha256": "bf2d2fd8da85c476a3b15159b418efb74133d084c02af5c6e0a8f39ba4f57513"
+      },
+      {
+        "bytes": 26471,
+        "path": "rework-runtime-focused159-after.product.diff",
+        "sha256": "1cbb8e6b69471ef697694233abcefcdd5b44104801813b9f807137b9b932efc9"
+      },
+      {
+        "bytes": 24961,
+        "path": "rework-runtime-focused159-after.xml",
+        "sha256": "6041e50ad87e3fabe3b4f3e3cef8fc16db211bbac9e6cb1aa235b16b84eb85db"
+      },
+      {
+        "bytes": 117877,
+        "path": "rework-runtime-focused159-before.before.json",
+        "sha256": "320822dad064ca6c2acbc57bea3ce5ae510b188020a412c06b09ca73f8397672"
+      },
+      {
+        "bytes": 228425,
+        "path": "rework-runtime-focused159-before.json",
+        "sha256": "55138bda68501beae1e5eca03c0c0a3f049538ff75f56bfd13012d42072154e9"
+      },
+      {
+        "bytes": 49508,
+        "path": "rework-runtime-focused159-before.log",
+        "sha256": "0c1a30df360c981cb924d3b5b772ca9778059d7ca71aba185b9828cd04147738"
+      },
+      {
+        "bytes": 0,
+        "path": "rework-runtime-focused159-before.product.diff",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "bytes": 55417,
+        "path": "rework-runtime-focused159-before.xml",
+        "sha256": "9a132770cf0a2b851ed775b68edd801d47e1c0383cfc2d9a85ba0cf7c25164ea"
+      },
+      {
+        "bytes": 76730,
+        "path": "rework-runtime-focused159-commit-mapping.json",
+        "sha256": "21ef411583c3a4a22fed6da95d11f4ac5a09e37564b4ac9c24a1b01503485771"
+      },
+      {
+        "bytes": 10447,
+        "path": "rework-runtime-focused159-comparison.json",
+        "sha256": "8c68c7902af990194778a03d949c80dbc1f0bbb89fe0cefa1cdf5b3bf46f5b89"
+      },
+      {
+        "bytes": 117392,
+        "path": "rework-runtime-focused159-plan.json",
+        "sha256": "e11041fa7bd0597d3474379c4196a21fc85bb09611c7e5bac917f713028b1486"
+      },
+      {
+        "bytes": 8876,
+        "path": "rework-runtime-focused159-runner.py",
+        "sha256": "0aa53a667d05a610925c73b1f4b55f0745a9139e56776a7fa7257ba1c85783d0"
+      },
+      {
+        "bytes": 3760304,
+        "path": "rework-runtime-hosted-capture-inputs.json",
+        "sha256": "43801e83c7f603fb268ebc39f47c0c320070e554b080c002d8fb8f15696526fb"
+      },
+      {
+        "bytes": 125827,
+        "path": "rework-runtime-hosted-job-135156706752.log",
+        "sha256": "6052f3dc53b2ccb83aa73bff44b050151ecb9ca8894bcca9a835258883057288"
+      },
+      {
+        "bytes": 4638809,
+        "path": "rework-runtime-hosted-job-135156706794.log",
+        "sha256": "2452a6e90be79ff50b9752b8020b420e1d3c91e8558f876dad2f8e5324bbf859"
+      },
+      {
+        "bytes": 4650260,
+        "path": "rework-runtime-hosted-job-135156706845.log",
+        "sha256": "39dcab30a4b413c6eea3540c8506e39c523176c00ecb73d54eae4dfde3aabef9"
+      },
+      {
+        "bytes": 4642031,
+        "path": "rework-runtime-hosted-job-135156706899.log",
+        "sha256": "38f58b7c2a990370d8f2fe4c271571bda7fb13c8d072d9b909222a085b412f83"
+      },
+      {
+        "bytes": 131480,
+        "path": "rework-runtime-hosted-job-135156706934.log",
+        "sha256": "dd821d4346b92ee87db52f975781c0fdac62b4b6129286ed49d70590a28fbb08"
+      },
+      {
+        "bytes": 1457539,
+        "path": "rework-runtime-hosted-job-135258963682-comparison.json",
+        "sha256": "3d43c4a760ce167e7cec78b493e59c392cca8c6d3a7a9e7f28ab5b1a7c964aaf"
+      },
+      {
+        "bytes": 4704819,
+        "path": "rework-runtime-hosted-job-135258963682.log",
+        "sha256": "7947311f166680dc942e6af766f63f9103b5865d4bf67f694c49e4a7d9cb5791"
+      },
+      {
+        "bytes": 921086,
+        "path": "rework-runtime-hosted-job-135258963721-comparison.json",
+        "sha256": "d1ddd4c614d087d7954db9f2032fc2f02b74e0872f15d6c960e97a767e6e09fa"
+      },
+      {
+        "bytes": 4692882,
+        "path": "rework-runtime-hosted-job-135258963721.log",
+        "sha256": "39d55dca1dad9a7b268cd25273aeb333a015c097bcc77b2ff8c49eb55cd86ec6"
+      },
+      {
+        "bytes": 1458391,
+        "path": "rework-runtime-hosted-job-135258963965-comparison.json",
+        "sha256": "7680bb4d511db84a71cc64c783fd55c5d215af7b2bf42ba8377b27b6a5b13a21"
+      },
+      {
+        "bytes": 4688012,
+        "path": "rework-runtime-hosted-job-135258963965.log",
+        "sha256": "4a8fde2baaeb663856ef41012d70e1f3a87a1a80202f231ebd01e69af5bdae3a"
+      },
+      {
+        "bytes": 21984,
+        "path": "rework-runtime-hosted-job-135258964003-comparison.json",
+        "sha256": "4dc3d0c3b15f8cd1b7891b3e78ad52c2e68410acee930d7ea4315d47b912336e"
+      },
+      {
+        "bytes": 125913,
+        "path": "rework-runtime-hosted-job-135258964003.log",
+        "sha256": "de7767eeb6b70f37613ec27eb6fec65be427ebe2cab45d685da3e38d8171cc6b"
+      },
+      {
+        "bytes": 23382,
+        "path": "rework-runtime-hosted-job-135258964309-comparison.json",
+        "sha256": "5a961534bf94060df1fb1a33ffbb09606583cb3dc666476d5fcc57348512de43"
+      },
+      {
+        "bytes": 133728,
+        "path": "rework-runtime-hosted-job-135258964309.log",
+        "sha256": "fd495a3380bfd88d6ee152ce771f3f7553acfc9bf0a3f73eaa4b6ece88fa312d"
+      },
+      {
+        "bytes": 3060,
+        "path": "rework-runtime-hosted-rt11-failure-excerpt.log",
+        "sha256": "d8f26d32111dd6ed5539f8b3631f1cfce6f4da3ce9f034b52f9b90e59f301c32"
+      },
+      {
+        "bytes": 11355,
+        "path": "rework-runtime-hosted-rt11-routing.json",
+        "sha256": "7a7e4fa8e7d8330fa0289979fccfa1c156201dc7560b562ce9c6616235cc801c"
+      },
+      {
+        "bytes": 34243,
+        "path": "rework-runtime-hosted-source-identities.json",
+        "sha256": "bed4eafcf8f60b6aa02bf309b9637845b13d4ccf42913daedd1405c37b455703"
+      },
+      {
+        "bytes": 30721,
+        "path": "rework-runtime-hosted-summary.json",
+        "sha256": "899c7732749d280d24638b3d89e163617eefca7a5a6afbb9440a0156ee7cebbc"
+      },
+      {
+        "bytes": 445,
+        "path": "rework-runtime-pin-created-commit.json",
+        "sha256": "208034296646cdfa9cd9a2f20a5457d4456bd6b6c9f2059d4a23cc4ad759880a"
+      },
+      {
+        "bytes": 1000,
+        "path": "rework-runtime-pin-generation.json",
+        "sha256": "a1b91d59af8e01effae4785b58ca813cb29beebddb4574abc4f6f04f174f0b66"
+      },
+      {
+        "bytes": 95,
+        "path": "rework-runtime-pin-generation.log",
+        "sha256": "5a0c65b16546fe4e93f21ab339f9ddd07a1fc461954d773f041c97489c4c7d53"
+      },
+      {
+        "bytes": 1110,
+        "path": "rework-runtime-pin-publication-input.json",
+        "sha256": "074eee49e1e1a6e54ab69388f595de393ac9a08f18aa860d287c2d943da2bc81"
+      },
+      {
+        "bytes": 9597,
+        "path": "rework-runtime-pr-rationale.json",
+        "sha256": "29ac297ffec9a3194c1ae1a4bfee6eaa15d76ea369b305a9f57e792e0d105b2f"
+      },
+      {
+        "bytes": 4379,
+        "path": "rework-runtime-pr-rationale.txt",
+        "sha256": "e06e07a16ecf9617d80f4c271df33a19acb93a1d56166b7a1b140256516766bc"
+      },
+      {
+        "bytes": 449,
+        "path": "rework-runtime-product-created-commit.json",
+        "sha256": "c1760cd70c83003f051e3deeeb1575f35460677d4bda49216afaf951da92985e"
+      },
+      {
+        "bytes": 1106,
+        "path": "rework-runtime-product-publication-input.json",
+        "sha256": "2752955a812a8b1871b56113440c56e2372fd09d642de8efcf7965fc984198dd"
+      },
+      {
+        "bytes": 8798,
+        "path": "rework-runtime-upgrade-before-1-association-guard.py",
+        "sha256": "6a155b6817f74ae7540f8975c2dcf00358e13a544fb0da3e8a22151d3af25f2f"
+      },
+      {
+        "bytes": 1736,
+        "path": "rework-runtime-upgrade-before-1.before.json",
+        "sha256": "3a11a9c95b481f76f37e6c0cdbb300b3f3c7dff415241a11b2283bbf9d1819b7"
+      },
+      {
+        "bytes": 3379,
+        "path": "rework-runtime-upgrade-before-1.json",
+        "sha256": "6b93bae668afd44d7a7be17f766c108989294ae3a279774587b10bbe3e4640d2"
+      },
+      {
+        "bytes": 4190,
+        "path": "rework-runtime-upgrade-before-1.log",
+        "sha256": "1d2920b1eecdaa6c8413b0352e0bb6167db7c5acc041d049416686668f79b884"
+      },
+      {
+        "bytes": 4405,
+        "path": "rework-runtime-upgrade-before-1.xml",
+        "sha256": "b3c9353dc0cf656dd9c6451d3891a5c6d95886653f00aab78e0741e8609e8ddc"
+      },
+      {
+        "bytes": 1760,
+        "path": "rework-runtime-variant-binding-freeze.json",
+        "sha256": "7abfb1c3d5281f700afc307ed103e8036d641af0f2debe9284b65348153aeebe"
+      },
+      {
+        "bytes": 26471,
+        "path": "rework-runtime-variant-binding.diff",
+        "sha256": "1cbb8e6b69471ef697694233abcefcdd5b44104801813b9f807137b9b932efc9"
+      },
+      {
+        "bytes": 1019,
+        "path": "rework-schema-equality-623.before.json",
+        "sha256": "adcd9bb346dc3d1b89c11773e71af4bc25639a852abee15e83ade4c5e48d635d"
+      },
+      {
+        "bytes": 1656,
+        "path": "rework-schema-equality-623.json",
+        "sha256": "ff154870868e472b679e252ceaac6a01b171ab68a4dad6ad15cc123ea68d213f"
+      },
+      {
+        "bytes": 356,
+        "path": "rework-schema-equality-623.log",
+        "sha256": "3e53c0fab173ba8c77ea36dc0f7724d0fbc8aaadf9d69e82decd6effac75f2a6"
+      },
+      {
+        "bytes": 377,
+        "path": "rework-schema-equality-623.xml",
+        "sha256": "ddee946f6120166925a1abc5a1436ac274287e94b54094a80d83998089210ac2"
+      },
+      {
+        "bytes": 6606,
+        "path": "rework-vibe-after-1.json",
+        "sha256": "57017311ff3ebf596f31c20d6f08e5576a6649d935f74286035867284a773b8e"
+      },
+      {
+        "bytes": 3144,
+        "path": "rework-vibe-after-1.log",
+        "sha256": "cf0a450e557337ee3e9bca07beaecbbede6f65ff2d0566895706d314a5fa0de6"
+      },
+      {
+        "bytes": 2800,
+        "path": "rework-vibe-after-1.xml",
+        "sha256": "d9ad2b2df22af30820e415b09fe633b10f60724bcbf3908c1245f7bcd6b1fecc"
+      },
+      {
+        "bytes": 4625,
+        "path": "rework-vibe-before-1.json",
+        "sha256": "8821d20ce55c3e1fe95245f3db04b64cd886c465a57394db3ec1a9f4e92536e2"
+      },
+      {
+        "bytes": 10566,
+        "path": "rework-vibe-before-1.log",
+        "sha256": "7018e8fd9cc0dfe8e5ce8bd1cf30a75a73423fab115e33dff55bdf242dd0ea59"
+      },
+      {
+        "bytes": 10209,
+        "path": "rework-vibe-before-1.xml",
+        "sha256": "161111b5398ffbf769845923fff9512b7b203ccc2dce4927fca7a805314cf9a1"
+      },
+      {
+        "bytes": 5316,
+        "path": "rework-vibe-final-baseline-diff.py",
+        "sha256": "3eb82eb336aa58ab95fc2eb68462c9dc1167030eff3dd54b8117cf2fba3cd709"
+      },
+      {
+        "bytes": 8341,
+        "path": "rework-vibe-final-before.json",
+        "sha256": "9224226a45f73cf01f41a543698c323855a5cb14bfb5624e344c29c28bc240a0"
+      },
+      {
+        "bytes": 12189,
+        "path": "rework-vibe-final-before.log",
+        "sha256": "8a68708d240f16c06ed8720140ff29c0f847db0e4e84fee4d088aebcde63be22"
+      },
+      {
+        "bytes": 11928,
+        "path": "rework-vibe-final-before.xml",
+        "sha256": "35d56656a39296a5d99a5188abc60fbe8d1f48a2b9be9e27f8f49e38f471b1ed"
+      },
+      {
+        "bytes": 6730,
+        "path": "rework-vibe-final-comparison.json",
+        "sha256": "030e7ca1fad76c6fb19dcacd6073acf04c7957fe5672f57fea04757890fc5c31"
+      },
+      {
+        "bytes": 197,
+        "path": "rework-vibe-final-comparison.log",
+        "sha256": "c5128525f8c5f5e32f9811b0a376dde4c0052f7373dbeea3b90287bae02311d9"
+      },
+      {
+        "bytes": 1100,
+        "path": "rework-vibe-final-environment.txt",
+        "sha256": "9a78e2799465c2b310d30c20edfc05c1d028929ca3e90fa0ac50f90e91e6feb2"
+      },
+      {
+        "bytes": 6955,
+        "path": "rework-vibe-final-head.json",
+        "sha256": "b5f61397e773d758f76a7f1ba41fe54a22610ffbf207ecbba1eca5fecc97f9a1"
+      },
+      {
+        "bytes": 3144,
+        "path": "rework-vibe-final-head.log",
+        "sha256": "0f3518caa0b08b0ef4ea551653c653bf9f6e6a21201baaeeac7ffee6a8b2a99a"
+      },
+      {
+        "bytes": 2800,
+        "path": "rework-vibe-final-head.xml",
+        "sha256": "3277d889d3ea81a7d4351aae240d091b7f4480385540f60a46ac0e150fb2b787"
+      },
+      {
+        "bytes": 4514,
+        "path": "rework-vibe-final-run.py",
+        "sha256": "c101f974edd86242552e08a0abb7305d8fe759aa93ecc1721ff88c0f371a8a18"
+      },
+      {
+        "bytes": 1699,
+        "path": "rework-vibe-hosted-SHA256SUMS",
+        "sha256": "30a98f06175c90e1b1b0908a54f1d71ebfa3ae44fbab1367f894c346c5d8d814"
+      },
+      {
+        "bytes": 49977,
+        "path": "rework-vibe-hosted-before-runs.json",
+        "sha256": "53997b1818d1ca4fb2cddde64f9c5605ea785f30abceae8a9122eff033508241"
+      },
+      {
+        "bytes": 12934,
+        "path": "rework-vibe-hosted-head-canonical-run.json",
+        "sha256": "0163bfee3f29484acfdae86424213da0ecb2872c8e3fa1fd6ab3d4983eee0405"
+      },
+      {
+        "bytes": 12916,
+        "path": "rework-vibe-hosted-head-ci-run.json",
+        "sha256": "bcf1c8fe13993e75032879177935dc78ba259679214632ddb0c0979e9be4553d"
+      },
+      {
+        "bytes": 18820,
+        "path": "rework-vibe-hosted-job-135156754529.log",
+        "sha256": "271f1b723e9c88de9738c781d3d937cc9c404428afab8e4306c0934c5c86057e"
+      },
+      {
+        "bytes": 17348,
+        "path": "rework-vibe-hosted-job-135156754925.log",
+        "sha256": "3483e400a21ed96eeb32726705ddb614a37526cf79753a03c834d7cd2aaa5de5"
+      },
+      {
+        "bytes": 19426,
+        "path": "rework-vibe-hosted-job-135156755183.log",
+        "sha256": "6b447b5ebe5600af1cea26b161e5d0e225772d8b87c710f79ad2921b91d583b2"
+      },
+      {
+        "bytes": 18344,
+        "path": "rework-vibe-hosted-job-135258957772.log",
+        "sha256": "321e8f9eba8856713bdbffe981024d80113e0791839503b27e19a80fff3e150b"
+      },
+      {
+        "bytes": 19426,
+        "path": "rework-vibe-hosted-job-135258957951.log",
+        "sha256": "d94b5de9b38c26bbef3dc1e277d2ad17d77ab6696b762279cf396538f379678e"
+      },
+      {
+        "bytes": 17351,
+        "path": "rework-vibe-hosted-job-135258958488.log",
+        "sha256": "bd120c8cecb84e64fa3ac15ca1dbf37217bc1ca60d9158d16ef7ef5a24df84d5"
+      },
+      {
+        "bytes": 4808,
+        "path": "rework-vibe-hosted-retrieval.json",
+        "sha256": "ce141e61a5d6dbe179a48908013495f221c864ec19825a6c95d61ce65cc8e48e"
+      },
+      {
+        "bytes": 5403,
+        "path": "rework-vibe-hosted-run-44404716447-jobs.json",
+        "sha256": "724d2f6ccbd46e7c6f985a5e549e195941916ffeac8ae407bd5e33ecf77f659a"
+      },
+      {
+        "bytes": 2212,
+        "path": "rework-vibe-hosted-run-44404716714-jobs.json",
+        "sha256": "4dfcd72e094578a947280e586c4d48d5ec07631080659e353ed82a0b5ad84deb"
+      },
+      {
+        "bytes": 5403,
+        "path": "rework-vibe-hosted-run-44434244622-jobs.json",
+        "sha256": "9bf19f526990535545dd48d8e65f0554ab0c9ceaa4fcb51204f626bd2bf10ffe"
+      },
+      {
+        "bytes": 2212,
+        "path": "rework-vibe-hosted-run-44434244677-jobs.json",
+        "sha256": "1e80b7fae3b00c338a26357cb41fd7d712534f75e0c5dec00662c08c8e77acd3"
+      },
+      {
+        "bytes": 3392,
+        "path": "rework-vibe-hosted-source-comparison.json",
+        "sha256": "ce755cac0b2cc8d1907b8c5152c1399fedc696c85defe1c12de7d221a70d0b9b"
+      },
+      {
+        "bytes": 34073,
+        "path": "rework-vibe-hosted-summary.json",
+        "sha256": "cef9841afc3e87c4e652fff324a3726a95b8326d2a162a6bdb706d50d5306119"
+      },
+      {
+        "bytes": 4303,
+        "path": "rework-vibe-item3-summary.json",
+        "sha256": "82ab2d951ac548dc865fdf85252d1a4bd83d46c6c834cb099e5be5b57ee78efe"
+      },
+      {
+        "bytes": 5472,
+        "path": "rework-vibe-item3.diff",
+        "sha256": "52fc985f2928e57c3ed2284e9fed763d0aed6e1bdc2c7bff99025e09cdc25ae2"
+      },
+      {
+        "bytes": 654,
+        "path": "rework-vibe-pin-created-commit.json",
+        "sha256": "aa9568cfb6d893d812e4fc9cad21ba869799294ecc74177fae6d08b36ff92780"
+      },
+      {
+        "bytes": 1090,
+        "path": "rework-vibe-pin-generation.json",
+        "sha256": "eac8e62719918aa43f3b3ffd0c1fe2e4b0127e5bd70cf29296c397351a440cb2"
+      },
+      {
+        "bytes": 320,
+        "path": "rework-vibe-pin-generation.log",
+        "sha256": "11b704eb17feb8d5b09dd1aa14ca40df9c68c3e4441447b168aa65644ce4875b"
+      },
+      {
+        "bytes": 1918,
+        "path": "rework-vibe-pin-publication-input.json",
+        "sha256": "358907ddbdc8e9df7b236f85001dcbf5712b8d55c9149d5ac919edf5617b9a97"
+      },
+      {
+        "bytes": 2399,
+        "path": "rework-vibe-pin14-2.before.json",
+        "sha256": "ae08fd101c6c3e160dc0faba4da826bdc10669f779861bab58b8cdaf2d65b4cf"
+      },
+      {
+        "bytes": 4298,
+        "path": "rework-vibe-pin14-2.json",
+        "sha256": "b1c4eaa85bc7afe016243f1f4e5d52421bd9b179a49cf62e3cc0339fc854841c"
+      },
+      {
+        "bytes": 2296,
+        "path": "rework-vibe-pin14-2.log",
+        "sha256": "e41833208f6896ca8cfb2a676fed55153b73768cdd6a6e3ebad2f2ab522e1586"
+      },
+      {
+        "bytes": 2050,
+        "path": "rework-vibe-pin14-2.xml",
+        "sha256": "0410fa8a0e22c57f526406084ae36f9345f003fe771e2f152c4e5db78f28a186"
+      },
+      {
+        "bytes": 1910,
+        "path": "rework-vibe-pin14.before.json",
+        "sha256": "7baa411d4ac08604390ffec6eb16d817d796ace0d8c01d0039255a7584d78942"
+      },
+      {
+        "bytes": 3384,
+        "path": "rework-vibe-pin14.json",
+        "sha256": "06ed7ec8dae354a07254b297fa0b4db868533107ba417b099719a4cebf7b0fd3"
+      },
+      {
+        "bytes": 462,
+        "path": "rework-vibe-pin14.log",
+        "sha256": "d54c0f51b6ff04131f9932353b364dc9c871198328b0010b11510aa1f476eb12"
+      },
+      {
+        "bytes": 920,
+        "path": "rework-vibe-strict-SHA256SUMS",
+        "sha256": "2255173bc4e35bb234c317963b74a0b95c9e9fae775161e413fda9412481230d"
+      },
+      {
+        "bytes": 2228,
+        "path": "rework-vibe-strict-before-jobs.json",
+        "sha256": "ac5cfa4b5424178700f3cb6a4bc5eb96378aca4d2508beb0113df1915a97846e"
+      },
+      {
+        "bytes": 12485,
+        "path": "rework-vibe-strict-before-run.json",
+        "sha256": "1fbae03baeedb4ca5dd45aac149dfa5dd5e0d87394512a64c630f285050fd4d6"
+      },
+      {
+        "bytes": 2228,
+        "path": "rework-vibe-strict-head-jobs.json",
+        "sha256": "98135cc2d0d43cef95c2f1bb74e597a8556146fb9dd595dd88f4035503f94646"
+      },
+      {
+        "bytes": 12935,
+        "path": "rework-vibe-strict-head-run.json",
+        "sha256": "059bca708837fd76a2b59f9be26276f79e57f875c606613f53ae352377626ff7"
+      },
+      {
+        "bytes": 151377,
+        "path": "rework-vibe-strict-job-135156754637.log",
+        "sha256": "7f064d63112f449fe51745f81664920953b4deb3745af74ab58b76bd16433180"
+      },
+      {
+        "bytes": 151310,
+        "path": "rework-vibe-strict-job-135258957343.log",
+        "sha256": "dd80e220d4655365f3df1d497264151a8df42c7947dbd20f678b14abf5df5bf6"
+      },
+      {
+        "bytes": 2188,
+        "path": "rework-vibe-strict-retrieval.json",
+        "sha256": "d9c3cfece3e53cbe3d6d1e1bb5abeb07034b77f29857bafb0c4960daf2205677"
+      },
+      {
+        "bytes": 3025,
+        "path": "rework-vibe-strict-source-comparison.json",
+        "sha256": "a5600f987ae03cb945f7fd15d6ff031da8c9e66a93b8238291eea4e5eae4ef50"
+      },
+      {
+        "bytes": 13057,
+        "path": "rework-vibe-strict-summary.json",
+        "sha256": "a655fffa4f4ce7e51fa15dd0891fbb3fbc9cf6800c3d19fa0e0767ad2a2edee3"
+      },
+      {
+        "bytes": 2606,
+        "path": "rework-windows-AT15-routing.json",
+        "sha256": "cdad66ecf569f59075dc40529dbcaccb024ff5ca8e8eb7143301115bc2e0aa74"
+      }
+    ],
+    "members": 370,
+    "path": "docs/evidence/r14-p55-12/observations-rework-final.tar.xz",
+    "sha256": "3a2ec6c341c341a87e8df940ddb456c24d179b099782226776c4ae67c8b01328"
+  },
+  "authority": {
+    "accepted_proof_boundary": "https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6996446701",
+    "packet_at_dev": "1eff8700a11aa0986ac0a9cd62d1e63417040701",
+    "rework": "https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6995577860",
+    "standing_rulings": "Known failures remain executed; dependency-identity guards remain intact."
+  },
+  "core_after_passed": 217,
+  "core_focused_tests": {
+    "agent": {
+      "after": {
+        "counts": {
+          "errors": 0,
+          "failed": 0,
+          "passed": 41,
+          "skipped": 0
+        },
+        "junit": {
+          "bytes": 6179,
+          "member": "rework-agent-focused41-after-1.xml",
+          "sha256": "a6ee23bcd79246a200e69ec5031489d1ab58a28791971df20a978d435e75b996"
+        }
+      },
+      "before": {
+        "counts": {
+          "errors": 0,
+          "failed": 2,
+          "passed": 39,
+          "skipped": 0
+        },
+        "junit": {
+          "bytes": 10851,
+          "member": "rework-agent-focused41-before-1.xml",
+          "sha256": "a39bcf812d84bee1773351ea160709d4c67813dd7813cfb0051993583f2ae2bc"
+        }
+      },
+      "comparison": {
+        "bytes": 30502,
+        "member": "rework-agent-focused41-comparison.json",
+        "sha256": "4609296c4c9e1204332a4eff106faf6caa3525f8e71811ad8255b018a674bf2c"
+      },
+      "scope": "35 caller cases, two unchanged installed recoveries, image without ffmpeg, three umask cases"
+    },
+    "runtime": {
+      "after": {
+        "counts": {
+          "errors": 0,
+          "failed": 0,
+          "passed": 159,
+          "skipped": 0
+        },
+        "junit": {
+          "bytes": 24961,
+          "member": "rework-runtime-focused159-after.xml",
+          "sha256": "6041e50ad87e3fabe3b4f3e3cef8fc16db211bbac9e6cb1aa235b16b84eb85db"
+        }
+      },
+      "before": {
+        "counts": {
+          "errors": 0,
+          "failed": 7,
+          "passed": 152,
+          "skipped": 0
+        },
+        "junit": {
+          "bytes": 55417,
+          "member": "rework-runtime-focused159-before.xml",
+          "sha256": "9a132770cf0a2b851ed775b68edd801d47e1c0383cfc2d9a85ba0cf7c25164ea"
+        }
+      },
+      "comparison": {
+        "bytes": 10447,
+        "member": "rework-runtime-focused159-comparison.json",
+        "sha256": "8c68c7902af990194778a03d949c80dbc1f0bbb89fe0cefa1cdf5b3bf46f5b89"
+      },
+      "immutable_commit_mapping": {
+        "bytes": 76730,
+        "member": "rework-runtime-focused159-commit-mapping.json",
+        "sha256": "21ef411583c3a4a22fed6da95d11f4ac5a09e37564b4ac9c24a1b01503485771"
+      },
+      "scope": "31 stream, 93 settlement/security, 20 canonical-output boundary, seven attempt-log, eight variant cases"
+    },
+    "vibe": {
+      "after": {
+        "counts": {
+          "errors": 0,
+          "failed": 0,
+          "passed": 17,
+          "skipped": 0
+        },
+        "junit": {
+          "bytes": 2800,
+          "member": "rework-vibe-final-head.xml",
+          "sha256": "3277d889d3ea81a7d4351aae240d091b7f4480385540f60a46ac0e150fb2b787"
+        }
+      },
+      "before": {
+        "counts": {
+          "errors": 0,
+          "failed": 4,
+          "passed": 13,
+          "skipped": 0
+        },
+        "junit": {
+          "bytes": 11928,
+          "member": "rework-vibe-final-before.xml",
+          "sha256": "35d56656a39296a5d99a5188abc60fbe8d1f48a2b9be9e27f8f49e38f471b1ed"
+        }
+      },
+      "comparison": {
+        "bytes": 6730,
+        "member": "rework-vibe-final-comparison.json",
+        "sha256": "030e7ca1fad76c6fb19dcacd6073acf04c7957fe5672f57fea04757890fc5c31"
+      },
+      "scope": "equal-byte distinct-path collection/fetch/custody/copy plus refusal and existing receipt cases"
+    }
+  },
+  "counter_observer_audit": {
+    "bytes": 1322,
+    "member": "rework-counter-observer-audit.json",
+    "sha256": "3927ae0a56d13a1a69a6d24164da6e83d6bc617055ebafaabe38c05b4be06dec"
+  },
+  "full_path_counters": {
+    "bytes": 23745,
+    "member": "rework-counter-final-comparison.json",
+    "sha256": "8b4892bbb00847c403fe58cf561a2e655687bb396411d6a66de709eb0f8a228d"
+  },
+  "hosted_observations": {
+    "agent_meter": {
+      "bytes": 199443,
+      "member": "rework-agent-hosted-8243-meter-classification.json",
+      "sha256": "ddc098f8488029388dc5913b20b4185f251b1e6771b2cc025ce9274af0ef04dc"
+    },
+    "agent_other_packet_workflows": {
+      "bytes": 318028,
+      "member": "rework-agent-crosspacket-classification.json",
+      "sha256": "f95e87e23bc2b745da2f8c26206f9a702082ef4786143850975ad975741342e0"
+    },
+    "prior_runs_terminal": {
+      "bytes": 49581,
+      "member": "rework-final-prior-run-census.json",
+      "sha256": "7f1c8b229b90c9f534147b1c886d3089e2778ec75067d2ffcc9555e85d790da6"
+    },
+    "qualification": "Setup/root-gate/pin-identity failures and skipped targets are NO-RESULT, not green CI or a meter qualification.",
+    "runtime_checkpoint_ci": {
+      "bytes": 30721,
+      "member": "rework-runtime-hosted-summary.json",
+      "sha256": "899c7732749d280d24638b3d89e163617eefca7a5a6afbb9440a0156ee7cebbc"
+    },
+    "source_boundary": "Hosted observations identify the previous publication heads; they are not full CI qualification of the later corrected product commits.",
+    "vibe_ci_and_parity": {
+      "bytes": 34073,
+      "member": "rework-vibe-hosted-summary.json",
+      "sha256": "cef9841afc3e87c4e652fff324a3726a95b8326d2a162a6bdb706d50d5306119"
+    },
+    "vibe_strict_ready": {
+      "bytes": 13057,
+      "member": "rework-vibe-strict-summary.json",
+      "sha256": "a655fffa4f4ce7e51fa15dd0891fbb3fbc9cf6800c3d19fa0e0767ad2a2edee3"
+    },
+    "windows_AT15_recurrence": {
+      "bytes": 2606,
+      "member": "rework-windows-AT15-routing.json",
+      "sha256": "cdad66ecf569f59075dc40529dbcaccb024ff5ca8e8eb7143301115bc2e0aa74"
+    }
+  },
+  "limits": [
+    "Focused Linux CPU proof; fixed Comfy bytes with real custody, HTTP, settlement and caller delivery. No GPU, latency or full-release qualification.",
+    "The counter records Python hash streams; native/subprocess hashing and cached constructor aliases are outside observer coverage.",
+    "Original and incoming observer identities are recorded separately; all three harness snapshots are unbounded.",
+    "Preserved variants qualify at the service boundary under Lead6996446701; FIX-12 completes the unchanged installed journey on combined heads.",
+    "#948 and #926 remain outside packet scope. No tasks.md edit, destination merge, rebase, workflow cancellation or dispatch.",
+    "Large original hosted meter ZIPs remain in the workspace; the archive includes decoded diagnostic bytes, inventories, SHA256s and source URLs."
+  ],
+  "packet": "R14-P55-12",
+  "prior_evidence": {
+    "checkpoint_archive": {
+      "path": "docs/evidence/r14-p55-12/observations-rework-checkpoint.zip",
+      "sha256": "83215cfbd222f8bbe24d76ff4b73ae3b3f7f04b9a6fad8d44a123c83166e8880"
+    },
+    "historical_hold": "Earlier checkpoint/plan wording remains historical; the later proof-boundary ruling and additive after plans supersede it.",
+    "retry_archive": {
+      "path": "docs/evidence/r14-p55-12/observations-retry-scope.zip",
+      "sha256": "367e42797578d1b6ab616c344f328fefc3b6c0e25928e50fdc591d79d4399eb9"
+    }
+  },
+  "required_agent_source_merge": {
+    "audit": {
+      "bytes": 11851,
+      "member": "rework-final-scope-audit.json",
+      "sha256": "af632955c9b4a5c9ede8bd67d1662b1aa3fecad73c4fdb7c5c5cb562747dea6b"
+    },
+    "commit": "419fb512a719cf1d1dfe71791e9668bc5089db5a",
+    "parents": [
+      "c98d836520b61a99de22025480521a0c4d9e75db",
+      "493616c1cfc7a83f18894dc81773571e977f26ef"
+    ]
+  },
+  "retained_failures": {
+    "installed_comparison": {
+      "bytes": 3798,
+      "member": "rework-installed-diagnostics-comparison.json",
+      "sha256": "d524a772508dc9a5e6080aafc0a459f392bf83b77aaf4c3714568a6941679fc2"
+    },
+    "legacy_creative_effects": {
+      "boundary": "Direct service ValidationError (status 422) for create_with_variant and variant.append with canonical durable logs.",
+      "comparison": {
+        "bytes": 159620,
+        "member": "rework-legacy-logs-623.json",
+        "sha256": "6a8d683671459392d5b28a1bb197955ff38de6284cefbc0b7b15e1bf782bbfbb"
+      },
+      "issue": "https://github.com/banodoco/astrid-dev/issues/958",
+      "result": {
+        "counts": {
+          "errors": 0,
+          "failed": 2,
+          "passed": 0,
+          "skipped": 0
+        },
+        "junit": {
+          "bytes": 18759,
+          "member": "rework-legacy-logs-623.xml",
+          "sha256": "757be4252ef4fdda10f5457f320e5ef1fd8750c033ef0966060c782b30a2824c"
+        }
+      }
+    },
+    "legacy_installed_variant_journey": {
+      "issue": "https://github.com/banodoco/astrid-dev/issues/958",
+      "result": {
+        "counts": {
+          "errors": 0,
+          "failed": 1,
+          "passed": 0,
+          "skipped": 0
+        },
+        "junit": {
+          "bytes": 13110,
+          "member": "rework-installed-variants-68.xml",
+          "sha256": "a98d6aab90586ec6a4ee9808306dba88909195f3afecedcb09685116ac227cb5"
+        }
+      },
+      "stop": "First ordinary generation.create_with_variant settlement returns HTTP 422; edit and recovery assertions are not reached."
+    },
+    "ordinary_non_thumbnail_retry": {
+      "boundary": "Owner retry of an ordinary action with durable logs still reaches HTTP 409 at the immutable association guard.",
+      "issue": "https://github.com/banodoco/astrid-dev/issues/926",
+      "result": {
+        "counts": {
+          "errors": 0,
+          "failed": 1,
+          "passed": 0,
+          "skipped": 0
+        },
+        "junit": {
+          "bytes": 14011,
+          "member": "rework-general-log-retry-68.xml",
+          "sha256": "59bb030fe45d757d84544d168201089e26a5858083204bc533fc088f064a6bf7"
+        }
+      }
+    },
+    "owner": "R14-FIX-12, astrid-dev #959; no #926/#958 repair in this packet",
+    "scope_decision": "https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6996446701",
+    "stale_runtime_literals": {
+      "comparison": {
+        "bytes": 9483,
+        "member": "rework-agent-pin-guards-comparison.json",
+        "sha256": "32240e6884ec694c99d0e98680d1fb0e47213729434b64461ea012abbd316fdb"
+      },
+      "detail": "The vendor-lock and Windows path-witness fixed literals fail on both previous and proposed pins. Later assertions in those two cases are not reached; no assertion changed."
+    }
+  },
+  "row": "Plan55 LS-6 remainder",
+  "schema_baseline": {
+    "approved_commit": "f108349eccafb3e7588d9fa5dbe94d2d6b990015",
+    "checks": "Equality chain and no-observed_job assertion preserved and passing; TypeScript contract metadata regenerated by the existing generator.",
+    "digest": "sha256:a313b20d28be310e53fe0abe8e2f06a5dde1894a2c4b348fcf0e25ec57dce348",
+    "sequencing": "Lead owns ordering with Plan59 #838 at release/14/main."
+  },
+  "schema_version": 1,
+  "scope_preservation": {
+    "bytes": 11851,
+    "member": "rework-final-scope-audit.json",
+    "sha256": "af632955c9b4a5c9ede8bd67d1662b1aa3fecad73c4fdb7c5c5cb562747dea6b"
+  },
+  "separate_pin_proposals": {
+    "approval_status_at_proof": "pending Lead; local paired testing authorized by rework decision",
+    "runtime": "68c7911e581e85bc70c357806260e88300247ed0",
+    "vibe": "80fda01f579642d035accc4ababb0015586de87c"
+  },
+  "session": "r14-P55-12-1",
+  "status": "paired proof complete; submitted pin proposals require Lead integration acceptance",
+  "tested_product_sources": {
+    "agent": {
+      "commit": "68c7911e581e85bc70c357806260e88300247ed0",
+      "tree": "d4a50b40528e64b3e11c22746833775a52712132"
+    },
+    "runtime": {
+      "commit": "62333bd797e84b21cb3995e4bcf580ed0bdcf9f0",
+      "tree": "b2202d0e885efc6b1fc8cac8e7ad0fc0d5ea1f17"
+    },
+    "vibe": {
+      "canonical_pin_path": "astrid/packs/vibecomfy/pins.json",
+      "exact_identity_in_archive": "rework-vibe-final-comparison.json and rework-counter-final-comparison.json",
+      "selected_by_agent_pin_commit": "80fda01f579642d035accc4ababb0015586de87c",
+      "tree": "8f059c72f4385acdf0ace2c04f0ea8d3af643c62"
+    }
+  }
+}

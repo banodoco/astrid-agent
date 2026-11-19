@@ -349,6 +349,7 @@ def validate_result_manifest(
     manifest: Mapping[str, Any],
     *,
     staging_root: str | Path,
+    output_receipts: Mapping[str, Any] | None = None,
 ) -> ValidatedResultManifest:
     """Strictly validate a universal result manifest against a staging root.
 
@@ -433,7 +434,11 @@ def validate_result_manifest(
             raise ResultManifestError(
                 f"output {raw_path!r} must declare content_hash"
             )
-        actual_digest = sha256_file(resolved)
+        if output_receipts is None:
+            actual_digest = sha256_file(resolved)
+        else:
+            from astrid.core.foundation.output_receipts import output_digest
+            actual_digest = output_digest(resolved, output_receipts.get(raw_path))
         actual_hash = f"sha256:{actual_digest}"
         if declared_hash != actual_hash:
             raise ResultManifestError(
@@ -618,6 +623,7 @@ def harvest_staged_outputs(
     values: Mapping[str, Any] | None = None,
     require: bool = False,
     definition: Any | None = None,
+    use_output_receipts: bool = False,
 ) -> list[HarvestedOutput]:
     """Harvest concrete files from a host-assigned ``{out}`` spool.
 
@@ -650,7 +656,7 @@ def harvest_staged_outputs(
 
     manifest_path = root / RESULT_MANIFEST_NAME
     if manifest_path.exists():
-        harvested = _collect_manifest_files(root, manifest_path)
+        harvested = _collect_manifest_files(root, manifest_path, use_output_receipts=use_output_receipts)
         if (require or media_required) and not harvested:
             raise HarvestError(f"no concrete outputs harvested under {root}")
         return harvested
@@ -678,7 +684,7 @@ def _expand_declared_path(
 
 
 def _collect_manifest_files(
-    root: Path, manifest_path: Path
+    root: Path, manifest_path: Path, *, use_output_receipts: bool = False,
 ) -> list[HarvestedOutput]:
     try:
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -689,6 +695,13 @@ def _collect_manifest_files(
     outputs = payload.get("outputs")
     if not isinstance(outputs, list):
         raise HarvestError("manifest outputs must be a list")
+
+    bound_receipts = {}
+    if use_output_receipts:
+        from astrid.core.foundation.output_receipts import bind_output_receipts
+        envelope = payload.get("managed_generation_result")
+        if isinstance(envelope, Mapping):
+            bound_receipts = bind_output_receipts(envelope, root)
 
     flattened: list[tuple[int, Mapping[str, Any]]] = []
     for index, entry in enumerate(outputs):
@@ -762,7 +775,11 @@ def _collect_manifest_files(
         declared_hash = entry.get("content_hash")
         if not isinstance(declared_hash, str) or not declared_hash:
             raise HarvestError(f"output {raw_path!r} must declare content_hash")
-        actual_hash = f"sha256:{sha256_file(resolved)}"
+        if use_output_receipts:
+            from astrid.core.foundation.output_receipts import output_digest
+            actual_hash = f"sha256:{output_digest(resolved, bound_receipts.get(raw_path, entry.get('output_receipt')))}"
+        else:
+            actual_hash = f"sha256:{sha256_file(resolved)}"
         if declared_hash != actual_hash:
             raise HarvestError(
                 f"output {raw_path!r} declares content_hash {declared_hash!r} "

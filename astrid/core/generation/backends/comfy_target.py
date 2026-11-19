@@ -504,7 +504,8 @@ class ComfyTargetClient:
         return Path(value)
 
     def download_output(self, descriptor: object, destination: Path, *,
-                        expected_sha256: str | None = None) -> Path:
+                        expected_sha256: str | None = None, receipt_callback=None,
+                        prompt_id: str | None = None) -> Path:
         self._current(None)
         filename, subfolder, output_type = validate_output_descriptor(descriptor)
         expected = None if expected_sha256 is None else _digest_hex(expected_sha256)
@@ -572,6 +573,12 @@ class ComfyTargetClient:
             with self._generation_guard():
                 os.replace(temporary_path, destination)
                 temporary_path = None
+                if receipt_callback is not None:
+                    from astrid.core.foundation.output_receipts import make_output_receipt
+                    receipt_callback(make_output_receipt(
+                        destination, digest.hexdigest(), size, prompt_id=prompt_id,
+                        descriptor={"filename": filename, "subfolder": subfolder, "type": output_type},
+                    ))
                 return destination
         except (OSError, urllib_error.URLError) as exc:
             raise ValueError(f"comfy target could not download output {filename!r}") from exc

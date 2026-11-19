@@ -1,0 +1,1063 @@
+{
+  "archive": {
+    "bytes": 365804,
+    "every_member_hash_verified": true,
+    "files": [
+      {
+        "bytes": 5190,
+        "path": "agent-caller-frozen.log",
+        "sha256": "5eb5e5c75b3d55b78010e4c47cd19e836d4b3f04cc01ffdc8fff470730fe7cad"
+      },
+      {
+        "bytes": 5268,
+        "path": "agent-caller-frozen.xml",
+        "sha256": "046bf92e9157c0c5ecb62643dd6d585b5a2ac8d045c4323b6a6c7a98b124f67d"
+      },
+      {
+        "bytes": 1386,
+        "path": "association-guard-hash-extraction-reconciliation.json",
+        "sha256": "5d41e81641bedfdfbe2ef74323f12e8c55520e7a513b7ed03f863b257c8b2ac5"
+      },
+      {
+        "bytes": 26291,
+        "path": "build_retry_scope_evidence.py",
+        "sha256": "e1356484400132a86ec899f9d462462271ad35fd6f3d0d1bb9def2f56b9ef51a"
+      },
+      {
+        "bytes": 180113,
+        "path": "ci-p55-20261118-snapshot.json",
+        "sha256": "79ce56777909f992c4e03d33188922a499c447782c135d8abd35ef15d565ac64"
+      },
+      {
+        "bytes": 3119,
+        "path": "ci-p55-20261118-source-checks.json",
+        "sha256": "c86af5261c52bfa3027369143e7a743b2dfc2ce4c90c124a0d62ec23f92fa19e"
+      },
+      {
+        "bytes": 664,
+        "path": "ci-p55-product-heads-20261118-213317-SHA256SUMS",
+        "sha256": "5bc5c87d2267546491477eb65ad6321206abaa6fd0514e8b276a9ce54bd7c71e"
+      },
+      {
+        "bytes": 3550,
+        "path": "ci-p55-product-heads-20261118-213317-VibeComfy-135109883534.selected.log",
+        "sha256": "7629d211dfe1022af301713592c40a965db04c51053eff586d396b0a4f760877"
+      },
+      {
+        "bytes": 951,
+        "path": "ci-p55-product-heads-20261118-213317-VibeComfy-135109884945.selected.log",
+        "sha256": "a26ecbe0672d886f84c4f8844ad5029c3ca2250e0c161c76268c7f0bf5fd1ac6"
+      },
+      {
+        "bytes": 3504,
+        "path": "ci-p55-product-heads-20261118-213317-VibeComfy-135109885366.selected.log",
+        "sha256": "64fe3c9a71b0c3dd119b517d9096cdd2dec25d646ccc3b9ec8e9b9b16ecc52de"
+      },
+      {
+        "bytes": 943,
+        "path": "ci-p55-product-heads-20261118-213317-VibeComfy-135109885554.selected.log",
+        "sha256": "fccb78413a0334fcc8be82df5f7724738d3e1469556baaf4043ca878c7537556"
+      },
+      {
+        "bytes": 26989,
+        "path": "ci-p55-product-heads-20261118-213317.json",
+        "sha256": "b596ac22d7651def8370e6aec1428a1e31a14b41f599d297819f2e1feeeb8bd9"
+      },
+      {
+        "bytes": 6961,
+        "path": "general-log-retry-base-selected-evidence.json",
+        "sha256": "f9f3300300016f3eeb5deccb1c71a1bf4ca6f1dd55e237efce023522ccb440a7"
+      },
+      {
+        "bytes": 6931,
+        "path": "general-log-retry-base.json",
+        "sha256": "1e6c658576fc1c4310f044268f87e372a68276816b5b59f69768eccb4fa30100"
+      },
+      {
+        "bytes": 14935,
+        "path": "general-log-retry-base.log",
+        "sha256": "fef49641dbc324c03b48559cfd6ac12f32b6141cc67b9a337e953b8d2eb075e7"
+      },
+      {
+        "bytes": 13788,
+        "path": "general-log-retry-base.xml",
+        "sha256": "7bb583bc0d66f9d5955b8a7585154ffc75de21ce77b67fb763f9532fdf52c56d"
+      },
+      {
+        "bytes": 17166,
+        "path": "general-log-retry-comparison.json",
+        "sha256": "75d9be311360eb8f3d7aa5c8a9500a16cf535e16bd7041b5e65e7f45a6465e87"
+      },
+      {
+        "bytes": 6975,
+        "path": "general-log-retry-current-selected-evidence.json",
+        "sha256": "6617de338466f130c645cae897da731485034afbc05ae3ae694e102c0b4eb0bb"
+      },
+      {
+        "bytes": 7008,
+        "path": "general-log-retry-current.json",
+        "sha256": "5135be08ba9376c7be9308178981d9fecc54a948332286f04328b8eacefe1e5c"
+      },
+      {
+        "bytes": 15418,
+        "path": "general-log-retry-current.log",
+        "sha256": "85da59ac973dbe8a694c59a85ac44d14050728c298e93b51d43739edc3ee29af"
+      },
+      {
+        "bytes": 14009,
+        "path": "general-log-retry-current.xml",
+        "sha256": "d4a4a69a6f8b587aa25ef639733e3411624b12b4da04dea456def01b30ef617b"
+      },
+      {
+        "bytes": 6991,
+        "path": "general-log-retry-final-current-1-selected-evidence.json",
+        "sha256": "bb55cb2743e43d16187ec88a9cf85d6071f929af7ee859fc8f77245e1ecc9354"
+      },
+      {
+        "bytes": 4265,
+        "path": "general-log-retry-final-current-1.before.json",
+        "sha256": "d602bb66aec9ff7beee02a8792a63572fa1583ab8f73e03d1f6f8da36b088f2d"
+      },
+      {
+        "bytes": 8821,
+        "path": "general-log-retry-final-current-1.json",
+        "sha256": "ba1220a4c0814027b6e7a22dabe20c7044c03648bb4bf4b262991a8921588a5a"
+      },
+      {
+        "bytes": 15426,
+        "path": "general-log-retry-final-current-1.log",
+        "sha256": "44baa0f932dbfd9e0d214dad474b4a50a2783263ca423bf939599ad6a8c48403"
+      },
+      {
+        "bytes": 14017,
+        "path": "general-log-retry-final-current-1.xml",
+        "sha256": "ce60748ed4b38eb5456fbd555c21a364cde7e23dfc94ffc62e698360ed527f2a"
+      },
+      {
+        "bytes": 26631,
+        "path": "ls6-final-scoped-log-ownership-audit.json",
+        "sha256": "3d5a22607bbaf9da06739a77063c4050f0750e91cc5565dd2a83ea568e9c6cfb"
+      },
+      {
+        "bytes": 68609,
+        "path": "ls6-full-path-base-1.json",
+        "sha256": "8a4265204f7a6a3421a0c683e1470a76159640969408d5a10207f31e01cb581d"
+      },
+      {
+        "bytes": 4317,
+        "path": "ls6-full-path-base-1.log",
+        "sha256": "9d8847e32d719a987fb06214999ce59664b0922d581a301247c18b332a2aad80"
+      },
+      {
+        "bytes": 70079,
+        "path": "ls6-full-path-head-1.json",
+        "sha256": "8c2703ab4d43f5f19f5ed2068d063560e5f18a4c53986cf6ccfd11dc7f04fb36"
+      },
+      {
+        "bytes": 4359,
+        "path": "ls6-full-path-head-1.log",
+        "sha256": "be0b7f0f50572720d753ea5b85e867a1297b440bd94c2e7c50d45ff79f2e75eb"
+      },
+      {
+        "bytes": 10454,
+        "path": "recovery-approved-409-diagnosis.json",
+        "sha256": "53a3d9a69a904324d01990bc1f6ac30d0a9e9332e07a6f82c37342100aabfef8"
+      },
+      {
+        "bytes": 863,
+        "path": "recovery-approved-after-vs-before-astrid-agent.patch",
+        "sha256": "0e9010958d70dc2db39e3532e80742a852f28dd60e75a21456e5150817be9ca0"
+      },
+      {
+        "bytes": 696,
+        "path": "recovery-approved-after-vs-before-astrid-runtime.patch",
+        "sha256": "171002297b98bd641c9ca7bb9a0e0b26ae67f27c732cb585a60f071525f81e1e"
+      },
+      {
+        "bytes": 6779,
+        "path": "recovery-approved-after.json",
+        "sha256": "26523b56021630dd85bfef993d5059ba707820c835eb65115ff1a7fc2c9af98b"
+      },
+      {
+        "bytes": 18971,
+        "path": "recovery-approved-after.log",
+        "sha256": "3c7484e153869701c600ffae1dff22e722af61979bdb26b48230a89b8808b1a0"
+      },
+      {
+        "bytes": 13723,
+        "path": "recovery-approved-after.xml",
+        "sha256": "844cbb4b0a585957050fb834ff976bd1395fefb8a434a37ac4662669c3f37e09"
+      },
+      {
+        "bytes": 5930,
+        "path": "recovery-approved-before.json",
+        "sha256": "989cad1e01e3e92f601eab6b9d940ebb2e42f9706ad6738e025b3d33f78f46da"
+      },
+      {
+        "bytes": 30501,
+        "path": "recovery-approved-before.log",
+        "sha256": "e47e1efabd5bf4be44dbd1cfccf4d6c517322b219e91a16182aa63a12a21e91a"
+      },
+      {
+        "bytes": 28737,
+        "path": "recovery-approved-before.xml",
+        "sha256": "0224586f464d59a1274accf6641455453111cdbb5f4a784acc0cd8148a3a7c5f"
+      },
+      {
+        "bytes": 3420,
+        "path": "recovery-approved-comparison.json",
+        "sha256": "804778c247ddaf7daa86db0d0f5d7eba369046886cf16653a199130bbbf69151"
+      },
+      {
+        "bytes": 9387,
+        "path": "retry-scope-disk-restoration.json",
+        "sha256": "2aef524ac8db0fc2040bee143418ad05123d44a77a2bd1bd9b3c6badd5dd8059"
+      },
+      {
+        "bytes": 1524,
+        "path": "retry-scope-product-publication.json",
+        "sha256": "321f86a4bad377dcc4506dc21cbba477395ccc32163437b0b75c30f4bf5ef7f8"
+      },
+      {
+        "bytes": 8798,
+        "path": "retry-scoped-after-associate_managed_outputs.py",
+        "sha256": "6a155b6817f74ae7540f8975c2dcf00358e13a544fb0da3e8a22151d3af25f2f"
+      },
+      {
+        "bytes": 10889,
+        "path": "retry-scoped-after.json",
+        "sha256": "dcd24cda39d833bdae7778142e93846068d9bb53dfb95e16ca6bf4f129b4473a"
+      },
+      {
+        "bytes": 5774,
+        "path": "retry-scoped-after.log",
+        "sha256": "316e118c7bfb2af236fc6042676fd7e3027f152a4dbf2ceaec014c820198b27c"
+      },
+      {
+        "bytes": 573,
+        "path": "retry-scoped-after.xml",
+        "sha256": "2d955a8ccec4703d892076229afe093f1f3821e55796d2b961df0114bff56144"
+      },
+      {
+        "bytes": 8798,
+        "path": "retry-scoped-before-associate_managed_outputs.py",
+        "sha256": "6a155b6817f74ae7540f8975c2dcf00358e13a544fb0da3e8a22151d3af25f2f"
+      },
+      {
+        "bytes": 9176,
+        "path": "retry-scoped-before.json",
+        "sha256": "bbbe1a8d180d54f0b2b33b6f997bca367ef9f26806f08ca66dd959b08f0cc14e"
+      },
+      {
+        "bytes": 15648,
+        "path": "retry-scoped-before.log",
+        "sha256": "b3bd1e5f3f99151bc03f6630675751bfd01a11aba78a643677b59cc55187d099"
+      },
+      {
+        "bytes": 13719,
+        "path": "retry-scoped-before.xml",
+        "sha256": "e00cc4220804d6a7981c189553bbde6037ea670ea5aef472a3c27bb9dd5cd5a5"
+      },
+      {
+        "bytes": 19921,
+        "path": "retry-scoped-final-caller.json",
+        "sha256": "0c5300bb0030a600a5787753854070229635d49ef8464c308fbaff38136ab96c"
+      },
+      {
+        "bytes": 5190,
+        "path": "retry-scoped-final-caller.log",
+        "sha256": "fad9f0c7129a89266ced434cdaba6ed2bc144c6ab0c68af05982aa87c306f714"
+      },
+      {
+        "bytes": 5268,
+        "path": "retry-scoped-final-caller.xml",
+        "sha256": "81762cc8b164d1956e9f2b34a0187e1f19a786dfbf78fe3b95e010e8629106c4"
+      },
+      {
+        "bytes": 15978,
+        "path": "retry-scoped-final-comparison.json",
+        "sha256": "b3ad10981867c2fde2dfbf3b083395c80546b062ebf94521a78c12ec731908c6"
+      },
+      {
+        "bytes": 5353,
+        "path": "retry-scoped-final-counter-run.json",
+        "sha256": "81e2c2861c1c0611c4ffa3283a5bdcb9a3cc47fc47bf04ab60824125dfa880fa"
+      },
+      {
+        "bytes": 70122,
+        "path": "retry-scoped-final-counter.json",
+        "sha256": "f339699d955b1a2976d904ae0aebe3ebc4e6e141dbff027541f87ecc66ccc7e4"
+      },
+      {
+        "bytes": 4374,
+        "path": "retry-scoped-final-counter.log",
+        "sha256": "874d552f42944413410511375843da56486dbdeca3c92b39843376e1d4599b10"
+      },
+      {
+        "bytes": 12230,
+        "path": "retry-scoped-final-verification-plan.json",
+        "sha256": "02d9bd268e433a98b09a4f65e9238ffd41ac08dc03560aad0dd32fea43d66f4a"
+      },
+      {
+        "bytes": 4254,
+        "path": "run_general_log_retry_probe.py",
+        "sha256": "ab843f4d2a8901e3032f0fd1446d701540222662c5e6dad03d65153ca24d94a1"
+      },
+      {
+        "bytes": 10023,
+        "path": "run_runtime_final_regressions.py",
+        "sha256": "78333a797d5cb6da1462078e3b859c3cff1c72cf46e4544044e1353bafab405e"
+      },
+      {
+        "bytes": 6208,
+        "path": "runtime-coherent-review.json",
+        "sha256": "33eca1953a2377bb20eb3a1b1204339f1672c547bca71b1f91c8b1df77625a38"
+      },
+      {
+        "bytes": 3164,
+        "path": "runtime-final-ready-1-basetemp-cleanup.json",
+        "sha256": "02674c131d73caf4220b35659bf52ac4900a7c85ca96034a3fca17c55f93ff6b"
+      },
+      {
+        "bytes": 8798,
+        "path": "runtime-final-ready-1-canonical_logs-association-guard.py",
+        "sha256": "6a155b6817f74ae7540f8975c2dcf00358e13a544fb0da3e8a22151d3af25f2f"
+      },
+      {
+        "bytes": 21475,
+        "path": "runtime-final-ready-1-canonical_logs.before.json",
+        "sha256": "716cc034ef7a22f45a15e1471740563cc5296da12ee0e2c07bde64541cddecef"
+      },
+      {
+        "bytes": 43907,
+        "path": "runtime-final-ready-1-canonical_logs.json",
+        "sha256": "95d4cd783fee7ad405a871aa48e387f2dee34f04f890d5f99b50b117cbcfb1af"
+      },
+      {
+        "bytes": 2935,
+        "path": "runtime-final-ready-1-canonical_logs.log",
+        "sha256": "0e2472474bddc4f8aa250fe0c16c625d7566b85e3918becffc57a0243edf09ba"
+      },
+      {
+        "bytes": 3583,
+        "path": "runtime-final-ready-1-canonical_logs.xml",
+        "sha256": "bef7bc72652f4b22a0fd98457401652677a0ad699499fe1a9417e388bf71148f"
+      },
+      {
+        "bytes": 8798,
+        "path": "runtime-final-ready-1-stream-association-guard.py",
+        "sha256": "6a155b6817f74ae7540f8975c2dcf00358e13a544fb0da3e8a22151d3af25f2f"
+      },
+      {
+        "bytes": 22490,
+        "path": "runtime-final-ready-1-stream.before.json",
+        "sha256": "ba32f37bd2503eab6dcf5a041c18ddfc8922034f7465b5fc358e14450af76d77"
+      },
+      {
+        "bytes": 46739,
+        "path": "runtime-final-ready-1-stream.json",
+        "sha256": "66f58ccdc01ec67b4c6d992d509ab6ebdc89e40b33fafffafe930c55385a6a57"
+      },
+      {
+        "bytes": 3691,
+        "path": "runtime-final-ready-1-stream.log",
+        "sha256": "3391cefd14ba150e9b212ee0c8bba5115ce4bc3fe39a39c905b4e74516013d60"
+      },
+      {
+        "bytes": 4702,
+        "path": "runtime-final-ready-1-stream.xml",
+        "sha256": "ea8620e9a8f774e1b2ea1f9bbb4576627ddaed58f8aa93c45df4ed7b7a36dfe8"
+      },
+      {
+        "bytes": 9783,
+        "path": "runtime-final-ready-1-summary.json",
+        "sha256": "18ab6f20749e5de0631592a0992766a507ccd57c8a49ebe0fd051a4027f8b587"
+      },
+      {
+        "bytes": 8798,
+        "path": "runtime-final-ready-1-thumbnail-association-guard.py",
+        "sha256": "6a155b6817f74ae7540f8975c2dcf00358e13a544fb0da3e8a22151d3af25f2f"
+      },
+      {
+        "bytes": 30949,
+        "path": "runtime-final-ready-1-thumbnail.before.json",
+        "sha256": "0ace2a99a8d3f041223a1aac46cc56ae5fee26b554e24a262e6be9a6bc7fb043"
+      },
+      {
+        "bytes": 67113,
+        "path": "runtime-final-ready-1-thumbnail.json",
+        "sha256": "49995d40510a1a2b64169933224d831ff349b8e8eb0d89e3f43ef0cd163b9c46"
+      },
+      {
+        "bytes": 11837,
+        "path": "runtime-final-ready-1-thumbnail.log",
+        "sha256": "adf3dda4dd042415b167d982fa1152a451466fd45487a4098a8a909f1ecebd9d"
+      },
+      {
+        "bytes": 14814,
+        "path": "runtime-final-ready-1-thumbnail.xml",
+        "sha256": "aca70bd2030870ab2ba0c558dbf7564a8d9cc7efa20f64e8cff3c8a717e24f46"
+      },
+      {
+        "bytes": 42931,
+        "path": "runtime-final-regression-plan.json",
+        "sha256": "557cadf8be988b84e71c330a9c89529f78644ece9ff7a5edc54c57c8d15ce518"
+      },
+      {
+        "bytes": 1270,
+        "path": "runtime-final-regression-preparation.json",
+        "sha256": "40b77667d5daec827d35f142bb05e6ce34586af04dad3c6c6011b16f33baab12"
+      },
+      {
+        "bytes": 4313,
+        "path": "runtime-retry-pin-proposal.json",
+        "sha256": "bc7cf93b5526d09d54033ca81d1f0a543405aa418b91f9de1c12c86d3f19ae7e"
+      },
+      {
+        "bytes": 4702,
+        "path": "runtime-stream-coherent.xml",
+        "sha256": "33d60769d3e42a613b88863da29b959b40ef5a8103fa6ad06ade857893099824"
+      },
+      {
+        "bytes": 1856,
+        "path": "runtime-thumbnail-attempt-scope-before-1.before.json",
+        "sha256": "8799dcf3dd8ad8df7d51a057efc164fcd17f2cd40dc27c10372b2f9d93c180d9"
+      },
+      {
+        "bytes": 6482,
+        "path": "runtime-thumbnail-attempt-scope-before-1.json",
+        "sha256": "2324c27ebde23cce70c58b1f9a7a67e66a83ac11b917cd672ded231aafec16f7"
+      },
+      {
+        "bytes": 217886,
+        "path": "runtime-thumbnail-attempt-scope-before-1.log",
+        "sha256": "4e6f85547fc9d206bad9390724e6413875c80100de5c43c5f2a256ff8389aa45"
+      },
+      {
+        "bytes": 219073,
+        "path": "runtime-thumbnail-attempt-scope-before-1.xml",
+        "sha256": "5c855c07bc8ab587d52f345e4d18b419bb3419bfe20bdd089e9d67efda05b941"
+      },
+      {
+        "bytes": 1957,
+        "path": "runtime-thumbnail-attempt-scope-before-2.before.json",
+        "sha256": "7d79f83e20172a12c80de5abbe4271b5d2a8707679664173c086d45b080745dd"
+      },
+      {
+        "bytes": 6062,
+        "path": "runtime-thumbnail-attempt-scope-before-2.json",
+        "sha256": "e97eb10a4990956917b97784f6f5d7fdb6501bb7c9a9981f0235671c247e45a3"
+      },
+      {
+        "bytes": 13833,
+        "path": "runtime-thumbnail-attempt-scope-before-2.log",
+        "sha256": "c0dbcbb7bfa9548466ac946622bde45f7cae1f04e2702c51102d44d8f53e2da4"
+      },
+      {
+        "bytes": 14686,
+        "path": "runtime-thumbnail-attempt-scope-before-2.xml",
+        "sha256": "16eb9aeedbe78f00f870bb07d5b19c30f9ac20a4de6bb262aee67fc48b7df564"
+      },
+      {
+        "bytes": 2742,
+        "path": "runtime-thumbnail-attempt-scope-before-3.before.json",
+        "sha256": "d60580a8731722d7bf5ca31d5053c1f1f4e528ac5e5d086a090fe30abf591ec8"
+      },
+      {
+        "bytes": 6460,
+        "path": "runtime-thumbnail-attempt-scope-before-3.json",
+        "sha256": "85df880ee034584692de621a86370eeb2d2108ec3e92d6b32106168e0b75882f"
+      },
+      {
+        "bytes": 15486,
+        "path": "runtime-thumbnail-attempt-scope-before-3.log",
+        "sha256": "12a9dc691ef3a074d10c57e41313f6ef041808d9fc5049930cc056c02bc6b09a"
+      },
+      {
+        "bytes": 15980,
+        "path": "runtime-thumbnail-attempt-scope-before-3.xml",
+        "sha256": "e0eeef6e72b00fcbb3d296ee6d8f33b1d880c2d85b8ce98289970cc323f76a52"
+      },
+      {
+        "bytes": 4683,
+        "path": "runtime-thumbnail-attempt-scope-comparison-1.json",
+        "sha256": "6911fa772ae8bd1b9837f793910fc6cd1fa4f6e9323312dfb58733bd72c6492e"
+      },
+      {
+        "bytes": 9629,
+        "path": "runtime-thumbnail-attempt-scope-frozen-source.py.txt",
+        "sha256": "066f43bc656311d373f1090f18b18fc8988f1dc2cb34de264089978b43c86ba1"
+      },
+      {
+        "bytes": 2245,
+        "path": "runtime-thumbnail-attempt-scope-head-1.before.json",
+        "sha256": "20dae00a92e69fecc71c385ba769542c23c4a322ab2af91fe160f92fcfedff1c"
+      },
+      {
+        "bytes": 5585,
+        "path": "runtime-thumbnail-attempt-scope-head-1.json",
+        "sha256": "77490c9b049041d0de683b6648b54d58385824e1f1d114d06cbf9c6caed38b91"
+      },
+      {
+        "bytes": 1182,
+        "path": "runtime-thumbnail-attempt-scope-head-1.log",
+        "sha256": "28e2125b75550c86cac99a2a1c3d74978ece2bfaf8c67908e56e6c3041f6d5ae"
+      },
+      {
+        "bytes": 1401,
+        "path": "runtime-thumbnail-attempt-scope-head-1.xml",
+        "sha256": "10719fb383f478ae85ab43cc17e6aa27a50511a510adc5b121c3ffb721681835"
+      },
+      {
+        "bytes": 9453,
+        "path": "runtime-thumbnail-attempt-scope-original-source.py.txt",
+        "sha256": "aa9e2c84e695ddea8f0afceeaf6afb53f6e8a73951ec917b8abd462b4b652cec"
+      },
+      {
+        "bytes": 19204,
+        "path": "runtime-thumbnail-final-preservation-1.json",
+        "sha256": "3236993e1e52091dcdcb117de3679a8c3ed8eff67d04ef85ef99efcc87b908d0"
+      },
+      {
+        "bytes": 11837,
+        "path": "runtime-thumbnail-final-preservation-1.log",
+        "sha256": "1325e2baab73a1b39564aadbb25d4af178526212b87988df22c7124fca3d4a77"
+      },
+      {
+        "bytes": 14814,
+        "path": "runtime-thumbnail-final-preservation-1.xml",
+        "sha256": "9904c80cf7b53587d68741445311f5cf44cccd5978b47f486bc35efd5ca222d1"
+      },
+      {
+        "bytes": 16657,
+        "path": "runtime-thumbnail-log-final-comparison-1.json",
+        "sha256": "6ec398cdc19eb3b1fc2a0eb41b77847e768b760b110bf27e740f5ab05efdcd07"
+      },
+      {
+        "bytes": 2935,
+        "path": "runtime-thumbnail-log-final-head-1.log",
+        "sha256": "064280d3eaba89e512e21e05d8ebcaa2825831533d3686c4678cbae23eeb1d1f"
+      },
+      {
+        "bytes": 3583,
+        "path": "runtime-thumbnail-log-final-head-1.xml",
+        "sha256": "af35ab3576a871414f429e72f6c9430d042fa9583fd20eeb649c6d8f12ef1f03"
+      },
+      {
+        "bytes": 340,
+        "path": "runtime-ts-projection-generate.log",
+        "sha256": "cb32a05c21abf561ad5a7e45f2195a8c68232ed0e2a112432f31b5c1bc323b62"
+      },
+      {
+        "bytes": 5594,
+        "path": "runtime-ts-projection-regeneration.json",
+        "sha256": "c097ce971e0a2d93d45ae49b0f4614a58a998defbc686245fe99dd5f74284618"
+      },
+      {
+        "bytes": 19002,
+        "path": "schema-adapter-approved-audit.json",
+        "sha256": "818c7c9969f288b31c4d0132943ef313c3c852ebbbf9d11b94b1f4173859fd2f"
+      },
+      {
+        "bytes": 98,
+        "path": "schema-approved-after.log",
+        "sha256": "20362a81bf4105ac9b50b20bf0a2d76c76b81572886928ac3f09de5e8026048a"
+      },
+      {
+        "bytes": 651,
+        "path": "schema-approved-after.xml",
+        "sha256": "bb873e527e7e802b752258e39ee60ff18ccc1bddc266762fa1597550c6aed9df"
+      },
+      {
+        "bytes": 71980,
+        "path": "schema-approved-before-test-file.py",
+        "sha256": "2cd601f3ba1f958f12fe8bcf75ae2d080f6810dfba6b5a4ecaca27c5365af668"
+      },
+      {
+        "bytes": 1036,
+        "path": "schema-approved-before.log",
+        "sha256": "5725047449f737664cfe4a831b3d670f3e2543a9b8a72a9f5059670237298852"
+      },
+      {
+        "bytes": 1266,
+        "path": "schema-approved-before.xml",
+        "sha256": "9657c8d6be0532bb1843bd304457976e19fca55d1a5eac859d8665950465ed4e"
+      },
+      {
+        "bytes": 665,
+        "path": "schema-approved-commit-message.txt",
+        "sha256": "5328e4f83dd2e509161f0e3884138debc760db6453ae7f05f3227adadff2332a"
+      },
+      {
+        "bytes": 136,
+        "path": "schema-approved-commit.log",
+        "sha256": "ad2e2690ce589e53185f7872dc7147a7bc309d45f40edb2eec5aece333a5bb4b"
+      },
+      {
+        "bytes": 7316,
+        "path": "schema-approved-evidence.json",
+        "sha256": "34dc838e3fe824b32725114ba1188e13f3be1adfcdb9c88c0d245a07e2920b73"
+      },
+      {
+        "bytes": 340,
+        "path": "schema-approved-generator.log",
+        "sha256": "cb32a05c21abf561ad5a7e45f2195a8c68232ed0e2a112432f31b5c1bc323b62"
+      },
+      {
+        "bytes": 11107,
+        "path": "test_general_log_retry_probe.py",
+        "sha256": "671648e5b9287ead292f2ded239d0af64fd64e6aeaa0e4a541bfcb59192a1e22"
+      }
+    ],
+    "path": "observations-retry-scope.zip",
+    "sha256": "367e42797578d1b6ab616c344f328fefc3b6c0e25928e50fdc591d79d4399eb9"
+  },
+  "authority": "https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6991360672",
+  "authorized_schema_commit": {
+    "after_guard_and_unchanged_generator_tests": "3 passed, 0 failed/errors/skips",
+    "approved_literal": "sha256:a313b20d28be310e53fe0abe8e2f06a5dde1894a2c4b348fcf0e25ec57dce348",
+    "before_schema_guard": "1 expected failure",
+    "equality_chain_and_no_observed_job_function_byte_identical": true,
+    "evidence": "schema-approved-evidence.json",
+    "existing_generator_rerun": "Fresh contract-metadata.ts and generated.ts were byte-identical to the checked-in projections; no additional projection diff.",
+    "function_sha256": "8372a4eeee135d1fe5a0687dd767e2285af613d8826a00686322e6027d5cdc71",
+    "one_literal_substitution_only": true,
+    "published": "f108349eccafb3e7588d9fa5dbe94d2d6b990015",
+    "sequencing": "Landing this schema digest at release/14/main is ordered by the Lead with Plan 59 #838; this packet does not merge, modify #838, or change its ownership.",
+    "subject": "Refresh LS-6 schema baseline under Lead decision 6990340497"
+  },
+  "final_packet_verification": {
+    "agent_unique_ids": 37,
+    "count_scope": "Selected packet tests only. Counters, historical failures and the separate known generic retry probe are reported separately and are not counted as passing tests.",
+    "errors": 0,
+    "failed": 0,
+    "passed": 188,
+    "runtime_unique_ids": 151,
+    "skipped": 0,
+    "suites": [
+      {
+        "errors": 0,
+        "exact_id_reference": "runtime-stream-coherent.xml",
+        "exact_ids_unchanged": true,
+        "failed": 0,
+        "junit": "runtime-final-ready-1-stream.xml",
+        "ordered_ids_sha256": "deb734345f4cb5e6620bb6c617a02180d06b857933bf20f70e03d98b4cb49c20",
+        "passed": 31,
+        "repo": "astrid-runtime",
+        "selection": "stream",
+        "skipped": 0
+      },
+      {
+        "errors": 0,
+        "exact_id_reference": "runtime-thumbnail-final-preservation-1.xml",
+        "exact_ids_unchanged": true,
+        "failed": 0,
+        "junit": "runtime-final-ready-1-thumbnail.xml",
+        "ordered_ids_sha256": "3db8eb296776e4b98b7605a9d5fa2e6fbe44abd6c1714456fefb0b8929224d2d",
+        "passed": 93,
+        "repo": "astrid-runtime",
+        "selection": "thumbnail",
+        "skipped": 0
+      },
+      {
+        "errors": 0,
+        "exact_id_reference": "runtime-thumbnail-log-final-head-1.xml",
+        "exact_ids_unchanged": true,
+        "failed": 0,
+        "junit": "runtime-final-ready-1-canonical_logs.xml",
+        "ordered_ids_sha256": "7f9aa58fbe8782f542a70d28e8469c63079c64b4ee552f4e7f8378e42fb9e0b8",
+        "passed": 20,
+        "repo": "astrid-runtime",
+        "selection": "canonical_logs",
+        "skipped": 0
+      },
+      {
+        "errors": 0,
+        "exact_id_reference": "runtime-thumbnail-attempt-scope-before-3.xml",
+        "exact_ids_unchanged": true,
+        "failed": 0,
+        "junit": "runtime-thumbnail-attempt-scope-head-1.xml",
+        "ordered_ids_sha256": "b2ee91082fec9787def2bc7fc2ac2ed7738dccd7d549d1bce00de162a1b62a82",
+        "passed": 7,
+        "repo": "astrid-runtime",
+        "selection": "attempt_scoped_thumbnail_logs",
+        "skipped": 0
+      },
+      {
+        "errors": 0,
+        "exact_id_reference": "retry-scoped-before.xml",
+        "exact_ids_unchanged": true,
+        "failed": 0,
+        "junit": "retry-scoped-after.xml",
+        "ordered_ids_sha256": "a86c6a4fd88d940925c9b5b88e17ec6e095d66e44fc9abe20345747fafd1d926",
+        "passed": 2,
+        "repo": "astrid-agent",
+        "selection": "protected_thumbnail_recovery",
+        "skipped": 0
+      },
+      {
+        "errors": 0,
+        "exact_id_reference": "agent-caller-frozen.xml",
+        "exact_ids_unchanged": true,
+        "failed": 0,
+        "junit": "retry-scoped-final-caller.xml",
+        "ordered_ids_sha256": "fcd4ec89266db200c5c52ec0a63b96d6e226dc1b0dc84882f781093d3cdfcc03",
+        "passed": 35,
+        "repo": "astrid-agent",
+        "selection": "caller_and_receipt_pipeline",
+        "skipped": 0
+      }
+    ]
+  },
+  "full_path_counters": {
+    "comparison": "retry-scoped-final-comparison.json",
+    "harness_path": "tests/ls6_output_counters.py",
+    "harness_sha256": "4d6d67f4006d6351d5fce79ab488abae2c060c5f6bd6ce8d9ff403a73aede1e6",
+    "instrumentation": {
+      "attribution": "all collection threads are producer; during upload/delivery the main thread is client and other threads are Runtime",
+      "constructors": [
+        "hashlib.sha256",
+        "hashlib.new",
+        "hashlib.file_digest"
+      ],
+      "limitations": [
+        "Python in-process observation; native hashing, subprocess hashing and direct cached constructor aliases are not covered",
+        "Comfy inference and its HTTP response are a fixed attributed byte fixture",
+        "Real product collection/custody, Runtime HTTP transfer/settlement, SDK verification and caller file delivery",
+        "Counts are not latency measurements or a live-model/remote-GPU qualification"
+      ],
+      "match": "complete SHA-256 streams matched by digest and byte count",
+      "observer": "tests._local_speed_hashes.OutputHashObserver"
+    },
+    "measurements": [
+      {
+        "bytes": 37,
+        "cas_unchanged_after_caller_mutation": true,
+        "fetch_count_each": 1,
+        "independent_caller_file": true,
+        "matches_prior_candidate": true,
+        "phases": {
+          "caller": {
+            "final_pinned": {
+              "bytes_hashed": 37,
+              "completed_streams": 1,
+              "coverage_gaps": []
+            },
+            "prescribed_base": {
+              "bytes_hashed": 185,
+              "completed_streams": 5,
+              "coverage_gaps": []
+            }
+          },
+          "producer": {
+            "final_pinned": {
+              "bytes_hashed": 37,
+              "completed_streams": 1,
+              "coverage_gaps": []
+            },
+            "prescribed_base": {
+              "bytes_hashed": 259,
+              "completed_streams": 7,
+              "coverage_gaps": []
+            }
+          },
+          "runtime_pre_delivery": {
+            "final_pinned": {
+              "bytes_hashed": 222,
+              "completed_streams": 6,
+              "coverage_gaps": []
+            },
+            "prescribed_base": {
+              "bytes_hashed": 222,
+              "completed_streams": 6,
+              "coverage_gaps": []
+            }
+          },
+          "runtime_transmit": {
+            "final_pinned": {
+              "bytes_hashed": 37,
+              "completed_streams": 1,
+              "coverage_gaps": []
+            },
+            "prescribed_base": {
+              "bytes_hashed": 74,
+              "completed_streams": 2,
+              "coverage_gaps": []
+            }
+          }
+        },
+        "sha256": "17f98bea63cd486d0c7186ded02888b4e5f0dcdf0174105f9f6fe1798a76a35c"
+      },
+      {
+        "bytes": 9437197,
+        "cas_unchanged_after_caller_mutation": true,
+        "fetch_count_each": 1,
+        "independent_caller_file": true,
+        "matches_prior_candidate": true,
+        "phases": {
+          "caller": {
+            "final_pinned": {
+              "bytes_hashed": 9437197,
+              "completed_streams": 1,
+              "coverage_gaps": []
+            },
+            "prescribed_base": {
+              "bytes_hashed": 47185985,
+              "completed_streams": 5,
+              "coverage_gaps": []
+            }
+          },
+          "producer": {
+            "final_pinned": {
+              "bytes_hashed": 9437197,
+              "completed_streams": 1,
+              "coverage_gaps": []
+            },
+            "prescribed_base": {
+              "bytes_hashed": 66060379,
+              "completed_streams": 7,
+              "coverage_gaps": []
+            }
+          },
+          "runtime_pre_delivery": {
+            "final_pinned": {
+              "bytes_hashed": 28311591,
+              "completed_streams": 3,
+              "coverage_gaps": []
+            },
+            "prescribed_base": {
+              "bytes_hashed": 28311591,
+              "completed_streams": 3,
+              "coverage_gaps": []
+            }
+          },
+          "runtime_transmit": {
+            "final_pinned": {
+              "bytes_hashed": 9437197,
+              "completed_streams": 1,
+              "coverage_gaps": []
+            },
+            "prescribed_base": {
+              "bytes_hashed": 9437197,
+              "completed_streams": 1,
+              "coverage_gaps": []
+            }
+          }
+        },
+        "sha256": "aba8b0a34943135e22abbd448299091a839913609e3711ef8a9a941b7d51555b"
+      }
+    ],
+    "same_harness_before_and_after": true,
+    "source_identity_stable": true
+  },
+  "hosted_ci_snapshot": {
+    "artifact": "ci-p55-product-heads-20261118-213317.json",
+    "failed_vibe_jobs": 4,
+    "limits": [
+      "The connector returns the first page only; this is a snapshot of returned PR runs, not an exhaustive all-event/all-page census.",
+      "The run response does not echo head_sha or event; source binding is the explicit commit_sha query recorded here.",
+      "Failed-job details are the latest attempt returned by the connector, first page only.",
+      "Queued and skipped workflows supply NO-RESULT for execution proof. No waiting or repeated polling was performed.",
+      "Existing source-input equality and matching prior signatures do not constitute a paired hosted baseline run or CI-green result."
+    ],
+    "no_green_ci_claim": true,
+    "not_later_evidence_head_ci": true,
+    "observation": "Vibe failures recur at dependency installation (runpod-lifecycle unavailable) and root-clean allowlist; compared Makefile/pyproject/uv.lock input blobs equal the prescribed base and earlier snapshot.",
+    "observed_end_utc": "2026-11-18T21:36:51.455Z",
+    "observed_start_utc": "2026-11-18T21:33:17.950Z",
+    "regression_attribution": "unclassified; no paired hosted baseline",
+    "sources": [
+      {
+        "published_source_commit": "33b7951e428e20484a1b49ee37e6353ed4a16fc5",
+        "repository": "banodoco/astrid-agent",
+        "returned_workflows": 6,
+        "status_counts": {
+          "queued": 5,
+          "skipped": 1
+        }
+      },
+      {
+        "published_source_commit": "4323ef03f75334bc38c13d8fcb43b46368774d72",
+        "repository": "banodoco/astrid-runtime",
+        "returned_workflows": 2,
+        "status_counts": {
+          "queued": 2
+        }
+      },
+      {
+        "published_source_commit": "ecc5bc05ad55753883853fc7f56a3914f8f475a0",
+        "repository": "banodoco/VibeComfy",
+        "returned_workflows": 4,
+        "status_counts": {
+          "failure": 3,
+          "skipped": 1
+        }
+      }
+    ]
+  },
+  "known_separate_failure": {
+    "error": "HTTP409: managed output association conflicts with existing immutable output; attempt_id/provenance_json differ on ordinary-action retry.",
+    "guard_action": "The general immutable guard, ordinary-action output policy and failed probe expectation remain unchanged.",
+    "initial_report": "https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6992053151",
+    "issue": "https://github.com/banodoco/astrid-dev/issues/926",
+    "launcher_sha256": "ab843f4d2a8901e3032f0fd1446d701540222662c5e6dad03d65153ca24d94a1",
+    "lead_filing": "https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6992136770",
+    "observations": [
+      {
+        "failed": 1,
+        "junit": "general-log-retry-base.xml",
+        "result": "known HTTP 409 immutable association conflict",
+        "selection": "base",
+        "skipped": 0
+      },
+      {
+        "failed": 1,
+        "junit": "general-log-retry-current.xml",
+        "result": "known HTTP 409 immutable association conflict",
+        "selection": "current",
+        "skipped": 0
+      },
+      {
+        "failed": 1,
+        "junit": "general-log-retry-final-current-1.xml",
+        "result": "known HTTP 409 immutable association conflict",
+        "selection": "final-current-1",
+        "skipped": 0
+      }
+    ],
+    "probe_and_launcher_unchanged": true,
+    "probe_sha256": "671648e5b9287ead292f2ded239d0af64fd64e6aeaa0e4a541bfcb59192a1e22",
+    "status": "Still failed on prescribed base, pre-fix candidate and final candidate; outside this thumbnail-scoped fix."
+  },
+  "limits": [
+    "Ready for Lead review and ordinary PR handling; pins are proposals pending Lead acceptance, and no merge or release qualification is asserted.",
+    "Schema commit f108349eccafb3e7588d9fa5dbe94d2d6b990015 remains explicitly named; release/14/main landing is Lead-ordered with Plan59 #838.",
+    "Protected recovery uses CPU fixture generation and a substituted external decoder with real authenticated Runtime HTTP, installed action, native custody, SDK following and settlement; no GPU or real-decoder timing claim.",
+    "Completed Python SHA streams and bytes are counted independently by phase; no native/subprocess hashing, live-model inference or latency claim.",
+    "General ordinary-action retry remains a visible failing probe under #926; it is not skipped or included in the 188 passing packet IDs.",
+    "Queued and skipped hosted workflows are NO-RESULT. The source-bound snapshot does not establish green CI or exhaust all workflow pages/events.",
+    "Only top-level regular evidence files are archived; no basetemp directories, full realm databases or credential files are included."
+  ],
+  "packet": "R14-P55-12",
+  "pins": {
+    "runtime": {
+      "evidence": "runtime-retry-pin-proposal.json",
+      "generated_consumer_bytes_unchanged": true,
+      "published_proposal_commit": "33b7951e428e20484a1b49ee37e6353ed4a16fc5",
+      "source_commit": "4323ef03f75334bc38c13d8fcb43b46368774d72",
+      "status": "isolated proposal pending Lead acceptance",
+      "verified_consumer_artifacts": 16
+    },
+    "vibe_proposal_unchanged": {
+      "authority_commit": "2fdf06a903b0fecaf9f70f1453e993119dccfd5e",
+      "authority_path": "astrid/packs/vibecomfy/pins.json",
+      "authority_repository": "banodoco/astrid-agent",
+      "json_pointer": "/sources/vibecomfy/revision",
+      "status": "existing proposal; acceptance remains Lead-owned"
+    }
+  },
+  "product_change": {
+    "agent": "Only generation.thumbnail_backfill log descriptors receive thumbnail-attempt:<trusted attempt_id> in the shared success/failure log upload helper; canonical names, ports, variants and custody remain unchanged.",
+    "runtime": "Private validators receive the existing fenced attempt_id at both settlement validation sites; canonical logs accept legacy default or the exact current-attempt group. All other thumbnail checks and the immutable association guard remain unchanged.",
+    "vibe": "Product source is unchanged from the earlier frozen proof; this retry resume adds no Vibe product change."
+  },
+  "progress_report": "https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6992400203",
+  "protected_recovery": {
+    "after": {
+      "tests.core.execution.test_ls6_thumbnail_recovery::test_failed_thumbnail_is_visible_and_retry_does_not_repeat_generation": "passed",
+      "tests.core.execution.test_ls6_thumbnail_recovery::test_main_reply_precedes_thumbnail_and_restart_recovers_one_preview": "passed"
+    },
+    "before": {
+      "tests.core.execution.test_ls6_thumbnail_recovery::test_failed_thumbnail_is_visible_and_retry_does_not_repeat_generation": "failed",
+      "tests.core.execution.test_ls6_thumbnail_recovery::test_main_reply_precedes_thumbnail_and_restart_recovers_one_preview": "passed"
+    },
+    "comparison": "retry-scoped-final-comparison.json",
+    "completed_assertions": [
+      "Exact thumbnail metadata, JPEG object bytes and original video bytes.",
+      "Original main task stays succeeded with the same attempt; generation trace remains exactly one invocation.",
+      "Exactly one generation, one thumbnail managed-output association, correct thumbnail provenance, and exactly two project tasks.",
+      "Main reply succeeds before held thumbnail work; durable intent survives Runtime restart and is recovered once.",
+      "Owner retry preserves thumbnail task ID, uses a different attempt, and has a strictly higher lease fence.",
+      "Decoder trace advances from one failed attempt to exactly two attempts after retry.",
+      "Subsequent host runs produce no extra thumbnail work or duplicate preview."
+    ],
+    "immutable_guard_bytes": 8798,
+    "immutable_guard_matches_prescribed_base": true,
+    "immutable_guard_sha256": "6a155b6817f74ae7540f8975c2dcf00358e13a544fb0da3e8a22151d3af25f2f",
+    "nonfatal_stderr_observation": {
+      "initial_error": "ProtocolError: request body is shorter than Content-Length",
+      "qualification": "Raw stderr retained. Both protected tests passed; this observation alone does not establish a candidate product regression, and no source or test change was made for it.",
+      "request_route": "POST /v1/tasks/{id}/wait",
+      "secondary_error": "BrokenPipeError while writing the error response to the disconnected client"
+    },
+    "test_file_sha256": "25cbc33f4e0527279f6e1598df9b8d4873ecb4f43f98e53b907b33c69d9514ac"
+  },
+  "row": "LS-6 remainder",
+  "schema_version": 1,
+  "scope_audit": {
+    "all_other_existing_assertions_retained": true,
+    "artifact": "ls6-final-scoped-log-ownership-audit.json",
+    "existing_test_changes": [
+      "strict producer hash count 3 to 1",
+      "approved strict census 51 to 52",
+      "approved schema digest literal"
+    ],
+    "no_tasks_workflow_or_outside_packet_changes": true,
+    "no_tests_deleted_skipped_xfailed_or_deselected": true,
+    "runtime_artifact_hashes_verified": 86,
+    "schema_equality_and_no_observed_job_guard_retained": true,
+    "vibe_product_unchanged": true
+  },
+  "scope_boundary_proof": {
+    "before_3": {
+      "failed": 2,
+      "passed": 5
+    },
+    "comparison": "runtime-thumbnail-attempt-scope-comparison-1.json",
+    "head": {
+      "failed": 0,
+      "passed": 7
+    },
+    "preserved_authoring_history": [
+      "Before-1: seven unchanged-fixture setup errors at the real free-space reserve; no reserve override or test change.",
+      "Before-2: four pass and three fail; two retry helpers stopped at the newly authored incorrect HTTP403 expectation.",
+      "Parent authorized new-helper correction to exact HTTP401 plus unauthorized code, scope-denial message and tasks:write detail, matching the existing auth contract. Both source versions are archived.",
+      "Corrected before-3 and head use identical source. Both current-scope positives fail before and pass after; all five refusals pass in both runs."
+    ],
+    "protected_existing_boundary_file_sha256": "3633faaa2a0cecbb9fc32ca01253db1b6b6baa76ed6da797c4f1746af46f9f36",
+    "retry_preservation": "Actual owner retry retains task identity, changes attempt and increases fence; old log association rows remain exactly unchanged; current custody and idempotent replay are asserted.",
+    "test_file_sha256": "066f43bc656311d373f1090f18b18fc8988f1dc2cb34de264089978b43c86ba1"
+  },
+  "session": "r14-P55-12-1",
+  "source_commits_before_evidence": {
+    "VibeComfy": {
+      "local": "e6040e0ddc1e7e0c2d63cdd909379d8bb8ea5829",
+      "product_unchanged_in_retry_resume": true,
+      "published": "ecc5bc05ad55753883853fc7f56a3914f8f475a0",
+      "tree": "1bc5fb870ee77464aabd6c6a8f292de52146939c"
+    },
+    "astrid-agent": {
+      "local": "57ce2995d56416d07dec9b63594a90d60e63444c",
+      "local_product_commit": "dfcddd3fc7fec6a590f2b2cda2cbecb74659db78",
+      "product_tree": "d5d820b555aef88f13099b126d4e4dfdfd07180c",
+      "published": "33b7951e428e20484a1b49ee37e6353ed4a16fc5",
+      "published_product_commit": "1d6a02d39f30afe43f895cf4ee43412d0f3e818c",
+      "tree": "dfafcb0034dc6df67ced652cfebc9f0de7585c5c"
+    },
+    "astrid-runtime": {
+      "local": "2320d8e48df3d77a90bce29e1712c648d418cc69",
+      "published": "4323ef03f75334bc38c13d8fcb43b46368774d72",
+      "tree": "a54f4984a99dff377b7a89f5b426771b1310fcf3"
+    }
+  },
+  "source_publication_mapping": "retry-scope-product-publication.json",
+  "status": "READY FOR LEAD REVIEW: scoped thumbnail retry completes; 188 selected packet test IDs pass; isolated pins remain proposals pending Lead acceptance.",
+  "supersedes": {
+    "index": "approved-resume.json",
+    "previous_archive": "observations-approved-resume.zip",
+    "previous_archive_sha256": "98bb27ec037ad76d3eb539605a15018e96fca7866bb4a686ceeb342173893f30",
+    "previous_status": "BLOCKED: approved schema and descriptor corrections applied; restart/preview/dedup passes; successful retry settlement hits an immutable failed-attempt log association conflict.",
+    "resolution": "The unchanged protected retry test now passes with a fresh attempt-scoped log selector; prior BLOCKED observations remain preserved and are superseded for this packet status.",
+    "sha256": "cb3c4e2b0b2d378cbcef1445d4305e0db5f6de19f584ca6cc16aaf6d60e99a0a"
+  }
+}

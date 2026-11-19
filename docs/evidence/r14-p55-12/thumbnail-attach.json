@@ -1,0 +1,477 @@
+{
+  "agent_evidence_correction_commit": "6a49c5c38d9fa1fe117e926ab0c71e08c14750f4",
+  "agent_runtime_pin_proposal_commit": "90386873fc412bcb2956d15d0e2ff4df4d7eeb66",
+  "archive": {
+    "bytes": 165828,
+    "files": [
+      {
+        "bytes": 842,
+        "path": "agent-evidence-pin-after.json",
+        "sha256": "6ea3f756180ab7c5dd58b71d155ce4bdaf00728e61c60812052b085cf27f815f"
+      },
+      {
+        "bytes": 4263,
+        "path": "agent-evidence-pin-after.log",
+        "sha256": "3d0f23101f9715267cc9732d2ebb6ed896622f735b49ccbd941bd6a4035e024b"
+      },
+      {
+        "bytes": 5649,
+        "path": "agent-evidence-pin-after.xml",
+        "sha256": "b47d271cf0f6a1d140cafdbdacc29a6a5be75c171311319356167ff0e0a004c2"
+      },
+      {
+        "bytes": 803,
+        "path": "agent-evidence-pin-before-1.json",
+        "sha256": "cbbf8cbae67b159efa1d6507287fe6e937fc0a21a418413ca0615da8423ca09a"
+      },
+      {
+        "bytes": 1747,
+        "path": "agent-evidence-pin-before-1.log",
+        "sha256": "fd05786ec2c5dcc447a95d00c24395b11100698c53998d71b77c5ce973f3aef6"
+      },
+      {
+        "bytes": 2005,
+        "path": "agent-evidence-pin-before-1.xml",
+        "sha256": "d46ceba85d2c6b517c715eca39fcea93fbc1710acd69f30b8a3f87663f2100b8"
+      },
+      {
+        "bytes": 751,
+        "path": "agent-evidence-pin-before.json",
+        "sha256": "4e248ddd798ac75c3866e65505dcf0d174190d969bcd6c1756c714a9f905faaa"
+      },
+      {
+        "bytes": 462,
+        "path": "agent-evidence-pin-before.log",
+        "sha256": "d54c0f51b6ff04131f9932353b364dc9c871198328b0010b11510aa1f476eb12"
+      },
+      {
+        "bytes": 963,
+        "path": "agent-evidence-pin-coherent-after.json",
+        "sha256": "69106517d264b10a2a0984e843503af5eaa720ed0e521c94f79fabe96e2636b1"
+      },
+      {
+        "bytes": 592,
+        "path": "agent-evidence-pin-coherent-after.log",
+        "sha256": "03dfd61d6ec75dabf9bab57796981a1a79849cdad68f4243e677dbeb3d531eda"
+      },
+      {
+        "bytes": 2050,
+        "path": "agent-evidence-pin-coherent-after.xml",
+        "sha256": "4ca4c69d0ed2f6bd3a73eb841fc50bd5714d28689b499453b025ce0179adcffd"
+      },
+      {
+        "bytes": 967,
+        "path": "agent-evidence-pin-coherent-before.json",
+        "sha256": "dcba1d2359455cf1a21b9097cfdd7268ba99ed2399aa775f3c29e455de1203ca"
+      },
+      {
+        "bytes": 2251,
+        "path": "agent-evidence-pin-coherent-before.log",
+        "sha256": "5f4c193fa5737f75ca6072b13cdcd27b73bd5949171ff8c1b6be624ed9bf7be6"
+      },
+      {
+        "bytes": 3696,
+        "path": "agent-evidence-pin-coherent-before.xml",
+        "sha256": "532fdab4143ffdeb114244e6ee287c1f663a21e4e8ad8d79c30350f58608663f"
+      },
+      {
+        "bytes": 16695,
+        "path": "agent-thumbnail-authorized-after-astrid-runtime.patch",
+        "sha256": "dd3caaf56a34671edbf3802ba1d55ded40bfea9e56abc9080d7afb9c2c5a792a"
+      },
+      {
+        "bytes": 6370,
+        "path": "agent-thumbnail-authorized-after.json",
+        "sha256": "1d71a76bcf38f1733a992df9c909048902cbf3ae4d1c8bf6ac1f4c051bd69b28"
+      },
+      {
+        "bytes": 30516,
+        "path": "agent-thumbnail-authorized-after.log",
+        "sha256": "2ba463d73da41f81de9fffacffe1da813f30abdb5752e2e82d3907c39d430b9e"
+      },
+      {
+        "bytes": 28753,
+        "path": "agent-thumbnail-authorized-after.xml",
+        "sha256": "839aea474bf5c75941bfce32e1b701c2eefb0075baa0b168bbbf5e828845a494"
+      },
+      {
+        "bytes": 4998,
+        "path": "agent-thumbnail-authorized-before.json",
+        "sha256": "d7a7ca6434ace1110481c3ddbda7eaea939c83dece5cc098d2140d898b3b75f5"
+      },
+      {
+        "bytes": 30535,
+        "path": "agent-thumbnail-authorized-before.log",
+        "sha256": "8fac9cd6dc8bb7bae30a4ff0c1af815433a391dc91c0978bc5705eb7c2390790"
+      },
+      {
+        "bytes": 28779,
+        "path": "agent-thumbnail-authorized-before.xml",
+        "sha256": "113b456f9ea4fcbf8b659076d4f3ee0a170de21b36f17512b1e418ac8aa19d48"
+      },
+      {
+        "bytes": 2814,
+        "path": "ci-p55-20261118-SHA256SUMS",
+        "sha256": "3e9cad52504cfb7304d79594e03b890199319a889cc464645887ef12d5d16db3"
+      },
+      {
+        "bytes": 2769,
+        "path": "ci-p55-20261118-VibeComfy-135032158537.selected.log",
+        "sha256": "337a741e81113fefddc756ea1fb1a962f01eb418b1f2c8e1bba87aa55c860784"
+      },
+      {
+        "bytes": 3413,
+        "path": "ci-p55-20261118-VibeComfy-135032158676.selected.log",
+        "sha256": "370c63685756c57ee1052f48c0722bd8310c94d5ab9affd69ceb7221cc3ec5eb"
+      },
+      {
+        "bytes": 3493,
+        "path": "ci-p55-20261118-VibeComfy-135032159049.selected.log",
+        "sha256": "0e88915ecacc99ea437900b31d7aae5dd08a80597c64a48ecffb2b866cbe8c46"
+      },
+      {
+        "bytes": 2766,
+        "path": "ci-p55-20261118-VibeComfy-135032159282.selected.log",
+        "sha256": "b1d92c5080bf7d914bb297a8be638017dab5de6cba12a00a4099a62c09a9dc16"
+      },
+      {
+        "bytes": 3695,
+        "path": "ci-p55-20261118-astrid-agent-135032064844.selected.log",
+        "sha256": "b78d1fdb83805dc0a9befc811cd6308eda0c6996a226a3242788fbd659d118e3"
+      },
+      {
+        "bytes": 4223,
+        "path": "ci-p55-20261118-astrid-agent-135032186865.selected.log",
+        "sha256": "bdb69aca558c4e2f874ecb6784680ca4bfc71b73db7a21054d2cbab6d9027293"
+      },
+      {
+        "bytes": 4091,
+        "path": "ci-p55-20261118-astrid-agent-135032187452.selected.log",
+        "sha256": "65c9cf1888745a71189aad4f742a8e1dc8dfece1c8690af89018c5f3215eb72d"
+      },
+      {
+        "bytes": 3105,
+        "path": "ci-p55-20261118-astrid-agent-135032207185.selected.log",
+        "sha256": "c8594ab6e01e1dcdfdc3ce9bf64bf21d061a9706fe7b0f1aafccb575699c67f3"
+      },
+      {
+        "bytes": 11936,
+        "path": "ci-p55-20261118-astrid-agent-135032222137.selected.log",
+        "sha256": "b76d2e0aa389a25f4e5f2b97733e3625f1adb7af5503ced753142a750f1093ab"
+      },
+      {
+        "bytes": 4063,
+        "path": "ci-p55-20261118-astrid-agent-135032624933.selected.log",
+        "sha256": "416e423b481ca3078c3ecdf5e51a4d690e1620d61802d0975d5e9c816cbb79c9"
+      },
+      {
+        "bytes": 3953,
+        "path": "ci-p55-20261118-astrid-agent-135032625632.selected.log",
+        "sha256": "c817314ab1505acae9f37f393bc1396434b359e50c67acc78157a269e751e567"
+      },
+      {
+        "bytes": 3975,
+        "path": "ci-p55-20261118-astrid-agent-135032625684.selected.log",
+        "sha256": "10d641f695554066c56e3ef26c05f849971d449ab9a7942c5c3068e1ba02d893"
+      },
+      {
+        "bytes": 9232,
+        "path": "ci-p55-20261118-astrid-runtime-135032104172.selected.log",
+        "sha256": "af1494167b772535ed130f718350b9fa577b2e9e256a052a8abd2c0b59b948ac"
+      },
+      {
+        "bytes": 3722,
+        "path": "ci-p55-20261118-astrid-runtime-135032105253.selected.log",
+        "sha256": "28c7bcc068c5d29d76bb4c1c51eded6f87c62d7fab63af20d9a6d7867f8828ce"
+      },
+      {
+        "bytes": 43667,
+        "path": "ci-p55-20261118-astrid-runtime-135032307006.selected.log",
+        "sha256": "2477346dc71989738c23a60bac8b81b70d6564875c44d4a2bc94faf91d127d2b"
+      },
+      {
+        "bytes": 8150,
+        "path": "ci-p55-20261118-astrid-runtime-135032307430.selected.log",
+        "sha256": "38c93681cfeb5c9c2a6b41169b59173fcb0e60c3e82fff7e8934059af884fbc0"
+      },
+      {
+        "bytes": 51968,
+        "path": "ci-p55-20261118-astrid-runtime-135032307700.selected.log",
+        "sha256": "cf7eb11080a2d32408ddce71904d7d293e5a90c83f03f5cabad502c83df67147"
+      },
+      {
+        "bytes": 7625,
+        "path": "ci-p55-20261118-astrid-runtime-135032307749.selected.log",
+        "sha256": "1adc9ad299c99343190f825bbd65b91d37bfd631c9e25012094f21882e31b0a4"
+      },
+      {
+        "bytes": 56922,
+        "path": "ci-p55-20261118-astrid-runtime-135032307853.selected.log",
+        "sha256": "3a5bca4a332391f0d3ffb478c54fb94bc098bef63821b4c6bb030d8a7f541b00"
+      },
+      {
+        "bytes": 180113,
+        "path": "ci-p55-20261118-snapshot.json",
+        "sha256": "79ce56777909f992c4e03d33188922a499c447782c135d8abd35ef15d565ac64"
+      },
+      {
+        "bytes": 3119,
+        "path": "ci-p55-20261118-source-checks.json",
+        "sha256": "c86af5261c52bfa3027369143e7a743b2dfc2ce4c90c124a0d62ec23f92fa19e"
+      },
+      {
+        "bytes": 3183,
+        "path": "ci-p55-20261118-windows-native-failure.log",
+        "sha256": "1c2bb891142bc8e13642483e9668a0b0fa2d53a47c0582a53b9395d61dc94538"
+      },
+      {
+        "bytes": 23119,
+        "path": "ls6-final-test-ownership-audit.json",
+        "sha256": "7752e0d227d527afa5f1433b4855004e6314cdf6494336f07e587cb49d7bd866"
+      },
+      {
+        "bytes": 6689,
+        "path": "runtime-ci-projection-after.log",
+        "sha256": "3e3ac2241cafbc3b50d9a7241d34ab786bcab82256654cc77c32aa0c1cb89222"
+      },
+      {
+        "bytes": 7823,
+        "path": "runtime-ci-projection-after.xml",
+        "sha256": "73863985d3247fa959e021aa5eab4b178943cd9e3c073eca1b38fd308506202c"
+      },
+      {
+        "bytes": 7467,
+        "path": "runtime-ci-projection-before.log",
+        "sha256": "99cdbdd79241d4cc1321820b093c3ae2b2acba6d58eff4505f4bc589fe022522"
+      },
+      {
+        "bytes": 8843,
+        "path": "runtime-ci-projection-before.xml",
+        "sha256": "0177a52f8a367cef09554a10b26bb1c641cc51df1fe99ffa3a8d57e0d9ec1a0d"
+      },
+      {
+        "bytes": 98,
+        "path": "runtime-ci-projection-fixed.log",
+        "sha256": "91ec09eb878d8e298d6900045f27fe3d5646dbbf7052cf0bebcef22697c7f4c9"
+      },
+      {
+        "bytes": 522,
+        "path": "runtime-ci-projection-fixed.xml",
+        "sha256": "2adad759e90c7618768607e33bce10fa7337c95db4072bf36e035337656ef921"
+      },
+      {
+        "bytes": 2808,
+        "path": "runtime-thumbnail-final-preservation-1-before.json",
+        "sha256": "ce4455ac11ea3e57838099455991f7d3148dabd806a71fc422ad569625350399"
+      },
+      {
+        "bytes": 19204,
+        "path": "runtime-thumbnail-final-preservation-1.json",
+        "sha256": "3236993e1e52091dcdcb117de3679a8c3ed8eff67d04ef85ef99efcc87b908d0"
+      },
+      {
+        "bytes": 11837,
+        "path": "runtime-thumbnail-final-preservation-1.log",
+        "sha256": "1325e2baab73a1b39564aadbb25d4af178526212b87988df22c7124fca3d4a77"
+      },
+      {
+        "bytes": 14814,
+        "path": "runtime-thumbnail-final-preservation-1.xml",
+        "sha256": "9904c80cf7b53587d68741445311f5cf44cccd5978b47f486bc35efd5ca222d1"
+      },
+      {
+        "bytes": 8698,
+        "path": "runtime-thumbnail-log-before-1.log",
+        "sha256": "e8798b175d1162bd4ffd307bb23e40b13acde48dc99a5a5a52965d7608d4c309"
+      },
+      {
+        "bytes": 9078,
+        "path": "runtime-thumbnail-log-before-1.xml",
+        "sha256": "7c05f54937e3e03bb0d91fc01d78badb871747fd3cc57456ef3bb42fe9d647f2"
+      },
+      {
+        "bytes": 10041,
+        "path": "runtime-thumbnail-log-expanded-before-1.log",
+        "sha256": "f049dba39b708eb92e01d979e2193e93745112b25621290feeed7e83868d2be1"
+      },
+      {
+        "bytes": 10750,
+        "path": "runtime-thumbnail-log-expanded-before-1.xml",
+        "sha256": "0391614c186299b91b05423424c4ffa956e13c2b1d63f7a5608f1555d9883bae"
+      },
+      {
+        "bytes": 5047,
+        "path": "runtime-thumbnail-log-expanded-head-1.log",
+        "sha256": "451b2a9dc58283e5614cff7ea1b5fd083d43f2b1a11b3af9943d2035a7708fba"
+      },
+      {
+        "bytes": 5585,
+        "path": "runtime-thumbnail-log-expanded-head-1.xml",
+        "sha256": "2cf59c87923d09118b019093679e499fa4e10bce891ddd08f791929bae8b66b1"
+      },
+      {
+        "bytes": 10041,
+        "path": "runtime-thumbnail-log-final-before-1.log",
+        "sha256": "7b90b88000c8e07389b671f5e66c744a9edfbea4274a3557fc8bac3059d8cd9d"
+      },
+      {
+        "bytes": 10750,
+        "path": "runtime-thumbnail-log-final-before-1.xml",
+        "sha256": "817cf76292e4edf09391647387c389d4365064f1c94dbd37e2346a1606e12f06"
+      },
+      {
+        "bytes": 16657,
+        "path": "runtime-thumbnail-log-final-comparison-1.json",
+        "sha256": "6ec398cdc19eb3b1fc2a0eb41b77847e768b760b110bf27e740f5ab05efdcd07"
+      },
+      {
+        "bytes": 2935,
+        "path": "runtime-thumbnail-log-final-head-1.log",
+        "sha256": "064280d3eaba89e512e21e05d8ebcaa2825831533d3686c4678cbae23eeb1d1f"
+      },
+      {
+        "bytes": 3583,
+        "path": "runtime-thumbnail-log-final-head-1.xml",
+        "sha256": "af35ab3576a871414f429e72f6c9430d042fa9583fd20eeb649c6d8f12ef1f03"
+      },
+      {
+        "bytes": 5594,
+        "path": "runtime-ts-projection-regeneration.json",
+        "sha256": "c097ce971e0a2d93d45ae49b0f4614a58a998defbc686245fe99dd5f74284618"
+      },
+      {
+        "bytes": 1334,
+        "path": "thumbnail-final-source-identities.json",
+        "sha256": "11994ed2f6e3858340ab7357637fac9e60a7239c40ced87be330b1affca3ef42"
+      }
+    ],
+    "path": "observations-thumbnail-attach.zip",
+    "sha256": "73273326fb06748a474d748ff8db4ade4329039d1dcfc228d5e2429d0cc07b86"
+  },
+  "behavior": [
+    "Exactly one role=thumbnail output is selected independently of normal logs; the existing JPEG/source/project/recipe/provenance validator is unchanged.",
+    "Only canonical durable object/log outputs named job.stdout and job.stderr may accompany the thumbnail, once each, with their normal port, filename, variant and media type; creative metadata and other extras are refused.",
+    "Missing or second thumbnail and each tested noncanonical companion return HTTP422 without task completion, generation/variant mutation, output associations, object rows or CAS publication.",
+    "The two TypeScript conformance projections were regenerated from the existing generator. No test or generator template was edited.",
+    "Agent evidence references the immutable package-owned Vibe pin authority instead of introducing another tracked selector; historical raw identities remain in the archive."
+  ],
+  "blockers": [
+    {
+      "finding": "The installed Agent action emits is_primary:false; bind_thumbnail_output changes role to thumbnail but retains the creative field. Runtime correctly refuses any is_primary field on a thumbnail.",
+      "proposed_product_action": "Correct the packet-owned Agent descriptor adapter while retaining the Runtime guard and both tests; awaiting narrow Lead ruling.",
+      "request": "https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6989175158",
+      "unproved": [
+        "successful preview attachment after recovery",
+        "post-success deduplication",
+        "successful thumbnail retry completion"
+      ]
+    },
+    {
+      "action": "No test change; strict literal refresh or explicit failing-check disposition requested from Lead.",
+      "expected_literal": "sha256:e5a3c475c7c38b63ab363eed5298b39c6021d0c229525041d330adfcf31ff102",
+      "finding": "The unchanged test_observed_job_leaves_the_contract_schema_digest_unchanged fixes the prescribed base schema digest. The packet-required API additions legitimately change the schema digest.",
+      "generated_digest": "sha256:a313b20d28be310e53fe0abe8e2f06a5dde1894a2c4b348fcf0e25ec57dce348",
+      "request": "https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6989084311"
+    }
+  ],
+  "lead_authorization": "https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6987820252",
+  "observation_notes": [
+    "All historical checkpoint/resume archives remain unchanged. Agent resume.json changed only its two Vibe pin values to immutable authority references.",
+    "The new boundary test initially used an unavailable public name field. The corrected new assertion uses the public variant_key and adds exact persisted name/variant equality; every prior assertion remains. Its final identical-source before/head comparison is decisive. Earlier raw failures remain.",
+    "The initial Agent pin run lacked Runtime import paths; another preliminary full-file run lacked ASTRID_VIBECOMFY_CHECKOUT. Corrected coherent before/after runs use the same required environment. Earlier observations remain.",
+    "The intermediate runtime-ci-projection-after files precede the successful artifact correction and are failed uncorrected observations, not after-fix proof.",
+    "CI snapshot contains 12 workflows on the previously published heads and selected raw lines for 19 failed jobs. It is historical; no complete green CI claim is made for the new heads.",
+    "LS-8 and latency meter dependency-identity refusals remain NO-RESULT observations. Guards were not bypassed. Other unpaired CI failures are not asserted to be inherited.",
+    "Prior full-path hash counts and D14 evidence remain in observations-resume.zip; they were not rerun after this narrow log-classifier correction."
+  ],
+  "packet": "R14-P55-12",
+  "proposed_runtime_pin": "c7c42eb7ce781ab0880918d6f9fa4a1e6fdc4919",
+  "published_source_heads_before_evidence": {
+    "VibeComfy": {
+      "head": "b0165caa8ac26a64e8ba9cdc0c45c12bde58fea8",
+      "local_commit": "65ec30c69ce657a008ca6348955e78fb30608b6f",
+      "tree": "273eeb4eb560cd843ab236ffe918520707a2a040"
+    },
+    "astrid-agent": {
+      "head": "90386873fc412bcb2956d15d0e2ff4df4d7eeb66",
+      "local_commit": "d3c2dcf9c9d6c3a9efd15bf0af365e0182c1d60d",
+      "tree": "7e7040992dbee6d1b8ab70029a2cabfb699f74d4"
+    },
+    "astrid-runtime": {
+      "head": "c7c42eb7ce781ab0880918d6f9fa4a1e6fdc4919",
+      "local_commit": "d03e260670dedfe2e671c5edbc799f85512378a9",
+      "tree": "1205e50de599493a110978b9e0b85f494e5b0e23"
+    }
+  },
+  "results": {
+    "agent_pin_authority": {
+      "after_passed": 14,
+      "before_failed": 1,
+      "before_passed": 13,
+      "unchanged_test_sha256": "2f01f0876c165c69e05049b4b6f8a0a2873299dc837586d9dce2ba4942cd1a6d"
+    },
+    "new_http_boundary": {
+      "after": {
+        "failed": 0,
+        "passed": 20
+      },
+      "before": {
+        "failed": 1,
+        "passed": 19
+      },
+      "comparison": "runtime-thumbnail-log-final-comparison-1.json",
+      "same_node_ids": true,
+      "test_sha256": "3633faaa2a0cecbb9fc32ca01253db1b6b6baa76ed6da797c4f1746af46f9f36"
+    },
+    "preserved_runtime_settlement": {
+      "comparison": "runtime-thumbnail-final-preservation-1.json",
+      "existing_base_cases": 83,
+      "failed": 0,
+      "passed": 93,
+      "same_prior_node_ids_and_statuses": true
+    },
+    "typescript_generated_projection": {
+      "after_passed": 2,
+      "before_failed": 2,
+      "evidence": "runtime-ts-projection-regeneration.json"
+    },
+    "unchanged_agent_recovery": {
+      "after_error": "thumbnail output must not declare is_primary",
+      "after_evidence": "agent-thumbnail-authorized-after.json",
+      "after_result": {
+        "failed": 2
+      },
+      "before_error": "requires exactly one thumbnail settlement output",
+      "before_evidence": "agent-thumbnail-authorized-before.json",
+      "before_result": {
+        "failed": 2
+      },
+      "test_sha256": "25cbc33f4e0527279f6e1598df9b8d4873ecb4f43f98e53b907b33c69d9514ac"
+    }
+  },
+  "runtime_fix_commits": [
+    "ca7fcc09670902b2f6a5ebecf522fec00bfe0e95",
+    "c7c42eb7ce781ab0880918d6f9fa4a1e6fdc4919"
+  ],
+  "schema_version": 1,
+  "session": "r14-P55-12-1",
+  "status": "BLOCKED: Runtime log integration proven; unchanged installed-host recovery tests expose a second Agent descriptor mismatch.",
+  "test_and_scope_audit": {
+    "all_other_existing_test_bytes_preserved": true,
+    "artifact": "ls6-final-test-ownership-audit.json",
+    "existing_test_changes": [
+      "authorized delivery hash-count equality 3 to 1",
+      "Lead-approved census equality 51 to 52"
+    ],
+    "no_deleted_skipped_xfailed_or_deselected_tests": true,
+    "no_merge_rebase_or_outside_packet_changes": true,
+    "no_tasks_or_workflow_changes": true
+  },
+  "vibe_pin_authority": {
+    "commit": "2fdf06a903b0fecaf9f70f1453e993119dccfd5e",
+    "file_sha256": "3bd3c40448ad42b3283da5869cf5e549a51e29c5072305d426ba90a92f7d2b10",
+    "json_pointer": "/sources/vibecomfy/revision",
+    "path": "astrid/packs/vibecomfy/pins.json",
+    "repository": "banodoco/astrid-agent"
+  }
+}

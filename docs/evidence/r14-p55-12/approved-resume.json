@@ -1,0 +1,226 @@
+{
+  "archive": {
+    "bytes": 47632,
+    "files": [
+      {
+        "bytes": 10454,
+        "path": "recovery-approved-409-diagnosis.json",
+        "sha256": "53a3d9a69a904324d01990bc1f6ac30d0a9e9332e07a6f82c37342100aabfef8"
+      },
+      {
+        "bytes": 863,
+        "path": "recovery-approved-after-vs-before-astrid-agent.patch",
+        "sha256": "0e9010958d70dc2db39e3532e80742a852f28dd60e75a21456e5150817be9ca0"
+      },
+      {
+        "bytes": 696,
+        "path": "recovery-approved-after-vs-before-astrid-runtime.patch",
+        "sha256": "171002297b98bd641c9ca7bb9a0e0b26ae67f27c732cb585a60f071525f81e1e"
+      },
+      {
+        "bytes": 6779,
+        "path": "recovery-approved-after.json",
+        "sha256": "26523b56021630dd85bfef993d5059ba707820c835eb65115ff1a7fc2c9af98b"
+      },
+      {
+        "bytes": 18971,
+        "path": "recovery-approved-after.log",
+        "sha256": "3c7484e153869701c600ffae1dff22e722af61979bdb26b48230a89b8808b1a0"
+      },
+      {
+        "bytes": 13723,
+        "path": "recovery-approved-after.xml",
+        "sha256": "844cbb4b0a585957050fb834ff976bd1395fefb8a434a37ac4662669c3f37e09"
+      },
+      {
+        "bytes": 5930,
+        "path": "recovery-approved-before.json",
+        "sha256": "989cad1e01e3e92f601eab6b9d940ebb2e42f9706ad6738e025b3d33f78f46da"
+      },
+      {
+        "bytes": 30501,
+        "path": "recovery-approved-before.log",
+        "sha256": "e47e1efabd5bf4be44dbd1cfccf4d6c517322b219e91a16182aa63a12a21e91a"
+      },
+      {
+        "bytes": 28737,
+        "path": "recovery-approved-before.xml",
+        "sha256": "0224586f464d59a1274accf6641455453111cdbb5f4a784acc0cd8148a3a7c5f"
+      },
+      {
+        "bytes": 3420,
+        "path": "recovery-approved-comparison.json",
+        "sha256": "804778c247ddaf7daa86db0d0f5d7eba369046886cf16653a199130bbbf69151"
+      },
+      {
+        "bytes": 19002,
+        "path": "schema-adapter-approved-audit.json",
+        "sha256": "818c7c9969f288b31c4d0132943ef313c3c852ebbbf9d11b94b1f4173859fd2f"
+      },
+      {
+        "bytes": 98,
+        "path": "schema-approved-after.log",
+        "sha256": "20362a81bf4105ac9b50b20bf0a2d76c76b81572886928ac3f09de5e8026048a"
+      },
+      {
+        "bytes": 651,
+        "path": "schema-approved-after.xml",
+        "sha256": "bb873e527e7e802b752258e39ee60ff18ccc1bddc266762fa1597550c6aed9df"
+      },
+      {
+        "bytes": 71980,
+        "path": "schema-approved-before-test-file.py",
+        "sha256": "2cd601f3ba1f958f12fe8bcf75ae2d080f6810dfba6b5a4ecaca27c5365af668"
+      },
+      {
+        "bytes": 1036,
+        "path": "schema-approved-before.log",
+        "sha256": "5725047449f737664cfe4a831b3d670f3e2543a9b8a72a9f5059670237298852"
+      },
+      {
+        "bytes": 1266,
+        "path": "schema-approved-before.xml",
+        "sha256": "9657c8d6be0532bb1843bd304457976e19fca55d1a5eac859d8665950465ed4e"
+      },
+      {
+        "bytes": 665,
+        "path": "schema-approved-commit-message.txt",
+        "sha256": "5328e4f83dd2e509161f0e3884138debc760db6453ae7f05f3227adadff2332a"
+      },
+      {
+        "bytes": 136,
+        "path": "schema-approved-commit.log",
+        "sha256": "ad2e2690ce589e53185f7872dc7147a7bc309d45f40edb2eec5aece333a5bb4b"
+      },
+      {
+        "bytes": 7316,
+        "path": "schema-approved-evidence.json",
+        "sha256": "34dc838e3fe824b32725114ba1188e13f3be1adfcdb9c88c0d245a07e2920b73"
+      },
+      {
+        "bytes": 340,
+        "path": "schema-approved-generator.log",
+        "sha256": "cb32a05c21abf561ad5a7e45f2195a8c68232ed0e2a112432f31b5c1bc323b62"
+      }
+    ],
+    "path": "observations-approved-resume.zip",
+    "sha256": "98bb27ec037ad76d3eb539605a15018e96fca7866bb4a686ceeb342173893f30"
+  },
+  "authorized_adapter_commit": {
+    "adapter_sha256": "e06dd3232c3c9213dfe7f204b32e7e28eb1e083f91ee7ad0b1a86b8680684b17",
+    "change": "Remove is_primary after existing admitted effect/output checks, when converting the one result output to role=thumbnail.",
+    "protected_recovery_test_sha256_unchanged": "25cbc33f4e0527279f6e1598df9b8d4873ecb4f43f98e53b907b33c69d9514ac",
+    "published": "1850f8cee5374e9637a13c2733d62660aa08b126",
+    "runtime_store_sha256_unchanged": "12f8ab9f37a088803924be90cf070196948d094a185ede1ac8c456c37997ec06"
+  },
+  "authorized_schema_commit": {
+    "after_guard_and_unchanged_generator_tests": "3 passed, 0 failed/errors/skips",
+    "approved_literal": "sha256:a313b20d28be310e53fe0abe8e2f06a5dde1894a2c4b348fcf0e25ec57dce348",
+    "before_schema_guard": "1 expected failure",
+    "equality_chain_and_no_observed_job_function_byte_identical": true,
+    "evidence": "schema-approved-evidence.json",
+    "existing_generator_rerun": "Fresh contract-metadata.ts and generated.ts were byte-identical to the checked-in projections; no additional projection diff.",
+    "function_sha256": "8372a4eeee135d1fe5a0687dd767e2285af613d8826a00686322e6027d5cdc71",
+    "one_literal_substitution_only": true,
+    "published": "f108349eccafb3e7588d9fa5dbe94d2d6b990015",
+    "sequencing": "Landing this schema digest at release/14/main is ordered by the Lead with Plan 59 #838; this packet does not merge, modify #838, or change its ownership.",
+    "subject": "Refresh LS-6 schema baseline under Lead decision 6990340497"
+  },
+  "completed_proof": [
+    "Main SDK reply completes before thumbnail extraction.",
+    "Durable intent survives interruption between main settlement and thumbnail admission, followed by Runtime/host restart.",
+    "Normal installed task completes with exactly one attached preview and exact JPEG bytes, source binding and provenance.",
+    "Repeated successful reconciliation returns no work: one generation invocation, one extraction, two tasks and one preview association.",
+    "Thumbnail failure remains visible; no automatic retry or repeated generation; ordinary owner retry uses the same task with a new attempt and higher fence."
+  ],
+  "decision": "https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6990340497",
+  "limits": [
+    "Both recovery selectors remained executed. One now passes; the new retry failure is retained without expectation changes.",
+    "Recovery proof uses CPU fixture generation and an external-decoder substitute; authenticated Runtime HTTP, SDK following, installed action, native child custody and normal settlement are exercised.",
+    "Prior full-path hash, D14, streaming and refusal proof remains historical in the earlier archives. Final counter/stream/caller reruns are held at the new product stop.",
+    "No complete LS-6 or green-CI qualification claim; all three PRs remain drafts pending the retry product ruling.",
+    "Raw diagnosis contains selected relevant rows and normal request metadata only; no realm database or worker credentials are archived."
+  ],
+  "new_product_blocker": {
+    "action": "Stopped and requested Lead routing; no workaround, log suppression, immutability relaxation or test change.",
+    "diagnosis": "recovery-approved-409-diagnosis.json",
+    "diagnosis_method": "Read-only comparison of the saved normal request, selected original association/attempt rows and Runtime association code; differences are explicitly reconstructed rather than claimed as an error payload.",
+    "diagnosis_sha256": "53a3d9a69a904324d01990bc1f6ac30d0a9e9332e07a6f82c37342100aabfef8",
+    "error": "HTTP409: managed output association conflicts with existing immutable output",
+    "first_conflicting_output": {
+      "group_key": "default",
+      "name": "job.stdout",
+      "ordinal": 0,
+      "output_port": "logs",
+      "role": "log",
+      "variant_key": "job.stdout"
+    },
+    "observation": "The failed attempt retains its durable job.stdout/job.stderr associations. The retry reuses their task/selector identity with different immutable attempt/provenance ownership. The first stdout digest is unchanged empty content.",
+    "remaining_unproved": "Successful retry settlement and successful completion of the unchanged retry test.",
+    "report": "https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6990540255",
+    "rollback_observed": "Two tasks, one generation, one generator invocation, two decoder invocations; no committed preview association; retry task failed on attempt 2.",
+    "source_derived_immutable_difference": [
+      "attempt_id",
+      "generation_id",
+      "provenance_json"
+    ],
+    "stage": "The owner-authorized retry produces its JPEG successfully, but normal settlement is rejected."
+  },
+  "packet": "R14-P55-12",
+  "pins": {
+    "runtime_diff_from_pin": [
+      "docs/evidence/r14-p55-12/observations-thumbnail-attach.zip",
+      "docs/evidence/r14-p55-12/thumbnail-attach.json",
+      "tests/test_update_jobs.py"
+    ],
+    "runtime_product_bytes_match_pin": true,
+    "runtime_proposal_unchanged": "c7c42eb7ce781ab0880918d6f9fa4a1e6fdc4919",
+    "vibe_proposal_unchanged": {
+      "authority_commit": "2fdf06a903b0fecaf9f70f1453e993119dccfd5e",
+      "authority_path": "astrid/packs/vibecomfy/pins.json",
+      "authority_repository": "banodoco/astrid-agent",
+      "json_pointer": "/sources/vibecomfy/revision"
+    }
+  },
+  "recovery_after": {
+    "tests.core.execution.test_ls6_thumbnail_recovery::test_failed_thumbnail_is_visible_and_retry_does_not_repeat_generation": "failed",
+    "tests.core.execution.test_ls6_thumbnail_recovery::test_main_reply_precedes_thumbnail_and_restart_recovers_one_preview": "passed"
+  },
+  "recovery_before": {
+    "tests.core.execution.test_ls6_thumbnail_recovery::test_failed_thumbnail_is_visible_and_retry_does_not_repeat_generation": "failed",
+    "tests.core.execution.test_ls6_thumbnail_recovery::test_main_reply_precedes_thumbnail_and_restart_recovers_one_preview": "failed"
+  },
+  "recovery_comparison": "recovery-approved-comparison.json",
+  "schema_version": 1,
+  "scope_audit": {
+    "artifact": "schema-adapter-approved-audit.json",
+    "existing_test_changes": [
+      "authorized strict delivery count 3 to 1",
+      "approved strict capability census 51 to 52",
+      "approved fixed schema digest literal refresh"
+    ],
+    "no_tests_deleted_skipped_xfailed_or_deselected": true,
+    "no_workflow_tasks_merge_rebase_or_outside_packet_changes": true,
+    "protected_recovery_tests_unchanged": true,
+    "runtime_thumbnail_and_immutability_guards_unchanged": true
+  },
+  "session": "r14-P55-12-1",
+  "source_commits_before_evidence": {
+    "VibeComfy": {
+      "head": "053ed11c65c660bbcb34f17f129b627be6a4d419",
+      "local": "031723afeaddda2d489a8698002c1ce5df752d03",
+      "tree": "c3de1dd87d2f85212184d97b6c0ed17e303084ad"
+    },
+    "astrid-agent": {
+      "head": "1850f8cee5374e9637a13c2733d62660aa08b126",
+      "local": "22c84bfe724ee0f5d8c73ce9cea7b03dad637792",
+      "tree": "e33cb56eae76cfaf69943a221295855d9464aa74"
+    },
+    "astrid-runtime": {
+      "head": "f108349eccafb3e7588d9fa5dbe94d2d6b990015",
+      "local": "3034f04311d0b1e441afc6c08287b8d83e4481e4",
+      "tree": "db8981f41b6e6d8a54eeb325108782111de29b69"
+    }
+  },
+  "status": "BLOCKED: approved schema and descriptor corrections applied; restart/preview/dedup passes; successful retry settlement hits an immutable failed-attempt log association conflict."
+}
