@@ -650,9 +650,19 @@ def test_workflow_hook_evidence_keeps_pinned_relative_source_citations():
     assert run._workflow_hook_evidence(evidence) == evidence
 
 
+def test_workflow_hook_evidence_accepts_supported_rational_trim_and_null_legacy_view():
+    run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    evidence = {"reference_view": {"references": [{"occurrence": "performance", "modality": "video",
+        "trim": ["1/24", "49/24"]}]}}
+    assert run._workflow_hook_evidence(evidence) == evidence
+    assert run._workflow_hook_evidence({"reference_view": None}) == {"reference_view": None}
+
+
 @pytest.mark.parametrize("evidence", [
     {"reference_view": {"references": []}, "/tmp/escape": "value"},
     {"reference_view": {"references": [{"occurrence": "foo/bar", "modality": "video"}]}},
+    {"reference_view": {"references": [{"occurrence": "x", "modality": "video", "input_binding": False}]}},
+    {"reference_view": {"audio": {"requested_grants": [False]}}},
     {"reference_view": {"references": [{"retained_picture_frames_derived": {
         "rule_source": "ComfyUI@423cbd20511becb1f16122ab518e92e58bfa03d9:../../tmp/nodes.py:1-2"}}]}},
     {"reference_view": {"references": [False]}},
