@@ -836,10 +836,14 @@ def _compile_native_masked_edit(
     source_path = assets[source_id]
     still_source = request.value.get("version") == 2 and any(
         item.get("role") == "timeline" and item.get("modality") == "image" for item in request.value["media"])
+    implicit_still_grant = still_source and not any(
+        item.get("role") == "timeline" and any(edit.get("stream") == "video" for edit in item.get("edit", []))
+        for item in request.value["media"])
     if still_source:
         source_path = destination / "prepared-still-source.mkv"
         command = ["ffmpeg", "-v", "error", "-y", "-loop", "1", "-framerate", "24", "-i", str(assets[source_id]),
-                   "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-vf", "scale=1024:576:flags=lanczos,format=gbrp",
+                   "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+                   "-vf", f"scale={canvas_size[0]}:{canvas_size[1]}:flags=lanczos,format=gbrp",
                    "-frames:v", str(frame_load_cap), "-t", str(float(spec.duration)), "-fflags", "+bitexact",
                    "-flags:v", "+bitexact", "-flags:a", "+bitexact", "-c:v", "ffv1", "-pix_fmt", "gbrp",
                    "-c:a", "pcm_s16le", str(source_path)]
@@ -981,7 +985,7 @@ def _compile_native_masked_edit(
     for permission_path, kind, _, strength, _ in grant_masks:
         if strength <= 0:
             continue
-        if kind == "image":
+        if kind == "image" and not implicit_still_grant:
             bindings[f"permission_mask_{active_index}"] = permission_path
         active_index += 1
     destination.mkdir(parents=True, exist_ok=True)
