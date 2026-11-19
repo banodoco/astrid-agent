@@ -579,30 +579,20 @@ def _generation_task_refs(result: InvocationResult) -> dict[str, Any]:
     manifest = manifest or settled.get('manifest') or {}
     neutral = (manifest.get('managed_generation_result') or manifest
                if isinstance(manifest, Mapping) else {})
-    # Workflow hook evidence is sealed in the neutral managed-generation
-    # envelope by run.py. Runtime normally nests it under the output manifest;
-    # retain the direct settled evidence projection as a compatibility fallback.
-    evidence = neutral.get("evidence") if isinstance(neutral, Mapping) else None
-    if not isinstance(evidence, Mapping):
-        evidence = settled.get("evidence")
-    producer_evidence = evidence.get("producer") if isinstance(evidence, Mapping) else None
-    hook_evidence = producer_evidence.get("workflow_hook") if isinstance(producer_evidence, Mapping) else None
-    reference_view = hook_evidence.get("reference_view") if isinstance(hook_evidence, Mapping) else None
-    if reference_view is None:
-        # Publication readback carries only the bounded projection extracted
-        # from the hash-verified durable result-manifest object.
-        publication = raw.get("publication_readback")
-        publication_result = publication.get("result") if isinstance(publication, Mapping) else None
-        publication_payload = publication_result.get("payload") if isinstance(publication_result, Mapping) else None
-        hook_projection = (publication_payload.get("workflow_hook_evidence")
-                           if isinstance(publication_payload, Mapping) else None)
-        if isinstance(hook_projection, Mapping):
-            from astrid.core.contracts.managed_generation_result import validate_workflow_hook_evidence
-            try:
-                hook_projection = validate_workflow_hook_evidence(hook_projection)
-            except ValueError:
-                hook_projection = None
-            reference_view = hook_projection.get("reference_view") if isinstance(hook_projection, Mapping) else None
+    # Only invocation's validated named-publication readback projection is
+    # eligible; arbitrary result manifests and producer-supplied settled
+    # evidence do not establish custody.
+    settled_payload = settled.get("payload") if isinstance(settled, Mapping) else None
+    hook_projection = (settled_payload.get("workflow_hook_evidence")
+                       if isinstance(settled_payload, Mapping) else None)
+    reference_view = None
+    if isinstance(hook_projection, Mapping):
+        from astrid.core.contracts.managed_generation_result import validate_workflow_hook_evidence
+        try:
+            hook_projection = validate_workflow_hook_evidence(hook_projection)
+        except ValueError:
+            hook_projection = None
+        reference_view = hook_projection.get("reference_view") if isinstance(hook_projection, Mapping) else None
     if isinstance(reference_view, Mapping):
         refs["reference_view"] = deepcopy(dict(reference_view))
     # Prefer settled input refs to the request's immutable source descriptor.
@@ -710,19 +700,11 @@ def _reconstruct_generation_result(result: InvocationResult) -> Any:
     # H3's settled receipt carries the same self-contained reference view that
     # was sealed at dry run. Project it from the receipt without reopening any
     # producer scratch path (which may already have been deleted).
-    reference_view = generation_payload.get("reference_view")
+    reference_view = task_refs.get("reference_view")
     settled_manifest = generation_payload.get("manifest")
-    if reference_view is None and isinstance(settled_manifest, Mapping):
-        reference_view = settled_manifest.get("reference_view")
-    if reference_view is None:
-        for candidate in payload_candidates:
-            candidate_manifest = candidate.get("manifest")
-            if isinstance(candidate_manifest, Mapping) and isinstance(candidate_manifest.get("reference_view"), Mapping):
-                reference_view = candidate_manifest["reference_view"]
-                break
-            if isinstance(candidate.get("reference_view"), Mapping):
-                reference_view = candidate["reference_view"]
-                break
+    generation_payload.pop("reference_view", None)
+    if isinstance(settled_manifest, Mapping) and "reference_view" in settled_manifest:
+        settled_manifest = {key: value for key, value in settled_manifest.items() if key != "reference_view"}
     if isinstance(reference_view, Mapping):
         manifest = dict(settled_manifest) if isinstance(settled_manifest, Mapping) else {}
         manifest["reference_view"] = _json_safe_mapping(reference_view)

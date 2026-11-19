@@ -589,8 +589,13 @@ def test_workflow_hook_evidence_survives_materialization_and_sdk_readback_after_
         host_root, production, task_identity="task-1", attempt_identity="attempt-1",
         workflow_path=tmp_path / "absent.py", after_outputs=after_outputs,
     )
-    durable_evidence = manifest["managed_generation_result"]["evidence"]["producer"]["workflow_hook"]
-    settled_view = durable_evidence["reference_view"]
+    manifest_output = next(row for row in manifest["outputs"] if row["role"] == "manifest")
+    manifest_bytes = (host_root / manifest_output["path"]).read_bytes()
+    from astrid.core.execution._child_bridge import _workflow_hook_evidence_from_manifest
+    projected_evidence = _workflow_hook_evidence_from_manifest(
+        manifest_bytes, role=manifest_output["role"], media_type=manifest_output["media_type"],
+        output_port=manifest_output["output_port"])
+    settled_view = projected_evidence["reference_view"]
     assert [row["modality"] for row in settled_view["references"]] == ["image", "video"]
     video_row = next(row for row in settled_view["references"] if row["modality"] == "video")
     assert video_row["retained_picture_frames_derived"]["kind"] == "derived_pinned_node_rule"
@@ -605,8 +610,7 @@ def test_workflow_hook_evidence_survives_materialization_and_sdk_readback_after_
     result = InvocationResult(
         "vibecomfy.run", "executor", "command", True, kernel_task_id="task-1",
         raw_result={"task": {"task_id": "task-1", "state": "succeeded", "result": {
-            "payload": {"manifest": {"managed_generation_result":
-                manifest["managed_generation_result"]}}}}},
+            "payload": {"workflow_hook_evidence": projected_evidence}}}},
     )
     settled = _reconstruct_generation_result(result)
     assert settled.manifest["reference_view"] == settled_view
@@ -617,6 +621,7 @@ def test_workflow_hook_evidence_survives_materialization_and_sdk_readback_after_
     {"reference_view": {"note": "file:///tmp/private/reference.mp4"}},
     {"reference_view": {"note": "copied from C:\\Users\\private\\reference.mp4"}},
     {"reference_view": {"note": "copied from \\\\server\\share\\reference.mkv"}},
+    {"reference_view": {"note": "relative Windows locator ..\\private\\reference.mp4"}},
     {"reference_view": {"note": "scratch at /var/tmp/private.json"}},
     {"reference_view": {"bound_path": "private"}},
 ])

@@ -18,6 +18,7 @@ import tempfile
 import time
 import uuid
 from collections.abc import Mapping
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -3268,6 +3269,61 @@ def _read_task_managed_outputs(
     }
 
 
+def _read_h3_workflow_hook_evidence(client: Any, rows: Any, *, task_id: str,
+                                    run_id: str, attempt_id: str) -> dict[str, Any] | None:
+    """Resolve and authenticate the direct SDK result-manifest association."""
+    if not isinstance(rows, (list, tuple)):
+        return None
+    for row in rows:
+        if hasattr(row, "__dataclass_fields__"):
+            row = asdict(row)
+        if not isinstance(row, Mapping) or row.get("output_port") != "result_manifest":
+            continue
+        # Runtime-owned result-manifest custody is exact to this settled attempt.
+        if (row.get("role") != "manifest" or row.get("media_type") != "application/json"
+                or row.get("task_id") != task_id or row.get("run_id") != run_id
+                or row.get("attempt_id") != attempt_id or row.get("durability") != "durable"
+                or not isinstance(row.get("lifecycle"), Mapping)
+                or row["lifecycle"].get("state") not in {"available", "promoted"}):
+            raise CapabilityInvocationError("result manifest association failed custody verification")
+        object_id, digest, size = row.get("object_id"), row.get("digest"), row.get("size")
+        if (not isinstance(object_id, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", object_id)
+                or digest != object_id or type(size) is not int or size < 0):
+            raise CapabilityInvocationError("result manifest association has invalid byte identity")
+        # Large or unreadable manifests can omit the optional view while keeping
+        # the generation result usable. A failed byte identity is a custody error.
+        if size > 8 * 1024 * 1024:
+            return None
+        try:
+            response = client.get_object(object_id.removeprefix("sha256:"))
+            data = response.data if hasattr(response, "data") else response
+        except Exception as exc:
+            raise CapabilityInvocationError("result manifest bytes could not be read") from exc
+        if (not isinstance(data, bytes) or len(data) != size
+                or "sha256:" + hashlib.sha256(data).hexdigest() != digest):
+            raise CapabilityInvocationError("result manifest bytes failed digest verification")
+        try:
+            envelope = json.loads(data)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        if not isinstance(envelope, Mapping):
+            return None
+        managed = envelope.get("managed_generation_result", envelope)
+        if not isinstance(managed, Mapping) or managed.get("kind") != "managed-generation-result.v1":
+            return None
+        evidence = managed.get("evidence")
+        producer = evidence.get("producer") if isinstance(evidence, Mapping) else None
+        hook = producer.get("workflow_hook") if isinstance(producer, Mapping) else None
+        if hook is None:
+            return None
+        from astrid.core.contracts.managed_generation_result import validate_workflow_hook_evidence
+        try:
+            return validate_workflow_hook_evidence(hook)
+        except ValueError:
+            return None
+    return None
+
+
 _MANAGED_OUTPUT_SETTLE_SECONDS = 10.0
 _MANAGED_OUTPUT_SETTLE_POLL_SECONDS = 0.5
 
@@ -3843,6 +3899,30 @@ def _observe_task_invocation(
             raw_result["ok"] = False
             raw_result["error"] = read_error
             ok = False
+    if settled_success and ok and capability_id == "vibecomfy.run":
+        workflow_evidence = _read_h3_workflow_hook_evidence(
+            client, raw_result.get("managed_outputs"), task_id=task_id,
+            run_id=run_id, attempt_id=attempt_id or "")
+        if workflow_evidence is not None:
+            settled_task = raw_result.get("task")
+            if isinstance(settled_task, Mapping):
+                settled_task = dict(settled_task)
+                settled_result = settled_task.get("result")
+                settled_result = dict(settled_result) if isinstance(settled_result, Mapping) else {}
+                settled_payload = settled_result.get("payload")
+                settled_payload = dict(settled_payload) if isinstance(settled_payload, Mapping) else {}
+                settled_payload["workflow_hook_evidence"] = workflow_evidence
+                settled_result["payload"] = settled_payload
+                settled_task["result"] = settled_result
+                raw_result["task"] = settled_task
+            settled = raw_result.get("result")
+            if isinstance(settled, Mapping):
+                settled = dict(settled)
+                root_payload = settled.get("payload")
+                root_payload = dict(root_payload) if isinstance(root_payload, Mapping) else {}
+                root_payload["workflow_hook_evidence"] = workflow_evidence
+                settled["payload"] = root_payload
+                raw_result["result"] = settled
     if ok and settled_success and isinstance(raw_result.get("managed_outputs"), list):
         # Each row carries its handle and, for result media, a viewable local
         # copy-on-write view (deterministic per digest).

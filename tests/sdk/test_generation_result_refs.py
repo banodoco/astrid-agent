@@ -109,12 +109,60 @@ def test_settled_reference_view_is_reconstructed_without_spool_paths():
         "trim": [1, 3], "tag": "<Video 1>",
         "input_binding": {"binding": "video_reference_0", "port": "ref_videos.ref_video_0"},
         "retained_picture_frames_estimate": {"value": 47, "kind": "metadata_upper_bound", "observed": False}}]}
-    fixture.result.raw_result['task']['result']['evidence'] = {
-        "producer": {"workflow_hook": {"reference_view": reference_view}}, "transport": {},
-    }
+    fixture.result.raw_result['task']['result']['payload'] = {"workflow_hook_evidence": {
+        "reference_view": reference_view,
+    }}
     fixture.result.raw_result['task']['result']['manifest_path'] = '/deleted/spool/result.json'
 
     result = _reconstruct_generation_result(fixture.result)
 
     assert result.manifest["reference_view"] == reference_view
     assert "/deleted/spool" not in str(result.to_dict())
+
+
+def test_untrusted_manifest_reference_view_is_not_projected():
+    fixture = terminal()
+    fixture.result.raw_result['task']['result']['payload'] = {"manifest": {
+        "reference_view": {"references": [{"occurrence": "/tmp/private.mp4"}]},
+    }}
+    result = _reconstruct_generation_result(fixture.result)
+    assert "reference_view" not in result.manifest
+
+
+def test_direct_h3_manifest_cas_readback_authenticates_and_survives_scratch_cleanup(tmp_path):
+    import hashlib
+    import json
+    from types import SimpleNamespace
+
+    from astrid.sdk.invocation import _read_h3_workflow_hook_evidence
+    from astrid.sdk.exceptions import CapabilityInvocationError
+
+    view = {"references": [{"occurrence": "performance", "modality": "video",
+        "retained_picture_frames_estimate": {"value": 47, "kind": "metadata_upper_bound", "observed": False}}]}
+    data = json.dumps({"kind": "managed-generation-result.v1", "evidence": {
+        "producer": {"workflow_hook": {"reference_view": view}}}}).encode()
+    scratch = tmp_path / "managed-generation-result.json"
+    scratch.write_bytes(data)
+    digest = "sha256:" + hashlib.sha256(data).hexdigest()
+    association = {"task_id": "task-1", "run_id": "run-1", "attempt_id": "attempt-1",
+        "output_port": "result_manifest", "role": "manifest", "media_type": "application/json",
+        "durability": "durable", "lifecycle": {"state": "available"},
+        "object_id": digest, "digest": digest, "size": len(data)}
+    client = SimpleNamespace(get_object=lambda object_id: SimpleNamespace(data=data))
+    scratch.unlink()
+
+    projected = _read_h3_workflow_hook_evidence(client, [association], task_id="task-1",
+                                                 run_id="run-1", attempt_id="attempt-1")
+    assert projected == {"reference_view": view}
+    fixture = terminal()
+    fixture.result.raw_result["task"]["run_id"] = "run-1"
+    fixture.result.raw_result["task"]["attempt_id"] = "attempt-1"
+    fixture.result.raw_result["task"]["result"]["payload"] = {
+        "workflow_hook_evidence": projected,
+    }
+    assert _reconstruct_generation_result(fixture.result).manifest["reference_view"] == view
+
+    with pytest.raises(CapabilityInvocationError, match="digest verification"):
+        bad_client = SimpleNamespace(get_object=lambda object_id: SimpleNamespace(data=data + b"!"))
+        _read_h3_workflow_hook_evidence(bad_client, [association], task_id="task-1",
+                                        run_id="run-1", attempt_id="attempt-1")

@@ -3752,13 +3752,13 @@ def test_output_over_retention_limit_rejects_before_cas_read():
 
 def test_verified_result_manifest_projects_workflow_hook_evidence_to_readback():
     """Only a digest-verified durable manifest can supply the bounded view."""
-    payload = json.dumps({"managed_generation_result": {"kind": "managed-generation-result.v1",
+    payload = json.dumps({"kind": "managed-generation-result.v1",
         "evidence": {"producer": {"workflow_hook": {
-            "reference_view": {"references": [], "target_frame_cap": 17}}}}}}).encode()
+            "reference_view": {"references": [], "target_frame_cap": 17}}}}}).encode()
     oid = digest(payload)
     row = {"association_id": "association", "task_id": "child-task", "run_id": "child-run",
            "project_id": "project", "attempt_id": "child-attempt", "durability": "durable",
-           "lifecycle": {"state": "available"}, "role": "final", "object_id": oid,
+           "lifecycle": {"state": "available"}, "role": "manifest", "object_id": oid,
            "digest": oid, "size": len(payload), "output_port": "result_manifest",
            "media_type": "application/json", "filename": "result.json", "ordinal": 0}
     settled_output = {"kind": "object", "digest": oid, "size": len(payload),
@@ -3785,6 +3785,17 @@ def test_verified_result_manifest_projects_workflow_hook_evidence_to_readback():
         kernel_task_id="child-task", raw_result={"task": {"task_id": "child-task",
             "result": {"payload": {"workflow_hook_evidence": captured}}}})
     assert _generation_task_refs(result)["reference_view"] == captured["reference_view"]
+
+
+def test_oversized_optional_workflow_view_is_omitted_from_publication_frame():
+    from astrid.core.execution._child_bridge import _bounded_publication_result
+
+    canonical = {"payload": {}, "outputs": [], "generation_publish_v1": {
+        "effect_type": "generation.publish_v1", "publications": []}}
+    view = {"reference_view": {"references": [{"occurrence": "x" * 600_000}]}}
+    bounded = _bounded_publication_result(canonical,
+        evidence_task={"task_id": "child-task"}, publication_rows=[], workflow_hook_evidence=view)
+    assert bounded == canonical
 
 
 @pytest.mark.parametrize("size", [64 * 1024 * 1024, 5 * 1024 ** 3 + 1])

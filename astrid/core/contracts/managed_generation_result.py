@@ -392,6 +392,31 @@ def validate_workflow_hook_evidence(value: Any) -> dict[str, Any]:
     list_context = {("view", "references"): "reference", ("audio", "requested_grants"): "grant",
                     ("audio", "expected_delivered_sample_spans"): "span",
                     ("audio", "actual_delivered_sample_spans"): "span"}
+    typed_fields = {
+        ("view", "references"): list, ("view", "target_frame_cap"): int,
+        ("reference", "occurrence"): str, ("reference", "modality"): str,
+        ("reference", "trim"): list, ("reference", "tag"): str,
+        ("input_binding", "binding"): str, ("input_binding", "port"): str,
+        ("input_binding", "start_time"): (int, float), ("input_binding", "frame_load_cap"): int,
+        ("input_binding", "audio"): (str, bool), ("input_binding", "soundtrack"): bool,
+        ("input_binding", "resolved_range"): list, ("soundtrack", "port"): str,
+        ("soundtrack", "tag"): str, ("estimate", "value"): (int, float),
+        ("estimate", "kind"): str, ("estimate", "observed"): bool,
+        ("effective_size", "width"): int, ("effective_size", "height"): int,
+        ("derived", "value"): int, ("derived", "status"): str, ("derived", "kind"): str,
+        ("derived", "reason"): str, ("derived", "input_frame_count"): int,
+        ("derived", "input_sha256"): str, ("derived", "basis"): str,
+        ("derived", "conformance"): str, ("derived", "target_frame_cap"): int,
+        ("derived", "alignment"): str, ("derived", "rule_source"): str,
+        ("derived", "loader_source"): str, ("derived", "decoder_source"): str,
+        ("audio", "requested_grants"): list, ("audio", "effective_40hz_mask"): dict,
+        ("audio", "decoded_frame_mask"): list, ("audio", "expected_delivered_sample_spans"): list,
+        ("audio", "actual_delivered_sample_spans"): list, ("grant", "samples"): list,
+        ("grant", "strength"): (int, float), ("grant", "use"): str,
+        ("grant", "occurrences"): list, ("effective_40hz_mask", "values"): list,
+        ("effective_40hz_mask", "basis"): str, ("effective_40hz_mask", "precision"): int,
+        ("span", "samples"): list, ("span", "source"): str,
+    }
     citations = {
         "rule_source": "ComfyUI@6bfaacc67c2103481e5f0c84d75257cd0581d86a:comfy_extras/nodes_minimax_h3.py:324-332",
         "loader_source": "ComfyUI-VideoHelperSuite@4ee72c065db22c9d96c2427954dc69e7b908444b:videohelpersuite/load_video_nodes.py:216-246",
@@ -400,6 +425,7 @@ def validate_workflow_hook_evidence(value: Any) -> dict[str, Any]:
     locator_patterns = (
         r"(?i)file://|https?://",
         r"(?i)(?:^|[\s\"'=])(?:[a-z]:[\\/]|\\\\)",
+        r"(?i)(?:^|[\s\"'=])(?:\.{1,2}[\\/]|[a-z0-9_.-]+\\[a-z0-9_.-]+(?:\\|$))",
         r"(?<![A-Za-z0-9])/(?:[^/\s]+/)*[^/\s]+",
         r"(?<![A-Za-z0-9])(?:[A-Za-z_.-]+/)+[A-Za-z0-9_.-]+(?:\b|$)",
         r"(?i)\b[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+\.(?:mp4|mkv|mov|webm|wav|flac|png|jpe?g|json|zip|py)(?:\b|:)",
@@ -410,6 +436,10 @@ def validate_workflow_hook_evidence(value: Any) -> dict[str, Any]:
             if set(item) - field_sets[context]:
                 raise ManagedGenerationResultError(f"workflow hook evidence has an unsupported field at {where}")
             for key, child in item.items():
+                expected_type = typed_fields.get((context, key))
+                if expected_type is not None and (type(child) not in expected_type if isinstance(expected_type, tuple)
+                                                   else type(child) is not expected_type):
+                    raise ManagedGenerationResultError(f"workflow hook evidence has an invalid value at {where}.{key}")
                 if key in citations:
                     if child != citations[key]:
                         raise ManagedGenerationResultError(f"workflow hook evidence has an unpinned citation at {where}.{key}")
