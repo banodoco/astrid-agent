@@ -140,6 +140,18 @@ def test_non_h3_capability_cannot_mint_workflow_reference_view():
     assert "reference_view" not in result.manifest
 
 
+def test_preconstructed_generation_result_cannot_retain_untrusted_reference_view():
+    from astrid.core.generation import GENERATION_RESULT_KEY
+
+    produced = GenerationResult.from_dict({"manifest": {
+        "reference_view": {"references": [{"occurrence": "/tmp/private.mp4"}]},
+    }})
+    invocation = InvocationResult("vibecomfy.run", "executor", "command", True,
+        raw_result={"payload": {GENERATION_RESULT_KEY: produced}})
+    result = _reconstruct_generation_result(invocation)
+    assert "reference_view" not in result.manifest
+
+
 def test_direct_h3_manifest_cas_readback_authenticates_and_survives_scratch_cleanup(tmp_path):
     import hashlib
     import json

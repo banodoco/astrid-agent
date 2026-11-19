@@ -1066,7 +1066,7 @@ class HostChildBridge:
             reply = {"v": 1, "request_id": self._sequence, "ok": True, "data": public}
             reply_size = len(json.dumps(reply, sort_keys=True, separators=(",", ":"),
                                         ensure_ascii=False, allow_nan=False).encode("utf-8")) + 1
-            if reply_size > _MAX_FRAME:
+            if reply_size - 1 > _MAX_FRAME - 1024:
                 canonical = dict(canonical)
                 canonical["payload"] = {key: value for key, value in canonical["payload"].items()
                                         if key != "workflow_hook_evidence"}

@@ -684,7 +684,9 @@ def _reconstruct_generation_result(result: InvocationResult) -> Any:
         )
     if isinstance(generation_payload, generation_result_type):
         if not managed_outputs and not task_refs:
-            return generation_payload
+            object_manifest = getattr(generation_payload, "manifest", None)
+            if not isinstance(object_manifest, Mapping) or "reference_view" not in object_manifest:
+                return generation_payload
         generation_payload = generation_payload.to_dict()
     if not isinstance(generation_payload, Mapping):
         raise CapabilityRuntimeError(
