@@ -59,10 +59,10 @@ def parse_reports(log: Path, *, instrumented: bool, samples: int) -> list[dict]:
         if not isinstance(outputs, list) or not outputs:
             raise ValueError("missing delivered output")
         for item in outputs:
-            if (type(item.get("bytes")) is not int or item["bytes"] <= 0
+            if (type(item.get("bytes")) is not int or item["bytes"] != 1048576
                     or len(item.get("sha256", "")) != 64
                     or any(c not in "0123456789abcdef" for c in item["sha256"])
-                    or item.get("dimensions") != [16, 16]):
+                    or item.get("dimensions") != [1024, 1024]):
                 raise ValueError("incomplete verified output identity")
         if row.get("attached_http_paths", {}).get("POST /prompt") != 1:
             raise ValueError("first job must submit exactly once")
@@ -114,6 +114,9 @@ def main() -> int:
     summary = {"schema": "astrid.ls12-first-job-proof.v1", "status": "NO-RESULT",
                "platform": platform.platform(), "python": sys.version, "budget_certified": False,
                "scope": "attached CPU stand-in; first generation after Runtime/host admission; setup outside caller clock",
+               "workload": {"dimensions": [1024, 1024], "bytes": 1048576,
+                            "fixture_blob": "8f8b3ce67e9b4a7f3a6afa2a816385661f4487af",
+                            "qualification": "Lead 6997218519: median AND slowest of 20; queue time retained"},
                "native_flushes": None, "latency": None, "counters": None}
     try:
         for phase, count in (("latency", args.samples), ("counters", args.counter_samples)):
@@ -143,6 +146,7 @@ def main() -> int:
             [row["overhead_seconds"] for row in summary["latency"] if row["caller"] == caller], limit)
             for caller in sorted(CALLERS)}
         qualified = args.samples == 20 and all(row["median_under_limit"] and row["p99_under_limit"]
+                                             and row["slowest"] < limit
                                              for row in summary["distributions"].values())
         summary["budget_certified"] = qualified
         summary["status"] = "PASS" if qualified else "D1-NOT-MET"

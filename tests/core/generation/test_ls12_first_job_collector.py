@@ -14,7 +14,7 @@ def _row(caller):
             "attached_http_paths": {"POST /prompt": 1},
             "drive_controls": {"product_defaults": True},
             "proof": {"measured_task_id": caller, "verified_states": ["succeeded"],
-                      "outputs": [{"bytes": 82, "sha256": "a" * 64, "dimensions": [16, 16]}]}}
+                      "outputs": [{"bytes": 1048576, "sha256": "a" * 64, "dimensions": [1024, 1024]}]}}
 
 
 def test_first_job_overhead_retains_queue_wait(tmp_path):
@@ -23,6 +23,39 @@ def test_first_job_overhead_retains_queue_wait(tmp_path):
     rows = parse_reports(path, instrumented=False, samples=1)
     assert [row["overhead_seconds"] for row in rows] == pytest.approx([2.4, 2.4])
     assert all(row["queue_time_subtracted"] is False for row in rows)
+
+
+def test_d1_rejects_the_tiny_standing_meter_payload(tmp_path):
+    rows = [_row(c) for c in CALLERS]
+    for row in rows:
+        row["proof"]["outputs"][0].update(bytes=82, dimensions=[16, 16])
+    path = tmp_path / "log"
+    path.write_text("\n".join(PREFIX + json.dumps(row) for row in rows))
+    with pytest.raises(ValueError, match="verified output identity"):
+        parse_reports(path, instrumented=False, samples=1)
+
+
+def test_d1_accepts_the_owner_one_megapixel_workload(tmp_path):
+    rows = [_row(c) for c in CALLERS]
+    for row in rows:
+        row["proof"]["outputs"][0].update(bytes=1048576, dimensions=[1024, 1024])
+    path = tmp_path / "log"
+    path.write_text("\n".join(PREFIX + json.dumps(row) for row in rows))
+    reports = parse_reports(path, instrumented=False, samples=1)
+    assert len(reports) == len(CALLERS)
+    assert all(row["overhead_seconds"] == pytest.approx(2.4) for row in reports)
+
+
+@pytest.mark.parametrize("dimensions,size", [([1, 1], 1048576), ([1024, 1024], 82),
+                                           ([1024, 1024], 1048575), ([1024, 512], 1048576)])
+def test_d1_requires_both_image_dimensions_and_byte_volume(tmp_path, dimensions, size):
+    rows = [_row(c) for c in CALLERS]
+    for row in rows:
+        row["proof"]["outputs"][0].update(bytes=size, dimensions=dimensions)
+    path = tmp_path / "log"
+    path.write_text("\n".join(PREFIX + json.dumps(row) for row in rows))
+    with pytest.raises(ValueError, match="verified output identity"):
+        parse_reports(path, instrumented=False, samples=1)
 
 
 @pytest.mark.parametrize("defect", ["missing", "duplicate", "warmup", "nonfinite", "output", "queue", "mode", "submit"])

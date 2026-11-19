@@ -20,6 +20,10 @@ from tests._local_speed_process import (
     MAX_REPORT_BYTES, PREFIX, ProcessObserver, read_reports, sources,
 )
 from tests.integrations.local_speed_sources import tuple_sources  # noqa: F401
+# Byte-identical to dev 9a7ae543 releases/14/evidence/ls1/image_fixture.py
+# (Git blob 8f8b3ce67e9b4a7f3a6afa2a816385661f4487af).
+from tests.integrations.ls12_image_fixture import make_image
+from tests.integrations import runpod_slot_pod
 from tests.integrations.test_local_speed_meter import AttachedMeter
 from tests.integrations.test_runpod_slot_path_cpu import _drive
 from tests.integrations.test_workflow_file_placements_cpu import INPUTS, _workflow_file
@@ -79,13 +83,17 @@ def test_first_attached_job_observation(
     connection = tmp_path / "prepared-connection.json"
     workflow = _workflow_file()
     instrumented = os.environ.get("ASTRID_LS12_OBSERVE") == "1"
+    # Keep the standing LS-2 fixture unchanged. This first-job cell uses the
+    # owner's 1024x1024, 1 MiB PNG for the complete caller-local delivery path.
+    expected_payload = make_image(f"ls12:{caller}:{sample_index}:{instrumented}")
+    original_media = runpod_slot_pod._media
+    monkeypatch.setattr(runpod_slot_pod, "_media", lambda kind:
+                        (expected_payload, "image/png") if kind == "images" else original_media(kind))
     if instrumented:
         capture = ProcessReportCapture(PREFIX, max_report_bytes=MAX_REPORT_BYTES).install(monkeypatch)
-        from tests.integrations.runpod_slot_pod import _media
-        payload = _media("images")[0]
         hashes, observer = sources()
         meter.observer = ProcessObserver(
-            {hashlib.sha256(payload).hexdigest(): len(payload)}, "parent_runtime_host_sdk",
+            {hashlib.sha256(expected_payload).hexdigest(): len(expected_payload)}, "parent_runtime_host_sdk",
             hash_source=hashes, observer_source=observer,
         )
         meter.observer.start()
@@ -150,6 +158,9 @@ def test_first_attached_job_observation(
                 dimensions = list(image.size)
                 image.verify()
             payload = path.read_bytes()
+            assert dimensions == [1024, 1024]
+            assert len(payload) == 1048576
+            assert payload == expected_payload, "caller-local image differs from the owner's D1 payload"
             outputs.append({"filename": path.name, "bytes": len(payload),
                             "sha256": hashlib.sha256(payload).hexdigest(), "dimensions": dimensions})
         report = meter.report()
