@@ -57,51 +57,6 @@ def _child_wire_id(*, project_id: str | None, parent_task_id: str,
     return "child-v1-" + hashlib.sha256(_strict_json(preimage)).hexdigest()
 
 
-def _workflow_hook_evidence_from_manifest(data: bytes, *, role: str, media_type: str,
-                                          output_port: str) -> dict[str, Any]:
-    """Project only the bounded hook view from a durable managed result object."""
-    if role != "manifest" or media_type != "application/json" or output_port != "result_manifest":
-        return {}
-    if len(data) > 8 * 1024 * 1024:
-        return {}
-    try:
-        envelope = json.loads(data)
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return {}
-    if not isinstance(envelope, Mapping):
-        return {}
-    managed = envelope.get("managed_generation_result", envelope)
-    if not isinstance(managed, Mapping) or managed.get("kind") != "managed-generation-result.v1":
-        return {}
-    evidence = managed.get("evidence")
-    producer = evidence.get("producer") if isinstance(evidence, Mapping) else None
-    hook = producer.get("workflow_hook") if isinstance(producer, Mapping) else None
-    if hook is None:
-        return {}
-    from astrid.core.contracts.managed_generation_result import validate_workflow_hook_evidence
-    try:
-        return validate_workflow_hook_evidence(hook)
-    except ValueError as exc:
-        raise ChildBridgeError("managed result contains invalid workflow hook evidence") from exc
-
-
-def _bounded_publication_result(canonical: dict[str, Any], *, evidence_task: dict[str, Any],
-                                publication_rows: list[dict[str, Any]],
-                                workflow_hook_evidence: Mapping[str, Any]) -> dict[str, Any]:
-    """Attach optional evidence only when the whole public frame still fits."""
-    if not workflow_hook_evidence:
-        return canonical
-    candidate = dict(canonical)
-    candidate["payload"] = {**canonical["payload"],
-                             "workflow_hook_evidence": dict(workflow_hook_evidence)}
-    candidate_task = {**evidence_task, "result": candidate}
-    readback = {"version": 1, "task": candidate_task, "result": candidate,
-                "managed_outputs": publication_rows}
-    size = len(json.dumps(readback, sort_keys=True, separators=(",", ":"),
-                          ensure_ascii=False, allow_nan=False).encode("utf-8"))
-    return candidate if size <= _MAX_FRAME - 1024 else canonical
-
-
 @dataclass(frozen=True)
 class AdmittedChildSnapshot:
     child_key: str
@@ -1035,11 +990,9 @@ class HostChildBridge:
                          for declaration in publications.values()))
         if not named and not read_outputs:
             return public
-        captured_evidence: dict[str, Any] = {}
         if outputs is None:
             publication_rows = [] if named else None
-            outputs = self._outputs(task, publication_rows=publication_rows,
-                                    capture_evidence=captured_evidence if named else None)
+            outputs = self._outputs(task, publication_rows=publication_rows)
         public["result"]["outputs"] = outputs
         if not named:
             return public
@@ -1054,27 +1007,11 @@ class HostChildBridge:
         evidence_task = {field: task.get(field) for field in
                          ("project_id", "generation_intent", "expected_effect")}
         evidence_task.update({field: public[field] for field in ("task_id", "run_id", "attempt_id", "state")})
-        canonical = _bounded_publication_result(canonical, evidence_task=evidence_task,
-                                                publication_rows=publication_rows or [],
-                                                workflow_hook_evidence=captured_evidence)
         evidence_task["result"] = canonical
         public["publication_readback"] = _validate_publication_readback(
             {"version": 1, "task": evidence_task, "result": canonical,
              "managed_outputs": publication_rows}, task_id=public["task_id"], run_id=public["run_id"],
             attempt_id=public["attempt_id"], managed_outputs=outputs)
-        if "workflow_hook_evidence" in canonical["payload"]:
-            reply = {"v": 1, "request_id": self._sequence, "ok": True, "data": public}
-            reply_size = len(json.dumps(reply, sort_keys=True, separators=(",", ":"),
-                                        ensure_ascii=False, allow_nan=False).encode("utf-8")) + 1
-            if reply_size - 1 > _MAX_FRAME - 1024:
-                canonical = dict(canonical)
-                canonical["payload"] = {key: value for key, value in canonical["payload"].items()
-                                        if key != "workflow_hook_evidence"}
-                evidence_task["result"] = canonical
-                public["publication_readback"] = _validate_publication_readback(
-                    {"version": 1, "task": evidence_task, "result": canonical,
-                     "managed_outputs": publication_rows}, task_id=public["task_id"], run_id=public["run_id"],
-                    attempt_id=public["attempt_id"], managed_outputs=outputs)
         return public
 
     @staticmethod
@@ -1104,7 +1041,6 @@ class HostChildBridge:
         return result
 
     def _outputs(self, task: dict[str, Any], *, capture: dict[str, Any] | None = None,
-                 capture_evidence: dict[str, Any] | None = None,
                  publication_rows: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
         if task.get("state", task.get("status")) not in {"completed", "succeeded"}:
             raise ChildBridgeError("child is not successfully settled")
@@ -1188,10 +1124,6 @@ class HostChildBridge:
                 raise ChildBridgeError("child output bytes failed verification")
             if resource(self.client.child_output(association)) != row:
                 raise ChildBridgeError("child output association changed during readback")
-            if capture_evidence is not None:
-                capture_evidence.update(_workflow_hook_evidence_from_manifest(
-                    data, role=row.get("role"), media_type=row.get("media_type"),
-                    output_port=row.get("output_port")))
             if row.get("role") == "log":
                 continue
             # Return managed CAS descriptors, never private lineage or lease.

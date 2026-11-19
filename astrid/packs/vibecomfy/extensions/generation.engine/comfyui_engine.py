@@ -21,8 +21,7 @@ class _ComfyUIValidationError(ValueError):
 _WORKFLOWS: dict[Any, list[Any]] = {}
 
 
-def _call_hook(hook: Any, *args: Any, check_runtime: bool | None = None,
-               workflow_hook_evidence: bool | None = None) -> Any:
+def _call_hook(hook: Any, *args: Any, check_runtime: bool | None = None) -> Any:
     """Call a workflow hook; one that declares an ``engine`` parameter is given the engine's facts."""
     import inspect
     parameters = inspect.signature(hook).parameters
@@ -32,8 +31,6 @@ def _call_hook(hook: Any, *args: Any, check_runtime: bool | None = None,
         kwargs['engine'] = comfyui_facts()
     if check_runtime is not None and 'check_runtime' in parameters:
         kwargs['check_runtime'] = check_runtime
-    if workflow_hook_evidence is True and 'workflow_hook_evidence' in parameters:
-        kwargs['workflow_hook_evidence'] = True
     return hook(*args, **kwargs)
 
 
@@ -265,8 +262,7 @@ class ComfyUIEngine:
         after_outputs = (job.get("hooks") or {}).get("after_outputs")
         if after_outputs is None:
             return outputs
-        return _call_hook(after_outputs, _job_dir(job), job.get("inputs", {}), job.get("files", {}), outputs,
-                          workflow_hook_evidence=job.get("workflow_hook_evidence"))
+        return _call_hook(after_outputs, _job_dir(job), job.get("inputs", {}), job.get("files", {}), outputs)
 
     def dry_run(self, job: Any) -> Any:
         """Build only; nothing is aligned, started or submitted. The plan is what the caller prints."""
