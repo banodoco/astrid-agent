@@ -522,6 +522,9 @@ def _v2_mask_schedule(
 
     for item in value["media"]:
         if item["role"] == "timeline":
+            if item.get("modality") == "image":
+                baselines["video"].append([0, 1 / 24])
+                continue
             start = float(item["resolved_at"]["value"]) / 24.0
             raw_range = item.get("range")
             span = (
@@ -652,6 +655,13 @@ def prepare_request(
         warnings.append({"limit": "job_duration_seconds", "message": duration_limits["warning"]})
     if request.value.get("version") == 2:
         assets = _resolve_assets(request, asset_map)
+        for item in request.value["media"]:
+            if item.get("role") == "timeline" and item.get("modality") == "image":
+                frame = LIMITS["timeline_image_frame"]["value"]
+                if item["resolved_at"]["value"] != frame:
+                    raise PreparationError(f"timeline image frame: only frame {frame} is supported by this lowering")
+                if item.get("edit") or item.get("hard") or item.get("latent_pin"):
+                    raise PreparationError("timeline image lowering does not support explicit edits or anchors")
         conditioning_measurements = _admit_conditioning(request, assets, warnings)
         if branch_for(request) == "source_free" and not request.value["media"]:
             warnings.append({"limit": "text_only_documented_use", "message": "Text-only generation is outside the documented use of the Ref2VA checkpoint."})

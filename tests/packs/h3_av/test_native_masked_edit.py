@@ -1019,3 +1019,44 @@ def test_fractional_pre_splice_duplicates_mono_context_for_stereo_fixed_pcm(tmp_
     mask = manifest["capabilities"]["audio_time_mask"]["requested_frame_values"]
     assert mask[:12] == [0] * 12
     assert mask[12:24] == [0.5] * 12
+
+@pytest.mark.ffmpeg
+def test_timeline_still_uses_source_backed_generation_and_exact_first_frame(tmp_path):
+    import subprocess
+    from PIL import Image
+    from astrid.packs.h3_av.shared.compose import compose_candidate, _decode_exact_pcm
+    from astrid.packs.h3_av.shared.prepare import prepare_request, PreparationError
+    from tests.packs.h3_av.test_moving_masks import _fixtures
+    from vibecomfy.cli_loader import load_workflow_any
+
+    still = tmp_path / "still.png"
+    Image.new("RGB", (1024, 576), (12, 210, 35)).save(still)
+    _, generated = _fixtures(tmp_path)
+    raw = {"version": 2, "duration": 1, "prompt": "Animate", "media": [
+        {"asset": "still", "role": "timeline", "modality": "image", "at": {"frame": 0}}]}
+    preparation = prepare_request(normalize_request(raw), asset_map={"still": str(still)})
+    manifest = compile_preparation(preparation, out_dir=tmp_path / "compiled")
+    source = tmp_path / "compiled" / "prepared-still-source.mkv"
+    assert source.is_file()
+    mask = manifest["capabilities"]["audio_time_mask"]
+    assert all(value == 1 for value in mask["decoded_frame_values"])
+    api = load_workflow_any(manifest["workflow"]["workflow.py"]["path"]).compile(
+        "api", run_inputs=manifest["workflow_inputs"])
+    v2v = next(row for row in api.values() if row["class_type"] == "H3V2VGranularFractionalDenoise")
+    assert v2v["inputs"]["audio_strength"] == 0
+    assert any(row["class_type"] == "MiniMaxH3SetAVNoiseMask" for row in api.values())
+    result = compose_candidate(preparation=preparation, generated=generated, source=source, out_dir=tmp_path / "composed")
+    def frames(path):
+        return subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-vf", "scale=1024:576:flags=lanczos,format=gbrp,format=rgb24", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], check=True, capture_output=True).stdout
+    original, standin, actual = map(frames, (source, generated, result["candidate"]["path"]))
+    size = 1024 * 576 * 3
+    assert len(original) == 24 * size
+    assert original[:size] != standin[:size]
+    assert actual[:size] == original[:size]
+    assert actual[size:2 * size] == standin[size:2 * size]
+    delivered, channels = _decode_exact_pcm(Path(result["candidate"]["path"]))
+    soundtrack, _ = _decode_exact_pcm(generated, expected_channels=channels, generated=True)
+    assert delivered == soundtrack[:len(delivered)]
+    raw["media"][0]["at"] = {"frame": 1}
+    with pytest.raises(PreparationError, match="timeline image frame"):
+        prepare_request(normalize_request(raw), asset_map={"still": str(still)})

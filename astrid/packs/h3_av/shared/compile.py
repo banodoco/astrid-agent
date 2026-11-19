@@ -239,6 +239,12 @@ def _with_v2_intent(inputs: Any, request: H3Request) -> Any:
                            "strength": float(edit.get("strength", 1)),
                            "seed": edit.get("seed", inputs.sampling["seed"]),
                            "references": [occurrence_by_id[name] for name in edit["guides"]] if "guides" in edit else [row["occurrence"] for row in inputs.conditioning]})
+    for item in placed:
+        if item.get("role") == "timeline" and item.get("modality") == "image":
+            for stream, interval in (("video", [1 / 24, value["duration"]]), ("audio", [0, value["duration"]])):
+                grants.append({"stream": stream, "interval": interval, "source_occurrence": item["occurrence_id"],
+                               "region_raster": None, "strength": 1.0, "seed": inputs.sampling["seed"],
+                               "references": [row["occurrence"] for row in inputs.conditioning] if stream == "video" else []})
     if not any(item.get("role") == "timeline" for item in value["media"]):
         grants.append({"stream": "av", "interval": [0, value["duration"]], "source_occurrence": None,
                        "region_raster": None, "strength": 1, "seed": inputs.sampling["seed"],
@@ -793,7 +799,20 @@ def _compile_native_masked_edit(
             _combined_strength_mask([(mask_path, "video", (0, frame_load_cap), operation.strength, grant_masks[0][4])],
                                     frames=frame_load_cap, destination=destination)
     mask_binding = "video_mask_0" if mask_kind == "video" else "mask_0"
-    bindings: dict[str, Path] = {"source_video": assets[source_id], mask_binding: mask_path}
+    source_path = assets[source_id]
+    still_source = request.value.get("version") == 2 and any(
+        item.get("role") == "timeline" and item.get("modality") == "image" for item in request.value["media"])
+    if still_source:
+        source_path = destination / "prepared-still-source.mkv"
+        command = ["ffmpeg", "-v", "error", "-y", "-loop", "1", "-framerate", "24", "-i", str(assets[source_id]),
+                   "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-vf", "scale=1024:576:flags=lanczos,format=gbrp",
+                   "-frames:v", str(frame_load_cap), "-t", str(float(spec.duration)), "-c:v", "ffv1", "-pix_fmt", "gbrp",
+                   "-c:a", "pcm_s16le", str(source_path)]
+        try:
+            subprocess.run(command, check=True, capture_output=True)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise CompilationError(f"could not prepare timeline still source: {exc}") from exc
+    bindings: dict[str, Path] = {"source_video": source_path, mask_binding: mask_path}
     generated_audio = []
     fixed_audio_spans = []
     for item in audio_passes:
@@ -831,7 +850,8 @@ def _compile_native_masked_edit(
             raw_frames = generation_timing(spec.duration)["raw_frames"]
         except ValueError as exc:
             raise CompilationError(str(exc)) from exc
-        path, requested_mask, decoded_mask = _audio_time_mask(generated_audio, fixed_audio_spans,
+        mask_grants = [(0, raw_frames * 2000, 1.0)] if still_source else generated_audio
+        path, requested_mask, decoded_mask = _audio_time_mask(mask_grants, fixed_audio_spans,
                                                                frames=raw_frames, destination=destination)
         bindings["audio_time_mask"] = path
         audio_mask_values = {"format": "FFV1 gbrp16le 8x8 uniform RGB, red channel", "precision": "1/65535",

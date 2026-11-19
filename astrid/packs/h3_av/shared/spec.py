@@ -540,12 +540,13 @@ def _from_v2(request: H3Request) -> H3Spec:
     regions: list[Region] = []
     if timelines:
         item = timelines[0]
+        is_still = item.get("modality") == "image" and item["resolved_at"]["value"] == 0
         if (
-            item.get("modality") != "video"
+            not is_still and (item.get("modality") != "video"
             or item["resolved_at"]["value"] != 0
             or "range" not in item
             or item.get("hard")
-            or "latent_pin" in item
+            or "latent_pin" in item)
         ):
             _fail(
                 "unsupported_source",
@@ -553,7 +554,10 @@ def _from_v2(request: H3Request) -> H3Spec:
                 "media",
                 "Use one bounded video without hard anchors",
             )
-        source = Source(item["asset"], tuple(_fraction(t, "media.range") for t in item["range"]), item["occurrence_id"], item.get("id", item["occurrence_id"]))
+        source = Source(item["asset"], (Fraction(0), _fraction(value["duration"], "duration")) if is_still else tuple(_fraction(t, "media.range") for t in item["range"]), item["occurrence_id"], item.get("id", item["occurrence_id"]))
+        if is_still:
+            ops.extend([Operation("regenerate", (Fraction(1, 24), _fraction(value["duration"], "duration")), refs=tuple(names.values()), stream="video"),
+                        Operation("regenerate", (Fraction(0), _fraction(value["duration"], "duration")), stream="audio")])
         for edit in item["edit"]:
             if (
                 set(edit) - {"stream", "during", "resolved", "action", "mask", "guides", "channels", "strength", "seed"}
