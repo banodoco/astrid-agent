@@ -806,7 +806,8 @@ def _compile_native_masked_edit(
         source_path = destination / "prepared-still-source.mkv"
         command = ["ffmpeg", "-v", "error", "-y", "-loop", "1", "-framerate", "24", "-i", str(assets[source_id]),
                    "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-vf", "scale=1024:576:flags=lanczos,format=gbrp",
-                   "-frames:v", str(frame_load_cap), "-t", str(float(spec.duration)), "-c:v", "ffv1", "-pix_fmt", "gbrp",
+                   "-frames:v", str(frame_load_cap), "-t", str(float(spec.duration)), "-fflags", "+bitexact",
+                   "-flags:v", "+bitexact", "-flags:a", "+bitexact", "-c:v", "ffv1", "-pix_fmt", "gbrp",
                    "-c:a", "pcm_s16le", str(source_path)]
         try:
             subprocess.run(command, check=True, capture_output=True)

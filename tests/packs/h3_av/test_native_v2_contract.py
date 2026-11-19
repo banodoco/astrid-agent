@@ -610,3 +610,34 @@ def test_v1_edit_continue_and_separate_av_semantics_remain_in_the_parent_contrac
     assert continuation.value["operation"] == "continue"
     assert _authoritative_source_asset_id(edit) == "source.mp4"
     assert _authoritative_source_asset_id(continuation) == "source.mp4"
+
+
+@pytest.mark.ffmpeg
+def test_timeline_still_public_plan_and_build(tmp_path, capsys):
+    from astrid.packs.h3_av.cli import main
+    from astrid.packs.h3_av.shared.spec import canonical_spec, normalize_spec
+    from astrid.packs.h3_av.shared.stages import compile_stages
+
+    still = tmp_path / "still.png"
+    Image.new("RGB", (1024, 576), (17, 93, 201)).save(still)
+    raw = {"version": 2, "duration": 1, "prompt": "Animate", "media": [
+        {"asset": "still", "role": "timeline", "modality": "image", "at": {"frame": 0}}]}
+    request = normalize_request(raw, asset_modalities={"still": "image"})
+    spec = normalize_spec(canonical_spec(request), asset_modalities={"still": "image"})
+    assert spec.source.modality == "image"
+    request_path, map_path = tmp_path / "request.json", tmp_path / "assets.json"
+    request_path.write_text(json.dumps(raw))
+    map_path.write_text(json.dumps({"still": str(still)}))
+    assert main(["plan", "--spec", str(request_path), "--asset-map", str(map_path), "--out", str(tmp_path / "plan")]) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["runtime_submission"] == "eligible"
+    assert plan["pass_count"] == 1
+    _, preparation, compilation = compile_stages(request, {"still": str(still)}, tmp_path / "build")
+    assert preparation["status"] == "prepared"
+    assert compilation["status"] == "compiled"
+    source = tmp_path / "build" / "compile" / "prepared-still-source.mkv"
+    assert source.is_file()
+    _, _, repeated = compile_stages(request, {"still": str(still)}, tmp_path / "build-again")
+    repeated_source = tmp_path / "build-again" / "compile" / "prepared-still-source.mkv"
+    assert source.read_bytes() == repeated_source.read_bytes()
+    assert compilation["compilation_digest"] == repeated["compilation_digest"]

@@ -404,6 +404,8 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
                 clock = FPS if modality == "video" else Fraction(SAMPLE_RATE)
                 occurrence["range"], occurrence["resolved_range"] = _interval(item["range"], f"{path}.range", clock)
         else:
+            if modality == "image" and item.get("latent_pin"):
+                raise H3RequestError(f"{path}.latent_pin is unsupported for timeline images")
             if "at" not in item: raise H3RequestError(f"{path}.at is required for timeline media")
             at, at_frame = _at(item["at"], f"{path}.at")
             occurrence.update({"at": at, "resolved_at": {"unit": "frames", "value": at_frame}, "hard": item.get("hard", False), "edit": []})

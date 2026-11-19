@@ -1026,12 +1026,15 @@ def test_timeline_still_uses_source_backed_generation_and_exact_first_frame(tmp_
     from PIL import Image
     from astrid.packs.h3_av.shared.compose import compose_candidate, _decode_exact_pcm
     from astrid.packs.h3_av.shared.prepare import prepare_request, PreparationError
-    from tests.packs.h3_av.test_moving_masks import _fixtures
     from vibecomfy.cli_loader import load_workflow_any
 
     still = tmp_path / "still.png"
-    Image.new("RGB", (1024, 576), (12, 210, 35)).save(still)
-    _, generated = _fixtures(tmp_path)
+    pixels = bytes((x * 7 + y * 13 + channel * 71) % 256 for y in range(576) for x in range(1024) for channel in range(3))
+    Image.frombytes("RGB", (1024, 576), pixels).save(still)
+    generated = tmp_path / "standin.mkv"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=1024x576:rate=24",
+                    "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-frames:v", "24",
+                    "-t", "1", "-c:v", "ffv1", "-pix_fmt", "gbrp", "-c:a", "pcm_s16le", str(generated)], check=True)
     raw = {"version": 2, "duration": 1, "prompt": "Animate", "media": [
         {"asset": "still", "role": "timeline", "modality": "image", "at": {"frame": 0}}]}
     preparation = prepare_request(normalize_request(raw), asset_map={"still": str(still)})
@@ -1051,12 +1054,25 @@ def test_timeline_still_uses_source_backed_generation_and_exact_first_frame(tmp_
     original, standin, actual = map(frames, (source, generated, result["candidate"]["path"]))
     size = 1024 * 576 * 3
     assert len(original) == 24 * size
+    assert original[:size] == pixels
+    assert standin[:size] != standin[size:2 * size]
     assert original[:size] != standin[:size]
-    assert actual[:size] == original[:size]
+    assert actual[:size] == pixels
     assert actual[size:2 * size] == standin[size:2 * size]
     delivered, channels = _decode_exact_pcm(Path(result["candidate"]["path"]))
     soundtrack, _ = _decode_exact_pcm(generated, expected_channels=channels, generated=True)
+    silence, source_channels = _decode_exact_pcm(source)
+    assert len(silence) == 48000 * source_channels * 2 and not any(silence)
+    assert len(delivered) == 48000 * channels * 2
     assert delivered == soundtrack[:len(delivered)]
     raw["media"][0]["at"] = {"frame": 1}
     with pytest.raises(PreparationError, match="timeline image frame"):
         prepare_request(normalize_request(raw), asset_map={"still": str(still)})
+
+
+def test_timeline_still_rejects_latent_pin():
+    from astrid.packs.h3_av.shared.request import H3RequestError
+    raw = {"version": 2, "duration": 1, "prompt": "Animate", "media": [
+        {"asset": "still", "role": "timeline", "modality": "image", "at": {"frame": 0}, "latent_pin": True}]}
+    with pytest.raises(H3RequestError, match="latent_pin"):
+        normalize_request(raw)

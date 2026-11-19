@@ -28,6 +28,7 @@ class Source:
     range: tuple[Fraction, Fraction]
     occurrence_id: str | None = field(default=None, compare=False)
     name: str = field(default="__source__", compare=False)
+    modality: str = field(default="video", compare=False)
 
 
 @dataclass(frozen=True)
@@ -395,10 +396,9 @@ def _normalize_spec(
                 "id": spec.source.name,
                 "asset": spec.source.asset,
                 "role": "timeline",
-                "modality": "video",
+                "modality": spec.source.modality,
                 "at": {"frame": 0},
-                "range": list(spec.source.range),
-                "edit": edits,
+                **({} if spec.source.modality == "image" else {"range": list(spec.source.range), "edit": edits}),
             },
         )
     positions = {ref.authored_id or ref.name: ref.occurrence_id for ref in refs.values()}
@@ -554,9 +554,9 @@ def _from_v2(request: H3Request) -> H3Spec:
                 "media",
                 "Use one bounded video without hard anchors",
             )
-        source = Source(item["asset"], (Fraction(0), _fraction(value["duration"], "duration")) if is_still else tuple(_fraction(t, "media.range") for t in item["range"]), item["occurrence_id"], item.get("id", item["occurrence_id"]))
+        source = Source(item["asset"], (Fraction(0), _fraction(value["duration"], "duration")) if is_still else tuple(_fraction(t, "media.range") for t in item["range"]), item["occurrence_id"], item.get("id", item["occurrence_id"]), "image" if is_still else "video")
         if is_still:
-            ops.extend([Operation("regenerate", (Fraction(1, 24), _fraction(value["duration"], "duration")), refs=tuple(names.values()), stream="video"),
+            ops.extend([Operation("regenerate", (Fraction(1, 24), _fraction(value["duration"], "duration")), refs=tuple(ref.name for ref in refs if ref.use != "replacement"), stream="video"),
                         Operation("regenerate", (Fraction(0), _fraction(value["duration"], "duration")), stream="audio")])
         for edit in item["edit"]:
             if (
