@@ -1,0 +1,30 @@
+{
+  "method": "read-only source comparison of original workflow commands and checkout inputs",
+  "original_run_steps": 255,
+  "byte_identical": 230,
+  "observer_arguments_only": 25,
+  "new_if_not_cancelled_test_steps": 38,
+  "existing_product_tests_changed": false,
+  "dependency_pins_changed": false,
+  "workflow_checkout_inputs_changed": false,
+  "by_repo": {
+    "astrid-agent": {
+      "base": "ffb24b83d501e7d01ccd9cab123b665881e70d88",
+      "original_run_steps": 125,
+      "byte_identical": 110,
+      "observer_arguments_only": 15
+    },
+    "astrid-runtime": {
+      "base": "81ca7713896335402663e4f21dd5e1b17e5247ac",
+      "original_run_steps": 56,
+      "byte_identical": 50,
+      "observer_arguments_only": 6
+    },
+    "astrid-app": {
+      "base": "1e109f982c5a1bb0cd54c92bfa99835b7ca12e8b",
+      "original_run_steps": 74,
+      "byte_identical": 70,
+      "observer_arguments_only": 4
+    }
+  }
+}

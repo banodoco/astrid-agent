@@ -1,0 +1,113 @@
+{
+  "validator": "actionlint v1.7.7",
+  "command": [
+    "actionlint",
+    "-shellcheck=",
+    "-pyflakes=",
+    "-oneline",
+    ".github/workflows/chat.yml",
+    ".github/workflows/ci.yml",
+    ".github/workflows/lanes.yml",
+    ".github/workflows/windows-journey.yml",
+    ".github/workflows/failure-ceiling.yml"
+  ],
+  "exit": 0,
+  "output": "",
+  "scope": "All packet workflow files; external shellcheck/pyflakes are disabled because this check validates Actions schema and expression contexts.",
+  "prior_failure": "GitHub rejected expressions in steps.shell before creating native jobs; prior implementation checkpoint is unqualified.",
+  "core_implementation_unchanged": true,
+  "matrix_environment_explicit_for_every_captured_job": true,
+  "captured_jobs": [
+    {
+      "workflow": ".github/workflows/chat.yml",
+      "job": "windows-launchers",
+      "matrix": null
+    },
+    {
+      "workflow": ".github/workflows/chat.yml",
+      "job": "chat",
+      "matrix": null
+    },
+    {
+      "workflow": ".github/workflows/lanes.yml",
+      "job": "integration",
+      "matrix": {
+        "group": [
+          1,
+          2,
+          3,
+          4
+        ]
+      }
+    },
+    {
+      "workflow": ".github/workflows/lanes.yml",
+      "job": "opt-in",
+      "matrix": null
+    },
+    {
+      "workflow": ".github/workflows/lanes.yml",
+      "job": "installed",
+      "matrix": null
+    },
+    {
+      "workflow": ".github/workflows/ci.yml",
+      "job": "windows-native-and-installer",
+      "matrix": null
+    },
+    {
+      "workflow": ".github/workflows/ci.yml",
+      "job": "checks",
+      "matrix": null
+    },
+    {
+      "workflow": ".github/workflows/ci.yml",
+      "job": "unit-shard",
+      "matrix": {
+        "os": [
+          "ubuntu-latest"
+        ],
+        "group": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8
+        ]
+      }
+    },
+    {
+      "workflow": ".github/workflows/ci.yml",
+      "job": "darwin-native",
+      "matrix": null
+    },
+    {
+      "workflow": ".github/workflows/ci.yml",
+      "job": "release",
+      "matrix": {
+        "python-version": [
+          "3.11",
+          "3.12"
+        ]
+      }
+    },
+    {
+      "workflow": ".github/workflows/ci.yml",
+      "job": "boundary",
+      "matrix": null
+    },
+    {
+      "workflow": ".github/workflows/windows-journey.yml",
+      "job": "windows-journey",
+      "matrix": {
+        "installer-shell": [
+          "powershell.exe",
+          "pwsh.exe"
+        ]
+      }
+    }
+  ]
+}

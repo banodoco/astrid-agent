@@ -1,0 +1,8 @@
+test_cancelled_workflow_rejects_the_same_complete_receipts (__main__.HostedWorkflowTests.test_cancelled_workflow_rejects_the_same_complete_receipts) ... ok
+test_completed_failure_workflows_keep_complete_receipts_eligible (__main__.HostedWorkflowTests.test_completed_failure_workflows_keep_complete_receipts_eligible) ... ok
+test_deadline_rejects_nonterminal_workflows_despite_complete_receipts (__main__.HostedWorkflowTests.test_deadline_rejects_nonterminal_workflows_despite_complete_receipts) ... ok
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.052s
+
+OK

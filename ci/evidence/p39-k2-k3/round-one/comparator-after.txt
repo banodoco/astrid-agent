@@ -1,0 +1,32 @@
+test_added_or_swapped_entry (__main__.FailureCeilingTests.test_added_or_swapped_entry) ... ok
+test_cancelled_skipped_and_incomplete_jobs (__main__.FailureCeilingTests.test_cancelled_skipped_and_incomplete_jobs) ... ok
+test_changed_diagnostic_cannot_self_approve (__main__.FailureCeilingTests.test_changed_diagnostic_cannot_self_approve) ... ok
+test_complete_covered_run_keeps_failing_raw_exit (__main__.FailureCeilingTests.test_complete_covered_run_keeps_failing_raw_exit) ... ok
+test_current_run_selector_emits_exact_retirement_receipt (__main__.FailureCeilingTests.test_current_run_selector_emits_exact_retirement_receipt) ... ok
+test_dependency_revision_must_match_declared_job_tuple (__main__.FailureCeilingTests.test_dependency_revision_must_match_declared_job_tuple) ... ok
+test_empty_or_truncated_results (__main__.FailureCeilingTests.test_empty_or_truncated_results) ... ok
+test_fake_result_count (__main__.FailureCeilingTests.test_fake_result_count) ... ok
+test_merge_retirement_requires_release_only_job (__main__.FailureCeilingTests.test_merge_retirement_requires_release_only_job) ... ok
+test_missing_entire_nightly (__main__.FailureCeilingTests.test_missing_entire_nightly) ... ok
+test_missing_job (__main__.FailureCeilingTests.test_missing_job) ... ok
+test_native_id_cannot_swap_source_declaration (__main__.FailureCeilingTests.test_native_id_cannot_swap_source_declaration) ... ok
+test_new_passing_id_must_be_retained_for_future_loss_checks (__main__.FailureCeilingTests.test_new_passing_id_must_be_retained_for_future_loss_checks) ... ok
+test_new_red_and_missing_id_cannot_cancel_by_count (__main__.FailureCeilingTests.test_new_red_and_missing_id_cannot_cancel_by_count) ... ok
+test_old_night_cannot_replace_tonights_missing_evidence (__main__.FailureCeilingTests.test_old_night_cannot_replace_tonights_missing_evidence) ... ok
+test_parent_pass_cannot_retire_failing_subtest (__main__.FailureCeilingTests.test_parent_pass_cannot_retire_failing_subtest) ... ok
+test_passing_entry_must_be_retired (__main__.FailureCeilingTests.test_passing_entry_must_be_retired) ... ok
+test_removed_failure_is_rejected (__main__.FailureCeilingTests.test_removed_failure_is_rejected) ... ok
+test_required_job_and_expected_id_cannot_self_approve_removal (__main__.FailureCeilingTests.test_required_job_and_expected_id_cannot_self_approve_removal) ... ok
+test_retirement_requires_exact_passing_receipt (__main__.FailureCeilingTests.test_retirement_requires_exact_passing_receipt) ... ok
+test_same_id_different_cause_sensitive_failure_rejected (__main__.FailureCeilingTests.test_same_id_different_cause_sensitive_failure_rejected) ... ok
+test_same_id_different_stage_rejected (__main__.FailureCeilingTests.test_same_id_different_stage_rejected) ... ok
+test_skip_or_xfail_is_not_coverage (__main__.FailureCeilingTests.test_skip_or_xfail_is_not_coverage) ... ok
+test_trusted_cli_never_imports_candidate_checker_or_pythonpath (__main__.FailureCeilingTests.test_trusted_cli_never_imports_candidate_checker_or_pythonpath) ... ok
+test_unexplained_failed_setup_is_not_covered_by_red_test (__main__.FailureCeilingTests.test_unexplained_failed_setup_is_not_covered_by_red_test) ... ok
+test_unknown_reconciliation_stays_unknown (__main__.FailureCeilingTests.test_unknown_reconciliation_stays_unknown) ... ok
+test_wrong_tuple (__main__.FailureCeilingTests.test_wrong_tuple) ... ok
+
+----------------------------------------------------------------------
+Ran 27 tests in 0.048s
+
+OK
