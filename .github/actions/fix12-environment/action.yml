@@ -1,0 +1,38 @@
+name: Prepare FIX-12 Lanes environment
+description: Set up the selected exact Agent and Runtime sources and record their dependencies.
+inputs:
+  cell:
+    description: Reference or candidate
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Set standard Lanes fixture locations
+      shell: bash
+      run: |
+        {
+          echo "ASTRID_CI_JOB=lanes-integration"
+          echo "ASTRID_RUNTIME_CHECKOUT=$GITHUB_WORKSPACE/astrid-runtime"
+          echo "ASTRID_VIBECOMFY_CHECKOUT=$GITHUB_WORKSPACE/vibecomfy-checkout"
+          echo "ASTRID_TEST_LIFECYCLE_CHECKOUT=$GITHUB_WORKSPACE/runpod-lifecycle-checkout"
+          echo "ASTRID_TEST_COMFY_SOURCE=$GITHUB_WORKSPACE/comfyui-checkout"
+          echo "ASTRID_PINOKIO_CHECKOUT=$GITHUB_WORKSPACE/astrid-pinokio"
+        } >> "$GITHUB_ENV"
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11.18'
+    - uses: astral-sh/setup-uv@v6
+      with:
+        version: '0.11.32'
+        enable-cache: false
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '22.23.4'
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '20.19.4'
+    - name: Prepare clean public source checkouts and install Lanes dependencies
+      shell: bash
+      env:
+        CELL: ${{ inputs.cell }}
+      run: bash proof/scripts/ci/fix12_pair/setup.sh
