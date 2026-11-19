@@ -1,0 +1,1709 @@
+{
+  "archive": {
+    "bytes": 83898,
+    "path": "observations-resume.zip",
+    "sha256": "a0e14009444059219430622437ba8697577be14f560fa30825f5a6efe0a56026"
+  },
+  "artifacts": [
+    {
+      "bytes": 5190,
+      "name": "agent-caller-frozen.log",
+      "sha256": "5eb5e5c75b3d55b78010e4c47cd19e836d4b3f04cc01ffdc8fff470730fe7cad"
+    },
+    {
+      "bytes": 5268,
+      "junit": {
+        "counts": {
+          "error": 0,
+          "failed": 0,
+          "passed": 35,
+          "skipped": 0
+        },
+        "test_ids": [
+          {
+            "id": "tests.sdk.test_media_open::test_open_returns_bounded_identity_preview_without_mutation",
+            "status": "passed"
+          },
+          {
+            "id": "tests.sdk.test_media_open::test_open_allows_a_zero_byte_inline_preview",
+            "status": "passed"
+          },
+          {
+            "id": "tests.sdk.test_media_open::test_open_materializes_only_when_requested_and_preserves_extension",
+            "status": "passed"
+          },
+          {
+            "id": "tests.sdk.test_media_open::test_open_materialize_infers_extension_from_mime_type",
+            "status": "passed"
+          },
+          {
+            "id": "tests.sdk.test_media_open::test_media_open_reuses_a_verified_deterministic_view",
+            "status": "passed"
+          },
+          {
+            "id": "tests.sdk.test_media_open::test_open_rejects_unscoped_alias_and_oversize_without_download",
+            "status": "passed"
+          },
+          {
+            "id": "tests.sdk.test_media_open::test_open_text_binding_verifies_project_and_utf8",
+            "status": "passed"
+          },
+          {
+            "id": "tests.sdk.test_media_open::test_cli_open_is_one_sdk_call_and_accepts_structured_reference",
+            "status": "passed"
+          },
+          {
+            "id": "tests.sdk.test_media_open::test_media_open_defaults_to_human_output",
+            "status": "passed"
+          },
+          {
+            "id": "tests.sdk.test_media_open::test_materialize_returns_an_independent_copy_of_verified_response",
+            "status": "passed"
+          },
+          {
+            "id": "tests.sdk.test_media_open::test_truncated_runtime_response_does_not_replace_existing_view",
+            "status": "passed"
+          },
+          {
+            "id": "tests.sdk.test_media_open::test_existing_hardlink_to_cas_is_never_returned_as_a_caller_view",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.generation.test_output_delivery::test_each_output_is_delivered_with_collision_safe_names[True]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.generation.test_output_delivery::test_each_output_is_delivered_with_collision_safe_names[False]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.generation.test_output_delivery::test_partial_delivery_never_reports_success_or_replaces_prior_file[corrupt-second]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.generation.test_output_delivery::test_partial_delivery_never_reports_success_or_replaces_prior_file[missing-second]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.generation.test_output_delivery::test_partial_delivery_never_reports_success_or_replaces_prior_file[unsealed-output]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.generation.test_output_delivery::test_partial_delivery_never_reports_success_or_replaces_prior_file[wrong-size]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.generation.test_output_delivery::test_manifest_only_completion_resolves_cas_without_worker_paths",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.generation.test_output_delivery::test_legacy_provider_uses_the_shared_local_export_path",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.generation.test_output_delivery::test_failed_generation_is_preserved_for_the_cli_failure_handler",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.generation.test_output_delivery::test_output_hash_passes_across_download_host_runtime_and_delivery",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.generation.test_ls6_receipt_pipeline::test_one_fetch_one_producer_hash_and_independent_runtime_and_caller[37]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.generation.test_ls6_receipt_pipeline::test_one_fetch_one_producer_hash_and_independent_runtime_and_caller[9437197]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.generation.test_ls6_receipt_pipeline::test_transforming_hook_mints_a_fresh_receipt",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.generation.test_ls6_receipt_pipeline::test_changed_file_cannot_reuse_a_producer_receipt",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.generation.test_ls6_receipt_pipeline::test_caller_refuses_changed_in_process_verified_file",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_output_receipt_observations::test_stable_content_receipt_reuses_only_the_current_local_observation",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_output_receipt_observations::test_unusable_sidecar_keeps_independent_output_hash[missing]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_output_receipt_observations::test_unusable_sidecar_keeps_independent_output_hash[malformed]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_output_receipt_observations::test_unusable_sidecar_keeps_independent_output_hash[task]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_output_receipt_observations::test_unusable_sidecar_keeps_independent_output_hash[prompt]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_output_receipt_observations::test_unusable_sidecar_keeps_independent_output_hash[logical-path]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_output_receipt_observations::test_unusable_sidecar_keeps_independent_output_hash[symlink]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_output_receipt_observations::test_same_length_change_cannot_rebind_an_old_observation",
+            "status": "passed"
+          }
+        ]
+      },
+      "name": "agent-caller-frozen.xml",
+      "sha256": "046bf92e9157c0c5ecb62643dd6d585b5a2ac8d045c4323b6a6c7a98b124f67d"
+    },
+    {
+      "bytes": 7499,
+      "name": "agent-census-approved-runtimepath.log",
+      "sha256": "8803964811c68fed678388df44edf39134162f8f6208685cff78848a99d9c6ac"
+    },
+    {
+      "bytes": 2574,
+      "junit": {
+        "counts": {
+          "error": 0,
+          "failed": 0,
+          "passed": 17,
+          "skipped": 0
+        },
+        "test_ids": [
+          {
+            "id": "tests.test_capability_ledger::test_shipped_ledger_reconciles_historical_capability_sets",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_capability_ledger::test_ledger_has_only_canonical_ids_models_backends_and_explicit_unmapped_labels",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_capability_ledger::test_host_consumes_the_reconciled_ledger_before_readiness_matrix",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_capability_ledger::test_vibecomfy_readiness_reserves_gpu_for_workflow_execution",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_capability_ledger::test_historical_executor_rows_are_explicitly_not_installed",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_capability_ledger::test_historical_source_labels_preserve_retirements_and_replacement",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_capability_ledger::test_hivemind_is_an_installed_pack_not_an_external_contract",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_capability_ledger::test_hivemind_matrix_rows_expose_provider_readiness_metadata",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_capability_ledger::test_source_census_reports_unreviewed_pack_labels_without_failing_host",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_capability_ledger::test_hivemind_is_excluded_from_the_in_tree_source_label_census",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_capability_ledger::test_moved_pack_labels_are_not_reported_as_installed",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_capability_ledger::test_reviewed_v3_source_occurrence_removal_is_reported_by_name",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_capability_ledger::test_provenance_census_does_not_validate_external_pack_compatibility",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_pack_action_census_ratchet::test_every_bundled_pack_action_is_in_approved_inventory_and_matrix",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_pack_action_census_ratchet::test_action_census_ratchet_detects_a_missing_reviewed_row",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_capability_matrix_sync::test_capability_matrix_copies_are_identical",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_capability_matrix_sync::test_runpod_host_target_operations_have_cpu_matrix_rows",
+            "status": "passed"
+          }
+        ]
+      },
+      "name": "agent-census-approved-runtimepath.xml",
+      "sha256": "480014107e59b577da1285d51fadb3ff2741157472673f805996c269ec1c1013"
+    },
+    {
+      "bytes": 462,
+      "name": "agent-census-approved.log",
+      "sha256": "d54c0f51b6ff04131f9932353b364dc9c871198328b0010b11510aa1f476eb12"
+    },
+    {
+      "bytes": 8772,
+      "name": "agent-fullpath-first.log",
+      "sha256": "f67c4d5456890e091344dd9a1deb2e22c01d31df17d7bbf67a55f9e4b0a5af7d"
+    },
+    {
+      "bytes": 8980,
+      "junit": {
+        "counts": {
+          "error": 0,
+          "failed": 2,
+          "passed": 3,
+          "skipped": 0
+        },
+        "test_ids": [
+          {
+            "id": "tests.core.generation.test_ls6_receipt_pipeline::test_one_fetch_one_producer_hash_and_independent_runtime_and_caller[37]",
+            "status": "failed"
+          },
+          {
+            "id": "tests.core.generation.test_ls6_receipt_pipeline::test_one_fetch_one_producer_hash_and_independent_runtime_and_caller[9437197]",
+            "status": "failed"
+          },
+          {
+            "id": "tests.core.generation.test_ls6_receipt_pipeline::test_transforming_hook_mints_a_fresh_receipt",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.generation.test_ls6_receipt_pipeline::test_changed_file_cannot_reuse_a_producer_receipt",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.generation.test_ls6_receipt_pipeline::test_caller_refuses_changed_in_process_verified_file",
+            "status": "passed"
+          }
+        ]
+      },
+      "name": "agent-fullpath-first.xml",
+      "sha256": "6b944f9b9cd58aa4afe19754badd859aeef079fd833f9eabf7869c68303b10a1"
+    },
+    {
+      "bytes": 14186,
+      "name": "agent-fullpath-publish.log",
+      "sha256": "4d2236442338d0a9528c46dc813993112cb18deb93cabd7a74bde7a1f1e2ef2b"
+    },
+    {
+      "bytes": 14362,
+      "junit": {
+        "counts": {
+          "error": 0,
+          "failed": 2,
+          "passed": 3,
+          "skipped": 0
+        },
+        "test_ids": [
+          {
+            "id": "tests.core.generation.test_ls6_receipt_pipeline::test_one_fetch_one_producer_hash_and_independent_runtime_and_caller[37]",
+            "status": "failed"
+          },
+          {
+            "id": "tests.core.generation.test_ls6_receipt_pipeline::test_one_fetch_one_producer_hash_and_independent_runtime_and_caller[9437197]",
+            "status": "failed"
+          },
+          {
+            "id": "tests.core.generation.test_ls6_receipt_pipeline::test_transforming_hook_mints_a_fresh_receipt",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.generation.test_ls6_receipt_pipeline::test_changed_file_cannot_reuse_a_producer_receipt",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.generation.test_ls6_receipt_pipeline::test_caller_refuses_changed_in_process_verified_file",
+            "status": "passed"
+          }
+        ]
+      },
+      "name": "agent-fullpath-publish.xml",
+      "sha256": "488afdf7805228fde37ba56a7d2cbdd1a0f635ea80a7242a5cd0f3bac81e06d5"
+    },
+    {
+      "bytes": 25306,
+      "name": "agent-fullpath-registration.log",
+      "sha256": "83f5b9fbe1a61569f0ca337467e4fb4536683a5f7e5c0d18e07055b3979b6f7b"
+    },
+    {
+      "bytes": 25722,
+      "junit": {
+        "counts": {
+          "error": 0,
+          "failed": 2,
+          "passed": 3,
+          "skipped": 0
+        },
+        "test_ids": [
+          {
+            "id": "tests.core.generation.test_ls6_receipt_pipeline::test_one_fetch_one_producer_hash_and_independent_runtime_and_caller[37]",
+            "status": "failed"
+          },
+          {
+            "id": "tests.core.generation.test_ls6_receipt_pipeline::test_one_fetch_one_producer_hash_and_independent_runtime_and_caller[9437197]",
+            "status": "failed"
+          },
+          {
+            "id": "tests.core.generation.test_ls6_receipt_pipeline::test_transforming_hook_mints_a_fresh_receipt",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.generation.test_ls6_receipt_pipeline::test_changed_file_cannot_reuse_a_producer_receipt",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.generation.test_ls6_receipt_pipeline::test_caller_refuses_changed_in_process_verified_file",
+            "status": "passed"
+          }
+        ]
+      },
+      "name": "agent-fullpath-registration.xml",
+      "sha256": "a44d0dcbf8dc51b8f0f19a348b28e564b74ead1ae37e740edda7153ae4ae5ee1"
+    },
+    {
+      "bytes": 1917,
+      "name": "agent-fullpath-state.log",
+      "sha256": "55eaec205339975d028726a256de397bc91a0cecefa9fba5c6967d935d711443"
+    },
+    {
+      "bytes": 1005,
+      "junit": {
+        "counts": {
+          "error": 0,
+          "failed": 0,
+          "passed": 5,
+          "skipped": 0
+        },
+        "test_ids": [
+          {
+            "id": "tests.core.generation.test_ls6_receipt_pipeline::test_one_fetch_one_producer_hash_and_independent_runtime_and_caller[37]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.generation.test_ls6_receipt_pipeline::test_one_fetch_one_producer_hash_and_independent_runtime_and_caller[9437197]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.generation.test_ls6_receipt_pipeline::test_transforming_hook_mints_a_fresh_receipt",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.generation.test_ls6_receipt_pipeline::test_changed_file_cannot_reuse_a_producer_receipt",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.generation.test_ls6_receipt_pipeline::test_caller_refuses_changed_in_process_verified_file",
+            "status": "passed"
+          }
+        ]
+      },
+      "name": "agent-fullpath-state.xml",
+      "sha256": "c484324dd8f70740856d6fe39ee1d553e438cac8107d06f62adedd6d41b52aa4"
+    },
+    {
+      "bytes": 22864,
+      "name": "agent-receipts-frozen.log",
+      "sha256": "92136974d9195e6b10b8076d208b048c11eaaf3e153816c3edd701afbd942c6e"
+    },
+    {
+      "bytes": 27834,
+      "junit": {
+        "counts": {
+          "error": 0,
+          "failed": 1,
+          "passed": 148,
+          "skipped": 0
+        },
+        "test_ids": [
+          {
+            "id": "tests.test_result_manifest::test_complete_output_metadata_for_file_populates_hash_and_bytes",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_complete_output_metadata_for_directory_adds_tree_metadata",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_complete_output_metadata_rejects_missing_required_outputs",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_complete_output_metadata_allows_missing_optional_outputs",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_write_manifest_validates_kind[Image]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_write_manifest_validates_kind[image preview]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_write_manifest_validates_kind[]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_write_manifest_allows_extra_top_level_fields",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_complete_output_metadata_preserves_existing_hashes",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_write_manifest_delegates_to_write_json_atomic",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_build_manifest_constructs_minimal_dict",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_build_manifest_defaults_warnings_to_empty_list",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_build_manifest_preserves_explicit_warnings",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_build_manifest_respects_custom_schema_version",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_build_manifest_passthrough_extras",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_build_manifest_result_passes_write_manifest_validation",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_build_manifest_copies_inputs_and_outputs",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_output_result_registry_conformance_covers_default_registry",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_validate_result_manifest_accepts_concrete_contained_files",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_validate_result_manifest_ordinal_falls_back_to_position",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_validate_result_manifest_rejects_missing_file",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_validate_result_manifest_rejects_optional_missing_file",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_validate_result_manifest_rejects_parent_traversal",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_validate_result_manifest_rejects_absolute_path",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_validate_result_manifest_rejects_hash_mismatch",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_validate_result_manifest_rejects_missing_content_hash",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_validate_result_manifest_rejects_directory_identity",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_validate_result_manifest_rejects_declared_directory_type",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_validate_result_manifest_rejects_duplicate_ordinals",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_validate_result_manifest_keeps_global_duplicate_ordinal_guard_with_generation_metadata",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_validate_result_manifest_rejects_multiple_primary_outputs",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_validate_result_manifest_rejects_non_result_role_primary",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_validate_result_manifest_rejects_symlink_escaping_staging",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_validate_result_manifest_accepts_symlink_inside_staging",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_validate_result_manifest_rejects_broken_symlink",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_validate_result_manifest_rejects_nonexistent_staging_root",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_validate_result_manifest_rejects_malformed_manifest",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_validate_result_manifest_rejects_wrong_declared_bytes",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_validate_result_manifest_accepts_nested_contained_paths",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_read_result_manifest_reads_and_validates_file",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_read_result_manifest_rejects_unreadable_file",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_harvest_reads_manifest_files_and_flattens_directories",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_harvest_uses_entry_name_and_port_not_suffix",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_harvest_preserves_collection_name_and_distinct_ordinals",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_harvest_rejects_global_duplicate_ordinals_across_generation_groups",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_harvest_empty_receipt_is_exclusive_and_required_fails",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_harvest_empty_receipt_for_media_fails_without_require",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_harvest_require_empty_spool_fails",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_harvest_rejects_escaping_manifest_path",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_harvest_rejects_missing_hash",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_harvest_directory_child_must_declare_its_own_hash",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_harvest_rejects_missing_file_without_fallback",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_result_manifest::test_outputs_required_from_receipt_flag",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_managed_generation_result::test_valid_video_result_has_deterministic_json_and_round_trips",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_managed_generation_result::test_schema_version_must_be_an_integer[True]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_managed_generation_result::test_schema_version_must_be_an_integer[1.0]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_managed_generation_result::test_output_identity_ordinal_port_and_evidence_are_preserved",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_managed_generation_result::test_invalid_output_identity_location_metadata_and_hash_are_rejected[<lambda>-producer_output_id]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_managed_generation_result::test_invalid_output_identity_location_metadata_and_hash_are_rejected[<lambda>-unknown fields]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_managed_generation_result::test_invalid_output_identity_location_metadata_and_hash_are_rejected[<lambda>-duplicate producer output identity]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_managed_generation_result::test_invalid_output_identity_location_metadata_and_hash_are_rejected[<lambda>-contained relative path]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_managed_generation_result::test_invalid_output_identity_location_metadata_and_hash_are_rejected[<lambda>-lowercase MIME]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_managed_generation_result::test_invalid_output_identity_location_metadata_and_hash_are_rejected[<lambda>-declares bytes]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_managed_generation_result::test_invalid_output_identity_location_metadata_and_hash_are_rejected[<lambda>-hashes to]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_managed_generation_result::test_duplicate_ordinals_and_missing_port_are_rejected",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_managed_generation_result::test_invalid_phase_outcome_combinations_are_rejected[<lambda>0]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_managed_generation_result::test_invalid_phase_outcome_combinations_are_rejected[<lambda>1]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_managed_generation_result::test_invalid_phase_outcome_combinations_are_rejected[<lambda>2]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_managed_generation_result::test_invalid_phase_outcome_combinations_are_rejected[<lambda>3]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_managed_generation_result::test_invalid_phase_outcome_combinations_are_rejected[<lambda>4]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_managed_generation_result::test_stale_task_or_attempt_correlation_is_rejected",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_managed_generation_result::test_failed_execution_can_be_represented_without_outputs",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_vibecomfy_production_engine::test_execution_identity_digest_is_stable_and_model_bound",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_vibecomfy_production_engine::test_session_identity_ignores_workflow_identity_but_binds_model_bytes",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_vibecomfy_production_engine::test_session_identity_binds_verified_auxiliary_runtime_and_config_identity",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_vibecomfy_production_engine::test_loaded_workflow_session_requirements_include_auxiliary_assets_and_loader_settings",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_vibecomfy_production_engine::test_loaded_identity_is_bound_to_canonical_metadata_and_content",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_vibecomfy_production_engine::test_load_workflow_path_unions_ready_template_and_ui_canonicalization",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_vibecomfy_production_engine::test_canonical_bundle_compiles_through_single_production_boundary",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_vibecomfy_production_engine::test_workflow_input_binding_validates_public_input_without_mutating_bundle",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_vibecomfy_production_engine::test_run_workflow_path_rejects_execution_identity_drift",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_vibecomfy_production_engine::test_run_executor_verifies_checkout_readiness_pair_and_selects_profile",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_vibecomfy_production_engine::test_run_executor_rejects_outputs_outside_private_custody",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_vibecomfy_production_engine::test_managed_result_is_rebased_and_keeps_producer_identity",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_vibecomfy_production_engine::test_managed_result_from_previous_attempt_fails_closed",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_vibecomfy_production_engine::test_managed_result_invalid_or_late_completion_fails_closed[<lambda>0]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_vibecomfy_production_engine::test_managed_result_invalid_or_late_completion_fails_closed[<lambda>1]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_vibecomfy_production_engine::test_managed_result_invalid_or_late_completion_fails_closed[<lambda>2]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_vibecomfy_production_engine::test_local_server_rejects_incompatible_modes_before_execution[extra0]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_vibecomfy_production_engine::test_local_server_rejects_incompatible_modes_before_execution[extra1]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_vibecomfy_production_engine::test_local_server_mode_selection_canonicalizes_url_and_requires_managed_result",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_vibecomfy_production_engine::test_unknown_workflow_input_lists_valid_names",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_vibecomfy_production_engine::test_local_server_failure_has_runnable_discovery_hint",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_vibecomfy_production_engine::test_generated_outputs_are_named_after_the_users_save_prefix",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_contract_accepts_local_and_portable_source_and_settings_references",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_existing_cas_source_ref_projects_its_digest_as_sha256[digest]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_existing_cas_source_ref_projects_its_digest_as_sha256[object_id]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_materializer_preserves_producer_source_ref_when_snapshot_matches[False]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_materializer_preserves_producer_source_ref_when_snapshot_matches[True]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_contract_rejects_invalid_evidence_reference_fields[<lambda>0]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_contract_rejects_invalid_evidence_reference_fields[<lambda>1]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_contract_rejects_invalid_evidence_reference_fields[<lambda>2]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_contract_allows_verified_partial_outputs_without_publication[failed]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_contract_allows_verified_partial_outputs_without_publication[cancelled]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_contract_allows_verified_partial_outputs_without_publication[interrupted]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_contract_rejects_publication_of_partial_outputs[failed]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_contract_rejects_publication_of_partial_outputs[cancelled]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_contract_rejects_publication_of_partial_outputs[interrupted]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_terminal_partial_receipt_retains_each_hash_check_and_native_outcome[failed-succeeded]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_terminal_partial_receipt_retains_each_hash_check_and_native_outcome[cancelled-failed]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_failed_receipt_without_outputs_keeps_downstream_not_run",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_failed_retrieval_without_outputs_keeps_verification_not_run",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_success_receipt_remains_publishable_without_hash_check_extension",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_hash_check_cannot_claim_verification_for_a_mismatch",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_contract_requires_created_timestamp_in_utc[2026-09-21T12:00:00]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_contract_requires_created_timestamp_in_utc[2026-09-21T12:00:00+01:00]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_contract_requires_created_timestamp_in_utc[not-a-time]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_materializer_copies_exact_evidence_bytes_and_keeps_portable_identity",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_materializer_retains_verified_partial_media_on_terminal_failure[failed]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_materializer_retains_verified_partial_media_on_terminal_failure[cancelled]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_materializer_retains_verified_partial_media_on_terminal_failure[interrupted]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_run_failure_retains_original_source_before_conversion_and_preserves_error[error0-failed]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_run_failure_retains_original_source_before_conversion_and_preserves_error[error1-cancelled]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_run_failure_retains_original_source_before_conversion_and_preserves_error[error2-failed]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_run_failure_retains_original_source_before_conversion_and_preserves_error[error3-cancelled]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_native_interruption_does_not_invent_cancel_request",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_native_failure_without_outputs_records_unstarted_phases",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_native_pending_downstream_phase_is_recorded_as_not_started",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_model_identity_never_upgrades_an_observed_or_mismatched_digest",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_returned_terminal_producer_result_never_becomes_successful_settlement[failed]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_returned_terminal_producer_result_never_becomes_successful_settlement[cancelled]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_changed_local_evidence_bytes_are_rejected[source]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_changed_local_evidence_bytes_are_rejected[effective_settings]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_source_and_effective_settings_with_identical_bytes_share_one_artifact",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_producer_evidence_f06::test_failed_producer_receipt_survives_executor_to_safe_remote_frame",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.execution.test_producer_evidence_transport_f06::test_real_runtime_retains_source_settings_and_partial_media_after_cleanup_restart[succeeded]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.execution.test_producer_evidence_transport_f06::test_real_runtime_retains_source_settings_and_partial_media_after_cleanup_restart[failed]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.execution.test_producer_evidence_transport_f06::test_real_runtime_retains_source_settings_and_partial_media_after_cleanup_restart[cancelled]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.execution.test_producer_evidence_transport_f06::test_success_harvest_rejects_mismatched_receipt_identity[task_id]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.execution.test_producer_evidence_transport_f06::test_success_harvest_rejects_mismatched_receipt_identity[attempt_id]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.execution.test_producer_evidence_transport_f06::test_failed_partial_result_cannot_satisfy_successful_publication",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.execution.test_producer_evidence_transport_f06::test_host_adds_installed_manifest_without_development_lookup",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.execution.test_producer_evidence_transport_f06::test_host_managed_result_path_fits_default_windows_attempt_and_remains_readable",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.execution.test_producer_evidence_transport_f06::test_host_restores_admitted_source_identity_after_bundle_staging[False]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.execution.test_producer_evidence_transport_f06::test_host_restores_admitted_source_identity_after_bundle_staging[True]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.execution.test_producer_evidence_transport_f06::test_host_refuses_to_rehash_corrupt_producer_manifest",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.execution.test_producer_evidence_transport_f06::test_success_outage_retries_exact_publication_or_reads_committed_result[False]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.execution.test_producer_evidence_transport_f06::test_success_outage_retries_exact_publication_or_reads_committed_result[True]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.execution.test_producer_evidence_transport_f06::test_unacknowledged_success_retains_spool_without_publishing_failure",
+            "status": "failed"
+          }
+        ]
+      },
+      "name": "agent-receipts-frozen.xml",
+      "sha256": "7ebfe97b4189a5193e332d60bc833855d564dc31151d5fce8ff9433cedcf5cb1"
+    },
+    {
+      "bytes": 2814,
+      "name": "agent-receipts-integrated.log",
+      "sha256": "b155e2a5f03bb8279a35813af815255dfe2ca3f88ed699e37035433260303018"
+    },
+    {
+      "bytes": 2166,
+      "junit": {
+        "counts": {
+          "error": 0,
+          "failed": 0,
+          "passed": 13,
+          "skipped": 0
+        },
+        "test_ids": [
+          {
+            "id": "tests.core.generation.test_ls6_receipt_pipeline::test_one_fetch_one_producer_hash_and_independent_runtime_and_caller[37]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.generation.test_ls6_receipt_pipeline::test_one_fetch_one_producer_hash_and_independent_runtime_and_caller[9437197]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.generation.test_ls6_receipt_pipeline::test_transforming_hook_mints_a_fresh_receipt",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.generation.test_ls6_receipt_pipeline::test_changed_file_cannot_reuse_a_producer_receipt",
+            "status": "passed"
+          },
+          {
+            "id": "tests.core.generation.test_ls6_receipt_pipeline::test_caller_refuses_changed_in_process_verified_file",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_output_receipt_observations::test_stable_content_receipt_reuses_only_the_current_local_observation",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_output_receipt_observations::test_unusable_sidecar_keeps_independent_output_hash[missing]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_output_receipt_observations::test_unusable_sidecar_keeps_independent_output_hash[malformed]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_output_receipt_observations::test_unusable_sidecar_keeps_independent_output_hash[task]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_output_receipt_observations::test_unusable_sidecar_keeps_independent_output_hash[prompt]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_output_receipt_observations::test_unusable_sidecar_keeps_independent_output_hash[logical-path]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_output_receipt_observations::test_unusable_sidecar_keeps_independent_output_hash[symlink]",
+            "status": "passed"
+          },
+          {
+            "id": "tests.test_output_receipt_observations::test_same_length_change_cannot_rebind_an_old_observation",
+            "status": "passed"
+          }
+        ]
+      },
+      "name": "agent-receipts-integrated.xml",
+      "sha256": "1410c847c9194fe3f39d5515309353c21755e96c4ecee91f7e605c79b1a27c33"
+    },
+    {
+      "bytes": 24707,
+      "name": "agent-thumbnail-recovery-first.log",
+      "sha256": "3ee53b82b1fb572cb09471978e5a36142ba972cfea0979836cb0df481a92ab2c"
+    },
+    {
+      "bytes": 24098,
+      "junit": {
+        "counts": {
+          "error": 0,
+          "failed": 2,
+          "passed": 0,
+          "skipped": 0
+        },
+        "test_ids": [
+          {
+            "id": "tests.core.execution.test_ls6_thumbnail_recovery::test_main_reply_precedes_thumbnail_and_restart_recovers_one_preview",
+            "status": "failed"
+          },
+          {
+            "id": "tests.core.execution.test_ls6_thumbnail_recovery::test_failed_thumbnail_is_visible_and_retry_does_not_repeat_generation",
+            "status": "failed"
+          }
+        ]
+      },
+      "name": "agent-thumbnail-recovery-first.xml",
+      "sha256": "7f2c6315a21d1330a3968ee466f211d178b4f06cd85c04364f38fd5f6e747b9e"
+    },
+    {
+      "bytes": 30533,
+      "name": "agent-thumbnail-recovery-publish.log",
+      "sha256": "be04fa0daf7b300c6fa50f2d902412fd93621e3ce6361e9d3b1ed5bae3b03df6"
+    },
+    {
+      "bytes": 28777,
+      "junit": {
+        "counts": {
+          "error": 0,
+          "failed": 2,
+          "passed": 0,
+          "skipped": 0
+        },
+        "test_ids": [
+          {
+            "id": "tests.core.execution.test_ls6_thumbnail_recovery::test_main_reply_precedes_thumbnail_and_restart_recovers_one_preview",
+            "status": "failed"
+          },
+          {
+            "id": "tests.core.execution.test_ls6_thumbnail_recovery::test_failed_thumbnail_is_visible_and_retry_does_not_repeat_generation",
+            "status": "failed"
+          }
+        ]
+      },
+      "name": "agent-thumbnail-recovery-publish.xml",
+      "sha256": "41b5450e30caa0a5cd363df436c86c41e001f8928a7f0dc53221764d26eae07f"
+    },
+    {
+      "bytes": 68609,
+      "name": "ls6-full-path-base-1.json",
+      "sha256": "8a4265204f7a6a3421a0c683e1470a76159640969408d5a10207f31e01cb581d"
+    },
+    {
+      "bytes": 4317,
+      "name": "ls6-full-path-base-1.log",
+      "sha256": "9d8847e32d719a987fb06214999ce59664b0922d581a301247c18b332a2aad80"
+    },
+    {
+      "bytes": 70079,
+      "name": "ls6-full-path-head-1.json",
+      "sha256": "8c2703ab4d43f5f19f5ed2068d063560e5f18a4c53986cf6ccfd11dc7f04fb36"
+    },
+    {
+      "bytes": 4359,
+      "name": "ls6-full-path-head-1.log",
+      "sha256": "be0b7f0f50572720d753ea5b85e867a1297b440bd94c2e7c50d45ff79f2e75eb"
+    }
+  ],
+  "base_commit": "91cb4cb499306b2f09686de0fb67b803bcb89077",
+  "blocked_report": "https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6987488171",
+  "blocker": "Actual installed thumbnail action returns one thumbnail plus ordinary durable job.stdout/job.stderr logs; existing Runtime attach validator requires len(all outputs)==1. Both real host recovery tests fail unchanged. Awaiting Lead routing; no fix applied.",
+  "comparisons": [
+    {
+      "base": "agent-caller-base-isolated.xml",
+      "base_ids": 22,
+      "changed": [],
+      "head": "agent-caller-frozen.xml",
+      "head_ids": 35,
+      "missing": [],
+      "new": [
+        "tests.core.generation.test_ls6_receipt_pipeline::test_caller_refuses_changed_in_process_verified_file",
+        "tests.core.generation.test_ls6_receipt_pipeline::test_changed_file_cannot_reuse_a_producer_receipt",
+        "tests.core.generation.test_ls6_receipt_pipeline::test_one_fetch_one_producer_hash_and_independent_runtime_and_caller[37]",
+        "tests.core.generation.test_ls6_receipt_pipeline::test_one_fetch_one_producer_hash_and_independent_runtime_and_caller[9437197]",
+        "tests.core.generation.test_ls6_receipt_pipeline::test_transforming_hook_mints_a_fresh_receipt",
+        "tests.test_output_receipt_observations::test_same_length_change_cannot_rebind_an_old_observation",
+        "tests.test_output_receipt_observations::test_stable_content_receipt_reuses_only_the_current_local_observation",
+        "tests.test_output_receipt_observations::test_unusable_sidecar_keeps_independent_output_hash[logical-path]",
+        "tests.test_output_receipt_observations::test_unusable_sidecar_keeps_independent_output_hash[malformed]",
+        "tests.test_output_receipt_observations::test_unusable_sidecar_keeps_independent_output_hash[missing]",
+        "tests.test_output_receipt_observations::test_unusable_sidecar_keeps_independent_output_hash[prompt]",
+        "tests.test_output_receipt_observations::test_unusable_sidecar_keeps_independent_output_hash[symlink]",
+        "tests.test_output_receipt_observations::test_unusable_sidecar_keeps_independent_output_hash[task]"
+      ]
+    },
+    {
+      "base": "agent-receipt-base-isolated.xml",
+      "base_ids": 149,
+      "changed": [],
+      "head": "agent-receipts-frozen.xml",
+      "head_ids": 149,
+      "missing": [],
+      "new": []
+    },
+    {
+      "base": "agent-census-base.xml",
+      "base_ids": 17,
+      "changed": [],
+      "head": "agent-census-approved-runtimepath.xml",
+      "head_ids": 17,
+      "missing": [],
+      "new": []
+    },
+    {
+      "base": "vibe-receipt-base-isolated.xml",
+      "base_ids": 24,
+      "changed": [],
+      "head": "vibe-receipt-resume-head-1.xml",
+      "head_ids": 24,
+      "missing": [],
+      "new": []
+    },
+    {
+      "base": "runtime-stream-base.xml",
+      "base_ids": 17,
+      "changed": [],
+      "head": "runtime-stream-coherent.xml",
+      "head_ids": 31,
+      "missing": [],
+      "new": [
+        "tests.test_verified_object_transfer::test_claimed_success_cannot_install_bad_or_incomplete_bytes[equal-length]",
+        "tests.test_verified_object_transfer::test_claimed_success_cannot_install_bad_or_incomplete_bytes[extra]",
+        "tests.test_verified_object_transfer::test_claimed_success_cannot_install_bad_or_incomplete_bytes[missing-marker]",
+        "tests.test_verified_object_transfer::test_claimed_success_cannot_install_bad_or_incomplete_bytes[short]",
+        "tests.test_verified_object_transfer::test_claimed_success_cannot_install_bad_or_incomplete_bytes[wrong-identity]",
+        "tests.test_verified_object_transfer::test_claimed_success_cannot_install_bad_or_incomplete_bytes[wrong-length]",
+        "tests.test_verified_object_transfer::test_large_transfer_reads_bounded_chunks_on_server_and_caller",
+        "tests.test_verified_object_transfer::test_legacy_and_range_delivery_keep_independent_caller_hash[False]",
+        "tests.test_verified_object_transfer::test_legacy_and_range_delivery_keep_independent_caller_hash[True]",
+        "tests.test_verified_object_transfer::test_runtime_mutation_while_transmitting_withholds_completion",
+        "tests.test_verified_object_transfer::test_sender_does_not_mark_equal_length_corrupted_transmitted_chunks",
+        "tests.test_verified_object_transfer::test_streamed_object_installs_independent_verified_file[0]",
+        "tests.test_verified_object_transfer::test_streamed_object_installs_independent_verified_file[17]",
+        "tests.test_verified_object_transfer::test_streamed_object_installs_independent_verified_file[9437197]"
+      ]
+    },
+    {
+      "base": "runtime-thumbnail-base-workspace.xml",
+      "base_ids": 83,
+      "changed": [],
+      "head": "runtime-thumbnail-coherent.xml",
+      "head_ids": 93,
+      "missing": [],
+      "new": [
+        "tests.test_durable_thumbnail_intents::test_effect_rollback_leaves_no_thumbnail_intent",
+        "tests.test_durable_thumbnail_intents::test_existing_thumbnail_does_not_create_pending_intent",
+        "tests.test_durable_thumbnail_intents::test_failed_thumbnail_remains_retryable_without_repeating_generation",
+        "tests.test_durable_thumbnail_intents::test_intent_admission_cannot_change_owner_epoch_or_source[actor]",
+        "tests.test_durable_thumbnail_intents::test_intent_admission_cannot_change_owner_epoch_or_source[epoch]",
+        "tests.test_durable_thumbnail_intents::test_intent_admission_cannot_change_owner_epoch_or_source[extra]",
+        "tests.test_durable_thumbnail_intents::test_intent_admission_cannot_change_owner_epoch_or_source[source-change]",
+        "tests.test_durable_thumbnail_intents::test_primary_reply_precedes_admission_and_restart_admits_once",
+        "tests.test_durable_thumbnail_intents::test_scoped_http_worker_admits_only_its_stored_intent",
+        "tests.test_durable_thumbnail_intents::test_worker_cannot_supply_a_thumbnail_intent"
+      ]
+    }
+  ],
+  "full_path_measurements": {
+    "base": [
+      {
+        "bytes": 37,
+        "caller": {
+          "bytes_hashed": 185,
+          "completed_streams": 5,
+          "coverage_gaps": []
+        },
+        "cas_unchanged_after_caller_mutation": true,
+        "features": {
+          "binder_receipt_kwargs": [],
+          "harvest_receipt_option": false
+        },
+        "fetch_count": 1,
+        "fetch_urls": [
+          "http://127.0.0.1:8188/view?filename=final.png&subfolder=&type=output"
+        ],
+        "independent_caller_file": true,
+        "producer": {
+          "bytes_hashed": 259,
+          "completed_streams": 7,
+          "coverage_gaps": []
+        },
+        "producer_checkpoints": {
+          "correlated_result": {
+            "bytes_hashed": 111,
+            "completed_streams": 3,
+            "coverage_gaps": []
+          },
+          "download": {
+            "bytes_hashed": 37,
+            "completed_streams": 1,
+            "coverage_gaps": []
+          },
+          "harvest": {
+            "bytes_hashed": 222,
+            "completed_streams": 6,
+            "coverage_gaps": []
+          },
+          "host_validation": {
+            "bytes_hashed": 259,
+            "completed_streams": 7,
+            "coverage_gaps": []
+          },
+          "materialized_result": {
+            "bytes_hashed": 185,
+            "completed_streams": 5,
+            "coverage_gaps": []
+          },
+          "settled": {
+            "bytes_hashed": 259,
+            "completed_streams": 7,
+            "coverage_gaps": []
+          },
+          "typed_outputs": {
+            "bytes_hashed": 259,
+            "completed_streams": 7,
+            "coverage_gaps": []
+          },
+          "uploaded_outputs": {
+            "bytes_hashed": 259,
+            "completed_streams": 7,
+            "coverage_gaps": []
+          },
+          "vibe_result": {
+            "bytes_hashed": 74,
+            "completed_streams": 2,
+            "coverage_gaps": []
+          }
+        },
+        "runtime_pre_delivery": {
+          "bytes_hashed": 222,
+          "completed_streams": 6,
+          "coverage_gaps": []
+        },
+        "runtime_primary_open_count": 1,
+        "runtime_transmit": {
+          "bytes_hashed": 74,
+          "completed_streams": 2,
+          "coverage_gaps": []
+        },
+        "settlement_state": "succeeded",
+        "sha256": "17f98bea63cd486d0c7186ded02888b4e5f0dcdf0174105f9f6fe1798a76a35c",
+        "task_status": "completed",
+        "thumbnail_intent_count": 0
+      },
+      {
+        "bytes": 9437197,
+        "caller": {
+          "bytes_hashed": 47185985,
+          "completed_streams": 5,
+          "coverage_gaps": []
+        },
+        "cas_unchanged_after_caller_mutation": true,
+        "features": {
+          "binder_receipt_kwargs": [],
+          "harvest_receipt_option": false
+        },
+        "fetch_count": 1,
+        "fetch_urls": [
+          "http://127.0.0.1:8188/view?filename=final.png&subfolder=&type=output"
+        ],
+        "independent_caller_file": true,
+        "producer": {
+          "bytes_hashed": 66060379,
+          "completed_streams": 7,
+          "coverage_gaps": []
+        },
+        "producer_checkpoints": {
+          "correlated_result": {
+            "bytes_hashed": 28311591,
+            "completed_streams": 3,
+            "coverage_gaps": []
+          },
+          "download": {
+            "bytes_hashed": 9437197,
+            "completed_streams": 1,
+            "coverage_gaps": []
+          },
+          "harvest": {
+            "bytes_hashed": 56623182,
+            "completed_streams": 6,
+            "coverage_gaps": []
+          },
+          "host_validation": {
+            "bytes_hashed": 66060379,
+            "completed_streams": 7,
+            "coverage_gaps": []
+          },
+          "materialized_result": {
+            "bytes_hashed": 47185985,
+            "completed_streams": 5,
+            "coverage_gaps": []
+          },
+          "settled": {
+            "bytes_hashed": 66060379,
+            "completed_streams": 7,
+            "coverage_gaps": []
+          },
+          "typed_outputs": {
+            "bytes_hashed": 66060379,
+            "completed_streams": 7,
+            "coverage_gaps": []
+          },
+          "uploaded_outputs": {
+            "bytes_hashed": 66060379,
+            "completed_streams": 7,
+            "coverage_gaps": []
+          },
+          "vibe_result": {
+            "bytes_hashed": 18874394,
+            "completed_streams": 2,
+            "coverage_gaps": []
+          }
+        },
+        "runtime_pre_delivery": {
+          "bytes_hashed": 28311591,
+          "completed_streams": 3,
+          "coverage_gaps": []
+        },
+        "runtime_primary_open_count": 1,
+        "runtime_transmit": {
+          "bytes_hashed": 9437197,
+          "completed_streams": 1,
+          "coverage_gaps": []
+        },
+        "settlement_state": "succeeded",
+        "sha256": "aba8b0a34943135e22abbd448299091a839913609e3711ef8a9a941b7d51555b",
+        "task_status": "completed",
+        "thumbnail_intent_count": 0
+      }
+    ],
+    "head": [
+      {
+        "bytes": 37,
+        "caller": {
+          "bytes_hashed": 37,
+          "completed_streams": 1,
+          "coverage_gaps": []
+        },
+        "cas_unchanged_after_caller_mutation": true,
+        "features": {
+          "binder_receipt_kwargs": [
+            "output_receipts",
+            "prompt_id"
+          ],
+          "harvest_receipt_option": true
+        },
+        "fetch_count": 1,
+        "fetch_urls": [
+          "http://127.0.0.1:8188/view?filename=final.png&subfolder=&type=output"
+        ],
+        "independent_caller_file": true,
+        "producer": {
+          "bytes_hashed": 37,
+          "completed_streams": 1,
+          "coverage_gaps": []
+        },
+        "producer_checkpoints": {
+          "correlated_result": {
+            "bytes_hashed": 37,
+            "completed_streams": 1,
+            "coverage_gaps": []
+          },
+          "download": {
+            "bytes_hashed": 37,
+            "completed_streams": 1,
+            "coverage_gaps": []
+          },
+          "harvest": {
+            "bytes_hashed": 37,
+            "completed_streams": 1,
+            "coverage_gaps": []
+          },
+          "host_validation": {
+            "bytes_hashed": 37,
+            "completed_streams": 1,
+            "coverage_gaps": []
+          },
+          "materialized_result": {
+            "bytes_hashed": 37,
+            "completed_streams": 1,
+            "coverage_gaps": []
+          },
+          "settled": {
+            "bytes_hashed": 37,
+            "completed_streams": 1,
+            "coverage_gaps": []
+          },
+          "typed_outputs": {
+            "bytes_hashed": 37,
+            "completed_streams": 1,
+            "coverage_gaps": []
+          },
+          "uploaded_outputs": {
+            "bytes_hashed": 37,
+            "completed_streams": 1,
+            "coverage_gaps": []
+          },
+          "vibe_result": {
+            "bytes_hashed": 37,
+            "completed_streams": 1,
+            "coverage_gaps": []
+          }
+        },
+        "runtime_pre_delivery": {
+          "bytes_hashed": 222,
+          "completed_streams": 6,
+          "coverage_gaps": []
+        },
+        "runtime_primary_open_count": 1,
+        "runtime_transmit": {
+          "bytes_hashed": 37,
+          "completed_streams": 1,
+          "coverage_gaps": []
+        },
+        "settlement_state": "succeeded",
+        "sha256": "17f98bea63cd486d0c7186ded02888b4e5f0dcdf0174105f9f6fe1798a76a35c",
+        "task_status": "completed",
+        "thumbnail_intent_count": 1
+      },
+      {
+        "bytes": 9437197,
+        "caller": {
+          "bytes_hashed": 9437197,
+          "completed_streams": 1,
+          "coverage_gaps": []
+        },
+        "cas_unchanged_after_caller_mutation": true,
+        "features": {
+          "binder_receipt_kwargs": [
+            "output_receipts",
+            "prompt_id"
+          ],
+          "harvest_receipt_option": true
+        },
+        "fetch_count": 1,
+        "fetch_urls": [
+          "http://127.0.0.1:8188/view?filename=final.png&subfolder=&type=output"
+        ],
+        "independent_caller_file": true,
+        "producer": {
+          "bytes_hashed": 9437197,
+          "completed_streams": 1,
+          "coverage_gaps": []
+        },
+        "producer_checkpoints": {
+          "correlated_result": {
+            "bytes_hashed": 9437197,
+            "completed_streams": 1,
+            "coverage_gaps": []
+          },
+          "download": {
+            "bytes_hashed": 9437197,
+            "completed_streams": 1,
+            "coverage_gaps": []
+          },
+          "harvest": {
+            "bytes_hashed": 9437197,
+            "completed_streams": 1,
+            "coverage_gaps": []
+          },
+          "host_validation": {
+            "bytes_hashed": 9437197,
+            "completed_streams": 1,
+            "coverage_gaps": []
+          },
+          "materialized_result": {
+            "bytes_hashed": 9437197,
+            "completed_streams": 1,
+            "coverage_gaps": []
+          },
+          "settled": {
+            "bytes_hashed": 9437197,
+            "completed_streams": 1,
+            "coverage_gaps": []
+          },
+          "typed_outputs": {
+            "bytes_hashed": 9437197,
+            "completed_streams": 1,
+            "coverage_gaps": []
+          },
+          "uploaded_outputs": {
+            "bytes_hashed": 9437197,
+            "completed_streams": 1,
+            "coverage_gaps": []
+          },
+          "vibe_result": {
+            "bytes_hashed": 9437197,
+            "completed_streams": 1,
+            "coverage_gaps": []
+          }
+        },
+        "runtime_pre_delivery": {
+          "bytes_hashed": 28311591,
+          "completed_streams": 3,
+          "coverage_gaps": []
+        },
+        "runtime_primary_open_count": 1,
+        "runtime_transmit": {
+          "bytes_hashed": 9437197,
+          "completed_streams": 1,
+          "coverage_gaps": []
+        },
+        "settlement_state": "succeeded",
+        "sha256": "aba8b0a34943135e22abbd448299091a839913609e3711ef8a9a941b7d51555b",
+        "task_status": "completed",
+        "thumbnail_intent_count": 1
+      }
+    ]
+  },
+  "lead_ruling": "https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6987022689",
+  "limits": [
+    "Incremental local observations; not complete LS-6 qualification or Lead approval.",
+    "No existing tests skipped, deleted or relaxed. Existing test changes limited to authorized caller count3to1 and strict census51to52.",
+    "Base/head hash observations intentionally include proposed dependency changes; no dependency guard disabled and no latency gate claimed.",
+    "Python SHA instrumentation only; fixture Comfy response, real product custody/Runtime HTTP/SDK paths. No live model/GPU or cross-process hashing measurement.",
+    "Four identical Vibe SOCKS setup failures and one identical Agent /workspace ancestry refusal remain executed.",
+    "Early failed new-fixture setups and missing-Runtime collection attempt remain in raw artifacts.",
+    "Original checkpoint.json/observations.zip remain unchanged historical records."
+  ],
+  "observed_candidate_product_commits": {
+    "agent_local": "585cc048e90787d354358e22f90b9645116611f7",
+    "agent_published_equal_tree": "2fdf06a903b0fecaf9f70f1453e993119dccfd5e",
+    "runtime": "1a28101869bffcdb84cc2271307a7f55978def7b",
+    "vibecomfy": {
+      "authority_commit": "2fdf06a903b0fecaf9f70f1453e993119dccfd5e",
+      "authority_path": "astrid/packs/vibecomfy/pins.json",
+      "authority_repository": "banodoco/astrid-agent",
+      "authority_sha256": "3bd3c40448ad42b3283da5869cf5e549a51e29c5072305d426ba90a92f7d2b10",
+      "json_pointer": "/sources/vibecomfy/revision"
+    }
+  },
+  "packet": "R14-P55-12",
+  "pins_proposed_for_lead_review": {
+    "runtime": "1a28101869bffcdb84cc2271307a7f55978def7b",
+    "vibecomfy": {
+      "authority_ref": "#/observed_candidate_product_commits/vibecomfy"
+    }
+  },
+  "schema_version": 1,
+  "session": "r14-P55-12-1",
+  "source_commit_before_evidence": "2fec6bdeb87569cd5a22a8f7805e1df173ec2760",
+  "source_file_sha256": {
+    "astrid/core/_shared/result_manifest.py": "03b9aef29bacae6e4af78465802208018c0a7552a66752b3c9665a1742177ded",
+    "astrid/core/contracts/managed_generation_result.py": "b41c6d017f09cf648c932fe94ef7237cd95ad1f5f5643cde7de9124a41c81963",
+    "astrid/core/execution/generic_host.py": "dee1cfc2c5901bceab505e7e3fedb2bdb5a35516bf5d18e543ff28483a195c09",
+    "astrid/core/execution/thumbnail_intents.py": "903eae4cf9250b022f2017bf55a99e980542b2d02d0be011005d7455896344ab",
+    "astrid/core/foundation/output_receipts.py": "e6ec7508f6ffd5dd7cd34223c4db5aa1f3a4b4a3de8c5ccab223508385afb14f",
+    "astrid/core/generation/backends/comfy_target.py": "d0912bcfa8496b3e1e33c6dca832bb6490e76eb268b28e6129262211d9e0afd2",
+    "astrid/core/generation/backends/vibecomfy_local_server.py": "80044f0ab04c19fe665daea26086f3a352f9ac0f6c904c2e51229d0ad7d65a75",
+    "astrid/core/generation/delivery.py": "657a93125f36f476e80e5a74132941aad4e2a66dd60756bf60bd1b0f8e10c756",
+    "astrid/core/generation/producer_result.py": "88b2b5675f5184ccf629c918e5cfa73bf052c1e06c31a3bd83827b07fb9a62d7",
+    "astrid/packs/generation/actions/thumbnail_backfill/__init__.py": "e0c941a0a564078f72eb8eaff617c15e962b36a1786322658e530f8c9dd8f915",
+    "astrid/packs/generation/actions/thumbnail_backfill/run.py": "3d8ef3b5488bb168280c355724b972f1efb8f2ea9bb653fa46e01a2202a5fe5a",
+    "astrid/packs/generation/pack.yaml": "62ba52709f3e09d8372610042da0eefb0ed308ffed48d7aa34a31b8c51947439",
+    "astrid/packs/runpod/pins.json": "5cb8b7b683f84da57233abc06ec2a9fe7444174b512b8eab7a870eba650ffb98",
+    "astrid/packs/runpod/recipe.linux-cu130.json": "9e1a95f7d405c8b1d0a9d47d0fba20ffc312bebd25366c7583479b719e7ffb81",
+    "astrid/packs/vibecomfy/actions/run/run.py": "eaf15825da18a574d8d874736f49c22db3e395c9c6f97a638d9e29e00f8aefcc",
+    "astrid/packs/vibecomfy/environment.windows-nvidia.json": "38e6298568d4fd9e5a7b7fde6f1e0cf95b2deb3b636de33769eea9c38077c746",
+    "astrid/packs/vibecomfy/extensions/generation.engine/comfyui.yaml": "bef73b8404d4d86dbb657ce5e0b402bc99668b7f41ab100498b83dcf848acc03",
+    "astrid/packs/vibecomfy/pins.json": "3bd3c40448ad42b3283da5869cf5e549a51e29c5072305d426ba90a92f7d2b10",
+    "astrid/packs/vibecomfy/recipe.windows-cu130.json": "953da3c5cd42fb87d5b2b518e83a39d70092de0f62661740a3c4642dca0cf9ea",
+    "astrid/resources/astrid-beta-capabilities.json": "4834799a767bd943a444aa0a3844ad2eb0dfac68afb3af74059f237b8c920c90",
+    "astrid/resources/runtime.lock.json": "fc08528af0696850ea72278d1d5d30e06542aedf491274f4321f7641a2f93e0e",
+    "astrid/sdk/media_open.py": "997e97615cb8bb011fe4448a9beb15d0d489fa7651eeb9de92ebb1fe03861ab5",
+    "astrid/sdk/remote.py": "fe1262f20539da5a57829fb5eba5298b97caf34c5c3584c98c723e4e7b0fff38",
+    "astrid/sdk/workspace_client.py": "a7ed2dea3a9fa106e147756c77d979c733430870320172b0b6890d41c9a0b5f2",
+    "astrid_runtime_client/__init__.py": "c3df5924b1685d1a1b094c8617edc081e9073a0484e52fe40368b2fe8a63ff5f",
+    "astrid_runtime_client/contract_metadata.py": "53992fe81d1d32ad6f4ab372b9c312adcc9627b39b87c4fb2034a2a300f96023",
+    "astrid_runtime_client/generated.py": "9451b656bd8621da143a1698a21ce0f6370624027c592045d2675a8d96c01543",
+    "config/astrid-beta-capabilities.json": "4834799a767bd943a444aa0a3844ad2eb0dfac68afb3af74059f237b8c920c90",
+    "config/astrid-capability-census.lock.json": "5be07f774a7117b0c05f2124be29c34b6f390e4a8b75b8851163f8964a93abd0",
+    "runtime.lock.json": "fc08528af0696850ea72278d1d5d30e06542aedf491274f4321f7641a2f93e0e",
+    "tests/core/execution/test_ls6_thumbnail_recovery.py": "25cbc33f4e0527279f6e1598df9b8d4873ecb4f43f98e53b907b33c69d9514ac",
+    "tests/core/generation/test_ls6_receipt_pipeline.py": "4dbdd2a505dba4ba559a9c4cceb06a305cccbdb6d990250f27ccd472596500a6",
+    "tests/core/generation/test_output_delivery.py": "e27565db8ad210f5a9dc9776d14218d9da8fa217d3214982da830868e05da53b",
+    "tests/ls6_output_counters.py": "4d6d67f4006d6351d5fce79ab488abae2c060c5f6bd6ce8d9ff403a73aede1e6",
+    "tests/test_capability_ledger.py": "65501134bbb829d617697fe9b56fea38a86ec455819f4633b8dd4ad9d4059cc4",
+    "tests/test_output_receipt_observations.py": "6be80f98375e0c60b026bda30893030117ceb660294427f87f21966e6369ab52"
+  },
+  "source_tree_before_evidence": "1143a6de561604f82d06a2b85d73cdb61769a130",
+  "status": "blocked_on_thumbnail_log_settlement"
+}

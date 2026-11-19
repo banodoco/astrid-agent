@@ -377,6 +377,7 @@ def validate_managed_generation_result(
     staging_root: str | Path,
     expected_task_id: str | None = None,
     expected_attempt_id: str | None = None,
+    use_output_receipts: bool = False,
 ) -> ManagedGenerationResult:
     """Strictly validate one managed-generation result against staged bytes."""
     if not isinstance(payload, Mapping):
@@ -536,8 +537,11 @@ def validate_managed_generation_result(
     }
     if universal_outputs:
         try:
+            from astrid.core.foundation.output_receipts import bind_output_receipts
             validated: ValidatedResultManifest = validate_result_manifest(
-                universal, staging_root=staging_root
+                universal, staging_root=staging_root,
+                output_receipts=(bind_output_receipts(payload, Path(staging_root))
+                                 if use_output_receipts else None),
             )
         except ResultManifestError as exc:
             raise ManagedGenerationResultError(str(exc)) from exc
@@ -575,6 +579,7 @@ def read_managed_generation_result(
     staging_root: str | Path,
     expected_task_id: str | None = None,
     expected_attempt_id: str | None = None,
+    use_output_receipts: bool = False,
 ) -> ManagedGenerationResult:
     """Read JSON and apply strict profile plus staged-byte validation."""
     manifest_path = Path(path)
@@ -594,6 +599,7 @@ def read_managed_generation_result(
         staging_root=staging_root,
         expected_task_id=expected_task_id,
         expected_attempt_id=expected_attempt_id,
+        use_output_receipts=use_output_receipts,
     )
 
 

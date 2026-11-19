@@ -87,7 +87,7 @@ def _result_rows(outputs):
 
 
 def _deliver(payload, rows, *, client, out, managed, project):
-    from astrid.sdk.media_open import DEFAULT_MATERIALIZE_BYTES, _materialize
+    from astrid.sdk.media_open import DEFAULT_MATERIALIZE_BYTES, _DeliveryData, _materialize
 
     destination = Path(out).expanduser().absolute() if out is not None else None
     file_destination = destination is not None and not destination.is_dir() and bool(destination.suffix)
@@ -100,16 +100,21 @@ def _deliver(payload, rows, *, client, out, managed, project):
         _, project = _resolve_invoke_destination(client=client, out=out, project=None, project_root=None)
     paths = []
     with TemporaryDirectory(prefix='.astrid-delivery-', dir=root) as scratch:
+        verified_files = []
         def open_verified(reference, digest, *, size=None, slot):
-            # Reuse the product's scoped resolver, integrity checks and CAS
-            # clone/copy path, including for the immutable producer manifest.
-            opened = client.media.open(project, reference, materialize=True,
+            # The scoped resolver receives and independently hashes this
+            # caller's bytes, including the immutable producer manifest.
+            opener = getattr(client.media, '_open_delivery', client.media.open)
+            opened = opener(project, reference, materialize=True,
                 cache_root=Path(scratch) / slot, preview_bytes=0,
                 max_bytes=size if isinstance(size, int) and size > 0 else DEFAULT_MATERIALIZE_BYTES)
             if not opened.ok:
                 raise ValueError(opened.error.message)
             path = Path(opened.data['local_path'])
-            if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            if isinstance(opened.data, _DeliveryData):
+                opened.data.verify(path, digest, size)
+                verified_files.append((opened.data, path, digest, size))
+            elif hashlib.sha256(path.read_bytes()).hexdigest() != digest:
                 raise ValueError(f'sha256 mismatch for Runtime object {reference}')
             if size is not None and path.stat().st_size != size:
                 raise ValueError(f'byte count mismatch for Runtime object {reference}')
@@ -170,6 +175,8 @@ def _deliver(payload, rows, *, client, out, managed, project):
             staged.append((temporary, path))
             paths.append(str(path))
         # No requested file is replaced until every object passes verification.
+        for receipt, temporary, digest, size in verified_files:
+            receipt.verify(temporary, digest, size)
         for temporary, path in staged:
             os.replace(temporary, path)
     result = {**payload, 'image_paths': paths, 'run_dir': str(root)}

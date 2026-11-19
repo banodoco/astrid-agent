@@ -1,0 +1,471 @@
+{
+  "packet": "R14-P55-12",
+  "row": "LS-6 remainder",
+  "session": "r14-P55-12-2",
+  "status": "Coordinated candidate proof complete; submitted pin proposals require Lead review and integration",
+  "authority": {
+    "required_dev_main": "4223b30a2b56c7eb59da3a47b200516372bdca5a",
+    "replacement_status": "https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6997687895",
+    "vibe_sync": "https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6997221040",
+    "five_rework_items": "https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6995577860",
+    "accepted_service_boundary": "https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6996446701"
+  },
+  "source_identity": {
+    "agent_tested_product": "70c005b313e94ddfabc62e9e894e22a9eefcd344",
+    "runtime_tested_product": "62333bd797e84b21cb3995e4bcf580ed0bdcf9f0",
+    "vibe_exact_revision": "Resolve sources.vibecomfy.revision in astrid/packs/vibecomfy/pins.json at the tested Agent commit; raw exact SHA/tree/parents are in this compressed archive.",
+    "vibe_merge_tested_source": "158d6f144bb59407c8162edd4f0364f4434ba387",
+    "vibe_merge_parent": "a56a19b107ba819f7994b48b9b7e9983fa819903",
+    "vibe_final_child": "The frozen evidence-only child of the actual connector merge is both the current Agent canonical Vibe pin and Vibe PR head. Exact SHA/tree are in connector/connector-vibe-final.json.",
+    "runtime_final_child": "Only evidence follows the Runtime product source.",
+    "final_agent_child": "Only this evidence and the final pin-copy observation follow the directly tested connector Agent pin commit.",
+    "vibe_merge_parents": [
+      "8fd40d3314e5d460d1d9ae238db48338ce667fc1",
+      "a56a19b107ba819f7994b48b9b7e9983fa819903"
+    ]
+  },
+  "separate_pin_proposals": {
+    "vibe": "70c005b313e94ddfabc62e9e894e22a9eefcd344",
+    "superseded_vibe": "80fda01f579642d035accc4ababb0015586de87c",
+    "runtime": "68c7911e581e85bc70c357806260e88300247ed0",
+    "vibe_paths": [
+      "astrid/packs/runpod/pins.json",
+      "astrid/packs/runpod/recipe.linux-cu130.json",
+      "astrid/packs/vibecomfy/environment.windows-nvidia.json",
+      "astrid/packs/vibecomfy/extensions/generation.engine/comfyui.yaml",
+      "astrid/packs/vibecomfy/pins.json",
+      "astrid/packs/vibecomfy/recipe.windows-cu130.json"
+    ],
+    "acceptance": "Pending Lead integration approval; no self-approval or destination merge."
+  },
+  "focused_results": {
+    "new_exact_pin_agent": {
+      "passed": 41,
+      "failures": 0,
+      "errors": 0,
+      "skips": 0,
+      "same_ids": true,
+      "reviewed_before": "39 pass / 2 export-permission failures"
+    },
+    "new_combined_vibe": {
+      "passed": 17,
+      "failures": 0,
+      "errors": 0,
+      "skips": 0,
+      "same_ids": true,
+      "reviewed_before": "13 pass / 4 distinct-path receipt failures"
+    },
+    "new_existing_pin_checks": {
+      "passed": 14,
+      "failures": 0,
+      "errors": 0,
+      "skips": 0
+    },
+    "carried_runtime": {
+      "passed": 159,
+      "failures": 0,
+      "errors": 0,
+      "skips": 0,
+      "same_ids": true,
+      "reviewed_before": "152 pass / 7 variant and upgrade failures",
+      "qualification": "Prior observation mapped byte-for-byte to unchanged Runtime product commit across 667 source files. No Runtime159 rerun claimed."
+    },
+    "core_total": 217,
+    "fresh_cases_this_session": 72,
+    "official_vendor_lock_check": "PASS; exact producer manifest and generated client retained.",
+    "staged_pin_copy_check": "PASS: unchanged tracked-pin-copy assertion after final connector evidence staging; raw observation adjacent."
+  },
+  "counter_results": {
+    "fresh_current_pin_observation": true,
+    "harness_sha256": "4d6d67f4006d6351d5fce79ab488abae2c060c5f6bd6ce8d9ff403a73aede1e6",
+    "observer_sha256": "e4109ee119242daed4574f2757e0a3a5063b3bd5cda10e33524e9764085fe9a0",
+    "source_stable": true,
+    "strict_checks_passed": true,
+    "measurements": [
+      {
+        "bytes": 37,
+        "sha256": "17f98bea63cd486d0c7186ded02888b4e5f0dcdf0174105f9f6fe1798a76a35c",
+        "fetch_count": 1,
+        "producer": {
+          "bytes_hashed": 37,
+          "completed_streams": 1,
+          "coverage_gaps": []
+        },
+        "runtime_pre_delivery": {
+          "bytes_hashed": 222,
+          "completed_streams": 6,
+          "coverage_gaps": []
+        },
+        "runtime_transmit": {
+          "bytes_hashed": 37,
+          "completed_streams": 1,
+          "coverage_gaps": []
+        },
+        "caller": {
+          "bytes_hashed": 37,
+          "completed_streams": 1,
+          "coverage_gaps": []
+        },
+        "cas_unchanged_after_caller_mutation": true,
+        "independent_caller_file": true,
+        "settlement_state": "succeeded",
+        "task_status": "completed",
+        "runtime_primary_open_count": 1,
+        "thumbnail_intent_count": 1
+      },
+      {
+        "bytes": 9437197,
+        "sha256": "aba8b0a34943135e22abbd448299091a839913609e3711ef8a9a941b7d51555b",
+        "fetch_count": 1,
+        "producer": {
+          "bytes_hashed": 9437197,
+          "completed_streams": 1,
+          "coverage_gaps": []
+        },
+        "runtime_pre_delivery": {
+          "bytes_hashed": 28311591,
+          "completed_streams": 3,
+          "coverage_gaps": []
+        },
+        "runtime_transmit": {
+          "bytes_hashed": 9437197,
+          "completed_streams": 1,
+          "coverage_gaps": []
+        },
+        "caller": {
+          "bytes_hashed": 9437197,
+          "completed_streams": 1,
+          "coverage_gaps": []
+        },
+        "cas_unchanged_after_caller_mutation": true,
+        "independent_caller_file": true,
+        "settlement_state": "succeeded",
+        "task_status": "completed",
+        "runtime_primary_open_count": 1,
+        "thumbnail_intent_count": 1
+      }
+    ],
+    "paired_original_counts": "Producer 7 to 1 and caller 5 to 1 at both sizes; Runtime transmission 2 to 1 for 37 bytes and 1 to 1 for 9437197 bytes. Runtime pre-delivery stays separately counted at 6 and 3.",
+    "limits": "Fixed Comfy response bytes and Python instrumentation. No GPU, native-I/O, latency, LS-2.2 or full-release qualification."
+  },
+  "preservation": {
+    "protected_recovery_sha256": "25cbc33f4e0527279f6e1598df9b8d4873ecb4f43f98e53b907b33c69d9514ac",
+    "immutable_guard_whole_lines_sha256": "6a155b6817f74ae7540f8975c2dcf00358e13a544fb0da3e8a22151d3af25f2f",
+    "immutable_guard_byte_equal_prescribed_base": true,
+    "existing_Agent_tests_unchanged_from_recovered_head": true,
+    "generated_client_matches_producer": true,
+    "generated_client_sha256": "7e4a8efeb150cd14da93e97b2784c9e28171f79866cd31ac614dc2e35a6f7f09",
+    "runtime_pin": "62333bd797e84b21cb3995e4bcf580ed0bdcf9f0",
+    "agent_diff_since_recovered": [
+      "astrid/packs/runpod/pins.json",
+      "astrid/packs/runpod/recipe.linux-cu130.json",
+      "astrid/packs/vibecomfy/environment.windows-nvidia.json",
+      "astrid/packs/vibecomfy/extensions/generation.engine/comfyui.yaml",
+      "astrid/packs/vibecomfy/pins.json",
+      "astrid/packs/vibecomfy/recipe.windows-cu130.json",
+      "docs/evidence/r14-p55-12/observations-rework-final.tar.xz",
+      "docs/evidence/r14-p55-12/pin-copy-guard.log",
+      "docs/evidence/r14-p55-12/rework-final.json"
+    ],
+    "runtime_evidence_only_paths": [
+      "docs/evidence/r14-p55-12/observations-rework-final.tar.xz",
+      "docs/evidence/r14-p55-12/pin-copy-guard.log",
+      "docs/evidence/r14-p55-12/rework-final.json"
+    ]
+  },
+  "retained_failures": {
+    "958": "Unchanged installed journey reran on the actual connector Agent pin and final Vibe head: first create settlement HTTP422. Both service cases separately failed unchanged on exact Runtime623, which is still the final Runtime product. FIX-12 owns completion.",
+    "926": "Unchanged ordinary durable-log owner retry reran on the actual connector Agent pin and final Vibe head: HTTP409 at the preserved immutable association guard. FIX-12 owns repair.",
+    "raw_failures": "All three commands retain raw exit1, JUnit and full log; four failure cases are not included in passing totals.",
+    "service_junit_prefix": "The exact absolute source and function/parameter IDs match; the raw classname gained a scratch-directory prefix because the Runtime checkout moved. Both raw forms and exact messages are retained in retained-failure-comparison.json.",
+    "prior_pin_literals": "Historical whole vendor-lock and Windows source witness pair remains 15 pass / 2 unchanged fixed-literal failures among the same17 IDs; carried in rework-final.json, not rerun or repaired here.",
+    "948": "JPEG validation / follow-up work remains outside this packet."
+  },
+  "hosted_evidence": {
+    "historical_only": true,
+    "census": "Recovered 98 Agent, 20 Runtime and 28 Vibe branch runs were all terminal before mutation; no cancellation or manual dispatch.",
+    "agent": "Held-connection functional records match prior; comparison NO-RESULT on protected-meter source identity. LS-7 retains the same single settlement-stage failure; LS-8 stops at Runtime identity on all three OSes. Standing meter retains Vibe identity NO-RESULT; AT15 remains routed separately.",
+    "runtime": "Recorded checkpoint CI has 3281 matching prior failure/error occurrences, 21 occurrences of seven checkpoint tests fixed by the mapped623 source, one routed RT11 watchdog occurrence, and zero unclassified new IDs.",
+    "vibe": "Paired root-clean and unavailable runpod-lifecycle setup failures leave downstream product tests NO-RESULT.",
+    "new_heads": "Automatic post-push checks are separate from these observations. Read current PR checks; this archive makes no green-CI claim."
+  },
+  "integration": {
+    "order": "Lead reviews and lands Runtime68 and Vibe176, then Agent410 last.",
+    "p55_04": "Combined Vibe source includes accepted P55-04 work. Whichever Agent PR lands second must retain/re-pin the combined Vibe source per6997221040.",
+    "schema": "Approved a313 schema literal remains in f108349e; equality and no-observed_job assertions remain. Lead coordinates later release/14/main landing with Plan59 issue838.",
+    "destinations": "All existing p55/ls-6-remainder PRs target release/14/plan-55. No destination merge, rebase, task-board edit or scope change.",
+    "proof_home": "Final combined proof is in Agent410; Runtime68 and Vibe176 link it in their PR submission. Original370-member rework archive remains identical in all three repositories."
+  },
+  "historical_evidence": {
+    "index": "docs/evidence/r14-p55-12/rework-final.json",
+    "archive": "docs/evidence/r14-p55-12/observations-rework-final.tar.xz",
+    "sha256": "3a2ec6c341c341a87e8df940ddb456c24d179b099782226776c4ae67c8b01328",
+    "verified_members": 370,
+    "preserved_unchanged": true
+  },
+  "archive": {
+    "path": "docs/evidence/r14-p55-12/observations-combined-vibe.tar.xz",
+    "bytes": 297600,
+    "sha256": "7f77090bd6ac478939a9ffd02b6baf63c9d4b5c792fd294dabbe21ecb1dc05c2",
+    "members": 46,
+    "inventory": [
+      {
+        "path": "connector/build_connector_evidence.py",
+        "bytes": 8644,
+        "sha256": "024f3729122f6d83dde0459756db426593d9e38bcd1df6edbe8b44e385630756"
+      },
+      {
+        "path": "connector/connector-counter-1-environment.txt",
+        "bytes": 1100,
+        "sha256": "9a78e2799465c2b310d30c20edfc05c1d028929ca3e90fa0ac50f90e91e6feb2"
+      },
+      {
+        "path": "connector/connector-counter-1-launch.py",
+        "bytes": 6734,
+        "sha256": "35fffc4c0cedce573d21b3f271c23674abf7c5986be6f36dca09765628ee822f"
+      },
+      {
+        "path": "connector/connector-counter-1-plan.json",
+        "bytes": 4944,
+        "sha256": "a50f854303441ca17d8cdd23f536f8dc1b7cf96873892e742980acdaa79d4dbd"
+      },
+      {
+        "path": "connector/connector-counter-1-run.json",
+        "bytes": 8902,
+        "sha256": "882907f7e2de97462ea0a006d1b0ad7dc953dfc761c786d24c45a09b6761dcd1"
+      },
+      {
+        "path": "connector/connector-counter-1.json",
+        "bytes": 71563,
+        "sha256": "65591b888f25eb539c3bc31801bd57b84931f00b1fd26b6590ae2592cb22a1bf"
+      },
+      {
+        "path": "connector/connector-counter-1.log",
+        "bytes": 4378,
+        "sha256": "4b57746b4e0798db4ed95449425a520e446769a78de45bb96a3d84c74886ff74"
+      },
+      {
+        "path": "connector/connector-created-sources.json",
+        "bytes": 3342,
+        "sha256": "95adc442f17ff41ccf57a192987a05218fd9cd25314988c0cc7bc9b5a2a27875"
+      },
+      {
+        "path": "connector/connector-failure-commands.json",
+        "bytes": 2174,
+        "sha256": "128fd23e22a1d091006ef1eab177b2a7f1d14c73561038e5353cb3c23266f19a"
+      },
+      {
+        "path": "connector/connector-final-source-audit.json",
+        "bytes": 805,
+        "sha256": "f8adab8b8a12921891ddeee0b00a15c2caaa2cec4f9807e196d22fac26cc70a3"
+      },
+      {
+        "path": "connector/connector-focused-comparison.json",
+        "bytes": 38905,
+        "sha256": "acfbb5e261b53e86dbf37422c9f7fe2ae90492dfc7852d32d88754d1bbbfe730"
+      },
+      {
+        "path": "connector/connector-pin-commit.json",
+        "bytes": 2689,
+        "sha256": "3ca2b7ad7844c0bbebce4b6a1144d8f2e85a971c0974a1dbb77d9cfbcc516e32"
+      },
+      {
+        "path": "connector/connector-pin-generation.log",
+        "bytes": 331,
+        "sha256": "6348217814a1e3e13d1535e13a928680b8b4c259ba7473d3c45eee58d6139109"
+      },
+      {
+        "path": "connector/connector-pin-publication-plan.json",
+        "bytes": 2635,
+        "sha256": "59b6b7abd8a8800ac7ee76c7d0084341714d32dca6d8525a0b32830765b3c91d"
+      },
+      {
+        "path": "connector/connector-proof-commands.json",
+        "bytes": 6509,
+        "sha256": "e506fab27132f7de5d06dd79ceaddff81b8749dfe191e13755deadb922fa5cb4"
+      },
+      {
+        "path": "connector/connector-retained-failure-comparison.json",
+        "bytes": 95444,
+        "sha256": "81a195d796ee9dd7b5b13b26df3a3a81a9239646e54cf10df2b0dcc4b6c2a39a"
+      },
+      {
+        "path": "connector/connector-retry926-selected-evidence.json",
+        "bytes": 6998,
+        "sha256": "8f3c96749419b45e39872b40cec861a4df6ace0a2d233481eb5ed4934a04f393"
+      },
+      {
+        "path": "connector/connector-source-readback.json",
+        "bytes": 950,
+        "sha256": "6f814753a9b39978d9b0fc173d8a79c8efa64e9ccf4503db71449a06c5b8bd59"
+      },
+      {
+        "path": "connector/connector-vibe-final.json",
+        "bytes": 1112,
+        "sha256": "ecb9f22946e483ce3a33adf275c832b3c60bf1b7a265eed5857a054a9fc73553"
+      },
+      {
+        "path": "connector/connector-vibe-publication-plan.json",
+        "bytes": 1058,
+        "sha256": "b7050eafb0c8137ef6a01a48f12f6e82c73ef470c026474977830b4dc9764a83"
+      },
+      {
+        "path": "connector/connector-vibe17-comparison.json",
+        "bytes": 4670,
+        "sha256": "b103dd807e49c84c2273c693450544948c338ecf5ee823ee38cc4f18a1ae616e"
+      },
+      {
+        "path": "current-runs/connector-agent41-1.before.json",
+        "bytes": 6487,
+        "sha256": "265c69f124f3635584337d0a4a284607e52bcec55e4b9bf6cb1b6bfde69934b0"
+      },
+      {
+        "path": "current-runs/connector-agent41-1.json",
+        "bytes": 7817,
+        "sha256": "f78b0d7553c8363b46252cfa0e16c461849cca341004d205ec90517b54686305"
+      },
+      {
+        "path": "current-runs/connector-agent41-1.log",
+        "bytes": 11287,
+        "sha256": "7b34406057681ccd8da095da339d1ea743dec3eee744a576cf66add18ccc5c01"
+      },
+      {
+        "path": "current-runs/connector-agent41-1.xml",
+        "bytes": 6179,
+        "sha256": "14211145c1f5d532071b89a23a225c1495cc318c62b7620a6883565ebe7dd41e"
+      },
+      {
+        "path": "current-runs/connector-installed958-1.before.json",
+        "bytes": 2194,
+        "sha256": "82a89a40395a33b174dd22e062939a67c7125947a965d4a47d7a815745c4ab33"
+      },
+      {
+        "path": "current-runs/connector-installed958-1.json",
+        "bytes": 3749,
+        "sha256": "2b550d0cf3a7e4b117e59979b6cbf2f388b2ae2c50f83b148237f8a1ef00801e"
+      },
+      {
+        "path": "current-runs/connector-installed958-1.log",
+        "bytes": 17183,
+        "sha256": "33502d3b506e68e675cbbf6f163ab8bc9e289fdd27f4b2a9521e9a1751f05c63"
+      },
+      {
+        "path": "current-runs/connector-installed958-1.xml",
+        "bytes": 13106,
+        "sha256": "22b4083334dd8f33cca7de806de55754309764d031558adbb01bbacafa38b040"
+      },
+      {
+        "path": "current-runs/connector-pin14-1.before.json",
+        "bytes": 1894,
+        "sha256": "17d16f7bdfe7bcf556023cf34d61c622e3ea0b160d41bd80fb65049bbb725d9e"
+      },
+      {
+        "path": "current-runs/connector-pin14-1.json",
+        "bytes": 3224,
+        "sha256": "910abb582456946808707e8d5a80155153269821af56fd115a2e5a132b5d88ff"
+      },
+      {
+        "path": "current-runs/connector-pin14-1.log",
+        "bytes": 2305,
+        "sha256": "52fc682149ffdf3a75318c7d1c90e0f39b187d6728bbec735e52e00e646e5724"
+      },
+      {
+        "path": "current-runs/connector-pin14-1.xml",
+        "bytes": 2050,
+        "sha256": "811bd2cc56c143fa3910994fb2ec47eabd072761e779a51a198e6b5a5b5ac360"
+      },
+      {
+        "path": "current-runs/connector-retry926-1.before.json",
+        "bytes": 2451,
+        "sha256": "0f8b49b0325918b04666a2b8da31b7fdd75226ff62c888843550ea7b8b6b3689"
+      },
+      {
+        "path": "current-runs/connector-retry926-1.json",
+        "bytes": 4006,
+        "sha256": "c5b5190dc83447a7aa0b852f85b2d6f3cdf17a2a362d4d027896e2520073b89b"
+      },
+      {
+        "path": "current-runs/connector-retry926-1.log",
+        "bytes": 15443,
+        "sha256": "936070620816dac08cb42c9fcbe9f5e12d05525946db5d569bc941b0be4655b9"
+      },
+      {
+        "path": "current-runs/connector-retry926-1.xml",
+        "bytes": 14020,
+        "sha256": "01814ef841754cf5f6bd6455e59a1b00468699f518f735f8aab4f7ba1926d70d"
+      },
+      {
+        "path": "current-runs/connector-vibe17-1.before.json",
+        "bytes": 1435,
+        "sha256": "b53d0c350763467df5ef8dbf15fa4db0287a8cde4f9d1cf8a2255de5951b89de"
+      },
+      {
+        "path": "current-runs/connector-vibe17-1.json",
+        "bytes": 2078,
+        "sha256": "f3c421522ef701d5aab11840754899c95b6ee5b23e61678c7335bff42dd99afc"
+      },
+      {
+        "path": "current-runs/connector-vibe17-1.log",
+        "bytes": 3160,
+        "sha256": "d62de80c04894ed7abf0527e1fcc75298cffb65b6e5edd44169269462af2bb9f"
+      },
+      {
+        "path": "current-runs/connector-vibe17-1.xml",
+        "bytes": 2800,
+        "sha256": "cc05f927318354ede4b0e0923bd57827ca478a6beb9f2117d0c211b6c0700952"
+      },
+      {
+        "path": "intermediate-local/failed-git-publication.json",
+        "bytes": 647,
+        "sha256": "1e8c260f27d80aeaf77ecdee7aabe6d94d28e92734e00638c3b1d965e2c28a4f"
+      },
+      {
+        "path": "intermediate-local/observations-combined-vibe.tar.xz",
+        "bytes": 254468,
+        "sha256": "931051c0dc5194a5833f84491264e74adebb746b13bfe2e17ab88023eba20eab"
+      },
+      {
+        "path": "launchers/run_focused.py",
+        "bytes": 2883,
+        "sha256": "fb7c57d814d33106d15c9440b23625146d4297f60c42a421c05084286764edb3"
+      },
+      {
+        "path": "unchanged-guards/protection-audit.json",
+        "bytes": 1256,
+        "sha256": "39d4674f2518f04e20022f9ba1ead982cffc41ddc578200d0c2f5d7ff2294dff"
+      },
+      {
+        "path": "unchanged-runtime/runtime159-carry-forward.json",
+        "bytes": 1279,
+        "sha256": "d9b046fe099c76e8b6805a94e6857fcd1b9cde3e88cbbe2e5e76e9b083c94af9"
+      }
+    ]
+  },
+  "publication_transport": {
+    "blocked_status": "https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6997973244",
+    "failure": "CLI git push lacked Username credentials; it changed no remote ref.",
+    "resolution": "Authenticated GitHub Git-object API. Every returned blob/tree matched the staged local object. Actual commits were fetched and their tree/parent identities verified; fresh Vibe17, Agent41, pin14 and counters ran on the returned commits.",
+    "history": "Existing published parent chains preserved; true two-parent Vibe merge includes a56. No rebase, amend, force update, destination merge or deletion. Unpublished local proposal commits remain in local history and are not final PR identities.",
+    "intermediate_evidence": "The intermediate local proof/archive is retained inside this archive. The earlier local commit IDs in BLOCKED6997973244 are superseded by the actual connector identities named here and in the final STATUS.",
+    "ref_updates": "Only p55/ls-6-remainder in the three authorized repositories, with force=false and expected_sha guards."
+  },
+  "staged_pin_copy_observation": {
+    "command": [
+      "/workspace/scratch/8c30ce2383b9/test-env/bin/python",
+      "-m",
+      "pytest",
+      "-q",
+      "-rA",
+      "tests/test_vibecomfy_pin.py::test_no_other_tracked_file_copies_the_pin",
+      "--basetemp=/workspace/scratch/8c30ce2383b9/proof/connector-staged-pin-copy-1-tmp",
+      "--junitxml=/workspace/scratch/8c30ce2383b9/proof/connector-staged-pin-copy-1.xml"
+    ],
+    "exit_code": 0,
+    "inputs_unchanged": true,
+    "source": "70c005b313e94ddfabc62e9e894e22a9eefcd344",
+    "json": "combined-pin-copy-guard.json",
+    "junit": "combined-pin-copy-guard.xml",
+    "log": "combined-pin-copy-guard.log",
+    "final_text_audit": "Afterward only this status and observation files were added; every text payload checked to preserve canonical pin-copy rule."
+  }
+}
