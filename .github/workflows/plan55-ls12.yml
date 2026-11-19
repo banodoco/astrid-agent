@@ -29,10 +29,12 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        revision: [base, pin-reference, candidate]
+        revision: [base, pin-reference, plan-reference, candidate]
         include:
           - os: macos-latest
             revision: candidate
+          - os: macos-latest
+            revision: plan-reference
     env:
       ASTRID_CI_JOB: lanes-integration
       ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/runtime
@@ -97,14 +99,15 @@ jobs:
         run: |
           import hashlib, json, os, pathlib, shutil, subprocess, sys
           sys.path.insert(0, str(pathlib.Path.cwd()))
-          from tests.ls12_reference import REFERENCE, verify
+          from tests.ls12_reference import BASE, REFERENCE, PLAN_REFERENCE, verify
           root = pathlib.Path.cwd()
           subprocess.run(["git", "fetch", "--no-tags", "origin", REFERENCE], check=True)
           receipt = verify(root)
           source = root
           if os.environ["REVISION"] != "candidate":
               source = root / "ls12-base"
-              selected = "493616c1cfc7a83f18894dc81773571e977f26ef" if os.environ["REVISION"] == "base" else REFERENCE
+              selected = {"base": BASE, "pin-reference": REFERENCE,
+                          "plan-reference": PLAN_REFERENCE}[os.environ["REVISION"]]
               subprocess.run(["git", "worktree", "add", "--detach", str(source), selected], check=True)
               for relative in [
                   "tests/integrations/test_ls12_first_job.py", "tests/ls12_first_job_run.py",
@@ -125,8 +128,9 @@ jobs:
           refs = {key: subprocess.check_output(["git", "-C", str(path), "rev-parse", "HEAD"], text=True).strip()
                   for key, path in {"agent": source, "harness": root, "runtime": root / "runtime", "vibecomfy": root / "vibecomfy-checkout", "lifecycle": root / "runpod-lifecycle-checkout"}.items()}
           (proof / "sources.json").write_text(json.dumps(refs, indent=2) + "\n")
-          # Retain the original guard: the unrepinned 493/d8 cell is NO-RESULT.
-          # Lead 6997218519 separately permits only the verified six-file reference.
+          # Keep both historical references and the original dependency guard.
+          # Final proof uses the accepted destination after Lead 6998870417;
+          # old 493/d8 and 666/6cad cells cannot qualify the new dependency tuple.
           for relative in ["runtime.lock.json", "astrid/packs/vibecomfy/pins.json"]:
               if (source / relative).read_bytes() != (root / relative).read_bytes():
                   raise SystemExit("base/candidate dependency authorities differ: " + relative)
@@ -298,13 +302,13 @@ jobs:
         run: |
           import pathlib, subprocess, sys
           sys.path.insert(0, str(pathlib.Path.cwd()))
-          from tests.ls12_reference import REFERENCE
+          from tests.ls12_reference import PLAN_REFERENCE
           # The shared runner, historical reference, fixture, native selection,
           # sample counts, identity guards and tolerances are unchanged.
           # A strict historical-identity refusal remains a failed NO-RESULT;
           # the complete new-tuple cells are retained for Lead classification.
           subprocess.run([sys.executable, "-m", "tests.local_speed_paired_run",
-                          "--base", REFERENCE, "--output", "ls12-counts-proof"], check=True)
+                          "--base", PLAN_REFERENCE, "--output", "ls12-counts-proof"], check=True)
       - name: Hash every retained count observation and failure
         if: ${{ always() }}
         shell: python
