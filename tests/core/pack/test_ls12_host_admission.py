@@ -63,3 +63,30 @@ def test_host_admission_does_not_substitute_another_selected_root_digest(tmp_pat
                  "source_digest": selected[roots[1].name]["source_digest"]}
     with pytest.raises(generic_host.HostError, match="source digest changed"):
         generic_host._verify_admitted_source(admission)
+
+
+@pytest.mark.parametrize("member", ["helper.py", "resource.txt"])
+def test_fresh_host_admission_detects_edited_bytes_without_a_read_count_gate(tmp_path, member):
+    """Keep the security probe reachable while verify-once is deferred."""
+    root = (tmp_path / "ls12_fresh").resolve()
+    root.mkdir()
+    (root / "helper.py").write_bytes(b"VALUE = 'old'\n")
+    (root / "resource.txt").write_bytes(b"resource old\n")
+    selected = {root.name: {"root": str(root), "source_digest": pack_digest(root)}}
+    admission = {"selected_pack_map": selected, "source_roots": [str(root)],
+                 "source_digest": selected[root.name]["source_digest"]}
+    generic_host._verify_admitted_source(admission)
+    validate_selected_pack_map(selected)
+    path = root / member
+    stamp = path.stat()
+    original = path.read_bytes()
+    changed = original.replace(b"old", b"new", 1)
+    assert changed != original and len(changed) == len(original)
+    path.write_bytes(changed)
+    os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    assert path.stat().st_size == stamp.st_size
+    assert path.stat().st_mtime_ns == stamp.st_mtime_ns
+    with pytest.raises(generic_host.HostError, match="source digest changed"):
+        generic_host._verify_admitted_source(admission)
+    with pytest.raises(ValueError, match="source digest changed"):
+        validate_selected_pack_map(selected)

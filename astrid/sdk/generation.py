@@ -192,11 +192,11 @@ def _check_workflow_source_admission(admitted: _WorkflowSourceAdmission) -> None
 
 @contextmanager
 def _snapshot_generation_workflow(path: Path):
-    """Freeze source once for this operation; nested preparation reuses it.
+    """Freeze a canonical source pair, checking held bytes before nested use.
 
-    Only the internally published private path can reuse admission. Fresh
-    reads must equal the held Python, companion and source bytes exactly;
-    timestamp equality does not grant authority. No result survives this scope.
+    The internally published private path keeps its admitted byte identity.
+    Nested preparation still performs ordinary canonical loading/publication;
+    reusing that verification is deferred. No result survives this scope.
     """
     from tempfile import TemporaryDirectory
     requested = path.expanduser().absolute()
@@ -208,8 +208,6 @@ def _snapshot_generation_workflow(path: Path):
             _check_workflow_source_admission(admitted)
         except (OSError, ValueError) as exc:
             raise GenerationInputError(f'admitted workflow source changed: {requested}: {exc}') from exc
-        yield admitted.path
-        return
     original = requested.resolve()
     with TemporaryDirectory(prefix='astrid-workflow-source-') as scratch:
         snapshot = Path(scratch).resolve() / original.name

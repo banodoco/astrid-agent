@@ -75,11 +75,11 @@ def pack_discovery_scope():
 
 
 def _tree_fingerprint(root: Path) -> str:
-    """Read the same content/name/kind identity with fewer path allocations.
+    """Read contents, names and file kinds, including untracked resources.
 
-    DirEntry metadata is used only within this walk. Every regular file is
-    still hashed on every call: same-size edits with restored times, new files,
-    symlinks and deletion remain observable. No admission result is cached.
+    A stat-only key misses same-size edits with restored timestamps. Tracking
+    the entire tree also covers added manifests, alternate manifests, deleted
+    resources and new symlinks that canonical admission must reject.
     """
     digest = hashlib.sha256()
 
@@ -87,11 +87,10 @@ def _tree_fingerprint(root: Path) -> str:
         digest.update(len(value).to_bytes(8, "big"))
         digest.update(value)
 
-    def visit(path: str, relative: str, entry: os.DirEntry[str] | None = None) -> None:
-        add(os.fsencode(relative))
+    def visit(path: Path) -> None:
+        add(os.fsencode(path.relative_to(root)))
         try:
-            mode = (entry.stat(follow_symlinks=False) if entry is not None
-                    else os.stat(path, follow_symlinks=False)).st_mode
+            mode = path.lstat().st_mode
         except FileNotFoundError:
             add(b"missing")
             return
@@ -99,20 +98,15 @@ def _tree_fingerprint(root: Path) -> str:
         if stat.S_ISLNK(mode):
             add(os.fsencode(os.readlink(path)))
         elif stat.S_ISDIR(mode):
-            with os.scandir(path) as scan:
-                # Match pathlib's platform ordering, including Windows case
-                # normalization, rather than changing the fingerprint format.
-                children = sorted(scan, key=lambda child: os.path.normcase(child.name))
-            for child in children:
-                child_relative = child.name if relative == "." else os.path.join(relative, child.name)
-                visit(child.path, child_relative, child)
+            for child in sorted(path.iterdir()):
+                visit(child)
         elif stat.S_ISREG(mode):
-            with open(path, "rb") as stream:
+            with path.open("rb") as stream:
                 add(hashlib.file_digest(stream, "sha256").digest())
         else:
             raise OSError(f"cannot fingerprint non-regular pack resource: {path}")
 
-    visit(os.fspath(root), ".")
+    visit(root)
     return digest.hexdigest()
 
 
