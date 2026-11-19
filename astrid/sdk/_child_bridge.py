@@ -212,18 +212,11 @@ def _validate_publication_readback(value: Any, *, task_id: str, run_id: str,
             or task["result"] != settled):
         raise ValueError("invalid publication task readback")
     if (type(settled) is not dict or set(settled) != {"payload", "outputs", "generation_publish_v1"}
-            or type(settled["payload"]) is not dict
-            or set(settled["payload"]) - {"action_result", "workflow_hook_evidence"}
+            or type(settled["payload"]) is not dict or set(settled["payload"]) - {"action_result"}
             or type(settled["outputs"]) is not list or len(settled["outputs"]) > 256
             or any(type(row) is not dict or set(row) - _PUBLICATION_TYPED_FIELDS
                    for row in settled["outputs"])):
         raise ValueError("invalid publication settlement readback")
-    if "workflow_hook_evidence" in settled["payload"]:
-        from astrid.core.contracts.managed_generation_result import validate_workflow_hook_evidence
-        try:
-            validate_workflow_hook_evidence(settled["payload"]["workflow_hook_evidence"])
-        except ValueError as exc:
-            raise ValueError("invalid workflow hook evidence in publication readback") from exc
     applied = settled["generation_publish_v1"]
     if (type(applied) is not dict or set(applied) != {"effect_type", "publications"}
             or applied["effect_type"] != "generation.publish_v1"

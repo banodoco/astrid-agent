@@ -115,15 +115,6 @@ def test_the_run_actions_after_outputs_spec_composes_the_candidate(tmp_path):
     generated = _video(tmp_path / "generated.mp4", seconds=4.5)
     produced = after_outputs([generated])
     assert Path(produced[0]).is_file() and Path(produced[0]) != generated
-    evidence_after_outputs = run._after_outputs(json.dumps({
-        "entry": "h3", "job_dir": str(job_dir), "inputs": job["inputs"], "files": job["files"],
-        "workflow_hook_evidence": True,
-    }))
-    assert isinstance(evidence_after_outputs([generated]), list)
-    structured = evidence_after_outputs.with_evidence([generated])
-    assert isinstance(structured, dict) and set(structured) == {"outputs", "evidence"}
-    assert Path(structured["outputs"][0]).is_file()
-    assert "reference_view" in structured["evidence"]
     assert run._after_outputs("{}") is None
 
 
