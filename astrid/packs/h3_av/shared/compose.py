@@ -460,11 +460,14 @@ def _guard_unprepared_static_permissions(preparation: Mapping[str, Any]) -> None
             if not isinstance(path, str) or not Path(path).is_file():
                 raise CompositionError(f"regional video mask {mask_id!r} is not resolved")
             if probe_mask(Path(path), mask_id=str(mask_id))["kind"] == "image":
-                from PIL import Image
-                with Image.open(path) as image:
-                    size = image.size
-                if selector.get("threshold") is not None or size != target:
-                    raise CompositionError("static permission requires a compiled mask for its size or threshold")
+                if selector.get("threshold") is not None:
+                    raise CompositionError("static permission requires a compiled mask for its threshold")
+                from .request import H3RequestError
+                from .static_regions import _image_pixels
+                try:
+                    _image_pixels(Path(path), str(mask_id), width=target[0], height=target[1], threshold=None)
+                except H3RequestError as exc:
+                    raise CompositionError(f"static permission requires a compiled mask: {exc}") from exc
 
 def _spatial_video_masks(
     preparation: Mapping[str, Any], source: Path | None = None

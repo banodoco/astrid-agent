@@ -431,3 +431,19 @@ def test_legacy_moving_mask_remains_accepted_on_nondefault_canvas(tmp_path):
                    "mask_schedule": {"video": {"changes": [
                        {"action": "generate", "area": {"asset": "mask"}}]}}}
     _guard_unprepared_static_permissions(preparation)
+
+
+def test_legacy_partial_gray_still_fails_closed(tmp_path):
+    from astrid.packs.h3_av.shared.compose import CompositionError, compose_candidate
+    from astrid.packs.h3_av.shared.verify import VerificationError, verify_candidate
+
+    path = tmp_path / "gray.png"
+    Image.new("L", (1024, 576), 128).save(path)
+    preparation = {"status": "prepared", "media": {"width": 1024, "height": 576},
+                   "assets": [{"asset": "mask", "status": "resolved", "path": str(path)}],
+                   "mask_schedule": {"video": {"changes": [
+                       {"action": "generate", "area": {"asset": "mask"}}]}}}
+    with pytest.raises(CompositionError, match="requires a compiled mask"):
+        compose_candidate(preparation=preparation, generated=path, out_dir=tmp_path / "out")
+    with pytest.raises(VerificationError, match="requires a compiled mask"):
+        verify_candidate(preparation=preparation, composition={"status": "composed"})
