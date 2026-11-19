@@ -18586,6 +18586,54 @@ class _ManagedStdinShutdown:
         if self.cleanup_error is not None:
             raise self.cleanup_error
 
+    @contextmanager
+    def input_lines(self, source: IO[str]):
+        """Observe shutdown at an idle input boundary, never inside a frame."""
+        lines: queue.Queue[Any] = queue.Queue(maxsize=1)
+        stopped = threading.Event()
+
+        def send(value):
+            while not stopped.is_set():
+                try:
+                    lines.put(value, timeout=0.05)
+                    return True
+                except queue.Full:
+                    pass
+            return False
+
+        def read():
+            try:
+                for line in source:
+                    if not send(line):
+                        return
+                send(None)
+            except BaseException as exc:  # noqa: BLE001 - preserve the original input failure.
+                send(exc)
+
+        def receive():
+            while not self.shutdown_requested.is_set():
+                try:
+                    line = lines.get(timeout=0.05)
+                except queue.Empty:
+                    continue
+                if self.shutdown_requested.is_set():
+                    break
+                if isinstance(line, BaseException):
+                    raise line
+                if line is None:
+                    return
+                yield line
+            self.wait_for_shutdown_cleanup()
+
+        # Like the EOF watcher, this CLI-lifetime reader may wait on an open
+        # client pipe. It never runs frames or closes the client's stream.
+        reader = threading.Thread(target=read, name="pack-host-stdin-lines", daemon=True)
+        reader.start()
+        try:
+            yield receive()
+        finally:
+            stopped.set()
+
     def run_loop(self, run: Callable[[], Any]) -> Any:
         try:
             result = run()
@@ -19044,19 +19092,15 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
             "source_closure_digest": identity_attestation["source"].get("closure_digest"),
             "ready_file": str(ready_path) if ready_path is not None else None,
         }
-    stdin_shutdown = (
-        _ManagedStdinShutdown(host)
-        if service_mode and args.command == "run"
-        else None
-    )
-    if stdin_shutdown is not None:
-        managed_shutdowns.append(stdin_shutdown)
+    shutdown = _ManagedStdinShutdown(host)
+    managed_shutdowns.append(shutdown)
+    stdin_shutdown = shutdown if service_mode and args.command == "run" else None
 
     def handle_shutdown(_signum, _frame):
-        if stdin_shutdown is not None:
-            stdin_shutdown.request_shutdown(_signum)
-        else:
-            _handle_host_shutdown_signal(host, _signum)
+        # A foreground signal must not raise into an interrupted native close
+        # before its owner records completion. The existing coordinator retains
+        # cleanup errors, and _cli waits for that owner before it can exit.
+        shutdown.request_shutdown(_signum)
 
     platform.install_stop_handlers(handle_shutdown)
     # `kill -USR1 <pid>` writes every thread's Python stack to the host log,
@@ -19215,7 +19259,8 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
             args.supervisor_state,
             max_frame_bytes=args.max_frame_bytes,
         )
-        supervisor.serve(sys.stdin, sys.stdout)
+        with shutdown.input_lines(sys.stdin) as lines:
+            supervisor.serve(lines, sys.stdout)
     return 0
 
 
