@@ -95,7 +95,7 @@ jobs:
           source = root
           if os.environ["REVISION"] == "base":
               source = root / "ls12-base"
-              subprocess.run(["git", "worktree", "add", "--detach", str(source), "91cb4cb499306b2f09686de0fb67b803bcb89077"], check=True)
+              subprocess.run(["git", "worktree", "add", "--detach", str(source), "493616c1cfc7a83f18894dc81773571e977f26ef"], check=True)
               for relative in [
                   "tests/integrations/test_ls12_first_job.py", "tests/ls12_first_job_run.py",
                   "tests/core/generation/test_ls12_first_job_collector.py",
@@ -161,7 +161,7 @@ jobs:
           os.chdir(os.environ["LS12_SOURCE"])
           subprocess.run([sys.executable, "-m", "tests.ls12_first_job_run",
               "--output", str(pathlib.Path(os.environ["LS12_PROOF"]) / "meter"),
-              "--samples", "2", "--counter-samples", "1"], check=True)
+              "--samples", "20", "--counter-samples", "2", "--require-d1"], check=True)
       - name: Existing caller source, input and target authority tests
         if: ${{ !cancelled() && steps.source.outcome == 'success' }}
         shell: python
