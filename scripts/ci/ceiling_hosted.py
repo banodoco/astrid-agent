@@ -222,6 +222,15 @@ def collect(api, checks, repository, head, tier, candidate, directory, wait_seco
               "complete": True, "jobs": [], "collection_errors": []}
     for filename, run in runs.items():
         (directory / f"run-{run['id']}.json").write_text(json.dumps(run, indent=2) + "\n", encoding="utf-8")
+        # Uploaded jobs cannot qualify a cancelled workflow or a run that is
+        # still nonterminal when the bounded wait ends. A completed failure
+        # remains eligible: its real red tests need per-ID accounting below.
+        if run.get("status") != "completed" or run.get("conclusion") not in {"success", "failure"}:
+            report["complete"] = False
+            report["collection_errors"].append(
+                f"unqualified workflow {run['name']} / run {run['id']}: "
+                f"status={run.get('status')}, conclusion={run.get('conclusion')}")
+            continue
         jobs = api.pages(f"actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs", "jobs")
         artifacts = api.pages(f"actions/runs/{run['id']}/artifacts", "artifacts")
         roots = []

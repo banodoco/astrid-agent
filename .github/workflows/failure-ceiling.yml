@@ -42,7 +42,9 @@ jobs:
         with:
           python-version: "3.11"
       - name: Exercise rejection and receipt checks
-        run: python -I scripts/ci/test_failure_ceiling.py -v
+        run: |
+          python -I scripts/ci/test_failure_ceiling.py -v
+          python -I scripts/ci/test_ceiling_hosted.py -v
 
   trusted-ceiling:
     name: trusted failure ceiling
