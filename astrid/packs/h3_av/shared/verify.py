@@ -12,6 +12,7 @@ from typing import Any, Mapping
 from .compose import (
     CompositionError,
     _audio_witness,
+    _guard_unprepared_static_permissions,
     _mask_segment_evidence,
     _sample_digest,
     _segments_with_spatial_masks,
@@ -274,6 +275,10 @@ def verify_candidate(
         raise VerificationError("orchestration-only preparation cannot be verified; use a compiled pass preparation")
     if preparation.get("status") != "prepared":
         raise VerificationError("preparation is not ready")
+    try:
+        _guard_unprepared_static_permissions(preparation)
+    except CompositionError as exc:
+        raise VerificationError(str(exc)) from exc
     if composition.get("status") != "composed":
         raise VerificationError("composition is not settled")
     _verify_provenance(preparation, composition)

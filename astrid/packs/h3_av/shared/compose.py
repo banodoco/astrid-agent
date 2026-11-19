@@ -422,6 +422,50 @@ def probe_mask(
     return {"kind": "video", "frames": frames}
 
 
+
+def _guard_unprepared_static_permissions(preparation: Mapping[str, Any]) -> None:
+    """Reject legacy static fallbacks when they would change authored pixels."""
+    from .generation import DEFAULT_SIZE
+
+    media = preparation.get("media")
+    request = preparation.get("request")
+    canvas = request.get("canvas") if isinstance(request, Mapping) else None
+    dimensions = media if isinstance(media, Mapping) else canvas
+    if isinstance(dimensions, Mapping):
+        width, height = dimensions.get("width"), dimensions.get("height")
+        if type(width) is not int or type(height) is not int:
+            raise CompositionError("preparation has invalid canvas dimensions")
+        target = (width, height)
+    else:
+        target = DEFAULT_SIZE  # Historical preparations without dimensions use the default.
+    schedule = preparation.get("mask_schedule")
+    video = schedule.get("video") if isinstance(schedule, Mapping) else None
+    changes = video.get("changes") if isinstance(video, Mapping) else None
+    assets = {row.get("asset"): row.get("path") for row in preparation.get("assets", [])
+              if isinstance(row, Mapping) and row.get("status") == "resolved"}
+    for change in changes if isinstance(changes, list) else []:
+        if not isinstance(change, Mapping) or change.get("action") != "generate" or change.get("prepared_mask_asset"):
+            continue
+        area = change.get("area")
+        if not isinstance(area, Mapping):
+            continue
+        selector = area.get("selector") if isinstance(area.get("selector"), Mapping) else area
+        if "rectangle" in selector:
+            authored = selector.get("canvas", DEFAULT_SIZE)
+            if not isinstance(authored, (list, tuple)) or tuple(authored) != target:
+                raise CompositionError("static permission requires a compiled mask for its authored canvas")
+        mask_id = change.get("mask_asset") or selector.get("mask_asset") or selector.get("asset")
+        if mask_id:
+            path = assets.get(mask_id)
+            if not isinstance(path, str) or not Path(path).is_file():
+                raise CompositionError(f"regional video mask {mask_id!r} is not resolved")
+            if probe_mask(Path(path), mask_id=str(mask_id))["kind"] == "image":
+                from PIL import Image
+                with Image.open(path) as image:
+                    size = image.size
+                if selector.get("threshold") is not None or size != target:
+                    raise CompositionError("static permission requires a compiled mask for its size or threshold")
+
 def _spatial_video_masks(
     preparation: Mapping[str, Any], source: Path | None = None
 ) -> list[dict[str, Any]]:
@@ -1256,6 +1300,7 @@ def compose_candidate(
 
     if preparation.get("status") == "orchestration_only":
         raise CompositionError("orchestration-only preparation cannot be composed; use a compiled pass preparation")
+    _guard_unprepared_static_permissions(preparation)
     generated_path = Path(generated).expanduser().resolve()
     if not generated_path.is_file():
         raise CompositionError(f"generated candidate does not exist: {generated_path}")

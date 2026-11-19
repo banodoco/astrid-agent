@@ -381,3 +381,53 @@ def test_planner_preview_and_saved_preparation_match_compiled_permission(tmp_pat
         assert compiled.size == preview.size == (512, 288)
         assert list(compiled.getdata()) == list(preview.getdata())
         assert compiled.getpixel((128, 72) if kind == "box" else (0, 0)) == 255
+
+
+@pytest.mark.parametrize("target,mask", [
+    ((512, 288), {"rectangle": [32, 32, 64, 64]}),
+    ((1024, 576), {"rectangle": [32, 32, 64, 64], "canvas": [512, 288]}),
+    ((512, 288), {"asset": "mask"}),
+    ((1024, 576), {"asset": "mask", "threshold": 128}),
+])
+def test_legacy_unprepared_static_permission_fails_closed(tmp_path, target, mask):
+    from astrid.packs.h3_av.shared.compose import CompositionError, compose_candidate
+    from astrid.packs.h3_av.shared.verify import VerificationError, verify_candidate
+
+    path = tmp_path / "mask.png"
+    Image.new("L", (1024, 576), 255).save(path)
+    preparation = {"status": "prepared", "media": {"width": target[0], "height": target[1]},
+                   "assets": [{"asset": "mask", "status": "resolved", "path": str(path)}],
+                   "mask_schedule": {"video": {"changes": [{"action": "generate", "area": mask}]}}}
+    with pytest.raises(CompositionError, match="requires a compiled mask"):
+        compose_candidate(preparation=preparation, generated=path, out_dir=tmp_path / "out")
+    with pytest.raises(VerificationError, match="requires a compiled mask"):
+        verify_candidate(preparation=preparation, composition={"status": "composed"})
+
+
+def test_legacy_equivalent_static_permissions_remain_accepted(tmp_path):
+    from astrid.packs.h3_av.shared.compose import _guard_unprepared_static_permissions
+
+    path = tmp_path / "mask.png"
+    Image.new("L", (1024, 576), 255).save(path)
+    preparation = {"media": {"width": 1024, "height": 576},
+                   "assets": [{"asset": "mask", "status": "resolved", "path": str(path)}],
+                   "mask_schedule": {"video": {"changes": [
+                       {"action": "generate", "area": {"rectangle": [32, 32, 64, 64]}},
+                       {"action": "generate", "area": {"asset": "mask"}},
+                   ]}}}
+    _guard_unprepared_static_permissions(preparation)
+
+
+def test_legacy_moving_mask_remains_accepted_on_nondefault_canvas(tmp_path):
+    import subprocess
+    from astrid.packs.h3_av.shared.compose import _guard_unprepared_static_permissions
+
+    path = tmp_path / "mask.mkv"
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "color=white:size=512x288:rate=24:duration=1", "-c:v", "ffv1", str(path)],
+                   check=True, capture_output=True)
+    preparation = {"media": {"width": 512, "height": 288},
+                   "assets": [{"asset": "mask", "status": "resolved", "path": str(path)}],
+                   "mask_schedule": {"video": {"changes": [
+                       {"action": "generate", "area": {"asset": "mask"}}]}}}
+    _guard_unprepared_static_permissions(preparation)
