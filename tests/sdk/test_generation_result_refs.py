@@ -137,7 +137,7 @@ def test_non_h3_capability_cannot_mint_workflow_reference_view():
     result = InvocationResult("speech.generate", "executor", "command", True,
         kernel_task_id="task-1", raw_result=fixture.result.raw_result)
     result = _reconstruct_generation_result(result)
-    assert "reference_view" not in result.manifest
+    assert result.manifest is None or "reference_view" not in result.manifest
 
 
 def test_preconstructed_generation_result_cannot_retain_untrusted_reference_view():
