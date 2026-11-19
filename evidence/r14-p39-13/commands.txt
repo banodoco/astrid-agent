@@ -1,0 +1,31 @@
+Reproduction templates. Exact executed argv, cwd and environment overrides are in commands.json. Braces below describe the two recorded runs; do not paste them as a single shell invocation.
+
+Workspace: /workspace/scratch/ed89673be2cd
+Candidate checkout: astrid-agent (7206f0f718f0fc81a8ba28476b69ff833ba7cd26)
+Before checkout: before (eb6e9ddfdb74ad0cde85fee91a3dec19f5cc1510; starting product plus four new failing cases)
+Runtime checkout: runtime-checkout (6855dfa8df65cf8ae4c002b57134d6505493c17c)
+Initial interpreter: /workspace/scratch/8c30ce2383b9/test-env/bin/python
+Private proof interpreter: /workspace/scratch/ed89673be2cd/proof-env/bin/python
+Both interpreters: Python 3.12.14, pytest 9.0.2. Private proof environment adds ruff==0.12.0.
+
+All commands below run from the named checkout. Each shell command captures stdout/stderr to the named outer log and records the inner return code in the corresponding .exit file; it exits with that same return code.
+
+Before root-only (initial interpreter; same command before and after the wrapper fix):
+PYTHONPATH="$PWD/scripts:$PWD:$PWD/../runtime-checkout" <python> -m pytest -q -rA tests/scripts/test_ci_test_evidence.py --junitxml=../evidence/{before-paired,after-root}/gate-probes.xml
+
+Before isolated refusal, initial interpreter and only the existing refusal selector:
+PYTHONPATH="$PWD/scripts:$PWD/../runtime-checkout" ASTRID_RUNTIME_CHECKOUT="$PWD/../runtime-checkout" <python> -P -m ci.run_pytest -q -rA --junitxml="$PWD/../evidence/before/refusal/probe.xml" tests/core/rendering/test_local_schema.py::test_installed_probe_refuses_a_nonisolated_interpreter
+
+Before schema file (private interpreter) and candidate schema file (initial interpreter):
+PYTHONPATH="$PWD/scripts:$PWD/../runtime-checkout" ASTRID_RUNTIME_CHECKOUT="$PWD/../runtime-checkout" <python> -P -m ci.run_pytest -v -rA --junitxml="$PWD/../evidence/{before-schema/probes,after-refusal/probe}.xml" tests/core/rendering/test_local_schema.py
+
+Candidate combined run, initial interpreter (two missing-Ruff environment failures retained):
+PYTHONPATH="$PWD/scripts:$PWD/../runtime-checkout" ASTRID_RUNTIME_CHECKOUT="$PWD/../runtime-checkout" <python> -P -m ci.run_pytest -v -rA --junitxml="$PWD/../evidence/candidate-focused/probes.xml" tests/scripts/test_ci_test_evidence.py tests/core/rendering/test_local_schema.py tests/scripts/test_gate_integrity.py tests/reshape/test_identity_gate.py::test_alternate_and_nested_tool_config_cannot_change_collection_or_findings
+
+Provision missing pinned tool in private copied environment:
+uv pip install --python /workspace/scratch/ed89673be2cd/proof-env/bin/python ruff==0.12.0
+
+Candidate full skip/integrity selection, private interpreter:
+PYTHONPATH="$PWD/scripts:$PWD/../runtime-checkout" ASTRID_RUNTIME_CHECKOUT="$PWD/../runtime-checkout" <python> -P -m ci.run_pytest -v -rA --junitxml="$PWD/../evidence/candidate-skip-guard/probes.xml" tests/test_skip_guard.py tests/scripts/test_gate_integrity.py
+
+The wrapper launches the installed pytest child using -I -u; both passes and raw outcomes are in the retained manifests/logs. Unchanged proof is carried forward only for the identical relevant source files. This snapshot precedes the required destination merge and hosted four-shard proof.

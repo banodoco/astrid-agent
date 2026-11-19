@@ -233,6 +233,43 @@ def test_declared_lane_filters_and_shards_have_an_exact_independent_census(tmp_p
     assert check_results([str(tmp_path), "--expected", "1"]) == 0
 
 
+@pytest.mark.parametrize("group", [1, 2, 3, 4])
+def test_external_evidence_preserves_repository_root_and_config_in_both_passes(tmp_path, group):
+    root = tmp_path / "agent"
+    tests = root / "tests"
+    tests.mkdir(parents=True)
+    (root / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n'
+        'markers = ["integration: declared lane"]\n'
+    )
+    (tests / "test_cases.py").write_text(
+        "import sys, pytest\nfrom pathlib import Path\n"
+        "@pytest.mark.integration\n@pytest.mark.parametrize('case', range(8))\n"
+        "def test_case(case, pytestconfig):\n"
+        "    assert sys.flags.isolated\n"
+        "    assert pytestconfig.rootpath == Path(__file__).resolve().parents[1]\n"
+        "    assert pytestconfig.inipath == pytestconfig.rootpath / 'pyproject.toml'\n"
+    )
+    for dependency in ("astrid-runtime", "vibecomfy-checkout", "comfyui-checkout"):
+        foreign = root / dependency / "tests"
+        foreign.mkdir(parents=True)
+        (foreign / "test_foreign.py").write_text(
+            "raise AssertionError('dependency tests must not be collected')\n"
+        )
+    evidence = tmp_path / "runner-temp" / f"shard-{group}"
+    result = run(root, "-m", "integration", "--splits", "4", "--group", str(group),
+                 destination=str(evidence / "result.xml"))
+    assert result.returncode == 0, result.stdout + result.stderr
+    reference = json.loads((evidence / "result.reference.json").read_text())
+    actual = json.loads((evidence / "result.collection.json").read_text())
+    assert reference == actual
+    assert reference["collected"] == [f"tests/test_cases.py::test_case[{case}]" for case in range(8)]
+    assert reference["selected"] == [
+        f"tests/test_cases.py::test_case[{case}]" for case in range((group - 1) * 2, group * 2)
+    ]
+    assert validate(evidence / "result.xml")["items"] == 2
+
+
 def test_collect_only_and_execution_cannot_silently_select_different_ids(tmp_path):
     (tmp_path / "conftest.py").write_text(
         "def pytest_generate_tests(metafunc):\n"

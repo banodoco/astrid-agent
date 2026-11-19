@@ -54,9 +54,14 @@ def main(argv=None):
     command = [sys.executable, "-I", "-u", str(entrypoint)]
     plugin = ["-p", "scripts.ci.collection_guard"]
     census_args = [arg for arg in selection_args if arg not in ("--store-durations", "--clean-durations")]
-    census_args = [*plugin, *census_args, "--collect-only", "--collection-manifest", str(reference)]
-    run_args = [*plugin, *args, "-rA", "--collection-manifest", str(manifest),
-                "--collection-reference", str(reference), "--test-event-log", str(events)]
+    # Pytest determines rootdir/config before our plugin's options are known.
+    # A separate, existing reference path is mistaken for a collection path;
+    # evidence outside the checkout then moves rootdir above pyproject.toml.
+    # Keep every evidence path attached to its option in BOTH passes so only
+    # the parent's declared test paths participate in root/config discovery.
+    census_args = [*plugin, *census_args, "--collect-only", f"--collection-manifest={reference}"]
+    run_args = [*plugin, *args, "-rA", f"--collection-manifest={manifest}",
+                f"--collection-reference={reference}", f"--test-event-log={events}"]
 
     def child_environment(arguments):
         return {**environment, "ASTRID_PYTEST_INVOCATION": json.dumps(
