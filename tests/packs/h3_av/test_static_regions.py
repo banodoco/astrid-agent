@@ -439,3 +439,47 @@ def test_same_directory_failed_permission_write_preserves_handoff(tmp_path, monk
     compile_preparation(preparation, out_dir=destination)
     assert old_path.read_bytes() == old_bytes
     assert preparation["mask_schedule"]["video"]["changes"][0]["prepared_mask_asset"] == asset_id
+
+
+def test_failed_second_permission_cleans_new_files_and_preserves_previous(tmp_path, monkeypatch):
+    import copy
+    import os
+    from pathlib import Path
+    from astrid.packs.h3_av.shared.compile import compile_preparation
+    from astrid.packs.h3_av.shared.prepare import _v2_mask_schedule
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from tests.packs.h3_av.test_native_masked_edit import WATERMARK, _prepare
+
+    raw = copy.deepcopy(WATERMARK)
+    raw["media"][0]["edit"] = [
+        {"stream": "video", "during": [0, 12], "mask": {"rectangle": [0, 0, 128, 128]}},
+        {"stream": "video", "during": [0, 12], "mask": {"rectangle": [256, 0, 128, 128]}},
+    ]
+    preparation = _prepare(raw, tmp_path)
+    preparation["mask_schedule"] = _v2_mask_schedule(normalize_request(raw))
+    destination = tmp_path / "compile"
+    compile_preparation(preparation, out_dir=destination)
+    before = copy.deepcopy(preparation)
+    previous = {Path(row["path"]): Path(row["path"]).read_bytes() for row in before["assets"]
+                if row.get("binding", "").startswith("permission_mask_")}
+    assert len(previous) == 2
+    real_replace = os.replace
+    calls = 0
+
+    def fail_second(source, target):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("injected second publication failure")
+        return real_replace(source, target)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "replace", fail_second)
+        with pytest.raises(OSError, match="second publication"):
+            compile_preparation(preparation, out_dir=destination)
+    assert preparation == before
+    assert {path: path.read_bytes() for path in previous} == previous
+    assert set(destination.glob("permission_mask_*.png")) == set(previous)
+    assert not list(destination.glob(".permission_mask_*-*"))
+    compile_preparation(preparation, out_dir=destination)
+    assert all(path.read_bytes() == content for path, content in previous.items())

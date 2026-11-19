@@ -1302,50 +1302,57 @@ def compile_preparation(preparation: Mapping[str, Any], *, out_dir: str | Path) 
         new_assets = [row for row in preparation["assets"]
                       if row.get("asset") not in previous_ids]
         existing_ids.difference_update(previous_ids)
-        with zipfile.ZipFile(managed["path"]) as archive:
+        published: list[Path] = []
+        try:
+            with zipfile.ZipFile(managed["path"]) as archive:
+                for record in permission_records:
+                    binding = record["binding"]
+                    index = int(binding.removeprefix("permission_mask_"))
+                    if index >= len(changes):
+                        raise CompilationError("prepared permission cannot be associated with its scheduled grant")
+                    payload = archive.read(record["member"])
+                    if hashlib.sha256(payload).hexdigest() != record["sha256"]:
+                        raise CompilationError(f"managed permission mask {binding} failed integrity validation")
+                    path = destination / (binding + ".png")
+                    # Never replace a file held by a prior handoff, even if a
+                    # later permission in this compilation fails to publish.
+                    if path.is_file():
+                        path = destination / f"{binding}-{uuid.uuid4().hex}.png"
+                    temporary = None
+                    try:
+                        with tempfile.NamedTemporaryFile(dir=destination, prefix=f".{binding}-", delete=False) as handle:
+                            temporary = Path(handle.name)
+                            handle.write(payload)
+                        os.replace(temporary, path)
+                        published.append(path)
+                    finally:
+                        if temporary is not None:
+                            temporary.unlink(missing_ok=True)
+                    change = changes[index]
+                    asset_id = binding
+                    suffix = 1
+                    while asset_id in existing_ids:
+                        asset_id = f"{binding}_{suffix}"
+                        suffix += 1
+                    existing_ids.add(asset_id)
+                    change["prepared_mask_asset"] = asset_id
+                    new_assets.append({"asset": asset_id, "binding": binding, "member": record["member"],
+                        "path": str(path), "status": "resolved", "sha256": record["sha256"], "size": len(payload),
+                        "derivation": {"selector": change.get("area"), "mask_asset": change.get("mask_asset"),
+                                       "occurrence_id": change.get("occurrence_id"), "index": change.get("index")}})
             for record in permission_records:
-                binding = record["binding"]
-                index = int(binding.removeprefix("permission_mask_"))
+                index = int(record["binding"].removeprefix("permission_mask_"))
                 if index >= len(changes):
-                    raise CompilationError("prepared permission cannot be associated with its scheduled grant")
-                payload = archive.read(record["member"])
-                if hashlib.sha256(payload).hexdigest() != record["sha256"]:
-                    raise CompilationError(f"managed permission mask {binding} failed integrity validation")
-                path = destination / (binding + ".png")
-                # Never replace a file held by a prior handoff, even if a
-                # later permission in this compilation fails to publish.
-                if path.is_file():
-                    path = destination / f"{binding}-{uuid.uuid4().hex}.png"
-                temporary = None
-                try:
-                    with tempfile.NamedTemporaryFile(dir=destination, prefix=f".{binding}-", delete=False) as handle:
-                        temporary = Path(handle.name)
-                        handle.write(payload)
-                    os.replace(temporary, path)
-                finally:
-                    if temporary is not None:
-                        temporary.unlink(missing_ok=True)
-                change = changes[index]
-                asset_id = binding
-                suffix = 1
-                while asset_id in existing_ids:
-                    asset_id = f"{binding}_{suffix}"
-                    suffix += 1
-                existing_ids.add(asset_id)
-                change["prepared_mask_asset"] = asset_id
-                new_assets.append({"asset": asset_id, "binding": binding, "member": record["member"],
-                    "path": str(path), "status": "resolved", "sha256": record["sha256"], "size": len(payload),
-                    "derivation": {"selector": change.get("area"), "mask_asset": change.get("mask_asset"),
-                                   "occurrence_id": change.get("occurrence_id"), "index": change.get("index")}})
-        for record in permission_records:
-            index = int(record["binding"].removeprefix("permission_mask_"))
-            if index >= len(changes):
-                raise CompilationError("prepared permission does not match a scheduled grant")
-        schedule["digest"] = hashlib.sha256(json.dumps(
-            {key: value for key, value in schedule.items() if key != "digest"},
-            sort_keys=True, separators=(",", ":"),
-        ).encode("utf-8")).hexdigest()
-        preparation.update({"assets": new_assets, "mask_schedule": schedule})
+                    raise CompilationError("prepared permission does not match a scheduled grant")
+            schedule["digest"] = hashlib.sha256(json.dumps(
+                {key: value for key, value in schedule.items() if key != "digest"},
+                sort_keys=True, separators=(",", ":"),
+            ).encode("utf-8")).hexdigest()
+            preparation.update({"assets": new_assets, "mask_schedule": schedule})
+        except BaseException:
+            for path in published:
+                path.unlink(missing_ok=True)
+            raise
     return result
 
 
