@@ -213,13 +213,22 @@ def os_trust_smoke():
     env.update(installed["env"])
     trust = subprocess.run(
         [installed["python"], "-I", "-c",
-         "import ssl\n"
+         "import ssl, subprocess, sys\n"
+         "from astrid.core.execution import network_policy\n"
+         "assert 'astrid.installer._tls_truststore._api' not in sys.modules\n"
+         "network_policy._patch_native_descendants({})\n"
          "from astrid.core.util.http import os_trust_ssl_context, trusted_httpx_client\n"
          "context = os_trust_ssl_context()\n"
          "assert context.verify_mode == ssl.CERT_REQUIRED and context.check_hostname\n"
          "assert type(context).__module__.startswith('astrid.installer._tls_truststore'), type(context)\n"
          "with trusted_httpx_client(timeout=30) as client:\n"
-         "    print(client.head('https://huggingface.co/').status_code)\n"],
+         "    print(client.head('https://huggingface.co/').status_code)\n"
+         "try:\n"
+         "    subprocess.Popen([sys.executable, '-c', 'pass'])\n"
+         "except network_policy.NetworkPolicyError:\n"
+         "    print('cold native TLS verified; native descendants still refused')\n"
+         "else:\n"
+         "    raise AssertionError('native descendant policy was bypassed')\n"],
         cwd=windows.EVIDENCE, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
         timeout=120)
     (windows.EVIDENCE / "command-os-trust.log").write_text(trust.stdout + trust.stderr, encoding="utf-8")

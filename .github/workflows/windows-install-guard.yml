@@ -161,3 +161,17 @@ jobs:
             ${{ runner.temp }}/windows-install-guard/*.log
             ${{ runner.temp }}/windows-install-guard/*.json
             ${{ runner.temp }}/windows-install-guard/generation-failure/**
+
+      - name: Retain successful installed TLS and generation proof
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Windows-fresh-user-install-success-long-paths-${{ matrix.long_paths }}
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/windows-install-guard/sources.json
+            ${{ runner.temp }}/windows-install-guard/guard-result.json
+            ${{ runner.temp }}/windows-install-guard/command-os-trust.log
+            ${{ runner.temp }}/windows-install-guard/generation-timing.json
+            ${{ runner.temp }}/windows-install-guard/command-generate-image.log
