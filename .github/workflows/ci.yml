@@ -4,11 +4,11 @@
 name: CI
 
 on:
+  schedule:
+    - cron: "17 1 * * *"
   push:
     branches: [main, release-1, "int/**", "release/*/main", "release/*/plan-*"]
-  # Release plan branches run on push for qualification. A pull request
-  # runs only the cheap subset: fast checks, unit shard 1 of 8 (and the unit aggregate), and boundary. The heavy jobs
-  # (windows, darwin, release wheels, shards 2-8) carry `if: github.event_name != 'pull_request'` and run on the push.
+  # Plan39 K2 requires every native job and all eight shards on PRs.
   pull_request:
     branches: ["release/*/main", "release/*/plan-*"]
   workflow_dispatch:
@@ -27,7 +27,6 @@ env:
 
 jobs:
   windows-native-and-installer:
-    if: github.event_name != 'pull_request'
     runs-on: windows-latest
     timeout-minutes: 90
     env:
@@ -44,28 +43,39 @@ jobs:
         with:
           python-version: "3.11"
       - name: Prepare test result directory
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-03 --matrix ${{ strategy.job-index || 0 }} --shell pwsh {0}
         run: New-Item -ItemType Directory -Force "$env:RUNNER_TEMP/test-results-windows-native-and-installer" | Out-Null
       - name: Install package with dev extras
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-04 --matrix ${{ strategy.job-index || 0 }} --shell pwsh {0}
         run: python -m pip install -e '.[dev]'
       - name: Install the pinned Runtime and client
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-05 --matrix ${{ strategy.job-index || 0 }} --shell pwsh {0}
         run: python scripts/ci_install_runtime.py
       - name: Check native PowerShell cleanup exit codes
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts
-        run: python -P -m ci.run_pytest -q -rA --junitxml="$env:RUNNER_TEMP/test-results-windows-native-and-installer/installer-windows-tasks.xml" tests/test_installer_windows_tasks.py
+        if: ${{ !cancelled() }}
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-06 --matrix ${{ strategy.job-index || 0 }} --shell pwsh {0}
+        run: python -P -m ci.run_pytest -p ceiling_pytest -q -rA --junitxml="$env:RUNNER_TEMP/test-results-windows-native-and-installer/installer-windows-tasks.xml" tests/test_installer_windows_tasks.py
       - name: Check Windows pack-host identity and service launcher binding
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts
-        run: python -P -m ci.run_pytest -q -rA --junitxml="$env:RUNNER_TEMP/test-results-windows-native-and-installer/host-recovery-services.xml" tests/sdk/test_host_recovery.py tests/test_services.py -k windows
+        if: ${{ !cancelled() }}
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-07 --matrix ${{ strategy.job-index || 0 }} --shell pwsh {0}
+        run: python -P -m ci.run_pytest -p ceiling_pytest -q -rA --junitxml="$env:RUNNER_TEMP/test-results-windows-native-and-installer/host-recovery-services.xml" tests/sdk/test_host_recovery.py tests/test_services.py -k windows
       - name: Check Remotion admission and captured source handoff
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts
-        run: python -P -m ci.run_pytest -q -rA --junitxml="$env:RUNNER_TEMP/test-results-windows-native-and-installer/remotion-host-regressions.xml" tests/core/rendering/test_remotion_host_regressions.py
+        if: ${{ !cancelled() }}
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-08 --matrix ${{ strategy.job-index || 0 }} --shell pwsh {0}
+        run: python -P -m ci.run_pytest -p ceiling_pytest -q -rA --junitxml="$env:RUNNER_TEMP/test-results-windows-native-and-installer/remotion-host-regressions.xml" tests/core/rendering/test_remotion_host_regressions.py
       - name: Check native Windows process and permission behavior
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts
+        if: ${{ !cancelled() }}
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-09 --matrix ${{ strategy.job-index || 0 }} --shell pwsh {0}
         run: >-
-          python -P -m ci.run_pytest -q -rA --junitxml="$env:RUNNER_TEMP/test-results-windows-native-and-installer/native-windows.xml"
+          python -P -m ci.run_pytest -p ceiling_pytest -q -rA --junitxml="$env:RUNNER_TEMP/test-results-windows-native-and-installer/native-windows.xml"
           tests/core/execution/test_platform_helpers.py::test_windows_scope_job_kills_descendants_after_leader_exit
           tests/core/execution/test_platform_helpers.py::test_windows_lock_and_owner_permissions_are_native
           tests/core/execution/test_platform_helpers.py::test_windows_scope_dies_when_owner_process_exits
@@ -79,6 +89,7 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts
           TEST_RESULTS_DIR: ${{ runner.temp }}/test-results-windows-native-and-installer
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-10 --matrix ${{ strategy.job-index || 0 }} --shell pwsh {0}
         run: python -P -m ci.check_results "${{ env.TEST_RESULTS_DIR }}" --expected 4
 
       - name: Upload test results
@@ -100,6 +111,14 @@ jobs:
         with:
           path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
           key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
+      - name: Retain actual Plan39 command and native result evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-ceiling-${{ github.job }}-${{ strategy.job-index || '0' }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/failure-ceiling/${{ github.job }}/
+          retention-days: 90
+          if-no-files-found: error
 
   checks:
     name: fast checks
@@ -119,10 +138,12 @@ jobs:
       - name: Resolve the comparison merge base
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-01 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: python -P -m ci.gate_base
 
       - name: Read the pinned Runtime commit
         id: runtime-pin
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-02 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: echo "commit=$(python -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')" >> "$GITHUB_OUTPUT"
 
       - name: Check out the Runtime (test fixtures)
@@ -134,6 +155,7 @@ jobs:
 
       - name: Read the pinned RunPod lifecycle revision
         id: lifecycle-pin
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-04 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: |
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json
@@ -162,20 +184,24 @@ jobs:
           python-version: "3.11"
 
       - name: Install system media tools
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-08 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
       - name: Install package with dev extras
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-09 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: python -m pip install -e '.[dev]'
 
       - name: Install the pinned Runtime and client
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-10 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: python scripts/ci_install_runtime.py
 
       # The collection gate imports every test module in the same environment the shards use, so it needs the pinned
       # VibeComfy checkout; without it every module that imports vibecomfy reports a collection error that is only this job.
       - name: Read the pinned VibeComfy revision
         id: vibecomfy-pin
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-11 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: |
           rev="$(python3 scripts/vibecomfy_pin.py)"
           if [[ ! "$rev" =~ ^[0-9a-f]{40}$ ]]; then
@@ -192,15 +218,17 @@ jobs:
           path: vibecomfy-checkout
 
       - name: Install VibeComfy
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-13 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: python -m pip install -e ./vibecomfy-checkout
 
       - name: Structure baseline gate
         if: ${{ !cancelled() }}
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-14 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: make structure
 
       - name: Structure ceiling policy from merge base
         if: ${{ !cancelled() }}
-        shell: bash
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-15 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: |
           set -euo pipefail
           trusted_structure="$(mktemp -d "$RUNNER_TEMP/structure-gate.XXXXXX")"
@@ -213,32 +241,38 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts
         if: ${{ !cancelled() }}
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-16 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: python -P -m reshape.identity_gate controls
 
       - name: Ruff baseline gate
         if: ${{ !cancelled() }}
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-17 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: make ruff
 
       # Mypy checks the project only with the YAML stubs, and with a NumPy whose bundled stubs parse under the configured
       # Python 3.11 target; unpinned, the latest NumPy stubs make mypy stop before it checks anything.
       - name: Install mypy stubs and the NumPy that mypy can parse
         if: ${{ !cancelled() }}
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-18 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: python -m pip install types-PyYAML 'numpy<2.4'
 
       - name: Mypy baseline gate
         if: ${{ !cancelled() }}
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-19 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: make mypy
 
       - name: Import cycles gate
         if: ${{ !cancelled() }}
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-20 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: make cycles
 
       # Root-level TLS tests are outside the PR's single unit shard. Keep the
       # transport inventory and certificate refusal probes on every PR.
       - name: Check Agent TLS policy and review regressions
         if: ${{ !cancelled() }}
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-21 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: >-
-          python -m pytest -q -rA
+          python -m pytest -p ceiling_pytest -q -rA
           tests/core/util/test_http_trust.py
           tests/installer/test_tls_fallback.py
           tests/test_721_remaining_tls_policy.py
@@ -254,8 +288,9 @@ jobs:
       # failing exit. Together these two steps still run every original case.
       - name: Check independently failing error contract
         if: ${{ always() }}
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-22 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: >-
-          python -m pytest -q -rA
+          python -m pytest -p ceiling_pytest -q -rA
           tests/test_astrid_error_contract.py::test_to_envelope_omits_code_and_source_type_when_none
           --junitxml=tls-error-contract.xml
 
@@ -281,14 +316,16 @@ jobs:
       # being red on this branch must not hide it.
       - name: Collection errors gate
         if: ${{ !cancelled() }}
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-25 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: make collection
 
       - name: Gate regression probes
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts
         if: ${{ !cancelled() }}
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-26 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: >-
-          python -P -m ci.run_pytest -q -rA
+          python -P -m ci.run_pytest -p ceiling_pytest -q -rA
           --junitxml="${{ runner.temp }}/agent-gate-probes/probes.xml"
           tests/reshape/test_identity_gate.py tests/scripts/test_ci_test_evidence.py
           tests/test_release_branch_workflows.py tests/scripts/test_gate_integrity.py tests/scripts/test_gate_base.py
@@ -309,6 +346,14 @@ jobs:
         with:
           path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
           key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
+      - name: Retain actual Plan39 command and native result evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-ceiling-${{ github.job }}-${{ strategy.job-index || '0' }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/failure-ceiling/${{ github.job }}/
+          retention-days: 90
+          if-no-files-found: error
 
   unit-shard:
     name: unit shard ${{ matrix.group }} / 8 (${{ matrix.os }})
@@ -328,7 +373,7 @@ jobs:
       matrix:
         os: [ubuntu-latest]
         # A pull request runs shard 1 of 8 only; the job name and --splits 8 are unchanged.
-        group: ${{ fromJSON(github.event_name == 'pull_request' && '[1]' || '[1,2,3,4,5,6,7,8]') }}
+        group: [1,2,3,4,5,6,7,8]
 
     steps:
       - name: Check out repository
@@ -337,7 +382,7 @@ jobs:
       # These release-0 rollback and launcher tests archive a pinned historical
       # Agent source tree; the default shallow checkout does not contain it.
       - name: Fetch release-0 Agent archive for installer rollback tests
-        shell: bash
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-01 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: |
           set -euo pipefail
           release0_agent=3204bb00135bec8ee2d2d3fb21eed5abfceca649
@@ -349,6 +394,7 @@ jobs:
 
       - name: Read the pinned Runtime commit
         id: runtime-pin
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-02 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: echo "commit=$(python -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')" >> "$GITHUB_OUTPUT"
 
       - name: Check out the Runtime (test fixtures)
@@ -360,6 +406,7 @@ jobs:
 
       - name: Read the pinned RunPod lifecycle revision
         id: lifecycle-pin
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-04 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: |
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json
@@ -377,7 +424,7 @@ jobs:
           path: runpod-lifecycle-checkout
 
       - name: Record RunPod lifecycle checkout
-        shell: bash
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-06 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         env:
           LIFECYCLE_REVISION: ${{ steps.lifecycle-pin.outputs.revision }}
         run: |
@@ -413,16 +460,19 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg fonts-dejavu-core
-        shell: bash
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-11 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
 
       - name: Install package with dev extras
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-12 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: python -m pip install -e '.[dev]'
 
       - name: Install the pinned Runtime and client
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-13 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: python scripts/ci_install_runtime.py
 
       - name: Read the pinned VibeComfy revision
         id: vibecomfy-pin
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-14 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: |
           rev="$(python3 scripts/vibecomfy_pin.py)"
           if [[ ! "$rev" =~ ^[0-9a-f]{40}$ ]]; then
@@ -439,7 +489,7 @@ jobs:
           path: vibecomfy-checkout
 
       - name: Record VibeComfy checkout
-        shell: bash
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-16 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         env:
           VIBECOMFY_REVISION: ${{ steps.vibecomfy-pin.outputs.revision }}
         run: |
@@ -449,6 +499,7 @@ jobs:
           echo "- VibeComfy: $checked_out" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install VibeComfy
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-17 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: python -m pip install -e ./vibecomfy-checkout
 
       - name: Unit tests (default lane shard)
@@ -459,8 +510,9 @@ jobs:
           PYTHONUNBUFFERED: 1
           ASTRID_PYTEST_HARD_EXIT_ON_LEAKED_THREADS: 1
           TEST_RESULTS_DIR: ${{ runner.temp }}/test-results-unit-shard-${{ matrix.group }}-${{ runner.os }}
-        run: mkdir -p "$TEST_RESULTS_DIR" && python -P -m ci.run_pytest -v -rA --junitxml="$TEST_RESULTS_DIR/unit-shard.xml" --durations=40 --splits 8 --group ${{ matrix.group }} --durations-path tests/.test_durations --store-durations --clean-durations
-        shell: bash
+        run: mkdir -p "$TEST_RESULTS_DIR" && python -P -m ci.run_pytest -p ceiling_pytest -v -rA --junitxml="$TEST_RESULTS_DIR/unit-shard.xml" --durations=40 --splits 8 --group ${{ matrix.group }} --durations-path tests/.test_durations --store-durations --clean-durations
+        if: ${{ !cancelled() }}
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-18 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
 
       - name: Upload measured test durations
         if: always()
@@ -477,6 +529,7 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts
           TEST_RESULTS_DIR: ${{ runner.temp }}/test-results-unit-shard-${{ matrix.group }}-${{ runner.os }}
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-20 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: python -P -m ci.check_results "${{ env.TEST_RESULTS_DIR }}" --expected 1
 
       - name: Upload test results
@@ -498,6 +551,14 @@ jobs:
         with:
           path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
           key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
+      - name: Retain actual Plan39 command and native result evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-ceiling-${{ github.job }}-${{ strategy.job-index || '0' }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/failure-ceiling/${{ github.job }}/
+          retention-days: 90
+          if-no-files-found: error
 
   unit:
     name: unit
@@ -519,7 +580,6 @@ jobs:
 
   darwin-native:
     name: darwin native
-    if: github.event_name != 'pull_request'
     runs-on: macos-latest
     timeout-minutes: 120
     env:
@@ -533,6 +593,7 @@ jobs:
 
       - name: Read the pinned Runtime commit
         id: runtime-pin
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-01 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: echo "commit=$(python3 -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')" >> "$GITHUB_OUTPUT"
 
       - name: Check out the Runtime (astrid-runtime)
@@ -554,7 +615,7 @@ jobs:
           python-version: "3.11"
       - name: Prepare test result directory
         run: mkdir -p "$RUNNER_TEMP/test-results-darwin-native"
-        shell: bash
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-05 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
 
       - name: Restore npm cache (C-08)
         id: c08-agent-ci-1
@@ -568,19 +629,24 @@ jobs:
           node-version-file: .node-version
 
       - name: Install ffmpeg
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-08 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: brew install ffmpeg
 
       - name: Install Remotion dependencies
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-09 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: npm ci --prefix remotion
 
       - name: Install package with dev extras
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-10 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: python -m pip install -e '.[dev]'
 
       - name: Install the Runtime and client from the checkout
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-11 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: python -m pip install --no-deps -e ./astrid-runtime -e ./astrid-runtime/packages/python
 
       - name: Read the pinned VibeComfy revision
         id: vibecomfy-pin
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-12 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: |
           rev="$(python3 scripts/vibecomfy_pin.py)"
           if [[ ! "$rev" =~ ^[0-9a-f]{40}$ ]]; then
@@ -597,7 +663,7 @@ jobs:
           path: vibecomfy-checkout
 
       - name: Record VibeComfy checkout
-        shell: bash
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-14 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         env:
           VIBECOMFY_REVISION: ${{ steps.vibecomfy-pin.outputs.revision }}
         run: |
@@ -607,19 +673,23 @@ jobs:
           echo "- VibeComfy: $checked_out" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install VibeComfy
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-15 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: python -m pip install -e ./vibecomfy-checkout
 
       - name: Provision the Remotion browser
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-16 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: npx remotion browser ensure
         working-directory: remotion
 
       - name: Install the Codex CLI (the codex_cli lane starts its native binary in the host sandbox)
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-17 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: npm install -g @openai/codex@0.163.0
 
       # The lanes the default run deselects and only this job provides: native macOS, the Remotion install, headless Chromium, the Codex CLI.
       - name: Darwin native, Remotion and browser tests
-        run: python -P -m ci.run_pytest -q -rA --junitxml="$TEST_RESULTS_DIR/darwin-native.xml" -m "darwin_native or remotion or chrome or codex_cli"
-        shell: bash
+        run: python -P -m ci.run_pytest -p ceiling_pytest -q -rA --junitxml="$TEST_RESULTS_DIR/darwin-native.xml" -m "darwin_native or remotion or chrome or codex_cli"
+        if: ${{ !cancelled() }}
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-18 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts
           TEST_RESULTS_DIR: ${{ runner.temp }}/test-results-darwin-native
@@ -628,6 +698,7 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts
           TEST_RESULTS_DIR: ${{ runner.temp }}/test-results-darwin-native
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-19 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: python -P -m ci.check_results "${{ env.TEST_RESULTS_DIR }}" --expected 1
 
       - name: Upload test results
@@ -658,10 +729,17 @@ jobs:
         with:
           path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
           key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
+      - name: Retain actual Plan39 command and native result evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-ceiling-${{ github.job }}-${{ strategy.job-index || '0' }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/failure-ceiling/${{ github.job }}/
+          retention-days: 90
+          if-no-files-found: error
 
   release:
     name: release wheel / Python ${{ matrix.python-version }}
-    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -684,19 +762,23 @@ jobs:
           version: "0.11.32"
 
       - name: Install system media tools
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-03 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
       - name: Install wheel builder
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-04 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: python -m pip install --disable-pip-version-check --no-input --require-hashes -r requirements/build.lock
 
       - name: Build exactly one wheel
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-05 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: |
           python -m build --wheel --no-isolation --outdir dist
           test "$(ls dist/*.whl | wc -l)" -eq 1
 
       - name: Install the wheel with the hashed runtime lock only
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-06 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: |
           python -m venv "$RUNNER_TEMP/release-venv"
           "$RUNNER_TEMP/release-venv/bin/python" -m pip install --disable-pip-version-check --no-input --require-hashes -r requirements/runtime.lock
@@ -708,9 +790,11 @@ jobs:
       # The default-lane home for "the shipped wheel works when installed" (testing plan R-1):
       # it adopts the wheel and venv built above, so the wheel that is uploaded is the wheel that is smoked.
       - name: Smoke the installed wheel
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-07 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: bash scripts/smoke_wheel_install.sh --wheel dist/*.whl --venv "$RUNNER_TEMP/release-venv"
 
       - name: Validate locks and record the release toolchain
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-08 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: python -m scripts.reshape.release_reproducibility --expected-python ${{ matrix.python-version }} --output dist/toolchain.json
 
       - name: Upload the wheel and its toolchain record
@@ -722,6 +806,15 @@ jobs:
 
   # Boundary: every vendored copy matches the immutable Runtime commit selected by runtime.lock.json.
   # The default-lane test catches local edits; this job also verifies producer manifest and source bytes.
+      - name: Retain actual Plan39 command and native result evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-ceiling-${{ github.job }}-${{ strategy.job-index || '0' }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/failure-ceiling/${{ github.job }}/
+          retention-days: 90
+          if-no-files-found: error
+
   boundary:
     name: boundary
     runs-on: ubuntu-latest
@@ -733,6 +826,7 @@ jobs:
 
       - name: Read the pinned Runtime commit
         id: runtime-pin
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-01 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: echo "commit=$(python -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')" >> "$GITHUB_OUTPUT"
 
       - name: Check out the Runtime (producer)
@@ -748,11 +842,21 @@ jobs:
           python-version: "3.11"
 
       - name: All vendored Runtime artifacts match the pinned producer
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-04 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: python scripts/vendor_lock.py check runtime.lock.json --producer runtime-producer
 
   # A pull request into a release branch comes from a branch of that release and names what it belongs
   # to: the plan (a plan branch does so by its name) or the astrid-dev issue. See the Release skill,
   # "How a release runs".
+      - name: Retain actual Plan39 command and native result evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-ceiling-${{ github.job }}-${{ strategy.job-index || '0' }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/failure-ceiling/${{ github.job }}/
+          retention-days: 90
+          if-no-files-found: error
+
   landing-reference:
     name: landing reference
     if: ${{ github.event_name == 'pull_request' && startsWith(github.base_ref, 'release/') && endsWith(github.base_ref, '/main') }}

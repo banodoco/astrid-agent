@@ -12,115 +12,1435 @@
       "workflow": "CI",
       "workflow_file": "ci.yml",
       "job": "fast checks",
-      "kind": "mixed"
+      "kind": "mixed",
+      "job_id": "checks",
+      "commands": [
+        {
+          "id": "step-01",
+          "name": "Resolve the comparison merge base",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-02",
+          "name": "Read the pinned Runtime commit",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-04",
+          "name": "Read the pinned RunPod lifecycle revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-08",
+          "name": "Install system media tools",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-09",
+          "name": "Install package with dev extras",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-10",
+          "name": "Install the pinned Runtime and client",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-11",
+          "name": "Read the pinned VibeComfy revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-13",
+          "name": "Install VibeComfy",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-14",
+          "name": "Structure baseline gate",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-15",
+          "name": "Structure ceiling policy from merge base",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-16",
+          "name": "Baseline and suppression controls gate",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-17",
+          "name": "Ruff baseline gate",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-18",
+          "name": "Install mypy stubs and the NumPy that mypy can parse",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-19",
+          "name": "Mypy baseline gate",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-20",
+          "name": "Import cycles gate",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-21",
+          "name": "Check Agent TLS policy and review regressions",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "CI/fast checks/step-21"
+        },
+        {
+          "id": "step-22",
+          "name": "Check independently failing error contract",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "CI/fast checks/step-22"
+        },
+        {
+          "id": "step-25",
+          "name": "Collection errors gate",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-26",
+          "name": "Gate regression probes",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "CI/fast checks/step-26"
+        }
+      ],
+      "matrix_index": "0",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      }
     },
     {
       "workflow": "CI",
       "workflow_file": "ci.yml",
       "job": "unit shard 1 / 8 (ubuntu-latest)",
-      "kind": "tests"
+      "kind": "tests",
+      "job_id": "unit-shard",
+      "commands": [
+        {
+          "id": "step-01",
+          "name": "Fetch release-0 Agent archive for installer rollback tests",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-02",
+          "name": "Read the pinned Runtime commit",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-04",
+          "name": "Read the pinned RunPod lifecycle revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-06",
+          "name": "Record RunPod lifecycle checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-11",
+          "name": "Install system media tools and a system font",
+          "kind": "check",
+          "optional": true
+        },
+        {
+          "id": "step-12",
+          "name": "Install package with dev extras",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-13",
+          "name": "Install the pinned Runtime and client",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-14",
+          "name": "Read the pinned VibeComfy revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-16",
+          "name": "Record VibeComfy checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-17",
+          "name": "Install VibeComfy",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-18",
+          "name": "Unit tests (default lane shard)",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "CI/unit (ubuntu-latest)"
+        },
+        {
+          "id": "step-20",
+          "name": "Summarize test result XML",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "0",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      }
     },
     {
       "workflow": "CI",
       "workflow_file": "ci.yml",
       "job": "unit shard 2 / 8 (ubuntu-latest)",
-      "kind": "tests"
+      "kind": "tests",
+      "job_id": "unit-shard",
+      "commands": [
+        {
+          "id": "step-01",
+          "name": "Fetch release-0 Agent archive for installer rollback tests",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-02",
+          "name": "Read the pinned Runtime commit",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-04",
+          "name": "Read the pinned RunPod lifecycle revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-06",
+          "name": "Record RunPod lifecycle checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-11",
+          "name": "Install system media tools and a system font",
+          "kind": "check",
+          "optional": true
+        },
+        {
+          "id": "step-12",
+          "name": "Install package with dev extras",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-13",
+          "name": "Install the pinned Runtime and client",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-14",
+          "name": "Read the pinned VibeComfy revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-16",
+          "name": "Record VibeComfy checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-17",
+          "name": "Install VibeComfy",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-18",
+          "name": "Unit tests (default lane shard)",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "CI/unit (ubuntu-latest)"
+        },
+        {
+          "id": "step-20",
+          "name": "Summarize test result XML",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "1",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      }
     },
     {
       "workflow": "CI",
       "workflow_file": "ci.yml",
       "job": "unit shard 3 / 8 (ubuntu-latest)",
-      "kind": "tests"
+      "kind": "tests",
+      "job_id": "unit-shard",
+      "commands": [
+        {
+          "id": "step-01",
+          "name": "Fetch release-0 Agent archive for installer rollback tests",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-02",
+          "name": "Read the pinned Runtime commit",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-04",
+          "name": "Read the pinned RunPod lifecycle revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-06",
+          "name": "Record RunPod lifecycle checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-11",
+          "name": "Install system media tools and a system font",
+          "kind": "check",
+          "optional": true
+        },
+        {
+          "id": "step-12",
+          "name": "Install package with dev extras",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-13",
+          "name": "Install the pinned Runtime and client",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-14",
+          "name": "Read the pinned VibeComfy revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-16",
+          "name": "Record VibeComfy checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-17",
+          "name": "Install VibeComfy",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-18",
+          "name": "Unit tests (default lane shard)",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "CI/unit (ubuntu-latest)"
+        },
+        {
+          "id": "step-20",
+          "name": "Summarize test result XML",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "2",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      }
     },
     {
       "workflow": "CI",
       "workflow_file": "ci.yml",
       "job": "unit shard 4 / 8 (ubuntu-latest)",
-      "kind": "tests"
+      "kind": "tests",
+      "job_id": "unit-shard",
+      "commands": [
+        {
+          "id": "step-01",
+          "name": "Fetch release-0 Agent archive for installer rollback tests",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-02",
+          "name": "Read the pinned Runtime commit",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-04",
+          "name": "Read the pinned RunPod lifecycle revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-06",
+          "name": "Record RunPod lifecycle checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-11",
+          "name": "Install system media tools and a system font",
+          "kind": "check",
+          "optional": true
+        },
+        {
+          "id": "step-12",
+          "name": "Install package with dev extras",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-13",
+          "name": "Install the pinned Runtime and client",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-14",
+          "name": "Read the pinned VibeComfy revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-16",
+          "name": "Record VibeComfy checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-17",
+          "name": "Install VibeComfy",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-18",
+          "name": "Unit tests (default lane shard)",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "CI/unit (ubuntu-latest)"
+        },
+        {
+          "id": "step-20",
+          "name": "Summarize test result XML",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "3",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      }
     },
     {
       "workflow": "CI",
       "workflow_file": "ci.yml",
       "job": "unit shard 5 / 8 (ubuntu-latest)",
-      "kind": "tests"
+      "kind": "tests",
+      "job_id": "unit-shard",
+      "commands": [
+        {
+          "id": "step-01",
+          "name": "Fetch release-0 Agent archive for installer rollback tests",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-02",
+          "name": "Read the pinned Runtime commit",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-04",
+          "name": "Read the pinned RunPod lifecycle revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-06",
+          "name": "Record RunPod lifecycle checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-11",
+          "name": "Install system media tools and a system font",
+          "kind": "check",
+          "optional": true
+        },
+        {
+          "id": "step-12",
+          "name": "Install package with dev extras",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-13",
+          "name": "Install the pinned Runtime and client",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-14",
+          "name": "Read the pinned VibeComfy revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-16",
+          "name": "Record VibeComfy checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-17",
+          "name": "Install VibeComfy",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-18",
+          "name": "Unit tests (default lane shard)",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "CI/unit (ubuntu-latest)"
+        },
+        {
+          "id": "step-20",
+          "name": "Summarize test result XML",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "4",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      }
     },
     {
       "workflow": "CI",
       "workflow_file": "ci.yml",
       "job": "unit shard 6 / 8 (ubuntu-latest)",
-      "kind": "tests"
+      "kind": "tests",
+      "job_id": "unit-shard",
+      "commands": [
+        {
+          "id": "step-01",
+          "name": "Fetch release-0 Agent archive for installer rollback tests",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-02",
+          "name": "Read the pinned Runtime commit",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-04",
+          "name": "Read the pinned RunPod lifecycle revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-06",
+          "name": "Record RunPod lifecycle checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-11",
+          "name": "Install system media tools and a system font",
+          "kind": "check",
+          "optional": true
+        },
+        {
+          "id": "step-12",
+          "name": "Install package with dev extras",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-13",
+          "name": "Install the pinned Runtime and client",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-14",
+          "name": "Read the pinned VibeComfy revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-16",
+          "name": "Record VibeComfy checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-17",
+          "name": "Install VibeComfy",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-18",
+          "name": "Unit tests (default lane shard)",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "CI/unit (ubuntu-latest)"
+        },
+        {
+          "id": "step-20",
+          "name": "Summarize test result XML",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "5",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      }
     },
     {
       "workflow": "CI",
       "workflow_file": "ci.yml",
       "job": "unit shard 7 / 8 (ubuntu-latest)",
-      "kind": "tests"
+      "kind": "tests",
+      "job_id": "unit-shard",
+      "commands": [
+        {
+          "id": "step-01",
+          "name": "Fetch release-0 Agent archive for installer rollback tests",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-02",
+          "name": "Read the pinned Runtime commit",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-04",
+          "name": "Read the pinned RunPod lifecycle revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-06",
+          "name": "Record RunPod lifecycle checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-11",
+          "name": "Install system media tools and a system font",
+          "kind": "check",
+          "optional": true
+        },
+        {
+          "id": "step-12",
+          "name": "Install package with dev extras",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-13",
+          "name": "Install the pinned Runtime and client",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-14",
+          "name": "Read the pinned VibeComfy revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-16",
+          "name": "Record VibeComfy checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-17",
+          "name": "Install VibeComfy",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-18",
+          "name": "Unit tests (default lane shard)",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "CI/unit (ubuntu-latest)"
+        },
+        {
+          "id": "step-20",
+          "name": "Summarize test result XML",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "6",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      }
     },
     {
       "workflow": "CI",
       "workflow_file": "ci.yml",
       "job": "unit shard 8 / 8 (ubuntu-latest)",
-      "kind": "tests"
+      "kind": "tests",
+      "job_id": "unit-shard",
+      "commands": [
+        {
+          "id": "step-01",
+          "name": "Fetch release-0 Agent archive for installer rollback tests",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-02",
+          "name": "Read the pinned Runtime commit",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-04",
+          "name": "Read the pinned RunPod lifecycle revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-06",
+          "name": "Record RunPod lifecycle checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-11",
+          "name": "Install system media tools and a system font",
+          "kind": "check",
+          "optional": true
+        },
+        {
+          "id": "step-12",
+          "name": "Install package with dev extras",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-13",
+          "name": "Install the pinned Runtime and client",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-14",
+          "name": "Read the pinned VibeComfy revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-16",
+          "name": "Record VibeComfy checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-17",
+          "name": "Install VibeComfy",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-18",
+          "name": "Unit tests (default lane shard)",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "CI/unit (ubuntu-latest)"
+        },
+        {
+          "id": "step-20",
+          "name": "Summarize test result XML",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "7",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      }
     },
     {
       "workflow": "CI",
       "workflow_file": "ci.yml",
       "job": "unit",
-      "kind": "aggregate"
+      "kind": "aggregate",
+      "job_id": "unit",
+      "dependencies": [
+        {
+          "workflow": "CI",
+          "job": "unit shard 1 / 8 (ubuntu-latest)"
+        },
+        {
+          "workflow": "CI",
+          "job": "unit shard 2 / 8 (ubuntu-latest)"
+        },
+        {
+          "workflow": "CI",
+          "job": "unit shard 3 / 8 (ubuntu-latest)"
+        },
+        {
+          "workflow": "CI",
+          "job": "unit shard 4 / 8 (ubuntu-latest)"
+        },
+        {
+          "workflow": "CI",
+          "job": "unit shard 5 / 8 (ubuntu-latest)"
+        },
+        {
+          "workflow": "CI",
+          "job": "unit shard 6 / 8 (ubuntu-latest)"
+        },
+        {
+          "workflow": "CI",
+          "job": "unit shard 7 / 8 (ubuntu-latest)"
+        },
+        {
+          "workflow": "CI",
+          "job": "unit shard 8 / 8 (ubuntu-latest)"
+        }
+      ],
+      "matrix_index": "0",
+      "dependency_tuple": {}
     },
     {
       "workflow": "CI",
       "workflow_file": "ci.yml",
       "job": "windows-native-and-installer",
-      "kind": "tests"
+      "kind": "tests",
+      "job_id": "windows-native-and-installer",
+      "commands": [
+        {
+          "id": "step-03",
+          "name": "Prepare test result directory",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-04",
+          "name": "Install package with dev extras",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-05",
+          "name": "Install the pinned Runtime and client",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-06",
+          "name": "Check native PowerShell cleanup exit codes",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "CI/windows-native-and-installer/installer-windows-tasks"
+        },
+        {
+          "id": "step-07",
+          "name": "Check Windows pack-host identity and service launcher binding",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "CI/windows-native-and-installer/host-recovery-services"
+        },
+        {
+          "id": "step-08",
+          "name": "Check Remotion admission and captured source handoff",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "CI/windows-native-and-installer/remotion-host-regressions"
+        },
+        {
+          "id": "step-09",
+          "name": "Check native Windows process and permission behavior",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "CI/windows-native-and-installer/native-windows"
+        },
+        {
+          "id": "step-10",
+          "name": "Summarize test result XML",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "0",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      }
     },
     {
       "workflow": "CI",
       "workflow_file": "ci.yml",
       "job": "darwin native",
-      "kind": "tests"
+      "kind": "tests",
+      "job_id": "darwin-native",
+      "commands": [
+        {
+          "id": "step-01",
+          "name": "Read the pinned Runtime commit",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-05",
+          "name": "Prepare test result directory",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-08",
+          "name": "Install ffmpeg",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-09",
+          "name": "Install Remotion dependencies",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-10",
+          "name": "Install package with dev extras",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-11",
+          "name": "Install the Runtime and client from the checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-12",
+          "name": "Read the pinned VibeComfy revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-14",
+          "name": "Record VibeComfy checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-15",
+          "name": "Install VibeComfy",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-16",
+          "name": "Provision the Remotion browser",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-17",
+          "name": "Install the Codex CLI (the codex_cli lane starts its native binary in the host sandbox)",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-18",
+          "name": "Darwin native, Remotion and browser tests",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "CI/darwin native"
+        },
+        {
+          "id": "step-19",
+          "name": "Summarize test result XML",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "0",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      }
     },
     {
       "workflow": "CI",
       "workflow_file": "ci.yml",
       "job": "release wheel / Python 3.11",
-      "kind": "mixed"
+      "kind": "check",
+      "job_id": "release",
+      "commands": [
+        {
+          "id": "step-03",
+          "name": "Install system media tools",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-04",
+          "name": "Install wheel builder",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-05",
+          "name": "Build exactly one wheel",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-06",
+          "name": "Install the wheel with the hashed runtime lock only",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-07",
+          "name": "Smoke the installed wheel",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-08",
+          "name": "Validate locks and record the release toolchain",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "0",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      }
     },
     {
       "workflow": "CI",
       "workflow_file": "ci.yml",
       "job": "release wheel / Python 3.12",
-      "kind": "mixed"
+      "kind": "check",
+      "job_id": "release",
+      "commands": [
+        {
+          "id": "step-03",
+          "name": "Install system media tools",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-04",
+          "name": "Install wheel builder",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-05",
+          "name": "Build exactly one wheel",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-06",
+          "name": "Install the wheel with the hashed runtime lock only",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-07",
+          "name": "Smoke the installed wheel",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-08",
+          "name": "Validate locks and record the release toolchain",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "1",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      }
     },
     {
       "workflow": "CI",
       "workflow_file": "ci.yml",
       "job": "boundary",
-      "kind": "check"
+      "kind": "check",
+      "job_id": "boundary",
+      "commands": [
+        {
+          "id": "step-01",
+          "name": "Read the pinned Runtime commit",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-04",
+          "name": "All vendored Runtime artifacts match the pinned producer",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "0",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      }
     },
     {
       "workflow": "Chat service",
       "workflow_file": "chat.yml",
       "job": "chat",
-      "kind": "tests"
+      "kind": "tests",
+      "job_id": "chat",
+      "commands": [
+        {
+          "id": "step-03",
+          "name": "Plan39 recorded command 03",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-04",
+          "name": "Plan39 recorded command 04",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-06",
+          "name": "Plan39 recorded command 06",
+          "kind": "tests",
+          "optional": false,
+          "runner": "bun",
+          "invocations": 1,
+          "lane": "Chat service/chat"
+        },
+        {
+          "id": "step-07",
+          "name": "Plan39 recorded command 07",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "0",
+      "dependency_tuple": {}
     },
     {
       "workflow": "Chat service",
       "workflow_file": "chat.yml",
       "job": "windows-launchers",
-      "kind": "tests"
+      "kind": "tests",
+      "job_id": "windows-launchers",
+      "commands": [
+        {
+          "id": "step-02",
+          "name": "Plan39 recorded command 02",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-03",
+          "name": "Exercise native Windows chat child launches",
+          "kind": "tests",
+          "optional": false,
+          "runner": "bun",
+          "invocations": 1,
+          "lane": "Chat service/windows-launchers/step-03"
+        },
+        {
+          "id": "step-04",
+          "name": "Allow slow Windows model discovery through HTTP",
+          "kind": "tests",
+          "optional": false,
+          "runner": "bun",
+          "invocations": 1,
+          "lane": "Chat service/windows-launchers/step-04"
+        },
+        {
+          "id": "step-05",
+          "name": "Parse the operator diagnostic with Windows PowerShell",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-06",
+          "name": "Parse the operator diagnostic with PowerShell Core",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "0",
+      "dependency_tuple": {}
     },
     {
       "workflow": "Windows task host journey",
       "workflow_file": "windows-journey.yml",
       "job": "Windows task host journey (powershell.exe)",
-      "kind": "journey"
+      "kind": "journey",
+      "job_id": "windows-journey",
+      "commands": [
+        {
+          "id": "step-01",
+          "name": "Resolve App ref",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-03",
+          "name": "Resolve the pinned Runtime commit from the Agent lock",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-06",
+          "name": "Record checked-out refs",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-07",
+          "name": "Install py-spy in the journey driver environment",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-08",
+          "name": "Install with the real App install.ps1 / powershell.exe",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-09",
+          "name": "Start Runtime through its installed Scheduled Task",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-10",
+          "name": "Wait for health on 127.0.0.1:17340",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-11",
+          "name": "Wait for pack-host running and its ready file",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-12",
+          "name": "Run an installed-profile SDK invocation through settlement",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-13",
+          "name": "Disable Scheduled Task restarts and run Runtime down",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-14",
+          "name": "Verify no Astrid or Runtime processes remain",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-15",
+          "name": "Collect install logs, Runtime logs, health and process lists",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "0",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      },
+      "unresolved_dependencies": [
+        "App installer ref defaults to mutable main; installed Agent/Runtime are selected App manifest revisions, not sibling checkouts. An installed tuple receipt and reviewed expected pins are required."
+      ]
     },
     {
       "workflow": "Windows task host journey",
       "workflow_file": "windows-journey.yml",
       "job": "Windows task host journey (pwsh.exe)",
-      "kind": "journey"
+      "kind": "journey",
+      "job_id": "windows-journey",
+      "commands": [
+        {
+          "id": "step-01",
+          "name": "Resolve App ref",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-03",
+          "name": "Resolve the pinned Runtime commit from the Agent lock",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-06",
+          "name": "Record checked-out refs",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-07",
+          "name": "Install py-spy in the journey driver environment",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-08",
+          "name": "Install with the real App install.ps1 / pwsh.exe",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-09",
+          "name": "Start Runtime through its installed Scheduled Task",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-10",
+          "name": "Wait for health on 127.0.0.1:17340",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-11",
+          "name": "Wait for pack-host running and its ready file",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-12",
+          "name": "Run an installed-profile SDK invocation through settlement",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-13",
+          "name": "Disable Scheduled Task restarts and run Runtime down",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-14",
+          "name": "Verify no Astrid or Runtime processes remain",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-15",
+          "name": "Collect install logs, Runtime logs, health and process lists",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "1",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      },
+      "unresolved_dependencies": [
+        "App installer ref defaults to mutable main; installed Agent/Runtime are selected App manifest revisions, not sibling checkouts. An installed tuple receipt and reviewed expected pins are required."
+      ]
     }
   ],
   "release": [
@@ -128,151 +1448,2143 @@
       "workflow": "CI",
       "workflow_file": "ci.yml",
       "job": "fast checks",
-      "kind": "mixed"
+      "kind": "mixed",
+      "job_id": "checks",
+      "commands": [
+        {
+          "id": "step-01",
+          "name": "Resolve the comparison merge base",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-02",
+          "name": "Read the pinned Runtime commit",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-04",
+          "name": "Read the pinned RunPod lifecycle revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-08",
+          "name": "Install system media tools",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-09",
+          "name": "Install package with dev extras",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-10",
+          "name": "Install the pinned Runtime and client",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-11",
+          "name": "Read the pinned VibeComfy revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-13",
+          "name": "Install VibeComfy",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-14",
+          "name": "Structure baseline gate",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-15",
+          "name": "Structure ceiling policy from merge base",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-16",
+          "name": "Baseline and suppression controls gate",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-17",
+          "name": "Ruff baseline gate",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-18",
+          "name": "Install mypy stubs and the NumPy that mypy can parse",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-19",
+          "name": "Mypy baseline gate",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-20",
+          "name": "Import cycles gate",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-21",
+          "name": "Check Agent TLS policy and review regressions",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "CI/fast checks/step-21"
+        },
+        {
+          "id": "step-22",
+          "name": "Check independently failing error contract",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "CI/fast checks/step-22"
+        },
+        {
+          "id": "step-25",
+          "name": "Collection errors gate",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-26",
+          "name": "Gate regression probes",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "CI/fast checks/step-26"
+        }
+      ],
+      "matrix_index": "0",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      }
     },
     {
       "workflow": "CI",
       "workflow_file": "ci.yml",
       "job": "unit shard 1 / 8 (ubuntu-latest)",
-      "kind": "tests"
+      "kind": "tests",
+      "job_id": "unit-shard",
+      "commands": [
+        {
+          "id": "step-01",
+          "name": "Fetch release-0 Agent archive for installer rollback tests",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-02",
+          "name": "Read the pinned Runtime commit",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-04",
+          "name": "Read the pinned RunPod lifecycle revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-06",
+          "name": "Record RunPod lifecycle checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-11",
+          "name": "Install system media tools and a system font",
+          "kind": "check",
+          "optional": true
+        },
+        {
+          "id": "step-12",
+          "name": "Install package with dev extras",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-13",
+          "name": "Install the pinned Runtime and client",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-14",
+          "name": "Read the pinned VibeComfy revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-16",
+          "name": "Record VibeComfy checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-17",
+          "name": "Install VibeComfy",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-18",
+          "name": "Unit tests (default lane shard)",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "CI/unit (ubuntu-latest)"
+        },
+        {
+          "id": "step-20",
+          "name": "Summarize test result XML",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "0",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      }
     },
     {
       "workflow": "CI",
       "workflow_file": "ci.yml",
       "job": "unit shard 2 / 8 (ubuntu-latest)",
-      "kind": "tests"
+      "kind": "tests",
+      "job_id": "unit-shard",
+      "commands": [
+        {
+          "id": "step-01",
+          "name": "Fetch release-0 Agent archive for installer rollback tests",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-02",
+          "name": "Read the pinned Runtime commit",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-04",
+          "name": "Read the pinned RunPod lifecycle revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-06",
+          "name": "Record RunPod lifecycle checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-11",
+          "name": "Install system media tools and a system font",
+          "kind": "check",
+          "optional": true
+        },
+        {
+          "id": "step-12",
+          "name": "Install package with dev extras",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-13",
+          "name": "Install the pinned Runtime and client",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-14",
+          "name": "Read the pinned VibeComfy revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-16",
+          "name": "Record VibeComfy checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-17",
+          "name": "Install VibeComfy",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-18",
+          "name": "Unit tests (default lane shard)",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "CI/unit (ubuntu-latest)"
+        },
+        {
+          "id": "step-20",
+          "name": "Summarize test result XML",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "1",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      }
     },
     {
       "workflow": "CI",
       "workflow_file": "ci.yml",
       "job": "unit shard 3 / 8 (ubuntu-latest)",
-      "kind": "tests"
+      "kind": "tests",
+      "job_id": "unit-shard",
+      "commands": [
+        {
+          "id": "step-01",
+          "name": "Fetch release-0 Agent archive for installer rollback tests",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-02",
+          "name": "Read the pinned Runtime commit",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-04",
+          "name": "Read the pinned RunPod lifecycle revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-06",
+          "name": "Record RunPod lifecycle checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-11",
+          "name": "Install system media tools and a system font",
+          "kind": "check",
+          "optional": true
+        },
+        {
+          "id": "step-12",
+          "name": "Install package with dev extras",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-13",
+          "name": "Install the pinned Runtime and client",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-14",
+          "name": "Read the pinned VibeComfy revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-16",
+          "name": "Record VibeComfy checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-17",
+          "name": "Install VibeComfy",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-18",
+          "name": "Unit tests (default lane shard)",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "CI/unit (ubuntu-latest)"
+        },
+        {
+          "id": "step-20",
+          "name": "Summarize test result XML",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "2",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      }
     },
     {
       "workflow": "CI",
       "workflow_file": "ci.yml",
       "job": "unit shard 4 / 8 (ubuntu-latest)",
-      "kind": "tests"
+      "kind": "tests",
+      "job_id": "unit-shard",
+      "commands": [
+        {
+          "id": "step-01",
+          "name": "Fetch release-0 Agent archive for installer rollback tests",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-02",
+          "name": "Read the pinned Runtime commit",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-04",
+          "name": "Read the pinned RunPod lifecycle revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-06",
+          "name": "Record RunPod lifecycle checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-11",
+          "name": "Install system media tools and a system font",
+          "kind": "check",
+          "optional": true
+        },
+        {
+          "id": "step-12",
+          "name": "Install package with dev extras",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-13",
+          "name": "Install the pinned Runtime and client",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-14",
+          "name": "Read the pinned VibeComfy revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-16",
+          "name": "Record VibeComfy checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-17",
+          "name": "Install VibeComfy",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-18",
+          "name": "Unit tests (default lane shard)",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "CI/unit (ubuntu-latest)"
+        },
+        {
+          "id": "step-20",
+          "name": "Summarize test result XML",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "3",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      }
     },
     {
       "workflow": "CI",
       "workflow_file": "ci.yml",
       "job": "unit shard 5 / 8 (ubuntu-latest)",
-      "kind": "tests"
+      "kind": "tests",
+      "job_id": "unit-shard",
+      "commands": [
+        {
+          "id": "step-01",
+          "name": "Fetch release-0 Agent archive for installer rollback tests",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-02",
+          "name": "Read the pinned Runtime commit",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-04",
+          "name": "Read the pinned RunPod lifecycle revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-06",
+          "name": "Record RunPod lifecycle checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-11",
+          "name": "Install system media tools and a system font",
+          "kind": "check",
+          "optional": true
+        },
+        {
+          "id": "step-12",
+          "name": "Install package with dev extras",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-13",
+          "name": "Install the pinned Runtime and client",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-14",
+          "name": "Read the pinned VibeComfy revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-16",
+          "name": "Record VibeComfy checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-17",
+          "name": "Install VibeComfy",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-18",
+          "name": "Unit tests (default lane shard)",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "CI/unit (ubuntu-latest)"
+        },
+        {
+          "id": "step-20",
+          "name": "Summarize test result XML",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "4",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      }
     },
     {
       "workflow": "CI",
       "workflow_file": "ci.yml",
       "job": "unit shard 6 / 8 (ubuntu-latest)",
-      "kind": "tests"
+      "kind": "tests",
+      "job_id": "unit-shard",
+      "commands": [
+        {
+          "id": "step-01",
+          "name": "Fetch release-0 Agent archive for installer rollback tests",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-02",
+          "name": "Read the pinned Runtime commit",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-04",
+          "name": "Read the pinned RunPod lifecycle revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-06",
+          "name": "Record RunPod lifecycle checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-11",
+          "name": "Install system media tools and a system font",
+          "kind": "check",
+          "optional": true
+        },
+        {
+          "id": "step-12",
+          "name": "Install package with dev extras",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-13",
+          "name": "Install the pinned Runtime and client",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-14",
+          "name": "Read the pinned VibeComfy revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-16",
+          "name": "Record VibeComfy checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-17",
+          "name": "Install VibeComfy",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-18",
+          "name": "Unit tests (default lane shard)",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "CI/unit (ubuntu-latest)"
+        },
+        {
+          "id": "step-20",
+          "name": "Summarize test result XML",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "5",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      }
     },
     {
       "workflow": "CI",
       "workflow_file": "ci.yml",
       "job": "unit shard 7 / 8 (ubuntu-latest)",
-      "kind": "tests"
+      "kind": "tests",
+      "job_id": "unit-shard",
+      "commands": [
+        {
+          "id": "step-01",
+          "name": "Fetch release-0 Agent archive for installer rollback tests",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-02",
+          "name": "Read the pinned Runtime commit",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-04",
+          "name": "Read the pinned RunPod lifecycle revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-06",
+          "name": "Record RunPod lifecycle checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-11",
+          "name": "Install system media tools and a system font",
+          "kind": "check",
+          "optional": true
+        },
+        {
+          "id": "step-12",
+          "name": "Install package with dev extras",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-13",
+          "name": "Install the pinned Runtime and client",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-14",
+          "name": "Read the pinned VibeComfy revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-16",
+          "name": "Record VibeComfy checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-17",
+          "name": "Install VibeComfy",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-18",
+          "name": "Unit tests (default lane shard)",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "CI/unit (ubuntu-latest)"
+        },
+        {
+          "id": "step-20",
+          "name": "Summarize test result XML",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "6",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      }
     },
     {
       "workflow": "CI",
       "workflow_file": "ci.yml",
       "job": "unit shard 8 / 8 (ubuntu-latest)",
-      "kind": "tests"
+      "kind": "tests",
+      "job_id": "unit-shard",
+      "commands": [
+        {
+          "id": "step-01",
+          "name": "Fetch release-0 Agent archive for installer rollback tests",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-02",
+          "name": "Read the pinned Runtime commit",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-04",
+          "name": "Read the pinned RunPod lifecycle revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-06",
+          "name": "Record RunPod lifecycle checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-11",
+          "name": "Install system media tools and a system font",
+          "kind": "check",
+          "optional": true
+        },
+        {
+          "id": "step-12",
+          "name": "Install package with dev extras",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-13",
+          "name": "Install the pinned Runtime and client",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-14",
+          "name": "Read the pinned VibeComfy revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-16",
+          "name": "Record VibeComfy checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-17",
+          "name": "Install VibeComfy",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-18",
+          "name": "Unit tests (default lane shard)",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "CI/unit (ubuntu-latest)"
+        },
+        {
+          "id": "step-20",
+          "name": "Summarize test result XML",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "7",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      }
     },
     {
       "workflow": "CI",
       "workflow_file": "ci.yml",
       "job": "unit",
-      "kind": "aggregate"
+      "kind": "aggregate",
+      "job_id": "unit",
+      "dependencies": [
+        {
+          "workflow": "CI",
+          "job": "unit shard 1 / 8 (ubuntu-latest)"
+        },
+        {
+          "workflow": "CI",
+          "job": "unit shard 2 / 8 (ubuntu-latest)"
+        },
+        {
+          "workflow": "CI",
+          "job": "unit shard 3 / 8 (ubuntu-latest)"
+        },
+        {
+          "workflow": "CI",
+          "job": "unit shard 4 / 8 (ubuntu-latest)"
+        },
+        {
+          "workflow": "CI",
+          "job": "unit shard 5 / 8 (ubuntu-latest)"
+        },
+        {
+          "workflow": "CI",
+          "job": "unit shard 6 / 8 (ubuntu-latest)"
+        },
+        {
+          "workflow": "CI",
+          "job": "unit shard 7 / 8 (ubuntu-latest)"
+        },
+        {
+          "workflow": "CI",
+          "job": "unit shard 8 / 8 (ubuntu-latest)"
+        }
+      ],
+      "matrix_index": "0",
+      "dependency_tuple": {}
     },
     {
       "workflow": "CI",
       "workflow_file": "ci.yml",
       "job": "windows-native-and-installer",
-      "kind": "tests"
+      "kind": "tests",
+      "job_id": "windows-native-and-installer",
+      "commands": [
+        {
+          "id": "step-03",
+          "name": "Prepare test result directory",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-04",
+          "name": "Install package with dev extras",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-05",
+          "name": "Install the pinned Runtime and client",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-06",
+          "name": "Check native PowerShell cleanup exit codes",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "CI/windows-native-and-installer/installer-windows-tasks"
+        },
+        {
+          "id": "step-07",
+          "name": "Check Windows pack-host identity and service launcher binding",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "CI/windows-native-and-installer/host-recovery-services"
+        },
+        {
+          "id": "step-08",
+          "name": "Check Remotion admission and captured source handoff",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "CI/windows-native-and-installer/remotion-host-regressions"
+        },
+        {
+          "id": "step-09",
+          "name": "Check native Windows process and permission behavior",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "CI/windows-native-and-installer/native-windows"
+        },
+        {
+          "id": "step-10",
+          "name": "Summarize test result XML",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "0",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      }
     },
     {
       "workflow": "CI",
       "workflow_file": "ci.yml",
       "job": "darwin native",
-      "kind": "tests"
+      "kind": "tests",
+      "job_id": "darwin-native",
+      "commands": [
+        {
+          "id": "step-01",
+          "name": "Read the pinned Runtime commit",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-05",
+          "name": "Prepare test result directory",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-08",
+          "name": "Install ffmpeg",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-09",
+          "name": "Install Remotion dependencies",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-10",
+          "name": "Install package with dev extras",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-11",
+          "name": "Install the Runtime and client from the checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-12",
+          "name": "Read the pinned VibeComfy revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-14",
+          "name": "Record VibeComfy checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-15",
+          "name": "Install VibeComfy",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-16",
+          "name": "Provision the Remotion browser",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-17",
+          "name": "Install the Codex CLI (the codex_cli lane starts its native binary in the host sandbox)",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-18",
+          "name": "Darwin native, Remotion and browser tests",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "CI/darwin native"
+        },
+        {
+          "id": "step-19",
+          "name": "Summarize test result XML",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "0",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      }
     },
     {
       "workflow": "CI",
       "workflow_file": "ci.yml",
       "job": "release wheel / Python 3.11",
-      "kind": "mixed"
+      "kind": "check",
+      "job_id": "release",
+      "commands": [
+        {
+          "id": "step-03",
+          "name": "Install system media tools",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-04",
+          "name": "Install wheel builder",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-05",
+          "name": "Build exactly one wheel",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-06",
+          "name": "Install the wheel with the hashed runtime lock only",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-07",
+          "name": "Smoke the installed wheel",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-08",
+          "name": "Validate locks and record the release toolchain",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "0",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      }
     },
     {
       "workflow": "CI",
       "workflow_file": "ci.yml",
       "job": "release wheel / Python 3.12",
-      "kind": "mixed"
+      "kind": "check",
+      "job_id": "release",
+      "commands": [
+        {
+          "id": "step-03",
+          "name": "Install system media tools",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-04",
+          "name": "Install wheel builder",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-05",
+          "name": "Build exactly one wheel",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-06",
+          "name": "Install the wheel with the hashed runtime lock only",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-07",
+          "name": "Smoke the installed wheel",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-08",
+          "name": "Validate locks and record the release toolchain",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "1",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      }
     },
     {
       "workflow": "CI",
       "workflow_file": "ci.yml",
       "job": "boundary",
-      "kind": "check"
+      "kind": "check",
+      "job_id": "boundary",
+      "commands": [
+        {
+          "id": "step-01",
+          "name": "Read the pinned Runtime commit",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-04",
+          "name": "All vendored Runtime artifacts match the pinned producer",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "0",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      }
     },
     {
       "workflow": "Chat service",
       "workflow_file": "chat.yml",
       "job": "chat",
-      "kind": "tests"
+      "kind": "tests",
+      "job_id": "chat",
+      "commands": [
+        {
+          "id": "step-03",
+          "name": "Plan39 recorded command 03",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-04",
+          "name": "Plan39 recorded command 04",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-06",
+          "name": "Plan39 recorded command 06",
+          "kind": "tests",
+          "optional": false,
+          "runner": "bun",
+          "invocations": 1,
+          "lane": "Chat service/chat"
+        },
+        {
+          "id": "step-07",
+          "name": "Plan39 recorded command 07",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "0",
+      "dependency_tuple": {}
     },
     {
       "workflow": "Chat service",
       "workflow_file": "chat.yml",
       "job": "windows-launchers",
-      "kind": "tests"
+      "kind": "tests",
+      "job_id": "windows-launchers",
+      "commands": [
+        {
+          "id": "step-02",
+          "name": "Plan39 recorded command 02",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-03",
+          "name": "Exercise native Windows chat child launches",
+          "kind": "tests",
+          "optional": false,
+          "runner": "bun",
+          "invocations": 1,
+          "lane": "Chat service/windows-launchers/step-03"
+        },
+        {
+          "id": "step-04",
+          "name": "Allow slow Windows model discovery through HTTP",
+          "kind": "tests",
+          "optional": false,
+          "runner": "bun",
+          "invocations": 1,
+          "lane": "Chat service/windows-launchers/step-04"
+        },
+        {
+          "id": "step-05",
+          "name": "Parse the operator diagnostic with Windows PowerShell",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-06",
+          "name": "Parse the operator diagnostic with PowerShell Core",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "0",
+      "dependency_tuple": {}
     },
     {
       "workflow": "Windows task host journey",
       "workflow_file": "windows-journey.yml",
       "job": "Windows task host journey (powershell.exe)",
-      "kind": "journey"
+      "kind": "journey",
+      "job_id": "windows-journey",
+      "commands": [
+        {
+          "id": "step-01",
+          "name": "Resolve App ref",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-03",
+          "name": "Resolve the pinned Runtime commit from the Agent lock",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-06",
+          "name": "Record checked-out refs",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-07",
+          "name": "Install py-spy in the journey driver environment",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-08",
+          "name": "Install with the real App install.ps1 / powershell.exe",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-09",
+          "name": "Start Runtime through its installed Scheduled Task",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-10",
+          "name": "Wait for health on 127.0.0.1:17340",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-11",
+          "name": "Wait for pack-host running and its ready file",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-12",
+          "name": "Run an installed-profile SDK invocation through settlement",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-13",
+          "name": "Disable Scheduled Task restarts and run Runtime down",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-14",
+          "name": "Verify no Astrid or Runtime processes remain",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-15",
+          "name": "Collect install logs, Runtime logs, health and process lists",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "0",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      },
+      "unresolved_dependencies": [
+        "App installer ref defaults to mutable main; installed Agent/Runtime are selected App manifest revisions, not sibling checkouts. An installed tuple receipt and reviewed expected pins are required."
+      ]
     },
     {
       "workflow": "Windows task host journey",
       "workflow_file": "windows-journey.yml",
       "job": "Windows task host journey (pwsh.exe)",
-      "kind": "journey"
+      "kind": "journey",
+      "job_id": "windows-journey",
+      "commands": [
+        {
+          "id": "step-01",
+          "name": "Resolve App ref",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-03",
+          "name": "Resolve the pinned Runtime commit from the Agent lock",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-06",
+          "name": "Record checked-out refs",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-07",
+          "name": "Install py-spy in the journey driver environment",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-08",
+          "name": "Install with the real App install.ps1 / pwsh.exe",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-09",
+          "name": "Start Runtime through its installed Scheduled Task",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-10",
+          "name": "Wait for health on 127.0.0.1:17340",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-11",
+          "name": "Wait for pack-host running and its ready file",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-12",
+          "name": "Run an installed-profile SDK invocation through settlement",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-13",
+          "name": "Disable Scheduled Task restarts and run Runtime down",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-14",
+          "name": "Verify no Astrid or Runtime processes remain",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-15",
+          "name": "Collect install logs, Runtime logs, health and process lists",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "1",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      },
+      "unresolved_dependencies": [
+        "App installer ref defaults to mutable main; installed Agent/Runtime are selected App manifest revisions, not sibling checkouts. An installed tuple receipt and reviewed expected pins are required."
+      ]
     },
     {
       "workflow": "Lanes",
       "workflow_file": "lanes.yml",
       "job": "integration shard 1 / 4",
-      "kind": "tests"
+      "kind": "tests",
+      "job_id": "integration",
+      "commands": [
+        {
+          "id": "step-01",
+          "name": "Resolve launcher ref",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-02",
+          "name": "Read the pinned Runtime commit",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-05",
+          "name": "Fetch historical Agent archive objects",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-06",
+          "name": "Fetch historical Runtime archive objects",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-07",
+          "name": "Verify Runtime sources before tests",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-08",
+          "name": "Record checked-out refs",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-14",
+          "name": "Install system media tools and a system font",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-15",
+          "name": "Install package with dev extras",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-16",
+          "name": "Install the Runtime and client from the checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-17",
+          "name": "Read the pinned VibeComfy revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-19",
+          "name": "Record VibeComfy checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-20",
+          "name": "Install VibeComfy",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-21",
+          "name": "Install the Remotion dependencies",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-22",
+          "name": "Provision the Remotion browser",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-23",
+          "name": "Read the pinned RunPod lifecycle revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-25",
+          "name": "Record RunPod lifecycle checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-26",
+          "name": "Read the pinned ComfyUI revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-28",
+          "name": "Record ComfyUI checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-29",
+          "name": "Integration tests (shard)",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "Lanes/integration"
+        },
+        {
+          "id": "step-30",
+          "name": "Summarize test result XML",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "0",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      }
     },
     {
       "workflow": "Lanes",
       "workflow_file": "lanes.yml",
       "job": "integration shard 2 / 4",
-      "kind": "tests"
+      "kind": "tests",
+      "job_id": "integration",
+      "commands": [
+        {
+          "id": "step-01",
+          "name": "Resolve launcher ref",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-02",
+          "name": "Read the pinned Runtime commit",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-05",
+          "name": "Fetch historical Agent archive objects",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-06",
+          "name": "Fetch historical Runtime archive objects",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-07",
+          "name": "Verify Runtime sources before tests",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-08",
+          "name": "Record checked-out refs",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-14",
+          "name": "Install system media tools and a system font",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-15",
+          "name": "Install package with dev extras",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-16",
+          "name": "Install the Runtime and client from the checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-17",
+          "name": "Read the pinned VibeComfy revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-19",
+          "name": "Record VibeComfy checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-20",
+          "name": "Install VibeComfy",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-21",
+          "name": "Install the Remotion dependencies",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-22",
+          "name": "Provision the Remotion browser",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-23",
+          "name": "Read the pinned RunPod lifecycle revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-25",
+          "name": "Record RunPod lifecycle checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-26",
+          "name": "Read the pinned ComfyUI revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-28",
+          "name": "Record ComfyUI checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-29",
+          "name": "Integration tests (shard)",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "Lanes/integration"
+        },
+        {
+          "id": "step-30",
+          "name": "Summarize test result XML",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "1",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      }
     },
     {
       "workflow": "Lanes",
       "workflow_file": "lanes.yml",
       "job": "integration shard 3 / 4",
-      "kind": "tests"
+      "kind": "tests",
+      "job_id": "integration",
+      "commands": [
+        {
+          "id": "step-01",
+          "name": "Resolve launcher ref",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-02",
+          "name": "Read the pinned Runtime commit",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-05",
+          "name": "Fetch historical Agent archive objects",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-06",
+          "name": "Fetch historical Runtime archive objects",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-07",
+          "name": "Verify Runtime sources before tests",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-08",
+          "name": "Record checked-out refs",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-14",
+          "name": "Install system media tools and a system font",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-15",
+          "name": "Install package with dev extras",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-16",
+          "name": "Install the Runtime and client from the checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-17",
+          "name": "Read the pinned VibeComfy revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-19",
+          "name": "Record VibeComfy checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-20",
+          "name": "Install VibeComfy",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-21",
+          "name": "Install the Remotion dependencies",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-22",
+          "name": "Provision the Remotion browser",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-23",
+          "name": "Read the pinned RunPod lifecycle revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-25",
+          "name": "Record RunPod lifecycle checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-26",
+          "name": "Read the pinned ComfyUI revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-28",
+          "name": "Record ComfyUI checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-29",
+          "name": "Integration tests (shard)",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "Lanes/integration"
+        },
+        {
+          "id": "step-30",
+          "name": "Summarize test result XML",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "2",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      }
     },
     {
       "workflow": "Lanes",
       "workflow_file": "lanes.yml",
       "job": "integration shard 4 / 4",
-      "kind": "tests"
+      "kind": "tests",
+      "job_id": "integration",
+      "commands": [
+        {
+          "id": "step-01",
+          "name": "Resolve launcher ref",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-02",
+          "name": "Read the pinned Runtime commit",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-05",
+          "name": "Fetch historical Agent archive objects",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-06",
+          "name": "Fetch historical Runtime archive objects",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-07",
+          "name": "Verify Runtime sources before tests",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-08",
+          "name": "Record checked-out refs",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-14",
+          "name": "Install system media tools and a system font",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-15",
+          "name": "Install package with dev extras",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-16",
+          "name": "Install the Runtime and client from the checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-17",
+          "name": "Read the pinned VibeComfy revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-19",
+          "name": "Record VibeComfy checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-20",
+          "name": "Install VibeComfy",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-21",
+          "name": "Install the Remotion dependencies",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-22",
+          "name": "Provision the Remotion browser",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-23",
+          "name": "Read the pinned RunPod lifecycle revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-25",
+          "name": "Record RunPod lifecycle checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-26",
+          "name": "Read the pinned ComfyUI revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-28",
+          "name": "Record ComfyUI checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-29",
+          "name": "Integration tests (shard)",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "Lanes/integration"
+        },
+        {
+          "id": "step-30",
+          "name": "Summarize test result XML",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "3",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      }
     },
     {
       "workflow": "Lanes",
       "workflow_file": "lanes.yml",
       "job": "opt-in",
-      "kind": "tests"
+      "kind": "tests",
+      "job_id": "opt-in",
+      "commands": [
+        {
+          "id": "step-01",
+          "name": "Read the pinned Runtime commit",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-03",
+          "name": "Record checked-out refs",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-08",
+          "name": "Install system media tools and a system font",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-09",
+          "name": "Install package with dev extras",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-10",
+          "name": "Install the Runtime and client from the checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-11",
+          "name": "Read the pinned VibeComfy revision",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-13",
+          "name": "Record VibeComfy checkout",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-14",
+          "name": "Install VibeComfy",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-15",
+          "name": "Install the Remotion dependencies",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-16",
+          "name": "Provision the Remotion browser",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-17",
+          "name": "Opt-in tests",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "Lanes/opt-in"
+        }
+      ],
+      "matrix_index": "0",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      }
     },
     {
       "workflow": "Lanes",
       "workflow_file": "lanes.yml",
       "job": "installed wheel",
-      "kind": "mixed"
+      "kind": "mixed",
+      "job_id": "installed",
+      "commands": [
+        {
+          "id": "step-01",
+          "name": "Prepare installed-wheel receipt",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-02",
+          "name": "Read the pinned Runtime commit",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-04",
+          "name": "Record checked-out refs",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-07",
+          "name": "Install system media tools",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-08",
+          "name": "Build exactly one wheel",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-09",
+          "name": "Install the wheel and the Runtime into a venv",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-10",
+          "name": "Install the Remotion dependencies",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-11",
+          "name": "Generate the installed Remotion registry",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-12",
+          "name": "Installed tests",
+          "kind": "tests",
+          "optional": false,
+          "runner": "pytest",
+          "invocations": 1,
+          "lane": "Lanes/installed wheel/step-12"
+        },
+        {
+          "id": "step-13",
+          "name": "Collect installed-wheel receipt",
+          "kind": "check",
+          "optional": false
+        },
+        {
+          "id": "step-14",
+          "name": "Check the receipt manifest against what will be uploaded",
+          "kind": "check",
+          "optional": false
+        }
+      ],
+      "matrix_index": "0",
+      "dependency_tuple": {
+        "banodoco/astrid-runtime": "2537fed24385ec1c24f48a812e09af4bb63fb794"
+      }
     }
   ]
 }

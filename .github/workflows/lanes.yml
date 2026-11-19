@@ -43,7 +43,7 @@ jobs:
 
       - name: Resolve launcher ref
         id: launcher-ref
-        shell: bash
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-01 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         env:
           INPUT_LAUNCHER_REF: ${{ inputs.launcher_ref }}
         run: |
@@ -56,6 +56,7 @@ jobs:
 
       - name: Read the pinned Runtime commit
         id: runtime-pin
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-02 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: echo "commit=$(python3 -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')" >> "$GITHUB_OUTPUT"
 
       # The Runtime sibling the integration tests start daemons from (tests/helpers/runtime.py), at the pinned commit.
@@ -75,12 +76,14 @@ jobs:
           path: astrid-pinokio
 
       - name: Fetch historical Agent archive objects
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-05 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: >-
           git fetch --no-tags --depth=1 origin
           a53ef0c257e4b0bbc2a65959b9119e2cb4cff453
           0e1543e0da2215db9cb3320cfd1083174c3c62a9
 
       - name: Fetch historical Runtime archive objects
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-06 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: >-
           git -C astrid-runtime fetch --no-tags --depth=1 origin
           11443b0b5b34bd5b36725504fb083146192a759d
@@ -95,7 +98,7 @@ jobs:
           6d53a19070faf63fc15ae1f81417722edc2c8a5f
 
       - name: Verify Runtime sources before tests
-        shell: bash
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-07 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         env:
           RUNTIME_LOCK_SHA: ${{ steps.runtime-pin.outputs.commit }}
           HISTORICAL_RUNTIME_SHA: efcb3264e854fc312faa0bc6e702a9034edc2e06
@@ -127,7 +130,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Record checked-out refs
-        shell: bash
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-08 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: |
           {
             echo "## Effective checked-out refs"
@@ -165,20 +168,24 @@ jobs:
           node-version-file: .node-version
 
       - name: Install system media tools and a system font
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-14 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg fonts-dejavu-core
 
       - name: Install package with dev extras
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-15 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: python -m pip install -e '.[dev]'
 
       # The tests put the Runtime checkout on sys.path (tests/helpers/runtime.py), so the Runtime and its client are
       # installed from that same checkout, not from the archive scripts/ci_install_runtime.py installs.
       - name: Install the Runtime and client from the checkout
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-16 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: python -m pip install --no-deps -e ./astrid-runtime -e ./astrid-runtime/packages/python
 
       - name: Read the pinned VibeComfy revision
         id: vibecomfy-pin
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-17 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: |
           rev="$(python3 scripts/vibecomfy_pin.py)"
           if [[ ! "$rev" =~ ^[0-9a-f]{40}$ ]]; then
@@ -197,20 +204,24 @@ jobs:
       - name: Record VibeComfy checkout
         env:
           VIBECOMFY_REVISION: ${{ steps.vibecomfy-pin.outputs.revision }}
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-19 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: |
           checked_out="$(git -C vibecomfy-checkout rev-parse HEAD)"
           test "$checked_out" = "$VIBECOMFY_REVISION"
           echo "- VibeComfy: banodoco/VibeComfy at $checked_out (engine revision verified)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install VibeComfy
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-20 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: python -m pip install -e ./vibecomfy-checkout
 
       - name: Install the Remotion dependencies
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-21 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: |
           sudo apt-get install -y libnss3 libdbus-1-3 libatk1.0-0 libatk-bridge2.0-0 libgbm1 libasound2t64 libxrandr2 libxkbcommon0 libxfixes3 libxcomposite1 libxdamage1 libpango-1.0-0 libcairo2 libcups2
           npm ci --prefix remotion
 
       - name: Provision the Remotion browser
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-22 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: npx remotion browser ensure
         working-directory: remotion
 
@@ -218,6 +229,7 @@ jobs:
       # runpod-lifecycle checkout (ASTRID_TEST_LIFECYCLE_CHECKOUT), as the unit shards do in ci.yml.
       - name: Read the pinned RunPod lifecycle revision
         id: lifecycle-pin
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-23 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: |
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json
@@ -235,7 +247,7 @@ jobs:
           path: runpod-lifecycle-checkout
 
       - name: Record RunPod lifecycle checkout
-        shell: bash
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-25 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         env:
           LIFECYCLE_REVISION: ${{ steps.lifecycle-pin.outputs.revision }}
         run: |
@@ -248,6 +260,7 @@ jobs:
       # because the integrity check verifies the genuine commit; it reads ASTRID_TEST_COMFY_SOURCE, so no test needs network.
       - name: Read the pinned ComfyUI revision
         id: comfyui-pin
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-26 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: |
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json
@@ -265,7 +278,7 @@ jobs:
           path: comfyui-checkout
 
       - name: Record ComfyUI checkout
-        shell: bash
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-28 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         env:
           COMFYUI_REVISION: ${{ steps.comfyui-pin.outputs.revision }}
         run: |
@@ -275,8 +288,9 @@ jobs:
           echo "- ComfyUI: $checked_out" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Integration tests (shard)
-        run: mkdir -p "$TEST_RESULTS_DIR" && python -P -m ci.run_pytest -v -rA --junitxml="$TEST_RESULTS_DIR/integration.xml" --durations=40 -m "integration and not opt_in and not app_checkout" --splits 4 --group ${{ matrix.group }}
-        shell: bash
+        run: mkdir -p "$TEST_RESULTS_DIR" && python -P -m ci.run_pytest -p ceiling_pytest -v -rA --junitxml="$TEST_RESULTS_DIR/integration.xml" --durations=40 -m "integration and not opt_in and not app_checkout" --splits 4 --group ${{ matrix.group }}
+        if: ${{ !cancelled() }}
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-29 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts
           TEST_RESULTS_DIR: ${{ runner.temp }}/test-results-integration-${{ matrix.group }}-${{ runner.os }}
@@ -285,6 +299,7 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts
           TEST_RESULTS_DIR: ${{ runner.temp }}/test-results-integration-${{ matrix.group }}-${{ runner.os }}
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-30 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: python -P -m ci.check_results "${{ env.TEST_RESULTS_DIR }}" --expected 1
 
       - name: Upload test results
@@ -306,6 +321,14 @@ jobs:
         with:
           path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
           key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
+      - name: Retain actual Plan39 command and native result evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-ceiling-${{ github.job }}-${{ strategy.job-index || '0' }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/failure-ceiling/${{ github.job }}/
+          retention-days: 90
+          if-no-files-found: error
 
   opt-in:
     name: opt-in
@@ -321,6 +344,7 @@ jobs:
 
       - name: Read the pinned Runtime commit
         id: runtime-pin
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-01 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: echo "commit=$(python3 -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')" >> "$GITHUB_OUTPUT"
 
       - name: Check out the Runtime (astrid-runtime)
@@ -331,7 +355,7 @@ jobs:
           path: astrid-runtime
 
       - name: Record checked-out refs
-        shell: bash
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-03 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: |
           {
             echo "## Effective checked-out refs"
@@ -363,20 +387,24 @@ jobs:
           node-version-file: .node-version
 
       - name: Install system media tools and a system font
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-08 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg fonts-dejavu-core
 
       - name: Install package with dev extras
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-09 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: python -m pip install -e '.[dev]'
 
       # The tests put the Runtime checkout on sys.path (tests/helpers/runtime.py), so the Runtime and its client are
       # installed from that same checkout, not from the archive scripts/ci_install_runtime.py installs.
       - name: Install the Runtime and client from the checkout
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-10 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: python -m pip install --no-deps -e ./astrid-runtime -e ./astrid-runtime/packages/python
 
       - name: Read the pinned VibeComfy revision
         id: vibecomfy-pin
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-11 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: |
           rev="$(python3 scripts/vibecomfy_pin.py)"
           if [[ ! "$rev" =~ ^[0-9a-f]{40}$ ]]; then
@@ -395,25 +423,31 @@ jobs:
       - name: Record VibeComfy checkout
         env:
           VIBECOMFY_REVISION: ${{ steps.vibecomfy-pin.outputs.revision }}
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-13 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: |
           checked_out="$(git -C vibecomfy-checkout rev-parse HEAD)"
           test "$checked_out" = "$VIBECOMFY_REVISION"
           echo "- VibeComfy: banodoco/VibeComfy at $checked_out (engine revision verified)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install VibeComfy
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-14 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: python -m pip install -e ./vibecomfy-checkout
 
       - name: Install the Remotion dependencies
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-15 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: |
           sudo apt-get install -y libnss3 libdbus-1-3 libatk1.0-0 libatk-bridge2.0-0 libgbm1 libasound2t64 libxrandr2 libxkbcommon0 libxfixes3 libxcomposite1 libxdamage1 libpango-1.0-0 libcairo2 libcups2
           npm ci --prefix remotion
 
       - name: Provision the Remotion browser
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-16 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: npx remotion browser ensure
         working-directory: remotion
 
       - name: Opt-in tests
-        run: python -m pytest -q -rA -m opt_in
+        if: ${{ !cancelled() }}
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-17 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
+        run: python -m pytest -p ceiling_pytest -q -rA -m opt_in
 
   # The tests that need Astrid installed as a wheel (not editable, not the checkout): the wheel the release job builds,
   # installed into its own venv, with the Runtime and the Remotion project provisioned. pytest runs from that venv with
@@ -424,6 +458,14 @@ jobs:
         with:
           path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
           key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
+      - name: Retain actual Plan39 command and native result evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-ceiling-${{ github.job }}-${{ strategy.job-index || '0' }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/failure-ceiling/${{ github.job }}/
+          retention-days: 90
+          if-no-files-found: error
 
   installed:
     name: installed wheel
@@ -444,7 +486,7 @@ jobs:
       - name: Prepare installed-wheel receipt
         id: receipt_init
         if: ${{ always() }}
-        shell: bash
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-01 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: |
           set -euo pipefail
           mkdir -p "$ASTRID_INSTALLED_RECEIPT_DIR"
@@ -452,7 +494,7 @@ jobs:
 
       - name: Read the pinned Runtime commit
         id: runtime_pin
-        shell: bash
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-02 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: |
           set -euo pipefail
           exec > >(tee -a "$ASTRID_INSTALLED_RECEIPT_DIR/runtime-pin.log") 2>&1
@@ -469,7 +511,7 @@ jobs:
 
       - name: Record checked-out refs
         id: refs
-        shell: bash
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-04 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: |
           set -euo pipefail
           exec > >(tee -a "$ASTRID_INSTALLED_RECEIPT_DIR/refs.log") 2>&1
@@ -494,6 +536,7 @@ jobs:
 
       - name: Install system media tools
         id: media
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-07 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: |
           set -euo pipefail
           exec > >(tee -a "$ASTRID_INSTALLED_RECEIPT_DIR/media.log") 2>&1
@@ -503,6 +546,7 @@ jobs:
 
       - name: Build exactly one wheel
         id: wheel
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-08 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: |
           set -euo pipefail
           exec > >(tee -a "$ASTRID_INSTALLED_RECEIPT_DIR/wheel.log") 2>&1
@@ -514,6 +558,7 @@ jobs:
       # Not editable: astrid, the Runtime and its client are copied into the venv's site-packages.
       - name: Install the wheel and the Runtime into a venv
         id: install
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-09 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: |
           set -euo pipefail
           exec > >(tee -a "$ASTRID_INSTALLED_RECEIPT_DIR/install.log") 2>&1
@@ -524,6 +569,7 @@ jobs:
 
       - name: Install the Remotion dependencies
         id: npm
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-10 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: |
           set -euo pipefail
           exec > >(tee -a "$ASTRID_INSTALLED_RECEIPT_DIR/npm.log") 2>&1
@@ -536,6 +582,7 @@ jobs:
       # package is a built artifact and supplies no TypeScript source tree.
       - name: Generate the installed Remotion registry
         id: registry
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-11 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: |
           set -euo pipefail
           exec > >(tee -a "$ASTRID_INSTALLED_RECEIPT_DIR/registry.log") 2>&1
@@ -557,9 +604,11 @@ jobs:
 
       - name: Installed tests
         id: selector
+        if: ${{ !cancelled() }}
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-12 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: >-
           set -o pipefail; set +e;
-          "$RUNNER_TEMP/installed-venv/bin/pytest" -q -m installed --import-mode=importlib
+          "$RUNNER_TEMP/installed-venv/bin/pytest" -p ceiling_pytest -q -m installed --import-mode=importlib
           --junitxml="$ASTRID_INSTALLED_RECEIPT_DIR/selector.junit.xml"
           tests/packs/h3_av/test_character_swap_cpu_boundary.py 2>&1 |
           tee "$ASTRID_INSTALLED_RECEIPT_DIR/selector.log";
@@ -568,7 +617,7 @@ jobs:
       - name: Collect installed-wheel receipt
         id: receipt
         if: ${{ always() }}
-        shell: bash
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-13 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         env:
           OUTCOME_CHECKOUT: ${{ steps.checkout.outcome }}
           OUTCOME_RECEIPT_INIT: ${{ steps.receipt_init.outcome }}
@@ -813,6 +862,7 @@ jobs:
       # this guard, which takes the same setting.
       - name: Check the receipt manifest against what will be uploaded
         if: ${{ always() }}
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-14 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
         run: python3 scripts/check_receipt_upload.py "$GITHUB_WORKSPACE/installed-wheel-receipt" --include-hidden-files
 
       - name: Upload installed-wheel receipt
@@ -823,3 +873,11 @@ jobs:
           path: ${{ github.workspace }}/installed-wheel-receipt
           include-hidden-files: true
           if-no-files-found: warn
+      - name: Retain actual Plan39 command and native result evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-ceiling-${{ github.job }}-${{ strategy.job-index || '0' }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/failure-ceiling/${{ github.job }}/
+          retention-days: 90
+          if-no-files-found: error

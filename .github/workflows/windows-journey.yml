@@ -1,6 +1,8 @@
 name: Windows task host journey
 
 on:
+  schedule:
+    - cron: "17 1 * * *"
   workflow_dispatch:
     inputs:
       app_ref:
@@ -8,9 +10,9 @@ on:
         required: false
         type: string
   push:
-    branches: [main, release-1, "windows/**", "release/*/main"]
+    branches: [main, release-1, "windows/**", "release/*/main", "release/*/plan-*"]
   pull_request:
-    branches: [main, "release/*/main"]
+    branches: [main, "release/*/main", "release/*/plan-*"]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -34,7 +36,7 @@ jobs:
 
       - name: Resolve App ref
         id: app-ref
-        shell: pwsh
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-01 --matrix ${{ strategy.job-index || 0 }} --shell pwsh {0}
         env:
           INPUT_APP_REF: ${{ inputs.app_ref }}
         run: |
@@ -51,7 +53,7 @@ jobs:
 
       - name: Resolve the pinned Runtime commit from the Agent lock
         id: runtime-ref
-        shell: pwsh
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-03 --matrix ${{ strategy.job-index || 0 }} --shell pwsh {0}
         run: |
           $lock = Get-Content runtime.lock.json -Raw | ConvertFrom-Json
           $runtimeRef = $lock.source_commit
@@ -75,7 +77,7 @@ jobs:
           path: journey-app
 
       - name: Record checked-out refs
-        shell: pwsh
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-06 --matrix ${{ strategy.job-index || 0 }} --shell pwsh {0}
         run: |
           $agentRef = git rev-parse HEAD
           $runtimeRef = git -C journey-runtime rev-parse HEAD
@@ -88,33 +90,42 @@ jobs:
           ) | Add-Content -Path $env:GITHUB_STEP_SUMMARY
 
       - name: Install py-spy in the journey driver environment
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-07 --matrix ${{ strategy.job-index || 0 }} --shell pwsh {0}
         run: python -m pip install py-spy==0.4.2
 
       - name: Install with the real App install.ps1 / ${{ matrix.installer-shell }}
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-08 --matrix ${{ strategy.job-index || 0 }} --shell pwsh {0}
         run: python -u scripts/ci_windows_journey.py install --installer-shell ${{ matrix.installer-shell }}
 
       - name: Start Runtime through its installed Scheduled Task
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-09 --matrix ${{ strategy.job-index || 0 }} --shell pwsh {0}
         run: python -u scripts/ci_windows_journey.py start
 
       - name: Wait for health on 127.0.0.1:17340
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-10 --matrix ${{ strategy.job-index || 0 }} --shell pwsh {0}
         run: python -u scripts/ci_windows_journey.py health
 
       - name: Wait for pack-host running and its ready file
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-11 --matrix ${{ strategy.job-index || 0 }} --shell pwsh {0}
         run: python -u scripts/ci_windows_journey.py host
 
       - name: Run an installed-profile SDK invocation through settlement
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-12 --matrix ${{ strategy.job-index || 0 }} --shell pwsh {0}
         run: python -u scripts/ci_windows_journey.py task
 
       - name: Disable Scheduled Task restarts and run Runtime down
         if: always()
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-13 --matrix ${{ strategy.job-index || 0 }} --shell pwsh {0}
         run: python -u scripts/ci_windows_journey.py down
 
       - name: Verify no Astrid or Runtime processes remain
         if: always()
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-14 --matrix ${{ strategy.job-index || 0 }} --shell pwsh {0}
         run: python -u scripts/ci_windows_journey.py stopped
 
       - name: Collect install logs, Runtime logs, health and process lists
         if: always()
+        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-15 --matrix ${{ strategy.job-index || 0 }} --shell pwsh {0}
         run: python -u scripts/ci_windows_journey.py collect
 
       - name: Upload Windows task host journey evidence
@@ -124,4 +135,12 @@ jobs:
           retention-days: 30
           name: Windows-task-host-journey-${{ matrix.installer-shell }}
           path: ${{ runner.temp }}/X5-windows-journey/
+          if-no-files-found: error
+      - name: Retain actual Plan39 command and native result evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-ceiling-${{ github.job }}-${{ strategy.job-index || '0' }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/failure-ceiling/${{ github.job }}/
+          retention-days: 90
           if-no-files-found: error
