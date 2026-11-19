@@ -4736,13 +4736,20 @@ def _admitted_python_roots(root: Path, definition: Any) -> tuple[Path, ...]:
 
 def _source_digest_for_roots(
     roots: tuple[Path, ...] | list[Path], *, captured_roots: Mapping[Path, Path] | None = None,
+    _verified_digests: Mapping[Path, str] | None = None,
 ) -> str:
     from astrid.core.pack.identity import pack_digest
 
     # Relocation preserves legacy multi-root identity labels while measuring
     # independent captured bytes with the same pack-tree-v1 identity function.
+    def observed(root: Path) -> str:
+        measured_root = (captured_roots or {}).get(root, root).resolve()
+        if _verified_digests is not None and measured_root in _verified_digests:
+            return _verified_digests[measured_root]
+        return pack_digest(measured_root)
+
     measured = [{"root": str(root.resolve()),
-                 "digest": pack_digest((captured_roots or {}).get(root, root).resolve())} for root in roots]
+                 "digest": observed(root)} for root in roots]
     return measured[0]["digest"] if len(measured) == 1 else _canonical_digest(measured)
 
 
@@ -5126,14 +5133,22 @@ def _verify_action_admission(definition: Mapping[str, Any], admission: Mapping[s
 
 def _verify_admitted_source(admission: Mapping[str, Any]) -> None:
     """Validate a single run's observed source; never compare an install PIN."""
+    verified_digests: dict[Path, str] = {}
     if admission.get("selected_pack_map"):
         from astrid.core.pack.imports import validate_selected_pack_map
 
         try:
-            validate_selected_pack_map(admission["selected_pack_map"],
-                                       verified_relocations=admission.get("verified_pack_relocations"))
+            selected = validate_selected_pack_map(
+                admission["selected_pack_map"],
+                verified_relocations=admission.get("verified_pack_relocations"),
+            )
         except (OSError, ValueError) as exc:
             raise HostError(f"admitted capability source digest changed: {exc}") from exc
+        # These exact roots were fully read above. The source-root identity is
+        # another projection of this admission, not a second admission. Keep
+        # the result local to this call; every later validator/worker install
+        # still reads afresh and the worker retains its exact executable bytes.
+        verified_digests = {Path(row["root"]): row["source_digest"] for row in selected.values()}
     expected = str(admission.get("source_digest") or "")
     if not expected:
         return
@@ -5145,7 +5160,7 @@ def _verify_admitted_source(admission: Mapping[str, Any]) -> None:
     else:
         return
     try:
-        observed = _source_digest_for_roots(roots)
+        observed = _source_digest_for_roots(roots, _verified_digests=verified_digests)
     except (OSError, ValueError) as exc:
         raise HostError(f"admitted capability source digest changed: {exc}") from exc
     if observed != expected:

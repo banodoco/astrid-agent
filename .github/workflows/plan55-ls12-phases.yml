@@ -111,9 +111,11 @@ jobs:
                   "tests/core/generation/test_ls12_first_job_collector.py",
                   "tests/core/generation/test_ls12_runtime_observer.py",
                   "tests/core/pack/test_ls12_import_admission.py",
+                  "tests/core/pack/test_ls12_host_admission.py",
                   "tests/core/pack/test_ls12_source_identity.py",
                   "tests/core/generation/test_ls12_named_entry.py",
                   "tests/sdk/test_ls12_single_emission.py",
+                  "tests/sdk/test_ls12_snapshot_admission.py",
                   "tests/packs/vibecomfy/test_ls12_attempt_bundle.py",
                   "tests/core/pack/test_discovery_fingerprint_walk.py",
               ]:

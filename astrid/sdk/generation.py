@@ -11,6 +11,7 @@ import builtins
 import importlib
 import json
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from functools import wraps
 from pathlib import Path
@@ -163,19 +164,64 @@ def _retain_generation_source(path: Path, controls: dict[str, Any]) -> dict[str,
         return _import_generation_member(snapshot, controls)
 
 
+@dataclass(frozen=True)
+class _WorkflowSourceAdmission:
+    path: Path
+    members: tuple[tuple[Path, bytes | None], ...]
+
+
+_workflow_source_admission: ContextVar[_WorkflowSourceAdmission | None] = ContextVar(
+    "workflow_source_admission", default=None,
+)
+
+
+def _check_workflow_source_admission(admitted: _WorkflowSourceAdmission) -> None:
+    """Bind first use to the exact bytes verified by canonical publication."""
+    root = admitted.path.parent
+    if root.is_symlink() or root.resolve() != root or not root.is_dir():
+        raise ValueError("private snapshot directory changed")
+    for member, expected in admitted.members:
+        if member.is_symlink():
+            raise ValueError(f"snapshot member is symlinked: {member.name}")
+        if expected is None:
+            if member.exists():
+                raise ValueError(f"snapshot gained an unadmitted member: {member.name}")
+        elif not member.is_file() or member.read_bytes() != expected:
+            raise ValueError(f"snapshot member differs from admission: {member.name}")
+
+
 @contextmanager
 def _snapshot_generation_workflow(path: Path):
-    """Freeze a canonical bundle, including its declared source evidence."""
+    """Freeze source once for this operation; nested preparation reuses it.
+
+    Only the internally published private path can reuse admission. Fresh
+    reads must equal the held Python, companion and source bytes exactly;
+    timestamp equality does not grant authority. No result survives this scope.
+    """
     from tempfile import TemporaryDirectory
-    original = path.expanduser().resolve()
-    if original.is_dir():
-        original = original / 'workflow.py'
+    requested = path.expanduser().absolute()
+    if requested.is_dir():
+        requested = requested / 'workflow.py'
+    admitted = _workflow_source_admission.get()
+    if admitted is not None and requested == admitted.path:
+        try:
+            _check_workflow_source_admission(admitted)
+        except (OSError, ValueError) as exc:
+            raise GenerationInputError(f'admitted workflow source changed: {requested}: {exc}') from exc
+        yield admitted.path
+        return
+    original = requested.resolve()
     with TemporaryDirectory(prefix='astrid-workflow-source-') as scratch:
-        snapshot = Path(scratch) / original.name
+        snapshot = Path(scratch).resolve() / original.name
+        held_members: tuple[tuple[Path, bytes | None], ...]
         try:
             if original.suffix.lower() == '.py':
                 from vibecomfy.security.provenance import Provenance
-                from vibecomfy.workflow_bundle import _atomic_publish_pair, load_bundle
+                from vibecomfy.workflow_bundle import (
+                    _atomic_publish_pair,
+                    canonical_json,
+                    load_bundle,
+                )
 
                 bundle = load_bundle(original, trust=Provenance.USER_CONFIRMED)
                 bundle.require_canonical_authority('snapshot generation workflow')
@@ -197,13 +243,25 @@ def _snapshot_generation_workflow(path: Path):
                 # adjacent convenience file.
                 members = ({snapshot.with_name('source.json'): archive.read_bytes()}
                            if declared or archive.is_file() else {})
-                _atomic_publish_pair(snapshot, original.read_bytes(), bundle.ui_sidecar,
+                python_bytes = original.read_bytes()
+                _atomic_publish_pair(snapshot, python_bytes, bundle.ui_sidecar,
                                      expected=bundle, extra_members=members)
+                held_members = (
+                    (snapshot, python_bytes),
+                    (snapshot.with_suffix('.vibe.json'), canonical_json(bundle.ui_sidecar).encode('utf-8')),
+                    (snapshot.with_name('source.json'), members.get(snapshot.with_name('source.json'))),
+                )
             else:
-                snapshot.write_bytes(original.read_bytes())
+                source_bytes = original.read_bytes()
+                snapshot.write_bytes(source_bytes)
+                held_members = ((snapshot, source_bytes),)
         except (OSError, ValueError) as exc:
             raise GenerationInputError(f'canonical workflow bundle could not be read: {original}: {exc}') from exc
-        yield snapshot
+        token = _workflow_source_admission.set(_WorkflowSourceAdmission(snapshot, held_members))
+        try:
+            yield snapshot
+        finally:
+            _workflow_source_admission.reset(token)
 
 
 def _public_input_values(values):
