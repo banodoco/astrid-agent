@@ -236,14 +236,18 @@ def _generation_duration(preparation: Mapping[str, Any]) -> float:
     return float(request["output"]["duration"])
 
 
+def _require_decoded_video_size(video: Mapping[str, Any], *, role: str) -> None:
+    if any(type(video.get(key)) is not int or video[key] <= 0 for key in ("width", "height")):
+        raise CompositionError(f"{role} video has no usable decoded dimensions")
+
+
 def _validate_video_size(preparation: Mapping[str, Any], video: Mapping[str, Any], *, role: str) -> None:
     media = preparation.get("media")
     if not isinstance(media, Mapping) or any(
         type(media.get(key)) is not int or media[key] <= 0 for key in ("width", "height")
     ):
         raise CompositionError("preparation has no usable requested video dimensions")
-    if any(type(video.get(key)) is not int or video[key] <= 0 for key in ("width", "height")):
-        raise CompositionError(f"{role} video has no usable decoded dimensions")
+    _require_decoded_video_size(video, role=role)
     actual = (video["width"], video["height"])
     requested = (media["width"], media["height"])
     if actual != requested:
@@ -280,6 +284,7 @@ def _validate_generated_coverage(
             return {"video": video}
         return {}
     video = _video_coverage(generated_video)
+    _require_decoded_video_size(video, role="generated")
     audio = _audio_coverage(generated_audio or generated_video)
     if abs(video["fps"] - timing.fps) > 1e-6:
         raise CompositionError(f"H3 continuation output must be {timing.fps} fps")
