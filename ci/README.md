@@ -168,5 +168,7 @@ They are labelled fixtures and do not retire product failures. No complete
 covered product run or actual product-ledger retirement is claimed. The initial
 App run additionally has ten exact G2 PASS-to-FAIL identities, reported to Lead in
 6998501613; none enters the ceiling. Lead owns their bisection and routing under
-6998651356. Product fixes and qualification must preserve
+6998651356. Lead subsequently classified these as stale contract tests and routed
+them to FIX-14 (6998771438); they remain uncovered until the fix lands and syncs.
+Product qualification must preserve
 these distinctions before Lead acceptance.

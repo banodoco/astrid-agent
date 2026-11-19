@@ -1,0 +1,19 @@
+{
+  "validator": "actionlint v1.7.7",
+  "command": [
+    "actionlint",
+    "-shellcheck=",
+    "-pyflakes=",
+    "-oneline",
+    ".github/workflows/chat.yml",
+    ".github/workflows/ci.yml",
+    ".github/workflows/lanes.yml",
+    ".github/workflows/windows-journey.yml",
+    ".github/workflows/failure-ceiling.yml"
+  ],
+  "exit": 0,
+  "output": "",
+  "scope": "All packet workflow files; external shellcheck/pyflakes are disabled because this check validates Actions schema and expression contexts.",
+  "prior_failure": "GitHub rejected expressions in steps.shell before creating native jobs; prior implementation checkpoint is unqualified.",
+  "core_implementation_unchanged": true
+}

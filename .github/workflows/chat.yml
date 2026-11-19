@@ -28,18 +28,18 @@ jobs:
           no-cache: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/int/') && !(startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main')) }}
           bun-version: "1.3.14"
       - name: Plan39 recorded command 02
-        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-02 --matrix ${{ strategy.job-index || 0 }} --shell pwsh {0}
+        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-02 --shell pwsh "{0}"
         run: npm ci --ignore-scripts
       - name: Exercise native Windows chat child launches
         if: ${{ !cancelled() }}
-        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-03 --matrix ${{ strategy.job-index || 0 }} --shell pwsh {0}
+        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-03 --shell pwsh "{0}"
         run: bun test --reporter=junit --reporter-outfile="$env:CEILING_STEP_DIR/bun-results.xml" ./astrid/chat/discoveryProbe.test.ts ./astrid/chat/astridAcpLauncher.windows.test.ts ./astrid/chat/acpProcessHost.test.ts
       - name: Allow slow Windows model discovery through HTTP
         if: ${{ !cancelled() }}
-        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-04 --matrix ${{ strategy.job-index || 0 }} --shell pwsh {0}
+        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-04 --shell pwsh "{0}"
         run: bun test --reporter=junit --reporter-outfile="$env:CEILING_STEP_DIR/bun-results.xml" ./astrid/chat/astrid-agent-models.test.ts -t "model discovery allows sequential OMP startup"
       - name: Parse the operator diagnostic with Windows PowerShell
-        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-05 --matrix ${{ strategy.job-index || 0 }} --shell powershell {0}
+        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-05 --shell powershell "{0}"
         run: |
           $tokens = $null
           $errors = $null
@@ -49,7 +49,7 @@ jobs:
             if ($errors.Count) { throw ($errors | Out-String) }
           }
       - name: Parse the operator diagnostic with PowerShell Core
-        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-06 --matrix ${{ strategy.job-index || 0 }} --shell pwsh {0}
+        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-06 --shell pwsh "{0}"
         run: |
           $tokens = $null
           $errors = $null
@@ -84,10 +84,10 @@ jobs:
           no-cache: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/int/') && !(startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main')) }}
           bun-version: "1.4.2"
       - name: Plan39 recorded command 03
-        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-03 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
+        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-03 --shell bash "{0}"
         run: npm ci --ignore-scripts
       - name: Plan39 recorded command 04
-        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-04 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
+        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-04 --shell bash "{0}"
         run: bun run check:chat-bundle
       - uses: oven-sh/setup-bun@v2
         with:
@@ -95,10 +95,10 @@ jobs:
           bun-version: "1.3.14"
       - name: Plan39 recorded command 06
         if: ${{ !cancelled() }}
-        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-06 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
+        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-06 --shell bash "{0}"
         run: bun run test:chat --reporter=junit --reporter-outfile="$CEILING_STEP_DIR/bun-results.xml"
       - name: Plan39 recorded command 07
-        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-07 --matrix ${{ strategy.job-index || 0 }} --shell bash {0}
+        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-07 --shell bash "{0}"
         run: bun run astrid/chat/astrid-local-agent-adapters-smoke.ts
       - name: Retain actual Plan39 command and native result evidence
         if: always()

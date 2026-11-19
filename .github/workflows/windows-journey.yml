@@ -36,7 +36,7 @@ jobs:
 
       - name: Resolve App ref
         id: app-ref
-        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-01 --matrix ${{ strategy.job-index || 0 }} --shell pwsh {0}
+        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-01 --shell pwsh "{0}"
         env:
           INPUT_APP_REF: ${{ inputs.app_ref }}
         run: |
@@ -53,7 +53,7 @@ jobs:
 
       - name: Resolve the pinned Runtime commit from the Agent lock
         id: runtime-ref
-        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-03 --matrix ${{ strategy.job-index || 0 }} --shell pwsh {0}
+        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-03 --shell pwsh "{0}"
         run: |
           $lock = Get-Content runtime.lock.json -Raw | ConvertFrom-Json
           $runtimeRef = $lock.source_commit
@@ -77,7 +77,7 @@ jobs:
           path: journey-app
 
       - name: Record checked-out refs
-        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-06 --matrix ${{ strategy.job-index || 0 }} --shell pwsh {0}
+        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-06 --shell pwsh "{0}"
         run: |
           $agentRef = git rev-parse HEAD
           $runtimeRef = git -C journey-runtime rev-parse HEAD
@@ -90,42 +90,42 @@ jobs:
           ) | Add-Content -Path $env:GITHUB_STEP_SUMMARY
 
       - name: Install py-spy in the journey driver environment
-        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-07 --matrix ${{ strategy.job-index || 0 }} --shell pwsh {0}
+        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-07 --shell pwsh "{0}"
         run: python -m pip install py-spy==0.4.2
 
       - name: Install with the real App install.ps1 / ${{ matrix.installer-shell }}
-        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-08 --matrix ${{ strategy.job-index || 0 }} --shell pwsh {0}
+        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-08 --shell pwsh "{0}"
         run: python -u scripts/ci_windows_journey.py install --installer-shell ${{ matrix.installer-shell }}
 
       - name: Start Runtime through its installed Scheduled Task
-        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-09 --matrix ${{ strategy.job-index || 0 }} --shell pwsh {0}
+        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-09 --shell pwsh "{0}"
         run: python -u scripts/ci_windows_journey.py start
 
       - name: Wait for health on 127.0.0.1:17340
-        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-10 --matrix ${{ strategy.job-index || 0 }} --shell pwsh {0}
+        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-10 --shell pwsh "{0}"
         run: python -u scripts/ci_windows_journey.py health
 
       - name: Wait for pack-host running and its ready file
-        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-11 --matrix ${{ strategy.job-index || 0 }} --shell pwsh {0}
+        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-11 --shell pwsh "{0}"
         run: python -u scripts/ci_windows_journey.py host
 
       - name: Run an installed-profile SDK invocation through settlement
-        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-12 --matrix ${{ strategy.job-index || 0 }} --shell pwsh {0}
+        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-12 --shell pwsh "{0}"
         run: python -u scripts/ci_windows_journey.py task
 
       - name: Disable Scheduled Task restarts and run Runtime down
         if: always()
-        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-13 --matrix ${{ strategy.job-index || 0 }} --shell pwsh {0}
+        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-13 --shell pwsh "{0}"
         run: python -u scripts/ci_windows_journey.py down
 
       - name: Verify no Astrid or Runtime processes remain
         if: always()
-        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-14 --matrix ${{ strategy.job-index || 0 }} --shell pwsh {0}
+        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-14 --shell pwsh "{0}"
         run: python -u scripts/ci_windows_journey.py stopped
 
       - name: Collect install logs, Runtime logs, health and process lists
         if: always()
-        shell: python -I "${{ github.workspace }}/scripts/ci/ceiling_capture.py" --step step-15 --matrix ${{ strategy.job-index || 0 }} --shell pwsh {0}
+        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-15 --shell pwsh "{0}"
         run: python -u scripts/ci_windows_journey.py collect
 
       - name: Upload Windows task host journey evidence

@@ -87,6 +87,27 @@
     "required-job-dependency-facts.json.gz": "8a768452abf3eacc74561cdc141b5e7091ef53db9fa68e1525d2d6ef64293db8",
     "seed-summary.json": "4e93a955806f8f472417eab650c97b5dbfbef95b227f40de96c5dd9ee6e7dcd1",
     "subtest-reconciliation-33.json.gz": "d2ed8dcba9bca122227c87ef582588e7b04b9630f24369afaa66bf0ff065008b",
-    "workflow-command-comparison.json": "e07bd168424322a8e1dcea343d458ec6cd541b3d8658921ca10919f2ff1de71a"
+    "workflow-bootstrap-proof.json": "36895566c2e1a2dac81697255ae64682046aaedf4c890dc851ee84d4251e8fe7",
+    "workflow-command-comparison.json": "e07bd168424322a8e1dcea343d458ec6cd541b3d8658921ca10919f2ff1de71a",
+    "workflow-validation.json": "2c9114f0802f5c2bf4309fa9eab1f6e6a02698f76dbd512d42f93a886c44ebb8"
+  },
+  "workflow_validation": {
+    "validator": "actionlint v1.7.7",
+    "command": [
+      "actionlint",
+      "-shellcheck=",
+      "-pyflakes=",
+      "-oneline",
+      ".github/workflows/chat.yml",
+      ".github/workflows/ci.yml",
+      ".github/workflows/lanes.yml",
+      ".github/workflows/windows-journey.yml",
+      ".github/workflows/failure-ceiling.yml"
+    ],
+    "exit": 0,
+    "output": "",
+    "scope": "All packet workflow files; external shellcheck/pyflakes are disabled because this check validates Actions schema and expression contexts.",
+    "prior_failure": "GitHub rejected expressions in steps.shell before creating native jobs; prior implementation checkpoint is unqualified.",
+    "core_implementation_unchanged": true
   }
 }
