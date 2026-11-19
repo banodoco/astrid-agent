@@ -65,6 +65,41 @@ SDK_PRODUCER = "astrid.sdk.invocation:_wait_for_kernel_task_loop"
 _UNSEEN = object()
 
 
+def _encode_phase_spans(spans, origin_ns):
+    """Lossless column/delta encoding within the unchanged pipe byte limit."""
+    metadata, indices, rows, previous = [], {}, [], origin_ns
+    for original in spans:
+        span = dict(original)
+        start, end = span.pop("monotonic_start_ns"), span.pop("monotonic_end_ns")
+        key = tuple(sorted(span.items()))
+        if key not in indices:
+            indices[key] = len(metadata)
+            metadata.append(span)
+        rows.append([indices[key], start - previous, None if end is None else end - start])
+        previous = start
+    return {"encoding": "phase-deltas-v1", "origin_ns": origin_ns, "metadata": metadata, "rows": rows}
+
+
+def _decode_phase_spans(value):
+    if type(value) is not dict or value.get("encoding") != "phase-deltas-v1":
+        raise ValueError("unknown phase encoding")
+    metadata, rows, previous = value.get("metadata"), value.get("rows"), value.get("origin_ns")
+    if (type(metadata) is not list or type(rows) is not list or type(previous) is not int
+            or len(rows) > MAX_EVENTS or len(metadata) > MAX_EVENTS
+            or any(type(item) is not dict or {"monotonic_start_ns", "monotonic_end_ns"} & item.keys() for item in metadata)):
+        raise ValueError("invalid phase encoding")
+    spans = []
+    for row in rows:
+        if (type(row) is not list or len(row) != 3 or type(row[0]) is not int or not 0 <= row[0] < len(metadata)
+                or type(row[1]) is not int or row[1] < 0
+                or (row[2] is not None and (type(row[2]) is not int or row[2] < 0))):
+            raise ValueError("invalid phase delta")
+        previous += row[1]
+        spans.append({**metadata[row[0]], "monotonic_start_ns": previous,
+                      "monotonic_end_ns": None if row[2] is None else previous + row[2]})
+    return spans
+
+
 class PatchSet:
     def __init__(self) -> None:
         self.saved = []
@@ -105,7 +140,7 @@ def _execution_call(code: str) -> str | None:
 
 
 def instrument_argv(argv: Any, hash_source: str, observer_source: str,
-                    targets: dict[str, int], gaps: set[str]) -> Any:
+                    targets: dict[str, int], gaps: set[str], *, phase_sites=None) -> Any:
     """Only the two known admitted worker wrappers and the public CLI are changed."""
     if not isinstance(argv, (list, tuple)) or not argv:
         return argv
@@ -153,7 +188,10 @@ def instrument_argv(argv: Any, hash_source: str, observer_source: str,
         "exec(compile(_p55hash_source,'<plan55-hashes>','exec'),_p55module.__dict__)\n"
         "exec(compile(_p55observer_source,'<plan55-process>','exec'),_p55module.__dict__)\n"
         f"_p55meter=_p55module.ProcessObserver({targets!r},{role!r},"
-        "hash_source=_p55hash_source,observer_source=_p55observer_source)\n"
+        "hash_source=_p55hash_source,observer_source=_p55observer_source"
+        + (",phase_sites=__import__('json').loads(_p55zlib.decompress(_p55b64.b85decode("
+           + repr(base64.b85encode(zlib.compress(json.dumps(phase_sites).encode())).decode())
+           + ")).decode())" if phase_sites else "") + ")\n"
         "_p55meter.start()\n"
         "try:\n    " + call + "\n"
         "finally:\n    _p55meter.emit_and_stop()\n"
@@ -164,7 +202,7 @@ def instrument_argv(argv: Any, hash_source: str, observer_source: str,
 
 class ProcessObserver:
     def __init__(self, targets: dict[str, int], role: str, *,
-                 hash_source: str, observer_source: str) -> None:
+                 hash_source: str, observer_source: str, phase_sites=None) -> None:
         self.targets, self.role = targets, role
         self.hash_source, self.observer_source = hash_source, observer_source
         self.patches = PatchSet()
@@ -207,6 +245,67 @@ class ProcessObserver:
         self.sdk_frames = {}
         self.sdk_show_frames = {}
         self.sdk_sleep_frames = {}
+        # Opt-in LS-12 diagnostics share this profiler. The default standing
+        # counter/latency procedure and its event vocabulary remain unchanged.
+        self.phase_sites = dict(phase_sites or {})
+        self.phase_names = {site.rsplit(".", 1)[-1].rsplit(":", 1)[-1]
+                            for site in self.phase_sites}
+        self.phase_codes = {}
+        self.phase_frames = {}
+        self.phase_spans = []
+
+    def _phase_profile(self, frame, event, arg):
+        if event not in {"call", "return"} or frame.f_code.co_name not in self.phase_names:
+            return
+        code = frame.f_code
+        cached = self.phase_codes.get(id(code))
+        if cached is None:
+            site = self._site(frame)
+            # runpy executes the admitted worker as __main__, without changing
+            # the defining filename. No arbitrary module alias is accepted.
+            if (frame.f_globals.get("__name__") == "__main__" and
+                    code.co_filename.replace("\\", "/").endswith("/astrid/core/execution/generic_host_worker.py")):
+                site = "astrid.core.execution.generic_host_worker:" + code.co_qualname
+            cached = (code, site, self.phase_sites.get(site))
+            self.phase_codes[id(code)] = cached
+        if cached[2] is None:
+            return
+        with self.lock:
+            key = (threading.get_native_id(), id(frame))
+            if event == "call":
+                if len(self.phase_spans) >= MAX_EVENTS:
+                    self.gaps.add("Python phase observation limit exceeded")
+                    return
+                span = {"site": cached[1], "phase": cached[2], "tid": key[0],
+                        "monotonic_start_ns": time.perf_counter_ns(), "monotonic_end_ns": None,
+                        "runtime_scope": getattr(self.context, "scope", None)}
+                self.phase_spans.append(span)
+                self.phase_frames[key] = span
+            else:
+                span = self.phase_frames.pop(key, None)
+                if span is not None:
+                    span["monotonic_end_ns"] = time.perf_counter_ns()
+                    # Known Runtime result shapes bind endpoint intervals to
+                    # the measured task. Never retain request bodies or specs.
+                    if type(arg) is dict:
+                        value = None
+                        if cached[1] == "runtime_protocol.service:RuntimeService.create_task":
+                            task = arg.get("task")
+                            value = task.get("id") if type(task) is dict else None
+                        elif cached[1] == "runtime_protocol.service:RuntimeService.claim_next":
+                            if type(arg.get("attempt_id")) is str:
+                                value = arg.get("task_id")
+                        elif cached[1] == "runtime_protocol.service:RuntimeService.settle_attempt":
+                            task = arg.get("data")
+                            value = task.get("task_id") if type(task) is dict else None
+                        if type(value) is str:
+                            span["task_id"] = value
+
+    def _phase_snapshot(self, since_ns, until_ns):
+        return [dict(span) for span in self.phase_spans
+                if (until_ns is None or span["monotonic_start_ns"] <= until_ns)
+                and (since_ns is None or span["monotonic_end_ns"] is None
+                     or span["monotonic_end_ns"] >= since_ns)]
 
     def _sdk_poll_end(self, frame, context):
         if context["poll_id"] is not None:
@@ -475,6 +574,8 @@ class ProcessObserver:
             self.patches.setattr(os, name, sync)
 
     def profile(self, frame, event, arg) -> None:
+        if self.phase_sites:
+            self._phase_profile(frame, event, arg)
         # Reject unrelated Python calls before caching/formatting code metadata.
         # Deep-copy/source-discovery loops produce many calls but none of the
         # compile/emission boundaries. This changes observer work, not coverage.
@@ -611,16 +712,19 @@ class ProcessObserver:
         cls = globals().get("OutputHashObserver")
         if cls is None:
             from tests._local_speed_hashes import OutputHashObserver as cls
-        self.hashes = cls(self.targets).install(self.patches)
+        self.hashes = (cls(self.targets, observe_durations=True) if self.phase_sites
+                       else cls(self.targets)).install(self.patches)
         original = subprocess.Popen.__init__
         owner = self
 
         def spawn(process, args, *positional, **kwargs):
             role = classify_command(args)
-            observed = instrument_argv(args, owner.hash_source, owner.observer_source, owner.targets, owner.gaps)
+            observed = instrument_argv(args, owner.hash_source, owner.observer_source, owner.targets, owner.gaps,
+                                       phase_sites=owner.phase_sites)
+            boundary = {"spawn_start_ns": time.perf_counter_ns()} if owner.phase_sites else {}
             result = original(process, observed, *positional, **kwargs)
             owner.event("process_start", child_pid=process.pid, child_role=role,
-                        census_invocation=owner._census_context(sys._getframe(1)))
+                        census_invocation=owner._census_context(sys._getframe(1)), **boundary)
             return result
 
         self.patches.setattr(subprocess.Popen, "__init__", spawn)
@@ -684,6 +788,9 @@ class ProcessObserver:
                 "output_hash_bytes": hashes.bytes_hashed,
                 "coverage_gaps": sorted(self.gaps | set(hashes.coverage_gaps)),
                 "native_flushes": None,
+                **({"phase_spans": self._phase_snapshot(since_ns, until_ns),
+                    "output_hash_spans": self.hashes.duration_spans(since_ns, until_ns)}
+                   if self.phase_sites else {}),
             }
 
     @staticmethod
@@ -861,6 +968,13 @@ class ProcessObserver:
         # repetitive; lossless compression preserves attribution and its limit.
         spans = report.pop("write_spans", [])
         report["write_spans_zlib"] = base64.b85encode(zlib.compress(json.dumps(spans).encode())).decode()
+        if "phase_spans" in report:
+            for field in ("phase_spans", "output_hash_spans"):
+                value = report.pop(field)
+                if field == "phase_spans":
+                    value = _encode_phase_spans(value, report["start_ns"])
+                report[field + "_zlib"] = base64.b85encode(zlib.compress(
+                    json.dumps(value, separators=(",", ":")).encode())).decode()
         raw = (PREFIX + json.dumps(report, sort_keys=True) + "\n").encode()
         if len(raw) > MAX_REPORT_BYTES:
             raw = (PREFIX + json.dumps({"schema": "astrid.local-speed-process.v1", "pid": os.getpid(),
@@ -895,6 +1009,14 @@ def read_reports(texts: list[str]) -> tuple[list[dict], list[str]]:
                     if not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
                         raise ValueError("invalid or oversized write attribution")
                     row["write_spans"] = json.loads(raw)
+                for field in ("phase_spans", "output_hash_spans"):
+                    if field + "_zlib" in row:
+                        decoder = zlib.decompressobj()
+                        raw = decoder.decompress(base64.b85decode(row.pop(field + "_zlib")), 8_000_000)
+                        if not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
+                            raise ValueError("invalid or oversized phase attribution")
+                        value = json.loads(raw)
+                        row[field] = _decode_phase_spans(value) if field == "phase_spans" else value
                 key = (row["pid"], row.get("start_ns"))
                 if key in found and found[key] != row:
                     gaps.append("conflicting process report")

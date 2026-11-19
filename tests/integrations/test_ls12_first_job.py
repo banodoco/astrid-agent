@@ -67,6 +67,12 @@ def _counter_report(meter, capture, result, caller):
         "output_hash_bytes": sum(row.get("output_hash_bytes", 0) for row in rows),
         "observer_gaps": sorted(set(gaps)),
     }
+    if os.environ.get("ASTRID_LS12_PHASES") == "1":
+        from tests.ls12_phases import capture_phases
+        report["phase_observations"] = capture_phases(meter)
+        # Preserve partial diagnostics before the original strict counter
+        # assertions. An incomplete report never becomes a passing sample.
+        print("\nLS12_PARTIAL_PHASE_OBSERVATION " + json.dumps(report, sort_keys=True))
     assert not gaps, json.dumps(report, sort_keys=True)
     assert report["output_hash_streams"] > 0, "output hashing was not observed"
     assert report["process_start_counts"].get("pack_worker", 0) == 1
@@ -83,6 +89,9 @@ def test_first_attached_job_observation(
     connection = tmp_path / "prepared-connection.json"
     workflow = _workflow_file()
     instrumented = os.environ.get("ASTRID_LS12_OBSERVE") == "1"
+    phases = os.environ.get("ASTRID_LS12_PHASES") == "1"
+    if phases and not instrumented:
+        raise ValueError("phase observation requires the separate counter invocation")
     # Keep the standing LS-2 fixture unchanged. This first-job cell uses the
     # owner's 1024x1024, 1 MiB PNG for the complete caller-local delivery path.
     expected_payload = make_image(f"ls12:{caller}:{sample_index}:{instrumented}")
@@ -92,9 +101,11 @@ def test_first_attached_job_observation(
     if instrumented:
         capture = ProcessReportCapture(PREFIX, max_report_bytes=MAX_REPORT_BYTES).install(monkeypatch)
         hashes, observer = sources()
+        from tests.ls12_phases import PHASE_SITES
         meter.observer = ProcessObserver(
             {hashlib.sha256(expected_payload).hexdigest(): len(expected_payload)}, "parent_runtime_host_sdk",
             hash_source=hashes, observer_source=observer,
+            **({"phase_sites": PHASE_SITES} if phases else {}),
         )
         meter.observer.start()
         request.addfinalizer(meter.observer.stop)

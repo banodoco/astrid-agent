@@ -21,7 +21,7 @@ class HashObservation:
     coverage_gaps: tuple[str, ...]
 
 class OutputHashObserver:
-    def __init__(self, targets: Mapping[str, int]):
+    def __init__(self, targets: Mapping[str, int], *, observe_durations=False):
         self.targets = dict(targets)
         if any(len(d) != 64 or any(c not in "0123456789abcdef" for c in d)
                or isinstance(n, bool) or not isinstance(n, int) or n < 0
@@ -36,9 +36,18 @@ class OutputHashObserver:
         self._matched = {}
         self._matched_at = {}
         self._gaps = set()
+        self.observe_durations = observe_durations
+        self._durations = {}
 
-    def _token(self, size):
-        return (next(self._ids), size)
+    def _token(self, size, started=None, ended=None):
+        token = (next(self._ids), size)
+        if self.observe_durations:
+            if len(self._durations) >= 100000:
+                self._gaps.add("output hash timing limit exceeded")
+            else:
+                self._durations[token] = {"monotonic_start_ns": started, "monotonic_end_ns": ended,
+                                          "tid": threading.get_native_id(), "bytes": size}
+        return token
 
     def _wrap(self, value, initial_size=0, tokens=(), known=True):
         if isinstance(value, _CountedHash):
@@ -50,18 +59,22 @@ class OutputHashObserver:
         return wrapped
 
     def sha256(self, data=b"", *args, **kwargs):
+        started = time.perf_counter_ns() if self.observe_durations else None
         value = self._sha256(data, *args, **kwargs)
+        ended = time.perf_counter_ns() if self.observe_durations else None
         size = memoryview(data).nbytes
         with self._lock:
-            return self._wrap(value, size, (self._token(size),) if size else ())
+            return self._wrap(value, size, (self._token(size, started, ended),) if size else ())
 
     def new(self, name, data=b"", **kwargs):
+        started = time.perf_counter_ns() if self.observe_durations else None
         value = self._new(name, data, **kwargs)
+        ended = time.perf_counter_ns() if self.observe_durations else None
         if value.name.lower().replace("-", "") != "sha256":
             return value
         size = memoryview(data).nbytes
         with self._lock:
-            return self._wrap(value, size, (self._token(size),) if size else ())
+            return self._wrap(value, size, (self._token(size, started, ended),) if size else ())
 
     def file_digest(self, fileobj, digest, /, **kwargs):
         def factory():
@@ -104,6 +117,20 @@ class OutputHashObserver:
             return HashObservation(len(matched), sum(size for _, size in consumed),
                                    tuple(sorted(self._gaps)))
 
+    def duration_spans(self, since_ns=None, until_ns=None):
+        """C hash-consumption time for exactly the same completed output streams.
+
+        Reused/copy prefixes retain one token and one duration. Reading bytes,
+        Python wrappers and digest finalization are outside these spans.
+        """
+        with self._lock:
+            consumed = {token for key, tokens in self._matched.items()
+                        if (since_ns is None or self._matched_at[key] >= since_ns)
+                        and (until_ns is None or self._matched_at[key] <= until_ns)
+                        for token in tokens}
+            return [dict(self._durations[token]) for token in sorted(consumed)
+                    if token in self._durations]
+
 class _CountedHash:
     def __init__(self, observer, inner, size, tokens, known):
         self.observer, self.inner, self.size = observer, inner, size
@@ -111,11 +138,13 @@ class _CountedHash:
 
     def update(self, block):
         with self.observer._lock:
+            started = time.perf_counter_ns() if self.observer.observe_durations else None
             result = self.inner.update(block)
+            ended = time.perf_counter_ns() if self.observer.observe_durations else None
             size = memoryview(block).nbytes
             self.size += size
             if size:
-                self.tokens += (self.observer._token(size),)
+                self.tokens += (self.observer._token(size, started, ended),)
             return result
 
     def digest(self):

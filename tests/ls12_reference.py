@@ -57,7 +57,7 @@ def verify(root):
         if git("rev-parse", "HEAD:" + path) != expected:
             raise ValueError("candidate dependency authority differs from accepted plan: " + path)
         authorities[path] = expected
-    return {"decision": "6998870417", "reference": PLAN_REFERENCE,
+    return {"decision": "6998870417", "count_reference_decision": "6999678949", "reference": PLAN_REFERENCE,
             "reference_tree": PLAN_TREE, "dependency_authority_blobs": authorities,
             "historical_pin_reference": historical,
             "historical_cross_pin_comparisons": "NO-RESULT; dependency guards retained",

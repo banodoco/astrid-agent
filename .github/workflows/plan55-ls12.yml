@@ -112,6 +112,9 @@ jobs:
               for relative in [
                   "tests/integrations/test_ls12_first_job.py", "tests/ls12_first_job_run.py",
                   "tests/integrations/ls12_image_fixture.py",
+                  "tests/ls12_phases.py", "tests/ls12_phase_run.py",
+                  "tests/_local_speed_process.py", "tests/_local_speed_hashes.py",
+                  "tests/core/generation/test_ls12_phase_observer.py",
                   "tests/core/generation/test_ls12_first_job_collector.py",
                   "tests/core/generation/test_ls12_runtime_observer.py",
                   "tests/core/pack/test_ls12_import_admission.py",
@@ -149,6 +152,7 @@ jobs:
               "tests/core/execution/test_external_pack_loading_m1_03.py",
               "tests/core/generation/test_ls12_first_job_collector.py",
               "tests/core/generation/test_ls12_runtime_observer.py",
+              "tests/core/generation/test_ls12_phase_observer.py",
               "--junitxml=" + str(pathlib.Path(os.environ["LS12_PROOF"]) / "focused.xml")]
           subprocess.run(command, check=True)
       - name: Execute discovery scope including known inherited failing case
