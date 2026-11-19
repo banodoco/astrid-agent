@@ -566,7 +566,8 @@ def _from_v2(request: H3Request) -> H3Spec:
                     "Use video edits or whole-stream preservation",
                 )
             region = _region(edit["mask"], regions) if edit["stream"] == "video" else None
-            default_guides = names if edit["action"] != "preserve" and edit["stream"] == "video" else ()
+            default_guides = (tuple(ref.authored_id for ref in refs if ref.use != "replacement")
+                              if edit["action"] != "preserve" and edit["stream"] == "video" else ())
             guides = tuple(names[name] for name in edit.get("guides", default_guides))
             ops.append(
                 Operation(

@@ -714,3 +714,103 @@ def test_audio_mask_fixed_pcm_wins_over_fractional_generated_overlap(tmp_path):
     assert path.is_file()
     assert requested == [0, pytest.approx(1498 * 0.5 / 2000), 1, 0, 0]
     assert decoded[1] == pytest.approx(requested[1], abs=0.5 / 65535)
+
+
+@pytest.mark.ffmpeg
+def test_mono_source_and_fixed_pcm_with_stereo_generated_audio(tmp_path):
+    import struct
+    import subprocess
+    from astrid.packs.h3_av.shared.compose import compose_candidate, _decode_exact_pcm
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+    from tests.packs.h3_av.test_moving_masks import _fixtures
+
+    source, original_generated = _fixtures(tmp_path)
+    generated = tmp_path / "stereo-generated.mkv"
+    voice = tmp_path / "fixed.wav"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(original_generated), "-f", "lavfi", "-i",
+                    "aevalsrc=0.125|0.375:s=48000:d=1", "-map", "0:v:0", "-map", "1:a:0",
+                    "-c:v", "copy", "-c:a", "pcm_s16le", str(generated)], check=True)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "sine=frequency=660:sample_rate=48000:duration=1", "-c:a", "pcm_s16le", str(voice)], check=True)
+    raw = {"version": 2, "duration": 1, "prompt": "Edit the mouth", "media": [
+        {"asset": "scene", "role": "timeline", "modality": "video", "at": {"frame": 0}, "range": [0, 1],
+         "edit": [
+             {"stream": "video", "during": [0, 1], "mask": {"rectangle": [0, 0, 128, 128]}, "guides": []},
+             {"stream": "audio", "during": ["5000/48000", "15001/48000"], "guides": ["fixed"]},
+             {"stream": "audio", "during": ["25001/48000", "35003/48000"]},
+         ]},
+        {"id": "fixed", "asset": "voice", "role": "reference", "modality": "audio", "range": ["1/48000", "10002/48000"]},
+    ]}
+    preparation = prepare_request(normalize_request(raw), asset_map={"scene": str(source), "voice": str(voice)})
+    result = compose_candidate(preparation=preparation, generated=generated, source=source, out_dir=tmp_path / "composed")
+    source_pcm, channels = _decode_exact_pcm(source)
+    fixed_pcm, fixed_channels = _decode_exact_pcm(voice)
+    stereo_pcm, generated_channels = _decode_exact_pcm(generated)
+    delivered, delivered_channels = _decode_exact_pcm(Path(result["candidate"]["path"]))
+    assert (channels, fixed_channels, generated_channels, delivered_channels) == (1, 1, 2, 1)
+    assert stereo_pcm[25001 * 4:25002 * 4] == struct.pack("<hh", 4096, 12288)
+    expected = (source_pcm[:5000 * 2] + fixed_pcm[1 * 2:10002 * 2] +
+                source_pcm[15001 * 2:25001 * 2] + struct.pack("<h", 8192) * (35003 - 25001) +
+                source_pcm[35003 * 2:48000 * 2])
+    assert delivered == expected
+    assert [row["source"] for row in result["composition"]["exact_audio"]["delivered_spans"]] == [
+        "source", "fixed", "source", "generated", "source"]
+
+
+def test_generated_audio_rejects_truncation_beyond_40hz_rounding():
+    from astrid.packs.h3_av.shared.compose import CompositionError, _splice_exact_pcm
+    source = b"\x01\x00" * 10000
+    generated = b"\x02\x00" * 9600
+    result = _splice_exact_pcm(source, channels=1, total_samples=10000, generated=generated,
+                               generated_spans=[(0, 10000)])
+    assert result == generated + b"\x00\x00" * 400
+    with pytest.raises(CompositionError, match="does not cover"):
+        _splice_exact_pcm(source, channels=1, total_samples=10000, generated=generated[:5000 * 2],
+                          generated_spans=[(0, 10000)])
+    result = _splice_exact_pcm(source, channels=1, total_samples=10000, generated=generated[:5000 * 2],
+                               generated_spans=[(0, 5000)])
+    assert result[:5000 * 2] == generated[:5000 * 2]
+    assert result[5000 * 2:] == source[5000 * 2:]
+
+
+@pytest.mark.ffmpeg
+@pytest.mark.parametrize("explicit_fixed", [False, True])
+def test_silent_character_swap_source_delivers_implicit_and_explicit_audio(tmp_path, explicit_fixed):
+    import subprocess
+    from PIL import Image
+    from astrid.packs.h3_av.shared.compose import compose_candidate, _decode_exact_pcm
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+    from tests.packs.h3_av.test_moving_masks import _fixtures
+
+    source_with_audio, generated = _fixtures(tmp_path)
+    source, reference, voice, image = (tmp_path / name for name in ("silent.mkv", "reference.mp4", "voice.wav", "face.png"))
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(source_with_audio), "-map", "0:v:0", "-c:v", "copy", str(source)], check=True)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=size=32x32:rate=24:duration=2",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", str(reference)], check=True)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=660:sample_rate=48000:duration=1",
+                    "-c:a", "pcm_s16le", str(voice)], check=True)
+    Image.new("RGB", (32, 32), "white").save(image)
+    edits = [{"stream": "video", "during": [0, 1], "mask": {"rectangle": [0, 0, 128, 128]}, "guides": ["performance", "face"]}]
+    if explicit_fixed:
+        edits.extend([{"stream": "audio", "during": ["10000/48000", "20000/48000"]},
+                      {"stream": "audio", "during": ["24000/48000", "34000/48000"], "guides": ["fixed"]}])
+    media = [
+        {"asset": "scene", "role": "timeline", "modality": "video", "at": {"frame": 0}, "range": [0, 1], "edit": edits},
+        {"id": "performance", "asset": "performance", "role": "reference", "modality": "video", "audio": False},
+        {"id": "face", "asset": "face", "role": "reference", "modality": "image"},
+    ]
+    if explicit_fixed:
+        media.append({"id": "fixed", "asset": "voice", "role": "reference", "modality": "audio"})
+    raw = {"version": 2, "duration": 1, "prompt": "Edit", "settings": {"adapter": {"id": "character_swap_v1"}}, "media": media}
+    prep = prepare_request(normalize_request(raw), asset_map={"scene": str(source), "performance": str(reference), "face": str(image), "voice": str(voice)})
+    assert prep["mask_schedule"]["audio"]["baseline_intervals"] == []
+    assert prep["mask_schedule"]["audio"]["generated_intervals"] == [[0.0, 1.0]]
+    result = compose_candidate(preparation=prep, generated=generated, source=source, out_dir=tmp_path / "composed")
+    delivered, channels = _decode_exact_pcm(Path(result["candidate"]["path"]))
+    generated_pcm, _ = _decode_exact_pcm(generated, expected_channels=channels, generated=True)
+    expected = generated_pcm[:48000 * channels * 2]
+    if explicit_fixed:
+        fixed_pcm, _ = _decode_exact_pcm(voice, expected_channels=channels)
+        stride = channels * 2
+        expected = expected[:24000 * stride] + fixed_pcm[:10000 * stride] + expected[34000 * stride:]
+    assert delivered == expected

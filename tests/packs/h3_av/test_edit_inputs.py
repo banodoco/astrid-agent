@@ -645,3 +645,22 @@ def test_internal_pass_refuses_a_selected_conflicting_classification():
     forged["media"][1]["use"] = "conditioning"
     with pytest.raises(H3RequestError, match="conflicts with the original audio use"):
         sampling_request(H3Request(forged, request.digest), 0)
+
+
+def test_default_video_guides_exclude_fixed_audio_occurrence():
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from astrid.packs.h3_av.shared.spec import canonical_spec
+    raw = {"version": 2, "duration": 5, "prompt": "Edit", "media": [
+        {"asset": "scene", "role": "timeline", "modality": "video", "at": {"frame": 0}, "range": [0, 5],
+         "edit": [{"stream": "video", "during": [0, 5]},
+                  {"stream": "audio", "during": [0, 2], "guides": ["fixed"]}]},
+        {"id": "fixed", "asset": "voice", "role": "reference", "modality": "audio", "range": [0, 2]},
+        {"id": "speaker", "asset": "voice", "role": "reference", "modality": "audio", "range": [2, 4]},
+    ]}
+    spec = canonical_spec(normalize_request(raw))
+    selected = {ref.name: ref for ref in spec.refs}
+    video_refs = spec.sampling_passes()[0].operation.refs
+    assert [selected[name].authored_id for name in video_refs] == ["speaker"]
+    raw["media"][0]["edit"][0]["guides"] = ["fixed"]
+    with pytest.raises(H3RequestError, match="both conditioning and replacement"):
+        normalize_request(raw)
