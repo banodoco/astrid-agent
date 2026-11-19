@@ -88,7 +88,7 @@ def test_first_attached_job_observation(
     expected_payload = make_image(f"ls12:{caller}:{sample_index}:{instrumented}")
     original_media = runpod_slot_pod._media
     monkeypatch.setattr(runpod_slot_pod, "_media", lambda kind:
-                        (expected_payload, "image/png") if kind == "images" else original_media(kind))
+                        (expected_payload, "png", "image/png") if kind == "images" else original_media(kind))
     if instrumented:
         capture = ProcessReportCapture(PREFIX, max_report_bytes=MAX_REPORT_BYTES).install(monkeypatch)
         hashes, observer = sources()
