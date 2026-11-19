@@ -8,6 +8,7 @@ as blocking diagnostics; planning does not add new executable routes.
 from __future__ import annotations
 
 import hashlib
+from copy import deepcopy
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Mapping
@@ -148,7 +149,10 @@ def plan_request(
             derived = sampling_request(request, index, previous_verified_output=index > 0)
             directory = root / "passes" / f"{index + 1:02d}"
             directory.mkdir(parents=True, exist_ok=True)
-            derived_preparation = prepare_request(derived, asset_map=asset_map)
+            derived_preparation = deepcopy(preparation)
+            derived_preparation["request"] = derived.value
+            derived_preparation["request_digest"] = derived.digest
+            derived_preparation["view_of_joint_preparation"] = True
             path = write_preparation(directory / "preparation.json", derived_preparation)
             pass_views.append({**asdict(sampling_pass), "request_digest": derived.digest,
                                "preparation_path": str(path),

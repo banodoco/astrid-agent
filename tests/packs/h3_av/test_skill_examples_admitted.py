@@ -219,7 +219,8 @@ def test_public_plan_accepts_moving_mask(assets, tmp_path, capsys):
     from astrid.packs.h3_av import cli
 
     mask = tmp_path / "mask.mkv"
-    _ffmpeg("-f", "lavfi", "-i", "color=c=white:s=1024x576:r=24:d=3", "-c:v", "ffv1", mask)
+    _ffmpeg("-f", "lavfi", "-i", "nullsrc=s=1024x576:r=24:d=3", "-vf",
+            "geq=lum='if(lt(X,512+mod(N,2)*64),255,0)':cb=128:cr=128,format=gray", "-c:v", "ffv1", mask)
     request = tmp_path / "moving.json"
     request.write_text(json.dumps({"version": 2, "prompt": "Edit", "duration": 3, "media": [
         {"asset": "bike.mp4", "role": "timeline", "modality": "video", "at": {"frame": 0},
@@ -231,3 +232,69 @@ def test_public_plan_accepts_moving_mask(assets, tmp_path, capsys):
     assert plan["runtime_submission"] == "eligible"
     assert plan["bindings"]["regions"][0]["kind"] == "video"
     assert plan["bindings"]["regions"][0]["frames"] == 72
+    assert any(row["binding"].startswith("video_mask") for row in plan["bindings"]["runtime"])
+    samples = _ffmpeg("-i", mask, "-vf", "crop=1:1:540:10", "-pix_fmt", "gray", "-f", "rawvideo", "pipe:1")
+    assert samples[:2] == bytes([0, 255])
+
+
+def test_near_limit_reference_warnings_and_resources_reach_plan_and_build(assets, tmp_path, capsys):
+    import importlib.util
+    from astrid.core.generation.engine_facts import comfyui_facts
+    from astrid.packs.h3_av import cli
+
+    voice = tmp_path / "voice.wav"
+    _ffmpeg("-f", "lavfi", "-i", "sine=frequency=660:sample_rate=48000:duration=3", voice)
+    asset_map = {**assets, "voice.wav": str(voice)}
+    document = {"version": 2, "prompt": "<Video 1> <Audio 1> <Audio 2>", "duration": 3,
+                "media": [{"asset": "bike.mp4", "role": "reference", "modality": "video",
+                           "range": [0, 2], "audio": True},
+                          {"asset": "voice.wav", "role": "reference", "modality": "audio", "range": [0, 2]}]}
+    request = tmp_path / "references.json"
+    request.write_text(json.dumps(document))
+    mapping = tmp_path / "assets.json"
+    mapping.write_text(json.dumps(asset_map))
+    assert cli.main(["plan", "--spec", str(request), "--asset-map", str(mapping), "--out", str(tmp_path / "plan")]) == 0
+    public_plan = json.loads(capsys.readouterr().out)
+    hook_path = SKILL.parent.parent / "extensions/vibecomfy.workflows/hooks.py"
+    spec = importlib.util.spec_from_file_location("h3_near_limit_hooks", hook_path)
+    hooks = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hooks)
+    built = hooks.build({"request": str(request), "asset_map": asset_map}, {}, tmp_path / "build", engine=comfyui_facts())
+    for plan in (public_plan, built["plan"]):
+        assert len([row for row in plan["warnings"] if row.get("limit") == "clip_seconds"]) == 2
+    refs = built["plan"]["reference_view"]["references"]
+    assert {row["modality"]: row["audio_duration_seconds"] for row in refs} == {"video": 2.0, "audio": 2.0}
+    assert all("resource_estimate" in row for row in refs)
+    assert str(tmp_path) not in json.dumps(built["plan"])
+
+
+def test_public_plan_and_build_accept_mixed_fixed_and_generated_audio_at_44100(tmp_path, capsys):
+    import importlib.util
+    from astrid.core.generation.engine_facts import comfyui_facts
+    from astrid.packs.h3_av import cli
+
+    source, voice = tmp_path / "source.mkv", tmp_path / "voice.wav"
+    _ffmpeg("-f", "lavfi", "-i", "color=c=blue:s=1024x576:r=24:d=1",
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100:duration=1",
+            "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "pcm_s16le", "-shortest", source)
+    _ffmpeg("-f", "lavfi", "-i", "sine=frequency=660:sample_rate=48000:duration=1", voice)
+    document = {"version": 2, "duration": 1, "prompt": "Edit", "media": [
+        {"asset": "scene", "role": "timeline", "modality": "video", "at": {"frame": 0}, "range": [0, 1],
+         "edit": [{"stream": "video", "during": [0, 1], "mask": {"rectangle": [0, 0, 128, 128]}},
+                  {"stream": "audio", "during": [0, "1/2"], "guides": ["fixed"]},
+                  {"stream": "audio", "during": ["1/2", 1]}]},
+        {"id": "fixed", "asset": "voice", "role": "reference", "modality": "audio"}]}
+    request, mapping = tmp_path / "mixed.json", tmp_path / "assets.json"
+    assets = {"scene": str(source), "voice": str(voice)}
+    request.write_text(json.dumps(document))
+    mapping.write_text(json.dumps(assets))
+    assert cli.main(["plan", "--spec", str(request), "--asset-map", str(mapping), "--out", str(tmp_path / "plan")]) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["runtime_submission"] == "eligible"
+    assert plan["compilation"]["status"] == "compiled"
+    hook_path = SKILL.parent.parent / "extensions/vibecomfy.workflows/hooks.py"
+    spec = importlib.util.spec_from_file_location("h3_mixed_audio_hooks", hook_path)
+    hooks = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hooks)
+    built = hooks.build({"request": str(request), "asset_map": assets}, {}, tmp_path / "build", engine=comfyui_facts())
+    assert "source_audio_prepared" in built["bindings"]
