@@ -366,3 +366,30 @@ def test_recompile_permission_with_authored_binding_collision(tmp_path):
     derived = [r for r in preparation["assets"] if r["asset"] == asset_id]
     assert len(derived) == 1 and derived[0]["sha256"] == first_hash
     assert first["managed_assets"]["manifest"] == second["managed_assets"]["manifest"]
+
+
+def test_permission_handoff_survives_failed_recompile_and_retry(tmp_path):
+    import copy
+    from pathlib import Path
+    from astrid.packs.h3_av.shared.compile import compile_preparation
+    from astrid.packs.h3_av.shared.prepare import _v2_mask_schedule
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from tests.packs.h3_av.test_native_masked_edit import WATERMARK, _prepare
+
+    raw = copy.deepcopy(WATERMARK)
+    raw["media"][0]["edit"][0]["mask"] = {"rectangle": [0, 0, 128, 128]}
+    preparation = _prepare(raw, tmp_path)
+    preparation["mask_schedule"] = _v2_mask_schedule(normalize_request(raw))
+    compile_preparation(preparation, out_dir=tmp_path / "first")
+    before = copy.deepcopy(preparation)
+    blocked = tmp_path / "blocked"
+    (blocked / "permission_mask_0.png").mkdir(parents=True)
+    with pytest.raises(OSError):
+        compile_preparation(preparation, out_dir=blocked)
+    assert preparation == before
+    compile_preparation(preparation, out_dir=tmp_path / "retry")
+    change = preparation["mask_schedule"]["video"]["changes"][0]
+    derived = [row for row in preparation["assets"] if row["asset"] == change["prepared_mask_asset"]]
+    assert len(derived) == 1
+    assert Path(derived[0]["path"]).parent == tmp_path / "retry"
+    assert Path(derived[0]["path"]).is_file()
