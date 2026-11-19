@@ -101,32 +101,35 @@ def _admit_conditioning(request: H3Request, assets: list[dict[str, Any]], warnin
         if path is None:
             continue
         measurement["bound_file"] = str(path)
+        if modality == "image":
+            try:
+                from PIL import Image
+                with Image.open(path) as image:
+                    width, height = image.size
+                    image.verify()
+            except Exception as exc:
+                raise PreparationError(f"conditioning image metadata is unreadable: {item['occurrence_id']}") from exc
+            measurement["tracks"] = ["video"]
+            measurement["effective_size"] = _reference_size(modality, width, height)
+            measurement["retained_picture_frames"] = 1
+            measurement["resource_estimate"].update({"schema_valid": True, "raw_bytes": measurement["effective_size"]["width"] * measurement["effective_size"]["height"] * 3})
+            continue
         probe = _probe_conditioning(path)
         measurement["tracks"] = [str(row.get("codec_type")) for row in probe.get("streams", []) if isinstance(row, Mapping)]
-        streams = _streams(probe, "video" if modality == "image" else modality)
+        streams = _streams(probe, modality)
         if not streams:
             raise PreparationError(f"conditioning clip 2–15 seconds: {item['occurrence_id']} has no {modality} stream")
         stream = streams[0]
         measured = _number(stream.get("duration"))
         width, height = stream.get("width"), stream.get("height")
         if (
-            isinstance(width, int)
+            modality == "video"
+            and isinstance(width, int)
             and width > 0
             and isinstance(height, int)
             and height > 0
-            and modality in {"image", "video"}
         ):
             measurement["effective_size"] = _reference_size(modality, width, height)
-        if modality == "image":
-            try:
-                from PIL import Image
-                with Image.open(path) as image:
-                    image.verify()
-            except Exception as exc:
-                raise PreparationError(f"conditioning image metadata is unreadable: {item['occurrence_id']}") from exc
-            measurement["retained_picture_frames"] = 1
-            measurement["resource_estimate"].update({"schema_valid": True, "raw_bytes": measurement["effective_size"]["width"] * measurement["effective_size"]["height"] * 3 if measurement["effective_size"] else None})
-            continue
         if measured is None:
             raise PreparationError(f"conditioning clip 2–15 seconds: cannot measure {item['occurrence_id']} duration")
         selected = item.get("resolved_range")
@@ -442,7 +445,7 @@ def _check_source_av_rate(asset_id: str, path: Path) -> None:
             f"{SOURCE_AV_RATE_CODE}: source {asset_id!r} has no video stream; {SOURCE_AV_CONFORM_HINT}",
             code=SOURCE_AV_RATE_CODE, field="source.asset", fix=SOURCE_AV_CONFORM_COMMAND,
         )
-    container = payload.get("format")
+    container = payload.get("format") if isinstance(payload, Mapping) else None
     container_duration = _seconds(container.get("duration")) if isinstance(container, Mapping) else None
     r_rate = _rate_fraction(video.get("r_frame_rate"))
     avg_rate = _rate_fraction(video.get("avg_frame_rate"))
@@ -462,7 +465,12 @@ def _check_source_av_rate(asset_id: str, path: Path) -> None:
         problems.append("video dimensions are not 1024x576")
     if video_duration is None or (audio is not None and audio_duration is None):
         problems.append("durations could not be measured")
-    elif audio is not None and abs(audio_duration - video_duration) > _SOURCE_AV_TOLERANCE_SECONDS:
+    elif (
+        audio is not None
+        and audio_duration is not None
+        and video_duration is not None
+        and abs(audio_duration - video_duration) > _SOURCE_AV_TOLERANCE_SECONDS
+    ):
         problems.append(
             f"audio and video durations differ by more than {_SOURCE_AV_TOLERANCE_SECONDS:.6f}s"
         )
@@ -680,8 +688,7 @@ def prepare_request(
         conditioning_measurements = _admit_conditioning(request, assets, warnings)
         if branch_for(request) == "source_free" and not request.value["media"]:
             warnings.append({"limit": "text_only_documented_use", "message": "Text-only generation is outside the documented use of the Ref2VA checkpoint."})
-        adapter_id = (request.value.get("settings", {}).get("adapter") or {}).get("id")
-        if branch_for(request) == "source_backed_v2v" and adapter_id != "character_swap_v1":
+        if branch_for(request) == "source_backed_v2v":
             for row in conditioning_measurements:
                 row.update({"slot": None, "tag": None, "binding_status": "provisional_until_lowering"})
                 row.pop("audio_tag", None)
