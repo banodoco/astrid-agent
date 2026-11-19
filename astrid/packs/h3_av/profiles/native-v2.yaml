@@ -3,6 +3,9 @@ workflow: workflows/native_h3_continuation_refs
 operations: [transform]
 fps: 24
 sample_rate: 48000
+# Default working size. The v2 compiler accepts output.size on image-guided
+# generation, masked edit and Character Swap. Each dimension is a multiple of
+# 32 from 32 through 16384 inclusive. Continuation uses the default.
 resolution: 1024x576
 reference_audio_default: true
 mask_polarity: black_preserve_white_edit
