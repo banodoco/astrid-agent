@@ -1060,6 +1060,17 @@ class HostChildBridge:
             {"version": 1, "task": evidence_task, "result": canonical,
              "managed_outputs": publication_rows}, task_id=public["task_id"], run_id=public["run_id"],
             attempt_id=public["attempt_id"], managed_outputs=outputs)
+        if "workflow_hook_evidence" in canonical["payload"]:
+            reply = {"v": 1, "request_id": self._sequence, "ok": True, "data": public}
+            if len(_strict_json(reply)) + 1 > _MAX_FRAME:
+                canonical = dict(canonical)
+                canonical["payload"] = {key: value for key, value in canonical["payload"].items()
+                                        if key != "workflow_hook_evidence"}
+                evidence_task["result"] = canonical
+                public["publication_readback"] = _validate_publication_readback(
+                    {"version": 1, "task": evidence_task, "result": canonical,
+                     "managed_outputs": publication_rows}, task_id=public["task_id"], run_id=public["run_id"],
+                    attempt_id=public["attempt_id"], managed_outputs=outputs)
         return public
 
     @staticmethod

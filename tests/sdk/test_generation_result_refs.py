@@ -134,7 +134,7 @@ def test_direct_h3_manifest_cas_readback_authenticates_and_survives_scratch_clea
     import json
     from types import SimpleNamespace
 
-    from astrid.sdk.invocation import _read_h3_workflow_hook_evidence
+    from astrid.sdk.invocation import _observe_h3_workflow_hook_evidence
     from astrid.sdk.exceptions import CapabilityInvocationError
 
     view = {"references": [{"occurrence": "performance", "modality": "video",
@@ -148,21 +148,26 @@ def test_direct_h3_manifest_cas_readback_authenticates_and_survives_scratch_clea
         "output_port": "result_manifest", "role": "manifest", "media_type": "application/json",
         "durability": "durable", "lifecycle": {"state": "available"},
         "object_id": digest, "digest": digest, "size": len(data)}
-    client = SimpleNamespace(get_object=lambda object_id: SimpleNamespace(data=data))
+    client = SimpleNamespace(media=SimpleNamespace(read_bytes=lambda object_id: data))
     scratch.unlink()
 
-    projected = _read_h3_workflow_hook_evidence(client, [association], task_id="task-1",
-                                                 run_id="run-1", attempt_id="attempt-1")
+    raw = {"task": {"task_id": "task-1", "run_id": "run-1", "attempt_id": "attempt-1",
+        "result": {"payload": {"workflow_hook_evidence": {"reference_view": {"references": []}}}}},
+        "managed_outputs": [association]}
+    projected = _observe_h3_workflow_hook_evidence(raw, client, task_id="task-1",
+                                                    run_id="run-1", attempt_id="attempt-1")
     assert projected == {"reference_view": view}
-    fixture = terminal()
-    fixture.result.raw_result["task"]["run_id"] = "run-1"
-    fixture.result.raw_result["task"]["attempt_id"] = "attempt-1"
-    fixture.result.raw_result["task"]["result"]["payload"] = {
-        "workflow_hook_evidence": projected,
-    }
-    assert _reconstruct_generation_result(fixture.result).manifest["reference_view"] == view
+    legacy_association = {**association, "object_id": digest.removeprefix("sha256:"),
+                          "digest": digest.removeprefix("sha256:")}
+    legacy_raw = {"task": {"task_id": "task-1", "run_id": "run-1", "attempt_id": "attempt-1",
+        "result": {}}, "managed_outputs": [legacy_association]}
+    assert _observe_h3_workflow_hook_evidence(legacy_raw, client, task_id="task-1",
+        run_id="run-1", attempt_id="attempt-1") == projected
+    result = InvocationResult("vibecomfy.run", "executor", "command", True,
+        kernel_task_id="task-1", raw_result=raw)
+    assert _reconstruct_generation_result(result).manifest["reference_view"] == view
 
     with pytest.raises(CapabilityInvocationError, match="digest verification"):
-        bad_client = SimpleNamespace(get_object=lambda object_id: SimpleNamespace(data=data + b"!"))
-        _read_h3_workflow_hook_evidence(bad_client, [association], task_id="task-1",
-                                        run_id="run-1", attempt_id="attempt-1")
+        bad_client = SimpleNamespace(media=SimpleNamespace(read_bytes=lambda object_id: data + b"!"))
+        _observe_h3_workflow_hook_evidence({"managed_outputs": [association]}, bad_client,
+            task_id="task-1", run_id="run-1", attempt_id="attempt-1")

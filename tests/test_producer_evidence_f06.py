@@ -591,10 +591,21 @@ def test_workflow_hook_evidence_survives_materialization_and_sdk_readback_after_
     )
     manifest_output = next(row for row in manifest["outputs"] if row["role"] == "manifest")
     manifest_bytes = (host_root / manifest_output["path"]).read_bytes()
-    from astrid.core.execution._child_bridge import _workflow_hook_evidence_from_manifest
-    projected_evidence = _workflow_hook_evidence_from_manifest(
-        manifest_bytes, role=manifest_output["role"], media_type=manifest_output["media_type"],
-        output_port=manifest_output["output_port"])
+    from types import SimpleNamespace
+    from astrid.sdk.invocation import _observe_h3_workflow_hook_evidence
+    manifest_digest = manifest_output["content_hash"]
+    runtime_association = {**manifest_output, "association_id": "runtime-result-manifest",
+        "task_id": "task-1", "run_id": "run-1", "attempt_id": "attempt-1",
+        "object_id": manifest_digest, "digest": manifest_digest,
+        "size": manifest_output["bytes"], "durability": "durable",
+        "lifecycle": {"state": "available"}}
+    cas = SimpleNamespace(media=SimpleNamespace(read_bytes=lambda object_id: manifest_bytes))
+    raw_result = {"task": {"task_id": "task-1", "run_id": "run-1", "attempt_id": "attempt-1",
+        "state": "succeeded", "result": {"payload": {"workflow_hook_evidence": {
+            "reference_view": {"references": []}}}}}, "managed_outputs": [runtime_association]}
+    projected_evidence = _observe_h3_workflow_hook_evidence(raw_result, cas, task_id="task-1",
+        run_id="run-1", attempt_id="attempt-1")
+    assert raw_result["task"]["result"]["payload"]["workflow_hook_evidence"] == projected_evidence
     settled_view = projected_evidence["reference_view"]
     assert [row["modality"] for row in settled_view["references"]] == ["image", "video"]
     video_row = next(row for row in settled_view["references"] if row["modality"] == "video")
@@ -607,11 +618,8 @@ def test_workflow_hook_evidence_survives_materialization_and_sdk_readback_after_
     picture.unlink()
     generated.unlink()
 
-    result = InvocationResult(
-        "vibecomfy.run", "executor", "command", True, kernel_task_id="task-1",
-        raw_result={"task": {"task_id": "task-1", "state": "succeeded", "result": {
-            "payload": {"workflow_hook_evidence": projected_evidence}}}},
-    )
+    result = InvocationResult("vibecomfy.run", "executor", "command", True,
+                              kernel_task_id="task-1", raw_result=raw_result)
     settled = _reconstruct_generation_result(result)
     assert settled.manifest["reference_view"] == settled_view
     assert str(tmp_path) not in str(settled.to_dict())
@@ -647,6 +655,7 @@ def test_workflow_hook_evidence_keeps_pinned_relative_source_citations():
     {"reference_view": {"references": [{"occurrence": "foo/bar", "modality": "video"}]}},
     {"reference_view": {"references": [{"retained_picture_frames_derived": {
         "rule_source": "ComfyUI@423cbd20511becb1f16122ab518e92e58bfa03d9:../../tmp/nodes.py:1-2"}}]}},
+    {"reference_view": {"references": [False]}},
 ])
 def test_workflow_hook_evidence_rejects_unknown_locator_keys_relative_paths_and_unpinned_citations(evidence):
     from astrid.core.contracts.errors import AstridValueError

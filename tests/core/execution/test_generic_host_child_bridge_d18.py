@@ -3754,7 +3754,20 @@ def test_verified_result_manifest_projects_workflow_hook_evidence_to_readback():
     """Only a digest-verified durable manifest can supply the bounded view."""
     payload = json.dumps({"kind": "managed-generation-result.v1",
         "evidence": {"producer": {"workflow_hook": {
-            "reference_view": {"references": [], "target_frame_cap": 17}}}}}).encode()
+            "reference_view": {"references": [
+                {"occurrence": "still-1", "modality": "image", "trim": None},
+                {"occurrence": "performance", "modality": "video", "input_binding": {
+                    "binding": "video-1", "port": "ref_videos.ref_video_0",
+                    "resolved_range": None,
+                    "soundtrack": {"port": "ref_audios.ref_audio_0", "tag": "<Audio 1>"}}}],
+                "target_frame_cap": 17, "audio": {
+                    "requested_grants": [{"samples": [0, 48000], "strength": 0.8,
+                        "use": "generated", "occurrences": []}],
+                    "effective_40hz_mask": {"values": [0.0, 1.0],
+                        "basis": "compiler resampling of the decoded per-frame mask", "precision": "1/65535"},
+                    "decoded_frame_mask": [0.0, 1.0],
+                    "expected_delivered_sample_spans": [{"samples": [0, 48000], "source": "generated"}],
+                    "actual_delivered_sample_spans": [{"samples": [0, 48000], "source": "generated"}]}}}}}).encode()
     oid = digest(payload)
     row = {"association_id": "association", "task_id": "child-task", "run_id": "child-run",
            "project_id": "project", "attempt_id": "child-attempt", "durability": "durable",
@@ -3777,7 +3790,8 @@ def test_verified_result_manifest_projects_workflow_hook_evidence_to_readback():
 
     captured = {}
     bridge._outputs(task, capture_evidence=captured)
-    assert captured == {"reference_view": {"references": [], "target_frame_cap": 17}}
+    expected_evidence = {"reference_view": json.loads(payload)["evidence"]["producer"]["workflow_hook"]["reference_view"]}
+    assert captured == expected_evidence
 
     from astrid.sdk.invocation import InvocationResult
     from astrid.sdk.results import _generation_task_refs

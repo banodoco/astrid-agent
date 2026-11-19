@@ -582,6 +582,37 @@ def test_sealed_reference_view_uses_compiled_rows_and_labels_video_counts_as_est
     assert _sealed_plan(character_swap, preparation=preparation)["reference_view"]["target_frame_cap"] == 3592
 
 
+def test_sealed_view_preserves_sr5_audio_grants_mask_and_span_kinds():
+    from astrid.packs.h3_av.shared.stages import _sealed_plan
+
+    grants = [{"samples": [0, 48000], "strength": 0.8, "use": "generated", "occurrences": []}]
+    mask = {"resampled_40hz": [0.0, 1.0], "decoded_frame_values": [0.0, 1.0], "precision": "1/65535"}
+    expected = [{"samples": [0, 48000], "source": "generated"}]
+    compilation = {"compilation_digest": "a" * 64, "workflow": {}, "workflow_inputs": {},
+        "capabilities": {"output_contract": "muxed_av_full_timeline",
+            "public_generation": {"modality": "video", "selectors": [{"selector": "main-0",
+                "ordinal": 0, "variant_key": "original", "required": True}]},
+            "conditioning": [{"occurrence": "performance", "modality": "video",
+                "input_binding": {"binding": "video-1", "port": "ref_videos.ref_video_0"}}],
+            "requested_audio_grants": grants, "audio_time_mask": mask,
+            "expected_delivered_audio_spans": expected}}
+
+    view = _sealed_plan(compilation)["reference_view"]
+    assert view["audio"]["requested_grants"] == grants
+    assert view["audio"]["effective_40hz_mask"] == {
+        "values": [0.0, 1.0], "basis": "compiler resampling of the decoded per-frame mask",
+        "precision": "1/65535"}
+    assert view["audio"]["decoded_frame_mask"] == [0.0, 1.0]
+    assert view["audio"]["expected_delivered_sample_spans"] == expected
+
+    from astrid.packs.h3_av.shared.stages import _settled_reference_view
+    from tempfile import TemporaryDirectory
+    with TemporaryDirectory() as tmp:
+        settled = _settled_reference_view(view, reference_assets={}, workdir=Path(tmp),
+        composition={"exact_audio": {"delivered_spans": expected}})
+        assert settled["audio"]["actual_delivered_sample_spans"] == expected
+
+
 def test_character_swap_sealed_view_uses_compilation_level_timing(tmp_path, monkeypatch):
     import subprocess
     from astrid.packs.h3_av.shared import generation

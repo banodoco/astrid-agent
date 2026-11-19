@@ -395,11 +395,11 @@ def validate_workflow_hook_evidence(value: Any) -> dict[str, Any]:
     typed_fields = {
         ("view", "references"): list, ("view", "target_frame_cap"): int,
         ("reference", "occurrence"): str, ("reference", "modality"): str,
-        ("reference", "trim"): list, ("reference", "tag"): str,
+        ("reference", "trim"): (list, type(None)), ("reference", "tag"): str,
         ("input_binding", "binding"): str, ("input_binding", "port"): str,
         ("input_binding", "start_time"): (int, float), ("input_binding", "frame_load_cap"): int,
-        ("input_binding", "audio"): (str, bool), ("input_binding", "soundtrack"): bool,
-        ("input_binding", "resolved_range"): list, ("soundtrack", "port"): str,
+        ("input_binding", "audio"): (str, bool), ("input_binding", "soundtrack"): (dict, bool, type(None)),
+        ("input_binding", "resolved_range"): (list, type(None)), ("soundtrack", "port"): str,
         ("soundtrack", "tag"): str, ("estimate", "value"): (int, float),
         ("estimate", "kind"): str, ("estimate", "observed"): bool,
         ("effective_size", "width"): int, ("effective_size", "height"): int,
@@ -414,8 +414,18 @@ def validate_workflow_hook_evidence(value: Any) -> dict[str, Any]:
         ("audio", "actual_delivered_sample_spans"): list, ("grant", "samples"): list,
         ("grant", "strength"): (int, float), ("grant", "use"): str,
         ("grant", "occurrences"): list, ("effective_40hz_mask", "values"): list,
-        ("effective_40hz_mask", "basis"): str, ("effective_40hz_mask", "precision"): int,
+        ("effective_40hz_mask", "basis"): str, ("effective_40hz_mask", "precision"): (str, int, float),
         ("span", "samples"): list, ("span", "source"): str,
+    }
+    required_fields = {
+        "view": {"references"},
+        "reference": {"occurrence", "modality"},
+        "soundtrack": {"port", "tag"},
+        "estimate": {"value", "kind", "observed"},
+        "effective_size": {"width", "height"},
+        "grant": {"samples", "strength", "use", "occurrences"},
+        "effective_40hz_mask": {"values", "basis", "precision"},
+        "span": {"samples", "source"},
     }
     citations = {
         "rule_source": "ComfyUI@6bfaacc67c2103481e5f0c84d75257cd0581d86a:comfy_extras/nodes_minimax_h3.py:324-332",
@@ -435,6 +445,9 @@ def validate_workflow_hook_evidence(value: Any) -> dict[str, Any]:
         if isinstance(item, dict):
             if set(item) - field_sets[context]:
                 raise ManagedGenerationResultError(f"workflow hook evidence has an unsupported field at {where}")
+            required = required_fields.get(context, set())
+            if required - set(item):
+                raise ManagedGenerationResultError(f"workflow hook evidence is missing a field at {where}")
             for key, child in item.items():
                 expected_type = typed_fields.get((context, key))
                 if expected_type is not None and (type(child) not in expected_type if isinstance(expected_type, tuple)
@@ -450,6 +463,18 @@ def validate_workflow_hook_evidence(value: Any) -> dict[str, Any]:
                 check(child, next_context or context, f"{where}.{key}")
         elif isinstance(item, list):
             next_context = list_context.get((context, where.rsplit(".", 1)[-1]))
+            list_field = where.rsplit(".", 1)[-1]
+            if next_context is not None and any(type(child) is not dict for child in item):
+                raise ManagedGenerationResultError(f"workflow hook evidence has an invalid list entry at {where}")
+            primitive_types = {
+                ("reference", "trim"): (int, float), ("input_binding", "resolved_range"): (int, float),
+                ("grant", "samples"): int, ("grant", "occurrences"): str,
+                ("effective_40hz_mask", "values"): (int, float), ("audio", "decoded_frame_mask"): (int, float, bool),
+                ("span", "samples"): int,
+            }.get((context, list_field))
+            if primitive_types is not None and any(type(child) not in (primitive_types if isinstance(primitive_types, tuple)
+                                                                        else (primitive_types,)) for child in item):
+                raise ManagedGenerationResultError(f"workflow hook evidence has invalid list values at {where}")
             for index, child in enumerate(item):
                 check(child, next_context or context, f"{where}[{index}]")
         elif isinstance(item, str):
