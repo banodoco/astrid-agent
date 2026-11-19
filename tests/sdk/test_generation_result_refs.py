@@ -157,8 +157,8 @@ def test_direct_h3_manifest_cas_readback_authenticates_and_survives_scratch_clea
     import json
     from types import SimpleNamespace
 
-    from astrid.sdk.invocation import _observe_h3_workflow_hook_evidence
     from astrid.sdk.exceptions import CapabilityInvocationError
+    from astrid.sdk.invocation import _observe_h3_workflow_hook_evidence
 
     view = {"references": [{"occurrence": "performance", "modality": "video",
         "retained_picture_frames_estimate": {"value": 47, "kind": "metadata_upper_bound", "observed": False}}]}
@@ -195,3 +195,32 @@ def test_direct_h3_manifest_cas_readback_authenticates_and_survives_scratch_clea
         bad_client = SimpleNamespace(media=SimpleNamespace(read_bytes=lambda object_id: data + b"!"))
         _observe_h3_workflow_hook_evidence({"managed_outputs": [association]}, bad_client,
             task_id="task-1", run_id="run-1", attempt_id="attempt-1")
+
+
+def test_h3_manifest_integrity_read_failure_is_not_treated_as_optional_unavailable():
+    from types import SimpleNamespace
+
+    from astrid.sdk.exceptions import ServiceIntegrityError, ServiceUnavailableError
+    from astrid.sdk.invocation import _read_h3_workflow_hook_evidence
+
+    digest = "sha256:" + "c" * 64
+    association = {"association_id": "result-manifest-assoc", "task_id": "task-1",
+        "run_id": "run-1", "attempt_id": "attempt-1",
+        "output_port": "result_manifest", "role": "manifest", "media_type": "application/json",
+        "durability": "durable", "lifecycle": {"state": "available"},
+        "object_id": digest, "digest": digest, "size": 10}
+
+    def integrity_failure(_object_id):
+        raise ServiceIntegrityError("persisted manifest bytes failed verification")
+
+    client = SimpleNamespace(media=SimpleNamespace(read_bytes=integrity_failure))
+    with pytest.raises(ServiceIntegrityError, match="failed verification"):
+        _read_h3_workflow_hook_evidence(client, [association], task_id="task-1",
+            run_id="run-1", attempt_id="attempt-1")
+
+    def unavailable(_object_id):
+        raise ServiceUnavailableError("Runtime is temporarily unavailable")
+
+    unavailable_client = SimpleNamespace(media=SimpleNamespace(read_bytes=unavailable))
+    assert _read_h3_workflow_hook_evidence(unavailable_client, [association], task_id="task-1",
+        run_id="run-1", attempt_id="attempt-1") is None

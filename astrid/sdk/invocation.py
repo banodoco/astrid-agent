@@ -3306,10 +3306,12 @@ def _read_h3_workflow_hook_evidence(client: Any, rows: Any, *, task_id: str,
         reader = getattr(media, "read_bytes", None)
         if not callable(reader):
             return None
-        from .exceptions import ServiceError
+        from .exceptions import ServiceError, ServiceIntegrityError
 
         try:
             data = reader(normalized_object.removeprefix("sha256:"))
+        except ServiceIntegrityError:
+            raise
         except (ServiceError, OSError, TimeoutError, ConnectionError):
             return None
         if (not isinstance(data, bytes) or len(data) != size
