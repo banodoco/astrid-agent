@@ -629,6 +629,12 @@ def test_planner_persists_and_reloads_classified_uses_for_each_pass(tmp_path):
         preparation = json.loads((tmp_path / "plan" / "passes" / f"{index:02d}" / "preparation.json").read_text())
         loaded = read_prepared_request(preparation["request"], preparation["request_digest"], require_normalized_v2=True)
         assert [row.get("use") for row in loaded.value["media"][1:]] == ["replacement", "conditioning"]
+        from astrid.packs.h3_av.shared.compile import CompilationError, compile_preparation
+        assert preparation["joint_preparation"]["request_digest"] == result["request_digest"]
+        assert preparation["joint_preparation"]["path"] == result["preparation_path"]
+        assert preparation["runtime_submission"] == "blocked_inspection_only"
+        with pytest.raises(CompilationError, match="preparation.kind"):
+            compile_preparation(preparation, out_dir=tmp_path / f"forbidden-{index}")
 
 
 def test_internal_pass_refuses_a_selected_conflicting_classification():

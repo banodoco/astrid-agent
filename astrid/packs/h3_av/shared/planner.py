@@ -152,7 +152,13 @@ def plan_request(
             derived_preparation = deepcopy(preparation)
             derived_preparation["request"] = derived.value
             derived_preparation["request_digest"] = derived.digest
-            derived_preparation["view_of_joint_preparation"] = True
+            derived_preparation["kind"] = "h3_av_derived_pass_view"
+            derived_preparation["status"] = "inspection_only"
+            derived_preparation["runtime_submission"] = "blocked_inspection_only"
+            derived_preparation["joint_preparation"] = {
+                "path": str(root / "preparation.json"), "request_digest": request.digest,
+                "reason": "Only the joint request is admitted and compiled for execution",
+            }
             path = write_preparation(directory / "preparation.json", derived_preparation)
             pass_views.append({**asdict(sampling_pass), "request_digest": derived.digest,
                                "preparation_path": str(path),
