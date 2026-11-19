@@ -849,6 +849,11 @@ def test_silent_character_swap_source_delivers_implicit_and_explicit_audio(tmp_p
         stride = channels * 2
         expected = expected[:24000 * stride] + fixed_pcm[:10000 * stride] + expected[34000 * stride:]
     assert delivered == expected
+    settled = hooks.after_outputs(tmp_path / "hook", {}, {}, [str(generated)], engine=comfyui_facts())
+    settled_pcm, settled_channels = _decode_exact_pcm(Path(settled[0]))
+    assert settled_channels == channels
+    assert settled_pcm == expected
+    assert (tmp_path / "hook/h3/verify.json").is_file()
 
 
 @pytest.mark.ffmpeg
