@@ -1055,12 +1055,12 @@ def test_timeline_still_uses_source_backed_generation_and_exact_first_frame(tmp_
     assert source_batch["class_type"] == "ImageBatch"
     source_loader = api[source_batch["inputs"]["image1"][0]]
     source_row = next(row for row in manifest["managed_assets"]["manifest"]["assets"] if row["binding"] == "source_video")
-    assert source_loader["inputs"]["video"] == manifest["workflow_inputs"]["source_video"] == source_row["member"]
+    assert source_loader["inputs"]["video"] == manifest["workflow_inputs"]["source_video"] == Path(source_row["member"]).name
     mask_node = api[v2v["inputs"]["source_mask"][0]]
     mask_batch = api[mask_node["inputs"]["image"][0]]
     mask_loader = api[mask_batch["inputs"]["image1"][0]]
     mask_row = next(row for row in manifest["managed_assets"]["manifest"]["assets"] if row["binding"] == "video_mask_0")
-    assert mask_loader["inputs"]["video"] == manifest["workflow_inputs"]["video_mask_0"] == mask_row["member"]
+    assert mask_loader["inputs"]["video"] == manifest["workflow_inputs"]["video_mask_0"] == Path(mask_row["member"]).name
     import zipfile
     with zipfile.ZipFile(manifest["managed_assets"]["path"]) as archive:
         assert archive.read(source_row["member"]) == source.read_bytes()
