@@ -282,3 +282,9 @@ def test_plan_rejects_a_preserve_only_spec(tmp_path: Path) -> None:
     assert caught.value.code == "h3.plan.single_pass"
 
 
+
+
+def test_plan_retains_text_only_and_duration_warnings(tmp_path):
+    request = normalize_request({"version": 2, "prompt": "A scene", "duration": 16, "media": []})
+    plan = plan_request(request, asset_map={}, out_dir=tmp_path / "plan")
+    assert {row.get("limit") for row in plan["warnings"]} >= {"job_duration_seconds", "text_only_documented_use"}
