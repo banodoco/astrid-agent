@@ -7,10 +7,10 @@ The historical fixture keeps numeric 24 fps and its original window scope.
 from __future__ import annotations
 
 import copy
-from types import SimpleNamespace
 
 import pytest
 
+from tests.helpers.media_manifest_compatibility import historical_manifest_case
 from tests.helpers.runtime import use_runtime
 from tests.helpers.trusted_seed import seed_trusted_parent
 
@@ -22,17 +22,9 @@ def manifest_media(tmp_path, monkeypatch):
     use_runtime()
     from runtime_protocol.service import RuntimeService
 
-    from tests.editing_conformance.test_commit_runtime_parent_media_swap import (
-        editing as native_parent_media_fixture,
-    )
-    from tests.editing_conformance.test_commit_runtime_parent_media_swap import source_bytes
-
-    # This helper builds the film with historical public APIs in a separate
-    # interpreter, settles decodable PNGs, then opens it with current Runtime.
-    fixture = native_parent_media_fixture.__wrapped__(
-        SimpleNamespace(param='image'), tmp_path, monkeypatch, 'swap', 'parent',
-        source_bytes.__wrapped__(tmp_path),
-    )
+    # Feasibility only: preserve genuine historical first-placement provenance,
+    # then use ordinary current admission and captured shared placement.
+    fixture = historical_manifest_case(tmp_path)
     case = next(fixture)
     try:
         service, project = case.service, case.project
