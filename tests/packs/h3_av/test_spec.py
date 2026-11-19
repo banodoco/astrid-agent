@@ -6,6 +6,7 @@ import json
 import subprocess
 import urllib.request
 from dataclasses import replace
+from fractions import Fraction
 from pathlib import Path
 
 import jsonschema
@@ -73,6 +74,33 @@ def _edit(*ops: Operation, regions: tuple[Region, ...] = ()) -> H3Spec:
     return H3Spec(
         "Change the declared pixels.", 4, Source("source.mp4", (0, 4)), regions=regions, ops=ops
     )
+
+
+def test_exact_fraction_duration_keeps_node_limit_error_typed():
+    accepted_duration = Fraction(3592, 24)
+    accepted = H3Spec(
+        "Exact boundary.",
+        accepted_duration,
+        ops=(Operation("generate", (Fraction(0), accepted_duration), stream="av"),),
+    )
+    assert normalize_spec(accepted).duration == accepted_duration
+
+    one_frame_over = Fraction(3593, 24)
+    with pytest.raises(H3SpecError, match="job length frames"):
+        normalize_spec(H3Spec(
+            "One frame beyond the node grid.",
+            one_frame_over,
+            ops=(Operation("generate", (Fraction(0), one_frame_over), stream="av"),),
+        ))
+
+    oversized_duration = Fraction(10**400)
+    oversized = H3Spec(
+        "Beyond node limit.",
+        oversized_duration,
+        ops=(Operation("generate", (Fraction(0), oversized_duration), stream="av"),),
+    )
+    with pytest.raises(H3SpecError, match="job length frames"):
+        normalize_spec(oversized)
 
 
 def _assert_g21(error: BaseException, code: str | None = None) -> None:

@@ -4,25 +4,137 @@ Node contract: ComfyUI 423cbd20511becb1f16122ab518e92e58bfa03d9,
 comfy_extras/nodes_minimax_h3.py, MiniMaxH3ReferenceToVideo.
 """
 import hashlib
-from dataclasses import dataclass
 import json
 import os
-from pathlib import Path
 import re
-from typing import Any, Mapping
+from dataclasses import dataclass
+from fractions import Fraction
+from pathlib import Path
+from typing import Any, Mapping, TypedDict
 
 from .engine_facts import facts
 from .timing import frame_index, smallest_h3_run_at_least
 
-LIMITS = {
+
+class _BuilderSlotValues(TypedDict):
+    image: int
+    video: int
+    audio: int
+
+
+class _JobLengthFrameValues(TypedDict):
+    min: int
+    max: int
+    stride: int
+
+
+class _NamedIntLimit(TypedDict):
+    min: int
+    max: int
+    multiple: int
+
+
+class _CharacterSwapReferences(TypedDict):
+    video: int
+    image: int
+    additional: str
+
+
+class _ContinuationReferences(TypedDict):
+    image: int
+    video: int
+    audio: int
+
+
+class _RegionsPerPass(TypedDict):
+    seeds: int
+    reference_sets: int
+
+
+class _LimitSource(TypedDict):
+    value: str
+    source: str
+
+
+class _BuilderSlotsLimit(TypedDict):
+    value: _BuilderSlotValues
+    source: str
+
+
+class _ClipSecondsLimit(TypedDict):
+    value: list[int]
+    source: str
+
+
+class _IntLimit(TypedDict):
+    value: int
+    source: str
+
+
+class _CanvasLimit(TypedDict):
+    value: _NamedIntLimit
+    source: str
+
+
+class _AudioStrengthLimit(TypedDict):
+    value: list[int]
+    source: str
+
+
+class _JobLengthLimit(TypedDict):
+    value: _JobLengthFrameValues
+    source: str
+
+
+class _JobDurationLimit(TypedDict):
+    value: list[float]
+    source: str
+    warning: str
+
+
+class _CharacterSwapReferencesLimit(TypedDict):
+    value: _CharacterSwapReferences
+    source: str
+
+
+class _ContinuationReferencesLimit(TypedDict):
+    value: _ContinuationReferences
+    source: str
+
+
+class _RegionsPerPassLimit(TypedDict):
+    value: _RegionsPerPass
+    source: str
+
+
+class _Limits(TypedDict):
+    builder_slots: _BuilderSlotsLimit
+    clip_seconds: _ClipSecondsLimit
+    modality_seconds: _IntLimit
+    conditioning_files: _IntLimit
+    canvas_dimension: _CanvasLimit
+    audio_grant_strength: _AudioStrengthLimit
+    job_length_frames: _JobLengthLimit
+    job_duration_seconds: _JobDurationLimit
+    character_swap_references: _CharacterSwapReferencesLimit
+    character_swap_mask_rectangle: _LimitSource
+    continuation_references: _ContinuationReferencesLimit
+    timeline_image_frame: _IntLimit
+    regions_per_pass: _RegionsPerPassLimit
+
+
+_BUILDER_SLOT_VALUES: _BuilderSlotValues = {"image": 9, "video": 3, "audio": 3}
+_JOB_LENGTH_FRAME_VALUES: _JobLengthFrameValues = {"min": 5, "max": 3600, "stride": 17}
+
+LIMITS: _Limits = {
     # Model facts.
-    "builder_slots": {"value": {"image": 9, "video": 3, "audio": 3}, "source": "node"},
+    "builder_slots": {"value": _BUILDER_SLOT_VALUES, "source": "node"},
     "clip_seconds": {"value": [2, 15], "source": "model card"},
     "modality_seconds": {"value": 15, "source": "model card"},
     "conditioning_files": {"value": 12, "source": "model card"},
     "canvas_dimension": {"value": {"min": 32, "max": 16384, "multiple": 32}, "source": "node"},
     "audio_grant_strength": {"value": [0, 1], "source": "node"},
-    "job_length_frames": {"value": {"min": 5, "max": 3600, "stride": 17}, "source": "node"},
+    "job_length_frames": {"value": _JOB_LENGTH_FRAME_VALUES, "source": "node"},
     "job_duration_seconds": {"value": [124 / 24, 362 / 24], "source": "node", "warning": "Outside 124–362 frames is outside the tested range."},
     # Current lowering limits. SR-3 owns shared seed/reference-set validation;
     # the regions-per-pass row is not enforced here.
@@ -32,8 +144,8 @@ LIMITS = {
     "timeline_image_frame": {"value": 0, "source": "Astrid lowering"},
     "regions_per_pass": {"value": {"seeds": 1, "reference_sets": 1}, "source": "Astrid lowering"},
 }
-IMAGE_REFERENCE_CAPACITY = LIMITS["builder_slots"]["value"]["image"]
-VIDEO_REFERENCE_CAPACITY = LIMITS["builder_slots"]["value"]["video"]
+IMAGE_REFERENCE_CAPACITY = _BUILDER_SLOT_VALUES["image"]
+VIDEO_REFERENCE_CAPACITY = _BUILDER_SLOT_VALUES["video"]
 CHARACTER_SWAP_ID = "character_swap_v1"
 CHARACTER_SWAP_REPOSITORY = "akatz-ai/MiniMax-H3-Character-Swap-LoRA"
 CHARACTER_SWAP_REVISION = "62407e0cc8089c363abd9ce4b0b27662abb237af"
@@ -209,11 +321,13 @@ def _required_locked_url(models: Mapping[str, Any], destination: str) -> str:
     return f"https://huggingface.co/{model.repository}/resolve/{model.revision}/{model.path}"
 
 
-def generation_timing(duration: float) -> dict[str, Any]:
+def generation_timing(duration: Fraction | int | float) -> dict[str, Any]:
     frames = frame_index(duration, "output.duration")
+    length = _JOB_LENGTH_FRAME_VALUES
+    if frames < length["min"] or frames > length["max"]:
+        raise ValueError("job length frames 5..3600: requested duration exceeds the node grid")
     raw = smallest_h3_run_at_least(frames)
-    length = LIMITS["job_length_frames"]["value"]
-    if frames < length["min"] or raw > length["max"]:
+    if raw > length["max"]:
         raise ValueError("job length frames 5..3600: requested duration exceeds the node grid")
     return {"fps": 24, "requested_frames": frames, "raw_frames": raw,
             "trim_tail_frames": raw - frames, "duration": frames / 24}
@@ -246,21 +360,21 @@ def generation_inputs_from_bindings(*, references: list[str], prompt: str, frame
                      "input_binding": {"binding": binding, "port": f"ref_images.ref_image_{i}"}, "tag": f"<Picture {i + 1}>"})
     audio_index = 0
     for i, reference in enumerate(video_references or []):
-        binding = dict(reference)
-        binding.setdefault("binding", f"video_reference_{i}")
-        binding["port"] = f"ref_videos.ref_video_{i}"
-        if binding.get("audio", True):
+        input_binding = dict(reference)
+        input_binding.setdefault("binding", f"video_reference_{i}")
+        input_binding["port"] = f"ref_videos.ref_video_{i}"
+        if input_binding.get("audio", True):
             audio_index += 1
-            binding["soundtrack"] = {"port": f"ref_video_audios.ref_video_audio_{i}", "tag": f"<Audio {audio_index}>"}
-        rows.append({"occurrence": binding["binding"], "modality": "video", "trim": None,
-                     "input_binding": binding, "tag": f"<Video {i + 1}>"})
+            input_binding["soundtrack"] = {"port": f"ref_video_audios.ref_video_audio_{i}", "tag": f"<Audio {audio_index}>"}
+        rows.append({"occurrence": input_binding["binding"], "modality": "video", "trim": None,
+                     "input_binding": input_binding, "tag": f"<Video {i + 1}>"})
     for i, reference in enumerate(audio_references or []):
-        binding = dict(reference)
-        binding.setdefault("binding", f"audio_reference_{i}")
-        binding["port"] = f"ref_audios.ref_audio_{i}"
+        input_binding = dict(reference)
+        input_binding.setdefault("binding", f"audio_reference_{i}")
+        input_binding["port"] = f"ref_audios.ref_audio_{i}"
         audio_index += 1
-        rows.append({"occurrence": binding["binding"], "modality": "audio", "trim": binding.get("resolved_range"),
-                     "input_binding": binding, "tag": f"<Audio {audio_index}>"})
+        rows.append({"occurrence": input_binding["binding"], "modality": "audio", "trim": input_binding.get("resolved_range"),
+                     "input_binding": input_binding, "tag": f"<Audio {audio_index}>"})
     return GenerationInputs(
         canvas={"width": 1024, "height": 576, "frames": frames},
         placed=({"occurrence": "legacy-source", "input_binding": masked_edit["source_binding"],
@@ -316,25 +430,42 @@ def build_generation_workflow(inputs: GenerationInputs):
                        "strength": raster["sampler_strength"],
                        **({"audio_source_binding": source["audio_input_binding"]} if source.get("audio_input_binding") else {}),
                        **({"audio_mask_binding": source["audio_mask_binding"]} if source.get("audio_mask_binding") else {})}
-    from vibecomfy.templates import ModelAsset, OutputSpec, ReadyMetadata, new_workflow, node
     from vibecomfy.nodes.core import (
-        AudioConcat, BasicGuider, BasicScheduler, CLIPLoader, CropMask, EmptyAudio, EmptyImage,
-        ImageBatch, ImageFromBatch, KSamplerSelect, LoadAudio, LoadImage, RepeatImageBatch, TrimAudioDuration,
-        LoraLoaderModelOnly, RandomNoise, SamplerCustomAdvanced, UNETLoader,
-        VAEDecode, VAEDecodeAudio, VAELoader,
+        AudioConcat,
+        BasicGuider,
+        BasicScheduler,
+        CLIPLoader,
+        CropMask,
+        EmptyAudio,
+        EmptyImage,
+        ImageBatch,
+        ImageFromBatch,
+        KSamplerSelect,
+        LoadAudio,
+        LoadImage,
+        LoraLoaderModelOnly,
+        RandomNoise,
+        RepeatImageBatch,
+        SamplerCustomAdvanced,
+        TrimAudioDuration,
+        UNETLoader,
+        VAEDecode,
+        VAEDecodeAudio,
+        VAELoader,
     )
     from vibecomfy.nodes.videohelpersuite import VHS_LoadVideoFFmpeg, VHS_VideoCombine
+    from vibecomfy.templates import ModelAsset, OutputSpec, ReadyMetadata, new_workflow, node
 
     if not 0 <= len(references) <= IMAGE_REFERENCE_CAPACITY:
         raise ValueError("this adapter supports at most nine image references")
     video_references = list(video_references or [])
-    length = LIMITS["job_length_frames"]["value"]
+    length = _JOB_LENGTH_FRAME_VALUES
     if frames < length["min"] or smallest_h3_run_at_least(frames) > length["max"]:
         raise ValueError("job length frames 5..3600: requested length exceeds the node grid")
     audio_references = list(audio_references or [])
     if len(video_references) > VIDEO_REFERENCE_CAPACITY:
         raise ValueError("this adapter requires at most three video references")
-    if len(audio_references) > LIMITS["builder_slots"]["value"]["audio"]:
+    if len(audio_references) > _BUILDER_SLOT_VALUES["audio"]:
         raise ValueError("this adapter supports at most three standalone audio references")
     locked_models = _h3_locked_urls()
     names = {
