@@ -649,7 +649,7 @@ def test_multi_pass_root_preparation_rejects_composition_and_verification(tmp_pa
     assert preparation["status"] == "orchestration_only"
     with pytest.raises(CompositionError, match="orchestration-only"):
         compose_candidate(preparation=preparation, generated=generated, source=resized, out_dir=tmp_path / "composed")
-    with pytest.raises(VerificationError, match="preparation is not ready"):
+    with pytest.raises(VerificationError, match="orchestration-only"):
         verify_candidate(preparation=preparation, composition={"status": "composed"})
     for item in plan["passes"]:
         child = json.loads(Path(item["plan_path"]).read_text())

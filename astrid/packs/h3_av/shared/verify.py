@@ -270,6 +270,8 @@ def verify_candidate(
 ) -> dict[str, Any]:
     """Verify artifact custody and concrete preservation evidence."""
 
+    if preparation.get("status") == "orchestration_only":
+        raise VerificationError("orchestration-only preparation cannot be verified; use a compiled pass preparation")
     if preparation.get("status") != "prepared":
         raise VerificationError("preparation is not ready")
     if composition.get("status") != "composed":
