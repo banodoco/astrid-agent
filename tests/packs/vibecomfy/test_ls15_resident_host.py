@@ -16,6 +16,7 @@ from astrid.core.execution.generic_host import GenericPackHost, HostError
 from astrid.core.execution.managed_tool_session import StaleAdmissionError
 from astrid.core.execution.resident_sessions import ResidentProtocolError
 from astrid.core.generation.backends.comfy_target import open_comfy_http
+from astrid.core.generation.vibecomfy_runtime_root import vibecomfy_runtime_root
 from tests.helpers.ls5_comfy_peer import ComfyPeer
 from tests.packs.vibecomfy import test_local_server_run
 from tests.test_generic_host import FakeRuntime
@@ -121,7 +122,12 @@ def run_job(world, number, *, values=None, expected_status="completed", align=No
         "spec": {"spec": {"inputs": {**descriptors,
                 "workflow_inputs": json.dumps(values or {}), "comfy_url": "" if managed else peer.url}}}}}
     if align is not None:
-        task["task"]["spec"]["spec"]["metadata"] = {"align": align}
+        task["task"]["generation_intent"] = {
+            "version": 1, "modality": "image", "partial_success_policy": "reject",
+            "groups": [{"group_key": "main", "selectors": [
+                {"selector": "main-0", "ordinal": 0, "variant_key": "original", "required": True}]}],
+            "metadata": {"model": "workflow", "align": align},
+        }
     runtime.tasks[task_id] = task
     outcome = host.run_task(task, lease_token=f"ls15-lease-{number}", keep_attempt=True)
     assert outcome.get("task", outcome)["status"] == expected_status
@@ -135,7 +141,7 @@ def run_job(world, number, *, values=None, expected_status="completed", align=No
     assert len(produced) == 1
     output = receipt.parent / produced[0]["path"]
     assert "sha256:" + hashlib.sha256(output.read_bytes()).hexdigest() == produced[0]["content_hash"]
-    journal = next(receipt.parent.glob(".vibecomfy-runtime/out/runs/*/attempt.json"))
+    journal = next(vibecomfy_runtime_root(receipt.parent).glob("out/runs/*/attempt.json"))
     record = json.loads(journal.read_bytes())
     native_result = json.loads(Path(record["managed_generation_result"]["path"]).read_bytes())
     assert native_result["task_id"] == task_id and native_result["attempt_id"] == attempt_id
