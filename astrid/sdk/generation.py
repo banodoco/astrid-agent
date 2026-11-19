@@ -11,6 +11,7 @@ import builtins
 import importlib
 import json
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from functools import wraps
 from pathlib import Path
@@ -163,19 +164,62 @@ def _retain_generation_source(path: Path, controls: dict[str, Any]) -> dict[str,
         return _import_generation_member(snapshot, controls)
 
 
+@dataclass(frozen=True)
+class _WorkflowSourceAdmission:
+    path: Path
+    members: tuple[tuple[Path, bytes | None], ...]
+
+
+_workflow_source_admission: ContextVar[_WorkflowSourceAdmission | None] = ContextVar(
+    "workflow_source_admission", default=None,
+)
+
+
+def _check_workflow_source_admission(admitted: _WorkflowSourceAdmission) -> None:
+    """Bind first use to the exact bytes verified by canonical publication."""
+    root = admitted.path.parent
+    if root.is_symlink() or root.resolve() != root or not root.is_dir():
+        raise ValueError("private snapshot directory changed")
+    for member, expected in admitted.members:
+        if member.is_symlink():
+            raise ValueError(f"snapshot member is symlinked: {member.name}")
+        if expected is None:
+            if member.exists():
+                raise ValueError(f"snapshot gained an unadmitted member: {member.name}")
+        elif not member.is_file() or member.read_bytes() != expected:
+            raise ValueError(f"snapshot member differs from admission: {member.name}")
+
+
 @contextmanager
 def _snapshot_generation_workflow(path: Path):
-    """Freeze a canonical bundle, including its declared source evidence."""
+    """Freeze a canonical source pair, checking held bytes before nested use.
+
+    The internally published private path keeps its admitted byte identity.
+    Nested preparation still performs ordinary canonical loading/publication;
+    reusing that verification is deferred. No result survives this scope.
+    """
     from tempfile import TemporaryDirectory
-    original = path.expanduser().resolve()
-    if original.is_dir():
-        original = original / 'workflow.py'
+    requested = path.expanduser().absolute()
+    if requested.is_dir():
+        requested = requested / 'workflow.py'
+    admitted = _workflow_source_admission.get()
+    if admitted is not None and requested == admitted.path:
+        try:
+            _check_workflow_source_admission(admitted)
+        except (OSError, ValueError) as exc:
+            raise GenerationInputError(f'admitted workflow source changed: {requested}: {exc}') from exc
+    original = requested.resolve()
     with TemporaryDirectory(prefix='astrid-workflow-source-') as scratch:
-        snapshot = Path(scratch) / original.name
+        snapshot = Path(scratch).resolve() / original.name
+        held_members: tuple[tuple[Path, bytes | None], ...]
         try:
             if original.suffix.lower() == '.py':
                 from vibecomfy.security.provenance import Provenance
-                from vibecomfy.workflow_bundle import _atomic_publish_pair, load_bundle
+                from vibecomfy.workflow_bundle import (
+                    _atomic_publish_pair,
+                    canonical_json,
+                    load_bundle,
+                )
 
                 bundle = load_bundle(original, trust=Provenance.USER_CONFIRMED)
                 bundle.require_canonical_authority('snapshot generation workflow')
@@ -197,13 +241,25 @@ def _snapshot_generation_workflow(path: Path):
                 # adjacent convenience file.
                 members = ({snapshot.with_name('source.json'): archive.read_bytes()}
                            if declared or archive.is_file() else {})
-                _atomic_publish_pair(snapshot, original.read_bytes(), bundle.ui_sidecar,
+                python_bytes = original.read_bytes()
+                _atomic_publish_pair(snapshot, python_bytes, bundle.ui_sidecar,
                                      expected=bundle, extra_members=members)
+                held_members = (
+                    (snapshot, python_bytes),
+                    (snapshot.with_suffix('.vibe.json'), canonical_json(bundle.ui_sidecar).encode('utf-8')),
+                    (snapshot.with_name('source.json'), members.get(snapshot.with_name('source.json'))),
+                )
             else:
-                snapshot.write_bytes(original.read_bytes())
+                source_bytes = original.read_bytes()
+                snapshot.write_bytes(source_bytes)
+                held_members = ((snapshot, source_bytes),)
         except (OSError, ValueError) as exc:
             raise GenerationInputError(f'canonical workflow bundle could not be read: {original}: {exc}') from exc
-        yield snapshot
+        token = _workflow_source_admission.set(_WorkflowSourceAdmission(snapshot, held_members))
+        try:
+            yield snapshot
+        finally:
+            _workflow_source_admission.reset(token)
 
 
 def _public_input_values(values):
@@ -1645,6 +1701,7 @@ class GenerationFacade:
                     continue
             try:
                 assets = {}
+                canonical_members = None
                 if is_remote_target:
                     template = (None if source == "workflow" else _local_template(candidate, mode))
                     if source == "workflow" and candidate.get('hooks_declared'):
@@ -1739,6 +1796,13 @@ class GenerationFacade:
                         bundle = emit_bundle(workflow, Path(scratch) / "workflow.py", {"operation": "authored"})
                         bundle.require_canonical_authority("generate on target")
                         approval = bundle.compile(schema_provider=schema) if schema is not None and not assets else None
+                        # Hold the exact admitted pair through transfer. A second
+                        # emission repeats schema reads and can build a different
+                        # candidate from the one checked above.
+                        canonical_members = (
+                            bundle.python_path.read_bytes(),
+                            bundle.python_path.with_suffix(".vibe.json").read_bytes(),
+                        )
                 else:
                     bundle = load_bundle(workflow)
                     bundle.require_canonical_authority("generate on target")
@@ -1766,7 +1830,7 @@ class GenerationFacade:
                         code='missing_dependency' if 'missing' in str(exc).lower() else 'input_rejected') from exc
                 failures.append(f"{identifier}: {exc}")
                 continue
-            selected = (identifier, workflow, bundle, plan, schema, approval, assets)
+            selected = (identifier, workflow, bundle, plan, schema, approval, assets, canonical_members)
             break
         if selected is None:
             raise AstridError(
@@ -1775,7 +1839,7 @@ class GenerationFacade:
                 code="COMFY_TARGET_NO_MODEL", field="model",
                 fix="Use an attached ComfyUI with the required nodes and models, or an installed managed runtime",
             )
-        entry_id, workflow, bundle, plan, schema, approval, assets = selected
+        entry_id, workflow, bundle, plan, schema, approval, assets, canonical_members = selected
         if is_remote_target and placement_policy is not None:
             placement_policy["engine"] = runpod_engine
         target_record = getattr(target_client, 'generation_target', None)
@@ -1831,7 +1895,11 @@ class GenerationFacade:
                 with TemporaryDirectory(prefix="astrid-dry-declarations-") as scratch:
                     root = Path(scratch)
                     capsule = root / "workflow.py"
-                    emit_bundle(workflow, capsule, {"operation": "authored"})
+                    if canonical_members is None:
+                        emit_bundle(workflow, capsule, {"operation": "authored"})
+                    else:
+                        capsule.write_bytes(canonical_members[0])
+                        capsule.with_suffix(".vibe.json").write_bytes(canonical_members[1])
                     loaded = load_workflow_path(capsule, root / "load")
                     canonical = _canonical_bundle_value(loaded.resolved).workflow
                     manifest, _ = judge_declarations(canonical, root / "engine",
@@ -1851,7 +1919,11 @@ class GenerationFacade:
 
         with TemporaryDirectory(prefix="astrid-generate-target-") as scratch:
             root = Path(scratch)
-            emit_bundle(workflow, root / "workflow.py", {"operation": "authored"})
+            if canonical_members is None:
+                emit_bundle(workflow, root / "workflow.py", {"operation": "authored"})
+            else:
+                (root / "workflow.py").write_bytes(canonical_members[0])
+                (root / "workflow.vibe.json").write_bytes(canonical_members[1])
             # The native bindings sent as workflow_inputs below.
             sent_inputs = {name: value for name, value in (plan or {}).get('bindings', {}).items()
                            if name not in assets}

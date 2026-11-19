@@ -58,10 +58,10 @@ def _child_directory_names(root: Path) -> tuple[str, ...]:
 def _check_collisions(roots: tuple[Path, ...], *, selected=None, verified_relocations=None) -> None:
     relocations = verified_relocations if verified_relocations is not None else {}
     if relocations:
-        from astrid.core.pack.imports import validate_selected_pack_map
+        from astrid.core.pack.imports import _check_pack_import_admission
 
         try:
-            validate_selected_pack_map(selected, verified_relocations=relocations)
+            _check_pack_import_admission(selected, relocations)
         except (OSError, ValueError) as exc:
             raise ImportError(f"refusing astrid.packs: invalid verified relocation: {exc}") from exc
     owners = {name: _CORE_ROOT / name for name in _child_directory_names(_CORE_ROOT)}

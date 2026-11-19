@@ -1,0 +1,164 @@
+name: Plan 55 first-job phase observations
+on:
+  pull_request:
+    branches: ["release/14/plan-55"]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - "astrid/**"
+      - "tests/ls12*.py"
+      - "tests/_local_speed_process.py"
+      - "tests/_local_speed_hashes.py"
+      - "tests/integrations/test_ls12_first_job.py"
+      - "tests/integrations/ls12_image_fixture.py"
+      - "tests/core/generation/test_ls12_phase_observer.py"
+      - ".github/workflows/plan55-ls12*.yml"
+permissions:
+  contents: read
+concurrency:
+  group: plan55-ls12-phases-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+jobs:
+  phases:
+    if: github.head_ref == 'p55/ls12-fingerprint-20261116'
+    name: First-job phases (${{ matrix.os }}, ${{ matrix.revision }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 70
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        revision: [plan-reference, candidate]
+    env:
+      ASTRID_CI_JOB: lanes-integration
+      ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/runtime
+      ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/vibecomfy-checkout
+      ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/runpod-lifecycle-checkout
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTEST_ADDOPTS: "-rA"
+      GIT_CONFIG_COUNT: "2"
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: "false"
+      GIT_CONFIG_KEY_1: core.eol
+      GIT_CONFIG_VALUE_1: lf
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Read canonical dependency authority
+        id: pins
+        shell: python
+        run: |
+          import json, os, pathlib
+          runtime = json.loads(pathlib.Path("runtime.lock.json").read_text())["source_commit"]
+          vibe = json.loads(pathlib.Path("astrid/packs/vibecomfy/pins.json").read_text())["sources"]["vibecomfy"]["revision"]
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              print("runtime=" + runtime, file=out)
+              print("vibecomfy=" + vibe, file=out)
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-runtime
+          ref: ${{ steps.pins.outputs.runtime }}
+          path: runtime
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/VibeComfy
+          ref: ${{ steps.pins.outputs.vibecomfy }}
+          path: vibecomfy-checkout
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/runpod-lifecycle
+          ref: 7f0b025e9391baac9f5c2fb7393617ea6fef0704
+          path: runpod-lifecycle-checkout
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install CPU test dependencies
+        id: install
+        shell: bash
+        run: |
+          python -m pip install -e '.[dev]'
+          python -m pip install --no-deps -e ./runtime -e ./runtime/packages/python -e ./runpod-lifecycle-checkout
+          python -m pip install -e ./vibecomfy-checkout
+      - name: Select exact product source and identical proof
+        id: source
+        shell: python
+        env:
+          REVISION: ${{ matrix.revision }}
+        run: |
+          import hashlib, json, os, pathlib, shutil, subprocess, sys
+          sys.path.insert(0, str(pathlib.Path.cwd()))
+          from tests.ls12_reference import BASE, REFERENCE, PLAN_REFERENCE, verify
+          root = pathlib.Path.cwd()
+          subprocess.run(["git", "fetch", "--no-tags", "origin", REFERENCE], check=True)
+          receipt = verify(root)
+          source = root
+          if os.environ["REVISION"] != "candidate":
+              source = root / "ls12-base"
+              selected = {"base": BASE, "pin-reference": REFERENCE,
+                          "plan-reference": PLAN_REFERENCE}[os.environ["REVISION"]]
+              subprocess.run(["git", "worktree", "add", "--detach", str(source), selected], check=True)
+              for relative in [
+                  "tests/integrations/test_ls12_first_job.py", "tests/ls12_first_job_run.py",
+                  "tests/integrations/ls12_image_fixture.py",
+                  "tests/ls12_phases.py", "tests/ls12_phase_run.py",
+                  "tests/_local_speed_process.py", "tests/_local_speed_hashes.py",
+                  "tests/core/generation/test_ls12_phase_observer.py",
+                  "tests/core/generation/test_ls12_first_job_collector.py",
+                  "tests/core/generation/test_ls12_runtime_observer.py",
+                  "tests/core/pack/test_ls12_import_admission.py",
+                  "tests/core/pack/test_ls12_host_admission.py",
+                  "tests/core/pack/test_ls12_source_identity.py",
+                  "tests/core/generation/test_ls12_named_entry.py",
+                  "tests/sdk/test_ls12_single_emission.py",
+                  "tests/sdk/test_ls12_snapshot_admission.py",
+                  "tests/packs/vibecomfy/test_ls12_attempt_bundle.py",
+                  "tests/core/pack/test_discovery_fingerprint_walk.py",
+              ]:
+                  shutil.copyfile(root / relative, source / relative)
+          proof = root / "ls12-proof"
+          proof.mkdir()
+          (proof / "reference-receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
+          refs = {key: subprocess.check_output(["git", "-C", str(path), "rev-parse", "HEAD"], text=True).strip()
+                  for key, path in {"agent": source, "harness": root, "runtime": root / "runtime", "vibecomfy": root / "vibecomfy-checkout", "lifecycle": root / "runpod-lifecycle-checkout"}.items()}
+          (proof / "sources.json").write_text(json.dumps(refs, indent=2) + "\n")
+          # Keep both historical references and the original dependency guard.
+          # Final proof uses the accepted destination after Lead 6998870417;
+          # old 493/d8 and 666/6cad cells cannot qualify the new dependency tuple.
+          for relative in ["runtime.lock.json", "astrid/packs/vibecomfy/pins.json"]:
+              if (source / relative).read_bytes() != (root / relative).read_bytes():
+                  raise SystemExit("base/candidate dependency authorities differ: " + relative)
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as out:
+              print("LS12_SOURCE=" + str(source), file=out)
+              print("LS12_PROOF=" + str(proof), file=out)
+              print("PYTHONPATH=" + os.pathsep.join(map(str, [source, root / "runtime", root / "runtime/packages/python", root / "vibecomfy-checkout", root / "runpod-lifecycle-checkout/src"])), file=out)
+      - name: Observe twenty separate first jobs per caller without changing D1 samples
+        if: ${{ !cancelled() && steps.source.outcome == 'success' }}
+        shell: python
+        run: |
+          import os, pathlib, subprocess, sys
+          os.chdir(os.environ["LS12_SOURCE"])
+          subprocess.run([sys.executable, "-m", "tests.ls12_phase_run",
+              "--output", str(pathlib.Path(os.environ["LS12_PROOF"]) / "phases"),
+              "--samples", "20"], check=True)
+      - name: Hash retained proof
+        if: ${{ always() }}
+        shell: python
+        run: |
+          import hashlib, os, pathlib
+          proof = pathlib.Path("ls12-proof")
+          proof.mkdir(exist_ok=True)
+          files = sorted(p for p in proof.rglob("*") if p.is_file() and p.name != "SHA256SUMS")
+          (proof / "SHA256SUMS").write_text("".join(hashlib.sha256(p.read_bytes()).hexdigest() + "  " + p.relative_to(proof).as_posix() + "\n" for p in files))
+      - name: Preserve every observation and original failure
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ls12-phases-${{ matrix.os }}-${{ matrix.revision }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ls12-proof
+          include-hidden-files: true
+          retention-days: 14

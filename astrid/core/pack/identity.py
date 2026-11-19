@@ -10,7 +10,9 @@ import stat
 import tempfile
 import unicodedata
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -39,8 +41,15 @@ def _entry_path(relative: str) -> bytes:
         raise ValueError(f"pack path is not valid UTF-8: {relative!r}") from exc
 
 
-def pack_digest(root: str | os.PathLike[str]) -> str:
-    """Return the pack-tree-v1 digest for a source tree.
+@dataclass(frozen=True)
+class _PackSourceSnapshot:
+    digest: str
+    sources: Mapping[str, bytes]
+    directories: frozenset[str]
+
+
+def _read_pack_tree(root: str | os.PathLike[str], *, retain_sources: bool = False) -> _PackSourceSnapshot:
+    """Read the identity and, for worker admission, retain its exact Python bytes.
 
     Links and special files are refused before exclusions are applied. Excluded
     real directories are pruned without visiting their children.
@@ -52,6 +61,8 @@ def pack_digest(root: str | os.PathLike[str]) -> str:
 
     files: list[tuple[bytes, Path]] = []
     folded: set[str] = set()
+    sources: dict[str, bytes] = {}
+    directories = {""}
 
     def walk(directory: Path, prefix: str = "") -> None:
         try:
@@ -74,6 +85,8 @@ def pack_digest(root: str | os.PathLike[str]) -> str:
                 raise ValueError(f"pack symlinks are not allowed: {relative!r}")
             if stat.S_ISDIR(entry_stat.st_mode):
                 if entry.name not in _EXCLUDED_DIRS:
+                    if retain_sources:
+                        directories.add(relative)
                     walk(Path(entry.path), relative)
                 continue
             if not stat.S_ISREG(entry_stat.st_mode):
@@ -97,7 +110,15 @@ def pack_digest(root: str | os.PathLike[str]) -> str:
         digest_input.extend(b"\0")
         digest_input.extend(file_hash)
         digest_input.extend(b"\n")
-    return hashlib.sha256(digest_input).hexdigest()
+        if retain_sources and relative_bytes.endswith(b".py"):
+            sources[relative_bytes.decode("utf-8")] = content
+    return _PackSourceSnapshot(hashlib.sha256(digest_input).hexdigest(),
+                               MappingProxyType(sources), frozenset(directories))
+
+
+def pack_digest(root: str | os.PathLike[str]) -> str:
+    """Return the unchanged pack-tree-v1 identity, reading every admitted file."""
+    return _read_pack_tree(root).digest
 
 
 def _validate_pin(pin: Mapping[str, Any]) -> dict[str, Any]:
