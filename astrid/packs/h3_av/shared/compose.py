@@ -15,7 +15,7 @@ from array import array
 from contextlib import contextmanager
 from fractions import Fraction
 from pathlib import Path, PurePosixPath
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from .timing import (
     ContinuationTiming,
@@ -132,6 +132,8 @@ def _video_coverage(path: Path) -> dict[str, Any]:
     if rate <= 0:
         raise CompositionError("video stream has no usable frame rate")
     raw_frames = stream.get("nb_read_frames") or stream.get("nb_frames")
+    if raw_frames is None:
+        raise CompositionError("video stream has no countable frames")
     try:
         frames = int(raw_frames)
     except (TypeError, ValueError):
@@ -412,7 +414,10 @@ def probe_mask(
                 f"{source_dimensions[0]}x{source_dimensions[1]}"
             )
     try:
-        frames = int(stream.get("nb_read_frames") or stream.get("nb_frames"))
+        raw_frames = stream.get("nb_read_frames") or stream.get("nb_frames")
+        if raw_frames is None:
+            raise CompositionError(f"regional video mask {mask_id!r} has no countable frames")
+        frames = int(raw_frames)
     except (TypeError, ValueError):
         raise CompositionError(f"regional video mask {mask_id!r} has no countable frames") from None
     if duration is not None and frames != round(float(duration) * _MASK_FPS):
@@ -485,7 +490,10 @@ def _spatial_video_masks(
                 raise CompositionError(
                     "regional video generation requires a resolved image mask for preservation"
                 )
-            mask_path = resolved.get(mask_id)
+            resolved_path = resolved.get(mask_id)
+            if resolved_path is None:
+                raise CompositionError(f"regional video mask {mask_id!r} is not resolved")
+            mask_path = resolved_path
             if mask_path is None or not mask_path.is_file():
                 raise CompositionError(f"regional video mask {mask_id!r} is not resolved")
         mask_info = probe_mask(
@@ -645,11 +653,11 @@ def _verify_spatial_mask_complement(
         try:
             for frame_index in range(frame_count):
                 if mask_frame_iters:
-                    frames = [next(iterator) for iterator in mask_frame_iters]
+                    mask_frames = [next(iterator) for iterator in mask_frame_iters]
                     protected_pixels = [
                         pixel for pixel in range(width * height)
                         if all(pixels[pixel] == 0 for pixels in static_pixels)
-                        and all(frame[pixel * 3] == 0 for frame in frames)
+                        and all(frame[pixel * 3] == 0 for frame in mask_frames)
                     ]
                     per_frame_counts.append(len(protected_pixels))
                 frames: list[bytes] = []
@@ -724,12 +732,12 @@ def _mask_segment_evidence(mask: Mapping[str, Any]) -> dict[str, Any]:
 def _segments_with_spatial_masks(
     duration: float,
     generated: list[list[float]],
-    masks: list[Mapping[str, Any]],
+    masks: Sequence[Mapping[str, Any]],
 ) -> list[tuple[float, float, bool, Mapping[str, Any] | None]]:
     base = _segments(duration, generated)
     boundaries = {point for start, end, _ in base for point in (start, end)}
-    for mask in masks:
-        start, end = map(float, mask["during"])
+    for boundary_mask in masks:
+        start, end = map(float, boundary_mask["during"])
         boundaries.update((max(0.0, min(float(duration), start)), max(0.0, min(float(duration), end))))
     ordered = sorted(boundaries)
     result: list[tuple[float, float, bool, Mapping[str, Any] | None]] = []
@@ -738,11 +746,14 @@ def _segments_with_spatial_masks(
             continue
         use_generated = _generated_at(generated, start, end)
         active = [
-            mask for mask in masks
-            if float(mask["during"][0]) <= (start + end) / 2 < float(mask["during"][1])
+            active_mask for active_mask in masks
+            if float(active_mask["during"][0]) <= (start + end) / 2 < float(active_mask["during"][1])
         ] if use_generated else []
-        mask = ({"during": [start, end], "union": active} if len(active) > 1
-                else (active[0] if active else None))
+        mask: Mapping[str, Any] | None = (
+            {"during": [start, end], "union": active}
+            if len(active) > 1
+            else (active[0] if active else None)
+        )
         result.append((start, end, use_generated, mask))
     return result
 
@@ -826,7 +837,7 @@ def _compose_media(
     generated_audio: list[list[float]],
     source_offset: float,
     video_fps: float | None = None,
-    spatial_video_masks: list[Mapping[str, Any]] | None = None,
+    spatial_video_masks: Sequence[Mapping[str, Any]] | None = None,
     exact_audio_path: Path | None = None,
 ) -> dict[str, Any]:
     """Compose source and generated streams into a lossless MKV candidate."""
@@ -846,10 +857,13 @@ def _compose_media(
     video_segments = _segments_with_spatial_masks(
         duration, generated_video, spatial_video_masks or []
     )
-    audio_segments = _segments(duration, generated_audio)
+    audio_segments = [
+        (start, end, use_generated, None)
+        for start, end, use_generated in _segments(duration, generated_audio)
+    ]
     for stream_type, segments in (("video", video_segments), ("audio", audio_segments)):
         for segment in segments:
-            _start, _end, use_generated = segment[:3]
+            _start, _end, use_generated = segment[0], segment[1], segment[2]
             available = (
                 (generated_types if stream_type == "video" else generated_audio_types)
                 if use_generated
@@ -895,7 +909,7 @@ def _compose_media(
             continue
         pieces: list[str] = []
         for index, segment in enumerate(segments):
-            start, end, use_generated = segment[:3]
+            start, end, use_generated = segment[0], segment[1], segment[2]
             spatial_mask = segment[3] if stream_type == "video" else None
             input_index = (
                 0
@@ -1008,7 +1022,7 @@ def _compose_media(
         ],
         "audio_segments": [
             {"during": [start, end], "source": "generated" if use_generated else "source"}
-            for start, end, use_generated in audio_segments
+            for start, end, use_generated, _mask in audio_segments
         ],
     }
 
@@ -1141,14 +1155,17 @@ def _decode_exact_pcm(path: Path, *, expected_channels: int | None = None, gener
 
 def _splice_exact_pcm(source: bytes, *, channels: int, total_samples: int,
                       source_start: int = 0, generated: bytes | None = None,
-                      generated_spans: list[tuple[int, int]] = (),
-                      fixed_spans: list[tuple[int, int, bytes, int]] = (),
-                      unfilled_generated_spans: list[tuple[int, int]] = ()) -> bytes:
+                      generated_spans: list[tuple[int, int]] | None = None,
+                      fixed_spans: list[tuple[int, int, bytes, int]] | None = None,
+                      unfilled_generated_spans: list[tuple[int, int]] | None = None) -> bytes:
     """Resolve each sample owner, then copy only the owner's available PCM.
 
     Unfilled generated spans reserve ownership during pre-splice and retain
     compatible source context when available. Fixed audio wins over both.
     """
+    generated_spans = generated_spans or []
+    fixed_spans = fixed_spans or []
+    unfilled_generated_spans = unfilled_generated_spans or []
     stride = channels * 2
     if channels not in (1, 2) or source_start < 0 or total_samples < 0:
         raise CompositionError("invalid canonical PCM source or channel count")
@@ -1169,7 +1186,7 @@ def _splice_exact_pcm(source: bytes, *, channels: int, total_samples: int,
     boundaries = sorted({0, total_samples,
         *(point for first, last in (*generated_spans, *unfilled_generated_spans) for point in (first, last)),
         *(point for first, last, _, _ in fixed_spans for point in (first, last))})
-    segments = []
+    segments: list[tuple[int, int, str, tuple[int, int, bytes, int] | None]] = []
     for first, last in zip(boundaries, boundaries[1:]):
         fixed = next((item for item in fixed_spans if item[0] <= first and last <= item[1]), None)
         if fixed is not None:
@@ -1194,10 +1211,12 @@ def _splice_exact_pcm(source: bytes, *, channels: int, total_samples: int,
     result = bytearray(total_samples * stride)
     for first, last, owner, fixed in segments:
         if owner == "fixed":
+            assert fixed is not None
             fixed_start, _, pcm, offset = fixed
             begin = (offset + first - fixed_start) * stride
             result[first * stride:last * stride] = pcm[begin:begin + (last - first) * stride]
         elif owner == "generated":
+            assert generated is not None
             result[first * stride:last * stride] = generated[first * stride:last * stride]
         elif owner == "unfilled":
             # Retain compatible source context for fractional denoising, but
@@ -1334,7 +1353,7 @@ def _exact_audio_for_request(preparation: Mapping[str, Any], *, source: Path, ge
     pcm = _splice_exact_pcm(source_pcm, channels=channels, total_samples=total,
                             source_start=source_start, generated=candidate_pcm,
                             generated_spans=generated_spans, fixed_spans=fixed_spans,
-                            unfilled_generated_spans=owned_generated_spans if pre_splice_only else ())
+                            unfilled_generated_spans=owned_generated_spans if pre_splice_only else [])
     destination.parent.mkdir(parents=True, exist_ok=True)
     with wave.open(str(destination), "wb") as wav:
         wav.setnchannels(channels)

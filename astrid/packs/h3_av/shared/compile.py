@@ -554,8 +554,8 @@ def _combined_strength_mask(grants: list[tuple[Path, str, tuple[int, int], float
     if not ffmpeg:
         raise CompilationError("regions per pass: combined masks require ffmpeg")
     output = destination / "sampler-strength-mask.mkv"
-    readers = []
-    static = []
+    readers: list[subprocess.Popen[bytes] | None] = []
+    static: list[Any] = []
     for path, kind, _, _, _ in grants:
         if kind == "image":
             with Image.open(path) as image:
@@ -576,7 +576,10 @@ def _combined_strength_mask(grants: list[tuple[Path, str, tuple[int, int], float
             combined = Image.new("L", (1024, 576))
             for index, (path, kind, (start, end), strength, name) in enumerate(grants):
                 if kind == "video":
-                    data = readers[index].stdout.read(1024 * 576 * 3)
+                    reader = readers[index]
+                    if reader is None or reader.stdout is None:
+                        raise CompilationError(f"grant {name} mask reader is unavailable")
+                    data = reader.stdout.read(1024 * 576 * 3)
                     if len(data) != 1024 * 576 * 3:
                         raise CompilationError(f"grant {name} mask video is short or has the wrong dimensions")
                     support = Image.frombytes("RGB", (1024, 576), data).getchannel("R")
@@ -598,10 +601,14 @@ def _combined_strength_mask(grants: list[tuple[Path, str, tuple[int, int], float
                 if writer:
                     combined = ImageChops.lighter(combined, weight)
             if writer:
+                if writer.stdin is None:
+                    raise CompilationError("regions per pass: mask writer is unavailable")
                 writer.stdin.write(combined.tobytes())
             elif grants[0][1] != "video" and (survived[0] or grants[0][3] == 0):
                 break
         if writer:
+            if writer.stdin is None:
+                raise CompilationError("regions per pass: mask writer is unavailable")
             writer.stdin.close()
             if writer.wait() != 0:
                 raise CompilationError("regions per pass: could not encode sampler strength mask")
@@ -638,7 +645,10 @@ def _audio_time_mask(grants: list[tuple[int, int, float]], fixed: list[tuple[int
     for frame in range(frames):
         first, last = frame * 2000, (frame + 1) * 2000
         edges = {first, last}
-        for start, end, *_ in (*grants, *fixed):
+        for start, end, _strength in grants:
+            if start < last and end > first:
+                edges.update((max(first, start), min(last, end)))
+        for start, end in fixed:
             if start < last and end > first:
                 edges.update((max(first, start), min(last, end)))
         ordered = sorted(edges)
@@ -782,10 +792,10 @@ def _compile_native_masked_edit(
                 raise CompilationError(str(exc)) from exc
             mask_path = destination / ("resolved-mask.png" if index == 0 else f"resolved-mask-{index}.png")
             mask_path.write_bytes(resolved.mask_png)
-        interval = tuple(round(value * 24) for value in grant.during)
+        interval = (round(grant.during[0] * 24), round(grant.during[1] * 24))
         grant_masks.append((mask_path, mask_kind, interval, grant.strength, f"{source.occurrence_id or source_id}.edit[{index}]"))
     combined = _combined_strength_mask(grant_masks, frames=frame_load_cap, destination=destination)
-    during = tuple(round(value * 24) for value in operation.during)
+    during = (round(operation.during[0] * 24), round(operation.during[1] * 24))
     if len(grant_masks) > 1:
         mask_path, mask_kind = combined, "video"
     else:
@@ -803,7 +813,10 @@ def _compile_native_masked_edit(
     fixed_audio_spans = []
     for item in audio_passes:
         audio_op = item.operation
-        span = tuple(int(value * 48000) for value in audio_op.during)
+        span: tuple[int, int] = (
+            int(audio_op.during[0] * 48000),
+            int(audio_op.during[1] * 48000),
+        )
         if audio_op.refs:
             if len(audio_op.refs) != 1 or references_by_name[audio_op.refs[0]].use != "replacement":
                 raise CompilationError("an audio guide must identify exactly one fixed replacement occurrence")
@@ -833,7 +846,7 @@ def _compile_native_masked_edit(
     audio_mask_values = None
     if generated_audio:
         try:
-            raw_frames = generation_timing(spec.duration)["raw_frames"]
+            raw_frames = generation_timing(float(spec.duration))["raw_frames"]
         except ValueError as exc:
             raise CompilationError(str(exc)) from exc
         path, requested_mask, decoded_mask = _audio_time_mask(generated_audio, fixed_audio_spans,
@@ -863,11 +876,14 @@ def _compile_native_masked_edit(
     references = [references_by_name[name] for name in operation.refs]
     conditioning = None
     if request.value.get("version") == 2:
-        selected = {item.occurrence_id for item in references}
+        selected = {item.occurrence_id for item in references if item.occurrence_id is not None}
         conditioning, reference_bindings = _conditioning_rows(request, assets, selected=selected)
         if adapter:
             required = LIMITS["character_swap_references"]["value"]
-            if any(sum(row["modality"] == modality for row in conditioning) < required[modality] for modality in ("image", "video")):
+            if (
+                sum(row["modality"] == "image" for row in conditioning) < required["image"]
+                or sum(row["modality"] == "video" for row in conditioning) < required["video"]
+            ):
                 raise CompilationError("Character Swap effective references: lowering requires at least one video and one image reference")
         bindings.update(reference_bindings)
     else:
@@ -876,7 +892,7 @@ def _compile_native_masked_edit(
                 raise CompilationError(f"native masked edit reference {item.asset!r} is missing from preparation")
             bindings[f"reference_{index}"] = assets[item.asset]
     try:
-        timing = generation_timing(spec.duration)
+        timing = generation_timing(float(spec.duration))
     except ValueError as exc:
         raise CompilationError(str(exc)) from exc
     prompt = spec.prompt
@@ -899,10 +915,16 @@ def _compile_native_masked_edit(
         from dataclasses import replace
         inputs = _with_v2_intent(replace(inputs, conditioning=tuple(conditioning)), request)
         grant_records = [dict(grant) for grant in inputs.grants]
-        for grant, mask in zip((grant for grant in grant_records if grant["stream"] == "video"), grant_masks, strict=True):
-            grant["region_raster"] = {"path": str(mask[0]), "kind": mask[1], "sampler_kind": mask_kind,
-                                      "input_binding": mask_binding, "channel": _MASK_CHANNEL,
-                                      "sampler_strength": 1.0 if len(grant_masks) > 1 else grant["strength"]}
+        for grant_record, mask in zip(
+            (record for record in grant_records if record["stream"] == "video"),
+            grant_masks,
+            strict=True,
+        ):
+            grant_record["region_raster"] = {
+                "path": str(mask[0]), "kind": mask[1], "sampler_kind": mask_kind,
+                "input_binding": mask_binding, "channel": _MASK_CHANNEL,
+                "sampler_strength": 1.0 if len(grant_masks) > 1 else grant_record["strength"],
+            }
         placed = tuple({**item, "input_binding": "source_video", "start_time": float(source.range[0]),
                         "frame_count": frame_load_cap,
                         **({"audio_input_binding": "source_audio_prepared"} if "source_audio_prepared" in bindings else {}),
@@ -1061,7 +1083,10 @@ def _compile_character_swap_v2(
     selected = set(guide_sets[0]) if guide_sets else None
     conditioning, bindings = _conditioning_rows(request, assets, selected=selected)
     minimum = LIMITS["character_swap_references"]["value"]
-    if any(sum(row["modality"] == modality for row in conditioning) < minimum[modality] for modality in ("image", "video")):
+    if (
+        sum(row["modality"] == "image" for row in conditioning) < minimum["image"]
+        or sum(row["modality"] == "video" for row in conditioning) < minimum["video"]
+    ):
         raise CompilationError("Character Swap effective references: lowering requires at least one video and one image reference")
     images = [row for row in conditioning if row["modality"] == "image"]
     videos = [row for row in conditioning if row["modality"] == "video"]

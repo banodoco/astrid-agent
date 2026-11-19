@@ -26,10 +26,104 @@ class _JobLengthFrameValues(TypedDict):
     stride: int
 
 
+class _NamedIntLimit(TypedDict):
+    min: int
+    max: int
+    multiple: int
+
+
+class _CharacterSwapReferences(TypedDict):
+    video: int
+    image: int
+    additional: str
+
+
+class _ContinuationReferences(TypedDict):
+    image: int
+    video: int
+    audio: int
+
+
+class _RegionsPerPass(TypedDict):
+    seeds: int
+    reference_sets: int
+
+
+class _LimitSource(TypedDict):
+    value: str
+    source: str
+
+
+class _BuilderSlotsLimit(TypedDict):
+    value: _BuilderSlotValues
+    source: str
+
+
+class _ClipSecondsLimit(TypedDict):
+    value: list[int]
+    source: str
+
+
+class _IntLimit(TypedDict):
+    value: int
+    source: str
+
+
+class _CanvasLimit(TypedDict):
+    value: _NamedIntLimit
+    source: str
+
+
+class _AudioStrengthLimit(TypedDict):
+    value: list[int]
+    source: str
+
+
+class _JobLengthLimit(TypedDict):
+    value: _JobLengthFrameValues
+    source: str
+
+
+class _JobDurationLimit(TypedDict):
+    value: list[float]
+    source: str
+    warning: str
+
+
+class _CharacterSwapReferencesLimit(TypedDict):
+    value: _CharacterSwapReferences
+    source: str
+
+
+class _ContinuationReferencesLimit(TypedDict):
+    value: _ContinuationReferences
+    source: str
+
+
+class _RegionsPerPassLimit(TypedDict):
+    value: _RegionsPerPass
+    source: str
+
+
+class _Limits(TypedDict):
+    builder_slots: _BuilderSlotsLimit
+    clip_seconds: _ClipSecondsLimit
+    modality_seconds: _IntLimit
+    conditioning_files: _IntLimit
+    canvas_dimension: _CanvasLimit
+    audio_grant_strength: _AudioStrengthLimit
+    job_length_frames: _JobLengthLimit
+    job_duration_seconds: _JobDurationLimit
+    character_swap_references: _CharacterSwapReferencesLimit
+    character_swap_mask_rectangle: _LimitSource
+    continuation_references: _ContinuationReferencesLimit
+    regions_per_pass: _RegionsPerPassLimit
+
+
 _BUILDER_SLOT_VALUES: _BuilderSlotValues = {"image": 9, "video": 3, "audio": 3}
 _JOB_LENGTH_FRAME_VALUES: _JobLengthFrameValues = {"min": 5, "max": 3600, "stride": 17}
 
-LIMITS = {
+LIMITS: _Limits = {
     # Model facts.
     "builder_slots": {"value": _BUILDER_SLOT_VALUES, "source": "node"},
     "clip_seconds": {"value": [2, 15], "source": "model card"},
