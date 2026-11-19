@@ -1,0 +1,18 @@
+{
+  "source": "https://github.com/banodoco/astrid-dev/blob/f5c2014e8483aac1ea1051b0011bee986bcea0f9/env/baseline-diff.py",
+  "script_sha256": "8cea13689f94ad412c5e9a097f06cf82fb95b578a5eecf28a8fc547b5451061e",
+  "method": "Filter raw timestamp-stripped destination -rA lines to the exact 104-ID roster; none exists.",
+  "argv": [
+    "python",
+    "-I",
+    "/workspace/scratch/7b8a4aa9f9f5/baseline-diff.py",
+    "--baseline",
+    "destination-68e7=/workspace/scratch/7b8a4aa9f9f5/evidence/destination-s01-rA.log",
+    "--candidate",
+    "/workspace/scratch/7b8a4aa9f9f5/evidence/candidate-104/results.log"
+  ],
+  "exit": 2,
+  "stdout": "",
+  "stderr": "baseline-diff: a side has no PASSED/FAILED lines; run pytest with -rA\n",
+  "meaning": "Comparison unavailable; no regression or no-new-failure claim is made."
+}
