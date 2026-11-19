@@ -531,3 +531,145 @@ def test_failed_producer_receipt_survives_executor_to_safe_remote_frame(tmp_path
     frame = fd.MARK + json.dumps(diagnostic)
     assert fd.parse_frame(frame) == {'code': 'download_failed', 'category': 'model'}
     assert private not in frame
+
+
+def test_workflow_hook_evidence_survives_materialization_and_sdk_readback_after_scratch_cleanup(tmp_path):
+    import shutil
+    import subprocess
+
+    from PIL import Image
+    from astrid.core.generation import entries
+    from astrid.sdk.results import InvocationResult, _reconstruct_generation_result
+
+    request_path = tmp_path / "request.json"
+    request_path.write_text(json.dumps({
+        "version": 2, "duration": 1, "prompt": "Blend <Video 1> and <Picture 1>.",
+        "media": [
+            {"id": "performance", "asset": "performance", "role": "reference",
+             "modality": "video", "range": [0, 2], "audio": False},
+            {"id": "picture", "asset": "picture", "role": "reference", "modality": "image"},
+        ],
+    }), encoding="utf-8")
+    performance = tmp_path / "performance.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=c=green:s=64x64:r=24:d=2",
+                    "-an", "-c:v", "mpeg4", "-y", str(performance)], check=True, capture_output=True)
+    picture = tmp_path / "picture.png"
+    Image.new("RGB", (32, 32), color="red").save(picture)
+    inputs = {"request": str(request_path),
+              "asset_map": {"performance": str(performance), "picture": str(picture)}}
+    job_dir = tmp_path / "h3-job"
+    entry = entries.find_entry("h3")
+    built = entries.build_entry(entry, inputs, job_dir)
+    dry_view = built["plan"]["reference_view"]
+    assert [row["modality"] for row in dry_view["references"]] == ["image", "video"]
+    hook_job = entries.entry_job(entry, inputs, job_dir, hooks={})
+    spec = json.dumps({"entry": "h3", "job_dir": str(job_dir), "inputs": hook_job["inputs"],
+                       "files": hook_job["files"], "workflow_hook_evidence": True}, sort_keys=True)
+    run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    after_outputs = run._after_outputs(spec)
+
+    generated = tmp_path / "generated.mp4"
+    frames = dry_view["target_frame_cap"]
+    duration = frames / 24
+    subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i",
+                    f"color=c=blue:s=64x64:r=24:d={duration}",
+                    "-f", "lavfi", "-i", f"sine=frequency=440:sample_rate=48000:duration={duration}",
+                    "-frames:v", str(frames), "-shortest", "-c:v", "mpeg4", "-c:a", "aac", "-y", str(generated)],
+                   check=True, capture_output=True)
+    producer = tmp_path / "producer"
+    producer.mkdir()
+    payload = _managed_payload(producer)
+    output_path = producer / payload["outputs"][0]["path"]
+    shutil.copyfile(generated, output_path)
+    payload["outputs"][0].update(bytes=output_path.stat().st_size,
+                                 sha256=_sha256(output_path.read_bytes()))
+    production = _write_production(producer, payload)
+    host_root = tmp_path / "host"
+    manifest = run._materialize_managed_generation_result(
+        host_root, production, task_identity="task-1", attempt_identity="attempt-1",
+        workflow_path=tmp_path / "absent.py", after_outputs=after_outputs,
+    )
+    manifest_output = next(row for row in manifest["outputs"] if row["role"] == "manifest")
+    manifest_bytes = (host_root / manifest_output["path"]).read_bytes()
+    from types import SimpleNamespace
+    from astrid.sdk.invocation import _observe_h3_workflow_hook_evidence
+    manifest_digest = manifest_output["content_hash"]
+    runtime_association = {**manifest_output, "association_id": "runtime-result-manifest",
+        "task_id": "task-1", "run_id": "run-1", "attempt_id": "attempt-1",
+        "object_id": manifest_digest, "digest": manifest_digest,
+        "size": manifest_output["bytes"], "durability": "durable",
+        "lifecycle": {"state": "available"}}
+    cas = SimpleNamespace(media=SimpleNamespace(read_bytes=lambda object_id: manifest_bytes))
+    raw_result = {"task": {"task_id": "task-1", "run_id": "run-1", "attempt_id": "attempt-1",
+        "state": "succeeded", "result": {"payload": {"workflow_hook_evidence": {
+            "reference_view": {"references": []}}}}}, "managed_outputs": [runtime_association]}
+    projected_evidence = _observe_h3_workflow_hook_evidence(raw_result, cas, task_id="task-1",
+        run_id="run-1", attempt_id="attempt-1")
+    assert raw_result["task"]["result"]["payload"]["workflow_hook_evidence"] == projected_evidence
+    settled_view = projected_evidence["reference_view"]
+    assert [row["modality"] for row in settled_view["references"]] == ["image", "video"]
+    video_row = next(row for row in settled_view["references"] if row["modality"] == "video")
+    assert video_row["retained_picture_frames_derived"]["kind"] == "derived_pinned_node_rule"
+    assert "/managed/" not in json.dumps(settled_view)
+    shutil.rmtree(producer)
+    shutil.rmtree(job_dir)
+    request_path.unlink()
+    performance.unlink()
+    picture.unlink()
+    generated.unlink()
+
+    result = InvocationResult("vibecomfy.run", "executor", "command", True,
+                              kernel_task_id="task-1", raw_result=raw_result)
+    settled = _reconstruct_generation_result(result)
+    assert settled.manifest["reference_view"] == settled_view
+    assert str(tmp_path) not in str(settled.to_dict())
+
+
+@pytest.mark.parametrize("evidence", [
+    {"reference_view": {"note": "file:///tmp/private/reference.mp4"}},
+    {"reference_view": {"note": "copied from C:\\Users\\private\\reference.mp4"}},
+    {"reference_view": {"note": "copied from \\\\server\\share\\reference.mkv"}},
+    {"reference_view": {"note": "relative Windows locator ..\\private\\reference.mp4"}},
+    {"reference_view": {"note": "scratch at /var/tmp/private.json"}},
+    {"reference_view": {"bound_path": "private"}},
+])
+def test_workflow_hook_evidence_rejects_embedded_locators_and_path_keys(evidence):
+    from astrid.core.contracts.errors import AstridValueError
+
+    run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    with pytest.raises(AstridValueError, match="path|URL|unsupported"):
+        run._workflow_hook_evidence(evidence)
+
+
+def test_workflow_hook_evidence_keeps_pinned_relative_source_citations():
+    run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    citation = "ComfyUI@6bfaacc67c2103481e5f0c84d75257cd0581d86a:comfy_extras/nodes_minimax_h3.py:324-332"
+    evidence = {"reference_view": {"references": [{"occurrence": "performance", "modality": "video",
+        "trim": [0, 2], "input_binding": {}, "tag": "<Video 1>",
+        "retained_picture_frames_derived": {"rule_source": citation}}]}}
+    assert run._workflow_hook_evidence(evidence) == evidence
+
+
+def test_workflow_hook_evidence_accepts_supported_rational_trim_and_null_legacy_view():
+    run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    evidence = {"reference_view": {"references": [{"occurrence": "performance", "modality": "video",
+        "trim": ["1/24", "49/24"]}]}}
+    assert run._workflow_hook_evidence(evidence) == evidence
+    assert run._workflow_hook_evidence({"reference_view": None}) == {"reference_view": None}
+
+
+@pytest.mark.parametrize("evidence", [
+    {"reference_view": {"references": []}, "/tmp/escape": "value"},
+    {"reference_view": {"references": [{"occurrence": "foo/bar", "modality": "video"}]}},
+    {"reference_view": {"references": [{"occurrence": "x", "modality": "video", "input_binding": False}]}},
+    {"reference_view": {"references": [], "audio": {"requested_grants": [False]}}},
+    {"reference_view": {"references": [{"retained_picture_frames_derived": {
+        "rule_source": "ComfyUI@423cbd20511becb1f16122ab518e92e58bfa03d9:../../tmp/nodes.py:1-2"}}]}},
+    {"reference_view": {"references": [False]}},
+])
+def test_workflow_hook_evidence_rejects_unknown_locator_keys_relative_paths_and_unpinned_citations(evidence):
+    from astrid.core.contracts.errors import AstridValueError
+
+    run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    with pytest.raises(AstridValueError):
+        run._workflow_hook_evidence(evidence)

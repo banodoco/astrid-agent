@@ -579,6 +579,23 @@ def _generation_task_refs(result: InvocationResult) -> dict[str, Any]:
     manifest = manifest or settled.get('manifest') or {}
     neutral = (manifest.get('managed_generation_result') or manifest
                if isinstance(manifest, Mapping) else {})
+    # Only invocation's validated named-publication readback projection is
+    # eligible; arbitrary result manifests and producer-supplied settled
+    # evidence do not establish custody.
+    settled_payload = settled.get("payload") if isinstance(settled, Mapping) else None
+    hook_projection = (settled_payload.get("workflow_hook_evidence")
+                       if result.capability_id == "vibecomfy.run" and isinstance(settled_payload, Mapping)
+                       else None)
+    reference_view = None
+    if isinstance(hook_projection, Mapping):
+        from astrid.core.contracts.managed_generation_result import validate_workflow_hook_evidence
+        try:
+            hook_projection = validate_workflow_hook_evidence(hook_projection)
+        except ValueError:
+            hook_projection = None
+        reference_view = hook_projection.get("reference_view") if isinstance(hook_projection, Mapping) else None
+    if isinstance(reference_view, Mapping):
+        refs["reference_view"] = deepcopy(dict(reference_view))
     # Prefer settled input refs to the request's immutable source descriptor.
     # Runtime task resources wrap the admitted envelope in spec.spec.
     admitted = spec.get('spec') if isinstance(spec, Mapping) else None
@@ -629,6 +646,14 @@ def _reconstruct_generation_result(result: InvocationResult) -> Any:
         settled_payload = settled.get("payload")
         if isinstance(settled_payload, Mapping):
             payload_candidates.append(settled_payload)
+    task = raw_result.get("task")
+    task = task if isinstance(task, Mapping) else {}
+    task_settled = task.get("result")
+    if isinstance(task_settled, Mapping) and task_settled is not settled:
+        payload_candidates.append(task_settled)
+        task_payload = task_settled.get("payload")
+        if isinstance(task_payload, Mapping):
+            payload_candidates.append(task_payload)
     generation_payload: Any = None
     generation_payload_found = False
     explicit_generation_payload = False
@@ -659,7 +684,9 @@ def _reconstruct_generation_result(result: InvocationResult) -> Any:
         )
     if isinstance(generation_payload, generation_result_type):
         if not managed_outputs and not task_refs:
-            return generation_payload
+            object_manifest = getattr(generation_payload, "manifest", None)
+            if not isinstance(object_manifest, Mapping) or "reference_view" not in object_manifest:
+                return generation_payload
         generation_payload = generation_payload.to_dict()
     if not isinstance(generation_payload, Mapping):
         raise CapabilityRuntimeError(
@@ -673,6 +700,20 @@ def _reconstruct_generation_result(result: InvocationResult) -> Any:
     else:
         generation_payload = _normalize_generation_payload(generation_payload)
     generation_payload = {**generation_payload, **task_refs}
+    # H3's settled receipt carries the same self-contained reference view that
+    # was sealed at dry run. Project it from the receipt without reopening any
+    # producer scratch path (which may already have been deleted).
+    reference_view = task_refs.get("reference_view")
+    settled_manifest = generation_payload.get("manifest")
+    generation_payload.pop("reference_view", None)
+    if isinstance(settled_manifest, Mapping) and "reference_view" in settled_manifest:
+        settled_manifest = {key: value for key, value in settled_manifest.items() if key != "reference_view"}
+    if isinstance(settled_manifest, Mapping):
+        generation_payload["manifest"] = dict(settled_manifest)
+    if isinstance(reference_view, Mapping):
+        manifest = dict(settled_manifest) if isinstance(settled_manifest, Mapping) else {}
+        manifest["reference_view"] = _json_safe_mapping(reference_view)
+        generation_payload = {**generation_payload, "manifest": manifest}
     if task_refs.get('manifest_ref'):
         generation_payload.update(run_dir=None, image_paths=[])
     from_dict = getattr(generation_result_type, "from_dict", None)

@@ -540,6 +540,211 @@ def test_same_mixed_occurrences_bind_identically_on_source_free_and_masked_route
     assert outputs[0] == outputs[1]
 
 
+def test_sealed_reference_view_uses_compiled_rows_and_labels_video_counts_as_estimates(tmp_path):
+    from astrid.packs.h3_av.shared.compile import _compile_native_v2
+    from astrid.packs.h3_av.shared.request_v2 import normalize_v2
+    from astrid.packs.h3_av.shared.stages import _sealed_plan
+
+    media = [
+        {"asset": "voice", "role": "reference", "modality": "audio"},
+        {"asset": "performance", "role": "reference", "modality": "video", "range": [1, 3], "audio": True},
+        {"asset": "picture", "role": "reference", "modality": "image"},
+    ]
+    image = tmp_path / "picture.png"
+    Image.new("RGB", (32, 32)).save(image)
+    assets = {"picture": image}
+    for name in ("voice", "performance"):
+        assets[name] = tmp_path / name
+        assets[name].write_bytes(b"asset fixture")
+    request = normalize_v2({"version": 2, "prompt": "<Picture 1> <Video 1> <Audio 1> <Audio 2>", "duration": 6, "media": media})
+    compilation = _compile_native_v2(request, assets, tmp_path / "out")
+    rows = compilation["capabilities"]["conditioning"]
+    preparation = {"conditioning_measurements": [{
+        "occurrence": "occurrence-2", "retained_picture_frames_estimate": {
+            "value": 47, "kind": "metadata_upper_bound", "observed": False,
+        }, "effective_size": {"width": 1024, "height": 576}, "bound_file": "/scratch/video.mp4",
+    }]}
+    view = _sealed_plan(compilation, preparation=preparation)["reference_view"]
+
+    assert [{key: row[key] for key in ("occurrence", "modality", "trim", "input_binding", "tag")} for row in view["references"]] == rows
+    video = next(row for row in view["references"] if row["modality"] == "video")
+    assert video["retained_picture_frames_estimate"] == {
+        "value": 47, "kind": "metadata_upper_bound", "observed": False,
+    }
+    assert video["effective_size"] == {"width": 1024, "height": 576}
+    assert "/scratch" not in str(view)
+    assert "retained_picture_frames" not in video
+
+    # Character Swap's compiler places timing at compilation top level.
+    character_swap = dict(compilation)
+    character_swap["generation_timing"] = {"raw_frames": 3592}
+    character_swap["capabilities"] = dict(compilation["capabilities"])
+    character_swap["capabilities"].pop("generation_timing", None)
+    assert _sealed_plan(character_swap, preparation=preparation)["reference_view"]["target_frame_cap"] == 3592
+
+
+def test_sealed_view_preserves_sr5_audio_grants_mask_and_span_kinds():
+    from astrid.packs.h3_av.shared.stages import _sealed_plan
+
+    grants = [{"samples": [0, 48000], "strength": 0.8, "use": "generated", "occurrences": []}]
+    mask = {"resampled_40hz": [0.0, 1.0], "decoded_frame_values": [0.0, 1.0], "precision": "1/65535"}
+    expected = [{"samples": [0, 48000], "source": "generated"}]
+    compilation = {"compilation_digest": "a" * 64, "workflow": {}, "workflow_inputs": {},
+        "capabilities": {"output_contract": "muxed_av_full_timeline",
+            "public_generation": {"modality": "video", "selectors": [{"selector": "main-0",
+                "ordinal": 0, "variant_key": "original", "required": True}]},
+            "conditioning": [{"occurrence": "performance", "modality": "video",
+                "input_binding": {"binding": "video-1", "port": "ref_videos.ref_video_0"}}],
+            "requested_audio_grants": grants, "audio_time_mask": mask,
+            "expected_delivered_audio_spans": expected}}
+
+    view = _sealed_plan(compilation)["reference_view"]
+    assert view["audio"]["requested_grants"] == grants
+    assert view["audio"]["effective_40hz_mask"] == {
+        "values": [0.0, 1.0], "basis": "compiler resampling of the decoded per-frame mask",
+        "precision": "1/65535"}
+    assert view["audio"]["decoded_frame_mask"] == [0.0, 1.0]
+    assert view["audio"]["expected_delivered_sample_spans"] == expected
+
+    from astrid.packs.h3_av.shared.stages import _settled_reference_view
+    from tempfile import TemporaryDirectory
+    with TemporaryDirectory() as tmp:
+        settled = _settled_reference_view(view, reference_assets={}, workdir=Path(tmp),
+        composition={"exact_audio": {"delivered_spans": expected}})
+        assert settled["audio"]["actual_delivered_sample_spans"] == expected
+
+
+def test_character_swap_sealed_view_uses_compilation_level_timing(tmp_path, monkeypatch):
+    import subprocess
+    from astrid.packs.h3_av.shared import generation
+    from astrid.packs.h3_av.shared.compile import compile_preparation
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from astrid.packs.h3_av.shared.stages import _sealed_plan
+
+    monkeypatch.setattr(generation, "character_swap_asset_sha256", lambda: "a1" * 32)
+    video, image = tmp_path / "performance.mp4", tmp_path / "replacement.png"
+    subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=c=green:s=64x64:r=24:d=4",
+                    "-an", "-c:v", "mpeg4", "-y", str(video)], check=True, capture_output=True)
+    Image.new("RGB", (32, 32), color="red").save(image)
+    request = normalize_request({"version": 2, "duration": 1,
+        "prompt": "Replace the person in <Video 1> with <Picture 1>.",
+        "media": [{"id": "performance", "asset": "performance", "role": "reference",
+                   "modality": "video", "range": [1, 3], "audio": False},
+                  {"id": "replacement", "asset": "replacement", "role": "reference", "modality": "image"}],
+        "settings": {"adapter": {"id": "character_swap_v1"}}})
+    preparation = prepare_request(request, asset_map={"performance": str(video), "replacement": str(image)})
+    compilation = compile_preparation(preparation, out_dir=tmp_path / "character-swap")
+    assert "generation_timing" not in compilation["capabilities"]
+    assert _sealed_plan(compilation, preparation=preparation)["reference_view"]["target_frame_cap"] == \
+        compilation["generation_timing"]["raw_frames"]
+
+
+
+def test_settled_reference_count_redecodes_pinned_vhs_path_and_keeps_failures_unqualified(tmp_path):
+    import hashlib
+    import shutil
+    import subprocess
+    from astrid.packs.h3_av.shared.stages import _settled_reference_view
+
+    ffmpeg = shutil.which("ffmpeg")
+    assert ffmpeg
+    video = tmp_path / "managed/assets/clip.mp4"
+    video.parent.mkdir(parents=True)
+    subprocess.run([ffmpeg, "-v", "error", "-f", "lavfi", "-i",
+                    "testsrc=size=64x48:rate=12:duration=6", "-t", "6", "-an",
+                    "-c:v", "mpeg4", "-y", str(video)], check=True, capture_output=True)
+    digest = hashlib.sha256(video.read_bytes()).hexdigest()
+    view = {"target_frame_cap": 120, "references": [{
+        "occurrence": "performance", "modality": "video", "tag": "<Video 1>",
+        "input_binding": {"binding": "video_reference_0", "start_time": 1.0, "frame_load_cap": 65},
+        "retained_picture_frames_estimate": {"value": 56, "kind": "metadata_upper_bound", "observed": False},
+    }]}
+    assets = {"video_reference_0": {"member": "assets/clip.mp4", "sha256": digest}}
+
+    settled = _settled_reference_view(view, reference_assets=assets, workdir=tmp_path)
+    derived = settled["references"][0]["retained_picture_frames_derived"]
+    assert derived["input_frame_count"] == 65
+    assert derived["value"] == 56  # min(65, 120), then the greatest 5+17k value
+    assert derived["kind"] == "derived_pinned_node_rule"
+    assert derived["conformance"] == "not_conformed"
+    assert derived["input_sha256"] == digest
+    assert "/managed/" not in str(settled)
+    assert settled["references"][0]["retained_picture_frames_estimate"] == view["references"][0]["retained_picture_frames_estimate"]
+
+    mutated = _settled_reference_view(view, reference_assets={
+        "video_reference_0": {"member": "assets/clip.mp4", "sha256": "0" * 64},
+    }, workdir=tmp_path)
+    assert mutated["references"][0]["retained_picture_frames_derived"]["status"] == "unqualified"
+    assert mutated["references"][0]["retained_picture_frames_derived"]["reason"] == "bound_reference_redecode_unavailable"
+    assert "/managed/" not in str(mutated)
+
+    unavailable = _settled_reference_view(view, reference_assets=assets, workdir=tmp_path,
+                                          ffmpeg="/missing/ffmpeg")
+    assert unavailable["references"][0]["retained_picture_frames_derived"]["status"] == "unqualified"
+    assert "ffmpeg" in unavailable["references"][0]["retained_picture_frames_derived"]["reason"]
+
+    missing = _settled_reference_view(view, reference_assets={
+        "video_reference_0": {"member": "assets/missing.mp4", "sha256": digest},
+    }, workdir=tmp_path)
+    assert missing["references"][0]["retained_picture_frames_derived"]["reason"] == "managed_reference_asset_missing"
+
+    no_vhs_bindings = {**view, "references": [{**view["references"][0], "input_binding": {"binding": "video_reference_0"}}]}
+    unbound = _settled_reference_view(no_vhs_bindings, reference_assets=assets, workdir=tmp_path)
+    assert unbound["references"][0]["retained_picture_frames_derived"]["reason"] == "vhs_binding_parameters_unavailable"
+
+    outside = tmp_path.parent / (tmp_path.name + "-managed")
+    outside.mkdir()
+    (tmp_path / "managed").rename(tmp_path / "managed-original")
+    (tmp_path / "managed").symlink_to(outside, target_is_directory=True)
+    escaped = _settled_reference_view(view, reference_assets=assets, workdir=tmp_path)
+    assert escaped["references"][0]["retained_picture_frames_derived"]["reason"] == "managed_reference_asset_root_symlink"
+
+
+def test_pinned_vhs_vp9_decoder_override_is_used_for_probe_and_redecode(monkeypatch, tmp_path):
+    import subprocess
+    from types import SimpleNamespace
+    from astrid.packs.h3_av.shared import stages
+
+    calls = []
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if "null" in command:
+            return SimpleNamespace(stderr=b"Stream #0:0: Video: vp9 , 64x48")
+        return SimpleNamespace(stdout="# framehash\n0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert stages._vhs_frame_count(tmp_path / "bound.webm", start_time=0, frame_load_cap=0,
+                                   ffmpeg="/bin/ffmpeg") == 1
+    assert len(calls) == 3
+    assert all(any(command[index:index + 2] == ["-c:v", "libvpx-vp9"]
+                   for index in range(len(command) - 1)) for command in calls[1:])
+
+
+def test_settled_reference_count_is_unqualified_for_multiple_video_streams(monkeypatch, tmp_path):
+    import hashlib
+    from types import SimpleNamespace
+    from astrid.packs.h3_av.shared import stages
+
+    video = tmp_path / "managed/assets/multi.mkv"
+    video.parent.mkdir(parents=True)
+    video.write_bytes(b"multi-stream bytes")
+    digest = hashlib.sha256(video.read_bytes()).hexdigest()
+    view = {"target_frame_cap": 120, "references": [{
+        "occurrence": "performance", "modality": "video",
+        "input_binding": {"binding": "video_reference_0", "start_time": 0, "frame_load_cap": 0},
+    }]}
+    monkeypatch.setattr(stages.subprocess, "run", lambda *a, **k: SimpleNamespace(stderr=(
+        b"Stream #0:0: Video: h264, 64x48\nStream #0:1: Video: h264, 128x72\n")))
+    settled = stages._settled_reference_view(
+        view, reference_assets={"video_reference_0": {"member": "assets/multi.mkv", "sha256": digest}},
+        workdir=tmp_path, ffmpeg="/fake/ffmpeg",
+    )
+    derived = settled["references"][0]["retained_picture_frames_derived"]
+    assert derived["status"] == "unqualified"
+    assert derived["reason"] == "multiple_video_streams_unqualified"
+
+
 def test_fractional_reference_trim_survives_compilation_manifest(tmp_path):
     from astrid.packs.h3_av.shared.compile import _compile_native_v2
     from astrid.packs.h3_av.shared.request_v2 import normalize_v2

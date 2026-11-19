@@ -33,6 +33,7 @@ from astrid.core.contracts.managed_generation_result import (  # noqa: E402
     ManagedGenerationResultError,
     read_managed_generation_result,
     validate_evidence_reference,
+    validate_workflow_hook_evidence,
     redact_evidence,
 )
 from astrid.packs.vibecomfy.shared.bundle_inputs import (  # noqa: E402
@@ -260,6 +261,13 @@ def _evidence_snapshot(path: Path, output_root: Path) -> dict[str, Any]:
             "bytes": len(data), "filename": path.name}
 
 
+def _workflow_hook_evidence(value: Any) -> dict[str, Any]:
+    try:
+        return validate_workflow_hook_evidence(value)
+    except ManagedGenerationResultError as exc:
+        raise AstridValueError(str(exc)) from exc
+
+
 def _materialize_managed_generation_result(
     output_root: Path,
     production_result: Any,
@@ -331,8 +339,19 @@ def _materialize_managed_generation_result(
         rebased["path"] = destination.relative_to(managed_root).as_posix()
         rebased["output_port"] = "vibecomfy_run"
         rebased_outputs.append(rebased)
+    workflow_hook_evidence = None
     if after_outputs is not None and rebased_outputs:
-        produced = [Path(item) for item in after_outputs([managed_root / row["path"] for row in rebased_outputs])]
+        hook_inputs = [managed_root / row["path"] for row in rebased_outputs]
+        structured_hook = getattr(after_outputs, "with_evidence", None)
+        hook_result = structured_hook(hook_inputs) if callable(structured_hook) else after_outputs(hook_inputs)
+        if isinstance(hook_result, dict):
+            if set(hook_result) != {"outputs", "evidence"}:
+                raise AstridValueError("after_outputs mapping must contain exactly outputs and evidence")
+            produced_values = hook_result["outputs"]
+            workflow_hook_evidence = _workflow_hook_evidence(hook_result["evidence"])
+        else:
+            produced_values = hook_result
+        produced = [Path(item) for item in produced_values]
         if len(produced) != len(rebased_outputs):
             raise AstridValueError("after_outputs must return one file per output")
         for row, replacement in zip(rebased_outputs, produced):
@@ -342,6 +361,8 @@ def _materialize_managed_generation_result(
             data = target.read_bytes()
             row.update(sha256=hashlib.sha256(data).hexdigest(), bytes=len(data))
             row.pop("hash_check", None)  # compared the producer's bytes, not the hook's
+    if workflow_hook_evidence is not None:
+        rebased_payload["evidence"]["producer"]["workflow_hook"] = workflow_hook_evidence
     rebased_payload["outputs"] = rebased_outputs
     if source_snapshot is None and "source" not in result.inputs and workflow_path.is_file():
         original = workflow_path.with_name("source.json") if workflow_path.suffix == ".py" else workflow_path
@@ -711,7 +732,21 @@ def _after_outputs(spec: Any) -> Any:
     engine = _engine_for({"engine": "comfyui"})
     run_job = {"hooks": hooks, "inputs": job.get("inputs", {}), "files": job.get("files", {}),
                "job_dir": job.get("job_dir")}
-    return lambda outputs: engine.finish(run_job, outputs)
+    capture_evidence = job.get("workflow_hook_evidence") is True
+    if capture_evidence:
+        run_job["workflow_hook_evidence"] = True
+
+    def finish(outputs):
+        result = engine.finish(run_job, outputs)
+        if isinstance(result, dict) and set(result) == {"outputs", "evidence"}:
+            return result["outputs"]
+        return result
+
+    if capture_evidence:
+        # The public callable keeps its historical list contract. Only the
+        # managed materializer opts into the structured callback explicitly.
+        finish.with_evidence = lambda outputs: engine.finish(run_job, outputs)
+    return finish
 
 
 class _AttachedServer:

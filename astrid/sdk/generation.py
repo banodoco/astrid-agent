@@ -1888,8 +1888,11 @@ class GenerationFacade:
                 # On a rented machine the pod-side `astrid generate` rebuilds and runs it from the shipped inputs;
                 # this controller's job directory is not shipped.
                 job = workflow_entries.entry_job(candidate, inputs, plan['job_dir'], hooks={})
-                hook_job = json.dumps({'entry': candidate['id'], 'job_dir': plan['job_dir'],
-                                       'inputs': job['inputs'], 'files': job['files']}, sort_keys=True)
+                hook_spec = {'entry': candidate['id'], 'job_dir': plan['job_dir'],
+                             'inputs': job['inputs'], 'files': job['files']}
+                if candidate['id'] == 'h3':
+                    hook_spec['workflow_hook_evidence'] = True
+                hook_job = json.dumps(hook_spec, sort_keys=True)
             result = self.workflow(
                 **({'after_outputs_job': hook_job} if hook_job else {}),
                 python=import_member(root / "workflow.py"),

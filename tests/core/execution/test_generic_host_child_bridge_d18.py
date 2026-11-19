@@ -3750,6 +3750,67 @@ def test_output_over_retention_limit_rejects_before_cas_read():
     assert cas_reads == []
 
 
+def test_verified_result_manifest_projects_workflow_hook_evidence_to_readback():
+    """Only a digest-verified durable manifest can supply the bounded view."""
+    reference_view = {"references": [
+        {"occurrence": "still-1", "modality": "image", "trim": None},
+        {"occurrence": "performance", "modality": "video", "input_binding": {
+            "binding": "video-1", "port": "ref_videos.ref_video_0", "resolved_range": None,
+            "soundtrack": {"port": "ref_audios.ref_audio_0", "tag": "<Audio 1>"}}}],
+        "target_frame_cap": 17, "audio": {
+            "requested_grants": [{"samples": [0, 48000], "strength": 0.8,
+                "use": "generated", "occurrences": []}],
+            "effective_40hz_mask": {"values": [0.0, 1.0],
+                "basis": "compiler resampling of the decoded per-frame mask", "precision": "1/65535"},
+            "decoded_frame_mask": [0.0, 1.0],
+            "expected_delivered_sample_spans": [{"samples": [0, 48000], "source": "generated"}],
+            "actual_delivered_sample_spans": [{"samples": [0, 48000], "source": "generated"}]}}
+    payload = json.dumps({"kind": "managed-generation-result.v1", "evidence": {
+        "producer": {"workflow_hook": {"reference_view": reference_view}}}}).encode()
+    oid = digest(payload)
+    row = {"association_id": "association", "task_id": "child-task", "run_id": "child-run",
+           "project_id": "project", "attempt_id": "child-attempt", "durability": "durable",
+           "lifecycle": {"state": "available"}, "role": "manifest", "object_id": oid,
+           "digest": oid, "size": len(payload), "output_port": "result_manifest",
+           "media_type": "application/json", "filename": "result.json", "ordinal": 0}
+    settled_output = {"kind": "object", "digest": oid, "size": len(payload),
+                      "output_port": "result_manifest", "media_type": "application/json",
+                      "filename": "result.json", "ordinal": 0}
+    client = SimpleNamespace(child_outputs=lambda task_id: [row],
+        child_output=lambda association_id: row, get_object=lambda object_id: payload)
+    bridge = object.__new__(HostChildBridge)
+    bridge.client = client
+    bridge.context = {"project_id": "project"}
+    bridge.policy = None
+    bridge._verified_outputs = {}
+    bridge._live = lambda: None
+    task = {"id": "child-task", "run_id": "child-run", "attempt_id": "child-attempt",
+            "status": "completed", "result": {"outputs": [settled_output]}}
+
+    captured = {}
+    bridge._outputs(task, capture_evidence=captured)
+    expected_evidence = {"reference_view": json.loads(payload)["evidence"]["producer"]["workflow_hook"]["reference_view"]}
+    assert captured == expected_evidence
+
+    from astrid.sdk.invocation import InvocationResult
+    from astrid.sdk.results import _generation_task_refs
+    result = InvocationResult("vibecomfy.run", "executor", "command", True,
+        kernel_task_id="child-task", raw_result={"task": {"task_id": "child-task",
+            "result": {"payload": {"workflow_hook_evidence": captured}}}})
+    assert _generation_task_refs(result)["reference_view"] == captured["reference_view"]
+
+
+def test_oversized_optional_workflow_view_is_omitted_from_publication_frame():
+    from astrid.core.execution._child_bridge import _bounded_publication_result
+
+    canonical = {"payload": {}, "outputs": [], "generation_publish_v1": {
+        "effect_type": "generation.publish_v1", "publications": []}}
+    view = {"reference_view": {"references": [{"occurrence": "x" * 600_000}]}}
+    bounded = _bounded_publication_result(canonical,
+        evidence_task={"task_id": "child-task"}, publication_rows=[], workflow_hook_evidence=view)
+    assert bounded == canonical
+
+
 @pytest.mark.parametrize("size", [64 * 1024 * 1024, 5 * 1024 ** 3 + 1])
 def test_materialization_large_object_and_hard_cap(world, monkeypatch, size):
     b, child, rows = _materialization_fixture(world, expose=False,
