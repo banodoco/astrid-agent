@@ -7,7 +7,96 @@ This is evidence for R14-P55-09 only. The packet targets `p55/ls-15` into
 pytest summaries, XML, counter captures and selected Runtime records. Its
 `manifest.json` gives each retained member's size and SHA-256.
 
-## Follow-up qualification checkpoint
+## Replacement recovery checkpoint — 19 November 2026
+
+Session `r14-P55-09-2` continues the same packet and PR #408 under Lead decisions
+[6997582358](https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6997582358)
+and [6997585669](https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6997585669).
+`recovery-checkpoint.json` and `recovery-observations.zip` preserve the local
+repair evidence and the previous published head's exact-ID hosted comparison.
+This checkpoint precedes the new hosted qualification; it is not a completion
+claim. The earlier checkpoints below remain historical evidence.
+
+The fetched full history establishes `50db28a3` as an **ancestor**, not a child,
+of the directed published head: `7e50a1a6 → 50db28a3 → afde8661 → c9f7940b`.
+No recovered commit was discarded or replayed. Native merge
+`f457f0f5092eee13511a81dfb03d852ceed4b3de` has parents `c9f7940b` and directed
+Plan 55 `493616c1cfc7a83f18894dc81773571e977f26ef`. The dependency pins are
+unchanged. Product repair `d8db907e7ac89637109815cbe3a5b0f84feb351a` follows
+that merge; workflow commit `125cdb011293ec3e7d966b8d94699998be915c31` pairs
+the proof with `493616c1` and adds the new trust-evidence probe.
+
+HTTPS Git publication lacked a local write credential. The authenticated
+GitHub connector published equivalent Git trees with new commit metadata.
+Every tree below was compared for exact identity before the single guarded
+packet-ref advance; the existing `c9f7940b` history and both merge parents
+remain intact. The local source IDs above are retained as evidence identities.
+
+| Change | Local commit | GitHub commit | Identical tree |
+| --- | --- | --- | --- |
+| Native merge | `f457f0f5` | `86a9653d2e32c5c35365940faedbd9ebcac8ef60` | `8c5a2e8c06774b787798107ca6b8864d71764430` |
+| Product repair | `d8db907e` | `027657aae28c8f555efc7474541c4b50053c6b93` | `6b83c195dcbc73e76f99ad718a1be06fe3701a06` |
+| Proof workflow | `125cdb01` | `4aab7942415c786467957bd7c44831e8cec7a623` | `8cbe2887f7c09ea843faa85ae392b76c0c5a6090` |
+
+The previous `c9f7940b` run
+[44384238876](https://github.com/banodoco/astrid-agent/actions/runs/44384238876)
+establishes that three of the four former supervisor-socket failures pass.
+The fourth, `trust-skips-absent-auxiliary`, passes the old socket point but
+fails later because prepared jobs omit `declared_unverified` model evidence.
+Canonical `astrid-dev@4223b30a:env/baseline-diff.py` classifies its unchanged
+baseline `91cb4cb4` comparison as follows; these are previous-run observations,
+not results against the new destination.
+
+| Previous suite | IDs per side | Regression | Preexisting | Fixed | Missing / no baseline |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Linux regression | 582 | 0 | 10 | 0 | 0 / 0 |
+| macOS regression | 582 | 0 | 32 | 0 | 0 / 0 |
+| Windows regression | 575 | 0 | 146 | 1 | 0 / 0 |
+| Linux native and contention | 43 | 1 | 2 | 0 | 0 / 0 |
+
+The repair restores full ordinary approval on the cold prepared admission.
+Each job then receives its own copies of that admission's model diagnostics
+in its result and native attempt/metadata records. The prepared authorization
+remains intact and the warm path performs no new approval. An identical new
+trust probe fails on recovered merge `f457f0f5` with an empty model-evidence
+list, and passes after the repair. It checks the declared model name and hash,
+honest unverified status, distinct per-job inputs/results/prefixes, both native
+record copies, valid output paths, one held websocket, and a guard that fails
+if the second job repeats approval.
+
+Local Python 3.13.5 proof ran on the working bytes subsequently committed as
+`d8db907e`; the archive distinguishes post-run source hashes from the raw
+execution-time command receipts. It retains every earlier setup and diagnostic
+failure. The combined 36-ID selection produced 34 passes and two HTTPX setup
+failures because the inherited local SOCKS proxy lacked optional `socksio`.
+After installing `socksio==1.0.0`, only those same two unchanged IDs were rerun;
+both passed. This is 36 IDs with passing observations across those two runs,
+not a claim that the first invocation was green.
+
+Both UI JSON and closed Python warm jobs have zero instrumented process
+starts, emissions, compiles, schema fetches, catalogue scans and audits in
+parent and child. Source capture still copies **68 files / 506,281 bytes**
+before lookup. UI JSON has 46 parent source validations; closed Python has 42.
+Both have five child source validations and five prepared authorizations.
+These are measured costs, not latency or constant-time validation claims.
+The separate public SDK probe passes with distinct real Runtime records and
+independently checked outputs. Concurrent completion, cancel-one, failed-job
+replacement, worker-crash custody, route identity and generation checks pass.
+
+Two existing fixture corrections are proposed in
+`proposed-fixture-repair.patch` and remain **unapplied** pending Lead's ruling
+on [REQUEST 6997732085](https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6997732085),
+also recorded as [BLOCKED 6997967389](https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6997967389).
+The helper's Windows journal locator hard-codes the Unix runtime directory,
+and its requested alignment mode is placed outside the validated generation
+intent. The proposal uses the canonical runtime-root function and the existing
+validated intent shape, retaining every assertion. The host helper, native
+managed proof and unchanged native regression test are byte-identical to
+`c9f7940b`. Native local AF_UNIX execution remains unavailable; hosted native
+and Windows proof is required. No GPU, installed-user latency, LS-14, LS-15.1
+or overall CI qualification is claimed.
+
+## Earlier follow-up qualification checkpoint (retained history)
 
 `followup-checkpoint.json` and `followup-observations.zip` extend the original
 checkpoint below. They retain all four completed `a6155415` hosted artifacts'
