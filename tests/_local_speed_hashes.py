@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 import threading
+import time
 from dataclasses import dataclass
 from typing import Mapping
 
@@ -33,6 +34,7 @@ class OutputHashObserver:
         self._ids = itertools.count()
         self._hashers = []
         self._matched = {}
+        self._matched_at = {}
         self._gaps = set()
 
     def _token(self, size):
@@ -89,13 +91,17 @@ class OutputHashObserver:
             # Copies share consumed-prefix tokens: repeated digest calls and
             # copying a finished hasher do not pretend bytes were hashed again.
             self._matched[(digest, value.tokens)] = value.tokens
+            self._matched_at.setdefault((digest, value.tokens), time.perf_counter_ns())
 
-    def snapshot(self):
+    def snapshot(self, since_ns=None, until_ns=None):
         with self._lock:
             for value in self._hashers:
                 self._record(value)
-            consumed = {token for tokens in self._matched.values() for token in tokens}
-            return HashObservation(len(self._matched), sum(size for _, size in consumed),
+            matched = {key: tokens for key, tokens in self._matched.items()
+                       if (since_ns is None or self._matched_at[key] >= since_ns)
+                       and (until_ns is None or self._matched_at[key] <= until_ns)}
+            consumed = {token for tokens in matched.values() for token in tokens}
+            return HashObservation(len(matched), sum(size for _, size in consumed),
                                    tuple(sorted(self._gaps)))
 
 class _CountedHash:
