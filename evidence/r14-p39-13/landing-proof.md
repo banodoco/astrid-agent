@@ -4,6 +4,10 @@ Plan39 **AT1.9 / AT1.54**, Agent PR[#428](https://github.com/banodoco/astrid-age
 
 The terminal hosted run establishes that the wrapper collects and reports the intended integration IDs in all four shards while retaining every real failure. The new plan head is merged without rebasing, and the wrapper/refusal proof has been repeated with the newly landed capture shell and native reporter. **This is submitted for Lead review; it is not a green-CI, sealed-ceiling, new-head hosted, or Done claim.** Lead owns any further hosted dispatch.
 
+## Immutable original evidence
+
+This evidence-reference correction follows [Lead7016333535](https://github.com/banodoco/astrid-dev/issues/796#issuecomment-7016333535) and [Lead7016582309](https://github.com/banodoco/astrid-dev/issues/796#issuecomment-7016582309). The complete original [report](https://github.com/banodoco/astrid-agent/blob/4ba3becd201779a4938aae50eada6e596bd098b4/evidence/r14-p39-13/landing-proof.md), [native-ID receipt](https://github.com/banodoco/astrid-agent/blob/4ba3becd201779a4938aae50eada6e596bd098b4/evidence/r14-p39-13/landing-proof.json) and [raw archive](https://github.com/banodoco/astrid-agent/blob/4ba3becd201779a4938aae50eada6e596bd098b4/evidence/r14-p39-13/landing-raw.tar.gz) remain on immutable `4ba3becd201779a4938aae50eada6e596bd098b4`. The JSON receipt links its three observed VibeComfy revisions through `sha_reference` to their original per-shard entries; the observation text and original job/artifact identities remain intact. All native IDs, outcomes, failure diagnostics and raw-archive bytes are preserved. The existing pin-copy guard, allowlist, pin and tests are unchanged.
+
 ## Source and authority
 
 - Tested merge: **`1a234537e768fe1641f308433da5bcd05b59f875`**.
@@ -101,7 +105,7 @@ All15 exact changed IDs and all546 current failed/error native IDs are retained.
 |3|135327185419|[14504969230](https://github.com/banodoco/astrid-agent/actions/runs/44454822934/artifacts/14504969230)|4126548|`235a638c2d7d4954dfe080ab5f631492dd90d0f74b102e54d77adbe607828042`|
 |4|135327185484|[14503716542](https://github.com/banodoco/astrid-agent/actions/runs/44454822934/artifacts/14503716542)|4049116|`b3e7a5b1e43f1ca1fc23493ecc8e87d4ec9cf9f5e0909504b6579f696c7dad94`|
 
-Every archive matches its API size and supplied hash. Shards1/2/4 full job logs independently confirm Agent086 and the same base dependencies: Runtime2537fed24385ec1c24f48a812e09af4bb63fb794, VibeComfy c27fe76b79d917fd9c08246660bc77211be64146, Pinokio d15c58b5cd1f7e24c1e699340b33961027f7c573, lifecycle7f0b025e9391baac9f5c2fb7393617ea6fef0704 and ComfyUI6bfaacc67c2103481e5f0c84d75257cd0581d86a.
+Every archive matches its API size and supplied hash. Shards1/2/4 full job logs independently confirm Agent086 and the same base dependencies: Runtime2537fed24385ec1c24f48a812e09af4bb63fb794, VibeComfy [revision recorded in the immutable per-shard proof](https://github.com/banodoco/astrid-agent/blob/4ba3becd201779a4938aae50eada6e596bd098b4/evidence/r14-p39-13/landing-proof.json#L212), Pinokio d15c58b5cd1f7e24c1e699340b33961027f7c573, lifecycle7f0b025e9391baac9f5c2fb7393617ea6fef0704 and ComfyUI6bfaacc67c2103481e5f0c84d75257cd0581d86a.
 
 **Shard3's full Actions setup/job log is unavailable** after connector Transport-closed responses and a public403. Its original complete child reference/execution logs, manifests, events and JUnit are intact. Run/artifact metadata pins its provenance to086, but independently observed dependency checkout SHAs and its outer-shell numeric exit line remain unavailable. The child JSONL explicitly records exit1. No expected dependency value is presented as an observation.
 

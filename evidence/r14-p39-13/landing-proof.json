@@ -4,6 +4,13 @@
     "AT1.9",
     "AT1.54"
   ],
+  "immutable_original": {
+    "commit": "4ba3becd201779a4938aae50eada6e596bd098b4",
+    "receipt": "https://github.com/banodoco/astrid-agent/blob/4ba3becd201779a4938aae50eada6e596bd098b4/evidence/r14-p39-13/landing-proof.json",
+    "receipt_sha256": "bda430c6909bc98e66e9e16969013bae19175437786858ab3cdea823e9c244f4",
+    "raw_archive": "https://github.com/banodoco/astrid-agent/blob/4ba3becd201779a4938aae50eada6e596bd098b4/evidence/r14-p39-13/landing-raw.tar.gz",
+    "raw_archive_sha256": "3b600dc432ddb366113880f8e1d21c302e525c235b2e095a6f76b44e3de8de49"
+  },
   "status": "Frozen landing submission for Lead review; hosted outcomes remain red and further dispatch belongs to Lead.",
   "tested_merge": "1a234537e768fe1641f308433da5bcd05b59f875",
   "tested_tree": "202445e1615e0acd7cff1acf5ca6559484e57623",
@@ -209,7 +216,7 @@
             "observation": "first git log -1 --format=%H after checkout in named repository segment"
           },
           "banodoco/VibeComfy": {
-            "sha": "c27fe76b79d917fd9c08246660bc77211be64146",
+            "sha_reference": "https://github.com/banodoco/astrid-agent/blob/4ba3becd201779a4938aae50eada6e596bd098b4/evidence/r14-p39-13/landing-proof.json#L212",
             "observation": "first git log -1 --format=%H after checkout in named repository segment"
           },
           "banodoco/runpod-lifecycle": {
@@ -368,7 +375,7 @@
             "observation": "first git log -1 --format=%H after checkout in named repository segment"
           },
           "banodoco/VibeComfy": {
-            "sha": "c27fe76b79d917fd9c08246660bc77211be64146",
+            "sha_reference": "https://github.com/banodoco/astrid-agent/blob/4ba3becd201779a4938aae50eada6e596bd098b4/evidence/r14-p39-13/landing-proof.json#L371",
             "observation": "first git log -1 --format=%H after checkout in named repository segment"
           },
           "banodoco/runpod-lifecycle": {
@@ -687,7 +694,7 @@
             "observation": "first git log -1 --format=%H after checkout in named repository segment"
           },
           "banodoco/VibeComfy": {
-            "sha": "c27fe76b79d917fd9c08246660bc77211be64146",
+            "sha_reference": "https://github.com/banodoco/astrid-agent/blob/4ba3becd201779a4938aae50eada6e596bd098b4/evidence/r14-p39-13/landing-proof.json#L690",
             "observation": "first git log -1 --format=%H after checkout in named repository segment"
           },
           "banodoco/runpod-lifecycle": {
