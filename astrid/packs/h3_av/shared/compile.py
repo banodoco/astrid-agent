@@ -163,14 +163,23 @@ def _asset_bindings(request: H3Request, assets: Mapping[str, Path], *, include_m
 
 
 
-def _conditioning_rows(request: H3Request, assets: Mapping[str, Path], *, selected: set[str] | None = None) -> tuple[list[dict[str, Any]], dict[str, Path]]:
+def _reference_port_order(selected: tuple[str, ...], modalities: Mapping[str, str]) -> tuple[tuple[str, ...], ...]:
+    """Compare effective slots, deduplicated in first-use order per modality."""
+    unique = tuple(dict.fromkeys(selected))
+    return tuple(tuple(name for name in unique if modalities[name] == modality)
+                 for modality in ("image", "video", "audio"))
+
+
+def _conditioning_rows(request: H3Request, assets: Mapping[str, Path], *, selected: tuple[str, ...] | None = None) -> tuple[list[dict[str, Any]], dict[str, Path]]:
     """Resolve occurrence identity in the same order as the target node's ports."""
     references = [item for item in request.value["media"]
                   if item["role"] == "reference" and item.get("use") != "replacement"]
     for item in references:
         if item.get("modality") not in {"image", "video", "audio"}:
             raise CompilationError(f"conditioning occurrence {item['occurrence_id']!r} has unresolved modality; declare image, video, or audio")
-    references = [item for item in references if selected is None or item["occurrence_id"] in selected]
+    if selected is not None:
+        by_occurrence = {item["occurrence_id"]: item for item in references}
+        references = [by_occurrence[occurrence] for occurrence in dict.fromkeys(selected)]
     rows: list[dict[str, Any]] = []
     bindings: dict[str, Path] = {}
     audio_number = 0
@@ -560,8 +569,8 @@ def _combined_strength_mask(grants: list[tuple[Path, str, tuple[int, int], float
     if not ffmpeg:
         raise CompilationError("regions per pass: combined masks require ffmpeg")
     output = destination / "sampler-strength-mask.mkv"
-    readers = []
-    static = []
+    readers: list[subprocess.Popen[bytes] | None] = []
+    static: list[Any] = []
     for path, kind, _, _, _ in grants:
         if kind == "image":
             with Image.open(path) as image:
@@ -582,7 +591,10 @@ def _combined_strength_mask(grants: list[tuple[Path, str, tuple[int, int], float
             combined = Image.new("L", (1024, 576))
             for index, (path, kind, (start, end), strength, name) in enumerate(grants):
                 if kind == "video":
-                    data = readers[index].stdout.read(1024 * 576 * 3)
+                    reader = readers[index]
+                    if reader is None or reader.stdout is None:
+                        raise CompilationError(f"grant {name} mask reader is unavailable")
+                    data = reader.stdout.read(1024 * 576 * 3)
                     if len(data) != 1024 * 576 * 3:
                         raise CompilationError(f"grant {name} mask video is short or has the wrong dimensions")
                     support = Image.frombytes("RGB", (1024, 576), data).getchannel("R")
@@ -604,10 +616,14 @@ def _combined_strength_mask(grants: list[tuple[Path, str, tuple[int, int], float
                 if writer:
                     combined = ImageChops.lighter(combined, weight)
             if writer:
+                if writer.stdin is None:
+                    raise CompilationError("regions per pass: mask writer is unavailable")
                 writer.stdin.write(combined.tobytes())
             elif grants[0][1] != "video" and (survived[0] or grants[0][3] == 0):
                 break
         if writer:
+            if writer.stdin is None:
+                raise CompilationError("regions per pass: mask writer is unavailable")
             writer.stdin.close()
             if writer.wait() != 0:
                 raise CompilationError("regions per pass: could not encode sampler strength mask")
@@ -644,7 +660,10 @@ def _audio_time_mask(grants: list[tuple[int, int, float]], fixed: list[tuple[int
     for frame in range(frames):
         first, last = frame * 2000, (frame + 1) * 2000
         edges = {first, last}
-        for start, end, *_ in (*grants, *fixed):
+        for start, end, _strength in grants:
+            if start < last and end > first:
+                edges.update((max(first, start), min(last, end)))
+        for start, end in fixed:
             if start < last and end > first:
                 edges.update((max(first, start), min(last, end)))
         ordered = sorted(edges)
@@ -707,7 +726,12 @@ def _compile_native_masked_edit(
     from vibecomfy.workflow_bundle import emit_bundle
 
     from .compose import CompositionError, probe_mask
-    from .generation import CHARACTER_SWAP_SHA256, build_generation_workflow, generation_inputs_from_bindings, generation_timing
+    from .generation import (
+        CHARACTER_SWAP_SHA256,
+        build_generation_workflow,
+        generation_inputs_from_bindings,
+        generation_timing,
+    )
     from .spec import Region, canonical_spec
     from .static_regions import resolve_static_region
 
@@ -737,7 +761,9 @@ def _compile_native_masked_edit(
     active_passes = [p for p in video_passes if p.operation.strength > 0]
     if len(active_passes) > 1:
         seeds = {p.operation.seed if p.operation.seed is not None else settings["seed"] for p in active_passes}
-        reference_sets = {frozenset(p.operation.refs) for p in active_passes}
+        reference_sets = {_reference_port_order(tuple(p.operation.refs),
+                                                {name: ref.modality for name, ref in references_by_name.items()})
+                          for p in active_passes}
         if len(seeds) > 1:
             raise CompilationError("regions per pass: grants with different seeds require separate sequential passes, which this lowering cannot execute")
         if len(reference_sets) > 1:
@@ -783,10 +809,10 @@ def _compile_native_masked_edit(
                 raise CompilationError(str(exc)) from exc
             mask_path = destination / ("resolved-mask.png" if index == 0 else f"resolved-mask-{index}.png")
             mask_path.write_bytes(resolved.mask_png)
-        interval = tuple(round(value * 24) for value in grant.during)
+        interval = (round(grant.during[0] * 24), round(grant.during[1] * 24))
         grant_masks.append((mask_path, mask_kind, interval, grant.strength, f"{source.occurrence_id or source_id}.edit[{index}]"))
     combined = _combined_strength_mask(grant_masks, frames=frame_load_cap, destination=destination)
-    during = tuple(round(value * 24) for value in operation.during)
+    during = (round(operation.during[0] * 24), round(operation.during[1] * 24))
     if len(grant_masks) > 1:
         mask_path, mask_kind = combined, "video"
     else:
@@ -818,7 +844,10 @@ def _compile_native_masked_edit(
     fixed_audio_spans = []
     for item in audio_passes:
         audio_op = item.operation
-        span = tuple(int(value * 48000) for value in audio_op.during)
+        span: tuple[int, int] = (
+            int(audio_op.during[0] * 48000),
+            int(audio_op.during[1] * 48000),
+        )
         if audio_op.refs:
             if len(audio_op.refs) != 1 or references_by_name[audio_op.refs[0]].use != "replacement":
                 raise CompilationError("an audio guide must identify exactly one fixed replacement occurrence")
@@ -879,11 +908,14 @@ def _compile_native_masked_edit(
     references = [references_by_name[name] for name in operation.refs]
     conditioning = None
     if request.value.get("version") == 2:
-        selected = {item.occurrence_id for item in references}
+        selected = tuple(item.occurrence_id for item in references if item.occurrence_id is not None)
         conditioning, reference_bindings = _conditioning_rows(request, assets, selected=selected)
         if adapter:
             required = LIMITS["character_swap_references"]["value"]
-            if any(sum(row["modality"] == modality for row in conditioning) < required[modality] for modality in ("image", "video")):
+            if (
+                sum(row["modality"] == "image" for row in conditioning) < required["image"]
+                or sum(row["modality"] == "video" for row in conditioning) < required["video"]
+            ):
                 raise CompilationError("Character Swap effective references: lowering requires at least one video and one image reference")
         bindings.update(reference_bindings)
     else:
@@ -915,10 +947,16 @@ def _compile_native_masked_edit(
         from dataclasses import replace
         inputs = _with_v2_intent(replace(inputs, conditioning=tuple(conditioning)), request)
         grant_records = [dict(grant) for grant in inputs.grants]
-        for grant, mask in zip((grant for grant in grant_records if grant["stream"] == "video"), grant_masks, strict=True):
-            grant["region_raster"] = {"path": str(mask[0]), "kind": mask[1], "sampler_kind": mask_kind,
-                                      "input_binding": mask_binding, "channel": _MASK_CHANNEL,
-                                      "sampler_strength": 1.0 if len(grant_masks) > 1 else grant["strength"]}
+        for grant_record, mask in zip(
+            (record for record in grant_records if record["stream"] == "video"),
+            grant_masks,
+            strict=True,
+        ):
+            grant_record["region_raster"] = {
+                "path": str(mask[0]), "kind": mask[1], "sampler_kind": mask_kind,
+                "input_binding": mask_binding, "channel": _MASK_CHANNEL,
+                "sampler_strength": 1.0 if len(grant_masks) > 1 else grant_record["strength"],
+            }
         placed = tuple({**item, "input_binding": "source_video", "start_time": float(source.range[0]),
                         "frame_count": frame_load_cap,
                         **({"audio_input_binding": "source_audio_prepared"} if "source_audio_prepared" in bindings else {}),
@@ -1011,14 +1049,14 @@ def _compile_character_swap_v2(
     from vibecomfy.workflow_bundle import emit_bundle
 
     from .generation import (
-        LIMITS,
         CHARACTER_SWAP_FILENAME,
         CHARACTER_SWAP_REPOSITORY,
         CHARACTER_SWAP_REVISION,
+        LIMITS,
         TURBO_FILENAME,
         build_generation_workflow,
-        generation_inputs_from_bindings,
         character_swap_asset_sha256,
+        generation_inputs_from_bindings,
         generation_timing,
     )
 
@@ -1063,7 +1101,7 @@ def _compile_character_swap_v2(
 
     references = [item for item in value["media"] if item["role"] == "reference" and item.get("use") != "replacement"]
     by_id = {item.get("id", item["occurrence_id"]): item["occurrence_id"] for item in references}
-    all_occurrences = frozenset(item["occurrence_id"] for item in references)
+    all_occurrences = tuple(item["occurrence_id"] for item in references)
     guide_sets = []
     for item in value["media"]:
         if item["role"] != "timeline":
@@ -1071,13 +1109,17 @@ def _compile_character_swap_v2(
         for edit in item.get("edit", []):
             if edit.get("stream") != "video" or edit.get("action") == "preserve" or edit.get("strength", 1) == 0:
                 continue
-            guide_sets.append(frozenset(by_id[name] for name in edit["guides"]) if "guides" in edit else all_occurrences)
-    if len(set(guide_sets)) > 1:
+            guide_sets.append(tuple(by_id[name] for name in edit["guides"]) if "guides" in edit else all_occurrences)
+    modalities = {item["occurrence_id"]: item.get("modality", "") for item in references}
+    if len({_reference_port_order(guides, modalities) for guides in guide_sets}) > 1:
         raise CompilationError("regions per pass: grants with different reference sets require separate sequential passes, which this lowering cannot execute")
-    selected = set(guide_sets[0]) if guide_sets else None
+    selected = guide_sets[0] if guide_sets else None
     conditioning, bindings = _conditioning_rows(request, assets, selected=selected)
     minimum = LIMITS["character_swap_references"]["value"]
-    if any(sum(row["modality"] == modality for row in conditioning) < minimum[modality] for modality in ("image", "video")):
+    if (
+        sum(row["modality"] == "image" for row in conditioning) < minimum["image"]
+        or sum(row["modality"] == "video" for row in conditioning) < minimum["video"]
+    ):
         raise CompilationError("Character Swap effective references: lowering requires at least one video and one image reference")
     images = [row for row in conditioning if row["modality"] == "image"]
     videos = [row for row in conditioning if row["modality"] == "video"]
@@ -1245,6 +1287,15 @@ def _compile_native_v2(
     branch = branch_for(request)
     settings = effective_settings(request)
     if settings.get("adapter", {}).get("id") == CHARACTER_SWAP_ID:
+        active_video_edits = [edit for item in request.value["media"] if item["role"] == "timeline"
+                              for edit in item.get("edit", []) if edit.get("stream") == "video"
+                              and edit.get("action") != "preserve" and edit.get("strength", 1) > 0]
+        if len({edit.get("seed", settings["seed"]) for edit in active_video_edits}) > 1:
+            raise CompilationError("regions per pass: grants with different seeds require separate sequential passes, which this lowering cannot execute")
+        if any(edit.get("strength", 1) != 1 or "seed" in edit
+               for item in request.value["media"] if item["role"] == "timeline"
+               for edit in item.get("edit", [])):
+            raise CompilationError("character_swap_v1 does not bind per-operation strength or seed")
         regional = any(edit.get("stream") == "video" and (
                            edit.get("mask", {}).get("full_frame") is not True
                            or edit.get("strength", 1) != 1 or "seed" in edit)
@@ -1422,7 +1473,12 @@ def _compile_generation(
     from vibecomfy.security.provenance import Provenance
     from vibecomfy.workflow_bundle import emit_bundle
 
-    from .generation import IMAGE_REFERENCE_CAPACITY, build_generation_workflow, generation_inputs_from_bindings, generation_timing
+    from .generation import (
+        IMAGE_REFERENCE_CAPACITY,
+        build_generation_workflow,
+        generation_inputs_from_bindings,
+        generation_timing,
+    )
 
     native_v2 = request.value.get("version") == 2
     conditioning = None
@@ -1436,20 +1492,19 @@ def _compile_generation(
         audio_references = list(audio_references or [])
         bindings = {f"reference_{index}": assets[item["asset"]] for index, item in enumerate(references)}
         bindings.update({f"audio_reference_{index}": assets[item["asset"]] for index, item in enumerate(audio_references)})
-    for binding, path in bindings.items():
-        if not binding.startswith("reference_"):
+    for binding_name, path in bindings.items():
+        if not binding_name.startswith("reference_"):
             continue
         try:
             with Image.open(path) as image:
                 if getattr(image, "n_frames", 1) != 1:
-                    raise CompilationError(f"{binding} must be a still image")
+                    raise CompilationError(f"{binding_name} must be a still image")
                 image.verify()
         except (OSError, ValueError) as exc:
-            raise CompilationError(f"{binding} must be a decodable still image") from exc
+            raise CompilationError(f"{binding_name} must be a decodable still image") from exc
     manifest = _write_asset_bundle(destination / "managed-assets.zip", bindings) if bindings else None
     members = _member_by_binding(manifest) if manifest is not None else {}
     image_members = [members[f"reference_{index}"] for index in range(len(references))]
-    audio_members = [members[f"audio_reference_{index}"] for index in range(len(audio_references))]
     if native_settings is None:
         settings = {**_DEFAULTS, **request.value["overrides"]}
         scheduler = "simple"

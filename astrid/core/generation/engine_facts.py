@@ -44,6 +44,7 @@ def comfyui_facts() -> EngineFacts:
 
     def custom_node_sources() -> Mapping[str, Any]:
         from pathlib import PurePosixPath
+
         from astrid.core.generation.engine_recipe import load_recipe
         return {PurePosixPath(source.relative_path).name: source.pin
                 for source in load_recipe("comfyui", PLATFORM).sources

@@ -91,7 +91,7 @@ class H3Spec:
         """Planning dependencies only; later editable pixels win after verification."""
         spec = normalize_spec(self)
         constraints = tuple(op for op in spec.ops if op.op == "preserve")
-        result = []
+        result: list[SamplingPass] = []
         for op in spec.ops:
             if op.op == "preserve":
                 continue
@@ -186,7 +186,8 @@ def _normalize_spec(
     spec = replace(spec, duration=_fraction(spec.duration, "duration"))
     if spec.source is not None:
         source_range, _ = _interval(spec.source.range, "source.range", FPS)
-        spec = replace(spec, source=replace(spec.source, range=tuple(map(Fraction, source_range))))
+        normalized_range = (Fraction(source_range[0]), Fraction(source_range[1]))
+        spec = replace(spec, source=replace(spec.source, range=normalized_range))
     refs = _names(spec.refs, "refs")
     regions = _names(spec.regions, "regions")
     masks = {name: _mask(region, f"regions.{name}") for name, region in regions.items()}
@@ -232,7 +233,8 @@ def _normalize_spec(
             )
         clock = Fraction(SAMPLE_RATE) if spec.allow_v2_audio_regeneration and op.stream == "audio" else FPS
         during, _ = _interval(op.during, f"{path}.during", clock)
-        op = replace(op, during=tuple(map(Fraction, during)))
+        normalized_during = (Fraction(during[0]), Fraction(during[1]))
+        op = replace(op, during=normalized_during)
         if op.region is not None and op.region not in regions:
             _fail(
                 "dangling_region",
@@ -322,7 +324,7 @@ def _normalize_spec(
         ops.append(op)
         if op.op in {"regenerate", "preserve"}:
             for stream in ("video", "audio") if op.stream == "av" else (op.stream,):
-                edit = {
+                edit: dict[str, Any] = {
                     "stream": stream,
                     "during": list(during),
                     "action": "preserve" if op.op == "preserve" else "generate",
@@ -337,10 +339,10 @@ def _normalize_spec(
                         edit["seed"] = op.seed
                 edits.append(edit)
     if spec.source is not None and spec.source.modality == "image":
-        expected = [Operation("regenerate", (Fraction(1, 24), spec.duration),
+        expected_ops = [Operation("regenerate", (Fraction(1, 24), spec.duration),
                               refs=tuple(ref.name for ref in refs.values() if ref.use != "replacement"), stream="video"),
                     Operation("regenerate", (Fraction(0), spec.duration), stream="audio")]
-        if spec.source.range != (0, spec.duration) or ops != expected:
+        if spec.source.range != (0, spec.duration) or ops != expected_ops:
             _fail("unsupported_source", "timeline image requires its joint implicit video and audio grants",
                   "ops", "Use the frame-zero timeline image without explicit edits")
     generators = [op for op in ops if op.op in {"generate", "extend"}]
@@ -462,7 +464,7 @@ def sampling_request_document(
     sampling_pass = spec.sampling_passes()[index]
     source = spec.source
     if previous_verified_output and source is not None:
-        source = replace(source, range=(0, spec.duration))
+        source = replace(source, range=(Fraction(0), spec.duration))
     document: dict[str, Any] = {}
     _normalize_spec(
         replace(spec, source=source, ops=(sampling_pass.operation, *sampling_pass.preserves)),
@@ -478,6 +480,7 @@ def sampling_request(request: H3Request, index: int, *, previous_verified_output
     """Build an internal pass while preserving the parent's classified occurrences."""
     import hashlib
     import json
+
     from .request import normalize_request
     from .request_v2 import _identity_value
 
@@ -538,7 +541,7 @@ def _from_v2(request: H3Request) -> H3Spec:
     timelines = [item for item in value["media"] if item["role"] == "timeline"]
     if len(timelines) > 1:
         _fail("source_count", "At most one source is supported", "media", "Use one timeline source")
-    refs = []
+    refs: list[Reference] = []
     names = {}
     for item in value["media"]:
         if item["role"] != "reference":
@@ -547,10 +550,11 @@ def _from_v2(request: H3Request) -> H3Spec:
         authored_id = item.get("id", item["occurrence_id"])
         names[authored_id] = name
         refs.append(Reference(name, item["asset"], item.get("modality", "image"),
-                              tuple(_fraction(t, "media.range") for t in item["range"]) if "range" in item else None,
+                              (_fraction(item["range"][0], "media.range"),
+                               _fraction(item["range"][1], "media.range")) if "range" in item else None,
                               item.get("audio"), item.get("use"), item["occurrence_id"], authored_id))
     source = None
-    ops = []
+    ops: list[Operation] = []
     regions: list[Region] = []
     if timelines:
         item = timelines[0]
@@ -568,10 +572,28 @@ def _from_v2(request: H3Request) -> H3Spec:
                 "media",
                 "Use one bounded video without hard anchors",
             )
-        source = Source(item["asset"], (Fraction(0), _fraction(value["duration"], "duration")) if is_still else tuple(_fraction(t, "media.range") for t in item["range"]), item["occurrence_id"], item.get("id", item["occurrence_id"]), "image" if is_still else "video")
+        source_range: tuple[Fraction, Fraction] = (
+            (Fraction(0), _fraction(value["duration"], "duration"))
+            if is_still
+            else (
+                _fraction(item["range"][0], "media.range"),
+                _fraction(item["range"][1], "media.range"),
+            )
+        )
+        source = Source(
+            item["asset"], source_range, item["occurrence_id"],
+            item.get("id", item["occurrence_id"]), "image" if is_still else "video",
+        )
         if is_still:
-            ops.extend([Operation("regenerate", (Fraction(1, 24), _fraction(value["duration"], "duration")), refs=tuple(ref.name for ref in refs if ref.use != "replacement"), stream="video"),
-                        Operation("regenerate", (Fraction(0), _fraction(value["duration"], "duration")), stream="audio")])
+            duration = _fraction(value["duration"], "duration")
+            ops.extend([
+                Operation(
+                    "regenerate", (Fraction(1, 24), duration),
+                    refs=tuple(ref.name for ref in refs if ref.use != "replacement"),
+                    stream="video",
+                ),
+                Operation("regenerate", (Fraction(0), duration), stream="audio"),
+            ])
         for edit in item["edit"]:
             if (
                 set(edit) - {"stream", "during", "resolved", "action", "mask", "guides", "channels", "strength", "seed"}
@@ -590,7 +612,8 @@ def _from_v2(request: H3Request) -> H3Spec:
             ops.append(
                 Operation(
                     "preserve" if edit["action"] == "preserve" else "regenerate",
-                    tuple(_fraction(t, "media.edit.during") for t in edit["during"]),
+                    (_fraction(edit["during"][0], "media.edit.during"),
+                     _fraction(edit["during"][1], "media.edit.during")),
                     region,
                     guides,
                     edit["stream"],
@@ -647,7 +670,7 @@ def canonical_spec(
             if value["source"]
             else None
         )
-        refs = []
+        refs: list[Reference] = []
         for ref in value["references"]:
             if ref["purpose"] != "appearance":
                 _fail(
@@ -658,7 +681,7 @@ def canonical_spec(
                 )
             refs.append(Reference(f"ref-{len(refs) + 1}", ref["asset"]))
         regions: list[Region] = []
-        ops = []
+        ops: list[Operation] = []
         for stream in ("video", "audio"):
             for change in value["changes"][stream]:
                 if set(change) - ({"during", "action", "area", "mask_asset"} if stream == "video"
@@ -677,7 +700,7 @@ def canonical_spec(
                 ops.append(
                     Operation(
                         "preserve" if change["action"] == "preserve" else "regenerate",
-                        tuple(change["during"]),
+                        (Fraction(change["during"][0]), Fraction(change["during"][1])),
                         region,
                         tuple(ref.name for ref in refs) if change["action"] != "preserve" else (),
                         stream,
@@ -691,10 +714,13 @@ def canonical_spec(
         if value["operation"] == "generate":
             ops = [
                 Operation(
-                    "generate", (0, duration), refs=tuple(ref.name for ref in refs), stream="av"
+                    "generate", (Fraction(0), _fraction(duration, "output.duration")),
+                    refs=tuple(ref.name for ref in refs), stream="av"
                 )
             ]
         elif value["operation"] == "continue":
+            if source is None:
+                _fail("source_count", "Continuation requires a source", "source", "Supply a bounded source")
             start = source.range[1] - source.range[0]
             edits = [op for op in ops if op.op != "preserve"]
             if (

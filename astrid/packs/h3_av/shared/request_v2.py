@@ -307,7 +307,10 @@ def _validate_character_swap_media(settings: Mapping[str, Any], media: list[dict
     modalities = [str(item.get("modality")) for item in references]
     from .generation import LIMITS
     minimum = LIMITS["character_swap_references"]["value"]
-    if any(modalities.count(kind) < minimum[kind] for kind in ("image", "video")):
+    if (
+        modalities.count("image") < minimum["image"]
+        or modalities.count("video") < minimum["video"]
+    ):
         raise H3RequestError("character_swap_v1 references: lowering requires at least one video (<Video 1>) and one image (<Picture 1>); further references are allowed but untested")
     if continuation:
         raise H3RequestError("character_swap_v1 does not support continuation")
