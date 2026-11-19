@@ -1,3 +1,5 @@
+Reproduction templates. Exact executed argv, cwd and environment overrides are in commands.json. Braces below describe the two recorded runs; do not paste them as a single shell invocation.
+
 Workspace: /workspace/scratch/ed89673be2cd
 Candidate checkout: astrid-agent (7206f0f718f0fc81a8ba28476b69ff833ba7cd26)
 Before checkout: before (eb6e9ddfdb74ad0cde85fee91a3dec19f5cc1510; starting product plus four new failing cases)

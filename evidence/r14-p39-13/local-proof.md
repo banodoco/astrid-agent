@@ -94,7 +94,8 @@ Linux, Python 3.12.14, pytest 9.0.2; Runtime checkout
 `6855dfa8df65cf8ae4c002b57134d6505493c17c`. Local dependencies were reused
 read-only initially; the final skip/integrity proof uses a private copy with
 the pinned Ruff installed. Hosted jobs use their declared Python and complete
-dependency checkouts. See `commands.txt` for the exact local entrypoints.
+dependency checkouts. See `commands.json` for exact argv/cwd/environment records;
+`commands.txt` is a human-readable reproduction template.
 
 The current focused source bytes are unchanged from their recorded runs;
 the full hosted four-shard proof is not claimed here. Final proof must use
