@@ -1,4 +1,4 @@
-"""A private workflow snapshot is admitted once and remains byte-bound at use."""
+"""Private workflow snapshots retain admitted bytes and expire with their scope."""
 import os
 
 import pytest
@@ -18,35 +18,23 @@ def _source(tmp_path, *, source_member=True):
     return bundle.python_path
 
 
-def test_nested_preparation_reuses_one_admitted_private_pair(tmp_path, monkeypatch):
-    from vibecomfy import workflow_bundle as bundles
-
+def test_nested_preparation_preserves_admitted_pair_contents_and_cleanup(tmp_path):
     source = _source(tmp_path)
-    calls = []
-    load, publish = bundles.load_bundle, bundles._atomic_publish_pair
-
-    def observed_load(*args, **kwargs):
-        calls.append("load")
-        return load(*args, **kwargs)
-
-    def observed_publish(*args, **kwargs):
-        calls.append("publish")
-        return publish(*args, **kwargs)
-
-    monkeypatch.setattr(bundles, "load_bundle", observed_load)
-    monkeypatch.setattr(bundles, "_atomic_publish_pair", observed_publish)
     with _snapshot_generation_workflow(source) as frozen:
         assert frozen != source
         with _snapshot_generation_workflow(frozen) as nested:
-            assert nested == frozen
-            assert calls == ["load", "publish"]
-            assert nested.read_bytes() == source.read_bytes()
+            assert nested != source
+            assert nested.read_bytes() == frozen.read_bytes() == source.read_bytes()
+            assert nested.with_suffix('.vibe.json').read_bytes() == frozen.with_suffix('.vibe.json').read_bytes()
             assert nested.with_name("source.json").read_bytes() == b'{"source":"old"}'
         assert frozen.is_file()
+        assert frozen.with_name("source.json").read_bytes() == b'{"source":"old"}'
     assert not frozen.exists()
+    assert not nested.exists()
     with _snapshot_generation_workflow(source) as later:
         assert later != frozen
-        assert calls == ["load", "publish", "load", "publish"]
+        assert later.read_bytes() == source.read_bytes()
+        assert later.with_name("source.json").read_bytes() == b'{"source":"old"}'
     assert not later.exists()
 
 
@@ -76,18 +64,21 @@ def test_nested_first_use_refuses_edited_admitted_members(tmp_path, member):
                 pytest.fail("edited bytes were reused as the admitted snapshot")
 
 
-def test_nested_json_snapshot_is_held_only_for_the_outer_operation(tmp_path):
+def test_nested_json_snapshots_preserve_contents_and_expire_with_scope(tmp_path):
     source = tmp_path / "workflow.json"
     source.write_bytes(b'{"nodes":[]}')
     with _snapshot_generation_workflow(source) as frozen:
         with _snapshot_generation_workflow(frozen) as nested:
-            assert nested == frozen and nested.read_bytes() == source.read_bytes()
-    with pytest.raises(GenerationInputError):
-        with _snapshot_generation_workflow(frozen):
-            pytest.fail("a completed operation retained authority over its deleted snapshot")
+            assert nested.read_bytes() == frozen.read_bytes() == source.read_bytes()
+    assert not frozen.exists()
+    assert not nested.exists()
+    for expired in (frozen, nested):
+        with pytest.raises(GenerationInputError):
+            with _snapshot_generation_workflow(expired):
+                pytest.fail("a completed operation retained authority over its deleted snapshot")
 
 
-def test_snapshot_reuse_normalizes_the_temporary_directory(tmp_path, monkeypatch):
+def test_snapshot_paths_are_normalized_and_keep_nested_contents(tmp_path, monkeypatch):
     import tempfile
 
     source = tmp_path / "workflow.json"
@@ -99,4 +90,7 @@ def test_snapshot_reuse_normalizes_the_temporary_directory(tmp_path, monkeypatch
     with _snapshot_generation_workflow(source) as frozen:
         assert frozen == frozen.resolve()
         with _snapshot_generation_workflow(frozen) as nested:
-            assert nested == frozen and nested.read_bytes() == source.read_bytes()
+            assert nested == nested.resolve()
+            assert nested.read_bytes() == frozen.read_bytes() == source.read_bytes()
+    assert not frozen.exists()
+    assert not nested.exists()

@@ -1,0 +1,47 @@
+{
+  "schema": "plan55.ls12.deferred-evidence.v1",
+  "deferred_task": "LS-12.1",
+  "split_ruling": "https://github.com/banodoco/astrid-dev/issues/796#issuecomment-7010819708",
+  "test_disposition": "https://github.com/banodoco/astrid-dev/issues/796#issuecomment-7012365894",
+  "original_implementation_commit": "b2a993f72eafb936ba9e3db77e43ad49da82293c",
+  "intermediate_commit": "b369213a1b517a23a86d1127e8a21b02ea2beaac",
+  "intermediate_tree": "c7d075c3d6cc548ae1b7ee5d88a4c5ee4b95ab09",
+  "tests": {
+    "host_admission.b2.py.txt": {
+      "source_path": "tests/core/pack/test_ls12_host_admission.py",
+      "commit": "b2a993f72eafb936ba9e3db77e43ad49da82293c",
+      "blob": "ed7fc0b6340498f90dd9b41d737f7a661ae4b9e3",
+      "sha256": "bcb2dea1875f655f4606dfeb9aed60fd776a6b8599bd46266d844d82c7ecba7f"
+    },
+    "snapshot_admission.b2.py.txt": {
+      "source_path": "tests/sdk/test_ls12_snapshot_admission.py",
+      "commit": "b2a993f72eafb936ba9e3db77e43ad49da82293c",
+      "blob": "8729939a5589d8ab0b10603d4dd765dcc5d5b9be",
+      "sha256": "39abadf34dc8aba082262f75fdaf259cc4f758c097de95f8233c48c0c46e83f7"
+    }
+  },
+  "deferred_test_ids": [
+    "tests/core/pack/test_ls12_host_admission.py::test_host_admission_reads_each_selected_source_once[False]",
+    "tests/core/pack/test_ls12_host_admission.py::test_host_admission_reads_each_selected_source_once[True]",
+    "tests/sdk/test_ls12_snapshot_admission.py::test_nested_preparation_reuses_one_admitted_private_pair",
+    "tests/sdk/test_ls12_snapshot_admission.py::test_nested_json_snapshot_is_held_only_for_the_outer_operation",
+    "tests/sdk/test_ls12_snapshot_admission.py::test_snapshot_reuse_normalizes_the_temporary_directory"
+  ],
+  "implementation_patch": {
+    "file": "verification-optimization.patch",
+    "from": "b369213a1b517a23a86d1127e8a21b02ea2beaac",
+    "to": "b2a993f72eafb936ba9e3db77e43ad49da82293c",
+    "paths": [
+      "astrid/core/pack/discovery.py",
+      "astrid/core/execution/generic_host.py",
+      "astrid/sdk/generation.py"
+    ],
+    "sha256": "e5f7d1a9e88021b12af8a7adf8490c89980007dd2b1d7fa2c16e895abf6ea924",
+    "format": "git diff --unified=0; replay checks use git apply --unidiff-zero"
+  },
+  "qualification": {
+    "b2_d1_run": 44515956267,
+    "b2_phase_run": 44515956210,
+    "status": "Not qualified; verify phase regressed; absolute D1 NOT MET"
+  }
+}

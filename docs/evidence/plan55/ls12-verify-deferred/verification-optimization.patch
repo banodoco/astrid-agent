@@ -1,0 +1,90 @@
+diff --git a/astrid/core/execution/generic_host.py b/astrid/core/execution/generic_host.py
+index be7994dda..5bfd2239f 100644
+--- a/astrid/core/execution/generic_host.py
++++ b/astrid/core/execution/generic_host.py
+@@ -4738,0 +4739 @@ def _source_digest_for_roots(
++    _verified_digests: Mapping[Path, str] | None = None,
+@@ -4743,0 +4745,6 @@ def _source_digest_for_roots(
++    def observed(root: Path) -> str:
++        measured_root = (captured_roots or {}).get(root, root).resolve()
++        if _verified_digests is not None and measured_root in _verified_digests:
++            return _verified_digests[measured_root]
++        return pack_digest(measured_root)
++
+@@ -4745 +4752 @@ def _source_digest_for_roots(
+-                 "digest": pack_digest((captured_roots or {}).get(root, root).resolve())} for root in roots]
++                 "digest": observed(root)} for root in roots]
+@@ -5128,0 +5136 @@ def _verify_admitted_source(admission: Mapping[str, Any]) -> None:
++    verified_digests: dict[Path, str] = {}
+@@ -5133,2 +5141,4 @@ def _verify_admitted_source(admission: Mapping[str, Any]) -> None:
+-            validate_selected_pack_map(admission["selected_pack_map"],
+-                                       verified_relocations=admission.get("verified_pack_relocations"))
++            selected = validate_selected_pack_map(
++                admission["selected_pack_map"],
++                verified_relocations=admission.get("verified_pack_relocations"),
++            )
+@@ -5136,0 +5147,5 @@ def _verify_admitted_source(admission: Mapping[str, Any]) -> None:
++        # These exact roots were fully read above. The source-root identity is
++        # another projection of this admission, not a second admission. Keep
++        # the result local to this call; every later validator/worker install
++        # still reads afresh and the worker retains its exact executable bytes.
++        verified_digests = {Path(row["root"]): row["source_digest"] for row in selected.values()}
+@@ -5148 +5163 @@ def _verify_admitted_source(admission: Mapping[str, Any]) -> None:
+-        observed = _source_digest_for_roots(roots)
++        observed = _source_digest_for_roots(roots, _verified_digests=verified_digests)
+diff --git a/astrid/core/pack/discovery.py b/astrid/core/pack/discovery.py
+index db7b7cf27..2477a95b4 100644
+--- a/astrid/core/pack/discovery.py
++++ b/astrid/core/pack/discovery.py
+@@ -78 +78 @@ def _tree_fingerprint(root: Path) -> str:
+-    """Read contents, names and file kinds, including untracked resources.
++    """Read the same content/name/kind identity with fewer path allocations.
+@@ -80,3 +80,3 @@ def _tree_fingerprint(root: Path) -> str:
+-    A stat-only key misses same-size edits with restored timestamps. Tracking
+-    the entire tree also covers added manifests, alternate manifests, deleted
+-    resources and new symlinks that canonical admission must reject.
++    DirEntry metadata is used only within this walk. Every regular file is
++    still hashed on every call: same-size edits with restored times, new files,
++    symlinks and deletion remain observable. No admission result is cached.
+@@ -90,2 +90,2 @@ def _tree_fingerprint(root: Path) -> str:
+-    def visit(path: Path) -> None:
+-        add(os.fsencode(path.relative_to(root)))
++    def visit(path: str, relative: str, entry: os.DirEntry[str] | None = None) -> None:
++        add(os.fsencode(relative))
+@@ -93 +93,2 @@ def _tree_fingerprint(root: Path) -> str:
+-            mode = path.lstat().st_mode
++            mode = (entry.stat(follow_symlinks=False) if entry is not None
++                    else os.stat(path, follow_symlinks=False)).st_mode
+@@ -101,2 +102,7 @@ def _tree_fingerprint(root: Path) -> str:
+-            for child in sorted(path.iterdir()):
+-                visit(child)
++            with os.scandir(path) as scan:
++                # Match pathlib's platform ordering, including Windows case
++                # normalization, rather than changing the fingerprint format.
++                children = sorted(scan, key=lambda child: os.path.normcase(child.name))
++            for child in children:
++                child_relative = child.name if relative == "." else os.path.join(relative, child.name)
++                visit(child.path, child_relative, child)
+@@ -104 +110 @@ def _tree_fingerprint(root: Path) -> str:
+-            with path.open("rb") as stream:
++            with open(path, "rb") as stream:
+@@ -109 +115 @@ def _tree_fingerprint(root: Path) -> str:
+-    visit(root)
++    visit(os.fspath(root), ".")
+diff --git a/astrid/sdk/generation.py b/astrid/sdk/generation.py
+index 875e9374b..3bdee6428 100644
+--- a/astrid/sdk/generation.py
++++ b/astrid/sdk/generation.py
+@@ -195 +195 @@ def _snapshot_generation_workflow(path: Path):
+-    """Freeze a canonical source pair, checking held bytes before nested use.
++    """Freeze source once for this operation; nested preparation reuses it.
+@@ -197,3 +197,3 @@ def _snapshot_generation_workflow(path: Path):
+-    The internally published private path keeps its admitted byte identity.
+-    Nested preparation still performs ordinary canonical loading/publication;
+-    reusing that verification is deferred. No result survives this scope.
++    Only the internally published private path can reuse admission. Fresh
++    reads must equal the held Python, companion and source bytes exactly;
++    timestamp equality does not grant authority. No result survives this scope.
+@@ -210,0 +211,2 @@ def _snapshot_generation_workflow(path: Path):
++        yield admitted.path
++        return
