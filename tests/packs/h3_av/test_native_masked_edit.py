@@ -685,17 +685,26 @@ def test_mixed_fixed_and_generated_audio_delivers_exact_pcm_and_masked_picture(t
                 source_pcm[15001 * stride:25001 * stride] + generated_pcm[25001 * stride:35003 * stride] +
                 source_pcm[35003 * stride:48000 * stride])
     assert delivered == expected
-    assert [row["source"] for row in result["composition"]["exact_audio"]["delivered_spans"]] == ["source", "fixed", "source", "generated", "source"]
-    def first_frame(path):
-        return subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-frames:v", "1", "-vf",
+    delivered_spans = result["composition"]["exact_audio"]["delivered_spans"]
+    assert [row["source"] for row in delivered_spans] == ["source", "fixed", "source", "generated", "source"]
+    assert manifest["capabilities"]["expected_delivered_audio_spans"] == delivered_spans
+    assert [(row["samples"], row["use"]) for row in manifest["capabilities"]["requested_audio_grants"]] == [
+        ([5000, 15001], "fixed"), ([25001, 35003], "generated")]
+    def decode_frames(path):
+        return subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-vf",
                                "scale=1024:576:flags=lanczos,format=gbrp,format=rgb24", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
                               check=True, capture_output=True).stdout
-    original, standin, actual = map(first_frame, (source, generated, result["candidate"]["path"]))
-    def pixel(frame, x, y):
-        offset = (y * 1024 + x) * 3
-        return frame[offset:offset + 3]
-    assert pixel(actual, 64, 64) == pixel(standin, 64, 64)
-    assert pixel(actual, 300, 64) == pixel(original, 300, 64)
+    original, standin, actual = map(decode_frames, (source, generated, result["candidate"]["path"]))
+    row_bytes, frame_bytes = 1024 * 3, 1024 * 576 * 3
+    assert len(original) == len(standin) == len(actual) == 24 * frame_bytes
+    for frame in range(24):
+        for row in range(576):
+            start = frame * frame_bytes + row * row_bytes
+            inside_end = start + (128 * 3 if row < 128 else 0)
+            end = start + row_bytes
+            assert actual[inside_end:end] == original[inside_end:end]
+            if row < 128:
+                assert actual[start:inside_end] == standin[start:inside_end]
 
 
 def test_audio_mask_fixed_pcm_wins_over_fractional_generated_overlap(tmp_path):

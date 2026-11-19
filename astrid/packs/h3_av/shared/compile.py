@@ -805,6 +805,26 @@ def _compile_native_masked_edit(
             fixed_audio_spans.append(span)
         else:
             generated_audio.append((*span, audio_op.strength))
+    requested_audio_grants = []
+    for item in passes:
+        audio_op = item.operation
+        if audio_op.stream != "audio":
+            continue
+        requested_audio_grants.append({
+            "samples": [int(value * 48000) for value in audio_op.during],
+            "strength": audio_op.strength,
+            "use": "fixed" if audio_op.refs else "generated",
+            "occurrences": [references_by_name[name].occurrence_id for name in audio_op.refs],
+        })
+    total_audio_samples = int(spec.duration * 48000)
+    edges = sorted({0, total_audio_samples,
+                    *(point for start, end, _ in generated_audio for point in (start, end)),
+                    *(point for start, end in fixed_audio_spans for point in (start, end))})
+    expected_audio_spans = []
+    for first, last in zip(edges, edges[1:]):
+        owner = "fixed" if any(a <= first and last <= b for a, b in fixed_audio_spans) else (
+            "generated" if any(a <= first and last <= b for a, b, _ in generated_audio) else "source")
+        expected_audio_spans.append({"samples": [first, last], "source": owner})
     audio_mask_values = None
     if generated_audio:
         try:
@@ -916,6 +936,8 @@ def _compile_native_masked_edit(
                 else "mask_0 (static image, spatial, crop disabled, channel " + _MASK_CHANNEL + ")"),
             "audio_binding": ("prepared source with fixed PCM, audio_strength=0" if "source_audio_prepared" in bindings
                               else "source_audio_from_source_video, audio_strength=0"),
+            **({"requested_audio_grants": requested_audio_grants,
+                "expected_delivered_audio_spans": expected_audio_spans} if requested_audio_grants else {}),
             **({"audio_time_mask": audio_mask_values} if audio_mask_values is not None else {}),
             "references": len(conditioning) if conditioning is not None else len(references),
             "reference_order": ([next(item["asset"] for item in request.value["media"] if item["occurrence_id"] == row["occurrence"]) for row in conditioning] if conditioning is not None else [item.asset for item in references]),
