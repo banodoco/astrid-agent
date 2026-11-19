@@ -34,6 +34,18 @@ def main() -> int:
         if counts["native_flushes"] is not None:
             summary["status"] = "PASS" if counts["native_flushes"] > 1 and not counts["observed_failed_flushes"] else "FAIL"
         (output / "decoded-events.json").write_text(json.dumps(trace, indent=2) + "\n")
+        wal = json.loads((output / "calibration/wal-calibration.json").read_text())
+        summary["wal_calibration"] = wal
+        if os.name != "nt":
+            observed = count_interval(trace, wal["interval"])
+            wal_events = [row for row in observed["events"] if row.get("path") == wal["database"] + "-wal"]
+            checkpoint_events = [row for row in observed["events"] if row.get("path") == wal["database"]]
+            qualified = (observed["native_flushes"] is not None and not observed["observed_failed_flushes"]
+                         and wal_events and checkpoint_events)
+            summary["wal_native"] = {"counts": observed, "wal_syncs": len(wal_events),
+                                      "checkpoint_database_syncs": len(checkpoint_events)}
+            if not qualified:
+                summary["status"] = "FAIL"
     (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary, indent=2))
     return 0 if summary["status"] == "PASS" else 1

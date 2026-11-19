@@ -126,7 +126,8 @@ class SlotPod(MachineProviderHTTP):
 @contextlib.contextmanager
 def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_classes=(), call=None,
            machine_identity=False, target_kind="runpod", h3_output=False, trusted_inventory=False,
-           request_observer=None, timeline_observer=None, runtime_observer=None):
+           request_observer=None, timeline_observer=None, runtime_observer=None,
+           product_defaults=False):
     monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "machine"))
     monkeypatch.setattr('astrid.packs.runpod.managed_sources.ensure_managed_sources', lambda: Path(tuple_sources))
     import subprocess
@@ -145,7 +146,10 @@ def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_class
         "idle_timeout_seconds": 1800,
         "credential_ref": "env:RUNPOD_RUNPOD_FAKE_CREDENTIAL", "budget_cap_usd": 2.0}
     claim_path = target_selection.canonical_claim_path("cpu-fixture")
-    monkeypatch.setenv("ASTRID_MACHINE_POLL_SECONDS", "0.05")
+    if product_defaults:
+        monkeypatch.delenv("ASTRID_MACHINE_POLL_SECONDS", raising=False)
+    else:
+        monkeypatch.setenv("ASTRID_MACHINE_POLL_SECONDS", "0.05")
     provider = SlotPod(claim_path, tmp_path / "attempts", _slot_classes(slot) | set(extra_classes))
     provider.comfy.h3_output = h3_output
     provider.comfy.request_observer = request_observer
@@ -228,7 +232,10 @@ def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_class
     host.discover()
     host.preflight()
     host.register()
-    worker = threading.Thread(target=host.run, kwargs={"poll_seconds": 0.02}, daemon=True)
+    # Meter cells leave the product's cadence unchanged. Other existing journey
+    # fixtures keep their explicitly accelerated polling.
+    worker = threading.Thread(target=host.run,
+        kwargs={} if product_defaults else {"poll_seconds": 0.02}, daemon=True)
     worker.start()
     try:
         with contextlib.ExitStack() as stack:

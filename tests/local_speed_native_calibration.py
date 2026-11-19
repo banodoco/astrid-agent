@@ -5,7 +5,8 @@ import json
 import os
 from pathlib import Path
 import sqlite3
-import time
+
+from tests._local_speed_process import EPOCH_CLOCK, epoch_time_ns
 
 
 def main():
@@ -19,7 +20,7 @@ def main():
         python_sync_calls.append(fd)
         return original_fsync(fd)
     os.fsync = observed_fsync
-    interval = {"pid": os.getpid(), "epoch_start_ns": time.time_ns()}
+    interval = {"pid": os.getpid(), "epoch_clock": EPOCH_CLOCK, "epoch_start_ns": epoch_time_ns()}
     with (args.output / "calibration.bin").open("wb") as handle:
         handle.write(b"native flush calibration")
         handle.flush()
@@ -33,7 +34,31 @@ def main():
     connection.commit()
     assert connection.execute("SELECT value FROM proof").fetchall() == [("stored",)]
     connection.close()
-    interval["epoch_reply_ns"] = time.time_ns()
+    interval["epoch_reply_ns"] = epoch_time_ns()
+    # Separate product-mode calibration, retaining the original DELETE/FULL
+    # proof above. These settings affect only this throwaway calibration DB.
+    wal_path = args.output / "wal-calibration.sqlite"
+    wal = sqlite3.connect(wal_path)
+    wal.execute("PRAGMA journal_mode=WAL")
+    wal.execute("PRAGMA synchronous=FULL")
+    wal.execute("CREATE TABLE proof(value TEXT NOT NULL)")
+    wal.commit()
+    modes = {name: wal.execute("PRAGMA " + name).fetchone()[0]
+             for name in ("journal_mode", "synchronous", "wal_autocheckpoint")}
+    wal_interval = {"pid": os.getpid(), "epoch_clock": EPOCH_CLOCK, "epoch_start_ns": epoch_time_ns()}
+    wal.execute("INSERT INTO proof VALUES ('committed')")
+    wal.commit()
+    checkpoint_start = epoch_time_ns()
+    checkpoint = wal.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+    wal_interval["epoch_reply_ns"] = epoch_time_ns()
+    assert modes["journal_mode"] == "wal" and modes["synchronous"] == 2
+    assert checkpoint[0] == 0
+    assert wal.execute("SELECT value FROM proof").fetchall() == [("committed",)]
+    wal.close()
+    (args.output / "wal-calibration.json").write_text(json.dumps({
+        "interval": wal_interval, "database": str(wal_path), "sqlite": modes,
+        "checkpoint_start_ns": checkpoint_start, "checkpoint": checkpoint,
+    }, indent=2) + "\n")
     os.fsync = original_fsync
     assert len(python_sync_calls) == 1
     (args.output / "calibration-interval.json").write_text(json.dumps(interval, indent=2) + "\n")
