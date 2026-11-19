@@ -805,6 +805,26 @@ def test_silent_character_swap_source_delivers_implicit_and_explicit_audio(tmp_p
     prep = prepare_request(normalize_request(raw), asset_map={"scene": str(source), "performance": str(reference), "face": str(image), "voice": str(voice)})
     assert prep["mask_schedule"]["audio"]["baseline_intervals"] == []
     assert prep["mask_schedule"]["audio"]["generated_intervals"] == [[0.0, 1.0]]
+    # Exercise the real public build hook and its managed graph bindings.
+    import importlib.util
+    from astrid.core.generation.engine_facts import comfyui_facts
+    hook_path = Path(__file__).parents[3] / "astrid/packs/h3_av/extensions/vibecomfy.workflows/hooks.py"
+    hook_spec = importlib.util.spec_from_file_location("h3_silent_source_hooks", hook_path)
+    hooks = importlib.util.module_from_spec(hook_spec)
+    hook_spec.loader.exec_module(hooks)
+    request_file = tmp_path / "request.json"
+    request_file.write_text(json.dumps(raw))
+    built = hooks.build({"request": str(request_file), "asset_map": {"scene": str(source), "performance": str(reference), "face": str(image), "voice": str(voice)}}, {}, tmp_path / "hook", engine=comfyui_facts())
+    graph = built["workflow"].compile("api", run_inputs=built["bindings"])
+    v2v = next(row for row in graph.values() if row["class_type"] == "H3V2VGranularFractionalDenoise")
+    assert v2v["inputs"]["audio_strength"] == 0
+    assert any(row["class_type"] == "MiniMaxH3SetAVNoiseMask" for row in graph.values())
+    assert "audio_time_mask" in built["assets"]
+    from astrid.packs.h3_av.shared.compose import _probe, _streams
+    assert len(_streams(_probe(built["assets"]["source_video"]), "audio")) == 1
+    compilation = json.loads((tmp_path / "hook/h3/plan/compile/compilation.json").read_text())
+    spans = compilation["capabilities"]["expected_delivered_audio_spans"]
+    assert {span["source"] for span in spans} == ({"generated", "fixed"} if explicit_fixed else {"generated"})
     result = compose_candidate(preparation=prep, generated=generated, source=source, out_dir=tmp_path / "composed")
     delivered, channels = _decode_exact_pcm(Path(result["candidate"]["path"]))
     generated_pcm, _ = _decode_exact_pcm(generated, expected_channels=channels, generated=True)
