@@ -4,6 +4,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -140,12 +141,27 @@ def test_strict_probe_consumes_the_selected_canonical_reader(monkeypatch, capsys
     assert closure["startup"]["executable"] == sys.executable
 
 
-def test_installed_probe_refuses_a_nonisolated_interpreter(monkeypatch):
-    assert not sys.flags.isolated
+def test_installed_probe_refuses_a_nonisolated_interpreter(tmp_path):
     schema = REPO_ROOT / _local_schema.SCHEMA_RELATIVE_PATH
-    monkeypatch.setattr(sys, "argv", ["probe", str(schema), str(REPO_ROOT), "installed"])
-    with pytest.raises(RuntimeError, match="isolated installed interpreter"):
-        exec(compile(remotion_runtime._SCHEMA_PROBE, "<schema-probe>", "exec"), {})
+    # The gate parent deliberately uses -I. Interpreter flags are not inherited
+    # by this fresh child: -E/-s avoid ambient Python configuration while leaving
+    # isolated == 0, the precondition this negative probe must actually exercise.
+    probe = (
+        "import sys\n"
+        "print(f'probe child isolated={sys.flags.isolated}', flush=True)\n"
+        "assert not sys.flags.isolated\n"
+        + remotion_runtime._SCHEMA_PROBE
+    )
+    result = subprocess.run(
+        [sys.executable, "-E", "-s", "-c", probe, str(schema), str(REPO_ROOT), "installed"],
+        cwd=tmp_path, capture_output=True, text=True, check=False, timeout=30,
+    )
+    print(f"schema refusal probe: parent isolated={sys.flags.isolated}; child exit={result.returncode}")
+    print(result.stdout, end="")
+    print(result.stderr, end="")
+    assert result.stdout == "probe child isolated=0\n"
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "RuntimeError: schema validation requires an isolated installed interpreter" in result.stderr
 
 
 @pytest.mark.parametrize("payload", [
