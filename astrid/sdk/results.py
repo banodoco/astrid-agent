@@ -584,7 +584,8 @@ def _generation_task_refs(result: InvocationResult) -> dict[str, Any]:
     # evidence do not establish custody.
     settled_payload = settled.get("payload") if isinstance(settled, Mapping) else None
     hook_projection = (settled_payload.get("workflow_hook_evidence")
-                       if isinstance(settled_payload, Mapping) else None)
+                       if result.capability_id == "vibecomfy.run" and isinstance(settled_payload, Mapping)
+                       else None)
     reference_view = None
     if isinstance(hook_projection, Mapping):
         from astrid.core.contracts.managed_generation_result import validate_workflow_hook_evidence

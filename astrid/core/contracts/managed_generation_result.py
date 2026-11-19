@@ -393,9 +393,14 @@ def validate_workflow_hook_evidence(value: Any) -> dict[str, Any]:
                     ("audio", "expected_delivered_sample_spans"): "span",
                     ("audio", "actual_delivered_sample_spans"): "span"}
     typed_fields = {
+        ("evidence", "reference_view"): (dict, type(None)),
         ("view", "references"): list, ("view", "target_frame_cap"): int,
         ("reference", "occurrence"): str, ("reference", "modality"): str,
         ("reference", "trim"): (list, type(None)), ("reference", "tag"): str,
+        ("reference", "input_binding"): dict,
+        ("reference", "retained_picture_frames_estimate"): dict,
+        ("reference", "effective_size"): dict,
+        ("reference", "retained_picture_frames_derived"): dict,
         ("input_binding", "binding"): str, ("input_binding", "port"): str,
         ("input_binding", "start_time"): (int, float), ("input_binding", "frame_load_cap"): int,
         ("input_binding", "audio"): (str, bool), ("input_binding", "soundtrack"): (dict, bool, type(None)),
@@ -410,6 +415,7 @@ def validate_workflow_hook_evidence(value: Any) -> dict[str, Any]:
         ("derived", "alignment"): str, ("derived", "rule_source"): str,
         ("derived", "loader_source"): str, ("derived", "decoder_source"): str,
         ("audio", "requested_grants"): list, ("audio", "effective_40hz_mask"): dict,
+        ("view", "audio"): dict,
         ("audio", "decoded_frame_mask"): list, ("audio", "expected_delivered_sample_spans"): list,
         ("audio", "actual_delivered_sample_spans"): list, ("grant", "samples"): list,
         ("grant", "strength"): (int, float), ("grant", "use"): str,
@@ -453,6 +459,10 @@ def validate_workflow_hook_evidence(value: Any) -> dict[str, Any]:
                 if expected_type is not None and (type(child) not in expected_type if isinstance(expected_type, tuple)
                                                    else type(child) is not expected_type):
                     raise ManagedGenerationResultError(f"workflow hook evidence has an invalid value at {where}.{key}")
+                entry_context = list_context.get((context, key))
+                if (type(child) is list and entry_context is not None
+                        and any(type(entry) is not dict for entry in child)):
+                    raise ManagedGenerationResultError(f"workflow hook evidence has an invalid list entry at {where}.{key}")
                 if key in citations:
                     if child != citations[key]:
                         raise ManagedGenerationResultError(f"workflow hook evidence has an unpinned citation at {where}.{key}")
@@ -464,10 +474,14 @@ def validate_workflow_hook_evidence(value: Any) -> dict[str, Any]:
         elif isinstance(item, list):
             next_context = list_context.get((context, where.rsplit(".", 1)[-1]))
             list_field = where.rsplit(".", 1)[-1]
+            if ((context, list_field) in {("reference", "trim"), ("input_binding", "resolved_range"),
+                                          ("grant", "samples"), ("span", "samples")}
+                    and len(item) != 2):
+                raise ManagedGenerationResultError(f"workflow hook evidence has an invalid boundary pair at {where}")
             if next_context is not None and any(type(child) is not dict for child in item):
                 raise ManagedGenerationResultError(f"workflow hook evidence has an invalid list entry at {where}")
             primitive_types = {
-                ("reference", "trim"): (int, float), ("input_binding", "resolved_range"): (int, float),
+                ("reference", "trim"): (int, float, str), ("input_binding", "resolved_range"): (int, float, str),
                 ("grant", "samples"): int, ("grant", "occurrences"): str,
                 ("effective_40hz_mask", "values"): (int, float), ("audio", "decoded_frame_mask"): (int, float, bool),
                 ("span", "samples"): int,
@@ -475,10 +489,17 @@ def validate_workflow_hook_evidence(value: Any) -> dict[str, Any]:
             if primitive_types is not None and any(type(child) not in (primitive_types if isinstance(primitive_types, tuple)
                                                                         else (primitive_types,)) for child in item):
                 raise ManagedGenerationResultError(f"workflow hook evidence has invalid list values at {where}")
+            if ((context, list_field) in {("reference", "trim"), ("input_binding", "resolved_range")}
+                    and any(isinstance(child, str) and re.fullmatch(
+                        r"(?:0|[1-9][0-9]*)/[1-9][0-9]*", child) is None for child in item)):
+                raise ManagedGenerationResultError(f"workflow hook evidence has an invalid rational boundary at {where}")
             for index, child in enumerate(item):
                 check(child, next_context or context, f"{where}[{index}]")
         elif isinstance(item, str):
-            if any(re.search(pattern, item) for pattern in locator_patterns):
+            rational_trim = (context in {"reference", "input_binding"}
+                and where.rsplit(".", 1)[-1].startswith(("trim[", "resolved_range["))
+                and re.fullmatch(r"(?:0|[1-9][0-9]*)/[1-9][0-9]*", item) is not None)
+            if not rational_trim and any(re.search(pattern, item) for pattern in locator_patterns):
                 raise ManagedGenerationResultError(f"workflow hook evidence contains a path or URL at {where}")
         elif item is not None and type(item) not in (bool, int, float):
             raise ManagedGenerationResultError(f"workflow hook evidence is not JSON-safe at {where}")

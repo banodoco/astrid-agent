@@ -129,6 +129,16 @@ def test_untrusted_manifest_reference_view_is_not_projected():
     assert "reference_view" not in result.manifest
 
 
+def test_non_h3_capability_cannot_mint_workflow_reference_view():
+    fixture = terminal()
+    fixture.result.capability_id = "speech.generate"
+    fixture.result.raw_result["task"]["result"]["payload"] = {
+        "workflow_hook_evidence": {"reference_view": {"references": []}},
+    }
+    result = _reconstruct_generation_result(fixture.result)
+    assert "reference_view" not in result.manifest
+
+
 def test_direct_h3_manifest_cas_readback_authenticates_and_survives_scratch_cleanup(tmp_path):
     import hashlib
     import json
