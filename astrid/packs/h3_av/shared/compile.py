@@ -858,7 +858,7 @@ def _compile_native_masked_edit(
         audio_mask_values = {"format": "FFV1 gbrp16le 8x8 uniform RGB, red channel", "precision": "1/65535",
                              "requested_frame_values": requested_mask, "decoded_frame_values": decoded_mask,
                              "resampled_40hz": _resample_audio_mask(decoded_mask, round(raw_frames * 40 / 24)),
-                             "padding": "keep"}
+                             "padding": "generated" if still_source else "keep"}
     fixed_audio = request.value.get("version") == 2 and any(
         item.get("use") == "replacement" for item in request.value["media"]
     )

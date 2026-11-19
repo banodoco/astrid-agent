@@ -1042,7 +1042,11 @@ def test_timeline_still_uses_source_backed_generation_and_exact_first_frame(tmp_
     source = tmp_path / "compiled" / "prepared-still-source.mkv"
     assert source.is_file()
     mask = manifest["capabilities"]["audio_time_mask"]
+    assert len(mask["decoded_frame_values"]) == manifest["capabilities"]["generation_timing"]["raw_frames"]
     assert all(value == 1 for value in mask["decoded_frame_values"])
+    assert len(mask["resampled_40hz"]) == round(len(mask["decoded_frame_values"]) * 40 / 24)
+    assert all(value == 1 for value in mask["resampled_40hz"])
+    assert mask["padding"] == "generated"
     api = load_workflow_any(manifest["workflow"]["workflow.py"]["path"]).compile(
         "api", run_inputs=manifest["workflow_inputs"])
     v2v = next(row for row in api.values() if row["class_type"] == "H3V2VGranularFractionalDenoise")
