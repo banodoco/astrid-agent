@@ -37,10 +37,16 @@ def manifest_media(tmp_path, monkeypatch):
     try:
         service, project = case.service, case.project
         service.list_timeline_commits(project, 'film', authorize=case.authorize)
-        case.legacy = service.get_project_parent_composition_revision(project, 'film', 'popup-baseline')
+        case.legacy_revision_id = service.get_project_timeline(project, 'film')['head_revision_id']
+        case.legacy = service.get_project_parent_composition_revision(project, 'film', case.legacy_revision_id)
         commits, _ = service._timeline_commits()
-        document = commits.revision_closure(project, 'film', 'popup-baseline')
+        document = commits.revision_closure(project, 'film', case.legacy_revision_id)
+        assert document['parent_revision']['revision_id'] == case.legacy_revision_id
+        assert service.get_project_timeline(project, 'film')['head_revision_id'] == case.legacy_revision_id
         shot = copy.deepcopy(document['shot_revisions'][0])
+        assert {row['occurrence_id']: row['shot_revision_id']
+                for row in document['parent_revision']['payload']['occurrences']} == {
+                    'occ-a': shot['revision_id'], 'occ-b': shot['revision_id']}
         binding = service.get_project_shot_text_binding(
             project, shot['payload']['text_bindings'][0]['binding_id'])
         descriptor = {key: binding[key] for key in (
@@ -58,7 +64,7 @@ def manifest_media(tmp_path, monkeypatch):
         # to real retained legacy text, never inline text authority. No Agent
         # command is credited with creating this authored baseline.
         seed_trusted_parent(service, {
-            'project_id': project, 'timeline_id': 'film', 'expected_head': 'popup-baseline',
+            'project_id': project, 'timeline_id': 'film', 'expected_head': case.legacy_revision_id,
             'parent_revision_id': 'media-baseline', 'parent_composition': parent,
             'shot_revisions': [shot],
         }, idempotency_key='media-baseline')
@@ -184,7 +190,7 @@ def test_real_media_manifest_inverse_retry_restart_and_history(monkeypatch, oper
         stored = service.get_project_parent_composition_revision(project, 'film', created['data']['accepted_revision_id'])
         assert stored['dependency_manifest'] == created['data']['canonical_document']['dependency_manifest']
         assert service.get_project_shot_text_binding(project, manifest_media.binding['binding_id']) == manifest_media.binding
-        assert service.get_project_parent_composition_revision(project, 'film', 'popup-baseline') == manifest_media.legacy
+        assert service.get_project_parent_composition_revision(project, 'film', manifest_media.legacy_revision_id) == manifest_media.legacy
         assert service.store.integrity_report()['ok']
     finally:
         service.close()
