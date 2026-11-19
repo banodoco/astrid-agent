@@ -192,3 +192,44 @@ def test_cold_download_timeout_receipt_tells_user_to_rerun():
     receipt = build_receipt(facts, job=SimpleNamespace(task_id="task-h3"), machine={}, timing=None)
     assert receipt["stage"] == "execution"
     assert "rerun to retry preparation; completed model files are kept and verified; interrupted models download again from the start" not in receipt["message"]
+
+
+def test_source_free_composition_and_verification_enforce_requested_dimensions(tmp_path):
+    import subprocess
+    from astrid.packs.h3_av.shared.compose import CompositionError, compose_candidate
+    from astrid.packs.h3_av.shared.generation import generation_timing
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from astrid.packs.h3_av.shared.verify import VerificationError, verify_candidate
+
+    request = normalize_request({"version": 2, "prompt": "A scene", "duration": 1,
+                                 "output": {"size": [512, 288]}, "media": []})
+    preparation = prepare_request(request)
+
+    def video(path, size, frames):
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                        f"color=c=blue:s={size}:r=24", "-f", "lavfi", "-i",
+                        "sine=frequency=440:sample_rate=48000", "-frames:v", str(frames),
+                        "-t", str(frames / 24), "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                        "-c:a", "aac", str(path)], check=True, capture_output=True)
+        return path
+
+    frames = generation_timing(1)["raw_frames"]
+    wrong = video(tmp_path / "wrong.mp4", "1024x576", frames)
+    with pytest.raises(CompositionError, match="generated video size is 1024x576, requested 512x288"):
+        compose_candidate(preparation=preparation, generated=wrong, out_dir=tmp_path / "bad")
+    generated = video(tmp_path / "generated.mp4", "512x288", frames)
+    composition = compose_candidate(preparation=preparation, generated=generated, out_dir=tmp_path / "good")
+    candidate = Path(composition["candidate"]["path"])
+    assert composition["coverage"]["candidate"]["video"]["width"] == 512
+    assert composition["coverage"]["candidate"]["video"]["height"] == 288
+    assert verify_candidate(preparation=preparation, composition=composition)["status"] == "verified"
+    decoded = subprocess.run(["ffmpeg", "-v", "error", "-i", str(candidate), "-frames:v", "1",
+                              "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], check=True, capture_output=True)
+    assert len(decoded.stdout) == 512 * 288 * 3
+
+    video(candidate, "1024x576", 24)
+    composition["candidate"]["sha256"] = hashlib.sha256(candidate.read_bytes()).hexdigest()
+    composition["candidate"]["size"] = candidate.stat().st_size
+    with pytest.raises(VerificationError, match="candidate video size is 1024x576, requested 512x288"):
+        verify_candidate(preparation=preparation, composition=composition)
