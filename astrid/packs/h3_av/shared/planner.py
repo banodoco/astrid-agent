@@ -14,7 +14,7 @@ from typing import Any, Mapping
 
 from .compile import CompilationError, compile_preparation
 from .engine_facts import facts
-from .generation import generation_timing
+from .generation import DEFAULT_SIZE, generation_timing
 from .prepare import prepare_request, write_preparation
 from .request import H3Request, H3RequestError, normalize_request
 from .request_v2 import json_times
@@ -77,6 +77,23 @@ def _ignored_fields(request: H3Request, spec: H3Spec, compilation: Mapping[str, 
     return ignored
 
 
+def _runtime_bindings(compilation: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Report managed assets consumed by the compiled workflow.
+
+    The managed-assets manifest also carries artifacts used during preparation
+    and composition. Only bindings exposed as workflow inputs are runtime
+    bindings; retain the full manifest elsewhere for artifact custody.
+    """
+    managed_assets = compilation.get("managed_assets", {}).get("manifest", {})
+    workflow_inputs = managed_assets.get("workflow_inputs", {})
+    if not isinstance(workflow_inputs, Mapping):
+        return []
+    return [
+        record for record in managed_assets.get("assets", [])
+        if isinstance(record, Mapping) and record.get("binding") in workflow_inputs
+    ]
+
+
 def plan_request(
     request: H3Request, *, asset_map: Mapping[str, str] | None = None, out_dir: str | Path,
 ) -> dict[str, Any]:
@@ -113,6 +130,9 @@ def plan_request(
         preparation["runtime_submission"] = "orchestration_only"
         preparation_path = write_preparation(root / "preparation.json", preparation)
         compiled = all(item["runtime_submission"] == "eligible" for item in plans)
+        default_canvas = plans[0]["compilation"].get("size") == {
+            "width": DEFAULT_SIZE[0], "height": DEFAULT_SIZE[1],
+        }
         plan = {
             "schema_version": 1, "kind": "h3_av_plan", "status": "planned",
             "request_digest": request.digest, "spec": asdict(spec),
@@ -129,7 +149,11 @@ def plan_request(
             "ignored_fields": [field for item in plans for field in item["ignored_fields"]],
             "compilation": {"status": "compiled" if compiled else "blocked", "ordered_passes": len(passes)},
             "preparation_path": str(preparation_path),
-            "runtime_submission": "orchestration_only" if compiled else "blocked_until_compilation",
+            # Historical default-canvas callers treat an eligible multi-pass
+            # plan as an eligible child orchestration. The root preparation
+            # above remains orchestration-only and cannot be composed directly.
+            "runtime_submission": ("eligible" if compiled and default_canvas else
+                                   "orchestration_only" if compiled else "blocked_until_compilation"),
             "capabilities": spec.capabilities, "plan_path": str(plan_path),
         }
         plan = json_times(plan)
@@ -190,7 +214,7 @@ def plan_request(
         "schema_version": 1, "kind": "h3_av_plan", "status": "planned",
         "request_digest": request.digest, "spec": asdict(spec),
         "bindings": {"assets": preparation["assets"], "regions": regions,
-                     "runtime": compiled.get("managed_assets", {}).get("manifest", {}).get("assets", [])},
+                     "runtime": _runtime_bindings(compiled)},
         "timing": timing, "previews": previews, "pass_count": len(passes),
         "passes": [asdict(item) for item in passes],
         "mask_schedule": preparation["mask_schedule"],
