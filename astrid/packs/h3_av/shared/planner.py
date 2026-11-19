@@ -16,7 +16,7 @@ from .compile import CompilationError, compile_preparation
 from .engine_facts import facts
 from .generation import generation_timing
 from .prepare import prepare_request, write_preparation
-from .request import H3Request, H3RequestError, normalize_request
+from .request import H3Request, H3RequestError
 from .request_v2 import json_times
 from .spec import H3Spec, canonical_spec, sampling_request
 from .static_regions import resolve_static_region
