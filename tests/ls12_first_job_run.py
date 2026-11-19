@@ -40,6 +40,10 @@ def parse_reports(log: Path, *, instrumented: bool, samples: int) -> list[dict]:
     for row in reports:
         if row.get("schema") != "astrid.local-speed-observation.v1" or row.get("instrumented") is not instrumented:
             raise ValueError("invalid first-job observation identity/mode")
+        controls = row.get("drive_controls")
+        if (not isinstance(controls, dict) or set(controls) != {"product_defaults"}
+                or controls["product_defaults"] is not True):
+            raise ValueError("requires explicit product-default host/machine cadence")
         duration = row.get("caller_seconds")
         execution = row.get("standin_execution_seconds")
         queue = row.get("standin_queue_seconds")

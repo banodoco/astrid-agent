@@ -12,6 +12,7 @@ def _row(caller):
             "sample_index": 0, "instrumented": False, "caller_seconds": 2.8,
             "standin_execution_seconds": [0.4], "standin_queue_seconds": [0.2],
             "attached_http_paths": {"POST /prompt": 1},
+            "drive_controls": {"product_defaults": True},
             "proof": {"measured_task_id": caller, "verified_states": ["succeeded"],
                       "outputs": [{"bytes": 82, "sha256": "a" * 64, "dimensions": [16, 16]}]}}
 
@@ -49,6 +50,21 @@ def test_counter_coverage_is_required(tmp_path):
     path.write_text("\n".join(PREFIX + json.dumps(row) for row in rows))
     with pytest.raises(ValueError, match="incomplete process/hash"):
         parse_reports(path, instrumented=True, samples=1)
+
+
+@pytest.mark.parametrize("controls", [None, {}, {"product_defaults": False},
+                                    {"product_defaults": 1},
+                                    {"product_defaults": True, "poll_seconds": 0.02}])
+def test_first_job_requires_product_cadence_evidence(tmp_path, controls):
+    rows = [_row(c) for c in sorted(CALLERS)]
+    if controls is None:
+        rows[0].pop("drive_controls")
+    else:
+        rows[0]["drive_controls"] = controls
+    path = tmp_path / "log"
+    path.write_text("\n".join(PREFIX + json.dumps(row) for row in rows))
+    with pytest.raises(ValueError, match="product-default host/machine cadence"):
+        parse_reports(path, instrumented=False, samples=1)
 
 
 def test_statistics_retain_slowest_p99_and_share_over_limit():

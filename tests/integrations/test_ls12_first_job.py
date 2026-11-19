@@ -116,9 +116,13 @@ def test_first_attached_job_observation(
         finally:
             meter.finish()
 
+    # LS-2.2 distinguishes the product cadence from the accelerated journey
+    # fixture. Record the same controls that are passed to that fixture.
+    drive_controls = {"product_defaults": True}
     with _drive(("image", "t2i"), tmp_path, monkeypatch, real_runtime, tuple_sources,
                 call=call, target_kind="attached", request_observer=meter.request,
-                timeline_observer=meter.comfy_timeline, runtime_observer=observe_runtime
+                timeline_observer=meter.comfy_timeline, runtime_observer=observe_runtime,
+                **drive_controls,
                 ) as (client, project_id, provider, result):
         if caller == "resident_sdk":
             assert result.ok, json.dumps(result.to_dict(), default=str)[:4000]
@@ -144,6 +148,7 @@ def test_first_attached_job_observation(
         report = meter.report()
         report.update({
             "caller": caller, "sample_index": sample_index,
+            "drive_controls": drive_controls,
             "job": "first invocation after host admission; no generation warmup",
             "proof": {"measured_task_id": task_id, "verified_states": ["succeeded"], "outputs": outputs},
             "caller_boundary": ("facade entry through result and caller-local delivery"
