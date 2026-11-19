@@ -641,3 +641,30 @@ def test_timeline_still_public_plan_and_build(tmp_path, capsys):
     repeated_source = tmp_path / "build-again" / "compile" / "prepared-still-source.mkv"
     assert source.read_bytes() == repeated_source.read_bytes()
     assert compilation["compilation_digest"] == repeated["compilation_digest"]
+
+
+def test_timeline_still_public_boundaries_reject_split_and_controls(tmp_path, capsys):
+    from dataclasses import replace
+    from astrid.packs.h3_av.cli import main
+    from astrid.packs.h3_av.shared.spec import canonical_spec, normalize_spec, sampling_request_document
+    from astrid.packs.h3_av.shared.request import H3RequestError
+
+    raw = {"version": 2, "duration": 1, "prompt": "Animate", "media": [
+        {"asset": "still", "role": "timeline", "modality": "image", "at": {"frame": 0}}]}
+    request = normalize_request(raw)
+    spec = canonical_spec(request)
+    with pytest.raises(H3RequestError, match="atomic"):
+        sampling_request_document(request, 0)
+    with pytest.raises(H3RequestError, match="joint implicit"):
+        normalize_spec(replace(spec, ops=spec.ops[:1]))
+    for field, value in (("hard", True), ("edit", [{"stream": "video", "during": [0, 1]}])):
+        changed = json.loads(json.dumps(raw))
+        changed["media"][0][field] = value
+        with pytest.raises(H3RequestError, match="explicit edits, anchors or continuation"):
+            canonical_spec(normalize_request(changed))
+    raw["media"][0]["at"] = {"frame": 1}
+    request_path = tmp_path / "request.json"
+    request_path.write_text(json.dumps(raw))
+    assert main(["plan", "--spec", str(request_path), "--out", str(tmp_path / "plan")]) != 0
+    captured = capsys.readouterr()
+    assert "timeline image frame" in captured.out + captured.err

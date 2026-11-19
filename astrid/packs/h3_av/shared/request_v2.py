@@ -512,6 +512,19 @@ def read_prepared_request(raw: Mapping[str, Any], expected_digest: Any, *, requi
     return request
 
 
+def timeline_image_limit_error(value: Mapping[str, Any]) -> str | None:
+    from .generation import LIMITS
+    for item in value["media"]:
+        if item.get("role") != "timeline" or item.get("modality") != "image":
+            continue
+        frame = LIMITS["timeline_image_frame"]["value"]
+        if item["resolved_at"]["value"] != frame:
+            return f"timeline image frame: only frame {frame} is supported by this lowering"
+        if item.get("edit") or item.get("hard") or item.get("latent_pin") or value.get("continuation"):
+            return "timeline image lowering does not support explicit edits, anchors or continuation"
+    return None
+
+
 def branch_for(request: H3Request) -> str:
     if request.value.get("version") != 2: raise H3RequestError("native-v2 branch selection requires a v2 request")
     media = request.value["media"]

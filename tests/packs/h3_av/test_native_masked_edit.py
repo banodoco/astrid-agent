@@ -1051,6 +1051,25 @@ def test_timeline_still_uses_source_backed_generation_and_exact_first_frame(tmp_
         "api", run_inputs=manifest["workflow_inputs"])
     v2v = next(row for row in api.values() if row["class_type"] == "H3V2VGranularFractionalDenoise")
     assert v2v["inputs"]["audio_strength"] == 0
+    source_batch = api[v2v["inputs"]["source_frames"][0]]
+    assert source_batch["class_type"] == "ImageBatch"
+    source_loader = api[source_batch["inputs"]["image1"][0]]
+    source_row = next(row for row in manifest["managed_assets"]["manifest"]["assets"] if row["binding"] == "source_video")
+    assert source_loader["inputs"]["video"] == manifest["workflow_inputs"]["source_video"] == source_row["member"]
+    mask_node = api[v2v["inputs"]["source_mask"][0]]
+    mask_batch = api[mask_node["inputs"]["image"][0]]
+    mask_loader = api[mask_batch["inputs"]["image1"][0]]
+    mask_row = next(row for row in manifest["managed_assets"]["manifest"]["assets"] if row["binding"] == "video_mask_0")
+    assert mask_loader["inputs"]["video"] == manifest["workflow_inputs"]["video_mask_0"] == mask_row["member"]
+    import zipfile
+    with zipfile.ZipFile(manifest["managed_assets"]["path"]) as archive:
+        assert archive.read(source_row["member"]) == source.read_bytes()
+        managed_mask = tmp_path / "managed-mask.mkv"
+        managed_mask.write_bytes(archive.read(mask_row["member"]))
+    decoded_mask = subprocess.run(["ffmpeg", "-v", "error", "-i", str(managed_mask), "-frames:v", "2", "-pix_fmt", "gray", "-f", "rawvideo", "-"], check=True, capture_output=True).stdout
+    mask_size = 1024 * 576
+    assert decoded_mask[:mask_size] == bytes(mask_size)
+    assert decoded_mask[mask_size:] == bytes([255]) * mask_size
     assert any(row["class_type"] == "MiniMaxH3SetAVNoiseMask" for row in api.values())
     result = compose_candidate(preparation=preparation, generated=generated, source=source, out_dir=tmp_path / "composed")
     def frames(path):

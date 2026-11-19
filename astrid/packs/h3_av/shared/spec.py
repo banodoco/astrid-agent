@@ -336,6 +336,13 @@ def _normalize_spec(
                     if op.seed is not None:
                         edit["seed"] = op.seed
                 edits.append(edit)
+    if spec.source is not None and spec.source.modality == "image":
+        expected = [Operation("regenerate", (Fraction(1, 24), spec.duration),
+                              refs=tuple(ref.name for ref in refs.values() if ref.use != "replacement"), stream="video"),
+                    Operation("regenerate", (Fraction(0), spec.duration), stream="audio")]
+        if spec.source.range != (0, spec.duration) or ops != expected:
+            _fail("unsupported_source", "timeline image requires its joint implicit video and audio grants",
+                  "ops", "Use the frame-zero timeline image without explicit edits")
     generators = [op for op in ops if op.op in {"generate", "extend"}]
     if generators and (len(generators) != 1 or any(op.op == "regenerate" for op in ops)):
         _fail(
@@ -449,6 +456,9 @@ def sampling_request_document(
     already composed output timelines, so their source window starts at zero.
     """
     spec = canonical_spec(request)
+    if spec.source is not None and spec.source.modality == "image":
+        _fail("unsupported_op", "timeline image grants are atomic and cannot be split into derived passes",
+              "ops", "Plan the complete timeline image request")
     sampling_pass = spec.sampling_passes()[index]
     source = spec.source
     if previous_verified_output and source is not None:
@@ -521,6 +531,10 @@ def _region(mask: Mapping, regions: list[Region]) -> str | None:
 
 def _from_v2(request: H3Request) -> H3Spec:
     value = request.value
+    from .request_v2 import timeline_image_limit_error
+    still_error = timeline_image_limit_error(value)
+    if still_error:
+        _fail("unsupported_source", still_error, "media", "Use a frame-zero timeline image without explicit controls")
     timelines = [item for item in value["media"] if item["role"] == "timeline"]
     if len(timelines) > 1:
         _fail("source_count", "At most one source is supported", "media", "Use one timeline source")
