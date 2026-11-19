@@ -472,6 +472,9 @@ def sampling_request_document(
         replace(spec, source=source, ops=(sampling_pass.operation, *sampling_pass.preserves)),
         None, request_document=document,
     )
+    canvas = request.value.get("canvas")
+    if canvas is not None:
+        document["output"] = {"size": [canvas["width"], canvas["height"]]}
     return document
 
 

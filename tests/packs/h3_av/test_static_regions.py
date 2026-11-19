@@ -340,3 +340,44 @@ def test_nonempty_grant_vanishing_on_target_grid_names_grant(tmp_path):
     mask.save(path)
     with pytest.raises(CompilationError, match="mouth.*vanishes"):
         _combined_strength_mask([(path, "image", (0, 1), 0.75, "mouth")], frames=1, destination=tmp_path, size=(32, 32))
+
+
+@pytest.mark.parametrize("kind", ["box", "still"])
+def test_planner_preview_and_saved_preparation_match_compiled_permission(tmp_path, kind):
+    import json
+    from pathlib import Path
+    from astrid.packs.h3_av.shared.planner import plan_request
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from tests.packs.h3_av.test_moving_masks import _fixtures
+
+    source, _ = _fixtures(tmp_path)
+    import subprocess
+    resized = tmp_path / "resized.mkv"
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(source),
+                    "-vf", "scale=512:288", "-c:v", "ffv1", "-c:a", "copy", str(resized)],
+                   check=True, capture_output=True)
+    source = resized
+    assets = {"source": str(source)}
+    if kind == "box":
+        mask = {"rectangle": [256, 144, 256, 144]}
+    else:
+        path = tmp_path / "small.png"
+        image = Image.new("L", (2, 2), 0)
+        image.putpixel((0, 0), 200)
+        image.save(path)
+        assets["mask"] = str(path)
+        mask = {"asset": "mask", "threshold": 128}
+    request = normalize_request({"version": 2, "prompt": "Edit", "duration": 1,
+        "output": {"size": [512, 288]},
+        "media": [{"asset": "source", "role": "timeline", "modality": "video",
+                   "at": {"frame": 0}, "range": [0, 1],
+                   "edit": [{"stream": "video", "during": [0, 1], "mask": mask}]}]})
+    plan = plan_request(request, asset_map=assets, out_dir=tmp_path / "plan")
+    assert plan["compilation"]["status"] == "compiled"
+    saved = json.loads(Path(plan["preparation_path"]).read_text())
+    binding = saved["mask_schedule"]["video"]["changes"][0]["prepared_mask_asset"]
+    prepared = next(row["path"] for row in saved["assets"] if row["asset"] == binding)
+    with Image.open(prepared) as compiled, Image.open(plan["bindings"]["regions"][0]["mask"]) as preview:
+        assert compiled.size == preview.size == (512, 288)
+        assert list(compiled.getdata()) == list(preview.getdata())
+        assert compiled.getpixel((128, 72) if kind == "box" else (0, 0)) == 255

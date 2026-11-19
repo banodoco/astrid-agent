@@ -145,6 +145,7 @@ def plan_request(
         resolved = resolve_static_region(
             region, width=media["width"], height=media["height"], assets=assets,
             polarity="black_preserve_white_edit" if region.mask_asset else None,
+            authored_canvas=True, threshold=region.threshold,
         )
         directory = root / "regions"
         directory.mkdir(exist_ok=True)
@@ -156,7 +157,6 @@ def plan_request(
                         "width": resolved.width, "height": resolved.height})
         previews.append({"region": region.name, "path": str(preview),
                          "sha256": hashlib.sha256(resolved.preview_png).hexdigest()})
-    preparation_path = write_preparation(root / "preparation.json", preparation)
     warnings = [{"code": "h3.plan.gpu_unqualified",
                  "message": "CPU planning does not establish GPU compatibility or model quality"}]
     compiled: dict[str, Any] = {}
@@ -177,6 +177,7 @@ def plan_request(
         }}
         if "branch" in compiled:
             compilation["branch"] = compiled["branch"]
+    preparation_path = write_preparation(root / "preparation.json", preparation)
     timing = _timing(spec, compiled)
     if timing["trim"]["tail_frames"]:
         warnings.append({"code": "h3.plan.tail_trim", "message":

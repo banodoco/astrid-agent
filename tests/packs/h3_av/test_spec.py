@@ -597,3 +597,27 @@ def test_typed_rectangle_rejects_invalid_canvas(canvas):
     with pytest.raises(H3RequestError):
         normalize_spec(_edit(Operation("regenerate", (0, 1), region="r"),
                              regions=(Region("r", box=(0, 0, 1, 1), canvas=canvas),)))
+
+
+def test_multi_pass_planner_preserves_requested_canvas(tmp_path):
+    from astrid.packs.h3_av.shared.planner import plan_request
+    from tests.packs.h3_av.test_moving_masks import _fixtures
+
+    source, _ = _fixtures(tmp_path)
+    import subprocess
+    resized = tmp_path / "resized.mkv"
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(source),
+                    "-vf", "scale=512:288", "-c:v", "ffv1", "-c:a", "copy", str(resized)],
+                   check=True, capture_output=True)
+    source = resized
+    request = normalize_request({"version": 2, "prompt": "Two edits", "duration": 1,
+        "output": {"size": [512, 288]},
+        "media": [{"asset": "source", "role": "timeline", "modality": "video",
+                   "at": {"frame": 0}, "range": [0, 1], "edit": [
+                       {"stream": "video", "during": [0, 1], "mask": {"rectangle": [0, 0, 256, 144]}},
+                       {"stream": "video", "during": [0, 1], "mask": {"rectangle": [512, 288, 256, 144]}}]}]})
+    plan = plan_request(request, asset_map={"source": str(source)}, out_dir=tmp_path / "plan")
+    assert plan["pass_count"] == 2
+    for item in plan["passes"]:
+        assert item["compilation"]["status"] == "compiled"
+        assert item["compilation"]["size"] == {"width": 512, "height": 288}
