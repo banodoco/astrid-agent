@@ -805,6 +805,41 @@ def test_silent_character_swap_source_delivers_implicit_and_explicit_audio(tmp_p
     prep = prepare_request(normalize_request(raw), asset_map={"scene": str(source), "performance": str(reference), "face": str(image), "voice": str(voice)})
     assert prep["mask_schedule"]["audio"]["baseline_intervals"] == []
     assert prep["mask_schedule"]["audio"]["generated_intervals"] == [[0.0, 1.0]]
+    # Exercise the real public build hook and its managed graph bindings.
+    import importlib.util
+    from astrid.core.generation.engine_facts import comfyui_facts
+    hook_path = Path(__file__).parents[3] / "astrid/packs/h3_av/extensions/vibecomfy.workflows/hooks.py"
+    hook_spec = importlib.util.spec_from_file_location("h3_silent_source_hooks", hook_path)
+    hooks = importlib.util.module_from_spec(hook_spec)
+    hook_spec.loader.exec_module(hooks)
+    request_file = tmp_path / "request.json"
+    request_file.write_text(json.dumps(raw))
+    built = hooks.build({"request": str(request_file), "asset_map": {"scene": str(source), "performance": str(reference), "face": str(image), "voice": str(voice)}}, {}, tmp_path / "hook", engine=comfyui_facts())
+    graph = built["workflow"].compile("api", run_inputs=built["bindings"])
+    v2v = next(row for row in graph.values() if row["class_type"] == "H3V2VGranularFractionalDenoise")
+    assert v2v["inputs"]["audio_strength"] == 0
+    assert any(row["class_type"] == "MiniMaxH3SetAVNoiseMask" for row in graph.values())
+    assert "audio_time_mask" in built["assets"]
+    from astrid.packs.h3_av.shared.compose import _probe, _streams
+    assert len(_streams(_probe(built["assets"]["source_video"]), "audio")) == 1
+    compilation = json.loads((tmp_path / "hook/h3/plan/compile/compilation.json").read_text())
+    second = hooks.build({"request": str(request_file), "asset_map": {"scene": str(source), "performance": str(reference), "face": str(image), "voice": str(voice)}}, {}, tmp_path / "hook-again", engine=comfyui_facts())
+    compilation_again = json.loads((tmp_path / "hook-again/h3/plan/compile/compilation.json").read_text())
+    assert hashlib.sha256(built["assets"]["source_video"].read_bytes()).digest() == hashlib.sha256(second["assets"]["source_video"].read_bytes()).digest()
+    assert compilation["compilation_digest"] == compilation_again["compilation_digest"]
+    spans = compilation["capabilities"]["expected_delivered_audio_spans"]
+    assert {span["source"] for span in spans} == ({"generated", "fixed"} if explicit_fixed else {"generated"})
+    mask_values = compilation["capabilities"]["audio_time_mask"]["decoded_frame_values"]
+    expected_mask = [1.0] * 24 + [0.0] * (len(mask_values) - 24)
+    if explicit_fixed:
+        expected_mask[12:17] = [0.0] * 5
+        model_pcm, model_channels = _decode_exact_pcm(built["assets"]["source_audio_prepared"])
+        voice_pcm, _ = _decode_exact_pcm(voice, expected_channels=model_channels)
+        stride = model_channels * 2
+        assert model_pcm == bytes(24000 * stride) + voice_pcm[:10000 * stride] + bytes(14000 * stride)
+    assert mask_values == expected_mask
+    mask_node = next(row for row in graph.values() if row["class_type"] == "MiniMaxH3SetAVNoiseMask")
+    assert graph[mask_node["inputs"]["latent"][0]]["class_type"] == "H3V2VGranularFractionalDenoise"
     result = compose_candidate(preparation=prep, generated=generated, source=source, out_dir=tmp_path / "composed")
     delivered, channels = _decode_exact_pcm(Path(result["candidate"]["path"]))
     generated_pcm, _ = _decode_exact_pcm(generated, expected_channels=channels, generated=True)
@@ -814,6 +849,11 @@ def test_silent_character_swap_source_delivers_implicit_and_explicit_audio(tmp_p
         stride = channels * 2
         expected = expected[:24000 * stride] + fixed_pcm[:10000 * stride] + expected[34000 * stride:]
     assert delivered == expected
+    settled = hooks.after_outputs(tmp_path / "hook", {}, {}, [str(generated)], engine=comfyui_facts())
+    settled_pcm, settled_channels = _decode_exact_pcm(Path(settled[0]))
+    assert settled_channels == channels
+    assert settled_pcm == expected
+    assert (tmp_path / "hook/h3/verify.json").is_file()
 
 
 @pytest.mark.ffmpeg
@@ -1099,3 +1139,59 @@ def test_timeline_still_rejects_latent_pin():
         {"asset": "still", "role": "timeline", "modality": "image", "at": {"frame": 0}, "latent_pin": True}]}
     with pytest.raises(H3RequestError, match="latent_pin"):
         normalize_request(raw)
+
+
+@pytest.mark.ffmpeg
+def test_fixed_only_audio_does_not_create_generation_mask(tmp_path):
+    import subprocess
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+    from tests.packs.h3_av.test_moving_masks import _fixtures
+    from vibecomfy.cli_loader import load_workflow_any
+
+    source, _ = _fixtures(tmp_path)
+    voice = tmp_path / "voice.wav"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "sine=frequency=660:sample_rate=48000:duration=1", "-c:a", "pcm_s16le", str(voice)], check=True)
+    raw = {"version": 2, "duration": 1, "prompt": "Edit", "media": [
+        {"asset": "scene", "role": "timeline", "modality": "video", "at": {"frame": 0}, "range": [0, 1],
+         "edit": [{"stream": "video", "during": [0, 1], "mask": {"rectangle": [0, 0, 128, 128]}},
+                  {"stream": "audio", "during": [0.5, 0.75], "guides": ["fixed"]}]},
+        {"id": "fixed", "asset": "voice", "role": "reference", "modality": "audio"}]}
+    prep = prepare_request(normalize_request(raw), asset_map={"scene": str(source), "voice": str(voice)})
+    manifest = compile_preparation(prep, out_dir=tmp_path / "compiled")
+    api = load_workflow_any(manifest["workflow"]["workflow.py"]["path"]).compile("api", run_inputs=manifest["workflow_inputs"])
+    assert "audio_time_mask" not in manifest["workflow_inputs"]
+    assert not any(row["class_type"] == "MiniMaxH3SetAVNoiseMask" for row in api.values())
+
+
+@pytest.mark.ffmpeg
+def test_silent_b_frame_subrange_passes_hook_preflight_with_exact_frames(tmp_path):
+    import importlib.util
+    import subprocess
+    from PIL import Image
+    from astrid.core.generation.engine_facts import comfyui_facts
+
+    source, reference, face = (tmp_path / name for name in ("source.mp4", "reference.mp4", "face.png"))
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "testsrc2=size=1024x576:rate=24:duration=2", "-c:v", "libx264", "-bf", "3",
+                    "-pix_fmt", "yuv420p", str(source)], check=True)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "color=size=32x32:rate=24:duration=2", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(reference)], check=True)
+    Image.new("RGB", (32, 32), "white").save(face)
+    raw = {"version": 2, "duration": 1, "prompt": "Edit", "settings": {"adapter": {"id": "character_swap_v1"}}, "media": [
+        {"asset": "scene", "role": "timeline", "modality": "video", "at": {"frame": 0}, "range": [0, 1],
+         "edit": [{"stream": "video", "during": [0, 1], "mask": {"rectangle": [0, 0, 128, 128]}, "guides": ["performance", "face"]}]},
+        {"id": "performance", "asset": "performance", "role": "reference", "modality": "video", "audio": False},
+        {"id": "face", "asset": "face", "role": "reference", "modality": "image"}]}
+    hook_path = Path(__file__).parents[3] / "astrid/packs/h3_av/extensions/vibecomfy.workflows/hooks.py"
+    spec = importlib.util.spec_from_file_location("h3_b_frame_hooks", hook_path)
+    hooks = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hooks)
+    request_file = tmp_path / "request.json"
+    request_file.write_text(json.dumps(raw))
+    result = hooks.build({"request": str(request_file), "asset_map": {"scene": str(source), "performance": str(reference), "face": str(face)}}, {}, tmp_path / "hook", engine=comfyui_facts())
+    assert result["plan"]["source_av"]["video_frames"] == 24
+    assert result["plan"]["source_av"]["audio_samples"] == 32000
+    def frames(path):
+        return subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-frames:v", "24", "-pix_fmt", "yuv420p", "-f", "rawvideo", "-"], check=True, capture_output=True).stdout
+    assert frames(result["assets"]["source_video"]) == frames(source)

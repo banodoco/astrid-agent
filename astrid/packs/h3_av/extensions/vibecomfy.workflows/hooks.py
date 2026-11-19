@@ -140,8 +140,6 @@ def build(inputs, files, out, *, engine=None, check_runtime=False):
     source = paths[source_id] if source_id else None
     if any(item.get("role") == "timeline" and item.get("modality") == "image" for item in request.value.get("media", [])):
         source = str(work / "plan" / "compile" / "prepared-still-source.mkv")
-    if source is not None and "source_video" in bindings:
-        plan["source_av"] = dict(facts.measure_source_av(source))
     trio = Path(compilation["workflow"]["workflow.py"]["path"]).parent
     # The media the graph binds, unpacked from compile's managed-assets archive: {binding: path}.
     assets = {}
@@ -154,6 +152,8 @@ def build(inputs, files, out, *, engine=None, check_runtime=False):
             target.write_bytes(resolved.members[record["member"]])
             assets[record["binding"]] = target
             reference_assets[record["binding"]] = {"member": record["member"], "sha256": record["sha256"]}
+    if source is not None and "source_video" in assets:
+        plan["source_av"] = dict(facts.measure_source_av(str(assets["source_video"])))
     stages.save_build_state(work, request=request, document=document, preparation=preparation,
                             source=source, plan=plan, reference_assets=reference_assets)
     return {"workflow": _load_graph(trio), "bindings": bindings, "plan": plan, "assets": assets,

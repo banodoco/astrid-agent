@@ -712,7 +712,8 @@ def _resample_audio_mask(values: list[float], ticks: int) -> list[float]:
 
 
 def _compile_native_masked_edit(
-    request: H3Request, assets: Mapping[str, Path], destination: Path, *, branch: str
+    request: H3Request, assets: Mapping[str, Path], destination: Path, *, branch: str,
+    preparation: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Compile a regional source-backed edit to native H3 nodes (no LanPaint).
 
@@ -865,6 +866,22 @@ def _compile_native_masked_edit(
             "use": "fixed" if audio_op.refs else "generated",
             "occurrences": [references_by_name[name].occurrence_id for name in audio_op.refs],
         })
+    # The prepared schedule includes implicit generation for missing source audio.
+    # Explicit grants retain their requested strength; implicit spans use full strength.
+    schedule = (preparation or {}).get("mask_schedule", {}).get("audio", {})
+    scheduled = schedule.get("generated_intervals") if isinstance(schedule, Mapping) else None
+    if scheduled is not None:
+        effective = []
+        for start, end in scheduled:
+            first, last = round(float(start) * 48000), round(float(end) * 48000)
+            points = sorted({first, last,
+                             *(max(first, min(last, x)) for a, b, _ in generated_audio for x in (a, b)),
+                             *(max(first, min(last, x)) for a, b in fixed_audio_spans for x in (a, b))})
+            for a, b in zip(points, points[1:]):
+                if a < b and not any(x <= a and b <= y for x, y in fixed_audio_spans):
+                    strength = max((strength for x, y, strength in generated_audio if x <= a and b <= y), default=1.0)
+                    effective.append((a, b, strength))
+        generated_audio = effective
     total_audio_samples = int(spec.duration * 48000)
     edges = sorted({0, total_audio_samples,
                     *(point for start, end, _ in generated_audio for point in (start, end)),
@@ -893,7 +910,7 @@ def _compile_native_masked_edit(
     )
     if fixed_audio:
         from .compose import _exact_audio_for_request
-        prepared = {"request": request.value, "assets": [
+        prepared = preparation or {"request": request.value, "assets": [
             {"asset": name, "path": str(path), "status": "resolved"} for name, path in assets.items()]}
         try:
             exact = _exact_audio_for_request(prepared, source=assets[source_id], generated=assets[source_id],
@@ -904,6 +921,21 @@ def _compile_native_masked_edit(
             raise CompilationError(str(exc)) from exc
         if exact is not None:
             bindings["source_audio_prepared"] = exact[0]
+    if scheduled is not None and not schedule.get("baseline_intervals") and not still_source:
+        # H3's video loader requires audio even when the original has none.
+        # This managed input is model context only; composition retains the original.
+        model_source = destination / "prepared-silent-source.mkv"
+        command = ["ffmpeg", "-v", "error", "-y", "-i", str(source_path),
+                   "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+                   "-map", "0:v:0", "-map", "1:a:0", "-c:v", "ffv1", "-c:a", "pcm_s16le",
+                   "-fflags", "+bitexact", "-flags:v", "+bitexact", "-flags:a", "+bitexact",
+                   "-frames:v", str(round(float(source.range[1]) * 24)),
+                   "-t", str(float(source.range[1])), str(model_source)]
+        try:
+            subprocess.run(command, check=True, capture_output=True)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise CompilationError(f"could not prepare silent timeline source: {exc}") from exc
+        bindings["source_video"] = model_source
     references_by_name = {item.name: item for item in spec.refs}
     references = [references_by_name[name] for name in operation.refs]
     conditioning = None
@@ -996,7 +1028,7 @@ def _compile_native_masked_edit(
             "audio_binding": ("prepared source with fixed PCM, audio_strength=0" if "source_audio_prepared" in bindings
                               else "source_audio_from_source_video, audio_strength=0"),
             **({"requested_audio_grants": requested_audio_grants,
-                "expected_delivered_audio_spans": expected_audio_spans} if requested_audio_grants else {}),
+                "expected_delivered_audio_spans": expected_audio_spans} if requested_audio_grants or scheduled is not None else {}),
             **({"audio_time_mask": audio_mask_values} if audio_mask_values is not None else {}),
             "references": len(conditioning) if conditioning is not None else len(references),
             "reference_order": ([next(item["asset"] for item in request.value["media"] if item["occurrence_id"] == row["occurrence"]) for row in conditioning] if conditioning is not None else [item.asset for item in references]),
@@ -1280,7 +1312,8 @@ def _compile_character_swap_v2(
 
 
 def _compile_native_v2(
-    request: H3Request, assets: Mapping[str, Path], destination: Path
+    request: H3Request, assets: Mapping[str, Path], destination: Path,
+    preparation: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Bind native-v2 media semantics to existing declared Vibe inputs."""
     from .generation import LIMITS
@@ -1301,7 +1334,7 @@ def _compile_native_v2(
                            or edit.get("strength", 1) != 1 or "seed" in edit)
                        for item in request.value["media"] for edit in item.get("edit", []))
         if branch == "source_backed_v2v" and regional:
-            return _compile_native_masked_edit(request, assets, destination, branch=branch)
+            return _compile_native_masked_edit(request, assets, destination, branch=branch, preparation=preparation)
         return _compile_character_swap_v2(request, assets, destination, branch=branch)
 
     if branch == "source_free":
@@ -1318,7 +1351,7 @@ def _compile_native_v2(
         )
 
     if branch == "source_backed_v2v":
-        return _compile_native_masked_edit(request, assets, destination, branch=branch)
+        return _compile_native_masked_edit(request, assets, destination, branch=branch, preparation=preparation)
 
     destination.mkdir(parents=True, exist_ok=True)
     if settings["sampler"] != _DEFAULTS["sampler"]:
@@ -1449,7 +1482,7 @@ def compile_preparation(preparation: Mapping[str, Any], *, out_dir: str | Path) 
     destination = Path(out_dir).expanduser().resolve()
     destination.mkdir(parents=True, exist_ok=True)
     if request.value.get("version") == 2:
-        return _compile_native_v2(request, assets, destination)
+        return _compile_native_v2(request, assets, destination, preparation=preparation)
     if request.value["operation"] == "generate":
         return _compile_generation(request, assets, destination)
     if request.value["operation"] == "edit":

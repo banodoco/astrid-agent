@@ -736,6 +736,35 @@ def prepare_request(
             schedule = _v2_mask_schedule(request, timeline_audio_presence=timeline_audio_presence)
         except MaskScheduleError as exc:
             raise PreparationError(str(exc)) from exc
+        # Exact composition copies protected samples without resampling. Check
+        # those prerequisites before runtime, but leave unowned model context
+        # free to use the compositor's optional resampling path.
+        audio_schedule = schedule["audio"]
+        active_audio_edits = any(
+            edit.get("stream") == "audio" and edit.get("action") == "generate"
+            and edit.get("strength", 1) > 0
+            for item in request.value["media"] if item.get("role") == "timeline"
+            for edit in item.get("edit", [])
+        )
+        if (schedule["branch"] != "extension_context" and audio_schedule["protected_intervals"]
+                and (audio_schedule["generated_intervals"] or active_audio_edits)):
+            from .compose import CompositionError, _decode_exact_pcm, _probe
+            paths = {str(row["asset"]): Path(str(row["path"])) for row in assets
+                     if row.get("status") == "resolved" and row.get("path")}
+            for item in request.value["media"]:
+                if item.get("role") != "timeline" or item.get("modality") != "video":
+                    continue
+                path = paths.get(str(item["asset"]))
+                if path is None or _probe(path) is None:
+                    continue  # unresolved or non-media fixture
+                try:
+                    pcm, channels = _decode_exact_pcm(path)
+                    offset = int(item.get("resolved_range", [0, 0])[0]) / 24
+                    end = max(float(span[1]) for span in audio_schedule["protected_intervals"])
+                    if len(pcm) < round((offset + end) * 48000) * channels * 2:
+                        raise CompositionError(f"{path.name}: source audio does not cover kept samples")
+                except CompositionError as exc:
+                    raise PreparationError(f"source-owned audio rejected before submission: {exc}") from exc
         guide_occurrences = {
             guide for item in request.value["media"] if item.get("role") == "timeline"
             for edit in item.get("edit", []) for guide in edit.get("guides", [])
