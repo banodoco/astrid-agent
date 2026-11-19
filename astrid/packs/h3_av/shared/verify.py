@@ -18,6 +18,7 @@ from .compose import (
     _segments_with_spatial_masks,
     _spatial_video_masks,
     _validate_candidate_coverage,
+    _validate_video_size,
     _verify_spatial_mask_complement,
 )
 
@@ -300,6 +301,7 @@ def verify_candidate(
             preparation=preparation,
             candidate=candidate_path,
         )
+        _validate_video_size(preparation, actual_coverage["video"], role="candidate")
     except CompositionError as exc:
         raise VerificationError(str(exc)) from exc
     declared_coverage = composition.get("coverage")

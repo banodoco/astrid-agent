@@ -124,7 +124,6 @@ def _video_coverage(path: Path) -> dict[str, Any]:
     if probe is None or len(video) != 1:
         raise CompositionError("generated/candidate media must contain exactly one video stream")
     stream = video[0]
-    width, height = _video_dimensions(probe, role="generated/candidate")
     rate_text = stream.get("avg_frame_rate") or stream.get("r_frame_rate")
     try:
         rate = Fraction(str(rate_text))
@@ -144,15 +143,22 @@ def _video_coverage(path: Path) -> dict[str, Any]:
         frames = round(observed_duration * float(rate))
     if frames <= 0:
         raise CompositionError("video stream contains no frames")
-    return {
+    coverage = {
         "path": str(path),
         "frames": frames,
         "fps": float(rate),
-        "width": width,
-        "height": height,
         "duration": frames / float(rate),
         "stream_count": 1,
     }
+    # Synthetic coverage callers may provide only timing fields. Public
+    # composition and verification require usable dimensions separately.
+    try:
+        width, height = _video_dimensions(probe, role="generated/candidate")
+    except CompositionError:
+        pass
+    else:
+        coverage.update(width=width, height=height)
+    return coverage
 
 
 def _audio_coverage(path: Path) -> dict[str, Any]:
@@ -230,12 +236,18 @@ def _generation_duration(preparation: Mapping[str, Any]) -> float:
     return float(request["output"]["duration"])
 
 
+def _require_decoded_video_size(video: Mapping[str, Any], *, role: str) -> None:
+    if any(type(video.get(key)) is not int or video[key] <= 0 for key in ("width", "height")):
+        raise CompositionError(f"{role} video has no usable decoded dimensions")
+
+
 def _validate_video_size(preparation: Mapping[str, Any], video: Mapping[str, Any], *, role: str) -> None:
     media = preparation.get("media")
     if not isinstance(media, Mapping) or any(
         type(media.get(key)) is not int or media[key] <= 0 for key in ("width", "height")
     ):
         raise CompositionError("preparation has no usable requested video dimensions")
+    _require_decoded_video_size(video, role=role)
     actual = (video["width"], video["height"])
     requested = (media["width"], media["height"])
     if actual != requested:
@@ -272,6 +284,7 @@ def _validate_generated_coverage(
             return {"video": video}
         return {}
     video = _video_coverage(generated_video)
+    _require_decoded_video_size(video, role="generated")
     audio = _audio_coverage(generated_audio or generated_video)
     if abs(video["fps"] - timing.fps) > 1e-6:
         raise CompositionError(f"H3 continuation output must be {timing.fps} fps")
@@ -300,7 +313,6 @@ def _validate_candidate_coverage(
     """Prove final duration and AV stream coverage from delivered bytes."""
 
     video = _video_coverage(candidate)
-    _validate_video_size(preparation, video, role="candidate")
     audio = _audio_coverage(candidate)
     timing = _continuation_timing(preparation)
     if _is_source_free_generation(preparation):
@@ -464,6 +476,8 @@ def _guard_unprepared_static_permissions(preparation: Mapping[str, Any]) -> None
     if isinstance(dimensions, Mapping):
         width, height = dimensions.get("width"), dimensions.get("height")
         if type(width) is not int or type(height) is not int:
+            if isinstance(media, Mapping):
+                raise CompositionError("preparation has no usable requested video dimensions")
             raise CompositionError("preparation has invalid canvas dimensions")
         target = (width, height)
     else:
@@ -1744,6 +1758,7 @@ def compose_candidate(
                 preparation=preparation,
                 candidate=candidate,
             )
+            _validate_video_size(preparation, candidate_coverage["video"], role="candidate")
         elif _continuation_timing(preparation) is not None:
             raise CompositionError("H3 continuation result is not decodable audiovisual media")
 
