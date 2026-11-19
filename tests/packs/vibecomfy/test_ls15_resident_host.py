@@ -299,10 +299,11 @@ def test_worker_crash_reconciles_both_owned_prompts_before_replacement(resident_
             recorded = set()
             while recorded != {2, 3} and time.monotonic() < deadline:
                 for index in (2, 3):
-                    pattern = f"**/ls15-task-{index}-ls15-attempt-{index}/outputs/.vibecomfy-runtime/out/runs/*/attempt.json"
-                    for path in host.attempt_base.glob(pattern):
-                        if json.loads(path.read_bytes()).get("queue_acceptance", {}).get("status") == "accepted":
-                            recorded.add(index)
+                    pattern = f"**/ls15-task-{index}-ls15-attempt-{index}/outputs"
+                    for destination in host.attempt_base.glob(pattern):
+                        for path in vibecomfy_runtime_root(destination).glob("out/runs/*/attempt.json"):
+                            if json.loads(path.read_bytes()).get("queue_acceptance", {}).get("status") == "accepted":
+                                recorded.add(index)
                 time.sleep(0.01)
             assert recorded == {2, 3}, "both accepted prompts must have durable private ownership before the kill"
             process.kill()
