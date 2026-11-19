@@ -621,3 +621,39 @@ def test_multi_pass_planner_preserves_requested_canvas(tmp_path):
     for item in plan["passes"]:
         assert item["compilation"]["status"] == "compiled"
         assert item["compilation"]["size"] == {"width": 512, "height": 288}
+
+
+def test_multi_pass_root_preparation_rejects_composition_and_verification(tmp_path):
+    import json
+    import subprocess
+    from pathlib import Path
+    from astrid.packs.h3_av.shared.compose import CompositionError, compose_candidate
+    from astrid.packs.h3_av.shared.planner import plan_request
+    from astrid.packs.h3_av.shared.verify import VerificationError, verify_candidate
+    from tests.packs.h3_av.test_moving_masks import _fixtures
+
+    source, generated = _fixtures(tmp_path)
+    resized = tmp_path / "resized.mkv"
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(source),
+                    "-vf", "scale=512:288", "-c:v", "ffv1", "-c:a", "copy", str(resized)],
+                   check=True, capture_output=True)
+    request = normalize_request({"version": 2, "prompt": "Two edits", "duration": 1,
+        "output": {"size": [512, 288]},
+        "media": [{"asset": "source", "role": "timeline", "modality": "video",
+                   "at": {"frame": 0}, "range": [0, 1], "edit": [
+                       {"stream": "video", "during": [0, 1], "mask": {"rectangle": [32, 32, 64, 64]}},
+                       {"stream": "video", "during": [0, 1], "mask": {"rectangle": [160, 32, 64, 64]}}]}]})
+    plan = plan_request(request, asset_map={"source": str(resized)}, out_dir=tmp_path / "plan")
+    preparation = json.loads(Path(plan["preparation_path"]).read_text())
+    assert plan["runtime_submission"] == preparation["runtime_submission"] == "orchestration_only"
+    assert preparation["status"] == "orchestration_only"
+    with pytest.raises(CompositionError, match="orchestration-only"):
+        compose_candidate(preparation=preparation, generated=generated, source=resized, out_dir=tmp_path / "composed")
+    with pytest.raises(VerificationError, match="preparation is not ready"):
+        verify_candidate(preparation=preparation, composition={"status": "composed"})
+    for item in plan["passes"]:
+        child = json.loads(Path(item["plan_path"]).read_text())
+        handoff = json.loads(Path(child["preparation_path"]).read_text())
+        assert child["runtime_submission"] == "eligible"
+        assert handoff["status"] == "prepared"
+        assert handoff["mask_schedule"]["video"]["changes"][0]["prepared_mask_asset"]

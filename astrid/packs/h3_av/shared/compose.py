@@ -1254,6 +1254,8 @@ def compose_candidate(
 ) -> dict[str, Any]:
     """Compose one candidate and publish custody plus preservation evidence."""
 
+    if preparation.get("status") == "orchestration_only":
+        raise CompositionError("orchestration-only preparation cannot be composed; use a compiled pass preparation")
     generated_path = Path(generated).expanduser().resolve()
     if not generated_path.is_file():
         raise CompositionError(f"generated candidate does not exist: {generated_path}")

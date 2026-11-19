@@ -107,6 +107,10 @@ def plan_request(
             asset_map=asset_map, out_dir=root / "passes" / f"{index + 1:02d}",
         ) for index in range(len(passes))]
         preparation = prepare_request(request, asset_map=asset_map)
+        # The root describes orchestration, not a compiled composition handoff.
+        # Each child owns its compiled permission masks and verified candidate.
+        preparation["status"] = "orchestration_only"
+        preparation["runtime_submission"] = "orchestration_only"
         preparation_path = write_preparation(root / "preparation.json", preparation)
         compiled = all(item["runtime_submission"] == "eligible" for item in plans)
         plan = {
@@ -125,7 +129,7 @@ def plan_request(
             "ignored_fields": [field for item in plans for field in item["ignored_fields"]],
             "compilation": {"status": "compiled" if compiled else "blocked", "ordered_passes": len(passes)},
             "preparation_path": str(preparation_path),
-            "runtime_submission": "eligible" if compiled else "blocked_until_compilation",
+            "runtime_submission": "orchestration_only" if compiled else "blocked_until_compilation",
             "capabilities": spec.capabilities, "plan_path": str(plan_path),
         }
         plan = json_times(plan)
