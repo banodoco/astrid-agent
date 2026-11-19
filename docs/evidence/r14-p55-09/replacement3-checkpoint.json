@@ -1,0 +1,154 @@
+{
+  "packet": "R14-P55-09",
+  "task": "LS-15",
+  "session": "r14-P55-09-3",
+  "state": "Merged local proof complete; native/Windows and full shared-host hosted qualification pending",
+  "prior_published_head": "7052ee1c65c81305bd2ca911952073066d876f68",
+  "destination": "e379565641414bc183cd02edebab1cbf77617931",
+  "fixture_approval": "https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6998123631",
+  "publication_mapping": [
+    {
+      "local": "73f8273f009e295e06a430aff9517be62120773c",
+      "published": "c4bf901147f1e6c2c462208a936adaa57f026c3c",
+      "tree": "36ed753fab994c3b0ffe5e905929058aeceb04a4",
+      "parents": [
+        "7052ee1c65c81305bd2ca911952073066d876f68"
+      ]
+    },
+    {
+      "local": "79df6975f44d7d13dfa2b8b56bcea5e417473ec9",
+      "published": "11bf3ad2675436812461b52e0e8a4ee9f2890ca8",
+      "tree": "1d87b3298f64a4f48bf1f318a728b85d0ec393d9",
+      "parents": [
+        "c4bf901147f1e6c2c462208a936adaa57f026c3c",
+        "e379565641414bc183cd02edebab1cbf77617931"
+      ]
+    },
+    {
+      "local": "e35b553d2d8eea78204c66ac9ab1a686a4b98c89",
+      "published": "7a589bf05bfbd54fa80a23109be1a5b7bf34dd86",
+      "tree": "418df63f2a289ba93de6a115053d59b43c66593f",
+      "parents": [
+        "11bf3ad2675436812461b52e0e8a4ee9f2890ca8"
+      ]
+    }
+  ],
+  "tested_local_commit": "e35b553d2d8eea78204c66ac9ab1a686a4b98c89",
+  "tested_tree": "418df63f2a289ba93de6a115053d59b43c66593f",
+  "equivalent_published_product_commit": "7a589bf05bfbd54fa80a23109be1a5b7bf34dd86",
+  "dependency_binding": "Exact accepted destination pins, byte-identical in all eight pin/recipe/lock files; full source identities in archive environment/setup.txt",
+  "dependency_short_ids": {
+    "runtime": "62333bd7",
+    "vibecomfy": "1ba0ac3a",
+    "lifecycle": "7f0b025e"
+  },
+  "fixture_assertions_preserved": 50,
+  "modified_existing_destination_tests": [],
+  "local": {
+    "python": "3.13.5",
+    "focused": {
+      "passed": 36,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "raw_exit": 0,
+      "seconds": 83.457
+    },
+    "warm_work": {
+      "ui_json": {
+        "process_starts": 0,
+        "emissions": 0,
+        "compiles": 0,
+        "schema_fetches": 0,
+        "pack_scans": 0,
+        "audits": 0
+      },
+      "closed_python": {
+        "process_starts": 0,
+        "emissions": 0,
+        "compiles": 0,
+        "schema_fetches": 0,
+        "pack_scans": 0,
+        "audits": 0
+      },
+      "scopes": "parent and child"
+    },
+    "retained_per_warm_job": {
+      "parent_source_validations": 46,
+      "child_source_validations": 5,
+      "prepared_authorizations": 5,
+      "pack_files_copied": 68,
+      "pack_bytes_copied": 507376
+    },
+    "current_destination_failing_before": {
+      "raw_exit": 1,
+      "parent": {
+        "process_starts": 7,
+        "emissions": 1,
+        "compiles": 5,
+        "schema_fetches": 63,
+        "pack_scans": 7
+      },
+      "child": "uninstrumented disposable baseline children; no zero-work claim"
+    },
+    "pin_copy_guard": {
+      "raw_exit": 0,
+      "initial_environment_error": "Canonical wrapper imported VibeComfy scripts before Agent scripts; raw collection error retained; corrected PYTHONPATH to source via unchanged ls15_run helper, exact selector passes."
+    },
+    "fixture_ruff": {
+      "raw_exit": 0
+    },
+    "warnings": [
+      "Generated-template legacy ref PendingDeprecationWarning",
+      "websockets.legacy DeprecationWarning"
+    ]
+  },
+  "recovered_hosted": {
+    "run": 44446836996,
+    "head": "7052ee1c",
+    "base": "493616c1",
+    "old_tuple_only": true,
+    "comparisons": {
+      "linux": {
+        "ids": 582,
+        "regressions": 0,
+        "inherited": 10
+      },
+      "macos": {
+        "ids": 582,
+        "regressions": 0,
+        "inherited": 32
+      },
+      "windows": {
+        "ids": 575,
+        "regressions": 0,
+        "inherited": 146,
+        "failed_to_passed_observation": 1
+      },
+      "native": {
+        "ids": 43,
+        "regressions": 0,
+        "inherited": 2
+      }
+    },
+    "missing_or_no_baseline_ids": 0,
+    "all_comparator_raw_exits": 0,
+    "packet_native_failure": "Cold native command list empty because align was outside generation_intent; approved fixture correction now applied",
+    "packet_windows_failures": "Six host probes stop at the noncanonical journal locator; approved fixture correction now applied",
+    "other_affected_workflows": "Exact LS8, LS7, held-connection and meter raw failures/limits retained in archive hosted-7052/facts.json"
+  },
+  "archive": {
+    "path": "replacement3-observations.tar.xz",
+    "bytes": 929916,
+    "sha256": "90e08fcc61411d021702859f6b00c5e1bfbb24dce059b1dfe150e0ac6bd524e3",
+    "data_members": 356
+  },
+  "remaining_limits": [
+    "No native local proof: direct AF_UNIX construction raises PermissionError before bind. Hosted Linux managed-generation proof required.",
+    "Current Windows/macOS and full Agent 8-shard/affected Lanes results pending; no overall no-new-failures or merge qualification claim.",
+    "All former raw failures remain; no test deletion, assertion relaxation, deselection or pin-identity guard changes.",
+    "Historical meter uses unsupported old Vibe and stays NO-RESULT; no latency/GPU/LS-14/LS-15.1 claim.",
+    "The public SDK test independently fetched and verified every delivered digest and both PNGs during execution; extracted producer temporary paths later absent, so extraction is not a fresh output-byte verification.",
+    "Lead owns independent review and destination integration."
+  ]
+}
