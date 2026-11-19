@@ -16,7 +16,7 @@ from jsonschema import Draft202012Validator
 from referencing import Registry
 from referencing.exceptions import Unresolvable
 
-from astrid.core.timeline.authoring_bundle import AuthoringBundleError
+from astrid.core.timeline.authoring_bundle import AuthoringBundleError, _authoring_shot_id
 from astrid.core.timeline.parent_registry import ParentRegistryError, effective_parent_registry
 from astrid.sdk.timeline._command_state import equal
 from astrid.sdk.timeline.compiler import TimingCompileError
@@ -106,6 +106,70 @@ def _typed_fps_paths(bundle: Mapping[str, Any]) -> set[str]:
         if isinstance(child_output, Mapping) and "fps" in child_output:
             paths.add(f"shots[{shot_id!r}].internal_timeline.output.fps")
     return paths
+
+
+def _canonical_fps_sources(bundle: Mapping[str, Any]) -> dict[tuple[str, ...], list[tuple[str, Any, set[str]]]]:
+    """Identify typed declarations behind canonical, occurrence-local shot names.
+
+    A shared source can acquire or lose local aliases when the canonical document
+    is reopened. Only complete physical source identities, exact authored rates,
+    and the adapter's own naming scheme can establish that continuity.
+    """
+    origins = bundle.get("source_mapping", {}).get("shots", {})
+    placements = bundle.get("placements", [])
+    source_counts: dict[str, int] = {}
+    for row in placements:
+        physical = origins.get(row.get("shot_id"), {}).get("shot_id")
+        if isinstance(physical, str):
+            source_counts[physical] = source_counts.get(physical, 0) + 1
+    groups: dict[tuple[str, ...], list[tuple[str, Any, list[Any]]]] = {}
+    for local_id, shot in (bundle.get("shots") or {}).items():
+        origin = origins.get(local_id, {})
+        identity = tuple(origin.get(key) for key in (
+            "shot_id", "revision_id", "content_digest", "internal_timeline_id",
+            "internal_timeline_revision_id", "internal_timeline_content_digest"))
+        if not all(isinstance(value, str) and value for value in identity):
+            continue
+        owners = [row for row in placements if row.get("shot_id") == local_id]
+        groups.setdefault(identity, []).append((local_id, shot, owners))
+    result: dict[tuple[str, ...], list[tuple[str, Any, set[str]]]] = {}
+    for identity, members in groups.items():
+        declarations = []
+        for local_id, shot, owners in members:
+            output = shot.get("internal_timeline", {}).get("output", {})
+            if (not owners or shot.get("shot_id") != local_id
+                    or not isinstance(output, Mapping) or "fps" not in output):
+                break
+            if any(not isinstance(row.get("occurrence_id"), str)
+                   or local_id != _authoring_shot_id(
+                       bundle["project_id"], bundle["timeline_id"], row["occurrence_id"],
+                       identity[0], shared=source_counts[identity[0]] > 1)
+                   for row in owners):
+                break
+            declarations.append((local_id, output["fps"], {row["occurrence_id"] for row in owners}))
+        else:
+            result[identity] = declarations
+    return result
+
+
+def _retained_shared_fps_paths(candidate: Mapping[str, Any], baseline: Mapping[str, Any]) -> set[str]:
+    """Recognize the same physical typed slot across canonical alias expansion/collapse."""
+    if any(candidate.get(key) != baseline.get(key) for key in ("project_id", "timeline_id")):
+        return set()
+    before = _canonical_fps_sources(baseline)
+    after = _canonical_fps_sources(candidate)
+    retained: set[str] = set()
+    for identity in before.keys() & after.keys():
+        old, new = before[identity], after[identity]
+        # At least one existing occurrence must still own this exact source.
+        # Aliases of one shared declaration are not separate physical clocks.
+        if not (set().union(*(owners for _, _, owners in old))
+                & set().union(*(owners for _, _, owners in new))):
+            continue
+        if all(equal(fps, old[0][1]) for _, fps, _ in old + new):
+            retained.update(f"shots[{local_id!r}].internal_timeline.output.fps"
+                            for local_id, _, _ in old)
+    return retained
 
 
 def _fps_basis(bundle: Mapping[str, Any]) -> str:
@@ -242,9 +306,10 @@ def _validate_fps(
         candidate, baseline, restoration_records, inverse_records)
         | _authenticated_deleted_shot_fps_removals(
             candidate, baseline, restoration_records, inverse_records))
-    if (baseline is not None
-            and not _typed_fps_paths(baseline) <= (_typed_fps_paths(candidate) | removed)):
-        _fail("candidate", "all authored fps declarations must retain their typed locations")
+    if baseline is not None:
+        missing = _typed_fps_paths(baseline) - (_typed_fps_paths(candidate) | removed)
+        if missing and not missing <= _retained_shared_fps_paths(candidate, baseline):
+            _fail("candidate", "all authored fps declarations must retain their typed locations")
     if not values or all(rate == values[0][1] for _, rate in values[1:]):
         return
     # D12 preserves an untouched legacy mismatch without equating its exact
