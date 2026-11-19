@@ -10,7 +10,6 @@ import os
 import http.client
 import socket
 import threading
-import tempfile
 import re
 import urllib.error
 import urllib.request
@@ -1349,11 +1348,14 @@ class WorkspaceClient:
 
     def _get_object_file(self, object_id: str, destination: Path, expected_digest: str, expected_size: int, headers: Mapping[str, str]) -> FileResponse:
         destination.parent.mkdir(parents=True, exist_ok=True)
-        fd, temporary_name = tempfile.mkstemp(prefix=".astrid-object-", dir=destination.parent)
-        temporary = Path(temporary_name)
+        temporary = destination.parent / f".astrid-object-{uuid.uuid4().hex}"
+        # Exclusive ordinary creation lets the kernel apply the caller's umask.
+        # The verified file keeps those permissions when it is installed below.
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o666)
         negotiated = False
         try:
-            with os.fdopen(fd, "wb") as output:
+            # Keep ownership here so even a failed fdopen closes the descriptor.
+            with os.fdopen(fd, "wb", closefd=False) as output:
                 def receive(response):
                     nonlocal negotiated
                     if getattr(response, "status", 200) not in (200, 206):
@@ -1394,13 +1396,19 @@ class WorkspaceClient:
                 )
                 output.flush()
                 os.fsync(output.fileno())
+            owned_fd, fd = fd, None
+            os.close(owned_fd)
             os.replace(temporary, destination)
             return FileResponse(str(destination), "sha256:" + expected_digest, expected_size,
                                 status, response_headers, negotiated)
         except (OSError, http.client.HTTPException) as exc:
             raise ApiError(0, "transport_error", "object transfer did not complete") from exc
         finally:
-            temporary.unlink(missing_ok=True)
+            try:
+                if fd is not None:
+                    os.close(fd)
+            finally:
+                temporary.unlink(missing_ok=True)
 
     def head_object(self, object_id: str, *, byte_range: tuple[int, int | None] | None = None) -> ByteResponse:
         headers: dict[str, str] = {}
