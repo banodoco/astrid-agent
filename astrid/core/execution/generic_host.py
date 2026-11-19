@@ -17378,9 +17378,10 @@ class LocalExecutionPreparation:
                                  "error_code": "preparation_unresolved" if command == "prepare_local_execution" else "report_unresolved",
                                  "custody_capabilities": self.known_custody_capabilities()}
                     _send_activation_frame(control, reply)
-                    if frame.get("command") == "abort_local_execution":
-                        # A failed write is not an acknowledgement. Retain the
-                        # process until Runtime resolves the broken channel.
+                    if frame.get("command") == "abort_local_execution" and reply.get("status") == "cleaned":
+                        # Only delivered positive cleanup releases the owner.
+                        # An unresolved reply retains this channel for retry;
+                        # a failed write is not an acknowledgement either.
                         self._control_cleanup_done.set()
             except BaseException as exc:
                 self.control_error = exc
