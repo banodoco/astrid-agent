@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from astrid.core.util.http import os_trust_ssl_context, request_error_host
 from astrid.pack_api import AstridError
 from astrid.pack_api import guard_canonical_entrypoint
 from astrid.pack_api import CredentialsScope
@@ -407,7 +408,7 @@ def _fetch_models(
 
     request = urllib.request.Request(url, headers=headers, method="GET")
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with request_error_host(request.full_url), urllib.request.urlopen(request, timeout=timeout, context=os_trust_ssl_context()) as response:
             raw_data = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")

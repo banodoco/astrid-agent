@@ -2,6 +2,7 @@
 
 import os
 import shutil
+import ssl
 import subprocess
 import sys
 from pathlib import Path
@@ -62,7 +63,9 @@ def test_download_sends_astrid_user_agent(tmp_path, monkeypatch):
     class Response(io.BytesIO):
         pass
 
-    def urlopen(request, *, timeout):
+    def urlopen(request, *, timeout, context):
+        assert context.verify_mode == ssl.CERT_REQUIRED
+        assert context.check_hostname is True
         requests.append((request, timeout))
         return Response(b"archive bytes")
 

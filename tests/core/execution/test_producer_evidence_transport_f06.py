@@ -5,7 +5,7 @@ import hashlib
 import importlib
 import json
 import shutil
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
 
 import pytest
@@ -183,6 +183,48 @@ def test_host_adds_installed_manifest_without_development_lookup(tmp_path, monke
     first = (spool / "manifest.json").read_bytes()
     host._prepare_producer_evidence(spool, {"execution_request": {"target": {"kind": "local"}}})
     assert (spool / "manifest.json").read_bytes() == first
+
+
+def test_host_managed_result_path_fits_default_windows_attempt_and_remains_readable(tmp_path, monkeypatch):
+    spool = _materialize(tmp_path, monkeypatch)
+    host = GenericPackHost.__new__(GenericPackHost)
+    host.boot_manifest_provenance = lambda: None
+    original_result = (spool / "outputs" / "managed-generation-result.json").read_bytes()
+
+    host._prepare_producer_evidence(spool, {"execution_request": {"target": {"kind": "local"}}})
+    first_manifest = (spool / "manifest.json").read_bytes()
+    receipt = json.loads(first_manifest)
+    relative_path = receipt["managed_generation_result_path"]
+    result_path = spool / relative_path
+    digest = hashlib.sha256(result_path.read_bytes()).hexdigest()
+
+    # Match the installed GenericPackHost default attempt shape and the
+    # 40-character Windows user profile reported in #671. Windows Path is
+    # reconstructed separately because these tests run on any host OS.
+    attempt_root = PureWindowsPath(
+        "C:/Users/" + "u" * 40 + "/AppData/Local/Astrid Runtime/attempts/"
+        + "b" * 16 + "/astrid-attempt-" + "a" * 32
+    )
+    windows_result = attempt_root / "outputs" / relative_path
+    assert len(str(windows_result)) <= 260
+    assert max(len(str(parent)) for parent in windows_result.parents) <= 248
+
+    assert result_path.name == f"result-{digest}.json"
+    assert (spool / "outputs" / "managed-generation-result.json").read_bytes() == original_result
+    row = next(row for row in receipt["outputs"] if row["name"] == "result_manifest")
+    assert row["path"] == relative_path
+    assert row["content_hash"] == f"sha256:{digest}"
+    assert row["bytes"] == result_path.stat().st_size
+    descriptors = harvest_staged_outputs(spool)
+    host._validate_producer_evidence(
+        descriptors, output_root=spool, task_id="task-1", attempt_id="attempt-1"
+    )
+
+    host._prepare_producer_evidence(spool, {"execution_request": {"target": {"kind": "local"}}})
+    assert (spool / "manifest.json").read_bytes() == first_manifest
+    assert result_path.read_bytes() == json.dumps(
+        receipt["managed_generation_result"], ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
 
 
 @pytest.mark.parametrize("mismatch", [False, True])

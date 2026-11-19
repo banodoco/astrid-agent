@@ -5,7 +5,6 @@ support roots. Returning None means neither root names a managed installation.
 """
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -13,6 +12,7 @@ from pathlib import Path
 def managed_runtime_lifecycle(*, action: str, source_checkout: Path, data_root: Path,
                               wait: bool = False) -> dict | None:
     from runtime_protocol import platform
+
     from .app_update import locked
     from .backend import Backend
     from .core import absolute, current, pending_transaction, read_json

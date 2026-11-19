@@ -26,7 +26,7 @@ def test_production_fork_reservation_refuses_incomplete_or_mixed_proof(monkeypat
     check = commit._check_reservations
     observed = []
 
-    def corrupt(port, plan, current, rejected, requested):
+    def corrupt(port, plan, current, rejected, requested, *memo):
         record = plan.records[0]
         bindings = record['bindings']
         source = next(item for item in bindings if item['key'] == 'fork.source')
@@ -56,7 +56,7 @@ def test_production_fork_reservation_refuses_incomplete_or_mixed_proof(monkeypat
         else:
             source['dependencies'] = ['unproven']
         observed.append(damage)
-        return check(port, plan, current, rejected, requested)
+        return check(port, plan, current, rejected, requested, *memo)
 
     monkeypatch.setattr(commit, '_check_reservations', corrupt)
     with pytest.raises(CommitRejected):
