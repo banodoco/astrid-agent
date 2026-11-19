@@ -1300,9 +1300,25 @@ def _exact_audio_for_request(preparation: Mapping[str, Any], *, source: Path, ge
         try:
             source_pcm, _ = _decode_exact_pcm(source, expected_channels=channels)
         except CompositionError:
-            # An unowned source is optional: unsupported rate/layout or absent
-            # samples cannot prevent pre-splicing the authoritative fixed PCM.
-            pass
+            # Resampling is permitted only for optional model context in
+            # fractional generated grants, never for source-owned delivery.
+            fractional = [edit["resolved"]["range"] for edit in edits
+                          if not edit.get("guides") and 0 < edit.get("strength", 1) < 1]
+            if fractional:
+                try:
+                    context, _ = _decode_exact_pcm(source, expected_channels=channels, generated=True)
+                except CompositionError:
+                    pass
+                else:
+                    sparse = bytearray(len(context))
+                    stride = channels * 2
+                    source_base = round(source_offset * 48000)
+                    for first, last in fractional:
+                        begin = (source_base + first) * stride
+                        end = min((source_base + last) * stride, len(context))
+                        if begin < end:
+                            sparse[begin:end] = context[begin:end]
+                    source_pcm = bytes(sparse)
     if source_pcm is None:
         source_pcm = bytes(total * channels * 2)
         source_start = 0
