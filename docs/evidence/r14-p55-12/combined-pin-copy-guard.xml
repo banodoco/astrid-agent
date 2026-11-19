@@ -1,0 +1,1 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="0" skipped="0" tests="1" time="0.473" timestamp="2026-11-19T02:48:22.986865+00:00" hostname="fc832b8b36d3"><testcase classname="tests.test_vibecomfy_pin" name="test_no_other_tracked_file_copies_the_pin" time="0.286" /></testsuite></testsuites>
