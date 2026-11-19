@@ -984,3 +984,38 @@ def test_fractional_pre_splice_conforms_unowned_44100_source_context(tmp_path):
     mask = manifest["capabilities"]["audio_time_mask"]["requested_frame_values"]
     assert mask[:12] == [0] * 12
     assert mask[12:24] == [0.5] * 12
+
+
+@pytest.mark.ffmpeg
+def test_fractional_pre_splice_duplicates_mono_context_for_stereo_fixed_pcm(tmp_path):
+    import struct
+    import subprocess
+    from astrid.packs.h3_av.shared.compose import _decode_exact_pcm
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+    from tests.packs.h3_av.test_moving_masks import _fixtures
+
+    source, _ = _fixtures(tmp_path)
+    voice = tmp_path / "stereo-fixed.wav"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "aevalsrc=0.125|0.375:s=48000:d=1", "-c:a", "pcm_s16le", str(voice)], check=True)
+    raw = {"version": 2, "duration": 1, "prompt": "Edit", "media": [
+        {"asset": "scene", "role": "timeline", "modality": "video", "at": {"frame": 0}, "range": [0, 1],
+         "edit": [{"stream": "video", "during": [0, 1], "mask": {"rectangle": [0, 0, 128, 128]}, "guides": []},
+                  {"stream": "audio", "during": [0, "1/2"], "guides": ["fixed"]},
+                  {"stream": "audio", "during": ["1/2", 1], "strength": 0.5}]},
+        {"id": "fixed", "asset": "voice", "role": "reference", "modality": "audio"},
+    ]}
+    preparation = prepare_request(normalize_request(raw), asset_map={"scene": str(source), "voice": str(voice)})
+    manifest = compile_preparation(preparation, out_dir=tmp_path / "compiled")
+    assert "source_audio_prepared" in manifest["workflow_inputs"]
+    prepared, channels = _decode_exact_pcm(tmp_path / "compiled" / "source-with-fixed-audio.wav")
+    assert channels == 2
+    fixed, _ = _decode_exact_pcm(voice, expected_channels=2)
+    mono, _ = _decode_exact_pcm(source, expected_channels=1)
+    samples = struct.unpack("<48000h", mono[:48000 * 2])
+    duplicated = b"".join(struct.pack("<hh", sample, sample) for sample in samples[24000:48000])
+    assert any(duplicated)
+    assert prepared == fixed[:24000 * 4] + duplicated
+    mask = manifest["capabilities"]["audio_time_mask"]["requested_frame_values"]
+    assert mask[:12] == [0] * 12
+    assert mask[12:24] == [0.5] * 12

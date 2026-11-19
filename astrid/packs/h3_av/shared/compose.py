@@ -1092,13 +1092,15 @@ def _normalize_full_replacement(
 
 
 
-def _decode_exact_pcm(path: Path, *, expected_channels: int | None = None, generated: bool = False) -> tuple[bytes, int]:
+def _decode_exact_pcm(path: Path, *, expected_channels: int | None = None, generated: bool = False,
+                      model_context: bool = False) -> tuple[bytes, int]:
     """Decode the named baseline as 48 kHz interleaved signed 16-bit PCM.
 
     Kept and supplied inputs must already have a 48 kHz mono or stereo layout;
     the generated input alone may be conformed to the baseline sample rate.
     Stereo generated audio is mixed to mono as (left + right) / 2 when the
-    prepared source is mono; no kept or supplied channel is transformed.
+    prepared source is mono. Optional model context may also duplicate mono
+    to stereo; no kept or supplied delivery channel is transformed.
     """
     probe = _probe(path)
     streams = _streams(probe, "audio") if probe else []
@@ -1111,22 +1113,27 @@ def _decode_exact_pcm(path: Path, *, expected_channels: int | None = None, gener
         raise CompositionError(f"{path.name}: audio sample rate and channel layout must be measurable") from None
     layout = stream.get("channel_layout")
     allowed_layout = "mono" if channels == 1 else "stereo" if channels == 2 else None
-    downmix_generated = generated and channels == 2 and expected_channels == 1
+    downmix = (generated or model_context) and channels == 2 and expected_channels == 1
+    duplicate_context = model_context and channels == 1 and expected_channels == 2
     if (allowed_layout is None or layout not in (None, "unknown", allowed_layout)
-            or (expected_channels is not None and channels != expected_channels and not downmix_generated)):
+            or (expected_channels is not None and channels != expected_channels and not (downmix or duplicate_context))):
         raise CompositionError(f"{path.name}: audio layout must match the source mono or stereo layout")
-    if rate != 48000 and not generated:
+    if rate != 48000 and not (generated or model_context):
         raise CompositionError(f"{path.name}: kept and supplied audio must be 48000 Hz; prepare a 48000 Hz source")
+    channel_filter = ("pan=mono|c0=0.5*c0+0.5*c1" if downmix else
+                      "pan=stereo|c0=c0|c1=c0" if duplicate_context else None)
     command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(path),
-               "-map", "0:a:0", "-vn", *( ["-ar", "48000"] if generated else [] ),
-               *( ["-af", "pan=mono|c0=0.5*c0+0.5*c1"] if downmix_generated else [] ),
+               "-map", "0:a:0", "-vn", *( ["-ar", "48000"] if generated or model_context else [] ),
+               *( ["-af", channel_filter] if channel_filter else [] ),
                "-c:a", "pcm_s16le", "-f", "s16le", "-"]
     try:
         pcm = subprocess.run(command, check=True, capture_output=True).stdout
     except (OSError, subprocess.SubprocessError) as exc:
         raise CompositionError(f"{path.name}: cannot decode canonical PCM: {exc}") from exc
-    if downmix_generated:
+    if downmix:
         channels = 1
+    elif duplicate_context:
+        channels = 2
     if len(pcm) % (channels * 2):
         raise CompositionError(f"{path.name}: decoded PCM has an incomplete sample")
     return pcm, channels
@@ -1306,7 +1313,7 @@ def _exact_audio_for_request(preparation: Mapping[str, Any], *, source: Path, ge
                           if not edit.get("guides") and 0 < edit.get("strength", 1) < 1]
             if fractional:
                 try:
-                    context, _ = _decode_exact_pcm(source, expected_channels=channels, generated=True)
+                    context, _ = _decode_exact_pcm(source, expected_channels=channels, model_context=True)
                 except CompositionError:
                     pass
                 else:
