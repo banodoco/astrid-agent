@@ -17,6 +17,8 @@ jobs:
   windows-launchers:
     runs-on: windows-latest
     timeout-minutes: 30
+    env:
+      ASTRID_CI_MATRIX: ${{ strategy.job-index || 0 }}
     steps:
       - uses: actions/checkout@v4
       - name: Set up Plan39 evidence collector
@@ -70,6 +72,8 @@ jobs:
   chat:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      ASTRID_CI_MATRIX: ${{ strategy.job-index || 0 }}
     steps:
       - uses: actions/checkout@v4
       - name: Set up Plan39 evidence collector

@@ -30,6 +30,8 @@ jobs:
       fail-fast: false
       matrix:
         installer-shell: [powershell.exe, pwsh.exe]
+    env:
+      ASTRID_CI_MATRIX: ${{ strategy.job-index || 0 }}
     steps:
       - name: Check out this Agent commit
         uses: actions/checkout@v4

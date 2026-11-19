@@ -126,6 +126,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
+      ASTRID_CI_MATRIX: ${{ strategy.job-index || 0 }}
       ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/astrid-runtime
       ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/vibecomfy-checkout
       ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/runpod-lifecycle-checkout
@@ -750,6 +751,8 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12"]
 
+    env:
+      ASTRID_CI_MATRIX: ${{ strategy.job-index || 0 }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -823,6 +826,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
+    env:
+      ASTRID_CI_MATRIX: ${{ strategy.job-index || 0 }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
