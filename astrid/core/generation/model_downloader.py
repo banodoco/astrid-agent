@@ -612,7 +612,7 @@ def _download_model(
     if part.exists() and part.stat().st_size > model.bytes:
         raise IntegrityError("model partial exceeds its locked byte count")
 
-    from astrid._tls_policy import request_error_host
+    from astrid.installer._tls_policy import request_error_host
 
     if opener is None:
         from functools import partial
