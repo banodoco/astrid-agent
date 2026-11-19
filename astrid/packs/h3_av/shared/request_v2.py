@@ -407,6 +407,8 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
                 clock = FPS if modality == "video" else Fraction(SAMPLE_RATE)
                 occurrence["range"], occurrence["resolved_range"] = _interval(item["range"], f"{path}.range", clock)
         else:
+            if modality == "image" and item.get("latent_pin"):
+                raise H3RequestError(f"{path}.latent_pin is unsupported for timeline images")
             if "at" not in item: raise H3RequestError(f"{path}.at is required for timeline media")
             at, at_frame = _at(item["at"], f"{path}.at")
             occurrence.update({"at": at, "resolved_at": {"unit": "frames", "value": at_frame}, "hard": item.get("hard", False), "edit": []})
@@ -511,6 +513,19 @@ def read_prepared_request(raw: Mapping[str, Any], expected_digest: Any, *, requi
         effective_settings(request)
     if require_normalized_v2 and request.value.get("version") != 2: raise H3RequestError("prepared v2 request is missing normalized derived fields")
     return request
+
+
+def timeline_image_limit_error(value: Mapping[str, Any]) -> str | None:
+    from .generation import LIMITS
+    for item in value["media"]:
+        if item.get("role") != "timeline" or item.get("modality") != "image":
+            continue
+        frame = LIMITS["timeline_image_frame"]["value"]
+        if item["resolved_at"]["value"] != frame:
+            return f"timeline image frame: only frame {frame} is supported by this lowering"
+        if item.get("edit") or item.get("hard") or item.get("latent_pin") or value.get("continuation"):
+            return "timeline image lowering does not support explicit edits, anchors or continuation"
+    return None
 
 
 def branch_for(request: H3Request) -> str:

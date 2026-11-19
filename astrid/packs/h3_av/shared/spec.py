@@ -28,6 +28,7 @@ class Source:
     range: tuple[Fraction, Fraction]
     occurrence_id: str | None = field(default=None, compare=False)
     name: str = field(default="__source__", compare=False)
+    modality: str = field(default="video", compare=False)
 
 
 @dataclass(frozen=True)
@@ -337,6 +338,13 @@ def _normalize_spec(
                     if op.seed is not None:
                         edit["seed"] = op.seed
                 edits.append(edit)
+    if spec.source is not None and spec.source.modality == "image":
+        expected_ops = [Operation("regenerate", (Fraction(1, 24), spec.duration),
+                              refs=tuple(ref.name for ref in refs.values() if ref.use != "replacement"), stream="video"),
+                    Operation("regenerate", (Fraction(0), spec.duration), stream="audio")]
+        if spec.source.range != (0, spec.duration) or ops != expected_ops:
+            _fail("unsupported_source", "timeline image requires its joint implicit video and audio grants",
+                  "ops", "Use the frame-zero timeline image without explicit edits")
     generators = [op for op in ops if op.op in {"generate", "extend"}]
     if generators and (len(generators) != 1 or any(op.op == "regenerate" for op in ops)):
         _fail(
@@ -397,10 +405,9 @@ def _normalize_spec(
                 "id": spec.source.name,
                 "asset": spec.source.asset,
                 "role": "timeline",
-                "modality": "video",
+                "modality": spec.source.modality,
                 "at": {"frame": 0},
-                "range": list(spec.source.range),
-                "edit": edits,
+                **({} if spec.source.modality == "image" else {"range": list(spec.source.range), "edit": edits}),
             },
         )
     positions = {ref.authored_id or ref.name: ref.occurrence_id for ref in refs.values()}
@@ -451,6 +458,9 @@ def sampling_request_document(
     already composed output timelines, so their source window starts at zero.
     """
     spec = canonical_spec(request)
+    if spec.source is not None and spec.source.modality == "image":
+        _fail("unsupported_op", "timeline image grants are atomic and cannot be split into derived passes",
+              "ops", "Plan the complete timeline image request")
     sampling_pass = spec.sampling_passes()[index]
     source = spec.source
     if previous_verified_output and source is not None:
@@ -470,6 +480,7 @@ def sampling_request(request: H3Request, index: int, *, previous_verified_output
     """Build an internal pass while preserving the parent's classified occurrences."""
     import hashlib
     import json
+
     from .request import normalize_request
     from .request_v2 import _identity_value
 
@@ -523,6 +534,10 @@ def _region(mask: Mapping, regions: list[Region]) -> str | None:
 
 def _from_v2(request: H3Request) -> H3Spec:
     value = request.value
+    from .request_v2 import timeline_image_limit_error
+    still_error = timeline_image_limit_error(value)
+    if still_error:
+        _fail("unsupported_source", still_error, "media", "Use a frame-zero timeline image without explicit controls")
     timelines = [item for item in value["media"] if item["role"] == "timeline"]
     if len(timelines) > 1:
         _fail("source_count", "At most one source is supported", "media", "Use one timeline source")
@@ -543,12 +558,13 @@ def _from_v2(request: H3Request) -> H3Spec:
     regions: list[Region] = []
     if timelines:
         item = timelines[0]
+        is_still = item.get("modality") == "image" and item["resolved_at"]["value"] == 0
         if (
-            item.get("modality") != "video"
+            not is_still and (item.get("modality") != "video"
             or item["resolved_at"]["value"] != 0
             or "range" not in item
             or item.get("hard")
-            or "latent_pin" in item
+            or "latent_pin" in item)
         ):
             _fail(
                 "unsupported_source",
@@ -556,10 +572,28 @@ def _from_v2(request: H3Request) -> H3Spec:
                 "media",
                 "Use one bounded video without hard anchors",
             )
-        source = Source(item["asset"],
-                        (_fraction(item["range"][0], "media.range"),
-                         _fraction(item["range"][1], "media.range")),
-                        item["occurrence_id"], item.get("id", item["occurrence_id"]))
+        source_range: tuple[Fraction, Fraction] = (
+            (Fraction(0), _fraction(value["duration"], "duration"))
+            if is_still
+            else (
+                _fraction(item["range"][0], "media.range"),
+                _fraction(item["range"][1], "media.range"),
+            )
+        )
+        source = Source(
+            item["asset"], source_range, item["occurrence_id"],
+            item.get("id", item["occurrence_id"]), "image" if is_still else "video",
+        )
+        if is_still:
+            duration = _fraction(value["duration"], "duration")
+            ops.extend([
+                Operation(
+                    "regenerate", (Fraction(1, 24), duration),
+                    refs=tuple(ref.name for ref in refs if ref.use != "replacement"),
+                    stream="video",
+                ),
+                Operation("regenerate", (Fraction(0), duration), stream="audio"),
+            ])
         for edit in item["edit"]:
             if (
                 set(edit) - {"stream", "during", "resolved", "action", "mask", "guides", "channels", "strength", "seed"}

@@ -839,6 +839,7 @@ def _compose_media(
     video_fps: float | None = None,
     spatial_video_masks: Sequence[Mapping[str, Any]] | None = None,
     exact_audio_path: Path | None = None,
+    preserve_rgb: bool = False,
 ) -> dict[str, Any]:
     """Compose source and generated streams into a lossless MKV candidate."""
 
@@ -894,7 +895,7 @@ def _compose_media(
             else:
                 input_args.extend(["-loop", "1", "-framerate", str(mask_fps), "-i", path])
             next_input_index += 1
-    if mask_input_indices:
+    if mask_input_indices or preserve_rgb:
         # Preservation is verified on decoded RGB pixels. Keep every segment
         # and the lossless candidate in full-resolution planar RGB so a mask
         # boundary cannot alter shared chroma samples when converted back to
@@ -1611,6 +1612,8 @@ def compose_candidate(
                     video_fps=24.0 if schedule.get("branch") == "source_backed_v2v" else None,
                     spatial_video_masks=spatial_video_masks,
                     exact_audio_path=exact_audio[0] if exact_audio is not None else None,
+                    preserve_rgb=any(item.get("role") == "timeline" and item.get("modality") == "image"
+                                     for item in request_value.get("media", [])),
                 )
                 if exact_audio is not None:
                     decoded, channels = _decode_exact_pcm(candidate, expected_channels=exact_audio[2])
