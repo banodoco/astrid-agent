@@ -1184,7 +1184,12 @@ def _exact_audio_for_request(preparation: Mapping[str, Any], *, source: Path, ge
     refs = {item.get("id", item["occurrence_id"]): item for item in media if item.get("role") == "reference"}
     edits = [edit for item in media if item.get("role") == "timeline" for edit in item.get("edit", [])
              if edit.get("stream") == "audio" and edit.get("action") == "generate" and edit.get("strength", 1) > 0]
-    schedule = preparation.get("mask_schedule", {}).get("audio", {})
+    mask_schedule = preparation.get("mask_schedule", {})
+    # Continuations already have an established suffix composition path; their
+    # source is intentionally shorter than the output timeline.
+    if mask_schedule.get("branch") == "extension_context":
+        return None
+    schedule = mask_schedule.get("audio", {})
     scheduled_generated = schedule.get("generated_intervals") if isinstance(schedule, Mapping) else None
     if not edits and not scheduled_generated:
         return None
@@ -1222,11 +1227,21 @@ def _exact_audio_for_request(preparation: Mapping[str, Any], *, source: Path, ge
             if last > fixed_end:
                 remaining.append((max(first, fixed_end), last))
         generated_spans = [(first, last) for first, last in remaining if first < last]
+    owned_spans = sorted([*generated_spans, *((first, last) for first, last, _, _ in fixed_items)])
+    covered = 0
+    source_owned = False
+    for first, last in owned_spans:
+        if first > covered:
+            source_owned = True
+        covered = max(covered, last)
+    source_owned = source_owned or covered < total
     source_probe = _probe(source)
     has_source_audio = bool(_streams(source_probe, "audio")) if source_probe else False
     source_pcm = None
     candidate_pcm = None
-    if has_source_audio:
+    if source_owned:
+        if not has_source_audio:
+            raise CompositionError("source has no audio and generation or supplied audio does not cover the timeline")
         source_pcm, channels = _decode_exact_pcm(source)
         if generated_spans:
             candidate_pcm, _ = _decode_exact_pcm(generated, expected_channels=channels, generated=True)
@@ -1243,14 +1258,6 @@ def _exact_audio_for_request(preparation: Mapping[str, Any], *, source: Path, ge
         pcm, _ = _decode_exact_pcm(assets[item["asset"]], expected_channels=channels)
         fixed_spans.append((first, last, pcm, offset))
     if source_pcm is None:
-        spans = sorted([*generated_spans, *((first, last) for first, last, _, _ in fixed_spans)])
-        covered = 0
-        for first, last in spans:
-            if first > covered:
-                raise CompositionError("source has no audio and generation or supplied audio does not cover the timeline")
-            covered = max(covered, last)
-        if covered < total:
-            raise CompositionError("source has no audio and generation or supplied audio does not cover the timeline")
         source_pcm = bytes(total * channels * 2)
         source_start = 0
     else:

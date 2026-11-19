@@ -814,3 +814,50 @@ def test_silent_character_swap_source_delivers_implicit_and_explicit_audio(tmp_p
         stride = channels * 2
         expected = expected[:24000 * stride] + fixed_pcm[:10000 * stride] + expected[34000 * stride:]
     assert delivered == expected
+
+
+@pytest.mark.ffmpeg
+def test_v2_continuation_composes_shorter_source_and_generated_suffix(tmp_path):
+    from astrid.packs.h3_av.shared.compose import compose_candidate
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+    from tests.packs.h3_av.test_native_v2_contract import _av
+
+    source, generated = tmp_path / "source.mkv", tmp_path / "generated.mkv"
+    _av(source, frames=24, color="blue", frequency=440)
+    request = normalize_request({"version": 2, "prompt": "Continue", "duration": 2, "continuation": True,
+        "media": [{"asset": "source", "role": "timeline", "modality": "video", "at": {"frame": 0}, "range": [0, 1]}]})
+    preparation = prepare_request(request, asset_map={"source": str(source)})
+    assert preparation["mask_schedule"]["branch"] == "extension_context"
+    assert preparation["mask_schedule"]["audio"]["protected_intervals"] == [[0.0, 1.0]]
+    assert preparation["mask_schedule"]["audio"]["generated_intervals"] == [[1.0, 2.0]]
+    manifest = compile_preparation(preparation, out_dir=tmp_path / "compiled")
+    _av(generated, frames=manifest["continuation_timing"]["expected_graph_output_frames"], color="red", frequency=880)
+    result = compose_candidate(preparation=preparation, generated=generated, source=source, out_dir=tmp_path / "composed")
+    assert result["coverage"]["candidate"]["video"]["frames"] == 48
+    assert [segment["source"] for segment in result["composition"]["audio_segments"]] == ["source", "generated"]
+
+
+@pytest.mark.ffmpeg
+def test_full_generated_audio_does_not_require_44100hz_source_pcm(tmp_path):
+    import subprocess
+    from astrid.packs.h3_av.shared.compose import CompositionError, compose_candidate, _decode_exact_pcm
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+    from tests.packs.h3_av.test_moving_masks import _fixtures
+
+    original, generated = _fixtures(tmp_path)
+    source = tmp_path / "source-44100.mkv"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(original), "-map", "0:v:0", "-map", "0:a:0",
+                    "-c:v", "copy", "-c:a", "pcm_s16le", "-ar", "44100", str(source)], check=True)
+    with pytest.raises(CompositionError, match="48000 Hz"):
+        _decode_exact_pcm(source)
+    request = normalize_request({"version": 2, "prompt": "Edit", "duration": 1, "media": [
+        {"asset": "scene", "role": "timeline", "modality": "video", "at": {"frame": 0}, "range": [0, 1],
+         "edit": [{"stream": "video", "during": [0, 1], "mask": {"rectangle": [0, 0, 128, 128]}},
+                  {"stream": "audio", "during": [0, 1]}]}]})
+    preparation = prepare_request(request, asset_map={"scene": str(source)})
+    assert preparation["mask_schedule"]["audio"]["protected_intervals"] == []
+    result = compose_candidate(preparation=preparation, generated=generated, source=source, out_dir=tmp_path / "composed")
+    delivered, channels = _decode_exact_pcm(Path(result["candidate"]["path"]))
+    candidate, _ = _decode_exact_pcm(generated, expected_channels=channels, generated=True)
+    assert delivered == candidate[:48000 * channels * 2]
+    assert result["composition"]["exact_audio"]["delivered_spans"] == [{"samples": [0, 48000], "source": "generated"}]
