@@ -371,6 +371,8 @@ def _compile_manifest(
     profile_id: str = _PROFILE_ID,
     extra_manifest: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    from .generation import DEFAULT_SIZE
+
     public_generation = capabilities.get("public_generation")
     if not isinstance(public_generation, Mapping):
         raise CompilationError("selected H3 graph is missing its sealed public generation contract")
@@ -389,6 +391,7 @@ def _compile_manifest(
         "status": "compiled",
         "profile": profile_id,
         "request_digest": request.digest,
+        "size": dict(request.value.get("canvas") or {"width": DEFAULT_SIZE[0], "height": DEFAULT_SIZE[1]}),
         "workflow": graph_identity,
         "workflow_inputs": workflow_inputs,
         "capabilities": dict(capabilities),
@@ -1057,6 +1060,7 @@ def _compile_character_swap_v2(
         "status": "compiled",
         "profile": "h3_av.native.v2",
         "request_digest": request.digest,
+        "size": dict(request.value.get("canvas") or {"width": DEFAULT_SIZE[0], "height": DEFAULT_SIZE[1]}),
         "workflow": workflow_identity,
         "workflow_inputs": workflow_inputs,
         "managed_assets": {"path": str(destination / "managed-assets.zip"), "sha256": _sha256(destination / "managed-assets.zip"), "manifest": asset_manifest},

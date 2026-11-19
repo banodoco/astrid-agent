@@ -750,11 +750,14 @@ def prepare_request(
             "warnings": warnings,
             "resource_estimate": {
                 "schema_valid": True,
-                "qualified": all(row["resource_estimate"]["qualified"] for row in conditioning_measurements),
+                "qualified": False,  # The target is not yet resource-qualified.
+                "conditioning_qualified": all(row["resource_estimate"]["qualified"] for row in conditioning_measurements),
+                "target_qualified": None,  # Target resource feasibility has not been established.
                 "observed": False,
                 "target_rows": target_timing["raw_frames"],
                 "requested_target_rows": target_timing["requested_frames"],
                 "target_raw_rgb_bytes": (target_timing["raw_frames"] * int(width) * int(height) * 3 if target_timing["raw_frames"] is not None else None),
+                "target_raw_float32_rgb_bytes": (target_timing["raw_frames"] * int(width) * int(height) * 3 * 4 if target_timing["raw_frames"] is not None else None),
                 "reference_rows": len(conditioning_measurements),
                 "reference_raw_rgb_bytes": (sum(row["resource_estimate"]["raw_bytes"] for row in conditioning_measurements if row["modality"] in {"image", "video"}) if all(row["resource_estimate"]["raw_bytes"] is not None for row in conditioning_measurements if row["modality"] in {"image", "video"}) else None),
                 "reference_raw_rgb_bytes_upper_bound": (sum((row["resource_estimate"].get("raw_bytes_upper_bound") if row["modality"] == "video" else row["resource_estimate"]["raw_bytes"]) for row in conditioning_measurements if row["modality"] in {"image", "video"}) if all((row["resource_estimate"].get("raw_bytes_upper_bound") if row["modality"] == "video" else row["resource_estimate"]["raw_bytes"]) is not None for row in conditioning_measurements if row["modality"] in {"image", "video"}) else None),

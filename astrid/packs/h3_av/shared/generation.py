@@ -456,7 +456,7 @@ def build_generation_workflow(inputs: GenerationInputs):
                           "native_output_types": ["CONDITIONING", "LATENT"],
                       },
                       clip=clip.out("CLIP"), vae=video_vae.out("VAE"), audio_vae=audio.out("audio_vae"),
-                      prompt=prompt, width=1024, height=576, length=frames, ref_image_size="match", **refs)
+                      prompt=prompt, width=inputs.canvas["width"], height=inputs.canvas["height"], length=frames, ref_image_size="match", **refs)
         sampling_model = shifted.out("MODEL")
         sampling_latent = target.out("LATENT")
         if masked_edit:
@@ -502,7 +502,7 @@ def build_generation_workflow(inputs: GenerationInputs):
                 mask_frames = mask_loader.out("IMAGE")
                 if tail_frames:
                     # The internal tail grants no additional edit permissions.
-                    preserve = EmptyImage(width=1024, height=576, batch_size=tail_frames, color=0)
+                    preserve = EmptyImage(width=inputs.canvas["width"], height=inputs.canvas["height"], batch_size=tail_frames, color=0)
                     mask_frames = ImageBatch(image1=mask_frames, image2=preserve.out("IMAGE")).out("IMAGE")
                 mask = node("ImageToMask", _outputs=("MASK",), image=mask_frames,
                             channel=masked_edit["mask_channel"])
