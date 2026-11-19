@@ -825,6 +825,17 @@ def test_silent_character_swap_source_delivers_implicit_and_explicit_audio(tmp_p
     compilation = json.loads((tmp_path / "hook/h3/plan/compile/compilation.json").read_text())
     spans = compilation["capabilities"]["expected_delivered_audio_spans"]
     assert {span["source"] for span in spans} == ({"generated", "fixed"} if explicit_fixed else {"generated"})
+    mask_values = compilation["capabilities"]["audio_time_mask"]["decoded_frame_values"]
+    expected_mask = [1.0] * 24 + [0.0] * (len(mask_values) - 24)
+    if explicit_fixed:
+        expected_mask[12:17] = [0.0] * 5
+        model_pcm, model_channels = _decode_exact_pcm(built["assets"]["source_audio_prepared"])
+        voice_pcm, _ = _decode_exact_pcm(voice, expected_channels=model_channels)
+        stride = model_channels * 2
+        assert model_pcm == bytes(24000 * stride) + voice_pcm[:10000 * stride] + bytes(14000 * stride)
+    assert mask_values == expected_mask
+    mask_node = next(row for row in graph.values() if row["class_type"] == "MiniMaxH3SetAVNoiseMask")
+    assert graph[mask_node["inputs"]["latent"][0]]["class_type"] == "H3V2VGranularFractionalDenoise"
     result = compose_candidate(preparation=prep, generated=generated, source=source, out_dir=tmp_path / "composed")
     delivered, channels = _decode_exact_pcm(Path(result["candidate"]["path"]))
     generated_pcm, _ = _decode_exact_pcm(generated, expected_channels=channels, generated=True)
@@ -1119,3 +1130,26 @@ def test_timeline_still_rejects_latent_pin():
         {"asset": "still", "role": "timeline", "modality": "image", "at": {"frame": 0}, "latent_pin": True}]}
     with pytest.raises(H3RequestError, match="latent_pin"):
         normalize_request(raw)
+
+
+@pytest.mark.ffmpeg
+def test_fixed_only_audio_does_not_create_generation_mask(tmp_path):
+    import subprocess
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+    from tests.packs.h3_av.test_moving_masks import _fixtures
+    from vibecomfy.cli_loader import load_workflow_any
+
+    source, _ = _fixtures(tmp_path)
+    voice = tmp_path / "voice.wav"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "sine=frequency=660:sample_rate=48000:duration=1", "-c:a", "pcm_s16le", str(voice)], check=True)
+    raw = {"version": 2, "duration": 1, "prompt": "Edit", "media": [
+        {"asset": "scene", "role": "timeline", "modality": "video", "at": {"frame": 0}, "range": [0, 1],
+         "edit": [{"stream": "video", "during": [0, 1], "mask": {"rectangle": [0, 0, 128, 128]}},
+                  {"stream": "audio", "during": [0.5, 0.75], "guides": ["fixed"]}]},
+        {"id": "fixed", "asset": "voice", "role": "reference", "modality": "audio"}]}
+    prep = prepare_request(normalize_request(raw), asset_map={"scene": str(source), "voice": str(voice)})
+    manifest = compile_preparation(prep, out_dir=tmp_path / "compiled")
+    api = load_workflow_any(manifest["workflow"]["workflow.py"]["path"]).compile("api", run_inputs=manifest["workflow_inputs"])
+    assert "audio_time_mask" not in manifest["workflow_inputs"]
+    assert not any(row["class_type"] == "MiniMaxH3SetAVNoiseMask" for row in api.values())

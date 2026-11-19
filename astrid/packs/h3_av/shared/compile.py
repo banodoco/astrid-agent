@@ -874,9 +874,11 @@ def _compile_native_masked_edit(
         effective = []
         for start, end in scheduled:
             first, last = round(float(start) * 48000), round(float(end) * 48000)
-            points = sorted({first, last, *(max(first, min(last, x)) for a, b, _ in generated_audio for x in (a, b))})
+            points = sorted({first, last,
+                             *(max(first, min(last, x)) for a, b, _ in generated_audio for x in (a, b)),
+                             *(max(first, min(last, x)) for a, b in fixed_audio_spans for x in (a, b))})
             for a, b in zip(points, points[1:]):
-                if a < b:
+                if a < b and not any(x <= a and b <= y for x, y in fixed_audio_spans):
                     strength = max((strength for x, y, strength in generated_audio if x <= a and b <= y), default=1.0)
                     effective.append((a, b, strength))
         generated_audio = effective
