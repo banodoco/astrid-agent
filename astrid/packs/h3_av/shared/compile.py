@@ -1083,7 +1083,7 @@ def _compile_character_swap_v2(
             if edit.get("stream") != "video" or edit.get("action") == "preserve" or edit.get("strength", 1) == 0:
                 continue
             guide_sets.append(tuple(by_id[name] for name in edit["guides"]) if "guides" in edit else all_occurrences)
-    modalities = {item["occurrence_id"]: item["modality"] for item in references}
+    modalities = {item["occurrence_id"]: item.get("modality", "") for item in references}
     if len({_reference_port_order(guides, modalities) for guides in guide_sets}) > 1:
         raise CompilationError("regions per pass: grants with different reference sets require separate sequential passes, which this lowering cannot execute")
     selected = guide_sets[0] if guide_sets else None

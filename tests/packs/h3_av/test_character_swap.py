@@ -699,3 +699,13 @@ def test_source_backed_selected_guide_order_is_provisional_until_compiled(tmp_pa
         (request.value["media"][2]["occurrence_id"], "<Picture 2>"),
         (request.value["media"][1]["occurrence_id"], "<Video 1>"),
     ]
+
+
+def test_character_swap_unresolved_reference_modality_fails_with_compilation_error(tmp_path):
+    from astrid.packs.h3_av.shared.compile import _compile_native_v2
+
+    raw = _request(source=True)
+    raw["media"].append({"id": "unknown", "asset": "unknown", "role": "reference"})
+    request = normalize_request(raw)
+    with pytest.raises(CompilationError, match="unresolved modality"):
+        _compile_native_v2(request, {}, tmp_path / "out")
