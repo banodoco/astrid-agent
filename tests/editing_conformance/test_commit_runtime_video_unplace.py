@@ -15,6 +15,7 @@ from astrid.sdk.timeline.commit import (
 from astrid.sdk.timeline.native_auto_placement import unplace_shared
 from tests.editing_conformance.test_recipe_occurrence_media import inputs
 from tests.helpers.runtime import use_runtime
+from tests.helpers.shot_patch import assert_reopened_shared_shot, authored_shot_patch
 from tests.sdk.test_timeline_commit_provider_document import MEDIA
 
 pytestmark = pytest.mark.integration
@@ -133,8 +134,9 @@ def editing(request, tmp_path, monkeypatch):
         bundle = bundle_from_document(birth['data']['canonical_document'])
         commands = []
         patch('internal:main', copy.deepcopy(input_internal))
-        shot = copy.deepcopy(input_shot)
-        shot.pop('internal_timeline_revision_id')
+        closure = Closure(bundle)
+        accepted_shot = closure.payload(closure.resolve('shot:' + occurrence['shot_id']))
+        shot = authored_shot_patch(accepted_shot, input_shot)
         patch('shot:' + occurrence['shot_id'], shot)
         current = Closure(bundle).payload('parent')['occurrences'][0]
         patch('parent', {**copy.deepcopy(occurrence),
@@ -160,6 +162,7 @@ def editing(request, tmp_path, monkeypatch):
         assert shared_shot['payload'] == expected_shot
         assert shared_internal['timeline_id'] == 'main'
         assert shared_internal['payload'] == input_internal
+        assert_reopened_shared_shot(service, project, 'main', shared_document)
         bundle = bundle_from_document(shared_document)
         placed = {'id': 'placed', 'clipType': kind, 'track': 'picture', 'asset': state.new['asset'],
                   'at': 1, 'hold': 4, 'opaque': {'clear': None},

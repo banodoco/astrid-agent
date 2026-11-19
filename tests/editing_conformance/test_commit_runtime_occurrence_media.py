@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests.helpers.runtime import use_runtime
+from tests.helpers.shot_patch import assert_reopened_shared_shot, authored_shot_patch
 
 pytestmark = pytest.mark.integration
 OWNER = 'occurrence:occ-a'
@@ -87,9 +88,7 @@ def _create_fixture(service, project, document, selection, *, authorize):
           copy.deepcopy(document['internal_timeline_revisions'][0]['payload']))
     closure = Closure(bundle)
     before = closure.payload(closure.resolve('shot:chapter-shot'))
-    shot = copy.deepcopy(document['shot_revisions'][0]['payload'])
-    # The compiler supplies the new shot's managed link; it is not authored state.
-    shot.pop('internal_timeline_revision_id')
+    shot = authored_shot_patch(before, document['shot_revisions'][0]['payload'])
     patch('shot:chapter-shot', before, shot)
     current = document_from_bundle(bundle)
     before = current['parent_revision']['payload']['occurrences'][0]
@@ -112,6 +111,7 @@ def _create_fixture(service, project, document, selection, *, authorize):
             or actual_internal['timeline_id'] != 'film'
             or actual_internal['payload'] != document['internal_timeline_revisions'][0]['payload']):
         pytest.fail('supported fixture commits changed authored payloads or shared ownership')
+    assert_reopened_shared_shot(service, project, 'film', actual)
 
 
 @pytest.fixture(params=['image', 'video'])
