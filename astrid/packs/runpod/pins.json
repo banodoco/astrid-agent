@@ -12,7 +12,7 @@
     },
     "vibecomfy": {
       "repository": "https://github.com/banodoco/VibeComfy.git",
-      "revision": "08b770d9493a1d1c567b2c4d2166c2b1d794784b"
+      "revision": "3150d77a39c7ee2e5a85e2f6fabcded63af2d081"
     },
     "h3-motion-context": {
       "repository": "https://github.com/seitanism/ComfyUI-H3-Motion-Context-MultiRef.git",
