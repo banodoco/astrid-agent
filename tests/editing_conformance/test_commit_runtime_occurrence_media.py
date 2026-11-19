@@ -25,6 +25,7 @@ def _create_fixture(service, project, document, selection, *, authorize):
     from astrid.sdk.timeline.commands import execute
     from astrid.sdk.timeline.commit import bundle_from_document, document_from_bundle
     from astrid.sdk.timeline.native_occurrence_create import capture_occurrence_create
+    from astrid.sdk.timeline.native_occurrence_shared import capture_occurrence_place_shared
 
     head = service.get_project_timeline(project, 'film')
     parent = service.get_project_parent_composition_revision(
@@ -95,9 +96,10 @@ def _create_fixture(service, project, document, selection, *, authorize):
     occurrence = {**copy.deepcopy(occurrences[0]),
                   'shot_revision_id': before['shot_revision_id']}
     patch('parent', before, occurrence, ('occurrences', 'occurrence_id:occ-a'))
-    submit(calls, 'popup-baseline')
-    result = submit([{'schema_version': 1, 'op': 'occurrence.place-shared', 'version': '1',
-                      'select': OWNER, 'args': {'occurrence_id': 'occ-b', 'on': 10}}], 'popup-sibling')
+    accepted = submit(calls, 'popup-baseline')
+    shared = capture_occurrence_place_shared(
+        bundle_from_document(accepted['data']['canonical_document']), OWNER, 'occ-b', on=10)
+    result = submit([shared], 'popup-sibling')
     actual = result['data']['canonical_document']
     expected_parent = copy.deepcopy(document['parent_revision']['payload'])
     actual_shot, = actual['shot_revisions']
