@@ -1162,3 +1162,36 @@ def test_fixed_only_audio_does_not_create_generation_mask(tmp_path):
     api = load_workflow_any(manifest["workflow"]["workflow.py"]["path"]).compile("api", run_inputs=manifest["workflow_inputs"])
     assert "audio_time_mask" not in manifest["workflow_inputs"]
     assert not any(row["class_type"] == "MiniMaxH3SetAVNoiseMask" for row in api.values())
+
+
+@pytest.mark.ffmpeg
+def test_silent_b_frame_subrange_passes_hook_preflight_with_exact_frames(tmp_path):
+    import importlib.util
+    import subprocess
+    from PIL import Image
+    from astrid.core.generation.engine_facts import comfyui_facts
+
+    source, reference, face = (tmp_path / name for name in ("source.mp4", "reference.mp4", "face.png"))
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "testsrc2=size=1024x576:rate=24:duration=2", "-c:v", "libx264", "-bf", "3",
+                    "-pix_fmt", "yuv420p", str(source)], check=True)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "color=size=32x32:rate=24:duration=2", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(reference)], check=True)
+    Image.new("RGB", (32, 32), "white").save(face)
+    raw = {"version": 2, "duration": 1, "prompt": "Edit", "settings": {"adapter": {"id": "character_swap_v1"}}, "media": [
+        {"asset": "scene", "role": "timeline", "modality": "video", "at": {"frame": 0}, "range": [0, 1],
+         "edit": [{"stream": "video", "during": [0, 1], "mask": {"rectangle": [0, 0, 128, 128]}, "guides": ["performance", "face"]}]},
+        {"id": "performance", "asset": "performance", "role": "reference", "modality": "video", "audio": False},
+        {"id": "face", "asset": "face", "role": "reference", "modality": "image"}]}
+    hook_path = Path(__file__).parents[3] / "astrid/packs/h3_av/extensions/vibecomfy.workflows/hooks.py"
+    spec = importlib.util.spec_from_file_location("h3_b_frame_hooks", hook_path)
+    hooks = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hooks)
+    request_file = tmp_path / "request.json"
+    request_file.write_text(json.dumps(raw))
+    result = hooks.build({"request": str(request_file), "asset_map": {"scene": str(source), "performance": str(reference), "face": str(face)}}, {}, tmp_path / "hook", engine=comfyui_facts())
+    assert result["plan"]["source_av"]["video_frames"] == 24
+    assert result["plan"]["source_av"]["audio_samples"] == 32000
+    def frames(path):
+        return subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-frames:v", "24", "-pix_fmt", "yuv420p", "-f", "rawvideo", "-"], check=True, capture_output=True).stdout
+    assert frames(result["assets"]["source_video"]) == frames(source)
