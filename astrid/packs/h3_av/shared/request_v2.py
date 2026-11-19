@@ -355,6 +355,8 @@ def _identity_value(value: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] | None = None) -> H3Request:
+    if "_derived_pass_view" in raw:
+        raise H3RequestError("derived pass view cannot be executed: rebuild it from the full request")
     _unknown(raw, {"version", "prompt", "duration", "media", "settings", "continuation"}, "request")
     if raw.get("version") != 2: raise H3RequestError("version must be 2")
     prompt = _nonblank(raw.get("prompt"), "prompt")
@@ -435,12 +437,15 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
                     guides = edit["guides"] if isinstance(edit["guides"], list) else [edit["guides"]]
                     normalized["guides"] = [_nonblank(guide, f"{edit_path}.guides[{i}]") for i, guide in enumerate(guides)]
                 if "strength" in edit or "seed" in edit:
-                    if stream != "video" or action != "generate":
-                        raise H3RequestError(f"{edit_path} strength and seed require a generated video edit")
+                    if action != "generate" or ("seed" in edit and stream != "video"):
+                        raise H3RequestError(f"{edit_path} strength requires a generated edit and seed requires a generated video edit")
                     if "strength" in edit:
-                        strength = _number(edit["strength"], f"{edit_path}.strength", minimum=0)
-                        if strength > 1:
-                            raise H3RequestError(f"{edit_path}.strength must be in the range 0..1")
+                        from .generation import LIMITS
+                        lower, upper = LIMITS["audio_grant_strength"]["value"] if stream == "audio" else (0, 1)
+                        label = "audio grant strength" if stream == "audio" else f"{edit_path}.strength"
+                        strength = _number(edit["strength"], label, minimum=lower)
+                        if strength > upper:
+                            raise H3RequestError(f"{label} must be in the range {lower}..{upper}")
                         normalized["strength"] = strength
                     if "seed" in edit:
                         if type(edit["seed"]) is not int or not 0 <= edit["seed"] <= 2**64 - 1:
