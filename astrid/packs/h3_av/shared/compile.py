@@ -1275,6 +1275,9 @@ def compile_preparation(preparation: Mapping[str, Any], *, out_dir: str | Path) 
     records = managed.get("manifest", {}).get("assets", [])
     permission_records = [r for r in records if str(r.get("binding", "")).startswith("permission_mask_")]
     if permission_records and isinstance(preparation.get("mask_schedule"), Mapping):
+        import os
+        import tempfile
+        import uuid
         import zipfile
         if not isinstance(preparation, dict) or not isinstance(preparation.get("assets"), list):
             raise CompilationError("prepared permission masks require mutable preparation assets")
@@ -1309,7 +1312,19 @@ def compile_preparation(preparation: Mapping[str, Any], *, out_dir: str | Path) 
                 if hashlib.sha256(payload).hexdigest() != record["sha256"]:
                     raise CompilationError(f"managed permission mask {binding} failed integrity validation")
                 path = destination / (binding + ".png")
-                path.write_bytes(payload)
+                # Never replace a file held by a prior handoff, even if a
+                # later permission in this compilation fails to publish.
+                if path.is_file():
+                    path = destination / f"{binding}-{uuid.uuid4().hex}.png"
+                temporary = None
+                try:
+                    with tempfile.NamedTemporaryFile(dir=destination, prefix=f".{binding}-", delete=False) as handle:
+                        temporary = Path(handle.name)
+                        handle.write(payload)
+                    os.replace(temporary, path)
+                finally:
+                    if temporary is not None:
+                        temporary.unlink(missing_ok=True)
                 change = changes[index]
                 asset_id = binding
                 suffix = 1

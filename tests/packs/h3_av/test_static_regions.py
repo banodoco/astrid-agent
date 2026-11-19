@@ -393,3 +393,49 @@ def test_permission_handoff_survives_failed_recompile_and_retry(tmp_path):
     assert len(derived) == 1
     assert Path(derived[0]["path"]).parent == tmp_path / "retry"
     assert Path(derived[0]["path"]).is_file()
+
+
+def test_same_directory_failed_permission_write_preserves_handoff(tmp_path, monkeypatch):
+    import copy
+    import tempfile
+    from pathlib import Path
+    from astrid.packs.h3_av.shared.compile import compile_preparation
+    from astrid.packs.h3_av.shared.prepare import _v2_mask_schedule
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from tests.packs.h3_av.test_native_masked_edit import WATERMARK, _prepare
+
+    raw = copy.deepcopy(WATERMARK)
+    raw["media"][0]["edit"][0]["mask"] = {"rectangle": [0, 0, 128, 128]}
+    preparation = _prepare(raw, tmp_path)
+    preparation["mask_schedule"] = _v2_mask_schedule(normalize_request(raw))
+    destination = tmp_path / "compile"
+    compile_preparation(preparation, out_dir=destination)
+    before = copy.deepcopy(preparation)
+    asset_id = before["mask_schedule"]["video"]["changes"][0]["prepared_mask_asset"]
+    old_path = Path(next(row["path"] for row in before["assets"] if row["asset"] == asset_id))
+    old_bytes = old_path.read_bytes()
+    real_tempfile = tempfile.NamedTemporaryFile
+
+    def failed_write(*args, **kwargs):
+        wrapped = real_tempfile(*args, **kwargs)
+        class Failure:
+            def __enter__(self):
+                self.handle = wrapped.__enter__()
+                self.name = self.handle.name
+                return self
+            def write(self, data):
+                self.handle.write(data[:10])
+                raise OSError("injected short write")
+            def __exit__(self, *args):
+                return wrapped.__exit__(*args)
+        return Failure()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(tempfile, "NamedTemporaryFile", failed_write)
+        with pytest.raises(OSError, match="injected short write"):
+            compile_preparation(preparation, out_dir=destination)
+    assert preparation == before
+    assert old_path.read_bytes() == old_bytes
+    compile_preparation(preparation, out_dir=destination)
+    assert old_path.read_bytes() == old_bytes
+    assert preparation["mask_schedule"]["video"]["changes"][0]["prepared_mask_asset"] == asset_id
