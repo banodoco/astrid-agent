@@ -1139,8 +1139,8 @@ def _splice_exact_pcm(source: bytes, *, channels: int, total_samples: int,
                       unfilled_generated_spans: list[tuple[int, int]] = ()) -> bytes:
     """Resolve each sample owner, then copy only the owner's available PCM.
 
-    Unfilled generated spans reserve ownership during the pre-splice and remain
-    silent until sampling. Fixed audio wins over generated and source audio.
+    Unfilled generated spans reserve ownership during pre-splice and retain
+    compatible source context when available. Fixed audio wins over both.
     """
     stride = channels * 2
     if channels not in (1, 2) or source_start < 0 or total_samples < 0:
@@ -1192,6 +1192,12 @@ def _splice_exact_pcm(source: bytes, *, channels: int, total_samples: int,
             result[first * stride:last * stride] = pcm[begin:begin + (last - first) * stride]
         elif owner == "generated":
             result[first * stride:last * stride] = generated[first * stride:last * stride]
+        elif owner == "unfilled":
+            # Retain compatible source context for fractional denoising, but
+            # do not require source samples in generated-owned intervals.
+            begin = (source_start + first) * stride
+            count = min((last - first) * stride, max(0, len(source) - begin))
+            result[first * stride:first * stride + count] = source[begin:begin + count]
         elif owner == "source":
             begin, end = (source_start + first) * stride, (source_start + last) * stride
             if len(source) < end:
@@ -1290,6 +1296,13 @@ def _exact_audio_for_request(preparation: Mapping[str, Any], *, source: Path, ge
     for first, last, item, offset in fixed_items:
         pcm, _ = _decode_exact_pcm(assets[item["asset"]], expected_channels=channels)
         fixed_spans.append((first, last, pcm, offset))
+    if source_pcm is None and pre_splice_only and has_source_audio:
+        try:
+            source_pcm, _ = _decode_exact_pcm(source, expected_channels=channels)
+        except CompositionError:
+            # An unowned source is optional: unsupported rate/layout or absent
+            # samples cannot prevent pre-splicing the authoritative fixed PCM.
+            pass
     if source_pcm is None:
         source_pcm = bytes(total * channels * 2)
         source_start = 0
