@@ -98,10 +98,17 @@ def test_first_attached_job_observation(
             "realm_id": daemon.service.realm["id"], "actor_id": "owner",
         }), encoding="utf-8")
         if instrumented:
+            from tests._local_speed_runtime import RuntimeObserver
+
             def trace(statement):
                 if statement.strip().upper().startswith("COMMIT"):
-                    meter.local_event("sqlite_commit")
+                    context = meter.observer.runtime_write_context(sys._getframe(1))
+                    event = meter.observer.event("runtime_commit_statement", write_context=context)
+                    meter.local_event("sqlite_commit", at_ns=event["at_ns"] if event is not None else None)
+                    if context == "unattributed_runtime":
+                        meter.observer.event("runtime_commit_statement_unattributed")
             daemon.service.store.conn.set_trace_callback(trace)
+            meter.runtime = RuntimeObserver(daemon, meter.observer).install()
 
     def call(facade, controls, tmp):
         if caller == "resident_sdk":
