@@ -1,0 +1,35 @@
+{
+  "argv": [
+    "/workspace/scratch/ed89673be2cd/proof-env/bin/python",
+    "-P",
+    "-m",
+    "ci.run_pytest",
+    "-v",
+    "-rA",
+    "-m",
+    "not integration",
+    "--junitxml=/workspace/scratch/7b8a4aa9f9f5/evidence/pin-guard-final-proof/results.xml",
+    "tests/test_vibecomfy_pin.py::test_no_other_tracked_file_copies_the_pin"
+  ],
+  "cwd": "/workspace/scratch/7b8a4aa9f9f5/astrid-agent",
+  "dirty": "A  evidence/r14-p39-19/product-validation/README.md\nA  evidence/r14-p39-19/product-validation/claim-observer.jsonl\nA  evidence/r14-p39-19/product-validation/diagnostic-claims-invocation.json\nA  evidence/r14-p39-19/product-validation/diagnostic-claims-results.collection.json.gz\nA  evidence/r14-p39-19/product-validation/diagnostic-claims-results.jsonl.gz\nA  evidence/r14-p39-19/product-validation/diagnostic-claims-results.log.gz\nA  evidence/r14-p39-19/product-validation/diagnostic-claims-results.reference.json.gz\nA  evidence/r14-p39-19/product-validation/diagnostic-claims-results.xml.gz\nA  evidence/r14-p39-19/product-validation/manifest.json\nA  evidence/r14-p39-19/product-validation/native-files.json\nA  evidence/r14-p39-19/product-validation/original-104-preservation.json\nA  evidence/r14-p39-19/product-validation/outcomes-by-id.json\nA  evidence/r14-p39-19/product-validation/pin-guard-before-product-invocation.json\nA  evidence/r14-p39-19/product-validation/pin-guard-before-product-results.collection.json.gz\nA  evidence/r14-p39-19/product-validation/pin-guard-before-product-results.jsonl.gz\nA  evidence/r14-p39-19/product-validation/pin-guard-before-product-results.log.gz\nA  evidence/r14-p39-19/product-validation/pin-guard-before-product-results.reference.json.gz\nA  evidence/r14-p39-19/product-validation/pin-guard-before-product-results.xml.gz\nA  evidence/r14-p39-19/product-validation/product-104-invocation.json\nA  evidence/r14-p39-19/product-validation/product-104-results.collection.json.gz\nA  evidence/r14-p39-19/product-validation/product-104-results.jsonl.gz\nA  evidence/r14-p39-19/product-validation/product-104-results.log.gz\nA  evidence/r14-p39-19/product-validation/product-104-results.reference.json.gz\nA  evidence/r14-p39-19/product-validation/product-104-results.xml.gz\nA  evidence/r14-p39-19/product-validation/run-summary.json\nA  evidence/r14-p39-19/product-validation/s01_claim_observer.py\nA  evidence/r14-p39-19/product-validation/s01_observer.py\nA  evidence/r14-p39-19/product-validation/shared-fps-after-invocation.json\nA  evidence/r14-p39-19/product-validation/shared-fps-after-results.collection.json.gz\nA  evidence/r14-p39-19/product-validation/shared-fps-after-results.jsonl.gz\nA  evidence/r14-p39-19/product-validation/shared-fps-after-results.log.gz\nA  evidence/r14-p39-19/product-validation/shared-fps-after-results.reference.json.gz\nA  evidence/r14-p39-19/product-validation/shared-fps-after-results.xml.gz\nA  evidence/r14-p39-19/product-validation/shared-fps-after-source.patch.gz\nA  evidence/r14-p39-19/product-validation/shared-fps-before-invocation.json\nA  evidence/r14-p39-19/product-validation/shared-fps-before-results.collection.json.gz\nA  evidence/r14-p39-19/product-validation/shared-fps-before-results.jsonl.gz\nA  evidence/r14-p39-19/product-validation/shared-fps-before-results.log.gz\nA  evidence/r14-p39-19/product-validation/shared-fps-before-results.reference.json.gz\nA  evidence/r14-p39-19/product-validation/shared-fps-before-results.xml.gz\nA  evidence/r14-p39-19/product-validation/shared-fps-before-source.patch.gz",
+  "environment_overrides": {
+    "ASTRID_CI_JOB": "lanes-integration",
+    "ASTRID_RUNTIME_CHECKOUT": "/workspace/scratch/ed89673be2cd/runtime-sync",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONPATH": "/workspace/scratch/7b8a4aa9f9f5/astrid-agent/scripts:/workspace/scratch/ed89673be2cd/runtime-sync"
+  },
+  "finished_utc": "2026-11-19T18:05:11.921474+00:00",
+  "kind": "local focused proof; not hosted qualification",
+  "patch_sha256": "0a83e29dc76253b3c2361d80a7592575b642f9c57f1b10b1d2979cb0fdac4e6d",
+  "raw_returncode": 0,
+  "runtime_dirty": "",
+  "runtime_sha": "2537fed24385ec1c24f48a812e09af4bb63fb794",
+  "selectors": [
+    "tests/test_vibecomfy_pin.py::test_no_other_tracked_file_copies_the_pin"
+  ],
+  "source_sha": "c1130e03b234763fb6c6d9e6fd4b29c275f80d42",
+  "source_tree": "9144ce956f5268c3c57322d1c526b8023b6ebe06",
+  "started_utc": "2026-11-19T18:05:09.340234+00:00",
+  "tracked_worktree_tree": "2229e6f17b0ea499c1ca3d87ea19202b5e18ade0"
+}
