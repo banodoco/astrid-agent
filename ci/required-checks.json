@@ -1,0 +1,278 @@
+{
+  "version": 1,
+  "repository": "banodoco/astrid-agent",
+  "authority": {
+    "plan": "Plan 39 K2/K3",
+    "source": "banodoco/astrid-dev@4223b30a2b56c7eb59da3a47b200516372bdca5a",
+    "decision": "6995664680",
+    "amendment": "6996255390"
+  },
+  "merge": [
+    {
+      "workflow": "CI",
+      "workflow_file": "ci.yml",
+      "job": "fast checks",
+      "kind": "mixed"
+    },
+    {
+      "workflow": "CI",
+      "workflow_file": "ci.yml",
+      "job": "unit shard 1 / 8 (ubuntu-latest)",
+      "kind": "tests"
+    },
+    {
+      "workflow": "CI",
+      "workflow_file": "ci.yml",
+      "job": "unit shard 2 / 8 (ubuntu-latest)",
+      "kind": "tests"
+    },
+    {
+      "workflow": "CI",
+      "workflow_file": "ci.yml",
+      "job": "unit shard 3 / 8 (ubuntu-latest)",
+      "kind": "tests"
+    },
+    {
+      "workflow": "CI",
+      "workflow_file": "ci.yml",
+      "job": "unit shard 4 / 8 (ubuntu-latest)",
+      "kind": "tests"
+    },
+    {
+      "workflow": "CI",
+      "workflow_file": "ci.yml",
+      "job": "unit shard 5 / 8 (ubuntu-latest)",
+      "kind": "tests"
+    },
+    {
+      "workflow": "CI",
+      "workflow_file": "ci.yml",
+      "job": "unit shard 6 / 8 (ubuntu-latest)",
+      "kind": "tests"
+    },
+    {
+      "workflow": "CI",
+      "workflow_file": "ci.yml",
+      "job": "unit shard 7 / 8 (ubuntu-latest)",
+      "kind": "tests"
+    },
+    {
+      "workflow": "CI",
+      "workflow_file": "ci.yml",
+      "job": "unit shard 8 / 8 (ubuntu-latest)",
+      "kind": "tests"
+    },
+    {
+      "workflow": "CI",
+      "workflow_file": "ci.yml",
+      "job": "unit",
+      "kind": "aggregate"
+    },
+    {
+      "workflow": "CI",
+      "workflow_file": "ci.yml",
+      "job": "windows-native-and-installer",
+      "kind": "tests"
+    },
+    {
+      "workflow": "CI",
+      "workflow_file": "ci.yml",
+      "job": "darwin native",
+      "kind": "tests"
+    },
+    {
+      "workflow": "CI",
+      "workflow_file": "ci.yml",
+      "job": "release wheel / Python 3.11",
+      "kind": "mixed"
+    },
+    {
+      "workflow": "CI",
+      "workflow_file": "ci.yml",
+      "job": "release wheel / Python 3.12",
+      "kind": "mixed"
+    },
+    {
+      "workflow": "CI",
+      "workflow_file": "ci.yml",
+      "job": "boundary",
+      "kind": "check"
+    },
+    {
+      "workflow": "Chat service",
+      "workflow_file": "chat.yml",
+      "job": "chat",
+      "kind": "tests"
+    },
+    {
+      "workflow": "Chat service",
+      "workflow_file": "chat.yml",
+      "job": "windows-launchers",
+      "kind": "tests"
+    },
+    {
+      "workflow": "Windows task host journey",
+      "workflow_file": "windows-journey.yml",
+      "job": "Windows task host journey (powershell.exe)",
+      "kind": "journey"
+    },
+    {
+      "workflow": "Windows task host journey",
+      "workflow_file": "windows-journey.yml",
+      "job": "Windows task host journey (pwsh.exe)",
+      "kind": "journey"
+    }
+  ],
+  "release": [
+    {
+      "workflow": "CI",
+      "workflow_file": "ci.yml",
+      "job": "fast checks",
+      "kind": "mixed"
+    },
+    {
+      "workflow": "CI",
+      "workflow_file": "ci.yml",
+      "job": "unit shard 1 / 8 (ubuntu-latest)",
+      "kind": "tests"
+    },
+    {
+      "workflow": "CI",
+      "workflow_file": "ci.yml",
+      "job": "unit shard 2 / 8 (ubuntu-latest)",
+      "kind": "tests"
+    },
+    {
+      "workflow": "CI",
+      "workflow_file": "ci.yml",
+      "job": "unit shard 3 / 8 (ubuntu-latest)",
+      "kind": "tests"
+    },
+    {
+      "workflow": "CI",
+      "workflow_file": "ci.yml",
+      "job": "unit shard 4 / 8 (ubuntu-latest)",
+      "kind": "tests"
+    },
+    {
+      "workflow": "CI",
+      "workflow_file": "ci.yml",
+      "job": "unit shard 5 / 8 (ubuntu-latest)",
+      "kind": "tests"
+    },
+    {
+      "workflow": "CI",
+      "workflow_file": "ci.yml",
+      "job": "unit shard 6 / 8 (ubuntu-latest)",
+      "kind": "tests"
+    },
+    {
+      "workflow": "CI",
+      "workflow_file": "ci.yml",
+      "job": "unit shard 7 / 8 (ubuntu-latest)",
+      "kind": "tests"
+    },
+    {
+      "workflow": "CI",
+      "workflow_file": "ci.yml",
+      "job": "unit shard 8 / 8 (ubuntu-latest)",
+      "kind": "tests"
+    },
+    {
+      "workflow": "CI",
+      "workflow_file": "ci.yml",
+      "job": "unit",
+      "kind": "aggregate"
+    },
+    {
+      "workflow": "CI",
+      "workflow_file": "ci.yml",
+      "job": "windows-native-and-installer",
+      "kind": "tests"
+    },
+    {
+      "workflow": "CI",
+      "workflow_file": "ci.yml",
+      "job": "darwin native",
+      "kind": "tests"
+    },
+    {
+      "workflow": "CI",
+      "workflow_file": "ci.yml",
+      "job": "release wheel / Python 3.11",
+      "kind": "mixed"
+    },
+    {
+      "workflow": "CI",
+      "workflow_file": "ci.yml",
+      "job": "release wheel / Python 3.12",
+      "kind": "mixed"
+    },
+    {
+      "workflow": "CI",
+      "workflow_file": "ci.yml",
+      "job": "boundary",
+      "kind": "check"
+    },
+    {
+      "workflow": "Chat service",
+      "workflow_file": "chat.yml",
+      "job": "chat",
+      "kind": "tests"
+    },
+    {
+      "workflow": "Chat service",
+      "workflow_file": "chat.yml",
+      "job": "windows-launchers",
+      "kind": "tests"
+    },
+    {
+      "workflow": "Windows task host journey",
+      "workflow_file": "windows-journey.yml",
+      "job": "Windows task host journey (powershell.exe)",
+      "kind": "journey"
+    },
+    {
+      "workflow": "Windows task host journey",
+      "workflow_file": "windows-journey.yml",
+      "job": "Windows task host journey (pwsh.exe)",
+      "kind": "journey"
+    },
+    {
+      "workflow": "Lanes",
+      "workflow_file": "lanes.yml",
+      "job": "integration shard 1 / 4",
+      "kind": "tests"
+    },
+    {
+      "workflow": "Lanes",
+      "workflow_file": "lanes.yml",
+      "job": "integration shard 2 / 4",
+      "kind": "tests"
+    },
+    {
+      "workflow": "Lanes",
+      "workflow_file": "lanes.yml",
+      "job": "integration shard 3 / 4",
+      "kind": "tests"
+    },
+    {
+      "workflow": "Lanes",
+      "workflow_file": "lanes.yml",
+      "job": "integration shard 4 / 4",
+      "kind": "tests"
+    },
+    {
+      "workflow": "Lanes",
+      "workflow_file": "lanes.yml",
+      "job": "opt-in",
+      "kind": "tests"
+    },
+    {
+      "workflow": "Lanes",
+      "workflow_file": "lanes.yml",
+      "job": "installed wheel",
+      "kind": "mixed"
+    }
+  ]
+}
