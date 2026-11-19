@@ -123,6 +123,7 @@ def _video_coverage(path: Path) -> dict[str, Any]:
     if probe is None or len(video) != 1:
         raise CompositionError("generated/candidate media must contain exactly one video stream")
     stream = video[0]
+    width, height = _video_dimensions(probe, role="generated/candidate")
     rate_text = stream.get("avg_frame_rate") or stream.get("r_frame_rate")
     try:
         rate = Fraction(str(rate_text))
@@ -144,6 +145,8 @@ def _video_coverage(path: Path) -> dict[str, Any]:
         "path": str(path),
         "frames": frames,
         "fps": float(rate),
+        "width": width,
+        "height": height,
         "duration": frames / float(rate),
         "stream_count": 1,
     }
@@ -224,6 +227,20 @@ def _generation_duration(preparation: Mapping[str, Any]) -> float:
     return float(request["output"]["duration"])
 
 
+def _validate_video_size(preparation: Mapping[str, Any], video: Mapping[str, Any], *, role: str) -> None:
+    media = preparation.get("media")
+    if not isinstance(media, Mapping) or any(
+        type(media.get(key)) is not int or media[key] <= 0 for key in ("width", "height")
+    ):
+        raise CompositionError("preparation has no usable requested video dimensions")
+    actual = (video["width"], video["height"])
+    requested = (media["width"], media["height"])
+    if actual != requested:
+        raise CompositionError(
+            f"{role} video size is {actual[0]}x{actual[1]}, requested {requested[0]}x{requested[1]}"
+        )
+
+
 def _validate_generated_coverage(
     *,
     preparation: Mapping[str, Any],
@@ -236,6 +253,7 @@ def _validate_generated_coverage(
         from .generation import generation_timing
         plan = generation_timing(_generation_duration(preparation))
         video = _video_coverage(generated_video)
+        _validate_video_size(preparation, video, role="generated")
         audio = _audio_coverage(generated_audio or generated_video)
         if video["fps"] != plan["fps"] or video["frames"] != plan["raw_frames"]:
             raise CompositionError("H3 generation frame coverage does not match the compiled plan")
@@ -244,6 +262,11 @@ def _validate_generated_coverage(
         return {"video": video, "audio": audio, "timing": plan}
     timing = _continuation_timing(preparation)
     if timing is None:
+        schedule = preparation.get("mask_schedule")
+        if isinstance(schedule, Mapping) and schedule.get("branch") == "source_backed_v2v":
+            video = _video_coverage(generated_video)
+            _validate_video_size(preparation, video, role="generated")
+            return {"video": video}
         return {}
     video = _video_coverage(generated_video)
     audio = _audio_coverage(generated_audio or generated_video)
@@ -274,6 +297,7 @@ def _validate_candidate_coverage(
     """Prove final duration and AV stream coverage from delivered bytes."""
 
     video = _video_coverage(candidate)
+    _validate_video_size(preparation, video, role="candidate")
     audio = _audio_coverage(candidate)
     timing = _continuation_timing(preparation)
     if _is_source_free_generation(preparation):
