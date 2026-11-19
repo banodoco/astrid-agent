@@ -3750,6 +3750,43 @@ def test_output_over_retention_limit_rejects_before_cas_read():
     assert cas_reads == []
 
 
+def test_verified_result_manifest_projects_workflow_hook_evidence_to_readback():
+    """Only a digest-verified durable manifest can supply the bounded view."""
+    payload = json.dumps({"managed_generation_result": {"kind": "managed-generation-result.v1",
+        "evidence": {"producer": {"workflow_hook": {
+            "reference_view": {"references": [], "target_frame_cap": 17}}}}}}).encode()
+    oid = digest(payload)
+    row = {"association_id": "association", "task_id": "child-task", "run_id": "child-run",
+           "project_id": "project", "attempt_id": "child-attempt", "durability": "durable",
+           "lifecycle": {"state": "available"}, "role": "final", "object_id": oid,
+           "digest": oid, "size": len(payload), "output_port": "result_manifest",
+           "media_type": "application/json", "filename": "result.json", "ordinal": 0}
+    settled_output = {"kind": "object", "digest": oid, "size": len(payload),
+                      "output_port": "result_manifest", "media_type": "application/json",
+                      "filename": "result.json", "ordinal": 0}
+    client = SimpleNamespace(child_outputs=lambda task_id: [row],
+        child_output=lambda association_id: row, get_object=lambda object_id: payload)
+    bridge = object.__new__(HostChildBridge)
+    bridge.client = client
+    bridge.context = {"project_id": "project"}
+    bridge.policy = None
+    bridge._verified_outputs = {}
+    bridge._live = lambda: None
+    task = {"id": "child-task", "run_id": "child-run", "attempt_id": "child-attempt",
+            "status": "completed", "result": {"outputs": [settled_output]}}
+
+    captured = {}
+    bridge._outputs(task, capture_evidence=captured)
+    assert captured == {"reference_view": {"references": [], "target_frame_cap": 17}}
+
+    from astrid.sdk.invocation import InvocationResult
+    from astrid.sdk.results import _generation_task_refs
+    result = InvocationResult("vibecomfy.run", "executor", "command", True,
+        kernel_task_id="child-task", raw_result={"task": {"task_id": "child-task",
+            "result": {"payload": {"workflow_hook_evidence": captured}}}})
+    assert _generation_task_refs(result)["reference_view"] == captured["reference_view"]
+
+
 @pytest.mark.parametrize("size", [64 * 1024 * 1024, 5 * 1024 ** 3 + 1])
 def test_materialization_large_object_and_hard_cap(world, monkeypatch, size):
     b, child, rows = _materialization_fixture(world, expose=False,

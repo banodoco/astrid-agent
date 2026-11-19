@@ -624,12 +624,28 @@ def test_workflow_hook_evidence_rejects_embedded_locators_and_path_keys(evidence
     from astrid.core.contracts.errors import AstridValueError
 
     run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
-    with pytest.raises(AstridValueError, match="path|URL"):
+    with pytest.raises(AstridValueError, match="path|URL|unsupported"):
         run._workflow_hook_evidence(evidence)
 
 
 def test_workflow_hook_evidence_keeps_pinned_relative_source_citations():
     run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
-    citation = "ComfyUI@423cbd20511becb1f16122ab518e92e58bfa03d9:comfy_extras/nodes_minimax_h3.py:324-332"
-    assert run._workflow_hook_evidence({"reference_view": {"rule_source": citation, "profile": "video"}}) == {
-        "reference_view": {"rule_source": citation, "profile": "video"}}
+    citation = "ComfyUI@6bfaacc67c2103481e5f0c84d75257cd0581d86a:comfy_extras/nodes_minimax_h3.py:324-332"
+    evidence = {"reference_view": {"references": [{"occurrence": "performance", "modality": "video",
+        "trim": [0, 2], "input_binding": {}, "tag": "<Video 1>",
+        "retained_picture_frames_derived": {"rule_source": citation}}]}}
+    assert run._workflow_hook_evidence(evidence) == evidence
+
+
+@pytest.mark.parametrize("evidence", [
+    {"reference_view": {"references": []}, "/tmp/escape": "value"},
+    {"reference_view": {"references": [{"occurrence": "foo/bar", "modality": "video"}]}},
+    {"reference_view": {"references": [{"retained_picture_frames_derived": {
+        "rule_source": "ComfyUI@423cbd20511becb1f16122ab518e92e58bfa03d9:../../tmp/nodes.py:1-2"}}]}},
+])
+def test_workflow_hook_evidence_rejects_unknown_locator_keys_relative_paths_and_unpinned_citations(evidence):
+    from astrid.core.contracts.errors import AstridValueError
+
+    run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    with pytest.raises(AstridValueError):
+        run._workflow_hook_evidence(evidence)

@@ -359,6 +359,87 @@ def redact_evidence(value: Any) -> Any:
     return value
 
 
+def validate_workflow_hook_evidence(value: Any) -> dict[str, Any]:
+    """Validate the bounded, path-free H3 reference-view evidence projection."""
+    field_sets = {
+        "evidence": {"reference_view"},
+        "view": {"references", "target_frame_cap", "audio"},
+        "reference": {"occurrence", "modality", "trim", "input_binding", "tag",
+                      "retained_picture_frames_estimate", "effective_size", "retained_picture_frames_derived"},
+        "input_binding": {"binding", "port", "start_time", "frame_load_cap", "audio", "soundtrack", "resolved_range"},
+        "soundtrack": {"port", "tag"},
+        "estimate": {"value", "kind", "observed"},
+        "effective_size": {"width", "height"},
+        "derived": {"value", "status", "kind", "reason", "input_frame_count", "input_sha256", "basis",
+                    "conformance", "target_frame_cap", "alignment", "rule_source", "loader_source", "decoder_source"},
+        "audio": {"requested_grants", "effective_40hz_mask", "decoded_frame_mask",
+                  "expected_delivered_sample_spans", "actual_delivered_sample_spans"},
+        "grant": {"samples", "strength", "use", "occurrences"},
+        "effective_40hz_mask": {"values", "basis", "precision"},
+        "span": {"samples", "source"},
+    }
+    child_context = {
+        ("evidence", "reference_view"): "view", ("view", "references"): "reference",
+        ("reference", "input_binding"): "input_binding", ("input_binding", "soundtrack"): "soundtrack",
+        ("reference", "retained_picture_frames_estimate"): "estimate",
+        ("reference", "effective_size"): "effective_size",
+        ("reference", "retained_picture_frames_derived"): "derived",
+        ("view", "audio"): "audio", ("audio", "requested_grants"): "grant",
+        ("audio", "effective_40hz_mask"): "effective_40hz_mask",
+        ("audio", "expected_delivered_sample_spans"): "span",
+        ("audio", "actual_delivered_sample_spans"): "span",
+    }
+    list_context = {("view", "references"): "reference", ("audio", "requested_grants"): "grant",
+                    ("audio", "expected_delivered_sample_spans"): "span",
+                    ("audio", "actual_delivered_sample_spans"): "span"}
+    citations = {
+        "rule_source": "ComfyUI@6bfaacc67c2103481e5f0c84d75257cd0581d86a:comfy_extras/nodes_minimax_h3.py:324-332",
+        "loader_source": "ComfyUI-VideoHelperSuite@4ee72c065db22c9d96c2427954dc69e7b908444b:videohelpersuite/load_video_nodes.py:216-246",
+        "decoder_source": "ComfyUI-VideoHelperSuite@4ee72c065db22c9d96c2427954dc69e7b908444b:videohelpersuite/load_video_nodes.py:170-193",
+    }
+    locator_patterns = (
+        r"(?i)file://|https?://",
+        r"(?i)(?:^|[\s\"'=])(?:[a-z]:[\\/]|\\\\)",
+        r"(?<![A-Za-z0-9])/(?:[^/\s]+/)*[^/\s]+",
+        r"(?<![A-Za-z0-9])(?:[A-Za-z_.-]+/)+[A-Za-z0-9_.-]+(?:\b|$)",
+        r"(?i)\b[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+\.(?:mp4|mkv|mov|webm|wav|flac|png|jpe?g|json|zip|py)(?:\b|:)",
+    )
+
+    def check(item: Any, context: str, where: str) -> None:
+        if isinstance(item, dict):
+            if set(item) - field_sets[context]:
+                raise ManagedGenerationResultError(f"workflow hook evidence has an unsupported field at {where}")
+            for key, child in item.items():
+                if key in citations:
+                    if child != citations[key]:
+                        raise ManagedGenerationResultError(f"workflow hook evidence has an unpinned citation at {where}.{key}")
+                    continue
+                next_context = child_context.get((context, key))
+                if isinstance(child, dict) and next_context is None:
+                    raise ManagedGenerationResultError(f"workflow hook evidence has an unsupported object at {where}.{key}")
+                check(child, next_context or context, f"{where}.{key}")
+        elif isinstance(item, list):
+            next_context = list_context.get((context, where.rsplit(".", 1)[-1]))
+            for index, child in enumerate(item):
+                check(child, next_context or context, f"{where}[{index}]")
+        elif isinstance(item, str):
+            if any(re.search(pattern, item) for pattern in locator_patterns):
+                raise ManagedGenerationResultError(f"workflow hook evidence contains a path or URL at {where}")
+        elif item is not None and type(item) not in (bool, int, float):
+            raise ManagedGenerationResultError(f"workflow hook evidence is not JSON-safe at {where}")
+
+    if type(value) is not dict:
+        raise ManagedGenerationResultError("workflow hook evidence must be an object")
+    check(value, "evidence", "evidence")
+    try:
+        encoded = json.dumps(value, ensure_ascii=False, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise ManagedGenerationResultError("workflow hook evidence must be finite JSON") from exc
+    if len(encoded.encode("utf-8")) > 2_000_000:
+        raise ManagedGenerationResultError("workflow hook evidence exceeds the 2 MB limit")
+    return json.loads(encoded)
+
+
 def _validate_profile_fields(payload: Mapping[str, Any]) -> None:
     unknown = sorted(set(payload) - _PROFILE_FIELDS)
     missing = sorted(_PROFILE_FIELDS - set(payload))
@@ -610,4 +691,5 @@ __all__ = [
     "validate_managed_generation_result",
     "validate_evidence_reference",
     "redact_evidence",
+    "validate_workflow_hook_evidence",
 ]

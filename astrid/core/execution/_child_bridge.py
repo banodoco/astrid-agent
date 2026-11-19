@@ -990,9 +990,11 @@ class HostChildBridge:
                          for declaration in publications.values()))
         if not named and not read_outputs:
             return public
+        captured_evidence: dict[str, Any] = {}
         if outputs is None:
             publication_rows = [] if named else None
-            outputs = self._outputs(task, publication_rows=publication_rows)
+            outputs = self._outputs(task, publication_rows=publication_rows,
+                                    capture_evidence=captured_evidence if named else None)
         public["result"]["outputs"] = outputs
         if not named:
             return public
@@ -1004,6 +1006,8 @@ class HostChildBridge:
                         for row in settled["outputs"]],
             "generation_publish_v1": settled.get("generation_publish_v1"),
         }
+        if captured_evidence:
+            canonical["payload"]["workflow_hook_evidence"] = captured_evidence
         evidence_task = {field: task.get(field) for field in
                          ("project_id", "generation_intent", "expected_effect")}
         evidence_task.update({field: public[field] for field in ("task_id", "run_id", "attempt_id", "state")})
@@ -1041,6 +1045,7 @@ class HostChildBridge:
         return result
 
     def _outputs(self, task: dict[str, Any], *, capture: dict[str, Any] | None = None,
+                 capture_evidence: dict[str, Any] | None = None,
                  publication_rows: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
         if task.get("state", task.get("status")) not in {"completed", "succeeded"}:
             raise ChildBridgeError("child is not successfully settled")
@@ -1124,6 +1129,23 @@ class HostChildBridge:
                 raise ChildBridgeError("child output bytes failed verification")
             if resource(self.client.child_output(association)) != row:
                 raise ChildBridgeError("child output association changed during readback")
+            if capture_evidence is not None and row.get("output_port") == "result_manifest":
+                try:
+                    envelope = json.loads(data)
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    envelope = None
+                if isinstance(envelope, Mapping):
+                    managed = envelope.get("managed_generation_result")
+                    if isinstance(managed, Mapping) and managed.get("kind") == "managed-generation-result.v1":
+                        evidence = managed.get("evidence")
+                        producer = evidence.get("producer") if isinstance(evidence, Mapping) else None
+                        hook = producer.get("workflow_hook") if isinstance(producer, Mapping) else None
+                        if hook is not None:
+                            from astrid.core.contracts.managed_generation_result import validate_workflow_hook_evidence
+                            try:
+                                capture_evidence.update(validate_workflow_hook_evidence(hook))
+                            except ValueError as exc:
+                                raise ChildBridgeError("managed result contains invalid workflow hook evidence") from exc
             if row.get("role") == "log":
                 continue
             # Return managed CAS descriptors, never private lineage or lease.

@@ -588,6 +588,21 @@ def _generation_task_refs(result: InvocationResult) -> dict[str, Any]:
     producer_evidence = evidence.get("producer") if isinstance(evidence, Mapping) else None
     hook_evidence = producer_evidence.get("workflow_hook") if isinstance(producer_evidence, Mapping) else None
     reference_view = hook_evidence.get("reference_view") if isinstance(hook_evidence, Mapping) else None
+    if reference_view is None:
+        # Publication readback carries only the bounded projection extracted
+        # from the hash-verified durable result-manifest object.
+        publication = raw.get("publication_readback")
+        publication_result = publication.get("result") if isinstance(publication, Mapping) else None
+        publication_payload = publication_result.get("payload") if isinstance(publication_result, Mapping) else None
+        hook_projection = (publication_payload.get("workflow_hook_evidence")
+                           if isinstance(publication_payload, Mapping) else None)
+        if isinstance(hook_projection, Mapping):
+            from astrid.core.contracts.managed_generation_result import validate_workflow_hook_evidence
+            try:
+                hook_projection = validate_workflow_hook_evidence(hook_projection)
+            except ValueError:
+                hook_projection = None
+            reference_view = hook_projection.get("reference_view") if isinstance(hook_projection, Mapping) else None
     if isinstance(reference_view, Mapping):
         refs["reference_view"] = deepcopy(dict(reference_view))
     # Prefer settled input refs to the request's immutable source descriptor.

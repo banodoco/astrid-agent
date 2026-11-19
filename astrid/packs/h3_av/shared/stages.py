@@ -383,7 +383,7 @@ def _settled_reference_view(reference_view: Mapping[str, Any], *, reference_asse
             "conformance": "not_conformed",
             "target_frame_cap": target,
             "alignment": "5 + 17k",
-            "rule_source": "ComfyUI@423cbd20511becb1f16122ab518e92e58bfa03d9:comfy_extras/nodes_minimax_h3.py:324-332",
+            "rule_source": "ComfyUI@6bfaacc67c2103481e5f0c84d75257cd0581d86a:comfy_extras/nodes_minimax_h3.py:324-332",
             "loader_source": "ComfyUI-VideoHelperSuite@4ee72c065db22c9d96c2427954dc69e7b908444b:videohelpersuite/load_video_nodes.py:216-246",
             "decoder_source": "ComfyUI-VideoHelperSuite@4ee72c065db22c9d96c2427954dc69e7b908444b:videohelpersuite/load_video_nodes.py:170-193",
         }

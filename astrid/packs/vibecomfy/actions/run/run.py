@@ -33,6 +33,7 @@ from astrid.core.contracts.managed_generation_result import (  # noqa: E402
     ManagedGenerationResultError,
     read_managed_generation_result,
     validate_evidence_reference,
+    validate_workflow_hook_evidence,
     redact_evidence,
 )
 from astrid.packs.vibecomfy.shared.bundle_inputs import (  # noqa: E402
@@ -261,50 +262,10 @@ def _evidence_snapshot(path: Path, output_root: Path) -> dict[str, Any]:
 
 
 def _workflow_hook_evidence(value: Any) -> dict[str, Any]:
-    """Validate opt-in evidence as bounded JSON without filesystem locators.
-
-    Path-looking keys are rejected, as are URLs, absolute POSIX/Windows/UNC
-    locators and embedded media/document paths. Pinned source citations remain
-    relative and are carried only in their explicitly named source fields.
-    """
-    if not isinstance(value, dict):
-        raise AstridValueError("after_outputs evidence must be a mapping")
-
-    def check(item: Any, where: str = "evidence") -> None:
-        if isinstance(item, dict):
-            for key, child in item.items():
-                if not isinstance(key, str) or re.search(
-                    r"(?:^|[_-])(?:paths?|files?|filenames?|uris?|urls?|locators?|scratch|directories|workdir|cwd|root)(?:$|[_-])",
-                    key, re.I,
-                ):
-                    raise AstridValueError(f"after_outputs evidence contains a path-bearing field at {where}")
-                check(child, f"{where}.{key}")
-        elif isinstance(item, list):
-            for index, child in enumerate(item):
-                check(child, f"{where}[{index}]")
-        elif isinstance(item, str):
-            has_locator = (
-                re.search(r"(?i)file://|https?://", item)
-                or re.search(r"(?i)(?:^|[\s\"'=])(?:[a-z]:[\\/]|\\\\)", item)
-                or re.search(r"(?<![A-Za-z0-9])/(?:[^/\s]+/)*[^/\s]+", item)
-                or re.search(r"(?i)\b[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+\.(?:mp4|mkv|mov|webm|wav|flac|png|jpe?g|json|zip)(?:\b|:)", item)
-            )
-            if has_locator and not (
-                where.endswith((".rule_source", ".loader_source", ".decoder_source"))
-                and re.fullmatch(r"ComfyUI(?:@[^:]+)?:[A-Za-z0-9_./-]+\.py:[0-9]+-[0-9]+", item)
-            ):
-                raise AstridValueError(f"after_outputs evidence contains a path or URL at {where}")
-        elif item is not None and not isinstance(item, (str, int, float, bool)):
-            raise AstridValueError(f"after_outputs evidence is not JSON-safe at {where}")
-
-    check(value)
     try:
-        encoded = json.dumps(value, ensure_ascii=False, allow_nan=False)
-    except (TypeError, ValueError) as exc:
-        raise AstridValueError("after_outputs evidence must be finite JSON data") from exc
-    if len(encoded.encode("utf-8")) > 2_000_000:
-        raise AstridValueError("after_outputs evidence exceeds the 2 MB limit")
-    return json.loads(encoded)
+        return validate_workflow_hook_evidence(value)
+    except ManagedGenerationResultError as exc:
+        raise AstridValueError(str(exc)) from exc
 
 
 def _materialize_managed_generation_result(
