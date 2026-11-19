@@ -753,7 +753,7 @@ def prepare_request(
                     continue  # unresolved or non-media fixture
                 try:
                     pcm, channels = _decode_exact_pcm(path)
-                    offset = float(item.get("range", [0, 0])[0])
+                    offset = int(item.get("resolved_range", [0, 0])[0]) / 24
                     end = max(float(span[1]) for span in audio_schedule["protected_intervals"])
                     if len(pcm) < round((offset + end) * 48000) * channels * 2:
                         raise CompositionError(f"{path.name}: source audio does not cover kept samples")
