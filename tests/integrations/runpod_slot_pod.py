@@ -252,9 +252,9 @@ class PodComfy:
                          "node_errors": errors}
         # This fake has no queue or asynchronous worker: record its explicit
         # enqueue/start boundary, not the HTTP response duration.
-        from time import monotonic
-        queued = monotonic()
-        started = monotonic()
+        from time import perf_counter
+        queued = perf_counter()
+        started = perf_counter()
         self.prompts.append(body)
         self.count += 1
         prompt_id = f"slot-{self.count}"
@@ -273,7 +273,7 @@ class PodComfy:
         self.history = getattr(self, "history", {})
         self.history[prompt_id] = {"outputs": outputs, "prompt": [self.count, prompt_id, graph, {}, list(outputs)],
                                    "status": {"status_str": "success", "completed": True, "messages": []}}
-        ended = monotonic()
+        ended = perf_counter()
         observer = getattr(self, "timeline_observer", None)
         if observer is not None:
             observer(prompt_id, queued, started, ended)

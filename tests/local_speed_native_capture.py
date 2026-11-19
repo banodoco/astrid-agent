@@ -14,7 +14,8 @@ import shutil
 import signal
 import subprocess
 import sys
-import time
+
+from tests._local_speed_process import EPOCH_CLOCK, epoch_time_ns
 
 
 def run_bounded(command, *, log: Path, timeout: int) -> int:
@@ -41,8 +42,9 @@ def capture(output: Path, command: list[str], timeout: int) -> dict:
         raise ValueError("native capture requires an actual proof command")
     output.mkdir(parents=True, exist_ok=False)
     meta = {"schema": "astrid.local-speed-native-capture.v1", "command": command,
+            "epoch_clock": EPOCH_CLOCK,
             "platform": platform.platform(), "python": sys.version,
-            "started_epoch_ns": time.time_ns(), "completed": False}
+            "started_epoch_ns": epoch_time_ns(), "completed": False}
     try:
         if sys.platform.startswith("linux"):
             tracer = shutil.which("strace")
@@ -51,7 +53,7 @@ def capture(output: Path, command: list[str], timeout: int) -> dict:
             # Filter in the kernel: printing a selected set alone still stops
             # on every syscall and can dominate the threaded SDK/Runtime harness.
             # The selected operations, per-PID logs and reader checks are unchanged.
-            traced = [tracer, "-ff", "--seccomp-bpf", "-ttt", "-T", "-e", "trace=process,fsync,fdatasync",
+            traced = [tracer, "-ff", "--seccomp-bpf", "-ttt", "-T", "-yy", "-e", "trace=process,fsync,fdatasync",
                       "-o", str(output / "trace"), "--", *command]
             meta["trace_command"] = traced
             meta["proof_exit"] = run_bounded(traced, log=output / "proof.log", timeout=timeout)
@@ -88,7 +90,7 @@ def capture(output: Path, command: list[str], timeout: int) -> dict:
     except (OSError, RuntimeError, subprocess.SubprocessError) as error:
         meta["error"] = f"{type(error).__name__}: {error}"
     finally:
-        meta["finished_epoch_ns"] = time.time_ns()
+        meta["finished_epoch_ns"] = epoch_time_ns()
         (output / "capture.json").write_text(json.dumps(meta, indent=2) + "\n")
     return meta
 

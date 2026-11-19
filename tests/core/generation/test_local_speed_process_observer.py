@@ -31,7 +31,7 @@ def test_actual_hash_file_digest_and_native_python_sync_are_counted(tmp_path):
     path.write_bytes(DATA)
     meter.start()
     try:
-        begin = time.monotonic_ns()
+        begin = time.perf_counter_ns()
         hashlib.sha256(DATA).digest()
         with path.open("rb") as handle:
             hashlib.file_digest(handle, "sha256").digest()
@@ -270,7 +270,7 @@ def test_failed_sync_is_not_lost_by_c_function_identity_filter(tmp_path):
     try:
         with (tmp_path / "closed-fsync").open("wb") as handle:
             closed_fd = handle.fileno()
-        begin = time.monotonic_ns()
+        begin = time.perf_counter_ns()
         with pytest.raises(OSError):
             os.fsync(closed_fd)
         report = meter.snapshot(begin)
