@@ -25,6 +25,12 @@ def resolve(event_name, event):
             raise ValueError("manual gate run requires an explicit destination target_branch")
         git("fetch", "--no-tags", "origin", f"refs/heads/{branch}")
         comparison = git("rev-parse", "FETCH_HEAD")
+    elif event_name == "schedule":
+        # Scheduled runs inspect the accepted default-branch commit named by
+        # GitHub. This is explicit event authority, never a HEAD^ fallback.
+        comparison = os.environ.get("GITHUB_SHA", "")
+        if comparison != git("rev-parse", "HEAD"):
+            raise ValueError("nightly checkout differs from the scheduled commit")
     else:
         raise ValueError(f"unsupported gate event: {event_name}")
     if not re.fullmatch(r"[0-9a-f]{40}", comparison) or comparison == "0" * 40:

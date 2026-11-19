@@ -1,0 +1,1042 @@
+{
+  "schema": 1,
+  "repository": "astrid-agent",
+  "authority": {
+    "dev_sha": "4223b30a2b56c7eb59da3a47b200516372bdca5a",
+    "decision": "6995664680",
+    "amendment": "6996255390",
+    "seed_and_reconciliation_decision": "6998651356",
+    "g1_report_sha256": "d4a4b2d5bce5324c47d0018db9ce651e979550c9361f74354caf65b939a99879",
+    "g2_report_sha256": "50760681220707845c9bd50e6795a0914fce9f705177359f6300ebc9324be522"
+  },
+  "admitted": 163,
+  "explicit_candidates_not_admitted": 152,
+  "native_inventory": 33630,
+  "owners": {
+    "AT1.3": 58,
+    "AT1.15 (platform matrix)": 1,
+    "AT1.2": 20,
+    "AT1.34": 15,
+    "AT1.1": 50,
+    "AT1.233": 13,
+    "AT1.38": 5,
+    "AT1.96": 1
+  },
+  "source_artifacts": [
+    {
+      "artifact_id": 14430610644,
+      "name": "host-recovery-services",
+      "selected": 40,
+      "complete": true
+    },
+    {
+      "artifact_id": 14430610644,
+      "name": "installer-windows-tasks",
+      "selected": 15,
+      "complete": true
+    },
+    {
+      "artifact_id": 14430610644,
+      "name": "native-windows",
+      "selected": 23,
+      "complete": true
+    },
+    {
+      "artifact_id": 14430610644,
+      "name": "remotion-host-regressions",
+      "selected": 36,
+      "complete": true
+    },
+    {
+      "artifact_id": 14434016282,
+      "name": "unit-shard",
+      "selected": 2378,
+      "complete": true
+    },
+    {
+      "artifact_id": 14436231204,
+      "name": "unit-shard",
+      "selected": 3806,
+      "complete": true
+    },
+    {
+      "artifact_id": 14436921312,
+      "name": "unit-shard",
+      "selected": 1879,
+      "complete": true
+    },
+    {
+      "artifact_id": 14439304065,
+      "name": "unit-shard",
+      "selected": 2065,
+      "complete": true
+    },
+    {
+      "artifact_id": 14439663462,
+      "name": "unit-shard",
+      "selected": 4010,
+      "complete": true
+    },
+    {
+      "artifact_id": 14439830050,
+      "name": "unit-shard",
+      "selected": 5342,
+      "complete": true
+    },
+    {
+      "artifact_id": 14441343748,
+      "name": "unit-shard",
+      "selected": 5257,
+      "complete": true
+    },
+    {
+      "artifact_id": 14441891528,
+      "name": "unit-shard",
+      "selected": 6066,
+      "complete": true
+    },
+    {
+      "artifact_id": 14432837250,
+      "name": "integration",
+      "selected": 516,
+      "complete": false
+    },
+    {
+      "artifact_id": 14432891885,
+      "name": "integration",
+      "selected": 516,
+      "complete": false
+    },
+    {
+      "artifact_id": 14433376555,
+      "name": "integration",
+      "selected": 516,
+      "complete": false
+    },
+    {
+      "artifact_id": 14433822901,
+      "name": "integration",
+      "selected": 516,
+      "complete": false
+    }
+  ],
+  "not_admitted": [
+    {
+      "lane": "Lanes/opt-in",
+      "native_id": "tests/test_onboarding_parity.py::test_editorial_arrange_is_discoverable_via_discover",
+      "owner": "AT1.3",
+      "reason": "G1 diagnostic is missing, too weak or truncated"
+    },
+    {
+      "lane": "Lanes/opt-in",
+      "native_id": "tests/test_onboarding_parity.py::test_provenance_is_populated_on_editorial_arrange",
+      "owner": "AT1.3",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/test_pipeline_dispatch_aliases.py::PipelineDispatchAliasTest::test_root_help_explains_canonical_gateway",
+      "owner": "AT1.14 (CLI)",
+      "reason": "G1 diagnostic is missing, too weak or truncated"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/test_provider_route_grant.py::test_tcp_only_broker_retires_udp_even_when_manifest_marks_broker_managed",
+      "owner": "AT1.1",
+      "reason": "live-run record or provider-grant cause unresolved; no sensitive admission from a family label"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/test_sdk_public_surface.py::test_generate_facade_maps_contract_failures_and_openai_rejection",
+      "owner": "AT1.2",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/test_skills_developer.py::test_developer_pack_declares_developing_astrid_and_developer_only_extras",
+      "owner": "AT1.3",
+      "reason": "G1 diagnostic is missing, too weak or truncated"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/test_skills_developer.py::test_default_sync_installs_developing_astrid_but_not_the_developer_skills",
+      "owner": "AT1.3",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/test_skills_developer.py::test_developer_sync_installs_resolves_survives_resync_and_uninstalls",
+      "owner": "AT1.3",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/test_skills_package_data.py::test_retained_integrations_flow_through_existing_sync_selection",
+      "owner": "AT1.3",
+      "reason": "G1 diagnostic is missing, too weak or truncated"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/test_skills_selected_composition.py::test_selected_declarations_drive_views_and_mcp",
+      "owner": "AT1.1",
+      "reason": "G1 diagnostic is missing, too weak or truncated"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/test_skills_selected_composition.py::test_capability_index_check_is_non_mutating",
+      "owner": "AT1.2",
+      "reason": "G1 diagnostic is missing, too weak or truncated"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/test_skills_sync_registry.py::RegistryBlockTest::test_deep_block_includes_skill_names",
+      "owner": "AT1.3",
+      "reason": "G1 diagnostic is missing, too weak or truncated"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/test_skills_sync_registry.py::SyncGatewayTest::test_deep_links_per_pack_and_prunes_stale",
+      "owner": "AT1.3",
+      "reason": "G1 diagnostic is missing, too weak or truncated"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/test_skills_sync_registry.py::SyncGatewayTest::test_gateway_only_links_core_and_writes_registry",
+      "owner": "AT1.3",
+      "reason": "G1 diagnostic is missing, too weak or truncated"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/test_skills_sync_registry.py::CheckTest::test_check_detects_stale_link",
+      "owner": "AT1.3",
+      "reason": "G1 diagnostic is missing, too weak or truncated"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/editing_conformance/test_fork_abi1_binding_set.py::test_authenticated_history_abi_preserves_original_fork_proofs[absent-False]",
+      "owner": "AT1.34",
+      "reason": "sensitive case retained outside ceiling pending explicit cause/installed-witness review"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/editing_conformance/test_fork_abi1_binding_set.py::test_authenticated_history_abi_preserves_original_fork_proofs[1-False]",
+      "owner": "AT1.34",
+      "reason": "sensitive case retained outside ceiling pending explicit cause/installed-witness review"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/editing_conformance/test_fork_abi1_binding_set.py::test_caller_annotations_and_recorder_schema_do_not_supply_history_abi",
+      "owner": "AT1.34",
+      "reason": "sensitive case retained outside ceiling pending explicit cause/installed-witness review"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/editing_conformance/test_occurrence_shared_d20.py::test_provider_full_closure_preview_retry_inverse[1]",
+      "owner": "AT1.38",
+      "reason": "sensitive case retained outside ceiling pending explicit cause/installed-witness review"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/test_pack_discovery.py::PackDiscoveryTest::test_canonical_content_roots_are_used_for_discovery",
+      "owner": "AT1.1",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/test_pack_discovery.py::PackDiscoveryTest::test_env_layer_ordered_after_extra",
+      "owner": "AT1.1",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/test_pack_discovery.py::PackDiscoveryTest::test_hidden_pack_is_excluded_by_default",
+      "owner": "AT1.1",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/test_pack_discovery.py::PackDiscoveryTest::test_no_env_var_falls_through_gracefully",
+      "owner": "AT1.1",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/test_pack_discovery.py::PackDiscoveryTest::test_valid_pack_discovery_and_content_loaders",
+      "owner": "AT1.1",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/test_pack_discovery_metadata.py::PackDiscoveryMetadataTest::test_discover_packs_ordered_returns_pack_definitions",
+      "owner": "AT1.1",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/test_pack_discovery_metadata.py::PackDiscoveryMetadataTest::test_env_layer_uses_pathsep_and_skips_empty_or_missing_entries",
+      "owner": "AT1.1",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/test_pack_discovery_metadata.py::PackDiscoveryMetadataTest::test_extra_roots_layer_excludes_local",
+      "owner": "AT1.1",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/test_pack_discovery_metadata.py::PackDiscoveryMetadataTest::test_local_layer_only_keeps_local_pack",
+      "owner": "AT1.1",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/test_pack_discovery_metadata.py::PackDiscoveryMetadataTest::test_local_layer_requires_an_authored_manifest",
+      "owner": "AT1.1",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/test_pack_discovery_metadata.py::PackDiscoveryMetadataTest::test_registries_share_identical_ordering",
+      "owner": "AT1.1",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/test_pack_discovery_metadata.py::PackDiscoveryMetadataTest::test_rendering_consumers_receive_source_kind_and_priority_metadata",
+      "owner": "AT1.1",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/test_pack_discovery_metadata.py::PackDiscoveryMetadataTest::test_same_canonical_external_root_is_scanned_once",
+      "owner": "AT1.1",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/test_pack_discovery_metadata.py::PackDiscoveryMetadataTest::test_source_layer_excludes_local_and_indexes_in_order",
+      "owner": "AT1.1",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/test_pack_discovery_single_scan.py::test_different_roots_keep_project_scan_and_do_not_leak_source_local",
+      "owner": "AT1.1",
+      "reason": "G1 diagnostic is missing, too weak or truncated"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/test_pack_discovery_single_scan.py::test_injected_scanner_keeps_argument_specific_authority_even_with_equal_roots",
+      "owner": "AT1.1",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/test_pack_discovery_single_scan.py::test_local_eligibility_is_observational[absent]",
+      "owner": "AT1.1",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/test_pack_discovery_single_scan.py::test_local_eligibility_is_observational[manifestless]",
+      "owner": "AT1.1",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/test_pack_discovery_single_scan.py::test_local_eligibility_is_observational[hidden]",
+      "owner": "AT1.1",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/test_pack_discovery_single_scan.py::test_managed_identity_guard_is_unchanged",
+      "owner": "AT1.1",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/test_pack_discovery_single_scan.py::test_discovery_observes_edits_on_every_call",
+      "owner": "AT1.1",
+      "reason": "G1 diagnostic is missing, too weak or truncated"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/test_pack_quarantine.py::test_invalid_keyword_quarantines_only_that_pack",
+      "owner": "AT1.1",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/test_pack_quarantine.py::test_quarantine_owner_matches_declared_bare_labels",
+      "owner": "AT1.1",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/test_pack_quarantine.py::test_unapproved_capability_is_unavailable_without_stopping_host",
+      "owner": "AT1.1",
+      "reason": "G1 diagnostic is missing, too weak or truncated"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/test_pack_run_cli_choices.py::PackRunCliChoicesTests::test_importable_pack_parsers_use_static_choices",
+      "owner": "AT1.3",
+      "reason": "G1 diagnostic is missing, too weak or truncated"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/test_portfolio_parity.py::test_validator_accepts_pack[iteration]",
+      "owner": "AT1.3",
+      "reason": "G1 diagnostic is missing, too weak or truncated"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/test_portfolio_parity.py::test_validator_accepts_pack[youtube]",
+      "owner": "AT1.3",
+      "reason": "G1 diagnostic is missing, too weak or truncated"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/test_portfolio_parity.py::test_validator_accepts_pack[moirae]",
+      "owner": "AT1.3",
+      "reason": "G1 diagnostic is missing, too weak or truncated"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/test_portfolio_parity.py::test_pack_manifest_v3_compliant[rendering]",
+      "owner": "AT1.3",
+      "reason": "G1 diagnostic is missing, too weak or truncated"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/test_portfolio_parity.py::test_pack_manifest_v3_compliant[training]",
+      "owner": "AT1.3",
+      "reason": "G1 diagnostic is missing, too weak or truncated"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/test_portfolio_parity.py::test_pack_manifest_v3_compliant[vibecomfy]",
+      "owner": "AT1.3",
+      "reason": "G1 diagnostic is missing, too weak or truncated"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/test_portfolio_parity.py::test_pack_manifest_v3_compliant[runpod]",
+      "owner": "AT1.3",
+      "reason": "G1 diagnostic is missing, too weak or truncated"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/timeline/test_cli_status_publish.py::test_publish_forwards_key_and_force_to_sdk_once",
+      "owner": "AT1.2",
+      "reason": "sensitive case retained outside ceiling pending explicit cause/installed-witness review"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/timeline/test_cli_status_publish.py::test_publish_partial_narration_error_preserves_receipt_and_does_not_retry[False]",
+      "owner": "AT1.2",
+      "reason": "sensitive case retained outside ceiling pending explicit cause/installed-witness review"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/timeline/test_cli_status_publish.py::test_publish_partial_narration_error_preserves_receipt_and_does_not_retry[True]",
+      "owner": "AT1.2",
+      "reason": "sensitive case retained outside ceiling pending explicit cause/installed-witness review"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/timeline/test_cli_status_publish.py::test_publish_human_output_is_a_short_summary_and_json_keeps_the_envelope",
+      "owner": "AT1.2",
+      "reason": "sensitive case retained outside ceiling pending explicit cause/installed-witness review"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/timeline/test_cli_status_publish.py::test_publish_cas_refusal_is_not_retried_or_reported_as_success[False]",
+      "owner": "AT1.2",
+      "reason": "sensitive case retained outside ceiling pending explicit cause/installed-witness review"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/timeline/test_cli_status_publish.py::test_publish_cas_refusal_is_not_retried_or_reported_as_success[True]",
+      "owner": "AT1.2",
+      "reason": "sensitive case retained outside ceiling pending explicit cause/installed-witness review"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/timeline/test_cli_status_publish.py::test_publish_of_a_clean_working_copy_publishes_nothing",
+      "owner": "AT1.2",
+      "reason": "sensitive case retained outside ceiling pending explicit cause/installed-witness review"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_bootstrap.py::test_no_secret_variables",
+      "owner": "AT1.233",
+      "reason": "sensitive case retained outside ceiling pending explicit cause/installed-witness review"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_bootstrap.py::test_bootstrap_root_override_writes_marker_and_avoids_workspace",
+      "owner": "AT1.233",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_bootstrap.py::test_identity_refusal_prevents_workspace_and_success_marker",
+      "owner": "AT1.233",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_bootstrap.py::test_realm_and_venv_overrides_are_honoured",
+      "owner": "AT1.233",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_bootstrap.py::test_uv_missing_fails_clearly_without_curl",
+      "owner": "AT1.233",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_bootstrap.py::test_unwritable_root_fails_clearly",
+      "owner": "AT1.233",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_bootstrap.py::test_fresh_boot_orders_noneditable_package_pip_and_probe_check",
+      "owner": "AT1.233",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_bootstrap.py::test_existing_packages_skip_install_but_still_get_pip_and_a_matching_probe_check",
+      "owner": "AT1.233",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_bootstrap.py::test_probe_check_reinstalls_astrid_when_installed_module_differs",
+      "owner": "AT1.233",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_bootstrap.py::test_marker_rerun_still_verifies_installed_astrid",
+      "owner": "AT1.233",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_bootstrap.py::test_large_freeze_and_present_pip_skip_all_install_commands",
+      "owner": "AT1.233",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_bootstrap.py::test_missing_lifecycle_is_installed_into_existing_managed_environment",
+      "owner": "AT1.233",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_bootstrap.py::test_marker_with_missing_lifecycle_repairs_install",
+      "owner": "AT1.233",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_held_budget.py::test_staged_candidate_plus_installer_h3_measured_budget",
+      "owner": "AT1.5",
+      "reason": "G1 diagnostic is missing, too weak or truncated"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_held_budget.py::test_staging_failure_and_exact_reconciliation_measured_allowance[terminal-stage-failure]",
+      "owner": "AT1.5",
+      "reason": "G1 diagnostic is missing, too weak or truncated"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_held_budget.py::test_staging_failure_and_exact_reconciliation_measured_allowance[lost-stage-response]",
+      "owner": "AT1.5",
+      "reason": "G1 diagnostic is missing, too weak or truncated"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_held_budget.py::test_late_staging_failure_measures_four_record_shortfall",
+      "owner": "AT1.5",
+      "reason": "G1 diagnostic is missing, too weak or truncated"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_jobs.py::test_held_joblist_runs_fresh_mixed_rows_and_keeps_custody[False]",
+      "owner": "AT1.5",
+      "reason": "sensitive case retained outside ceiling pending explicit cause/installed-witness review"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_jobs.py::test_held_joblist_runs_fresh_mixed_rows_and_keeps_custody[True]",
+      "owner": "AT1.5",
+      "reason": "sensitive case retained outside ceiling pending explicit cause/installed-witness review"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_jobs.py::test_held_joblist_uncertain_row_keeps_in_use_operation_and_snapshot",
+      "owner": "AT1.5",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_jobs.py::test_held_reconcile_uncertain_operation_blocks_every_new_start[timeout]",
+      "owner": "AT1.5",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_jobs.py::test_held_reconcile_uncertain_operation_blocks_every_new_start[lost-start-response]",
+      "owner": "AT1.5",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_jobs.py::test_held_reconcile_uncertain_operation_blocks_every_new_start[cancelled]",
+      "owner": "AT1.5",
+      "reason": "sensitive case retained outside ceiling pending explicit cause/installed-witness review"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_jobs.py::test_held_reconcile_uncertain_operation_blocks_every_new_start[cancel-error]",
+      "owner": "AT1.5",
+      "reason": "sensitive case retained outside ceiling pending explicit cause/installed-witness review"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_jobs.py::test_held_reconcile_uncertain_operation_blocks_every_new_start[interrupt]",
+      "owner": "AT1.5",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_jobs.py::test_held_reconcile_uncertain_operation_blocks_every_new_start[malformed-terminal]",
+      "owner": "AT1.5",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_jobs.py::test_held_reconcile_repeated_terminal_failures_exhaust_durable_budget",
+      "owner": "AT1.5",
+      "reason": "sensitive case retained outside ceiling pending explicit cause/installed-witness review"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_jobs.py::test_held_reconcile_terminal_receipt_persistence_failure_stays_in_use",
+      "owner": "AT1.5",
+      "reason": "sensitive case retained outside ceiling pending explicit cause/installed-witness review"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_jobs.py::test_held_reconcile_reservation_persistence_failure_never_dispatches",
+      "owner": "AT1.5",
+      "reason": "sensitive case retained outside ceiling pending explicit cause/installed-witness review"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_jobs.py::test_held_reconcile_progress_start_response_loss_keeps_exact_operation",
+      "owner": "AT1.5",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_jobs.py::test_transient_followup_diagnostic_or_persistence_error_retains_retry_custody[diagnostic]",
+      "owner": "AT1.5",
+      "reason": "sensitive case retained outside ceiling pending explicit cause/installed-witness review"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_jobs.py::test_transient_followup_diagnostic_or_persistence_error_retains_retry_custody[persistence]",
+      "owner": "AT1.5",
+      "reason": "sensitive case retained outside ceiling pending explicit cause/installed-witness review"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_jobs.py::test_two_job_cpu_loopback_packets_progress_budget_and_release",
+      "owner": "AT1.5",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_jobs.py::test_failed_two_job_rehearsal_retains_diagnostic_and_releases[png]",
+      "owner": "AT1.5",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_jobs.py::test_failed_two_job_rehearsal_retains_diagnostic_and_releases[json]",
+      "owner": "AT1.5",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_jobs.py::test_failed_two_job_rehearsal_retains_diagnostic_and_releases[hash]",
+      "owner": "AT1.5",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_jobs.py::test_failed_two_job_rehearsal_retains_diagnostic_and_releases[command]",
+      "owner": "AT1.5",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_jobs.py::test_failed_two_job_rehearsal_retains_diagnostic_and_releases[sanity]",
+      "owner": "AT1.5",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_jobs.py::test_failed_two_job_rehearsal_retains_diagnostic_and_releases[runtime]",
+      "owner": "AT1.5",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_jobs.py::test_transient_detached_poll_failure_retains_only_recoverable_followup[followup]",
+      "owner": "AT1.5",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_jobs.py::test_budget_exhaustion_still_releases_without_allocating_a_record",
+      "owner": "AT1.5",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_jobs.py::test_source_bound_installer_then_h3_held_accounting[None]",
+      "owner": "AT1.5",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_jobs.py::test_source_bound_installer_then_h3_held_accounting[install]",
+      "owner": "AT1.5",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_jobs.py::test_source_bound_installer_then_h3_held_accounting[identity]",
+      "owner": "AT1.5",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_jobs.py::test_source_bound_installer_then_h3_held_accounting[result]",
+      "owner": "AT1.5",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_jobs.py::test_source_bound_installer_then_h3_held_accounting[evidence]",
+      "owner": "AT1.5",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_jobs.py::test_source_bound_installer_then_h3_held_accounting[uncertain]",
+      "owner": "AT1.5",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/scripts/test_pod_jobs.py::test_source_bound_installer_then_h3_held_accounting[timeout]",
+      "owner": "AT1.5",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/core/rendering/test_registry.py::test_priority_index_selects_the_lowest_index_and_conflicts_are_reported",
+      "owner": "AT1.1",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/core/rendering/test_registry.py::test_manifest_permission_not_declared_by_pack_is_ineligible",
+      "owner": "AT1.1",
+      "reason": "sensitive case retained outside ceiling pending explicit cause/installed-witness review"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/core/rendering/test_registry_matrix.py::test_cross_layer_precedence_winner_is_recorded_in_evidence_and_conflicts",
+      "owner": "AT1.1",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/core/rendering/test_registry_matrix.py::test_multiple_conflicts_are_reported_in_deterministic_key_order",
+      "owner": "AT1.1",
+      "reason": "G1 diagnostic is missing, too weak or truncated"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/core/rendering/test_registry_matrix.py::test_permission_deficiency_reason_lists_all_missing_permissions_sorted",
+      "owner": "AT1.1",
+      "reason": "sensitive case retained outside ceiling pending explicit cause/installed-witness review"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/rendering/test_scene_source_carry.py::test_persistent_renderer_forwards_final_props_callback",
+      "owner": "AT1.2",
+      "reason": "sensitive case retained outside ceiling pending explicit cause/installed-witness review"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/rendering/test_timeline_route_integration.py::test_show_and_visualize_preserve_one_normalized_occurrence_target",
+      "owner": "AT1.2",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/rendering/test_timeline_route_integration.py::test_visualize_show_navigation_projects_frame_and_timestamp_to_ranges",
+      "owner": "AT1.2",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/rendering/test_timeline_route_integration.py::test_visualize_forwards_admitted_contact_and_motion_options",
+      "owner": "AT1.2",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/rendering/test_timeline_route_integration.py::test_visualize_inputs_defaults_to_native_filmstrip_but_explicit_contact_rejects",
+      "owner": "AT1.2",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/rendering/test_timeline_transfer_actions.py::test_check_only_stages_project_scoped_summary_without_prepared_body",
+      "owner": "AT1.3",
+      "reason": "G1 diagnostic is missing, too weak or truncated"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/sdk/test_timeline_commit_provider.py::test_restore_undo_redo_exact_full_closure_and_unknown_fields",
+      "owner": "AT1.38",
+      "reason": "sensitive case retained outside ceiling pending explicit cause/installed-witness review"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/sdk/test_timeline_commit_provider.py::test_restore_inverse_proof_representations_allow_preview_and_redo[whole-legacy-dual-proof]",
+      "owner": "AT1.38",
+      "reason": "sensitive case retained outside ceiling pending explicit cause/installed-witness review"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/sdk/test_timeline_commit_provider.py::test_restore_inverse_proof_representations_allow_preview_and_redo[whole-v2-effect-proof]",
+      "owner": "AT1.38",
+      "reason": "sensitive case retained outside ceiling pending explicit cause/installed-witness review"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/sdk/test_timeline_commit_provider.py::test_restore_inverse_proof_representations_allow_preview_and_redo[step-legacy-dual-proof]",
+      "owner": "AT1.38",
+      "reason": "sensitive case retained outside ceiling pending explicit cause/installed-witness review"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/sdk/test_timeline_commit_provider.py::test_restore_inverse_proof_representations_allow_preview_and_redo[step-v2-effect-proof]",
+      "owner": "AT1.38",
+      "reason": "sensitive case retained outside ceiling pending explicit cause/installed-witness review"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/test_canonical_aliases.py::CanonicalAliasTest::test_executor_api_uses_canonical_implementation",
+      "owner": "AT1.1",
+      "reason": "G1 diagnostic is missing, too weak or truncated"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/test_external_app_contract.py::test_external_app_runs_from_outside_repo",
+      "owner": "AT1.3",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/test_installer_pinokio_launcher.py::test_generated_foreground_retains_exact_admission_across_rollback[complete-old-True-True-False]",
+      "owner": "AT1.2",
+      "reason": "sensitive case retained outside ceiling pending explicit cause/installed-witness review"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/test_installer_pinokio_launcher.py::test_generated_foreground_retains_exact_admission_across_rollback[rolled_back-old-True-True-False]",
+      "owner": "AT1.2",
+      "reason": "sensitive case retained outside ceiling pending explicit cause/installed-witness review"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/test_installer_pinokio_launcher.py::test_generated_foreground_retains_exact_admission_across_rollback[None-old-True-True-False]",
+      "owner": "AT1.2",
+      "reason": "sensitive case retained outside ceiling pending explicit cause/installed-witness review"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/core/execution/test_generic_host_actions_v3.py::test_python_action_receives_original_host_bridge_before_import",
+      "owner": "AT1.1",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/core/execution/test_private_network_command.py::test_private_leaf_command_installs_network_before_pack_code[None--m]",
+      "owner": "AT1.1",
+      "reason": "sensitive case retained outside ceiling pending explicit cause/installed-witness review"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/core/execution/test_private_network_command.py::test_private_leaf_command_installs_network_before_pack_code[missing_policy--m]",
+      "owner": "AT1.1",
+      "reason": "sensitive case retained outside ceiling pending explicit cause/installed-witness review"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/core/execution/test_private_network_command.py::test_private_leaf_command_installs_network_before_pack_code[missing_hook--m]",
+      "owner": "AT1.1",
+      "reason": "sensitive case retained outside ceiling pending explicit cause/installed-witness review"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/core/execution/test_private_network_command.py::test_private_leaf_command_installs_network_before_pack_code[changed_hook--m]",
+      "owner": "AT1.1",
+      "reason": "sensitive case retained outside ceiling pending explicit cause/installed-witness review"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/core/generation/test_discovery_scope.py::test_cli_scope_is_per_dry_run_and_is_reset_on_failure",
+      "owner": "AT1.1",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/core/generation/test_discovery_scope.py::test_every_layer_and_same_size_manifest_edits_are_observed",
+      "owner": "AT1.1",
+      "reason": "G1 diagnostic is missing, too weak or truncated"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/core/generation/test_discovery_scope.py::test_symlinked_external_root_tracks_target_contents",
+      "owner": "AT1.1",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/core/generation/test_discovery_scope.py::test_literal_project_root_does_not_alias_expanded_home",
+      "owner": "AT1.1",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/core/generation/test_discovery_scope.py::test_changes_during_admission_do_not_publish_a_snapshot",
+      "owner": "AT1.1",
+      "reason": "sensitive case retained outside ceiling pending explicit cause/installed-witness review"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/builtin/test_training_run_seinfeld_parity.py::test_seinfeld_config_dry_run_emits_equivalent_ai_toolkit_config",
+      "owner": "AT1.96",
+      "reason": "G1 diagnostic is missing, too weak or truncated"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/builtin/test_training_run_seinfeld_parity.py::test_seinfeld_config_live_pause_and_resume_registration_metadata",
+      "owner": "AT1.96",
+      "reason": "G1 diagnostic is missing, too weak or truncated"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/builtin/test_training_run_support.py::test_training_run_main_dry_run_writes_state_and_live_preflight_fails_before_state",
+      "owner": "AT1.96",
+      "reason": "live-run record or provider-grant cause unresolved; no sensitive admission from a family label"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/builtin/test_training_run_support.py::test_training_run_dry_run_and_smoke_write_local_plan_artifacts_without_backend_calls",
+      "owner": "AT1.96",
+      "reason": "live-run record or provider-grant cause unresolved; no sensitive admission from a family label"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/builtin/test_training_run_support.py::test_training_run_live_mocked_pauses_at_review_gate_without_teardown",
+      "owner": "AT1.96",
+      "reason": "live-run record or provider-grant cause unresolved; no sensitive admission from a family label"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/builtin/test_training_run_support.py::test_training_run_live_training_failure_preserves_pod_for_recovery",
+      "owner": "AT1.96",
+      "reason": "live-run record or provider-grant cause unresolved; no sensitive admission from a family label"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/builtin/test_training_run_support.py::test_training_run_live_missing_handle_path_writes_recoverable_state_without_teardown",
+      "owner": "AT1.96",
+      "reason": "live-run record or provider-grant cause unresolved; no sensitive admission from a family label"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/builtin/test_training_run_support.py::test_training_run_resume_registers_checkpoint_before_teardown",
+      "owner": "AT1.96",
+      "reason": "live-run record or provider-grant cause unresolved; no sensitive admission from a family label"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/builtin/test_training_run_support.py::test_training_run_resume_skip_teardown_keeps_recovery_guard",
+      "owner": "AT1.96",
+      "reason": "live-run record or provider-grant cause unresolved; no sensitive admission from a family label"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/builtin/test_training_run_support.py::test_training_run_resume_requires_paused_state_and_valid_checkpoint",
+      "owner": "AT1.96",
+      "reason": "live-run record or provider-grant cause unresolved; no sensitive admission from a family label"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/builtin/training_run/test_runtime_state_resume.py::test_dry_run_writes_plan_without_network_gpu_or_runpod_calls",
+      "owner": "AT1.96",
+      "reason": "G1 diagnostic is missing, too weak or truncated"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/builtin/training_run/test_runtime_state_resume.py::test_live_missing_handle_path_records_recoverable_failure_without_teardown",
+      "owner": "AT1.96",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/builtin/training_run/test_runtime_state_resume.py::test_live_training_failure_preserves_pod_for_checkpoint_recovery",
+      "owner": "AT1.96",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/builtin/training_run/test_runtime_state_resume.py::test_resume_pulls_checkpoint_and_registers_before_teardown",
+      "owner": "AT1.96",
+      "reason": "full error diagnostic differs or no exact untruncated match is available"
+    },
+    {
+      "lane": "CI/unit (ubuntu-latest)",
+      "native_id": "tests/packs/builtin/training_run/test_seinfeld_parity.py::test_seinfeld_example_dry_run_uses_config_not_generic_literals",
+      "owner": "AT1.96",
+      "reason": "G1 diagnostic is missing, too weak or truncated"
+    }
+  ],
+  "limits": [
+    "residual R15-1/R15-2 groups require supported cause evidence; no blanket admission",
+    "App identities use uniquely reconciled full source tuples; internal IDs remain unavailable in historical logs",
+    "no later exact-head product retirement receipt was found; executable fixture proof is separate"
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "fixture_only": true,
+  "product_qualification": false,
+  "executed_local_fixture_commit": "d6238bf85757ab380385cf314b5b5aedc760eb35",
+  "implementation_sha256": {
+    "failure_ceiling.py": "a5e977a0e8744973f35f10ac682b1ef4b80c6250a71c3a9bca93584b5c4145ed",
+    "ceiling_adapters.py": "fadd505b101bf3d9c77d54c66b32a485943f54eef66303bf1f519518c19e0a92",
+    "ceiling_capture.py": "a19174a70946c5ca7d4b7e16385da17a13b868eed4019c5a5e734623fce840a1",
+    "ceiling_node.mjs": "7a93667f5c53eac83676b95ef12d9eff7b81c653d23595ab3c4143ddd1abe411"
+  },
+  "results": {
+    "complete-covered-merge": "PASS",
+    "complete-covered-release": "PASS",
+    "actual-fixture-retirement": "PASS",
+    "retired-recurrence": "FAIL",
+    "sensitive-different-cause": "FAIL",
+    "missing-nightly": "FAIL"
+  },
+  "actual_native_invocations": 10,
+  "expected_raw_exits": {
+    "g1": 1,
+    "g2": 1,
+    "passing": 0,
+    "recurrence": 1,
+    "different-cause": 1
+  },
+  "qualification_limit": "Executed fixture retirement is not retirement of any G1/G2 product entry."
+}

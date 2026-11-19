@@ -1,0 +1,123 @@
+# Plan39 K2/K3. Bootstrap once through Lead review: an absent merge-base
+# comparator is a real red, never a reason to execute the candidate comparator.
+name: Failure ceiling
+
+on:
+  pull_request:
+    branches: [main, "int/**", "release/*/main", "release/*/plan-*"]
+  schedule:
+    - cron: "47 5 * * *"
+  workflow_dispatch:
+    inputs:
+      target_branch:
+        description: Explicit trusted destination branch for the comparison merge base
+        type: string
+        required: true
+      tier:
+        description: Required evidence tier
+        type: choice
+        options: [merge, release]
+        default: release
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: failure-ceiling-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  comparator-probes:
+    name: comparator probes (candidate implementation)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Exercise rejection and receipt checks
+        run: |
+          python -I scripts/ci/test_failure_ceiling.py -v
+          python -I scripts/ci/test_ceiling_hosted.py -v
+
+  trusted-ceiling:
+    name: trusted failure ceiling
+    runs-on: ubuntu-latest
+    timeout-minutes: 110
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Export the immutable trusted comparison snapshot
+        id: trust
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          TARGET_BRANCH: ${{ inputs.target_branch }}
+          REQUESTED_TIER: ${{ inputs.tier }}
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          case "$EVENT_NAME" in
+            pull_request)
+              comparison="$PR_BASE_SHA"
+              tier=merge
+              ;;
+            schedule)
+              comparison="$CANDIDATE_SHA"
+              tier=release
+              ;;
+            workflow_dispatch)
+              [[ "$TARGET_BRANCH" =~ ^(main|release/[0-9]+/(main|plan-[0-9]+)|int/[a-zA-Z0-9_-]+)$ ]]
+              git fetch --no-tags origin "refs/heads/$TARGET_BRANCH"
+              comparison="$(git rev-parse FETCH_HEAD)"
+              tier="$REQUESTED_TIER"
+              ;;
+            *) echo 'Unsupported comparison authority' >&2; exit 2 ;;
+          esac
+          [[ "$comparison" =~ ^[0-9a-f]{40}$ ]]
+          base="$(git merge-base HEAD "$comparison")"
+          trusted="$(mktemp -d "$RUNNER_TEMP/failure-ceiling-trusted.XXXXXX")"
+          echo "Trusted comparator: $base; candidate: $CANDIDATE_SHA; tier: $tier"
+          if ! git cat-file -e "$base:scripts/ci/ceiling_hosted.py"; then
+            echo "::error::Trusted comparator is absent from merge base $base. Initial bootstrap needs Lead review; candidate code will not qualify itself."
+            exit 1
+          fi
+          git archive "$base" ci scripts/ci | tar -x -C "$trusted"
+          echo "root=$trusted" >> "$GITHUB_OUTPUT"
+          echo "head=$CANDIDATE_SHA" >> "$GITHUB_OUTPUT"
+          echo "tier=$tier" >> "$GITHUB_OUTPUT"
+          printf 'Trusted snapshot: `%s`\n\nCandidate: `%s`\n' "$base" "$CANDIDATE_SHA" >> "$GITHUB_STEP_SUMMARY"
+      - name: Collect required exact-head native outcomes and compare
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TRUSTED_ROOT: ${{ steps.trust.outputs.root }}
+          CANDIDATE_SHA: ${{ steps.trust.outputs.head }}
+          TIER: ${{ steps.trust.outputs.tier }}
+        run: >-
+          python -I "$TRUSTED_ROOT/scripts/ci/ceiling_hosted.py"
+          --repository "$GITHUB_REPOSITORY" --head "$CANDIDATE_SHA"
+          --candidate "$GITHUB_WORKSPACE" --tier "$TIER"
+          --output "$RUNNER_TEMP/ceiling-verdict" --wait-seconds 5400
+      - name: Retain comparator input, verdict and D4 report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p39-ceiling-verdict-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ceiling-verdict/
+          retention-days: 90
+          if-no-files-found: warn
