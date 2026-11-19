@@ -928,6 +928,7 @@ def _compile_native_masked_edit(
         command = ["ffmpeg", "-v", "error", "-y", "-i", str(source_path),
                    "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
                    "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "pcm_s16le",
+                   "-fflags", "+bitexact", "-flags:a", "+bitexact",
                    "-t", str(float(source.range[1])), str(model_source)]
         try:
             subprocess.run(command, check=True, capture_output=True)

@@ -823,6 +823,10 @@ def test_silent_character_swap_source_delivers_implicit_and_explicit_audio(tmp_p
     from astrid.packs.h3_av.shared.compose import _probe, _streams
     assert len(_streams(_probe(built["assets"]["source_video"]), "audio")) == 1
     compilation = json.loads((tmp_path / "hook/h3/plan/compile/compilation.json").read_text())
+    second = hooks.build({"request": str(request_file), "asset_map": {"scene": str(source), "performance": str(reference), "face": str(image), "voice": str(voice)}}, {}, tmp_path / "hook-again", engine=comfyui_facts())
+    compilation_again = json.loads((tmp_path / "hook-again/h3/plan/compile/compilation.json").read_text())
+    assert hashlib.sha256(built["assets"]["source_video"].read_bytes()).digest() == hashlib.sha256(second["assets"]["source_video"].read_bytes()).digest()
+    assert compilation["compilation_digest"] == compilation_again["compilation_digest"]
     spans = compilation["capabilities"]["expected_delivered_audio_spans"]
     assert {span["source"] for span in spans} == ({"generated", "fixed"} if explicit_fixed else {"generated"})
     mask_values = compilation["capabilities"]["audio_time_mask"]["decoded_frame_values"]
