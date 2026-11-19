@@ -1135,32 +1135,23 @@ def _decode_exact_pcm(path: Path, *, expected_channels: int | None = None, gener
 def _splice_exact_pcm(source: bytes, *, channels: int, total_samples: int,
                       source_start: int = 0, generated: bytes | None = None,
                       generated_spans: list[tuple[int, int]] = (),
-                      fixed_spans: list[tuple[int, int, bytes, int]] = ()) -> bytes:
-    """Select complete interleaved samples at absolute integer boundaries."""
+                      fixed_spans: list[tuple[int, int, bytes, int]] = (),
+                      unfilled_generated_spans: list[tuple[int, int]] = ()) -> bytes:
+    """Resolve each sample owner, then copy only the owner's available PCM.
+
+    Unfilled generated spans reserve ownership during the pre-splice and remain
+    silent until sampling. Fixed audio wins over generated and source audio.
+    """
     stride = channels * 2
     if channels not in (1, 2) or source_start < 0 or total_samples < 0:
         raise CompositionError("invalid canonical PCM source or channel count")
-    start, end = source_start * stride, (source_start + total_samples) * stride
-    if len(source) < end:
-        raise CompositionError("source audio does not cover the requested sample window")
-    result = bytearray(source[start:end])
-    if generated is not None:
-        if len(generated) % stride:
-            raise CompositionError("generated audio has an incomplete sample")
-        available = len(generated) // stride
-        needed = max((last for _, last in generated_spans), default=0)
-        if available < needed:
-            # H3 audio has a 40 Hz grid: the nearest tick can be at most
-            # half a tick (600 samples at 48 kHz) short of the video end.
-            nearest_tick = round(total_samples / 1200) * 1200
-            if available != nearest_tick or needed - available > 600:
-                raise CompositionError("generated audio does not cover its requested sample spans")
-            generated += bytes((needed - available) * stride)
-        generated = generated[:total_samples * stride]
-    for first, last in generated_spans:
-        if not 0 <= first < last <= total_samples or generated is None:
+    if len(source) % stride:
+        raise CompositionError("source audio has an incomplete sample")
+    for first, last in (*generated_spans, *unfilled_generated_spans):
+        if not 0 <= first < last <= total_samples:
             raise CompositionError("invalid generated audio sample span")
-        result[first * stride:last * stride] = generated[first * stride:last * stride]
+    if generated_spans and generated is None:
+        raise CompositionError("invalid generated audio sample span")
     seen: list[tuple[int, int]] = []
     for first, last, pcm, offset in fixed_spans:
         if not 0 <= first < last <= total_samples or offset < 0 or len(pcm) < (offset + last - first) * stride:
@@ -1168,7 +1159,44 @@ def _splice_exact_pcm(source: bytes, *, channels: int, total_samples: int,
         if any(first < other_end and other_start < last for other_start, other_end in seen):
             raise CompositionError("supplied audio sample spans overlap")
         seen.append((first, last))
-        result[first * stride:last * stride] = pcm[offset * stride:(offset + last - first) * stride]
+    boundaries = sorted({0, total_samples,
+        *(point for first, last in (*generated_spans, *unfilled_generated_spans) for point in (first, last)),
+        *(point for first, last, _, _ in fixed_spans for point in (first, last))})
+    segments = []
+    for first, last in zip(boundaries, boundaries[1:]):
+        fixed = next((item for item in fixed_spans if item[0] <= first and last <= item[1]), None)
+        if fixed is not None:
+            segments.append((first, last, "fixed", fixed))
+        elif any(a <= first and last <= b for a, b in generated_spans):
+            segments.append((first, last, "generated", None))
+        elif any(a <= first and last <= b for a, b in unfilled_generated_spans):
+            segments.append((first, last, "unfilled", None))
+        else:
+            segments.append((first, last, "source", None))
+    if generated is not None:
+        if len(generated) % stride:
+            raise CompositionError("generated audio has an incomplete sample")
+        available = len(generated) // stride
+        needed = max((last for _, last, owner, _ in segments if owner == "generated"), default=0)
+        if available < needed:
+            # A 40 Hz H3 tick can be at most 600 samples short of the video end.
+            nearest_tick = round(total_samples / 1200) * 1200
+            if available != nearest_tick or needed - available > 600:
+                raise CompositionError("generated audio does not cover its requested sample spans")
+            generated += bytes((needed - available) * stride)
+    result = bytearray(total_samples * stride)
+    for first, last, owner, fixed in segments:
+        if owner == "fixed":
+            fixed_start, _, pcm, offset = fixed
+            begin = (offset + first - fixed_start) * stride
+            result[first * stride:last * stride] = pcm[begin:begin + (last - first) * stride]
+        elif owner == "generated":
+            result[first * stride:last * stride] = generated[first * stride:last * stride]
+        elif owner == "source":
+            begin, end = (source_start + first) * stride, (source_start + last) * stride
+            if len(source) < end:
+                raise CompositionError("source audio does not cover the requested sample window")
+            result[first * stride:last * stride] = source[begin:end]
     return bytes(result)
 
 
@@ -1215,19 +1243,24 @@ def _exact_audio_for_request(preparation: Mapping[str, Any], *, source: Path, ge
             fixed_items.append((first, last, item, offset))
         else:
             explicit_generated.append((first, last))
-    generated_spans = [] if pre_splice_only else (
+    # A derived pass retains all classified references, including fixed clips
+    # it does not select. Such a pass has nothing to pre-splice.
+    if pre_splice_only and not fixed_items:
+        return None
+    owned_generated_spans = (
         [(round(float(first) * 48000), round(float(last) * 48000)) for first, last in scheduled_generated]
         if scheduled_generated is not None else explicit_generated)
     # Fixed owners take priority; don't require generated samples underneath them.
     for fixed_start, fixed_end, _, _ in fixed_items:
         remaining = []
-        for first, last in generated_spans:
+        for first, last in owned_generated_spans:
             if first < fixed_start:
                 remaining.append((first, min(last, fixed_start)))
             if last > fixed_end:
                 remaining.append((max(first, fixed_end), last))
-        generated_spans = [(first, last) for first, last in remaining if first < last]
-    owned_spans = sorted([*generated_spans, *((first, last) for first, last, _, _ in fixed_items)])
+        owned_generated_spans = [(first, last) for first, last in remaining if first < last]
+    generated_spans = [] if pre_splice_only else owned_generated_spans
+    owned_spans = sorted([*owned_generated_spans, *((first, last) for first, last, _, _ in fixed_items)])
     covered = 0
     source_owned = False
     for first, last in owned_spans:
@@ -1264,19 +1297,20 @@ def _exact_audio_for_request(preparation: Mapping[str, Any], *, source: Path, ge
         source_start = round(source_offset * 48000)
     pcm = _splice_exact_pcm(source_pcm, channels=channels, total_samples=total,
                             source_start=source_start, generated=candidate_pcm,
-                            generated_spans=generated_spans, fixed_spans=fixed_spans)
+                            generated_spans=generated_spans, fixed_spans=fixed_spans,
+                            unfilled_generated_spans=owned_generated_spans if pre_splice_only else ())
     destination.parent.mkdir(parents=True, exist_ok=True)
     with wave.open(str(destination), "wb") as wav:
         wav.setnchannels(channels)
         wav.setsampwidth(2)
         wav.setframerate(48000)
         wav.writeframes(pcm)
-    boundaries = sorted({0, total, *(point for first, last in generated_spans for point in (first, last)),
+    boundaries = sorted({0, total, *(point for first, last in owned_generated_spans for point in (first, last)),
                          *(point for first, last, _, _ in fixed_spans for point in (first, last))})
     spans = []
     for first, last in zip(boundaries, boundaries[1:]):
         owner = "fixed" if any(a <= first and last <= b for a, b, _, _ in fixed_spans) else (
-            "generated" if any(a <= first and last <= b for a, b in generated_spans) else "source")
+            "generated" if any(a <= first and last <= b for a, b in owned_generated_spans) else "source")
         spans.append({"samples": [first, last], "source": owner})
     return destination, pcm, channels, spans
 

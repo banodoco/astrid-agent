@@ -664,3 +664,25 @@ def test_default_video_guides_exclude_fixed_audio_occurrence():
     raw["media"][0]["edit"][0]["guides"] = ["fixed"]
     with pytest.raises(H3RequestError, match="both conditioning and replacement"):
         normalize_request(raw)
+
+
+def test_derived_generated_pass_does_not_pre_splice_unselected_fixed_occurrence(tmp_path):
+    from astrid.packs.h3_av.shared.compose import _exact_audio_for_request
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from astrid.packs.h3_av.shared.spec import sampling_request
+
+    raw = {"version": 2, "duration": 5, "prompt": "Edit", "media": [
+        {"asset": "scene", "role": "timeline", "modality": "video", "at": {"frame": 0}, "range": [0, 5],
+         "edit": [{"stream": "video", "during": [0, 5], "guides": []},
+                  {"stream": "audio", "during": [0, 2], "guides": ["fixed"]},
+                  {"stream": "audio", "during": [2, 4]}]},
+        {"id": "fixed", "asset": "voice", "role": "reference", "modality": "audio", "range": [0, 2]},
+    ]}
+    derived = sampling_request(normalize_request(raw), 2)
+    assert derived.value["media"][1]["use"] == "replacement"
+    assert derived.value["media"][0]["edit"][0]["stream"] == "audio"
+    # There is no selected fixed clip; pre-splice must not probe either asset.
+    missing = tmp_path / "not-needed.mkv"
+    assert _exact_audio_for_request({"request": derived.value, "assets": []}, source=missing, generated=missing,
+                                    destination=tmp_path / "out.wav", duration=5, source_offset=0,
+                                    pre_splice_only=True) is None

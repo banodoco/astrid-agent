@@ -861,3 +861,60 @@ def test_full_generated_audio_does_not_require_44100hz_source_pcm(tmp_path):
     candidate, _ = _decode_exact_pcm(generated, expected_channels=channels, generated=True)
     assert delivered == candidate[:48000 * channels * 2]
     assert result["composition"]["exact_audio"]["delivered_spans"] == [{"samples": [0, 48000], "source": "generated"}]
+
+
+def test_pcm_source_coverage_only_requires_kept_spans_and_fixed_wins_overlap():
+    import struct
+    from astrid.packs.h3_av.shared.compose import CompositionError, _splice_exact_pcm
+
+    def pcm(values):
+        return b"".join(struct.pack("<h", value) for value in values)
+    source = pcm(range(600))
+    generated = pcm([1000] * 1000)
+    fixed = pcm([2000] * 100)
+    # The source starts 100 samples into its file and is retained only for
+    # destination samples 0..500. Its missing tail is wholly generated.
+    result = _splice_exact_pcm(source, channels=1, total_samples=1000, source_start=100,
+                               generated=generated, generated_spans=[(500, 1000)],
+                               fixed_spans=[(700, 800, fixed, 0)])
+    assert result == pcm(list(range(100, 600)) + [1000] * 200 + [2000] * 100 + [1000] * 200)
+    with pytest.raises(CompositionError, match="source audio does not cover"):
+        _splice_exact_pcm(source[:-2], channels=1, total_samples=1000, source_start=100,
+                          generated=generated, generated_spans=[(500, 1000)], fixed_spans=[(700, 800, fixed, 0)])
+
+
+@pytest.mark.ffmpeg
+@pytest.mark.parametrize("source_audio", ["silent", "44100"])
+def test_pre_splice_reserves_generated_audio_without_requiring_source_pcm(tmp_path, source_audio):
+    import subprocess
+    from astrid.packs.h3_av.shared.compose import _decode_exact_pcm
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+    from tests.packs.h3_av.test_moving_masks import _fixtures
+
+    original, _ = _fixtures(tmp_path)
+    source, voice = tmp_path / "prepared-source.mkv", tmp_path / "fixed.wav"
+    if source_audio == "silent":
+        command = ["ffmpeg", "-v", "error", "-y", "-i", str(original), "-map", "0:v:0", "-c:v", "copy", str(source)]
+    else:
+        command = ["ffmpeg", "-v", "error", "-y", "-i", str(original), "-map", "0:v:0", "-map", "0:a:0",
+                   "-c:v", "copy", "-c:a", "pcm_s16le", "-ar", "44100", str(source)]
+    subprocess.run(command, check=True)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "sine=frequency=660:sample_rate=48000:duration=1", "-c:a", "pcm_s16le", str(voice)], check=True)
+    raw = {"version": 2, "duration": 1, "prompt": "Edit", "media": [
+        {"asset": "scene", "role": "timeline", "modality": "video", "at": {"frame": 0}, "range": [0, 1],
+         "edit": [{"stream": "video", "during": [0, 1], "mask": {"rectangle": [0, 0, 128, 128]}, "guides": []},
+                  {"stream": "audio", "during": [0, "1/2"], "guides": ["fixed"]},
+                  {"stream": "audio", "during": ["1/2", 1]}]},
+        {"id": "fixed", "asset": "voice", "role": "reference", "modality": "audio"},
+    ]}
+    preparation = prepare_request(normalize_request(raw), asset_map={"scene": str(source), "voice": str(voice)})
+    manifest = compile_preparation(preparation, out_dir=tmp_path / "compiled")
+    assert "source_audio_prepared" in manifest["workflow_inputs"]
+    prepared, channels = _decode_exact_pcm(tmp_path / "compiled" / "source-with-fixed-audio.wav")
+    fixed, _ = _decode_exact_pcm(voice, expected_channels=channels)
+    stride = channels * 2
+    assert prepared == fixed[:24000 * stride] + bytes(24000 * stride)
+    mask = manifest["capabilities"]["audio_time_mask"]["requested_frame_values"]
+    assert mask[:12] == [0] * 12
+    assert mask[12:24] == [1] * 12
