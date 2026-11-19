@@ -317,7 +317,7 @@ def test_public_h3_dimension_checks_reject_missing_or_malformed_media(tmp_path, 
         invalid.pop("media")
     else:
         invalid["media"] = media
-    with pytest.raises(CompositionError, match="(no usable requested video|invalid canvas) dimensions"):
+    with pytest.raises(CompositionError, match="no usable requested video dimensions"):
         compose_candidate(preparation=invalid, generated=generated, source=source, out_dir=tmp_path / "bad")
-    with pytest.raises(VerificationError, match="(no usable requested video|invalid canvas) dimensions"):
+    with pytest.raises(VerificationError, match="no usable requested video dimensions"):
         verify_candidate(preparation=invalid, composition=composition, source=source)

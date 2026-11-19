@@ -465,6 +465,8 @@ def _guard_unprepared_static_permissions(preparation: Mapping[str, Any]) -> None
     if isinstance(dimensions, Mapping):
         width, height = dimensions.get("width"), dimensions.get("height")
         if type(width) is not int or type(height) is not int:
+            if isinstance(media, Mapping):
+                raise CompositionError("preparation has no usable requested video dimensions")
             raise CompositionError("preparation has invalid canvas dimensions")
         target = (width, height)
     else:
