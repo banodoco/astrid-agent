@@ -706,6 +706,8 @@ def _reconstruct_generation_result(result: InvocationResult) -> Any:
     generation_payload.pop("reference_view", None)
     if isinstance(settled_manifest, Mapping) and "reference_view" in settled_manifest:
         settled_manifest = {key: value for key, value in settled_manifest.items() if key != "reference_view"}
+    if isinstance(settled_manifest, Mapping):
+        generation_payload["manifest"] = dict(settled_manifest)
     if isinstance(reference_view, Mapping):
         manifest = dict(settled_manifest) if isinstance(settled_manifest, Mapping) else {}
         manifest["reference_view"] = _json_safe_mapping(reference_view)

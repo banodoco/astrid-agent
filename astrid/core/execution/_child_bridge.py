@@ -97,7 +97,9 @@ def _bounded_publication_result(canonical: dict[str, Any], *, evidence_task: dic
     candidate_task = {**evidence_task, "result": candidate}
     readback = {"version": 1, "task": candidate_task, "result": candidate,
                 "managed_outputs": publication_rows}
-    return candidate if len(_strict_json(readback)) <= _MAX_FRAME - 1024 else canonical
+    size = len(json.dumps(readback, sort_keys=True, separators=(",", ":"),
+                          ensure_ascii=False, allow_nan=False).encode("utf-8"))
+    return candidate if size <= _MAX_FRAME - 1024 else canonical
 
 
 @dataclass(frozen=True)
@@ -1062,7 +1064,9 @@ class HostChildBridge:
             attempt_id=public["attempt_id"], managed_outputs=outputs)
         if "workflow_hook_evidence" in canonical["payload"]:
             reply = {"v": 1, "request_id": self._sequence, "ok": True, "data": public}
-            if len(_strict_json(reply)) + 1 > _MAX_FRAME:
+            reply_size = len(json.dumps(reply, sort_keys=True, separators=(",", ":"),
+                                        ensure_ascii=False, allow_nan=False).encode("utf-8")) + 1
+            if reply_size > _MAX_FRAME:
                 canonical = dict(canonical)
                 canonical["payload"] = {key: value for key, value in canonical["payload"].items()
                                         if key != "workflow_hook_evidence"}

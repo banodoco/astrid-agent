@@ -131,11 +131,12 @@ def test_untrusted_manifest_reference_view_is_not_projected():
 
 def test_non_h3_capability_cannot_mint_workflow_reference_view():
     fixture = terminal()
-    fixture.result.capability_id = "speech.generate"
     fixture.result.raw_result["task"]["result"]["payload"] = {
         "workflow_hook_evidence": {"reference_view": {"references": []}},
     }
-    result = _reconstruct_generation_result(fixture.result)
+    result = InvocationResult("speech.generate", "executor", "command", True,
+        kernel_task_id="task-1", raw_result=fixture.result.raw_result)
+    result = _reconstruct_generation_result(result)
     assert "reference_view" not in result.manifest
 
 
@@ -154,7 +155,8 @@ def test_direct_h3_manifest_cas_readback_authenticates_and_survives_scratch_clea
     scratch = tmp_path / "managed-generation-result.json"
     scratch.write_bytes(data)
     digest = "sha256:" + hashlib.sha256(data).hexdigest()
-    association = {"task_id": "task-1", "run_id": "run-1", "attempt_id": "attempt-1",
+    association = {"association_id": "result-manifest-assoc", "task_id": "task-1",
+        "run_id": "run-1", "attempt_id": "attempt-1",
         "output_port": "result_manifest", "role": "manifest", "media_type": "application/json",
         "durability": "durable", "lifecycle": {"state": "available"},
         "object_id": digest, "digest": digest, "size": len(data)}
