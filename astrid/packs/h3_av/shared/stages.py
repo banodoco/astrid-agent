@@ -287,6 +287,7 @@ def _settled_reference_view(reference_view: Mapping[str, Any], *, reference_asse
     a dry-run metadata estimate is never promoted into a settled count.
     """
     from copy import deepcopy
+
     from .prepare import _retained_video_frames
 
     settled = deepcopy(dict(reference_view))
