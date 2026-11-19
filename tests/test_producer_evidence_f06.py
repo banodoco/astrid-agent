@@ -662,7 +662,7 @@ def test_workflow_hook_evidence_accepts_supported_rational_trim_and_null_legacy_
     {"reference_view": {"references": []}, "/tmp/escape": "value"},
     {"reference_view": {"references": [{"occurrence": "foo/bar", "modality": "video"}]}},
     {"reference_view": {"references": [{"occurrence": "x", "modality": "video", "input_binding": False}]}},
-    {"reference_view": {"audio": {"requested_grants": [False]}}},
+    {"reference_view": {"references": [], "audio": {"requested_grants": [False]}}},
     {"reference_view": {"references": [{"retained_picture_frames_derived": {
         "rule_source": "ComfyUI@423cbd20511becb1f16122ab518e92e58bfa03d9:../../tmp/nodes.py:1-2"}}]}},
     {"reference_view": {"references": [False]}},
