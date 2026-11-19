@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import importlib
 import inspect
+import ssl
 from pathlib import Path
 from typing import Any
 from unittest.mock import Mock
@@ -82,7 +83,10 @@ def exercise_provider_request(
         body = base64.b64encode(png).decode("ascii")
         calls: list[Any] = []
 
-        def fake_urlopen(request: Any, *, timeout: int) -> _Response:
+        def fake_urlopen(request: Any, *, timeout: int, context: ssl.SSLContext) -> _Response:
+            assert isinstance(context, ssl.SSLContext)
+            assert context.verify_mode == ssl.CERT_REQUIRED
+            assert context.check_hostname is True
             calls.append(request)
             declared = provider.API_URL.rsplit("/", 1)[0] + "/" + (
                 "edits" if mode == "edit" else "generations"

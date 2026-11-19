@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 
 from ._command_state import CommandError, equal
+from ._preexisting import split_findings
 
 PIN = {
     'type': 'object', 'additionalProperties': False,
@@ -25,20 +26,43 @@ PARAMETERS = {
 }
 
 
-def registry_selections(bundle):
-    """Named catalog associations in authored registries, without digest lookup."""
+def _registry_entries(bundle):
+    """Yield ``((scope, asset), entry)`` for entries naming a catalog association."""
     parent = bundle['parent']
-    scopes = [parent, parent.get('config', {}),
-              *(shot['internal_timeline'] for shot in bundle['shots'].values())]
-    for scope in scopes:
+    scopes = [('parent', parent), ('config', parent.get('config', {})),
+              *((shot_id, shot['internal_timeline']) for shot_id, shot in bundle['shots'].items())]
+    for scope_key, scope in scopes:
         for asset, entry in scope.get('registry', {}).get('assets', {}).items():
-            if not isinstance(entry, dict):
-                continue
-            if 'generationId' in entry or 'variantId' in entry:
-                if not entry.get('generationId') or not entry.get('variantId'):
-                    raise CommandError('catalog association requires both generation and variant')
-                yield {'asset': asset, 'generation_id': entry['generationId'],
-                       'variant_id': entry['variantId'], 'object_id': entry.get('media_id')}
+            if isinstance(entry, dict) and ('generationId' in entry or 'variantId' in entry):
+                yield (scope_key, asset), entry
+
+
+def registry_selections(bundle):
+    """Complete catalog associations in authored registries, without digest lookup.
+
+    Incomplete entries are not associations; ``check_registry_associations``
+    judges them, so reading any bundle (including an unchanged base) never raises.
+    """
+    for (_, asset), entry in _registry_entries(bundle):
+        if entry.get('generationId') and entry.get('variantId'):
+            yield {'asset': asset, 'generation_id': entry['generationId'],
+                   'variant_id': entry['variantId'], 'object_id': entry.get('media_id')}
+
+
+def check_registry_associations(candidate, base):
+    """Refuse an incomplete association the candidate introduces or changes.
+
+    An entry already incomplete and identical in ``base`` is pre-existing and
+    stays editable (#387 pattern).
+    """
+    def incomplete(bundle):
+        return {key: (entry.get('generationId'), entry.get('variantId'), entry.get('media_id'))
+                for key, entry in _registry_entries(bundle)
+                if not (entry.get('generationId') and entry.get('variantId'))}
+
+    introduced, _ = split_findings(incomplete(candidate), incomplete(base))
+    if introduced:
+        raise CommandError('catalog association requires both generation and variant')
 
 
 def capture_media_admissions(port, calls):
@@ -100,10 +124,11 @@ def validate_admissions(bundle, calls):
     if not inputs:
         return
     media = compile_authoring_candidate(bundle).publication['dependency_manifest']['media']
-    associations = list(registry_selections(bundle))
     from .commit import bundle_from_document
 
     original = bundle_from_document(bundle['source_mapping']['_runtime_document'])
+    check_registry_associations(bundle, original)
+    associations = list(registry_selections(bundle))
     old_associations = list(registry_selections(original))
     selected_inputs = [{key: val for key, val in value['selection'].items() if key != 'catalog_digest'}
                        for value in inputs if 'selection' in value]

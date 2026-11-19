@@ -5463,17 +5463,24 @@ def _serve_until_claimed(host, runtime, capability_id: str, *, polls: int = 2000
     The poll budget bounds a loop that keeps claiming; the wall-clock bound ends a fenced loop whose claims never
     reach the Runtime, so a regression fails here instead of at the suite timeout.
     """
+    stop_polling = threading.Event()
+    shutdown_requested = host._shutdown.is_set
+
     def claim_next(**payload):
         runtime.claims.append(list(payload["capability_ids"]))
         if capability_id in payload["capability_ids"] or len(runtime.claims) > polls:
-            host._shutdown.set()
+            stop_polling.set()
         return None
 
     runtime.claim_next = claim_next
     watchdog = threading.Timer(seconds, host._shutdown.set)
     watchdog.start()
     try:
-        assert host.run(poll_seconds=0.005) == []
+        # End this polling observation without terminally shutting down the
+        # live host; later assertions still exercise its registration fence.
+        with pytest.MonkeyPatch.context() as polling:
+            polling.setattr(host._shutdown, "is_set", lambda: shutdown_requested() or stop_polling.is_set())
+            assert host.run(poll_seconds=0.005) == []
     finally:
         watchdog.cancel()
 
