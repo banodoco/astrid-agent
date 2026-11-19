@@ -424,8 +424,11 @@ def _attempt_value_bundle(bundle: Any, workflow: Any, root: Path, extra_members:
     """
     from vibecomfy.porting.object_info.consume import class_entry_snapshot
     from vibecomfy.workflow_bundle import (
-        _atomic_publish_pair, _build_v2_sidecar, _make_bundle,
-        _source_provenance, _v2_marker,
+        _atomic_publish_pair,
+        _build_v2_sidecar,
+        _make_bundle,
+        _source_provenance,
+        _v2_marker,
     )
 
     # Publication checks the held candidate against the exact copied bytes and
