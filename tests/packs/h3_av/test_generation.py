@@ -4,7 +4,6 @@ from astrid.packs.h3_av.shared.generation import generation_inputs_from_bindings
 
 import hashlib
 import json
-import os
 import shutil
 from dataclasses import replace
 from pathlib import Path
@@ -96,7 +95,9 @@ def test_builder_rejects_one_past_standalone_audio_slots():
 def test_limits_match_the_pinned_cached_h3_node_schema():
     from astrid.packs.h3_av.shared.generation import LIMITS
 
-    cache = Path(os.environ["VIBECOMFY_SOURCE"]) / "vibecomfy/porting/cache/object_info/comfy_core@cpu-runtime.json"
+    import vibecomfy
+
+    cache = Path(vibecomfy.__file__).parent / "porting/cache/object_info/comfy_core@cpu-runtime.json"
     classes = json.loads(cache.read_text())
     schema = classes["MiniMaxH3ReferenceToVideo"]
     assert schema["git_commit"] == "6bfaacc67c2103481e5f0c84d75257cd0581d86a"

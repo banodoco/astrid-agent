@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .errors import PreparationError
+from .generation import _BUILDER_SLOT_VALUES, LIMITS
 from .masks import (
     MaskScheduleError,
     build_mask_schedule,
@@ -19,8 +20,8 @@ from .masks import (
     merge_intervals,
 )
 from .request import H3Request, H3RequestError, _asset_ids
-from .request_v2 import branch_for
 from .generation import DEFAULT_SIZE, LIMITS
+from .request_v2 import branch_for, timeline_image_limit_error
 
 
 def _probe_conditioning(path: Path) -> dict[str, Any]:
@@ -65,7 +66,7 @@ def _reference_size(modality: str, width: int, height: int) -> dict[str, int]:
 
 def _admit_conditioning(request: H3Request, assets: list[dict[str, Any]], warnings: list[dict[str, str]] | None = None) -> list[dict[str, Any]]:
     """Apply the shared reference table before scheduling any paid/runtime work."""
-    from .compose import _streams, _number
+    from .compose import _number, _streams
     warnings = warnings if warnings is not None else []
     resolved = {str(row["asset"]): Path(str(row["path"])) for row in assets
                 if row.get("status") == "resolved" and isinstance(row.get("path"), str)}
@@ -74,7 +75,11 @@ def _admit_conditioning(request: H3Request, assets: list[dict[str, Any]], warnin
     totals = {"image": Fraction(0), "video": Fraction(0), "audio": Fraction(0)}
     total_uncertainty = {"video": Fraction(0), "audio": Fraction(0)}
     files = 0
-    entry = LIMITS["builder_slots"]["value"]
+    entry: dict[str, int] = {
+        "image": _BUILDER_SLOT_VALUES["image"],
+        "video": _BUILDER_SLOT_VALUES["video"],
+        "audio": _BUILDER_SLOT_VALUES["audio"],
+    }
     duration_clock = {"video": 24, "audio": 48000}
     measurements: list[dict[str, Any]] = []
     for item in refs:
@@ -97,26 +102,35 @@ def _admit_conditioning(request: H3Request, assets: list[dict[str, Any]], warnin
         if path is None:
             continue
         measurement["bound_file"] = str(path)
-        probe = _probe_conditioning(path)
-        measurement["tracks"] = [str(row.get("codec_type")) for row in probe.get("streams", []) if isinstance(row, Mapping)]
-        streams = _streams(probe, "video" if modality == "image" else modality)
-        if not streams:
-            raise PreparationError(f"conditioning clip 2–15 seconds: {item['occurrence_id']} has no {modality} stream")
-        stream = streams[0]
-        measured = _number(stream.get("duration"))
-        size = (stream.get("width"), stream.get("height"))
-        if all(isinstance(value, int) and value > 0 for value in size):
-            measurement["effective_size"] = _reference_size(modality, size[0], size[1]) if modality in {"image", "video"} else None
         if modality == "image":
             try:
                 from PIL import Image
                 with Image.open(path) as image:
+                    width, height = image.size
                     image.verify()
             except Exception as exc:
                 raise PreparationError(f"conditioning image metadata is unreadable: {item['occurrence_id']}") from exc
+            measurement["tracks"] = ["video"]
+            measurement["effective_size"] = _reference_size(modality, width, height)
             measurement["retained_picture_frames"] = 1
-            measurement["resource_estimate"].update({"schema_valid": True, "raw_bytes": measurement["effective_size"]["width"] * measurement["effective_size"]["height"] * 3 if measurement["effective_size"] else None})
+            measurement["resource_estimate"].update({"schema_valid": True, "raw_bytes": measurement["effective_size"]["width"] * measurement["effective_size"]["height"] * 3})
             continue
+        probe = _probe_conditioning(path)
+        measurement["tracks"] = [str(row.get("codec_type")) for row in probe.get("streams", []) if isinstance(row, Mapping)]
+        streams = _streams(probe, modality)
+        if not streams:
+            raise PreparationError(f"conditioning clip 2–15 seconds: {item['occurrence_id']} has no {modality} stream")
+        stream = streams[0]
+        measured = _number(stream.get("duration"))
+        width, height = stream.get("width"), stream.get("height")
+        if (
+            modality == "video"
+            and isinstance(width, int)
+            and width > 0
+            and isinstance(height, int)
+            and height > 0
+        ):
+            measurement["effective_size"] = _reference_size(modality, width, height)
         if measured is None:
             raise PreparationError(f"conditioning clip 2–15 seconds: cannot measure {item['occurrence_id']} duration")
         selected = item.get("resolved_range")
@@ -138,13 +152,22 @@ def _admit_conditioning(request: H3Request, assets: list[dict[str, Any]], warnin
             raise PreparationError(f"conditioning clip 2–15 seconds: {item['occurrence_id']} selects {span:.3f}s")
         if span_exact <= Fraction(str(clip_min)) + uncertainty or span_exact >= Fraction(str(clip_max)) - uncertainty:
             warnings.append({"limit": "clip_seconds", "message": f"{item['occurrence_id']} selects {span:.3f}s near the clip duration limit."})
-        video_bound = (int(selected[1]) - int(selected[0])) if modality == "video" and isinstance(selected, list) else (math.ceil(span * 24 - 1e-9) + 1 if modality == "video" else None)
-        totals[modality] += Fraction(video_bound, 24) if modality == "video" else span_exact
+        if modality == "video":
+            video_bound = (
+                int(selected[1]) - int(selected[0])
+                if isinstance(selected, list)
+                else math.ceil(span * 24 - 1e-9) + 1
+            )
+            totals[modality] += Fraction(video_bound, 24)
+        else:
+            video_bound = None
+            totals[modality] += span_exact
         if not exact_trim:
             total_uncertainty[modality] += Fraction(2, 24) if modality == "video" else Fraction(1, 48000)
         if modality == "video":
             # Estimate the loader's maximum 24-fps frames from metadata; the
             # actual filter output and node-retained count remain unobserved.
+            assert video_bound is not None
             bound = video_bound
             duration = request.value.get("duration")
             if duration is not None:
@@ -201,9 +224,9 @@ def _admit_conditioning(request: H3Request, assets: list[dict[str, Any]], warnin
     for row in measurements:
         estimate = row["resource_estimate"]["raw_bytes"]
         row["resource_estimate"].update({"qualified": estimate is not None, "unit": "bytes"})
-    for modality, limit in entry.items():
-        if counts[modality] > limit:
-            raise PreparationError(f"builder slots {entry}: {modality} has {counts[modality]} references (limit {limit})")
+    for modality, slot_limit in entry.items():
+        if counts[modality] > slot_limit:
+            raise PreparationError(f"builder slots {entry}: {modality} has {counts[modality]} references (limit {slot_limit})")
     if files > LIMITS["conditioning_files"]["value"]:
         raise PreparationError("conditioning files 12: supplied conditioning occurrences exceed 12")
     if files == LIMITS["conditioning_files"]["value"]:
@@ -425,7 +448,7 @@ def _check_source_av_rate(
             f"{SOURCE_AV_RATE_CODE}: source {asset_id!r} has no video stream; {SOURCE_AV_CONFORM_HINT}",
             code=SOURCE_AV_RATE_CODE, field="source.asset", fix=SOURCE_AV_CONFORM_COMMAND,
         )
-    container = payload.get("format")
+    container = payload.get("format") if isinstance(payload, Mapping) else None
     container_duration = _seconds(container.get("duration")) if isinstance(container, Mapping) else None
     r_rate = _rate_fraction(video.get("r_frame_rate"))
     avg_rate = _rate_fraction(video.get("avg_frame_rate"))
@@ -445,7 +468,12 @@ def _check_source_av_rate(
         problems.append(f"video dimensions are not {expected_size[0]}x{expected_size[1]}")
     if video_duration is None or (audio is not None and audio_duration is None):
         problems.append("durations could not be measured")
-    elif audio is not None and abs(audio_duration - video_duration) > _SOURCE_AV_TOLERANCE_SECONDS:
+    elif (
+        audio is not None
+        and audio_duration is not None
+        and video_duration is not None
+        and abs(audio_duration - video_duration) > _SOURCE_AV_TOLERANCE_SECONDS
+    ):
         problems.append(
             f"audio and video durations differ by more than {_SOURCE_AV_TOLERANCE_SECONDS:.6f}s"
         )
@@ -532,6 +560,9 @@ def _v2_mask_schedule(
 
     for item in value["media"]:
         if item["role"] == "timeline":
+            if item.get("modality") == "image":
+                baselines["video"].append([0, 1 / 24])
+                continue
             start = float(item["resolved_at"]["value"]) / 24.0
             raw_range = item.get("range")
             span = (
@@ -687,11 +718,13 @@ def prepare_request(
         warnings.append({"limit": "job_duration_seconds", "message": duration_limits["warning"]})
     if request.value.get("version") == 2:
         assets = _resolve_assets(request, asset_map)
+        still_error = timeline_image_limit_error(request.value)
+        if still_error:
+            raise PreparationError(still_error)
         conditioning_measurements = _admit_conditioning(request, assets, warnings)
         if branch_for(request) == "source_free" and not request.value["media"]:
             warnings.append({"limit": "text_only_documented_use", "message": "Text-only generation is outside the documented use of the Ref2VA checkpoint."})
-        adapter_id = (request.value.get("settings", {}).get("adapter") or {}).get("id")
-        if branch_for(request) == "source_backed_v2v" and adapter_id != "character_swap_v1":
+        if branch_for(request) == "source_backed_v2v":
             for row in conditioning_measurements:
                 row.update({"slot": None, "tag": None, "binding_status": "provisional_until_lowering"})
                 row.pop("audio_tag", None)

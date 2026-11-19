@@ -686,3 +686,38 @@ def test_character_swap_canvas_is_emitted(tmp_path, size):
     sized = [(row["class_type"], key, value) for row in api.values() for key, value in row["inputs"].items() if key in ("width", "height")]
     assert sorted(sized) == sorted([("MiniMaxH3ReferenceToVideo", "width", size[0]), ("MiniMaxH3ReferenceToVideo", "height", size[1])])
     assert compiled["size"] == {"width": size[0], "height": size[1]}
+
+
+
+def test_source_backed_selected_guide_order_is_provisional_until_compiled(tmp_path):
+    from PIL import Image
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+
+    raw = _request(source=True)
+    raw["media"].append({"id": "other", "asset": "other.png", "role": "reference", "modality": "image"})
+    raw["media"][0]["edit"][0]["guides"] = ["other", "replacement", "performance"]
+    files = _files(tmp_path, source=True)
+    files["other.png"] = tmp_path / "other.png"
+    Image.new("RGB", (64, 64), color="blue").save(files["other.png"])
+    request = normalize_request(raw)
+    prepared = prepare_request(request, asset_map={name: str(path) for name, path in files.items()})
+    assert all(row["tag"] is None and row["slot"] is None and
+               row["binding_status"] == "provisional_until_lowering"
+               for row in prepared["conditioning_measurements"])
+    compiled = compile_preparation(prepared, out_dir=tmp_path / "compiled")
+    rows = compiled["capabilities"]["conditioning"]
+    assert [(row["occurrence"], row["tag"]) for row in rows] == [
+        (request.value["media"][3]["occurrence_id"], "<Picture 1>"),
+        (request.value["media"][2]["occurrence_id"], "<Picture 2>"),
+        (request.value["media"][1]["occurrence_id"], "<Video 1>"),
+    ]
+
+
+def test_character_swap_unresolved_reference_modality_fails_with_compilation_error(tmp_path):
+    from astrid.packs.h3_av.shared.compile import _compile_native_v2
+
+    raw = _request(source=True)
+    raw["media"].append({"id": "unknown", "asset": "unknown", "role": "reference"})
+    request = normalize_request(raw)
+    with pytest.raises(CompilationError, match="unresolved modality"):
+        _compile_native_v2(request, {}, tmp_path / "out")

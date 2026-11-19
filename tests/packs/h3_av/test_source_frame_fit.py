@@ -1,8 +1,6 @@
 """CPU regression for the H3 raw-frame rounding tail on source-backed edits."""
 from __future__ import annotations
 
-from astrid.packs.h3_av.shared.generation import generation_inputs_from_bindings
-
 import subprocess
 from pathlib import Path
 
@@ -10,16 +8,26 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from astrid.packs.h3_av.shared import compose as compose_module
 from astrid.packs.h3_av.shared.compile import compile_preparation
-from astrid.packs.h3_av.shared.prepare import prepare_request
 from astrid.packs.h3_av.shared.compose import compose_candidate
-from astrid.packs.h3_av.shared.generation import build_generation_workflow, generation_timing
+from astrid.packs.h3_av.shared.generation import (
+    build_generation_workflow,
+    generation_inputs_from_bindings,
+    generation_timing,
+)
+from astrid.packs.h3_av.shared.prepare import prepare_request
 from astrid.packs.h3_av.shared.request import normalize_request
 from tests.packs.h3_av.fixtures.source_fit_start_contract import (
-    TinyTensor, audio_concat_execute, empty_audio_execute, fit_start,
-    image_from_batch, pixel_frames, repeat_image_batch, temporal_shape,
+    TinyTensor,
+    audio_concat_execute,
+    empty_audio_execute,
+    fit_start,
+    image_from_batch,
+    pixel_frames,
+    repeat_image_batch,
+    temporal_shape,
 )
-
 
 SCENARIOS = [
     # request frames, original source start, moving mask
@@ -27,6 +35,22 @@ SCENARIOS = [
     (39, 0.0, False),
     (42, 0.0, True),
 ]
+
+
+def test_video_coverage_estimates_frames_when_probe_reports_only_duration(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        compose_module,
+        "_probe",
+        lambda _path: {
+            "streams": [{"codec_type": "video", "duration": "2", "avg_frame_rate": "24/1"}]
+        },
+    )
+
+    coverage = compose_module._video_coverage(tmp_path / "duration-only.mkv")
+
+    assert coverage["frames"] == 48
+    assert coverage["fps"] == 24
+    assert coverage["duration"] == 2
 
 
 def _decode_video(path: Path, start: float, frames: int) -> np.ndarray:

@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import copy
+import json
 import re
 import subprocess
 from pathlib import Path
 
 import pytest
 import yaml
+from PIL import Image
 
 from astrid.core.generation import entries
 from astrid.core.generation.preflight import GenerationReadinessError
@@ -135,3 +137,73 @@ def test_dynamic_size_request_file_compiles(filename, size, asset, tmp_path):
     assert compiled["size"] == {"width": size[0], "height": size[1]}
     if asset == "sign.mp4":
         assert "mask_0" in compiled["workflow_inputs"]
+
+
+@pytest.mark.parametrize("name", ["start-still-speaker", "mouth-mask-speaker"])
+def test_speaker_request_file_is_admitted(name, tmp_path, monkeypatch):
+    request = SKILL.parent / "recipes" / f"{name}.json"
+    assert f"(recipes/{name}.json)" in SKILL.read_text()
+    start_still = name == "start-still-speaker"
+    video = tmp_path / ("speaker-sample.mp4" if start_still else "window-shot.mp4")
+    _ffmpeg("-f", "lavfi", "-i", "color=c=blue:s=1024x576:r=24",
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+            "-t", "3" if start_still else "6", "-c:v", "libx264", "-preset", "ultrafast",
+            "-pix_fmt", "yuv420p", "-c:a", "aac", video)
+    assets = {video.name: str(video)}
+    if start_still:
+        still = tmp_path / "window-portrait.png"
+        Image.new("RGB", (1024, 576), "yellow").save(still)
+        assets[still.name] = str(still)
+    else:
+        mouth = tmp_path / "mouth-mask.png"
+        mask = Image.new("L", (1024, 576))
+        mask.paste(255, (448, 320, 576, 384))
+        mask.save(mouth)
+        speaker = tmp_path / "speaker-sample.wav"
+        _ffmpeg("-f", "lavfi", "-i", "sine=frequency=660:sample_rate=48000:duration=3", speaker)
+        assets.update({mouth.name: str(mouth), speaker.name: str(speaker)})
+
+    observed = {}
+    real_build = entries.build_entry
+
+    def capture_build(*args, **kwargs):
+        built = real_build(*args, **kwargs)
+        observed["graph"] = built["workflow"].compile("api", run_inputs=built["bindings"])
+        observed["bindings"] = built["bindings"]
+
+        def sample_mask(binding, x, y):
+            return _ffmpeg(
+                "-i", built["assets"][binding], "-t", "6", "-vf", f"format=gray,crop=1:1:{x}:{y}",
+                "-pix_fmt", "gray", "-f", "rawvideo", "pipe:1")
+
+        observed["video_mask_0"] = sample_mask("video_mask_0", 512, 352)
+        observed["audio_time_mask"] = sample_mask("audio_time_mask", 0, 0)
+        if not start_still:
+            observed["outside_mouth"] = sample_mask("video_mask_0", 0, 0)
+        return built
+
+    monkeypatch.setattr(entries, "build_entry", capture_build)
+    result = generate.video(entry="h3", mode="video-edit", placement="runpod", dry_run=True,
+                            request=str(request), asset_map=assets)
+    assert result["status"] == "ready" and result["issues"] == [] and result["fixes"] == [], result
+    graph, bindings = observed["graph"], observed["bindings"]
+    target = next(node["inputs"] for node in graph.values() if node["class_type"] == "MiniMaxH3ReferenceToVideo")
+    assert target["prompt"] == json.loads(request.read_text())["prompt"]
+    assert "<Audio 1>" in target["prompt"]
+    assert {"source_video", "video_mask_0", "audio_time_mask"} <= set(result["entry"]["bindings"])
+    if start_still:
+        video_node, slot = target["ref_videos.ref_video_0"]
+        assert slot == 0 and target["ref_video_audios.ref_video_audio_0"] == [video_node, 2]
+        assert graph[video_node]["inputs"]["video"] == bindings["video_reference_0"]
+        assert observed["video_mask_0"] == bytes(1) + bytes([255]) * 143
+        assert observed["audio_time_mask"] == bytes([255]) * 144
+    else:
+        trim = graph[target["ref_audios.ref_audio_0"][0]]
+        assert trim["class_type"] == "TrimAudioDuration"
+        loader = graph[trim["inputs"]["audio"][0]]
+        assert loader["class_type"] == "LoadAudio"
+        assert loader["inputs"]["audio"] == bindings["audio_reference_0"]
+        window = bytes(48) + bytes([255]) * 48 + bytes(48)
+        assert observed["video_mask_0"] == window
+        assert observed["outside_mouth"] == bytes(144)
+        assert observed["audio_time_mask"] == window

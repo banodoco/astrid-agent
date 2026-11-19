@@ -16,9 +16,9 @@ from .compile import CompilationError, compile_preparation
 from .engine_facts import facts
 from .generation import DEFAULT_SIZE, generation_timing
 from .prepare import prepare_request, write_preparation
-from .request import H3Request, H3RequestError, normalize_request
+from .request import H3Request, H3RequestError
 from .request_v2 import json_times
-from .spec import H3Spec, canonical_spec, sampling_request_document
+from .spec import H3Spec, canonical_spec, sampling_request
 from .static_regions import resolve_static_region
 from .timing import plan_continuation
 
@@ -115,12 +115,13 @@ def plan_request(
             "Planning requires a modifying operation", code="h3.plan.single_pass", field="ops",
             fix="Use a generate, extend or regenerate operation plus preservation constraints",
         )
-    if len(passes) > 1:
+    joint_still = spec.source is not None and spec.source.modality == "image"
+    if len(passes) > 1 and not joint_still:
         # Every pass uses the existing single-operation planner/compiler. Later
         # compilation here is an inspectable preview: execution must replace its
         # source binding with the preceding composed and verified candidate.
         plans = [plan_request(
-            normalize_request(sampling_request_document(request, index, previous_verified_output=index > 0)),
+            sampling_request(request, index, previous_verified_output=index > 0),
             asset_map=asset_map, out_dir=root / "passes" / f"{index + 1:02d}",
         ) for index in range(len(passes))]
         preparation = prepare_request(request, asset_map=asset_map)
@@ -215,8 +216,9 @@ def plan_request(
         "request_digest": request.digest, "spec": asdict(spec),
         "bindings": {"assets": preparation["assets"], "regions": regions,
                      "runtime": _runtime_bindings(compiled)},
-        "timing": timing, "previews": previews, "pass_count": len(passes),
-        "passes": [asdict(item) for item in passes],
+        "timing": timing, "previews": previews, "pass_count": 1 if joint_still else len(passes),
+        "passes": ([{"operations": [asdict(item.operation) for item in passes], "reads": "source"}]
+                   if joint_still else [asdict(item) for item in passes]),
         "mask_schedule": preparation["mask_schedule"],
         "warnings": warnings, "ignored_fields": _ignored_fields(request, spec, compiled) if compiled else [],
         "compilation": compilation, "preparation_path": str(preparation_path),
