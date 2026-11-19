@@ -99,7 +99,7 @@ def plan_request(
             fix="Use a generate, extend or regenerate operation plus preservation constraints",
         )
     joint_still = spec.source is not None and spec.source.modality == "image"
-    if len(passes) > 1 and not joint_still:
+    if len(passes) > 1 and not joint_still and request.value["version"] == 1:
         # Every pass uses the existing single-operation planner/compiler. Later
         # compilation here is an inspectable preview: execution must replace its
         # source binding with the preceding composed and verified candidate.
@@ -140,9 +140,30 @@ def plan_request(
             fix="Map every declared asset to an existing local file",
         )
     assets = {row["asset"]: row["path"] for row in preparation["assets"]}
+    # Derived views retain host-approved use classifications for inspection;
+    # the original joint request alone determines compilation and eligibility.
+    pass_views = []
+    if request.value["version"] == 2 and len(passes) > 1 and not joint_still:
+        for index, sampling_pass in enumerate(passes):
+            derived = sampling_request(request, index, previous_verified_output=index > 0)
+            directory = root / "passes" / f"{index + 1:02d}"
+            directory.mkdir(parents=True, exist_ok=True)
+            derived_preparation = prepare_request(derived, asset_map=asset_map)
+            path = write_preparation(directory / "preparation.json", derived_preparation)
+            pass_views.append({**asdict(sampling_pass), "request_digest": derived.digest,
+                               "preparation_path": str(path),
+                               "source_binding": "original_source" if index == 0 else "deferred_until_previous_verified"})
     regions, previews = [], []
     for index, region in enumerate(spec.regions):
         media = preparation["media"]
+        if region.mask_asset and request.value["version"] == 2:
+            from .compose import probe_mask
+            info = probe_mask(Path(assets[region.mask_asset]), mask_id=region.mask_asset)
+            if info["kind"] == "video":
+                regions.append({"name": region.name, "asset": region.mask_asset,
+                                "mask": assets[region.mask_asset], "kind": "video",
+                                "frames": info["frames"]})
+                continue
         resolved = resolve_static_region(
             region, width=media["width"], height=media["height"], assets=assets,
             polarity="black_preserve_white_edit" if region.mask_asset else None,
@@ -160,6 +181,7 @@ def plan_request(
     preparation_path = write_preparation(root / "preparation.json", preparation)
     warnings = [{"code": "h3.plan.gpu_unqualified",
                  "message": "CPU planning does not establish GPU compatibility or model quality"}]
+    warnings.extend({"code": "h3.plan.preparation_warning", **row} for row in preparation.get("warnings", []))
     compiled: dict[str, Any] = {}
     try:
         compiled = compile_preparation(preparation, out_dir=root / "compilation")
@@ -189,7 +211,7 @@ def plan_request(
                      "runtime": compiled.get("managed_assets", {}).get("manifest", {}).get("assets", [])},
         "timing": timing, "previews": previews, "pass_count": 1 if joint_still else len(passes),
         "passes": ([{"operations": [asdict(item.operation) for item in passes], "reads": "source"}]
-                   if joint_still else [asdict(item) for item in passes]),
+                   if joint_still else (pass_views or [asdict(item) for item in passes])),
         "mask_schedule": preparation["mask_schedule"],
         "warnings": warnings, "ignored_fields": _ignored_fields(request, spec, compiled) if compiled else [],
         "compilation": compilation, "preparation_path": str(preparation_path),

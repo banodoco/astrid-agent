@@ -780,3 +780,52 @@ def test_public_hook_refuses_untyped_image_occurrence_before_claim(tmp_path, wit
     with pytest.raises(ValueError, match=r"occurrence-1.*unresolved modality.*declare image, video, or audio"):
         hooks.build({"request": str(request_file), "asset_map": asset_map}, {}, tmp_path / "out", engine=comfyui_facts())
     assert not (tmp_path / "out/h3/plan/compile/compilation.json").exists()
+
+
+def test_sealed_plan_exposes_preparation_diagnostics_and_occurrence_resources(tmp_path):
+    from astrid.packs.h3_av.shared.stages import _sealed_plan
+    from astrid.packs.h3_av.shared.request_v2 import normalize_v2
+    from astrid.packs.h3_av.shared.compile import _compile_native_v2
+
+    request = normalize_v2({"version": 2, "prompt": "A scene", "duration": 16, "media": []})
+    preparation = prepare_request(request)
+    compilation = _compile_native_v2(request, {}, tmp_path / "compiled")
+    view = _sealed_plan(compilation, preparation=preparation)
+    assert {row["limit"] for row in view["warnings"]} >= {"job_duration_seconds", "text_only_documented_use"}
+    assert view["resource_estimate"] == preparation["resource_estimate"]
+
+    request = normalize_v2({"version": 2, "prompt": "<Video 1> <Audio 1> <Audio 2>", "duration": 6,
+        "media": [{"asset": "v", "role": "reference", "modality": "video", "audio": True},
+                  {"asset": "a", "role": "reference", "modality": "audio"}]})
+    assets = {name: tmp_path / name for name in ("v", "a")}
+    for path in assets.values():
+        path.write_bytes(b"fixture")
+    compilation = _compile_native_v2(request, assets, tmp_path / "refs")
+    rows = compilation["capabilities"]["conditioning"]
+    measurements = [{"occurrence": row["occurrence"], "audio_duration_seconds": 2.0,
+                     "resource_estimate": {"raw_bytes": 123}, "bound_file": "/scratch/secret"} for row in rows]
+    view = _sealed_plan(compilation, preparation={"conditioning_measurements": measurements,
+                        "warnings": [{"limit": "clip_seconds", "message": "near limit"}]})
+    assert view["warnings"][0]["limit"] == "clip_seconds"
+    assert all(row["audio_duration_seconds"] == 2.0 and row["resource_estimate"] == {"raw_bytes": 123}
+               for row in view["reference_view"]["references"])
+    assert "/scratch" not in str(view)
+
+
+def test_text_only_warnings_reach_public_plan_and_build(tmp_path, capsys):
+    import importlib.util
+    from astrid.core.generation.engine_facts import comfyui_facts
+    from astrid.packs.h3_av import cli
+
+    request = tmp_path / "text.json"
+    request.write_text(json.dumps({"version": 2, "prompt": "A scene", "duration": 16, "media": []}))
+    assert cli.main(["plan", "--spec", str(request), "--out", str(tmp_path / "plan")]) == 0
+    public_plan = json.loads(capsys.readouterr().out)
+    path = Path(__file__).parents[3] / "astrid/packs/h3_av/extensions/vibecomfy.workflows/hooks.py"
+    spec = importlib.util.spec_from_file_location("h3_warning_test_hooks", path)
+    hooks = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hooks)
+    built = hooks.build({"request": str(request)}, {}, tmp_path / "build", engine=comfyui_facts())
+    for plan in (public_plan, built["plan"]):
+        assert {row.get("limit") for row in plan["warnings"]} >= {"job_duration_seconds", "text_only_documented_use"}
+    assert built["assets"] == {}

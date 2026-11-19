@@ -113,7 +113,7 @@ def test_skill_edit_audio_generation_is_rejected(examples, assets, tmp_path):
 
 
 @pytest.mark.parametrize("name", ["start-still-speaker", "mouth-mask-speaker"])
-def test_speaker_request_file_is_admitted(name, tmp_path, monkeypatch):
+def test_speaker_request_file_is_admitted(name, tmp_path, monkeypatch, capsys):
     request = SKILL.parent / "recipes" / f"{name}.json"
     assert f"(recipes/{name}.json)" in SKILL.read_text()
     start_still = name == "start-still-speaker"
@@ -135,6 +135,16 @@ def test_speaker_request_file_is_admitted(name, tmp_path, monkeypatch):
         speaker = tmp_path / "speaker-sample.wav"
         _ffmpeg("-f", "lavfi", "-i", "sine=frequency=660:sample_rate=48000:duration=3", speaker)
         assets.update({mouth.name: str(mouth), speaker.name: str(speaker)})
+
+    from astrid.packs.h3_av import cli
+    asset_map_path = tmp_path / "asset-map.json"
+    asset_map_path.write_text(json.dumps(assets))
+    assert cli.main(["plan", "--spec", str(request), "--asset-map", str(asset_map_path),
+                     "--out", str(tmp_path / "public-plan")]) == 0
+    public_plan = json.loads(capsys.readouterr().out)
+    assert public_plan["compilation"]["status"] == "compiled"
+    assert public_plan["runtime_submission"] == "eligible"
+    assert public_plan["bindings"]["runtime"]
 
     observed = {}
     real_build = entries.build_entry
@@ -180,3 +190,44 @@ def test_speaker_request_file_is_admitted(name, tmp_path, monkeypatch):
         assert observed["video_mask_0"] == window
         assert observed["outside_mouth"] == bytes(144)
         assert observed["audio_time_mask"] == window
+
+
+@pytest.mark.parametrize("conflict", ["seed", "guides"])
+def test_public_plan_blocks_incompatible_joint_video_grants(conflict, assets, tmp_path, capsys):
+    from astrid.packs.h3_av import cli
+
+    edits = [{"stream": "video", "during": [0, 1]}, {"stream": "video", "during": [1, 2]}]
+    media = [{"asset": "bike.mp4", "role": "timeline", "modality": "video",
+              "at": {"frame": 0}, "range": [0, 3], "edit": edits}]
+    if conflict == "seed":
+        edits[0]["seed"], edits[1]["seed"] = 1, 2
+    else:
+        edits[0]["guides"], edits[1]["guides"] = ["a"], ["b"]
+        media.extend([{"id": name, "asset": "frame-mask.png", "role": "reference", "modality": "image"}
+                      for name in ("a", "b")])
+    request = tmp_path / "joint.json"
+    request.write_text(json.dumps({"version": 2, "prompt": "Edit", "duration": 3, "media": media}))
+    mapping = tmp_path / "assets.json"
+    mapping.write_text(json.dumps(assets))
+    assert cli.main(["plan", "--spec", str(request), "--asset-map", str(mapping), "--out", str(tmp_path / "plan")]) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["runtime_submission"] == "blocked_until_compilation"
+    assert "different " + ("seeds" if conflict == "seed" else "reference sets") in str(plan["compilation"])
+
+
+def test_public_plan_accepts_moving_mask(assets, tmp_path, capsys):
+    from astrid.packs.h3_av import cli
+
+    mask = tmp_path / "mask.mkv"
+    _ffmpeg("-f", "lavfi", "-i", "color=c=white:s=1024x576:r=24:d=3", "-c:v", "ffv1", mask)
+    request = tmp_path / "moving.json"
+    request.write_text(json.dumps({"version": 2, "prompt": "Edit", "duration": 3, "media": [
+        {"asset": "bike.mp4", "role": "timeline", "modality": "video", "at": {"frame": 0},
+         "range": [0, 3], "edit": [{"stream": "video", "during": [0, 3], "mask": {"asset": "mask"}}]}]}))
+    mapping = tmp_path / "assets.json"
+    mapping.write_text(json.dumps({**assets, "mask": str(mask)}))
+    assert cli.main(["plan", "--spec", str(request), "--asset-map", str(mapping), "--out", str(tmp_path / "plan")]) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["runtime_submission"] == "eligible"
+    assert plan["bindings"]["regions"][0]["kind"] == "video"
+    assert plan["bindings"]["regions"][0]["frames"] == 72

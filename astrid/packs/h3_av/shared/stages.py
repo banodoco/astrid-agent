@@ -86,6 +86,10 @@ def _sealed_plan(compilation: Mapping[str, Any], *, preparation: Mapping[str, An
     plan = {"compilation_digest": digest, "output_contract": contract, "intent": intent,
             "workflow_members": {name: row["sha256"] for name, row in compilation["workflow"].items()},
             "workflow_inputs_sha256": stable_digest(compilation["workflow_inputs"])}
+    if isinstance(preparation, Mapping):
+        plan["warnings"] = [dict(row) for row in preparation.get("warnings", []) if isinstance(row, Mapping)]
+        if isinstance(preparation.get("resource_estimate"), Mapping):
+            plan["resource_estimate"] = dict(preparation["resource_estimate"])
     # The compiler's conditioning list is the single source of reference order,
     # tags and graph bindings. Keep this projection path-free for dry-run and
     # settled-result consumers; never copy it into compilation.json.
@@ -112,6 +116,10 @@ def _sealed_plan(compilation: Mapping[str, Any], *, preparation: Mapping[str, An
                     }
             if isinstance(measurement.get("effective_size"), Mapping):
                 reference["effective_size"] = dict(measurement["effective_size"])
+            if "audio_duration_seconds" in measurement:
+                reference["audio_duration_seconds"] = measurement["audio_duration_seconds"]
+            if isinstance(measurement.get("resource_estimate"), Mapping):
+                reference["resource_estimate"] = dict(measurement["resource_estimate"])
             refs.append(reference)
         view = {"references": refs}
         if isinstance(timing, Mapping) and type(timing.get("raw_frames")) is int:
