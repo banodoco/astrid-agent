@@ -524,3 +524,165 @@ def test_unresolved_modalities_cannot_bypass_reference_limits():
     items = [{"occurrence_id": f"unknown-{index}", "asset": f"asset-{index}", "role": "reference"} for index in range(13)]
     with pytest.raises(prepare.PreparationError, match=r"unknown-0.*unresolved modality"):
         prepare._admit_conditioning(_request(items), [])
+
+@pytest.mark.parametrize("strength", [0, 0.5, 1])
+def test_audio_grant_strength_is_admitted_and_keeps_sample_boundaries(strength):
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from astrid.packs.h3_av.shared.spec import canonical_spec, sampling_request_document
+    raw = {"version": 2, "duration": 5, "prompt": "Edit", "media": [
+        {"asset": "source", "role": "timeline", "modality": "video", "at": {"frame": 0},
+         "range": [0, 5], "edit": [{"stream": "audio", "during": ["1/48000", 2], "strength": strength}]},
+    ]}
+    request = normalize_request(raw)
+    op = canonical_spec(request).sampling_passes()[0].operation
+    assert op.strength == strength
+    assert op.during[0] * 48000 == 1
+    doc = sampling_request_document(request, 0)
+    assert normalize_request(doc).value["media"][0]["edit"][0]["resolved"]["range"] == [1, 96000]
+
+
+@pytest.mark.parametrize("strength", [-0.1, 1.1])
+def test_audio_grant_strength_rejects_values_outside_limits(strength):
+    from astrid.packs.h3_av.shared.request import normalize_request
+    raw = {"version": 2, "duration": 5, "prompt": "Edit", "media": [
+        {"asset": "source", "role": "timeline", "modality": "video", "at": {"frame": 0},
+         "range": [0, 5], "edit": [{"stream": "audio", "during": [0, 2], "strength": strength}]},
+    ]}
+    with pytest.raises(H3RequestError):
+        normalize_request(raw)
+
+
+def test_v2_mixed_audio_roundtrip_keeps_each_occurrence_and_use():
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from astrid.packs.h3_av.shared.spec import canonical_spec, sampling_request, sampling_request_document
+    raw = {"version": 2, "duration": 5, "prompt": "Edit", "media": [
+        {"id": "source", "asset": "scene", "role": "timeline", "modality": "video", "at": {"frame": 0},
+         "range": [0, 5], "edit": [
+             {"stream": "video", "during": [0, 5], "guides": ["speaker"]},
+             {"stream": "audio", "during": [0, 2], "guides": ["fixed"]},
+             {"stream": "audio", "during": [2, 4]},
+         ]},
+        {"id": "fixed", "asset": "voice", "role": "reference", "modality": "audio", "range": [0, 2]},
+        {"id": "speaker", "asset": "voice", "role": "reference", "modality": "audio", "range": [2, 4]},
+    ]}
+    request = normalize_request(raw)
+    spec = canonical_spec(request)
+    assert [ref.use for ref in spec.refs] == ["replacement", "conditioning"]
+    assert [ref.range for ref in spec.refs] == [(0, 2), (2, 4)]
+    assert [p.operation.stream for p in spec.sampling_passes()] == ["video", "audio", "audio"]
+    # Each pass retains occurrence identity, including references not selected by it.
+    for index in range(3):
+        rebuilt = sampling_request(request, index)
+        assert [(r["occurrence_id"], r["asset"], r.get("range"), r.get("use")) for r in rebuilt.value["media"][1:]] == [
+            (r["occurrence_id"], r["asset"], r.get("range"), r.get("use")) for r in request.value["media"][1:]]
+
+
+def test_derived_pass_view_refuses_loss_and_public_use_is_not_authoritative():
+    import json
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from astrid.packs.h3_av.shared.spec import sampling_request_document
+    raw = {"version": 2, "duration": 5, "prompt": "Edit", "media": [
+        {"id": "source", "asset": "scene", "role": "timeline", "modality": "video", "at": {"frame": 0},
+         "range": [0, 5], "edit": [
+             {"stream": "video", "during": [0, 5], "guides": ["speaker"]},
+             {"stream": "audio", "during": [0, 2], "guides": ["fixed"]},
+         ]},
+        {"id": "fixed", "asset": "voice", "role": "reference", "modality": "audio", "range": [0, 2]},
+        {"id": "speaker", "asset": "voice", "role": "reference", "modality": "audio", "range": [2, 4]},
+    ]}
+    request = normalize_request(raw)
+    view = sampling_request_document(request, 0)
+    with pytest.raises(H3RequestError, match="derived pass view cannot be executed"):
+        normalize_request(json.loads(json.dumps(view)))
+    safe_view = sampling_request_document(request, 1)
+    assert normalize_request(safe_view).value["media"][1]["use"] == "replacement"
+    raw["media"][1]["use"] = "replacement"
+    with pytest.raises(H3RequestError):
+        normalize_request(raw)
+
+
+def test_planner_persists_and_reloads_classified_uses_for_each_pass(tmp_path):
+    import json
+    from astrid.packs.h3_av.shared.planner import plan_request
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from astrid.packs.h3_av.shared.request_v2 import read_prepared_request
+
+    source, voice = tmp_path / "source.mkv", tmp_path / "voice.wav"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=size=1024x576:rate=24:duration=5",
+                    "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=5",
+                    "-c:v", "libx264", "-c:a", "aac", str(source)], check=True)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "sine=frequency=660:sample_rate=48000:duration=4", "-c:a", "pcm_s16le", str(voice)], check=True)
+    raw = {"version": 2, "duration": 5, "prompt": "Edit", "media": [
+        {"id": "source", "asset": "scene", "role": "timeline", "modality": "video", "at": {"frame": 0},
+         "range": [0, 5], "edit": [
+             {"stream": "video", "during": [0, 5], "guides": ["speaker"]},
+             {"stream": "audio", "during": [0, 2], "guides": ["fixed"]},
+             {"stream": "audio", "during": [2, 4]},
+         ]},
+        {"id": "fixed", "asset": "voice", "role": "reference", "modality": "audio", "range": [0, 2]},
+        {"id": "speaker", "asset": "voice", "role": "reference", "modality": "audio", "range": [2, 4]},
+    ]}
+    result = plan_request(normalize_request(raw), asset_map={"scene": str(source), "voice": str(voice)}, out_dir=tmp_path / "plan")
+    assert result["pass_count"] == 3
+    for index in range(1, 4):
+        preparation = json.loads((tmp_path / "plan" / "passes" / f"{index:02d}" / "preparation.json").read_text())
+        loaded = read_prepared_request(preparation["request"], preparation["request_digest"], require_normalized_v2=True)
+        assert [row.get("use") for row in loaded.value["media"][1:]] == ["replacement", "conditioning"]
+
+
+def test_internal_pass_refuses_a_selected_conflicting_classification():
+    from copy import deepcopy
+    from astrid.packs.h3_av.shared.request import H3Request, normalize_request
+    from astrid.packs.h3_av.shared.spec import sampling_request
+    raw = {"version": 2, "duration": 5, "prompt": "Edit", "media": [
+        {"asset": "scene", "role": "timeline", "modality": "video", "at": {"frame": 0}, "range": [0, 5],
+         "edit": [{"stream": "audio", "during": [0, 2], "guides": ["fixed"]}]},
+        {"id": "fixed", "asset": "voice", "role": "reference", "modality": "audio"},
+    ]}
+    request = normalize_request(raw)
+    forged = deepcopy(request.value)
+    forged["media"][1]["use"] = "conditioning"
+    with pytest.raises(H3RequestError, match="conflicts with the original audio use"):
+        sampling_request(H3Request(forged, request.digest), 0)
+
+
+def test_default_video_guides_exclude_fixed_audio_occurrence():
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from astrid.packs.h3_av.shared.spec import canonical_spec
+    raw = {"version": 2, "duration": 5, "prompt": "Edit", "media": [
+        {"asset": "scene", "role": "timeline", "modality": "video", "at": {"frame": 0}, "range": [0, 5],
+         "edit": [{"stream": "video", "during": [0, 5]},
+                  {"stream": "audio", "during": [0, 2], "guides": ["fixed"]}]},
+        {"id": "fixed", "asset": "voice", "role": "reference", "modality": "audio", "range": [0, 2]},
+        {"id": "speaker", "asset": "voice", "role": "reference", "modality": "audio", "range": [2, 4]},
+    ]}
+    spec = canonical_spec(normalize_request(raw))
+    selected = {ref.name: ref for ref in spec.refs}
+    video_refs = spec.sampling_passes()[0].operation.refs
+    assert [selected[name].authored_id for name in video_refs] == ["speaker"]
+    raw["media"][0]["edit"][0]["guides"] = ["fixed"]
+    with pytest.raises(H3RequestError, match="both conditioning and replacement"):
+        normalize_request(raw)
+
+
+def test_derived_generated_pass_does_not_pre_splice_unselected_fixed_occurrence(tmp_path):
+    from astrid.packs.h3_av.shared.compose import _exact_audio_for_request
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from astrid.packs.h3_av.shared.spec import sampling_request
+
+    raw = {"version": 2, "duration": 5, "prompt": "Edit", "media": [
+        {"asset": "scene", "role": "timeline", "modality": "video", "at": {"frame": 0}, "range": [0, 5],
+         "edit": [{"stream": "video", "during": [0, 5], "guides": []},
+                  {"stream": "audio", "during": [0, 2], "guides": ["fixed"]},
+                  {"stream": "audio", "during": [2, 4]}]},
+        {"id": "fixed", "asset": "voice", "role": "reference", "modality": "audio", "range": [0, 2]},
+    ]}
+    derived = sampling_request(normalize_request(raw), 2)
+    assert derived.value["media"][1]["use"] == "replacement"
+    assert derived.value["media"][0]["edit"][0]["stream"] == "audio"
+    # There is no selected fixed clip; pre-splice must not probe either asset.
+    missing = tmp_path / "not-needed.mkv"
+    assert _exact_audio_for_request({"request": derived.value, "assets": []}, source=missing, generated=missing,
+                                    destination=tmp_path / "out.wav", duration=5, source_offset=0,
+                                    pre_splice_only=True) is None
