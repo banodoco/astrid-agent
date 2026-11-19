@@ -192,6 +192,10 @@ def after_outputs(job_dir, inputs, files, outputs, *, engine=None):
     if isinstance(state["plan"].get("reference_view"), Mapping):
         verification["reference_view"] = stages._settled_reference_view(
             state["plan"]["reference_view"], reference_assets=state.get("reference_assets", {}), workdir=work,
+            composition=composition.get("composition") if isinstance(composition, Mapping) else None,
         )
     facts.write_json_atomic(work / "verify.json", verification)
-    return [composition["candidate"]["path"], *outputs[1:]]
+    produced = [composition["candidate"]["path"], *outputs[1:]]
+    if inputs.get("__astrid_workflow_hook_evidence") is True:
+        return {"outputs": produced, "evidence": {"reference_view": verification.get("reference_view")}}
+    return produced

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import shutil
 import subprocess
@@ -86,7 +87,9 @@ def _sealed_plan(compilation: Mapping[str, Any], *, preparation: Mapping[str, An
     # settled-result consumers; never copy it into compilation.json.
     conditioning = capabilities.get("conditioning") if isinstance(capabilities, Mapping) else None
     if isinstance(conditioning, list):
-        timing = capabilities.get("generation_timing") if isinstance(capabilities, Mapping) else None
+        timing = compilation.get("generation_timing")
+        if not isinstance(timing, Mapping) and isinstance(capabilities, Mapping):
+            timing = capabilities.get("generation_timing")
         measurements = {}
         if isinstance(preparation, Mapping):
             measurements = {row.get("occurrence"): row for row in preparation.get("conditioning_measurements", [])
@@ -110,6 +113,27 @@ def _sealed_plan(compilation: Mapping[str, Any], *, preparation: Mapping[str, An
         if isinstance(timing, Mapping) and type(timing.get("raw_frames")) is int:
             view["target_frame_cap"] = timing["raw_frames"]
         plan["reference_view"] = view
+    audio_view = {}
+    requested_audio_grants = capabilities.get("requested_audio_grants") if isinstance(capabilities, Mapping) else None
+    audio_time_mask = capabilities.get("audio_time_mask") if isinstance(capabilities, Mapping) else None
+    expected_audio_spans = capabilities.get("expected_delivered_audio_spans") if isinstance(capabilities, Mapping) else None
+    if isinstance(requested_audio_grants, list):
+        audio_view["requested_grants"] = [dict(row) for row in requested_audio_grants if isinstance(row, Mapping)]
+    if isinstance(audio_time_mask, Mapping):
+        audio_view["effective_40hz_mask"] = {
+            "values": list(audio_time_mask.get("resampled_40hz", [])),
+            "basis": "compiler resampling of the decoded per-frame mask",
+            "precision": audio_time_mask.get("precision"),
+        }
+        audio_view["decoded_frame_mask"] = list(audio_time_mask.get("decoded_frame_values", []))
+    if isinstance(expected_audio_spans, list):
+        audio_view["expected_delivered_sample_spans"] = [dict(row) for row in expected_audio_spans if isinstance(row, Mapping)]
+    if audio_view:
+        view = plan.get("reference_view")
+        if not isinstance(view, dict):
+            view = {"references": []}
+            plan["reference_view"] = view
+        view["audio"] = audio_view
     return plan
 
 
@@ -200,6 +224,15 @@ def _vhs_frame_count(path: Path, *, start_time: float, frame_load_cap: int,
     if not executable:
         raise FileNotFoundError("ffmpeg is unavailable")
     args_input = ["-i", str(path)]
+    # VHS probes first and forces libvpx-vp9 for VP9 streams, then probes again
+    # with that decoder before building its timestamp/filter command.
+    dummy = [executable, *args_input, "-c", "copy", "-frames:v", "1", "-f", "null", "-"]
+    probe = subprocess.run(dummy, check=True, capture_output=True, text=False, timeout=30)
+    lines = probe.stderr.decode("utf-8", errors="replace")
+    if "Video: vp9 " in lines:
+        args_input = ["-c:v", "libvpx-vp9", *args_input]
+        dummy = [executable, *args_input, "-c", "copy", "-frames:v", "1", "-f", "null", "-"]
+        probe = subprocess.run(dummy, check=True, capture_output=True, text=False, timeout=30)
     post_seek: list[str] = []
     if start_time > 0:
         if start_time > 4:
@@ -225,7 +258,8 @@ def _file_sha256(path: Path) -> str:
 
 
 def _settled_reference_view(reference_view: Mapping[str, Any], *, reference_assets: Mapping[str, Mapping[str, Any]],
-                            workdir: Path, ffmpeg: str | None = None) -> dict[str, Any]:
+                            workdir: Path, ffmpeg: str | None = None,
+                            composition: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Return the sealed view plus counts derived by re-decoding its bound bytes.
 
     Failed path, custody, hash, or decode checks stay explicitly unqualified;
@@ -235,9 +269,28 @@ def _settled_reference_view(reference_view: Mapping[str, Any], *, reference_asse
     from .prepare import _retained_video_frames
 
     settled = deepcopy(dict(reference_view))
+    audio_view = settled.get("audio")
+    composition_audio = composition.get("exact_audio") if isinstance(composition, Mapping) else None
+    actual_spans = composition_audio.get("delivered_spans") if isinstance(composition_audio, Mapping) else None
+    if isinstance(audio_view, dict) and isinstance(actual_spans, list):
+        audio_view["actual_delivered_sample_spans"] = deepcopy(actual_spans)
     target = settled.get("target_frame_cap")
     root = Path(workdir).resolve()
-    managed_root = (root / "managed").resolve()
+    managed_candidate = root / "managed"
+    managed_root = None
+    managed_root_reason = None
+    if managed_candidate.is_symlink():
+        managed_root_reason = "managed_reference_asset_root_symlink"
+    else:
+        try:
+            resolved_root = managed_candidate.resolve(strict=True)
+            if not resolved_root.is_dir() or not resolved_root.is_relative_to(root):
+                managed_root_reason = "managed_reference_asset_root_outside_custody"
+            else:
+                managed_root = resolved_root
+        except FileNotFoundError:
+            managed_root_reason = "managed_reference_asset_root_missing"
+    executable = ffmpeg or shutil.which("ffmpeg")
     for reference in settled.get("references", []):
         if not isinstance(reference, dict) or reference.get("modality") != "video":
             continue
@@ -245,26 +298,51 @@ def _settled_reference_view(reference_view: Mapping[str, Any], *, reference_asse
         input_binding = input_binding if isinstance(input_binding, Mapping) else {}
         binding = input_binding.get("binding")
         record = reference_assets.get(binding) if isinstance(binding, str) else None
-        reason = None
+        reason = managed_root_reason
         frame_count = None
-        if not isinstance(record, Mapping) or not isinstance(record.get("member"), str):
+        if reason is None and ("start_time" not in input_binding or "frame_load_cap" not in input_binding):
+            reason = "vhs_binding_parameters_unavailable"
+        if reason is None and not isinstance(record, Mapping):
             reason = "managed_reference_asset_unavailable"
-        elif type(target) is not int or target < 1:
+        elif reason is None and (not isinstance(record.get("member"), str) or not isinstance(record.get("sha256"), str)):
+            reason = "managed_reference_asset_unavailable"
+        elif reason is None and (type(target) is not int or target < 1):
             reason = "h3_target_frame_cap_unavailable"
-        else:
+        elif reason is None and not executable:
+            reason = "ffmpeg_unavailable"
+        elif reason is None:
             candidate = managed_root / record["member"]
             try:
-                path = candidate.resolve(strict=True)
+                member_path = Path(record["member"])
+                if member_path.is_absolute() or ".." in member_path.parts:
+                    raise ValueError("managed reference member is not a relative custody path")
+                cursor = managed_root
+                for part in member_path.parts:
+                    cursor = cursor / part
+                    if cursor.is_symlink():
+                        raise ValueError("managed reference member traverses a symlink")
+                try:
+                    path = candidate.resolve(strict=True)
+                except FileNotFoundError:
+                    reason = "managed_reference_asset_missing"
+                    raise
                 if not path.is_relative_to(managed_root) or candidate.is_symlink() or not path.is_file():
                     raise ValueError("managed reference asset is outside job custody")
                 digest = _file_sha256(path)
                 if digest != record.get("sha256"):
                     raise ValueError("managed reference asset hash differs from compilation manifest")
-                frame_count = _vhs_frame_count(path, start_time=float(input_binding.get("start_time", 0.0)),
-                                               frame_load_cap=int(input_binding.get("frame_load_cap", 0)),
+                start_time = input_binding["start_time"]
+                frame_load_cap = input_binding["frame_load_cap"]
+                if isinstance(start_time, bool) or not isinstance(start_time, (int, float)) or not math.isfinite(start_time) or start_time < 0:
+                    raise ValueError("invalid VHS start_time")
+                if type(frame_load_cap) is not int or frame_load_cap < 0:
+                    raise ValueError("invalid VHS frame_load_cap")
+                frame_count = _vhs_frame_count(path, start_time=float(start_time),
+                                               frame_load_cap=frame_load_cap,
                                                ffmpeg=ffmpeg)
             except FileNotFoundError:
-                reason = "ffmpeg_unavailable"
+                if reason is None:
+                    reason = "ffmpeg_unavailable"
             except subprocess.TimeoutExpired:
                 reason = "ffmpeg_redecode_timeout"
             except subprocess.CalledProcessError:
@@ -290,7 +368,8 @@ def _settled_reference_view(reference_view: Mapping[str, Any], *, reference_asse
             "conformance": "not_conformed",
             "target_frame_cap": target,
             "alignment": "5 + 17k",
-            "rule_source": "astrid/packs/h3_av/shared/prepare.py:43-46 (_retained_video_frames)",
-            "loader_source": "ComfyUI-VideoHelperSuite@4ee72c065db22c9d96c2427954dc69e7b908444b/videohelpersuite/load_video_nodes.py:1791-1928",
+            "rule_source": "ComfyUI-H3-Motion-Context-MultiRef@361624fb406b63eb6694442eac6c895fc1533a70:nodes_minimax_h3.py:324-332",
+            "loader_source": "ComfyUI-VideoHelperSuite@4ee72c065db22c9d96c2427954dc69e7b908444b:videohelpersuite/load_video_nodes.py:216-246",
+            "decoder_source": "ComfyUI-VideoHelperSuite@4ee72c065db22c9d96c2427954dc69e7b908444b:videohelpersuite/load_video_nodes.py:170-193",
         }
     return settled

@@ -574,6 +574,39 @@ def test_sealed_reference_view_uses_compiled_rows_and_labels_video_counts_as_est
     assert "/scratch" not in str(view)
     assert "retained_picture_frames" not in video
 
+    # Character Swap's compiler places timing at compilation top level.
+    character_swap = dict(compilation)
+    character_swap["generation_timing"] = {"raw_frames": 3592}
+    character_swap["capabilities"] = dict(compilation["capabilities"])
+    character_swap["capabilities"].pop("generation_timing", None)
+    assert _sealed_plan(character_swap, preparation=preparation)["reference_view"]["target_frame_cap"] == 3592
+
+
+def test_character_swap_sealed_view_uses_compilation_level_timing(tmp_path, monkeypatch):
+    import subprocess
+    from astrid.packs.h3_av.shared import generation
+    from astrid.packs.h3_av.shared.compile import compile_preparation
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from astrid.packs.h3_av.shared.stages import _sealed_plan
+
+    monkeypatch.setattr(generation, "character_swap_asset_sha256", lambda: "a1" * 32)
+    video, image = tmp_path / "performance.mp4", tmp_path / "replacement.png"
+    subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=c=green:s=64x64:r=24:d=4",
+                    "-an", "-c:v", "mpeg4", "-y", str(video)], check=True, capture_output=True)
+    Image.new("RGB", (32, 32), color="red").save(image)
+    request = normalize_request({"version": 2, "duration": 1,
+        "prompt": "Replace the person in <Video 1> with <Picture 1>.",
+        "media": [{"id": "performance", "asset": "performance", "role": "reference",
+                   "modality": "video", "range": [1, 3], "audio": False},
+                  {"id": "replacement", "asset": "replacement", "role": "reference", "modality": "image"}],
+        "settings": {"adapter": {"id": "character_swap_v1"}}})
+    preparation = prepare_request(request, asset_map={"performance": str(video), "replacement": str(image)})
+    compilation = compile_preparation(preparation, out_dir=tmp_path / "character-swap")
+    assert "generation_timing" not in compilation["capabilities"]
+    assert _sealed_plan(compilation, preparation=preparation)["reference_view"]["target_frame_cap"] == \
+        compilation["generation_timing"]["raw_frames"]
+
 
 
 def test_settled_reference_count_redecodes_pinned_vhs_path_and_keeps_failures_unqualified(tmp_path):
@@ -618,6 +651,42 @@ def test_settled_reference_count_redecodes_pinned_vhs_path_and_keeps_failures_un
                                           ffmpeg="/missing/ffmpeg")
     assert unavailable["references"][0]["retained_picture_frames_derived"]["status"] == "unqualified"
     assert "ffmpeg" in unavailable["references"][0]["retained_picture_frames_derived"]["reason"]
+
+    missing = _settled_reference_view(view, reference_assets={
+        "video_reference_0": {"member": "assets/missing.mp4", "sha256": digest},
+    }, workdir=tmp_path)
+    assert missing["references"][0]["retained_picture_frames_derived"]["reason"] == "managed_reference_asset_missing"
+
+    no_vhs_bindings = {**view, "references": [{**view["references"][0], "input_binding": {"binding": "video_reference_0"}}]}
+    unbound = _settled_reference_view(no_vhs_bindings, reference_assets=assets, workdir=tmp_path)
+    assert unbound["references"][0]["retained_picture_frames_derived"]["reason"] == "vhs_binding_parameters_unavailable"
+
+    outside = tmp_path.parent / (tmp_path.name + "-managed")
+    outside.mkdir()
+    (tmp_path / "managed").rename(tmp_path / "managed-original")
+    (tmp_path / "managed").symlink_to(outside, target_is_directory=True)
+    escaped = _settled_reference_view(view, reference_assets=assets, workdir=tmp_path)
+    assert escaped["references"][0]["retained_picture_frames_derived"]["reason"] == "managed_reference_asset_root_symlink"
+
+
+def test_pinned_vhs_vp9_decoder_override_is_used_for_probe_and_redecode(monkeypatch, tmp_path):
+    import subprocess
+    from types import SimpleNamespace
+    from astrid.packs.h3_av.shared import stages
+
+    calls = []
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if "null" in command:
+            return SimpleNamespace(stderr=b"Stream #0:0: Video: vp9 , 64x48")
+        return SimpleNamespace(stdout="# framehash\n0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert stages._vhs_frame_count(tmp_path / "bound.webm", start_time=0, frame_load_cap=0,
+                                   ffmpeg="/bin/ffmpeg") == 1
+    assert len(calls) == 3
+    assert all(any(command[index:index + 2] == ["-c:v", "libvpx-vp9"]
+                   for index in range(len(command) - 1)) for command in calls[1:])
 
 
 def test_fractional_reference_trim_survives_compilation_manifest(tmp_path):

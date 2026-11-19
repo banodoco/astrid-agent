@@ -353,7 +353,8 @@ def run_named_entry(described: dict[str, Any], named: str, inputs: dict[str, Any
             # a raise fails the job. It reads the state build left in this job directory.
             job = entries.entry_job(described, inputs, job_dir, hooks={})
             hook_job = {"after_outputs_job": json.dumps(
-                {"entry": described["id"], "job_dir": str(job_dir), "inputs": job["inputs"], "files": job["files"]},
+                {"entry": described["id"], "job_dir": str(job_dir), "inputs": job["inputs"], "files": job["files"],
+                 "workflow_hook_evidence": True},
                 sort_keys=True, default=str)}
         result = run_owned_action(
             workflow, out, task_identity=task, attempt_identity=attempt,

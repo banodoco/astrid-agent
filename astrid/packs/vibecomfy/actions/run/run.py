@@ -260,6 +260,35 @@ def _evidence_snapshot(path: Path, output_root: Path) -> dict[str, Any]:
             "bytes": len(data), "filename": path.name}
 
 
+def _workflow_hook_evidence(value: Any) -> dict[str, Any]:
+    """Validate the opt-in after_outputs evidence payload as JSON and path-free."""
+    if not isinstance(value, dict):
+        raise AstridValueError("after_outputs evidence must be a mapping")
+
+    def check(item: Any, where: str = "evidence") -> None:
+        if isinstance(item, dict):
+            for key, child in item.items():
+                if not isinstance(key, str) or re.search(r"(?:^|_)(?:path|locator|scratch)(?:$|_)", key, re.I):
+                    raise AstridValueError(f"after_outputs evidence contains a path-bearing field at {where}")
+                check(child, f"{where}.{key}")
+        elif isinstance(item, list):
+            for index, child in enumerate(item):
+                check(child, f"{where}[{index}]")
+        elif isinstance(item, str) and Path(item).is_absolute():
+            raise AstridValueError(f"after_outputs evidence contains an absolute path at {where}")
+        elif item is not None and not isinstance(item, (str, int, float, bool)):
+            raise AstridValueError(f"after_outputs evidence is not JSON-safe at {where}")
+
+    check(value)
+    try:
+        encoded = json.dumps(value, ensure_ascii=False, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise AstridValueError("after_outputs evidence must be finite JSON data") from exc
+    if len(encoded.encode("utf-8")) > 2_000_000:
+        raise AstridValueError("after_outputs evidence exceeds the 2 MB limit")
+    return json.loads(encoded)
+
+
 def _materialize_managed_generation_result(
     output_root: Path,
     production_result: Any,
@@ -331,8 +360,19 @@ def _materialize_managed_generation_result(
         rebased["path"] = destination.relative_to(managed_root).as_posix()
         rebased["output_port"] = "vibecomfy_run"
         rebased_outputs.append(rebased)
+    workflow_hook_evidence = None
     if after_outputs is not None and rebased_outputs:
-        produced = [Path(item) for item in after_outputs([managed_root / row["path"] for row in rebased_outputs])]
+        hook_inputs = [managed_root / row["path"] for row in rebased_outputs]
+        structured_hook = getattr(after_outputs, "with_evidence", None)
+        hook_result = structured_hook(hook_inputs) if callable(structured_hook) else after_outputs(hook_inputs)
+        if isinstance(hook_result, dict):
+            if set(hook_result) != {"outputs", "evidence"}:
+                raise AstridValueError("after_outputs mapping must contain exactly outputs and evidence")
+            produced_values = hook_result["outputs"]
+            workflow_hook_evidence = _workflow_hook_evidence(hook_result["evidence"])
+        else:
+            produced_values = hook_result
+        produced = [Path(item) for item in produced_values]
         if len(produced) != len(rebased_outputs):
             raise AstridValueError("after_outputs must return one file per output")
         for row, replacement in zip(rebased_outputs, produced):
@@ -342,6 +382,8 @@ def _materialize_managed_generation_result(
             data = target.read_bytes()
             row.update(sha256=hashlib.sha256(data).hexdigest(), bytes=len(data))
             row.pop("hash_check", None)  # compared the producer's bytes, not the hook's
+    if workflow_hook_evidence is not None:
+        rebased_payload["evidence"]["producer"]["workflow_hook"] = workflow_hook_evidence
     rebased_payload["outputs"] = rebased_outputs
     if source_snapshot is None and "source" not in result.inputs and workflow_path.is_file():
         original = workflow_path.with_name("source.json") if workflow_path.suffix == ".py" else workflow_path
@@ -711,7 +753,21 @@ def _after_outputs(spec: Any) -> Any:
     engine = _engine_for({"engine": "comfyui"})
     run_job = {"hooks": hooks, "inputs": job.get("inputs", {}), "files": job.get("files", {}),
                "job_dir": job.get("job_dir")}
-    return lambda outputs: engine.finish(run_job, outputs)
+    capture_evidence = job.get("workflow_hook_evidence") is True
+    if capture_evidence:
+        run_job["inputs"] = {**run_job["inputs"], "__astrid_workflow_hook_evidence": True}
+
+    def finish(outputs):
+        result = engine.finish(run_job, outputs)
+        if isinstance(result, dict) and set(result) == {"outputs", "evidence"}:
+            return result["outputs"]
+        return result
+
+    if capture_evidence:
+        # The public callable keeps its historical list contract. Only the
+        # managed materializer opts into the structured callback explicitly.
+        finish.with_evidence = lambda outputs: engine.finish(run_job, outputs)
+    return finish
 
 
 class _AttachedServer:

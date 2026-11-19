@@ -1889,7 +1889,8 @@ class GenerationFacade:
                 # this controller's job directory is not shipped.
                 job = workflow_entries.entry_job(candidate, inputs, plan['job_dir'], hooks={})
                 hook_job = json.dumps({'entry': candidate['id'], 'job_dir': plan['job_dir'],
-                                       'inputs': job['inputs'], 'files': job['files']}, sort_keys=True)
+                                       'inputs': job['inputs'], 'files': job['files'],
+                                       'workflow_hook_evidence': True}, sort_keys=True)
             result = self.workflow(
                 **({'after_outputs_job': hook_job} if hook_job else {}),
                 python=import_member(root / "workflow.py"),
