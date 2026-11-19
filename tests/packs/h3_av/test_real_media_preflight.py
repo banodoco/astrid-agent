@@ -189,3 +189,20 @@ def test_source_owned_pcm_is_validated_before_submission(tmp_path, rate, layout)
     raw["media"][0]["edit"][1]["during"] = [0, 1]
     prepared = prepare_request(normalize_request(raw), asset_map={"source": str(source)})
     assert prepared["mask_schedule"]["audio"]["protected_intervals"] == []
+
+
+def test_44100hz_continuation_and_preserve_only_keep_existing_admission(tmp_path):
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+    from astrid.packs.h3_av.shared.request import normalize_request
+
+    source = tmp_path / "source.mkv"
+    _ffmpeg("-f", "lavfi", "-i", "color=s=1024x576:r=24:d=1", "-f", "lavfi", "-i",
+            "anullsrc=r=44100:cl=stereo", "-t", "1", "-c:v", "ffv1", "-c:a", "pcm_s16le", str(source))
+    timeline = {"asset": "source", "role": "timeline", "modality": "video", "at": {"frame": 0}, "range": [0, 1]}
+    continuation = {"version": 2, "duration": 2, "prompt": "Continue", "continuation": True, "media": [timeline]}
+    prep = prepare_request(normalize_request(continuation), asset_map={"source": str(source)})
+    assert prep["mask_schedule"]["branch"] == "extension_context"
+    timeline["edit"] = [{"stream": "audio", "during": [0, 1], "action": "preserve"}]
+    preserve = {"version": 2, "duration": 1, "prompt": "Keep", "media": [timeline]}
+    prep = prepare_request(normalize_request(preserve), asset_map={"source": str(source)})
+    assert prep["mask_schedule"]["audio"]["protected_intervals"] == [[0.0, 1.0]]

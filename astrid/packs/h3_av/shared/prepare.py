@@ -740,8 +740,14 @@ def prepare_request(
         # those prerequisites before runtime, but leave unowned model context
         # free to use the compositor's optional resampling path.
         audio_schedule = schedule["audio"]
-        if (audio_schedule["protected_intervals"] and
-                (audio_schedule["generated_intervals"] or audio_schedule["changes"])):
+        active_audio_edits = any(
+            edit.get("stream") == "audio" and edit.get("action") == "generate"
+            and edit.get("strength", 1) > 0
+            for item in request.value["media"] if item.get("role") == "timeline"
+            for edit in item.get("edit", [])
+        )
+        if (schedule["branch"] != "extension_context" and audio_schedule["protected_intervals"]
+                and (audio_schedule["generated_intervals"] or active_audio_edits)):
             from .compose import CompositionError, _decode_exact_pcm, _probe
             paths = {str(row["asset"]): Path(str(row["path"])) for row in assets
                      if row.get("status") == "resolved" and row.get("path")}
