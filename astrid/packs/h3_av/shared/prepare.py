@@ -670,6 +670,10 @@ def prepare_request(
         if has_resolved_canvas and (width, height) != (effective_width, effective_height):
             raise PreparationError("width and height compatibility inputs cannot override the normalized request canvas")
         if not has_resolved_canvas:
+            # Persisted normalized v2 requests predate the canvas field; their
+            # identity and compiler both imply the historical default.
+            if request.value.get("version") == 2 and request.value.get("profile") and (width, height) != DEFAULT_SIZE:
+                raise PreparationError("width and height compatibility inputs cannot override the normalized request canvas")
             effective_width, effective_height = width, height
     width, height = effective_width, effective_height
     if any(type(value) is not int or value < canvas["min"] or value > canvas["max"] or value % canvas["multiple"] for value in (width, height)):

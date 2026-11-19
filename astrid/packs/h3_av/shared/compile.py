@@ -1280,12 +1280,28 @@ def compile_preparation(preparation: Mapping[str, Any], *, out_dir: str | Path) 
             raise CompilationError("prepared permission masks require mutable preparation assets")
         changes = [change for change in preparation["mask_schedule"]["video"]["changes"]
                    if change.get("action") == "generate"]
+        previous_ids = {change.get("prepared_mask_asset") for change in changes
+                        if change.get("prepared_mask_asset") is not None}
+        for index, change in enumerate(changes):
+            previous_id = change.get("prepared_mask_asset")
+            if previous_id is None:
+                continue
+            matches = [row for row in preparation["assets"] if row.get("asset") == previous_id]
+            if (len(matches) != 1 or matches[0].get("binding") != f"permission_mask_{index}"
+                    or matches[0].get("derivation") != {
+                        "selector": change.get("area"), "mask_asset": change.get("mask_asset"),
+                        "occurrence_id": change.get("occurrence_id"), "index": change.get("index")}):
+                raise CompilationError("prepared permission cannot be associated with its scheduled grant")
         existing_ids = {row.get("asset") for row in preparation["assets"]}
+        # Keep the composition handoff current without accumulating stale records.
+        preparation["assets"][:] = [row for row in preparation["assets"]
+                                      if row.get("asset") not in previous_ids]
+        existing_ids.difference_update(previous_ids)
         with zipfile.ZipFile(managed["path"]) as archive:
             for record in permission_records:
                 binding = record["binding"]
                 index = int(binding.removeprefix("permission_mask_"))
-                if index >= len(changes) or binding in existing_ids:
+                if index >= len(changes):
                     raise CompilationError("prepared permission cannot be associated with its scheduled grant")
                 payload = archive.read(record["member"])
                 if hashlib.sha256(payload).hexdigest() != record["sha256"]:
@@ -1293,7 +1309,14 @@ def compile_preparation(preparation: Mapping[str, Any], *, out_dir: str | Path) 
                 path = destination / (binding + ".png")
                 path.write_bytes(payload)
                 change = changes[index]
-                preparation["assets"].append({"asset": binding, "binding": binding, "member": record["member"],
+                asset_id = binding
+                suffix = 1
+                while asset_id in existing_ids:
+                    asset_id = f"{binding}_{suffix}"
+                    suffix += 1
+                existing_ids.add(asset_id)
+                change["prepared_mask_asset"] = asset_id
+                preparation["assets"].append({"asset": asset_id, "binding": binding, "member": record["member"],
                     "path": str(path), "status": "resolved", "sha256": record["sha256"], "size": len(payload),
                     "derivation": {"selector": change.get("area"), "mask_asset": change.get("mask_asset"),
                                    "occurrence_id": change.get("occurrence_id"), "index": change.get("index")}})
@@ -1301,7 +1324,6 @@ def compile_preparation(preparation: Mapping[str, Any], *, out_dir: str | Path) 
             index = int(record["binding"].removeprefix("permission_mask_"))
             if index >= len(changes):
                 raise CompilationError("prepared permission does not match a scheduled grant")
-            changes[index]["prepared_mask_asset"] = record["binding"]
         schedule = preparation["mask_schedule"]
         schedule["digest"] = hashlib.sha256(json.dumps(
             {key: value for key, value in schedule.items() if key != "digest"},

@@ -340,3 +340,29 @@ def test_nonempty_grant_vanishing_on_target_grid_names_grant(tmp_path):
     mask.save(path)
     with pytest.raises(CompilationError, match="mouth.*vanishes"):
         _combined_strength_mask([(path, "image", (0, 1), 0.75, "mouth")], frames=1, destination=tmp_path, size=(32, 32))
+
+
+def test_recompile_permission_with_authored_binding_collision(tmp_path):
+    import copy
+    from astrid.packs.h3_av.shared.compile import compile_preparation
+    from astrid.packs.h3_av.shared.prepare import _v2_mask_schedule
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from tests.packs.h3_av.test_native_masked_edit import WATERMARK, _prepare
+
+    raw = copy.deepcopy(WATERMARK)
+    raw["media"][0]["edit"][0]["mask"] = {"rectangle": [0, 0, 128, 128]}
+    preparation = _prepare(raw, tmp_path)
+    preparation["mask_schedule"] = _v2_mask_schedule(normalize_request(raw))
+    authored = dict(preparation["assets"][0], asset="permission_mask_0")
+    preparation["assets"].append(authored)
+    first = compile_preparation(preparation, out_dir=tmp_path / "first")
+    change = preparation["mask_schedule"]["video"]["changes"][0]
+    asset_id = change["prepared_mask_asset"]
+    assert asset_id != "permission_mask_0"
+    first_hash = next(r["sha256"] for r in preparation["assets"] if r["asset"] == asset_id)
+    second = compile_preparation(preparation, out_dir=tmp_path / "second")
+    assert change["prepared_mask_asset"] == asset_id
+    assert [r for r in preparation["assets"] if r["asset"] == "permission_mask_0"] == [authored]
+    derived = [r for r in preparation["assets"] if r["asset"] == asset_id]
+    assert len(derived) == 1 and derived[0]["sha256"] == first_hash
+    assert first["managed_assets"]["manifest"] == second["managed_assets"]["manifest"]
