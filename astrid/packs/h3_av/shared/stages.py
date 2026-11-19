@@ -22,6 +22,10 @@ STATE_NAME = "build-state.json"
 _OUTPUT_CONTRACTS = {"muxed_av_full_timeline", "separate_av_full_timeline"}
 
 
+class UnsupportedVHSFrameTopology(ValueError):
+    """Pinned VHS may count raw frame bytes ambiguously for multiple video streams."""
+
+
 def stable_digest(value: Any) -> str:
     payload = json.dumps(json_times(value), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -229,10 +233,19 @@ def _vhs_frame_count(path: Path, *, start_time: float, frame_load_cap: int,
     dummy = [executable, *args_input, "-c", "copy", "-frames:v", "1", "-f", "null", "-"]
     probe = subprocess.run(dummy, check=True, capture_output=True, text=False, timeout=30)
     lines = probe.stderr.decode("utf-8", errors="replace")
+    input_report = lines.split("Output #", 1)[0]
+    video_streams = re.findall(r"^\s*Stream #[^\n]*Video:", input_report, flags=re.MULTILINE)
+    if len(video_streams) > 1:
+        raise UnsupportedVHSFrameTopology("multiple_video_streams")
     if "Video: vp9 " in lines:
         args_input = ["-c:v", "libvpx-vp9", *args_input]
         dummy = [executable, *args_input, "-c", "copy", "-frames:v", "1", "-f", "null", "-"]
         probe = subprocess.run(dummy, check=True, capture_output=True, text=False, timeout=30)
+        lines = probe.stderr.decode("utf-8", errors="replace")
+        input_report = lines.split("Output #", 1)[0]
+        video_streams = re.findall(r"^\s*Stream #[^\n]*Video:", input_report, flags=re.MULTILINE)
+        if len(video_streams) > 1:
+            raise UnsupportedVHSFrameTopology("multiple_video_streams")
     post_seek: list[str] = []
     if start_time > 0:
         if start_time > 4:
@@ -347,6 +360,8 @@ def _settled_reference_view(reference_view: Mapping[str, Any], *, reference_asse
                 reason = "ffmpeg_redecode_timeout"
             except subprocess.CalledProcessError:
                 reason = "ffmpeg_redecode_failed"
+            except UnsupportedVHSFrameTopology:
+                reason = "multiple_video_streams_unqualified"
             except (OSError, ValueError, TypeError, subprocess.SubprocessError):
                 # Do not persist command arguments or scratch locators in the
                 # settled result; they can include the local bound-file path.
@@ -368,7 +383,7 @@ def _settled_reference_view(reference_view: Mapping[str, Any], *, reference_asse
             "conformance": "not_conformed",
             "target_frame_cap": target,
             "alignment": "5 + 17k",
-            "rule_source": "ComfyUI-H3-Motion-Context-MultiRef@361624fb406b63eb6694442eac6c895fc1533a70:nodes_minimax_h3.py:324-332",
+            "rule_source": "ComfyUI@423cbd20511becb1f16122ab518e92e58bfa03d9:comfy_extras/nodes_minimax_h3.py:324-332",
             "loader_source": "ComfyUI-VideoHelperSuite@4ee72c065db22c9d96c2427954dc69e7b908444b:videohelpersuite/load_video_nodes.py:216-246",
             "decoder_source": "ComfyUI-VideoHelperSuite@4ee72c065db22c9d96c2427954dc69e7b908444b:videohelpersuite/load_video_nodes.py:170-193",
         }

@@ -605,8 +605,31 @@ def test_workflow_hook_evidence_survives_materialization_and_sdk_readback_after_
     result = InvocationResult(
         "vibecomfy.run", "executor", "command", True, kernel_task_id="task-1",
         raw_result={"task": {"task_id": "task-1", "state": "succeeded", "result": {
-            "manifest": {}, "evidence": manifest["managed_generation_result"]["evidence"]}}},
+            "payload": {"manifest": {"managed_generation_result":
+                manifest["managed_generation_result"]}}}}},
     )
     settled = _reconstruct_generation_result(result)
     assert settled.manifest["reference_view"] == settled_view
     assert str(tmp_path) not in str(settled.to_dict())
+
+
+@pytest.mark.parametrize("evidence", [
+    {"reference_view": {"note": "file:///tmp/private/reference.mp4"}},
+    {"reference_view": {"note": "copied from C:\\Users\\private\\reference.mp4"}},
+    {"reference_view": {"note": "copied from \\\\server\\share\\reference.mkv"}},
+    {"reference_view": {"note": "scratch at /var/tmp/private.json"}},
+    {"reference_view": {"bound_path": "private"}},
+])
+def test_workflow_hook_evidence_rejects_embedded_locators_and_path_keys(evidence):
+    from astrid.core.contracts.errors import AstridValueError
+
+    run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    with pytest.raises(AstridValueError, match="path|URL"):
+        run._workflow_hook_evidence(evidence)
+
+
+def test_workflow_hook_evidence_keeps_pinned_relative_source_citations():
+    run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    citation = "ComfyUI@423cbd20511becb1f16122ab518e92e58bfa03d9:comfy_extras/nodes_minimax_h3.py:324-332"
+    assert run._workflow_hook_evidence({"reference_view": {"rule_source": citation, "profile": "video"}}) == {
+        "reference_view": {"rule_source": citation, "profile": "video"}}

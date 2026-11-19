@@ -552,12 +552,6 @@ def _generation_task_refs(result: InvocationResult) -> dict[str, Any]:
     settled = task.get('result') or raw.get('result')
     settled = settled if isinstance(settled, Mapping) else {}
     refs = {'task_id': task.get('task_id') or result.kernel_task_id}
-    evidence = settled.get("evidence")
-    producer_evidence = evidence.get("producer") if isinstance(evidence, Mapping) else None
-    hook_evidence = producer_evidence.get("workflow_hook") if isinstance(producer_evidence, Mapping) else None
-    reference_view = hook_evidence.get("reference_view") if isinstance(hook_evidence, Mapping) else None
-    if isinstance(reference_view, Mapping):
-        refs["reference_view"] = deepcopy(dict(reference_view))
     rows = settled.get('outputs')
     if isinstance(rows, list):
         refs['logs'] = [deepcopy({key: value for key, value in row.items()
@@ -585,6 +579,17 @@ def _generation_task_refs(result: InvocationResult) -> dict[str, Any]:
     manifest = manifest or settled.get('manifest') or {}
     neutral = (manifest.get('managed_generation_result') or manifest
                if isinstance(manifest, Mapping) else {})
+    # Workflow hook evidence is sealed in the neutral managed-generation
+    # envelope by run.py. Runtime normally nests it under the output manifest;
+    # retain the direct settled evidence projection as a compatibility fallback.
+    evidence = neutral.get("evidence") if isinstance(neutral, Mapping) else None
+    if not isinstance(evidence, Mapping):
+        evidence = settled.get("evidence")
+    producer_evidence = evidence.get("producer") if isinstance(evidence, Mapping) else None
+    hook_evidence = producer_evidence.get("workflow_hook") if isinstance(producer_evidence, Mapping) else None
+    reference_view = hook_evidence.get("reference_view") if isinstance(hook_evidence, Mapping) else None
+    if isinstance(reference_view, Mapping):
+        refs["reference_view"] = deepcopy(dict(reference_view))
     # Prefer settled input refs to the request's immutable source descriptor.
     # Runtime task resources wrap the admitted envelope in spec.spec.
     admitted = spec.get('spec') if isinstance(spec, Mapping) else None

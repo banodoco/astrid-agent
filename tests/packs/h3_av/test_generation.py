@@ -689,6 +689,30 @@ def test_pinned_vhs_vp9_decoder_override_is_used_for_probe_and_redecode(monkeypa
                    for index in range(len(command) - 1)) for command in calls[1:])
 
 
+def test_settled_reference_count_is_unqualified_for_multiple_video_streams(monkeypatch, tmp_path):
+    import hashlib
+    from types import SimpleNamespace
+    from astrid.packs.h3_av.shared import stages
+
+    video = tmp_path / "managed/assets/multi.mkv"
+    video.parent.mkdir(parents=True)
+    video.write_bytes(b"multi-stream bytes")
+    digest = hashlib.sha256(video.read_bytes()).hexdigest()
+    view = {"target_frame_cap": 120, "references": [{
+        "occurrence": "performance", "modality": "video",
+        "input_binding": {"binding": "video_reference_0", "start_time": 0, "frame_load_cap": 0},
+    }]}
+    monkeypatch.setattr(stages.subprocess, "run", lambda *a, **k: SimpleNamespace(stderr=(
+        b"Stream #0:0: Video: h264, 64x48\nStream #0:1: Video: h264, 128x72\n")))
+    settled = stages._settled_reference_view(
+        view, reference_assets={"video_reference_0": {"member": "assets/multi.mkv", "sha256": digest}},
+        workdir=tmp_path, ffmpeg="/fake/ffmpeg",
+    )
+    derived = settled["references"][0]["retained_picture_frames_derived"]
+    assert derived["status"] == "unqualified"
+    assert derived["reason"] == "multiple_video_streams_unqualified"
+
+
 def test_fractional_reference_trim_survives_compilation_manifest(tmp_path):
     from astrid.packs.h3_av.shared.compile import _compile_native_v2
     from astrid.packs.h3_av.shared.request_v2 import normalize_v2

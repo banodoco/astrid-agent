@@ -261,21 +261,39 @@ def _evidence_snapshot(path: Path, output_root: Path) -> dict[str, Any]:
 
 
 def _workflow_hook_evidence(value: Any) -> dict[str, Any]:
-    """Validate the opt-in after_outputs evidence payload as JSON and path-free."""
+    """Validate opt-in evidence as bounded JSON without filesystem locators.
+
+    Path-looking keys are rejected, as are URLs, absolute POSIX/Windows/UNC
+    locators and embedded media/document paths. Pinned source citations remain
+    relative and are carried only in their explicitly named source fields.
+    """
     if not isinstance(value, dict):
         raise AstridValueError("after_outputs evidence must be a mapping")
 
     def check(item: Any, where: str = "evidence") -> None:
         if isinstance(item, dict):
             for key, child in item.items():
-                if not isinstance(key, str) or re.search(r"(?:^|_)(?:path|locator|scratch)(?:$|_)", key, re.I):
+                if not isinstance(key, str) or re.search(
+                    r"(?:^|[_-])(?:paths?|files?|filenames?|uris?|urls?|locators?|scratch|directories|workdir|cwd|root)(?:$|[_-])",
+                    key, re.I,
+                ):
                     raise AstridValueError(f"after_outputs evidence contains a path-bearing field at {where}")
                 check(child, f"{where}.{key}")
         elif isinstance(item, list):
             for index, child in enumerate(item):
                 check(child, f"{where}[{index}]")
-        elif isinstance(item, str) and Path(item).is_absolute():
-            raise AstridValueError(f"after_outputs evidence contains an absolute path at {where}")
+        elif isinstance(item, str):
+            has_locator = (
+                re.search(r"(?i)file://|https?://", item)
+                or re.search(r"(?i)(?:^|[\s\"'=])(?:[a-z]:[\\/]|\\\\)", item)
+                or re.search(r"(?<![A-Za-z0-9])/(?:[^/\s]+/)*[^/\s]+", item)
+                or re.search(r"(?i)\b[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+\.(?:mp4|mkv|mov|webm|wav|flac|png|jpe?g|json|zip)(?:\b|:)", item)
+            )
+            if has_locator and not (
+                where.endswith((".rule_source", ".loader_source", ".decoder_source"))
+                and re.fullmatch(r"ComfyUI(?:@[^:]+)?:[A-Za-z0-9_./-]+\.py:[0-9]+-[0-9]+", item)
+            ):
+                raise AstridValueError(f"after_outputs evidence contains a path or URL at {where}")
         elif item is not None and not isinstance(item, (str, int, float, bool)):
             raise AstridValueError(f"after_outputs evidence is not JSON-safe at {where}")
 
@@ -755,7 +773,7 @@ def _after_outputs(spec: Any) -> Any:
                "job_dir": job.get("job_dir")}
     capture_evidence = job.get("workflow_hook_evidence") is True
     if capture_evidence:
-        run_job["inputs"] = {**run_job["inputs"], "__astrid_workflow_hook_evidence": True}
+        run_job["workflow_hook_evidence"] = True
 
     def finish(outputs):
         result = engine.finish(run_job, outputs)

@@ -352,10 +352,11 @@ def run_named_entry(described: dict[str, Any], named: str, inputs: dict[str, Any
             # (b) after_outputs once, inside the run, on the managed outputs before they are sealed;
             # a raise fails the job. It reads the state build left in this job directory.
             job = entries.entry_job(described, inputs, job_dir, hooks={})
-            hook_job = {"after_outputs_job": json.dumps(
-                {"entry": described["id"], "job_dir": str(job_dir), "inputs": job["inputs"], "files": job["files"],
-                 "workflow_hook_evidence": True},
-                sort_keys=True, default=str)}
+            after_outputs_spec = {"entry": described["id"], "job_dir": str(job_dir),
+                                  "inputs": job["inputs"], "files": job["files"]}
+            if described["id"] == "h3":
+                after_outputs_spec["workflow_hook_evidence"] = True
+            hook_job = {"after_outputs_job": json.dumps(after_outputs_spec, sort_keys=True, default=str)}
         result = run_owned_action(
             workflow, out, task_identity=task, attempt_identity=attempt,
             workflow_inputs=json.dumps(workflow_inputs, sort_keys=True, default=str), entry=named,
