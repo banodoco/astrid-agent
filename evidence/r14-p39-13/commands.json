@@ -1,0 +1,110 @@
+[
+  {
+    "evidence_directory": "before-paired",
+    "cwd": "/workspace/scratch/ed89673be2cd/before",
+    "argv": [
+      "/workspace/scratch/8c30ce2383b9/test-env/bin/python",
+      "-m",
+      "pytest",
+      "-q",
+      "-rA",
+      "tests/scripts/test_ci_test_evidence.py",
+      "--junitxml=../evidence/before-paired/gate-probes.xml"
+    ],
+    "environment_overrides": {
+      "PYTHONPATH": "/workspace/scratch/ed89673be2cd/before/scripts:/workspace/scratch/ed89673be2cd/before:/workspace/scratch/ed89673be2cd/before/../runtime-checkout"
+    }
+  },
+  {
+    "evidence_directory": "after-root",
+    "cwd": "/workspace/scratch/ed89673be2cd/astrid-agent",
+    "argv": [
+      "/workspace/scratch/8c30ce2383b9/test-env/bin/python",
+      "-m",
+      "pytest",
+      "-q",
+      "-rA",
+      "tests/scripts/test_ci_test_evidence.py",
+      "--junitxml=../evidence/after-root/gate-probes.xml"
+    ],
+    "environment_overrides": {
+      "PYTHONPATH": "/workspace/scratch/ed89673be2cd/astrid-agent/scripts:/workspace/scratch/ed89673be2cd/astrid-agent:/workspace/scratch/ed89673be2cd/astrid-agent/../runtime-checkout"
+    }
+  },
+  {
+    "evidence_directory": "before-schema",
+    "cwd": "/workspace/scratch/ed89673be2cd/before",
+    "argv": [
+      "/workspace/scratch/ed89673be2cd/proof-env/bin/python",
+      "-P",
+      "-m",
+      "ci.run_pytest",
+      "-v",
+      "-rA",
+      "--junitxml=/workspace/scratch/ed89673be2cd/before/../evidence/before-schema/probes.xml",
+      "tests/core/rendering/test_local_schema.py"
+    ],
+    "environment_overrides": {
+      "PYTHONPATH": "/workspace/scratch/ed89673be2cd/before/scripts:/workspace/scratch/ed89673be2cd/before/../runtime-checkout",
+      "ASTRID_RUNTIME_CHECKOUT": "/workspace/scratch/ed89673be2cd/before/../runtime-checkout"
+    }
+  },
+  {
+    "evidence_directory": "after-refusal",
+    "cwd": "/workspace/scratch/ed89673be2cd/astrid-agent",
+    "argv": [
+      "/workspace/scratch/8c30ce2383b9/test-env/bin/python",
+      "-P",
+      "-m",
+      "ci.run_pytest",
+      "-v",
+      "-rA",
+      "--junitxml=/workspace/scratch/ed89673be2cd/astrid-agent/../evidence/after-refusal/probe.xml",
+      "tests/core/rendering/test_local_schema.py"
+    ],
+    "environment_overrides": {
+      "PYTHONPATH": "/workspace/scratch/ed89673be2cd/astrid-agent/scripts:/workspace/scratch/ed89673be2cd/astrid-agent/../runtime-checkout",
+      "ASTRID_RUNTIME_CHECKOUT": "/workspace/scratch/ed89673be2cd/astrid-agent/../runtime-checkout"
+    }
+  },
+  {
+    "evidence_directory": "candidate-focused",
+    "cwd": "/workspace/scratch/ed89673be2cd/astrid-agent",
+    "argv": [
+      "/workspace/scratch/8c30ce2383b9/test-env/bin/python",
+      "-P",
+      "-m",
+      "ci.run_pytest",
+      "-v",
+      "-rA",
+      "--junitxml=/workspace/scratch/ed89673be2cd/astrid-agent/../evidence/candidate-focused/probes.xml",
+      "tests/scripts/test_ci_test_evidence.py",
+      "tests/core/rendering/test_local_schema.py",
+      "tests/scripts/test_gate_integrity.py",
+      "tests/reshape/test_identity_gate.py::test_alternate_and_nested_tool_config_cannot_change_collection_or_findings"
+    ],
+    "environment_overrides": {
+      "PYTHONPATH": "/workspace/scratch/ed89673be2cd/astrid-agent/scripts:/workspace/scratch/ed89673be2cd/astrid-agent/../runtime-checkout",
+      "ASTRID_RUNTIME_CHECKOUT": "/workspace/scratch/ed89673be2cd/astrid-agent/../runtime-checkout"
+    }
+  },
+  {
+    "evidence_directory": "candidate-skip-guard",
+    "cwd": "/workspace/scratch/ed89673be2cd/astrid-agent",
+    "argv": [
+      "/workspace/scratch/ed89673be2cd/proof-env/bin/python",
+      "-P",
+      "-m",
+      "ci.run_pytest",
+      "-v",
+      "-rA",
+      "--junitxml=/workspace/scratch/ed89673be2cd/astrid-agent/../evidence/candidate-skip-guard/probes.xml",
+      "tests/test_skip_guard.py",
+      "tests/scripts/test_gate_integrity.py"
+    ],
+    "environment_overrides": {
+      "PYTHONPATH": "/workspace/scratch/ed89673be2cd/astrid-agent/scripts:/workspace/scratch/ed89673be2cd/astrid-agent/../runtime-checkout",
+      "ASTRID_RUNTIME_CHECKOUT": "/workspace/scratch/ed89673be2cd/astrid-agent/../runtime-checkout"
+    }
+  }
+]

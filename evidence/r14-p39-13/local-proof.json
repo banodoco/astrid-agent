@@ -1,0 +1,322 @@
+{
+  "packet": "R14-P39-13",
+  "tasks": [
+    "AT1.9",
+    "AT1.54"
+  ],
+  "source_base": "9a698c39f51089feeb83f51791c7e6b19823d644",
+  "before_case_commit": "eb6e9ddfdb74ad0cde85fee91a3dec19f5cc1510",
+  "tested_candidate": "7206f0f718f0fc81a8ba28476b69ff833ba7cd26",
+  "candidate_tree": "752731d0505d3f8162f3b34e08a742fee13a052e",
+  "runtime_checkout": "6855dfa8df65cf8ae4c002b57134d6505493c17c",
+  "python": "3.12.14",
+  "pytest": "9.0.2",
+  "ruff": "0.12.0",
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "pairs": {
+    "collection": {
+      "same_native_ids": true,
+      "before_counts": {
+        "passed": 33,
+        "failed": 4
+      },
+      "after_counts": {
+        "passed": 37
+      },
+      "changes": {
+        "tests.scripts.test_ci_test_evidence::test_external_evidence_preserves_repository_root_and_config_in_both_passes[1]": {
+          "before": "failed",
+          "after": "passed"
+        },
+        "tests.scripts.test_ci_test_evidence::test_external_evidence_preserves_repository_root_and_config_in_both_passes[2]": {
+          "before": "failed",
+          "after": "passed"
+        },
+        "tests.scripts.test_ci_test_evidence::test_external_evidence_preserves_repository_root_and_config_in_both_passes[3]": {
+          "before": "failed",
+          "after": "passed"
+        },
+        "tests.scripts.test_ci_test_evidence::test_external_evidence_preserves_repository_root_and_config_in_both_passes[4]": {
+          "before": "failed",
+          "after": "passed"
+        }
+      }
+    },
+    "schema": {
+      "same_native_ids": true,
+      "before_counts": {
+        "passed": 85,
+        "failed": 1,
+        "skipped": 19
+      },
+      "after_counts": {
+        "passed": 86,
+        "skipped": 19
+      },
+      "changes": {
+        "tests.core.rendering.test_local_schema::test_installed_probe_refuses_a_nonisolated_interpreter": {
+          "before": "failed",
+          "after": "passed"
+        }
+      }
+    }
+  },
+  "further_proof": {
+    "gate_and_skip_guard": "64 passed; outer/raw session exit 0",
+    "combined_first_attempt": "164 passed, 19 declared Windows skips, two missing-Ruff environment failures; raw exit 1 retained. Both exact failed IDs passed after installing pinned Ruff."
+  },
+  "raw_files": [
+    {
+      "path": "after-refusal/outer.exit",
+      "size": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "after-refusal/outer.log",
+      "size": 27961,
+      "sha256": "f20df2c310bcfaf108af1c89ba94dec774eda3bf4ada6c1b0b2fb32e0a4b305a"
+    },
+    {
+      "path": "after-refusal/probe.collection.json",
+      "size": 24940,
+      "sha256": "500ec5d09ebbdf9ab984da2651f911831602eaaa775141a8b03163a1b1467aa3"
+    },
+    {
+      "path": "after-refusal/probe.jsonl",
+      "size": 145144,
+      "sha256": "cbe931bab1166a822c8a08519b9338462c432c35047ee2145088d6825a47c011"
+    },
+    {
+      "path": "after-refusal/probe.log",
+      "size": 27830,
+      "sha256": "7487639201b6493fe3531c2e2be8d6feda5af5073dfcb17d12f4cb7c6990fdd6"
+    },
+    {
+      "path": "after-refusal/probe.reference.json",
+      "size": 24940,
+      "sha256": "500ec5d09ebbdf9ab984da2651f911831602eaaa775141a8b03163a1b1467aa3"
+    },
+    {
+      "path": "after-refusal/probe.reference.log",
+      "size": 10153,
+      "sha256": "8fe0e1d2d6acc722b28ff8c0b9e1a85da135a69cab16b02154b97b235fac95f4"
+    },
+    {
+      "path": "after-refusal/probe.xml",
+      "size": 20784,
+      "sha256": "2fdf5fb2fdf982a410e6c82e3af7194cf7a8547ca77a0077a651a6e9332c7a94"
+    },
+    {
+      "path": "after-root/gate-probes.exit",
+      "size": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "after-root/gate-probes.log",
+      "size": 6695,
+      "sha256": "ce35cc8f7caec292eecdbf0f78e7c3c21d30c55482a0e4dea1980d596382ff17"
+    },
+    {
+      "path": "after-root/gate-probes.xml",
+      "size": 5723,
+      "sha256": "b797bdda6ce49e1f2185dcb35170693d9165b198a77f8c07639f837fa0838cb3"
+    },
+    {
+      "path": "before/refusal/outer.exit",
+      "size": 2,
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "path": "before/refusal/outer.log",
+      "size": 1379,
+      "sha256": "bfb6f13d42ba9eb696e2f64fc806a81fc5a0c7b0bab6215e85724e8bbdcd4f32"
+    },
+    {
+      "path": "before/refusal/probe.collection.json",
+      "size": 644,
+      "sha256": "f3a6b0b4d3bcfd280ab6444fecc485aa01ea4ee76421dee6b8ae1ae553cbbee2"
+    },
+    {
+      "path": "before/refusal/probe.jsonl",
+      "size": 2730,
+      "sha256": "ce20520d837b219ccc72997be786c5d1c691938004e83c9c6aa01e14562b8e02"
+    },
+    {
+      "path": "before/refusal/probe.log",
+      "size": 1265,
+      "sha256": "206f4e02cd8c72ea4479222685072e36ea01d848381066369185a2fe45e5f4c2"
+    },
+    {
+      "path": "before/refusal/probe.reference.json",
+      "size": 644,
+      "sha256": "f3a6b0b4d3bcfd280ab6444fecc485aa01ea4ee76421dee6b8ae1ae553cbbee2"
+    },
+    {
+      "path": "before/refusal/probe.reference.log",
+      "size": 125,
+      "sha256": "44dcbac684051c787f647b8f31f63206b59d91cc2d7a9f30c6cab2ddc270a5c7"
+    },
+    {
+      "path": "before/refusal/probe.xml",
+      "size": 1800,
+      "sha256": "b7b69f28d88d3fe6759128a98292b180c1f63a0d2feb6811215057a73d0a5d57"
+    },
+    {
+      "path": "before/root-regression.exit",
+      "size": 2,
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "path": "before/root-regression.log",
+      "size": 19452,
+      "sha256": "635188b793c944239ea7a66384732bd46ec1a36e34ba1988834e388042cf6cf1"
+    },
+    {
+      "path": "before/root-regression.xml",
+      "size": 30556,
+      "sha256": "7d6657c689d54293fed58828ef792477692909b9685cc59517e41ffafe502432"
+    },
+    {
+      "path": "before-paired/gate-probes.exit",
+      "size": 2,
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "path": "before-paired/gate-probes.log",
+      "size": 25478,
+      "sha256": "856397813dd33780fd81c6c70a778b9829af63bc4b40028309324bb153451ab4"
+    },
+    {
+      "path": "before-paired/gate-probes.xml",
+      "size": 35399,
+      "sha256": "bf366bb58de81f745cc372e2c7a865cb93aabe27c893faff5bfc651509ad6b13"
+    },
+    {
+      "path": "before-schema/outer.exit",
+      "size": 2,
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "path": "before-schema/outer.log",
+      "size": 28668,
+      "sha256": "7741cb68b9fd5c3427c605e476826c1fe305eccd901b500f28d3ea47f11f53b9"
+    },
+    {
+      "path": "before-schema/probes.collection.json",
+      "size": 24934,
+      "sha256": "d24664338d0250fe56c04070ceaf4e5ef87bce5957c36c3e34f7d55a32dfc21f"
+    },
+    {
+      "path": "before-schema/probes.jsonl",
+      "size": 145967,
+      "sha256": "96c14b4cbe3feebeffce4cc5e1900e3e1e1635806658d2c7014a67b28c52964b"
+    },
+    {
+      "path": "before-schema/probes.log",
+      "size": 28526,
+      "sha256": "985023c55c78c04205805a7c6665038cfc7cb57fb2534c542e89e7e80ea51b6b"
+    },
+    {
+      "path": "before-schema/probes.reference.json",
+      "size": 24934,
+      "sha256": "d24664338d0250fe56c04070ceaf4e5ef87bce5957c36c3e34f7d55a32dfc21f"
+    },
+    {
+      "path": "before-schema/probes.reference.log",
+      "size": 10142,
+      "sha256": "33b7b452254923195906a1ce2716627fd035e5db9524b5956239103c710cd3a3"
+    },
+    {
+      "path": "before-schema/probes.xml",
+      "size": 22300,
+      "sha256": "4f9ce2d88ccab6bc84cd9dba7f4e9d6af7d47aa034f45bb206d47db031d9654f"
+    },
+    {
+      "path": "candidate-focused/outer.exit",
+      "size": 2,
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "path": "candidate-focused/outer.log",
+      "size": 61128,
+      "sha256": "7493970e14a3b8b655a137d5797c19d1f958260ab74e7475c91d0bf878cd8cdf"
+    },
+    {
+      "path": "candidate-focused/probes.collection.json",
+      "size": 44875,
+      "sha256": "bad8e9fd6fbb25b7a410924fa5124fb69d9f0f8f662326ea4e2c2a0f99b7a7e1"
+    },
+    {
+      "path": "candidate-focused/probes.jsonl",
+      "size": 269610,
+      "sha256": "7f12c431e63914965be61f734b51266d02e8d883d70b6ba9f89dbfff9e60773a"
+    },
+    {
+      "path": "candidate-focused/probes.log",
+      "size": 60985,
+      "sha256": "6d51ecef8c2922e1a0c5d393b976bc58f48eb930a71e8ba05b186b532d50c345"
+    },
+    {
+      "path": "candidate-focused/probes.reference.json",
+      "size": 44875,
+      "sha256": "bad8e9fd6fbb25b7a410924fa5124fb69d9f0f8f662326ea4e2c2a0f99b7a7e1"
+    },
+    {
+      "path": "candidate-focused/probes.reference.log",
+      "size": 18264,
+      "sha256": "f56b2800412f2f2f1089d4cb658baa4ef39ff6978051f0a4dcd9942ca7ea8a06"
+    },
+    {
+      "path": "candidate-focused/probes.xml",
+      "size": 42546,
+      "sha256": "a202f56f08f942db42072b34318a0a44282cf66d0dd08903368c752aa77b67a5"
+    },
+    {
+      "path": "candidate-skip-guard/outer.exit",
+      "size": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "candidate-skip-guard/outer.log",
+      "size": 60371,
+      "sha256": "aa4a9007cf4e510360ed8b118561ffa9227e6efd17e5ece723514423781c7776"
+    },
+    {
+      "path": "candidate-skip-guard/probes.collection.json",
+      "size": 14445,
+      "sha256": "1a8e1fd27234d698e237bb76b3dd1809f571031716194a753671057f094dfa61"
+    },
+    {
+      "path": "candidate-skip-guard/probes.jsonl",
+      "size": 87764,
+      "sha256": "3bddf0994a539731c677bbd3bb6262de98f37a26a5c2944a9b7ffe87044a7785"
+    },
+    {
+      "path": "candidate-skip-guard/probes.log",
+      "size": 60253,
+      "sha256": "1eb971af9895960d9731bc418d274758ceb2bbf271c089873b5e4e9f131a9477"
+    },
+    {
+      "path": "candidate-skip-guard/probes.reference.json",
+      "size": 14445,
+      "sha256": "1a8e1fd27234d698e237bb76b3dd1809f571031716194a753671057f094dfa61"
+    },
+    {
+      "path": "candidate-skip-guard/probes.reference.log",
+      "size": 6862,
+      "sha256": "02f120f3b82a5a9d141c726fdca69a9a596d69c7c92ec5aa5577953746100de0"
+    },
+    {
+      "path": "candidate-skip-guard/probes.xml",
+      "size": 9380,
+      "sha256": "d107fdc25e074ee6eea892a0cc0d5bff25398a8630a57253c56877455fd48f9f"
+    }
+  ],
+  "limitations": [
+    "Local focused proof only; no four-shard hosted execution claim.",
+    "Final proof requires merging the Lead-synced release/14/plan-39 head first.",
+    "G1 shard3 original full log unavailable; exact 2063 claimed primary count not reconstructed.",
+    "Native Windows schema cases remain 19 declared skips on this Linux host, identically on base/candidate.",
+    "No new test bypass, skip, xfail, selector or gate exemption was introduced."
+  ]
+}
