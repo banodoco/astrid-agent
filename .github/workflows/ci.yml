@@ -1,167 +1,71 @@
-name: LS-12 matched Darwin audio observation
-
+name: LS-12 matched macOS first-job work observation
 on: workflow_dispatch
-
 permissions:
   contents: read
-
-env:
-  PYTEST_ADDOPTS: -rA
-
 jobs:
-  darwin-native:
-    name: Matched Darwin audio on e379 and aacd
+  observed-sdk:
+    name: One SDK first job per source on the same Mac
     runs-on: macos-latest
-    timeout-minutes: 120
+    timeout-minutes: 75
     env:
-      ASTRID_CI_JOB: darwin-native
-      ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/astrid-runtime
-      ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/vibecomfy-checkout
+      PYTHONDONTWRITEBYTECODE: '1'
+      PIP_NO_COMPILE: '1'
     steps:
-      - name: Check out diagnostic tools
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
+          path: controller
+          sparse-checkout: scripts/ci/ls12_owned_proof
           persist-credentials: false
-          sparse-checkout: scripts/ci/ls12_audio_proof
-
-      - name: Verify and stage the external diagnostic
-        run: |
-          set -euo pipefail
-          tools="$RUNNER_TEMP/ls12-audio-tools"
-          mkdir "$tools"
-          cp scripts/ci/ls12_audio_proof/{matched_darwin_audio,public_receipt}.py "$tools/"
-          cd "$tools"
-          echo '3683ee02d331e50cad05ee9245e4eae1e40e87e7d1881938177d3018defd13f3  matched_darwin_audio.py' | shasum -a 256 -c -
-
-      - name: Check out both immutable product revisions for one detached path
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: e379565641414bc183cd02edebab1cbf77617931
-          fetch-depth: 0
+          path: source-a
           persist-credentials: false
-
-      - name: Confirm comparison sources
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = e379565641414bc183cd02edebab1cbf77617931
-          git cat-file -e 'aacdcd86bfe09bcddac0f4d5941498c5126f74d8^{commit}'
-
-      - name: Read the pinned Runtime commit
-        id: runtime-pin
-        run: echo "commit=$(python3 -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')" >> "$GITHUB_OUTPUT"
-
-      - name: Check out the Runtime (astrid-runtime)
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: 7194011c2f41643a699f261c5276886612bc2186
+          path: source-b
+          persist-credentials: false
+      - uses: actions/checkout@v4
         with:
           repository: banodoco/astrid-runtime
-          ref: ${{ steps.runtime-pin.outputs.commit }}
-          path: astrid-runtime
+          ref: 62333bd797e84b21cb3995e4bcf580ed0bdcf9f0
+          path: runtime
           persist-credentials: false
-
-      - name: Restore pip cache (C-08)
-        id: c08-agent-ci-2
-        uses: actions/cache/restore@v4
-        with:
-          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
-          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Create one shared Python environment for both sources
-        run: |
-          set -euo pipefail
-          venv="$RUNNER_TEMP/ls12-darwin-venv"
-          python -m venv "$venv"
-          echo "$venv/bin" >> "$GITHUB_PATH"
-          echo "VIRTUAL_ENV=$venv" >> "$GITHUB_ENV"
-          "$venv/bin/python" - <<'PYTHON'
-          import subprocess
-          import sys
-          import tomllib
-          from pathlib import Path
-          requirements = tomllib.loads(Path("pyproject.toml").read_text())["build-system"]["requires"]
-          subprocess.run([sys.executable, "-m", "pip", "install", *requirements], check=True)
-          PYTHON
-
-      - name: Restore npm cache (C-08)
-        id: c08-agent-ci-1
-        uses: actions/cache/restore@v4
-        with:
-          path: "${{ runner.os == 'Windows' && '~/AppData/Local/npm-cache' || '~/.npm' }}"
-          key: npm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('remotion/package-lock.json') }}
-      - name: Set up Node.js from .node-version
-        uses: actions/setup-node@v4
-        with:
-          node-version-file: .node-version
-
-      - name: Install ffmpeg
-        run: brew install ffmpeg
-
-      - name: Install Remotion dependencies
-        run: npm ci --prefix remotion
-
-      - name: Install package with dev extras
-        run: python -m pip install -e '.[dev]'
-
-      - name: Install the Runtime and client from the checkout
-        run: python -m pip install --no-deps -e ./astrid-runtime -e ./astrid-runtime/packages/python
-
-      - name: Read the pinned VibeComfy revision
-        id: vibecomfy-pin
-        run: |
-          rev="$(python3 scripts/vibecomfy_pin.py)"
-          if [[ ! "$rev" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "VibeComfy engine recipe must resolve to a full lowercase 40-hex revision" >&2
-            exit 1
-          fi
-          echo "revision=$rev" >> "$GITHUB_OUTPUT"
-
-      - name: Check out VibeComfy at the pinned engine revision
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           repository: banodoco/VibeComfy
-          ref: ${{ steps.vibecomfy-pin.outputs.revision }}
-          path: vibecomfy-checkout
+          ref: 1ba0ac3ad4fe69fa0b4966cc41e6852224013f97
+          path: vibe
           persist-credentials: false
-
-      - name: Record VibeComfy checkout
-        shell: bash
-        env:
-          VIBECOMFY_REVISION: ${{ steps.vibecomfy-pin.outputs.revision }}
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/runpod-lifecycle
+          ref: 7f0b025e9391baac9f5c2fb7393617ea6fef0704
+          path: lifecycle
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install the original CPU test dependencies once
+        id: setup
         run: |
-          set -euo pipefail
-          checked_out="$(git -C "$ASTRID_VIBECOMFY_CHECKOUT" rev-parse HEAD)"
-          test "$checked_out" = "$VIBECOMFY_REVISION"
-          echo "- VibeComfy: $checked_out" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Install VibeComfy
-        run: python -m pip install -e ./vibecomfy-checkout
-
-      - name: Provision the Remotion browser
-        run: npx remotion browser ensure
-        working-directory: remotion
-
-      - name: Install the Codex CLI (the codex_cli lane starts its native binary in the host sandbox)
-        run: npm install -g @openai/codex@0.163.0
-
-      - name: Compare the original audio selector once on each head
-        run: |
-          python "$RUNNER_TEMP/ls12-audio-tools/matched_darwin_audio.py" \
-            --checkout "$GITHUB_WORKSPACE" --runtime "$ASTRID_RUNTIME_CHECKOUT" \
-            --vibe "$ASTRID_VIBECOMFY_CHECKOUT" --output "$RUNNER_TEMP/ls12-audio-private"
-
-      - name: Collect whitelisted native outcomes
-        if: ${{ !cancelled() }}
-        run: |
-          python "$RUNNER_TEMP/ls12-audio-tools/public_receipt.py" \
-            "$RUNNER_TEMP/ls12-audio-private" "$RUNNER_TEMP/ls12-audio-outcomes.json"
-
-      - name: Upload public outcome receipt
-        if: ${{ !cancelled() }}
+          python -m venv "$RUNNER_TEMP/ls12-venv"
+          py="$RUNNER_TEMP/ls12-venv/bin/python"
+          "$py" -m pip install -e './source-b[dev]'
+          "$py" -m pip install --no-deps -e ./runtime -e ./runtime/packages/python -e ./lifecycle
+          "$py" -m pip install -e ./vibe
+      - name: Observe the original SDK case on e379
+        run: '"$RUNNER_TEMP/ls12-venv/bin/python" controller/scripts/ci/ls12_owned_proof/matched.py source-a'
+      - name: Observe the original SDK case on 7194
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: '"$RUNNER_TEMP/ls12-venv/bin/python" controller/scripts/ci/ls12_owned_proof/matched.py source-b'
+      - name: Retain the two diagnostic receipts
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
-          name: ls12-matched-darwin-audio-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/ls12-audio-outcomes.json
+          name: ls12-owned-macos-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/ls12-public/*.json
+            ${{ runner.temp }}/ls12-public/*.junit.xml
           if-no-files-found: error
