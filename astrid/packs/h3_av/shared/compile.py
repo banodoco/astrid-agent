@@ -866,7 +866,7 @@ def _compile_native_masked_edit(
     audio_mask_values = None
     if generated_audio:
         try:
-            raw_frames = generation_timing(float(spec.duration))["raw_frames"]
+            raw_frames = generation_timing(spec.duration)["raw_frames"]
         except ValueError as exc:
             raise CompilationError(str(exc)) from exc
         mask_grants = [(0, raw_frames * 2000, 1.0)] if still_source else generated_audio
@@ -913,7 +913,7 @@ def _compile_native_masked_edit(
                 raise CompilationError(f"native masked edit reference {item.asset!r} is missing from preparation")
             bindings[f"reference_{index}"] = assets[item.asset]
     try:
-        timing = generation_timing(float(spec.duration))
+        timing = generation_timing(spec.duration)
     except ValueError as exc:
         raise CompilationError(str(exc)) from exc
     prompt = spec.prompt

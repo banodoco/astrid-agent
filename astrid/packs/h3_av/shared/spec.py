@@ -391,7 +391,7 @@ def _normalize_spec(
                 )
     from .generation import generation_timing
 
-    generation_timing(float(spec.duration))  # Existing single-window bound; no splitting.
+    generation_timing(spec.duration)  # Existing single-window bound; no splitting.
     media = [
         {"id": ref.authored_id or name, "asset": ref.asset, "role": "reference", "modality": ref.modality,
          **({"range": list(ref.range)} if ref.range is not None else {}),

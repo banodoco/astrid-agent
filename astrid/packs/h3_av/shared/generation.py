@@ -4,15 +4,17 @@ Node contract: ComfyUI 423cbd20511becb1f16122ab518e92e58bfa03d9,
 comfy_extras/nodes_minimax_h3.py, MiniMaxH3ReferenceToVideo.
 """
 import hashlib
-from dataclasses import dataclass
 import json
 import os
-from pathlib import Path
 import re
+from dataclasses import dataclass
+from fractions import Fraction
+from pathlib import Path
 from typing import Any, Mapping, TypedDict
 
 from .engine_facts import facts
 from .timing import frame_index, smallest_h3_run_at_least
+
 
 class _BuilderSlotValues(TypedDict):
     image: int
@@ -319,11 +321,13 @@ def _required_locked_url(models: Mapping[str, Any], destination: str) -> str:
     return f"https://huggingface.co/{model.repository}/resolve/{model.revision}/{model.path}"
 
 
-def generation_timing(duration: float) -> dict[str, Any]:
+def generation_timing(duration: Fraction | int | float) -> dict[str, Any]:
     frames = frame_index(duration, "output.duration")
-    raw = smallest_h3_run_at_least(frames)
     length = _JOB_LENGTH_FRAME_VALUES
-    if frames < length["min"] or raw > length["max"]:
+    if frames < length["min"] or frames > length["max"]:
+        raise ValueError("job length frames 5..3600: requested duration exceeds the node grid")
+    raw = smallest_h3_run_at_least(frames)
+    if raw > length["max"]:
         raise ValueError("job length frames 5..3600: requested duration exceeds the node grid")
     return {"fps": 24, "requested_frames": frames, "raw_frames": raw,
             "trim_tail_frames": raw - frames, "duration": frames / 24}

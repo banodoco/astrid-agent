@@ -132,9 +132,9 @@ def _video_coverage(path: Path) -> dict[str, Any]:
     if rate <= 0:
         raise CompositionError("video stream has no usable frame rate")
     raw_frames = stream.get("nb_read_frames") or stream.get("nb_frames")
-    if raw_frames is None:
-        raise CompositionError("video stream has no countable frames")
     try:
+        if raw_frames is None:
+            raise TypeError("frame count is unavailable")
         frames = int(raw_frames)
     except (TypeError, ValueError):
         observed_duration = _duration(probe, stream)
