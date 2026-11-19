@@ -218,3 +218,27 @@ def test_per_operation_controls_fail_closed_on_other_native_routes(tmp_path, con
         message = "native-v2 continuation has no per-operation strength or seed binding"
     with pytest.raises(CompilationError, match=message):
         compile_preparation(preparation, out_dir=tmp_path / "rejected")
+
+
+def test_reference_port_order_deduplicates_and_ignores_cross_modality_interleaving():
+    from astrid.packs.h3_av.shared.compile import _reference_port_order
+
+    modalities = {"a": "image", "b": "image", "v": "video"}
+    order = _reference_port_order(("a", "v", "a", "b"), modalities)
+    assert order == _reference_port_order(("v", "a", "b"), modalities)
+    assert order == (("a", "b"), ("v",), ())
+    assert order != _reference_port_order(("b", "a", "v"), modalities)
+
+
+def test_selected_reference_occurrences_bind_once_in_first_use_order(tmp_path):
+    from astrid.packs.h3_av.shared.compile import _conditioning_rows
+
+    raw = copy.deepcopy(CASES[2]["v2"])
+    raw["media"].append({"id": "other", "asset": "other.png", "role": "reference", "modality": "image"})
+    request = normalize_request(raw)
+    refs = [item for item in request.value["media"] if item["role"] == "reference"]
+    first, second = (item["occurrence_id"] for item in refs)
+    assets = {name: Path(path) for name, path in _assets(tmp_path).items()}
+    rows, bindings = _conditioning_rows(request, assets, selected=(second, first, second))
+    assert [row["occurrence"] for row in rows] == [second, first]
+    assert [bindings[f"reference_{index}"].name for index in range(2)] == ["other.png", "look.png"]

@@ -163,6 +163,13 @@ def _asset_bindings(request: H3Request, assets: Mapping[str, Path], *, include_m
 
 
 
+def _reference_port_order(selected: tuple[str, ...], modalities: Mapping[str, str]) -> tuple[tuple[str, ...], ...]:
+    """Compare effective slots, deduplicated in first-use order per modality."""
+    unique = tuple(dict.fromkeys(selected))
+    return tuple(tuple(name for name in unique if modalities[name] == modality)
+                 for modality in ("image", "video", "audio"))
+
+
 def _conditioning_rows(request: H3Request, assets: Mapping[str, Path], *, selected: tuple[str, ...] | None = None) -> tuple[list[dict[str, Any]], dict[str, Path]]:
     """Resolve occurrence identity in the same order as the target node's ports."""
     references = [item for item in request.value["media"]
@@ -172,7 +179,7 @@ def _conditioning_rows(request: H3Request, assets: Mapping[str, Path], *, select
             raise CompilationError(f"conditioning occurrence {item['occurrence_id']!r} has unresolved modality; declare image, video, or audio")
     if selected is not None:
         by_occurrence = {item["occurrence_id"]: item for item in references}
-        references = [by_occurrence[occurrence] for occurrence in selected]
+        references = [by_occurrence[occurrence] for occurrence in dict.fromkeys(selected)]
     rows: list[dict[str, Any]] = []
     bindings: dict[str, Path] = {}
     audio_number = 0
@@ -739,7 +746,9 @@ def _compile_native_masked_edit(
     active_passes = [p for p in video_passes if p.operation.strength > 0]
     if len(active_passes) > 1:
         seeds = {p.operation.seed if p.operation.seed is not None else settings["seed"] for p in active_passes}
-        reference_sets = {tuple(p.operation.refs) for p in active_passes}
+        reference_sets = {_reference_port_order(tuple(p.operation.refs),
+                                                {name: ref.modality for name, ref in references_by_name.items()})
+                          for p in active_passes}
         if len(seeds) > 1:
             raise CompilationError("regions per pass: grants with different seeds require separate sequential passes, which this lowering cannot execute")
         if len(reference_sets) > 1:
@@ -1074,7 +1083,8 @@ def _compile_character_swap_v2(
             if edit.get("stream") != "video" or edit.get("action") == "preserve" or edit.get("strength", 1) == 0:
                 continue
             guide_sets.append(tuple(by_id[name] for name in edit["guides"]) if "guides" in edit else all_occurrences)
-    if len(set(guide_sets)) > 1:
+    modalities = {item["occurrence_id"]: item["modality"] for item in references}
+    if len({_reference_port_order(guides, modalities) for guides in guide_sets}) > 1:
         raise CompilationError("regions per pass: grants with different reference sets require separate sequential passes, which this lowering cannot execute")
     selected = guide_sets[0] if guide_sets else None
     conditioning, bindings = _conditioning_rows(request, assets, selected=selected)
@@ -1247,6 +1257,11 @@ def _compile_native_v2(
     branch = branch_for(request)
     settings = effective_settings(request)
     if settings.get("adapter", {}).get("id") == CHARACTER_SWAP_ID:
+        active_video_edits = [edit for item in request.value["media"] if item["role"] == "timeline"
+                              for edit in item.get("edit", []) if edit.get("stream") == "video"
+                              and edit.get("action") != "preserve" and edit.get("strength", 1) > 0]
+        if len({edit.get("seed", settings["seed"]) for edit in active_video_edits}) > 1:
+            raise CompilationError("regions per pass: grants with different seeds require separate sequential passes, which this lowering cannot execute")
         if any(edit.get("strength", 1) != 1 or "seed" in edit
                for item in request.value["media"] if item["role"] == "timeline"
                for edit in item.get("edit", [])):

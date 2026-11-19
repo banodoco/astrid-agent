@@ -664,8 +664,7 @@ def prepare_request(
         conditioning_measurements = _admit_conditioning(request, assets, warnings)
         if branch_for(request) == "source_free" and not request.value["media"]:
             warnings.append({"limit": "text_only_documented_use", "message": "Text-only generation is outside the documented use of the Ref2VA checkpoint."})
-        adapter_id = (request.value.get("settings", {}).get("adapter") or {}).get("id")
-        if branch_for(request) == "source_backed_v2v" and adapter_id != "character_swap_v1":
+        if branch_for(request) == "source_backed_v2v":
             for row in conditioning_measurements:
                 row.update({"slot": None, "tag": None, "binding_status": "provisional_until_lowering"})
                 row.pop("audio_tag", None)
