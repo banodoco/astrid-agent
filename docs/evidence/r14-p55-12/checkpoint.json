@@ -1,0 +1,214 @@
+{
+  "archive": {
+    "bytes": 30383,
+    "file": "observations.zip",
+    "sha256": "e143cc85004762ec4f565fb478165331d82f28d800720d4a7d139854b0d5aae1"
+  },
+  "artifacts": [
+    {
+      "bytes": 2637,
+      "file": "agent-caller-base-isolated.log",
+      "sha256": "30450403c296a5c2af149dace235b50dc4b6eaea5a38ccb45b2baac096bb6a9d"
+    },
+    {
+      "bytes": 3351,
+      "file": "agent-caller-base-isolated.xml",
+      "nonpassing": [],
+      "outcomes": {
+        "errors": 0,
+        "failed": 0,
+        "passed": 22,
+        "skipped": 0
+      },
+      "sha256": "94d095406f3695669af70cafa7122d89c46d2ba49ac4504c45c7f095be71cf80"
+    },
+    {
+      "bytes": 2637,
+      "file": "agent-caller-head.log",
+      "sha256": "29666af9e27d852b74e8aaa84418a2ca635827558bc89bfc8c0e7dd7897da4b0"
+    },
+    {
+      "bytes": 3351,
+      "file": "agent-caller-head.xml",
+      "nonpassing": [],
+      "outcomes": {
+        "errors": 0,
+        "failed": 0,
+        "passed": 22,
+        "skipped": 0
+      },
+      "sha256": "d497201951367896c64906b0dc1e933ca916f75efaf17045c0c924b971eb4d9d"
+    },
+    {
+      "bytes": 7494,
+      "file": "agent-census-base.log",
+      "sha256": "416b20524956f2ea39ec98f79c9dc05e3e20b60dec6ac6e5e29fb707cff3db4b"
+    },
+    {
+      "bytes": 2574,
+      "file": "agent-census-base.xml",
+      "nonpassing": [],
+      "outcomes": {
+        "errors": 0,
+        "failed": 0,
+        "passed": 17,
+        "skipped": 0
+      },
+      "sha256": "730b8aa9b6ad34c1d4b656e9a0aa31e6bc66b252b374ebdc008a903734339fa6"
+    },
+    {
+      "bytes": 8709,
+      "file": "agent-census-head.log",
+      "sha256": "9f188d4fc86fc7426d6801d3e956f389f1ef45f839863f7c79bb7c2b90cf716e"
+    },
+    {
+      "bytes": 3883,
+      "file": "agent-census-head.xml",
+      "nonpassing": [
+        {
+          "classname": "tests.test_capability_ledger",
+          "name": "test_shipped_ledger_reconciles_historical_capability_sets",
+          "outcome": "failed"
+        }
+      ],
+      "outcomes": {
+        "errors": 0,
+        "failed": 1,
+        "passed": 16,
+        "skipped": 0
+      },
+      "sha256": "1dc76f60dcdaba421df47c81c9013a77659f54dd4de2e5f2324c27ae25d80ded"
+    },
+    {
+      "bytes": 1200,
+      "file": "agent-delivery-base-isolated.log",
+      "sha256": "40d91279b3b65e5f9f737a8f4e24867f814b74f9df59afb0fb4aece5ea1893c7"
+    },
+    {
+      "bytes": 1206,
+      "file": "agent-delivery-base-isolated.xml",
+      "nonpassing": [
+        {
+          "classname": "",
+          "name": "tests.core.generation.backends.test_comfy_target",
+          "outcome": "errors"
+        }
+      ],
+      "outcomes": {
+        "errors": 1,
+        "failed": 0,
+        "passed": 0,
+        "skipped": 0
+      },
+      "sha256": "beb55aeaa0175e123ad393898885acd55ba017021aac816f7ce71d4f435c8997"
+    },
+    {
+      "bytes": 22864,
+      "file": "agent-receipt-base-isolated.log",
+      "sha256": "d9490a769afc09f7f389ac8b5225a2dee309ad23b893530fed19257e206b5f5e"
+    },
+    {
+      "bytes": 27834,
+      "file": "agent-receipt-base-isolated.xml",
+      "nonpassing": [
+        {
+          "classname": "tests.core.execution.test_producer_evidence_transport_f06",
+          "name": "test_unacknowledged_success_retains_spool_without_publishing_failure",
+          "outcome": "failed"
+        }
+      ],
+      "outcomes": {
+        "errors": 0,
+        "failed": 1,
+        "passed": 148,
+        "skipped": 0
+      },
+      "sha256": "a510f61e877306f7ac9137acbd05c1a7ff6bf3b3ca351a7cfffada180b07dd2a"
+    },
+    {
+      "bytes": 5,
+      "file": "agent-receipt-base.log",
+      "sha256": "f85d30e7d95a052f65167f1f1095186d1190c91502b4ab7aedab460a6eab8870"
+    },
+    {
+      "bytes": 22864,
+      "file": "agent-receipt-head.log",
+      "sha256": "a1806d6dbaf9c9f6d561cb295c5351e93ab36e71965afa73b91a1d59244bfe6c"
+    },
+    {
+      "bytes": 27834,
+      "file": "agent-receipt-head.xml",
+      "nonpassing": [
+        {
+          "classname": "tests.core.execution.test_producer_evidence_transport_f06",
+          "name": "test_unacknowledged_success_retains_spool_without_publishing_failure",
+          "outcome": "failed"
+        }
+      ],
+      "outcomes": {
+        "errors": 0,
+        "failed": 1,
+        "passed": 148,
+        "skipped": 0
+      },
+      "sha256": "9e42fb2c0783492487c88f16e882d73a66ab0f0675eeb80d830e63931b6b0049"
+    }
+  ],
+  "base": "91cb4cb499306b2f09686de0fb67b803bcb89077",
+  "branch": "p55/ls-6-remainder",
+  "destination": "release/14/plan-55",
+  "evidence_kind": "Incremental local observations, not final pinned qualification",
+  "limits": [
+    "No test was skipped or deleted; the only existing test edit is the authorized delivery hash-count assertion3 to1.",
+    "Raw early failures, interrupted/no-result runs, collection errors and corrected new-test setup iterations remain in the archive.",
+    "Agent generated-client refresh and isolated proposed dependency re-pins are not complete.",
+    "New Agent full-path receipt/hash counter tests were written but not executed before the stop.",
+    "End-to-end generic-host restart-to-preview proof and hosted CI qualification are not complete.",
+    "No merge, tasks.md edit, Plan38 guard change, outside-packet fix or second packet."
+  ],
+  "other_blocker": {
+    "baseline": "17 passed in census selection",
+    "candidate": "16 passed/1 failed in same selection",
+    "cause": "New ordinary thumbnail action requires inventory52; preserved exact count assertion remains51.",
+    "mailbox": "https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6986656021",
+    "test": "tests/test_capability_ledger.py::test_shipped_ledger_reconciles_historical_capability_sets"
+  },
+  "packet": "R14-P55-12",
+  "repository": "astrid-agent",
+  "row": "Plan55 LS-6 remainder",
+  "session": "r14-P55-12-1",
+  "source_commit": "a0b9c45f28e0c795d7365a6641d632a51cc9bccc",
+  "source_sha256": {
+    "astrid/core/_shared/result_manifest.py": "141a59dffa6f504a57001c428b88b44bea6c5470f5de3b86b46e16d4435e62b9",
+    "astrid/core/contracts/managed_generation_result.py": "df136044e495ba137d55fd3bd18d4e65eca1f7862d9251ffc338d49199d6af88",
+    "astrid/core/execution/generic_host.py": "dee1cfc2c5901bceab505e7e3fedb2bdb5a35516bf5d18e543ff28483a195c09",
+    "astrid/core/execution/thumbnail_intents.py": "903eae4cf9250b022f2017bf55a99e980542b2d02d0be011005d7455896344ab",
+    "astrid/core/foundation/output_receipts.py": "9d1213d9f830e85f6805e5fc883e74dab909d2d9e9e6ca4c5dc0edbf0fe3dcdb",
+    "astrid/core/generation/backends/comfy_target.py": "d0912bcfa8496b3e1e33c6dca832bb6490e76eb268b28e6129262211d9e0afd2",
+    "astrid/core/generation/backends/vibecomfy_local_server.py": "80044f0ab04c19fe665daea26086f3a352f9ac0f6c904c2e51229d0ad7d65a75",
+    "astrid/core/generation/delivery.py": "657a93125f36f476e80e5a74132941aad4e2a66dd60756bf60bd1b0f8e10c756",
+    "astrid/core/generation/producer_result.py": "d2c0c1687166c5b7fb1b91a30ac384ca1ef7c3a4b189c0c8dd8709f9cd4663df",
+    "astrid/packs/generation/actions/thumbnail_backfill/__init__.py": "e0c941a0a564078f72eb8eaff617c15e962b36a1786322658e530f8c9dd8f915",
+    "astrid/packs/generation/actions/thumbnail_backfill/run.py": "3d8ef3b5488bb168280c355724b972f1efb8f2ea9bb653fa46e01a2202a5fe5a",
+    "astrid/packs/generation/pack.yaml": "62ba52709f3e09d8372610042da0eefb0ed308ffed48d7aa34a31b8c51947439",
+    "astrid/packs/vibecomfy/actions/run/run.py": "ebae5942232279260c7cb383c7180dbae39387c39377c03458d5a291a74e5120",
+    "astrid/resources/astrid-beta-capabilities.json": "4834799a767bd943a444aa0a3844ad2eb0dfac68afb3af74059f237b8c920c90",
+    "astrid/sdk/media_open.py": "997e97615cb8bb011fe4448a9beb15d0d489fa7651eeb9de92ebb1fe03861ab5",
+    "astrid/sdk/remote.py": "fe1262f20539da5a57829fb5eba5298b97caf34c5c3584c98c723e4e7b0fff38",
+    "astrid/sdk/workspace_client.py": "a7ed2dea3a9fa106e147756c77d979c733430870320172b0b6890d41c9a0b5f2",
+    "config/astrid-beta-capabilities.json": "4834799a767bd943a444aa0a3844ad2eb0dfac68afb3af74059f237b8c920c90",
+    "config/astrid-capability-census.lock.json": "5be07f774a7117b0c05f2124be29c34b6f390e4a8b75b8851163f8964a93abd0",
+    "tests/core/generation/test_ls6_receipt_pipeline.py": "9f82c84def7a301982b450330e8bffd5062c30169861c000200c05856fa85ce8",
+    "tests/core/generation/test_output_delivery.py": "e27565db8ad210f5a9dc9776d14218d9da8fa217d3214982da830868e05da53b"
+  },
+  "source_tree": "e2cfe1821b016cf37b2c9a89c4a60362a6c1cf19",
+  "state": "BLOCKED; implementation stopped on existing-test product regression",
+  "stop_reason": {
+    "assertion": "assert again == payload",
+    "baseline": "passed; selection20 passed/4 known setup failures",
+    "candidate": "failed; selection19 passed/5 failed",
+    "cause": "A copied file identity including mtime_ns and ctime_ns is serialized into the managed result, so repeated assembly changes evidence.producer even when output bytes match.",
+    "test": "tests/test_runtime_run.py::test_managed_generation_result_is_deterministic_and_preserves_video_output",
+    "test_unchanged": true
+  }
+}

@@ -53,6 +53,51 @@ documentation:
   kind: skill
   path: docs/SKILL.md
 actions:
+  thumbnail_backfill:
+    name: Create settled generation thumbnail
+    description: Derive the bounded JPEG preview for one Runtime-admitted source.
+    version: '1.0'
+    cache:
+      mode: none
+    inputs:
+    - name: source
+      type: file
+      required: true
+    - name: source_media_type
+      type: string
+      required: true
+    outputs:
+    - name: thumbnail
+      type: file
+      mode: create_or_replace
+      path_template: '{out}/thumbnail.jpg'
+      artifact_type: image/jpeg
+    isolation:
+      mode: subprocess
+      network: false
+    metadata:
+      adapter_family: cpu
+      output_result_manifest: true
+      runtime_file: actions/thumbnail_backfill/run.py
+      runtime_module: astrid.packs.generation.actions.thumbnail_backfill.run
+    invocation:
+      kind: command
+      command:
+        argv:
+        - '{python_exec}'
+        - -m
+        - astrid.packs.generation.actions.thumbnail_backfill.run
+        - --source
+        - '{source}'
+        - --media-type
+        - '{source_media_type}'
+        - --out
+        - '{out}'
+    resources:
+    - kind: implementation
+      path: actions/thumbnail_backfill/run.py
+    - kind: implementation
+      path: actions/thumbnail_backfill/__init__.py
   generate_audio:
     cache:
       mode: none

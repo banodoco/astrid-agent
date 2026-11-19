@@ -1764,6 +1764,11 @@ class RemoteTimelines(_RemoteFamily, _RemoteTimelineRevisionMixin):
 
 
 class RemoteMedia(_RemoteFamily):
+    def _open_delivery(self, project, ref, **options):
+        from .media_open import open_reference
+
+        return open_reference(self._client, project, ref, _delivery=True, **options)
+
     def open(
         self,
         project: str,

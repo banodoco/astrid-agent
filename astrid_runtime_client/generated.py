@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 import math
+import os
 import http.client
 import socket
 import threading
@@ -13,6 +15,7 @@ import urllib.error
 import urllib.request
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, BinaryIO, Callable, Literal, Mapping
 from urllib.parse import urlsplit
 
@@ -20,9 +23,12 @@ from .timeline_commit_types import CommitAcceptedMutation, CommitPreviewResponse
 
 PROTOCOL = "workspace.v1"
 _UNSET = object()
-SCHEMA_DIGEST = "sha256:e5a3c475c7c38b63ab363eed5298b39c6021d0c229525041d330adfcf31ff102"
-OPERATIONS = ('health', 'handshake', 'getRealm', 'doctor', 'createBackup', 'restoreBackup', 'exportRealm', 'tombstoneRealm', 'recoverRealm', 'purgeRealm', 'listProjects', 'createProject', 'getProject', 'updateProject', 'currentProject', 'selectProject', 'getPreferences', 'updatePreferences', 'getUserAppState', 'updateUserAppState', 'listDocuments', 'createDocument', 'getDocument', 'updateDocument', 'listProjectObjects', 'ingestProjectObject', 'importProjectMedia', 'getProjectMediaImport', 'listProjectTasks', 'listManagedOutputs', 'getManagedOutput', 'adoptManagedOutput', 'getProjectObjectLocation', 'exportManagedOutput', 'updateManagedOutputLifecycle', 'listProjectRuns', 'createTimeline', 'listTimelines', 'getProjectTimeline', 'renameTimeline', 'importTimeline', 'inspectTimeline', 'createTimelineView', 'commitTimeline', 'listTimelineCommits', 'getProjectMediaSelection', 'getProjectVerifiedMedia', 'getProjectVerifiedDocumentObject', 'getProjectVerifiedDocument', 'listProjectParentCompositionRevisions', 'publishParentComposition', 'replaceParentCompositionMedia', 'getProjectParentCompositionRevision', 'restoreProjectParentCompositionRevision', 'createTimelineDocument', 'getProjectShotRevision', 'getProjectTimelineRevision', 'listTimelineHistory', 'replaceTimelineClip', 'diffTimeline', 'archiveTimeline', 'recoverTimeline', 'getShot', 'createProjectShot', 'listProjectShots', 'getProjectShot', 'updateProjectShot', 'archiveProjectShot', 'recoverProjectShot', 'addShotItem', 'removeShotItem', 'promoteProjectShotCandidate', 'reorderShotItems', 'listProjectShotTextBindings', 'setProjectShotTextBinding', 'getProjectShotTextBinding', 'setProjectShotTextBindingById', 'rebindProjectShotTextBinding', 'createProjectReference', 'listProjectReferences', 'getProjectReference', 'updateProjectReference', 'archiveProjectReference', 'recoverProjectReference', 'associateReference', 'setPrimaryReference', 'linkReferences', 'getReference', 'listMediaRelations', 'createMediaRelation', 'getSourceFrameThumbnail', 'ensureSourceFrameThumbnail', 'ingestObject', 'getObject', 'headObject', 'admitTask', 'waitForWork', 'waitForTask', 'claimTask', 'claimDelegatedChild', 'admitDelegatedTask', 'getTask', 'cancelTask', 'retryTask', 'recoverTaskPlacement', 'recordRemoteActivation', 'controlRemoteCredential', 'revokeRemoteActivation', 'getRun', 'cancelRun', 'retryRun', 'listRunEvents', 'listEvents', 'registerExecutor', 'getExecutor', 'getTaskSettlement', 'abandonTask', 'getLocalWorkerGeneration', 'startLocalWorker', 'relinquishLocalWorker', 'listCapabilities', 'registerCapability', 'listGenerations', 'createGeneration', 'getGeneration', 'listVariants', 'createVariant', 'markGenerationVariantsViewed', 'getVariant', 'attachVariantThumbnail', 'markVariantViewed', 'settleAttempt', 'publishRecoverableSnapshot', 'issueChildAuthority', 'prepareReboot', 'checkpointAttempt', 'publishTimelineRender', 'failAttempt', 'heartbeatAttempt', 'requestReboot', 'resumeAttempt')
+SCHEMA_DIGEST = "sha256:a313b20d28be310e53fe0abe8e2f06a5dde1894a2c4b348fcf0e25ec57dce348"
+OPERATIONS = ('health', 'handshake', 'getRealm', 'doctor', 'createBackup', 'restoreBackup', 'exportRealm', 'tombstoneRealm', 'recoverRealm', 'purgeRealm', 'listProjects', 'createProject', 'getProject', 'updateProject', 'currentProject', 'selectProject', 'getPreferences', 'updatePreferences', 'getUserAppState', 'updateUserAppState', 'listDocuments', 'createDocument', 'getDocument', 'updateDocument', 'listProjectObjects', 'ingestProjectObject', 'importProjectMedia', 'getProjectMediaImport', 'listProjectTasks', 'listManagedOutputs', 'getManagedOutput', 'adoptManagedOutput', 'getProjectObjectLocation', 'exportManagedOutput', 'updateManagedOutputLifecycle', 'listProjectRuns', 'createTimeline', 'listTimelines', 'getProjectTimeline', 'renameTimeline', 'importTimeline', 'inspectTimeline', 'createTimelineView', 'commitTimeline', 'listTimelineCommits', 'getProjectMediaSelection', 'getProjectVerifiedMedia', 'getProjectVerifiedDocumentObject', 'getProjectVerifiedDocument', 'listProjectParentCompositionRevisions', 'publishParentComposition', 'replaceParentCompositionMedia', 'getProjectParentCompositionRevision', 'restoreProjectParentCompositionRevision', 'createTimelineDocument', 'getProjectShotRevision', 'getProjectTimelineRevision', 'listTimelineHistory', 'replaceTimelineClip', 'diffTimeline', 'archiveTimeline', 'recoverTimeline', 'getShot', 'createProjectShot', 'listProjectShots', 'getProjectShot', 'updateProjectShot', 'archiveProjectShot', 'recoverProjectShot', 'addShotItem', 'removeShotItem', 'promoteProjectShotCandidate', 'reorderShotItems', 'listProjectShotTextBindings', 'setProjectShotTextBinding', 'getProjectShotTextBinding', 'setProjectShotTextBindingById', 'rebindProjectShotTextBinding', 'createProjectReference', 'listProjectReferences', 'getProjectReference', 'updateProjectReference', 'archiveProjectReference', 'recoverProjectReference', 'associateReference', 'setPrimaryReference', 'linkReferences', 'getReference', 'listMediaRelations', 'createMediaRelation', 'getSourceFrameThumbnail', 'ensureSourceFrameThumbnail', 'ingestObject', 'getObject', 'headObject', 'admitTask', 'pendingThumbnailIntents', 'admitThumbnailIntent', 'waitForWork', 'waitForTask', 'claimTask', 'claimDelegatedChild', 'admitDelegatedTask', 'getTask', 'cancelTask', 'retryTask', 'recoverTaskPlacement', 'recordRemoteActivation', 'controlRemoteCredential', 'revokeRemoteActivation', 'getRun', 'cancelRun', 'retryRun', 'listRunEvents', 'listEvents', 'registerExecutor', 'getExecutor', 'getTaskSettlement', 'abandonTask', 'getLocalWorkerGeneration', 'startLocalWorker', 'relinquishLocalWorker', 'listCapabilities', 'registerCapability', 'listGenerations', 'createGeneration', 'getGeneration', 'listVariants', 'createVariant', 'markGenerationVariantsViewed', 'getVariant', 'attachVariantThumbnail', 'markVariantViewed', 'settleAttempt', 'publishRecoverableSnapshot', 'issueChildAuthority', 'prepareReboot', 'checkpointAttempt', 'publishTimelineRender', 'failAttempt', 'heartbeatAttempt', 'requestReboot', 'resumeAttempt')
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+_VERIFIED_OBJECT_MEDIA_TYPE = "application/vnd.astrid.verified-object.v1"
+_VERIFIED_OBJECT_MARKER = b"\nASTRID-OBJECT-COMPLETE-v1\n"
+_OBJECT_CHUNK_BYTES = 1024 * 1024
 
 
 def _require_loopback(url: str) -> None:
@@ -406,6 +412,16 @@ class ByteResponse:
 
 
 @dataclass(frozen=True)
+class FileResponse:
+    path: str
+    digest: str
+    size: int
+    status: int
+    headers: Mapping[str, str]
+    stream_verified: bool
+
+
+@dataclass(frozen=True)
 class Task:
     task_id: str
     run_id: str
@@ -718,6 +734,8 @@ class WorkspaceClient:
                 if response_reader is not None:
                     reading_response = True
                     with io.BytesIO(response_body) as response:
+                        response.status = status
+                        response.headers = response_headers
                         response_body = response_reader(response)
                     reading_response = False
             else:
@@ -1305,15 +1323,92 @@ class WorkspaceClient:
     def ensure_source_frame_thumbnail(self, project_id: str, thumbnail: Mapping[str, Any], *, idempotency_key: str) -> MutationResult:
         return self._mutation_json(self._request("POST", f"/v1/projects/{_path_part(project_id)}/thumbnails/source-frame", body=json.dumps(dict(thumbnail), separators=(",", ":")).encode(), headers={"Content-Type": "application/json", "Idempotency-Key": idempotency_key}, expected=(200, 201))[2])
 
-    def get_object(self, object_id: str, *, byte_range: tuple[int, int | None] | None = None) -> ByteResponse:
+    def get_object(self, object_id: str, *, byte_range: tuple[int, int | None] | None = None, destination: str | Path | None = None, expected_size: int | None = None, expected_digest: str | None = None) -> ByteResponse | FileResponse:
         headers: dict[str, str] = {}
         if byte_range:
             start, end = byte_range
             if start < 0 or (end is not None and end < start):
                 raise ValueError("invalid byte range")
             headers["Range"] = f"bytes={start}-{'' if end is None else end}"
+        if destination is not None:
+            if byte_range is not None and expected_digest is None:
+                raise ValueError("range delivery requires the independently expected range digest")
+            digest = str(expected_digest or object_id).removeprefix("sha256:")
+            if not re.fullmatch(r"[0-9a-f]{64}", digest):
+                raise ValueError("file delivery requires an authorized SHA-256 identity")
+            if not isinstance(expected_size, int) or isinstance(expected_size, bool) or expected_size < 0:
+                raise ValueError("file delivery requires the authorized nonnegative byte size")
+            if byte_range is None and digest != str(object_id).removeprefix("sha256:"):
+                raise ValueError("file delivery identity does not match the requested object")
+            if byte_range is None:
+                headers["Accept"] = _VERIFIED_OBJECT_MEDIA_TYPE
+            return self._get_object_file(object_id, Path(destination), digest, expected_size, headers)
         status, response_headers, body = self._request("GET", f"/v1/objects/{_path_part(object_id)}", headers=headers, expected=(200, 206))
         return ByteResponse(body, status, response_headers)
+
+    def _get_object_file(self, object_id: str, destination: Path, expected_digest: str, expected_size: int, headers: Mapping[str, str]) -> FileResponse:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.parent / f".astrid-object-{uuid.uuid4().hex}"
+        # Exclusive ordinary creation lets the kernel apply the caller's umask.
+        # The verified file keeps those permissions when it is installed below.
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o666)
+        negotiated = False
+        try:
+            # Keep ownership here so even a failed fdopen closes the descriptor.
+            with os.fdopen(fd, "wb", closefd=False) as output:
+                def receive(response):
+                    nonlocal negotiated
+                    if getattr(response, "status", 200) not in (200, 206):
+                        return response.read()
+                    fields = {str(key).lower(): str(value) for key, value in response.headers.items()}
+                    negotiated = fields.get("content-type") == _VERIFIED_OBJECT_MEDIA_TYPE
+                    if negotiated and (
+                        "Range" in headers
+                        or fields.get("x-content-digest") != "sha256:" + expected_digest
+                        or fields.get("x-object-length") != str(expected_size)
+                    ):
+                        raise ApiError(0, "integrity_error", "stream identity does not match the authorized result")
+                    observed = hashlib.sha256()
+                    remaining = expected_size
+                    while remaining:
+                        chunk = response.read(min(_OBJECT_CHUNK_BYTES, remaining))
+                        if not chunk:
+                            raise ApiError(0, "integrity_error", "object transfer ended before its expected length")
+                        observed.update(chunk)
+                        output.write(chunk)
+                        remaining -= len(chunk)
+                    if negotiated:
+                        marker = bytearray()
+                        while len(marker) < len(_VERIFIED_OBJECT_MARKER):
+                            chunk = response.read(len(_VERIFIED_OBJECT_MARKER) - len(marker))
+                            if not chunk:
+                                break
+                            marker.extend(chunk)
+                        if bytes(marker) != _VERIFIED_OBJECT_MARKER:
+                            raise ApiError(0, "integrity_error", "object transfer has no verified completion marker")
+                    if response.read(1) or observed.hexdigest() != expected_digest:
+                        raise ApiError(0, "integrity_error", "received object bytes do not match the authorized result")
+                    return b""
+
+                status, response_headers, _ = self._request(
+                    "GET", f"/v1/objects/{_path_part(object_id)}", headers=headers,
+                    expected=(200, 206), response_reader=receive,
+                )
+                output.flush()
+                os.fsync(output.fileno())
+            owned_fd, fd = fd, None
+            os.close(owned_fd)
+            os.replace(temporary, destination)
+            return FileResponse(str(destination), "sha256:" + expected_digest, expected_size,
+                                status, response_headers, negotiated)
+        except (OSError, http.client.HTTPException) as exc:
+            raise ApiError(0, "transport_error", "object transfer did not complete") from exc
+        finally:
+            try:
+                if fd is not None:
+                    os.close(fd)
+            finally:
+                temporary.unlink(missing_ok=True)
 
     def head_object(self, object_id: str, *, byte_range: tuple[int, int | None] | None = None) -> ByteResponse:
         headers: dict[str, str] = {}
@@ -1362,6 +1457,20 @@ class WorkspaceClient:
         payload: dict[str, Any] = {"timeout_seconds": min(timeout_seconds, max(0.0, self.timeout - 1.0))}
         if cursor is not None: payload["cursor"] = cursor
         return self._wait_request(f"/v1/tasks/{_path_part(task_id)}/wait", payload)
+
+    def pending_thumbnail_intents(self, *, executor_id: str, runtime_epoch: int, cursor: str | None = None, limit: int = 50) -> Mapping[str, Any]:
+        payload = {"executor_id": executor_id, "runtime_epoch": runtime_epoch, "limit": limit}
+        if cursor is not None:
+            payload["cursor"] = cursor
+        return self._json(self._request("POST", "/v1/thumbnail-intents/pending", body=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"}, expected=(200,))[2])
+
+    def admit_thumbnail_intent(self, task_id: str, intent_id: str, *, executor_id: str, runtime_epoch: int) -> MutationResult:
+        payload = {"executor_id": executor_id, "runtime_epoch": runtime_epoch}
+        return self._mutation_json(self._request("POST",
+            f"/v1/tasks/{_path_part(task_id)}/thumbnail-intents/{_path_part(intent_id)}/admit",
+            body=json.dumps(payload).encode(), headers={"Content-Type": "application/json",
+                "Idempotency-Key": "thumbnail-intent-" + intent_id}, expected=(200, 201))[2])
 
     def wait_for_work(self, *, executor_id: str, capability_ids: list[str], runtime_epoch: int, target: Mapping[str, Any] | None = None, cursor: str | None = None, timeout_seconds: float = 25.0) -> Mapping[str, Any]:
         """Read-only eligibility wait; a wake grants no claim or lease."""

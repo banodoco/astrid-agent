@@ -5731,6 +5731,25 @@ class RuntimeProtocolClient:
         capabilities = info.get("capabilities", ()) if isinstance(info, Mapping) else getattr(info, "capabilities", ())
         return "task_waits.v1" in capabilities
 
+    def supports_thumbnail_intents(self) -> bool:
+        if not callable(getattr(self.generated, "pending_thumbnail_intents", None)):
+            return False
+        if self.generated.handshake_info is None:
+            if self.executor_id is None:
+                return False
+            self._authenticate_worker(str(self.executor_id))
+        info = self.generated.handshake_info
+        capabilities = info.get("capabilities", ()) if isinstance(info, Mapping) else getattr(info, "capabilities", ())
+        return "thumbnail_intents.v1" in capabilities
+
+    def pending_thumbnail_intents(self, *, executor_id: str, cursor=None):
+        return self.generated.pending_thumbnail_intents(executor_id=executor_id,
+            runtime_epoch=self._current_runtime_epoch(), cursor=cursor)
+
+    def admit_thumbnail_intent(self, task_id: str, intent_id: str, *, executor_id: str):
+        return self.generated.admit_thumbnail_intent(task_id, intent_id, executor_id=executor_id,
+            runtime_epoch=self._current_runtime_epoch())
+
     def supports_resolution_descriptors(self, executor_id: str) -> bool:
         if not callable(getattr(self.generated, "wait_for_work", None)):
             return False
@@ -9700,6 +9719,7 @@ class GenericPackHost:
             validated = validate_managed_generation_result(
                 payload, staging_root=output_root,
                 expected_task_id=task_id, expected_attempt_id=attempt_id,
+                use_output_receipts=getattr(getattr(self, "client", None), "REUSES_OUTPUT_DIGEST", False) is True,
             )
             if successful and any(
                 validated.outcomes[phase].status != expected
@@ -12982,6 +13002,11 @@ class GenericPackHost:
                     job_evidence.finish()
             try:
                 logs = self._log_outputs(output_root, attempt=root, warnings=warnings)
+                if capability_id == "generation.thumbnail_backfill":
+                    # Owner retries keep the task but acquire a new attempt;
+                    # retain each attempt's immutable log associations.
+                    for output in logs:
+                        output["group_key"] = f"thumbnail-attempt:{attempt_id}"
                 task_epoch = task_data.get("runtime_epoch")
                 return self._upload_outputs(
                     logs, project_id=task_data.get("project_id"), run_id=task_data.get("run_id"),
@@ -13737,6 +13762,7 @@ class GenericPackHost:
                     declared_outputs=record.definition.outputs,
                     values=harvest_values,
                     require=False,
+                    use_output_receipts=getattr(self.client, "REUSES_OUTPUT_DIGEST", False) is True,
                 )
             except HarvestError as exc:
                 raise HostError(f"capability {record.id!r}: {exc}") from exc
@@ -13752,13 +13778,17 @@ class GenericPackHost:
                 defer_content_check_to_runtime=getattr(self.client, "REUSES_OUTPUT_DIGEST", False) is True,
             )
             _bind_named_parent_output(task_data, typed_outputs)
+            from .thumbnail_intents import bind_thumbnail_output
+            bind_thumbnail_output(record.id, typed_outputs, task_data)
             _terminal["outputs"] = typed_outputs
-            thumbnail_outputs, thumbnail_diagnostics = self._generation_thumbnail_outputs(
-                typed_outputs,
-                attempt_root=root,
-                task_data=task_data,
-            )
-            typed_outputs.extend(thumbnail_outputs)
+            supports_intents = getattr(self.client, "supports_thumbnail_intents", None)
+            if callable(supports_intents) and supports_intents():
+                thumbnail_diagnostics = []
+            else:
+                thumbnail_outputs, thumbnail_diagnostics = self._generation_thumbnail_outputs(
+                    typed_outputs, attempt_root=root, task_data=task_data,
+                )
+                typed_outputs.extend(thumbnail_outputs)
             result_names = {
                 descriptor["name"]
                 for descriptor in harvested
@@ -14417,6 +14447,14 @@ class GenericPackHost:
             return None
         if self._shutdown.is_set():
             return False
+        # This owned loop runs at startup and after each terminal attempt.
+        # A failed admission leaves the durable intent visible for the next
+        # iteration; it cannot change the completed generation's settlement.
+        from .thumbnail_intents import reconcile
+        try:
+            reconcile(self)
+        except Exception as exc:
+            _LOGGER.warning("thumbnail intent reconciliation deferred: %s", exc)
         if capability_ids is None:
             if not self.capabilities:
                 self.discover()

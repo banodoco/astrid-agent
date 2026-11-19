@@ -12,6 +12,7 @@ import base64
 import hashlib
 import mimetypes
 import os
+import stat
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
@@ -24,6 +25,70 @@ from .workspace_client import WorkspaceClientError
 DEFAULT_PREVIEW_BYTES = 16 * 1024
 DEFAULT_MAX_BYTES = 10 * 1024 * 1024
 DEFAULT_MATERIALIZE_BYTES = 100 * 1024 * 1024
+
+
+def _independent_identity(path: Path) -> tuple[int, ...]:
+    value = path.lstat()
+    if not stat.S_ISREG(value.st_mode) or value.st_nlink != 1:
+        raise ValueError("caller output is not an independent regular file")
+    return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+
+
+class _DeliveryData(dict):
+    """In-process evidence for bytes verified by this caller, never wire data."""
+
+    def __init__(self, data, *, path: Path, digest: str):
+        super().__init__(data)
+        self._path = path.absolute()
+        self._digest = digest
+        self._identity = _independent_identity(path)
+
+    def verify(self, path: Path, digest: str, size: int | None = None) -> None:
+        if (path.absolute() != self._path or digest != self._digest
+                or _independent_identity(path) != self._identity
+                or (size is not None and size != self._identity[2])):
+            raise ValueError("caller output changed after independent verification")
+
+
+def _delivery_file(client, object_id, *, digest, size, filename, media_type, root):
+    """Receive once into an owned file; the generated client hashes the stream.
+
+    Legacy byte adapters still receive the caller's independent digest check.
+    No Runtime path or producer receipt participates in this verification.
+    """
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    if not Path(filename).suffix:
+        filename += mimetypes.guess_extension(media_type, strict=False) or ""
+    destination = root / filename
+    transfer = getattr(client, "get_object_file", None)
+    if callable(transfer):
+        result = transfer(object_id, destination=destination, expected_size=size,
+                          expected_digest=digest)
+        if (not isinstance(result, Mapping) or result.get("digest") != "sha256:" + digest
+                or result.get("size") != size or Path(result.get("path", "")) != destination):
+            raise ValueError("Runtime client returned an invalid file verification result")
+        return destination
+    data, failure = _read_bytes(client, object_id)
+    if failure:
+        raise ValueError(failure.error.message)
+    if len(data) != size or hashlib.sha256(data).hexdigest() != digest:
+        raise ValueError("received bytes do not match the authorized Runtime identity")
+    # The slot is private and new. Preserve the caller's umask, without a
+    # hardlink, a writable CAS alias or another hash of the same byte response.
+    fd, raw = tempfile.mkstemp(prefix=".astrid-delivery-object-", dir=root)
+    os.close(fd)
+    temporary = Path(raw)
+    temporary.unlink()
+    try:
+        with temporary.open("xb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return destination
 
 
 def _failure(code: str, message: str, **details: Any) -> DomainResult[Any]:
@@ -288,6 +353,7 @@ def open_reference(
     cache_root: str | Path | None = None,
     preview_bytes: int = DEFAULT_PREVIEW_BYTES,
     max_bytes: int = DEFAULT_MAX_BYTES,
+    _delivery: bool = False,
 ) -> DomainResult[Any]:
     """Resolve and boundedly open one returned reference.
 
@@ -406,6 +472,25 @@ def open_reference(
         })
     if isinstance(expected_size, int) and expected_size > max_bytes and materialize:
         return _failure("size_limit", "requested materialization exceeds its byte limit", size_bytes=expected_size, max_bytes=max_bytes)
+    if _delivery:
+        digest = _normalized_digest(metadata.get("digest") or metadata.get("object_id"))
+        if (not digest or not isinstance(expected_size, int) or isinstance(expected_size, bool)
+                or expected_size < 0 or not materialize or cache_root is None):
+            return _failure("integrity_error", "delivery requires an authorized digest and byte count")
+        media_type = str(metadata.get("media_type") or metadata.get("mime_type") or "application/octet-stream")
+        filename = _safe_filename(metadata.get("filename"), fallback=digest[:16])
+        try:
+            path = _delivery_file(client, str(metadata.get("object_id") or object_id),
+                digest=digest, size=expected_size, filename=filename, media_type=media_type, root=cache_root)
+            data = _DeliveryData({"kind": kind, "ref": reference, "mime_type": media_type,
+                "name": path.name, "size_bytes": expected_size,
+                "scope": {"project": str(project), "read_only": True},
+                "content_identity": "sha256:" + digest, "availability": "available",
+                "preview": None, "local_path": str(path), "local_path_storage": "verified-copy",
+                "next_actions": []}, path=path, digest=digest)
+        except Exception as exc:
+            return _failure("integrity_error", "Runtime object delivery did not verify", reason=str(exc))
+        return DomainResult.success(data)
     data, failure = _read_bytes(client, str(metadata.get("object_id") or object_id))
     if failure:
         return failure

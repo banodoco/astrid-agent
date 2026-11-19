@@ -1,0 +1,59 @@
+{
+  "command": [
+    "/workspace/scratch/8c30ce2383b9/test-env/bin/python",
+    "-m",
+    "pytest",
+    "-q",
+    "-rA",
+    "tests/test_vibecomfy_pin.py::test_no_other_tracked_file_copies_the_pin",
+    "--basetemp=/workspace/scratch/8c30ce2383b9/proof/connector-staged-pin-copy-1-tmp",
+    "--junitxml=/workspace/scratch/8c30ce2383b9/proof/connector-staged-pin-copy-1.xml"
+  ],
+  "cwd": "/workspace/scratch/31d84c8ecea8/agent-connector-proof",
+  "environment": {
+    "ASTRID_RUNTIME_CHECKOUT": "/workspace/scratch/31d84c8ecea8/runtime-pinned-proof",
+    "ASTRID_VIBECOMFY_CHECKOUT": "/workspace/scratch/31d84c8ecea8/vibe-final-proof",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONPATH": "/workspace/scratch/31d84c8ecea8/agent-connector-proof:/workspace/scratch/31d84c8ecea8/runtime-pinned-proof:/workspace/scratch/31d84c8ecea8/vibe-final-proof"
+  },
+  "started_utc": "2026-11-19T02:48:22.296234+00:00",
+  "before": [
+    {
+      "root": "/workspace/scratch/31d84c8ecea8/agent-connector-proof",
+      "commit": "70c005b313e94ddfabc62e9e894e22a9eefcd344",
+      "tree": "b2015aeaeb66a469db21392488f2213209325777",
+      "status": [
+        "A  docs/evidence/r14-p55-12/combined-vibe.json",
+        "A  docs/evidence/r14-p55-12/observations-combined-vibe.tar.xz",
+        "?? tests/core/execution/test_ls6_variant_thumbnail_recovery.py"
+      ],
+      "tracked_diff_sha256": "e6f9c83aee505240e4135ac0f004f932d8cc3cc9a943ebbdce2f3ced31ddcdb7",
+      "worktree_files": {
+        "tests/core/execution/test_ls6_variant_thumbnail_recovery.py": "dd98270eb9fbb9e27c438f52f7d18b1bdb97271bbd4bf86e86fafe0e29003a84"
+      }
+    }
+  ],
+  "exit_code": 0,
+  "finished_utc": "2026-11-19T02:48:23.571054+00:00",
+  "after": [
+    {
+      "root": "/workspace/scratch/31d84c8ecea8/agent-connector-proof",
+      "commit": "70c005b313e94ddfabc62e9e894e22a9eefcd344",
+      "tree": "b2015aeaeb66a469db21392488f2213209325777",
+      "status": [
+        "A  docs/evidence/r14-p55-12/combined-vibe.json",
+        "A  docs/evidence/r14-p55-12/observations-combined-vibe.tar.xz",
+        "?? tests/core/execution/test_ls6_variant_thumbnail_recovery.py"
+      ],
+      "tracked_diff_sha256": "e6f9c83aee505240e4135ac0f004f932d8cc3cc9a943ebbdce2f3ced31ddcdb7",
+      "worktree_files": {
+        "tests/core/execution/test_ls6_variant_thumbnail_recovery.py": "dd98270eb9fbb9e27c438f52f7d18b1bdb97271bbd4bf86e86fafe0e29003a84"
+      }
+    }
+  ],
+  "inputs_unchanged": true,
+  "artifacts": {
+    ".log": "1fd3745f31f42aff7eab93396a775b73955b8dec3f97384857680d21d6699e3b",
+    ".xml": "85612cbffa8565a5b37b67b2c389fd5a028d2189666897164d518bfe870d62a1"
+  }
+}

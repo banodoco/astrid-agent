@@ -914,6 +914,11 @@ class WorkspaceClient:
     def get_object(self, object_id: str) -> Any:
         return self._call_generated("get_object", object_id)
 
+    def get_object_file(self, object_id: str, *, destination: str | Path,
+                        expected_size: int, expected_digest: str) -> Any:
+        return self._call_generated("get_object", object_id, destination=destination,
+                                    expected_size=expected_size, expected_digest=expected_digest)
+
     def get_source_frame_thumbnail(
         self,
         project_id: str,

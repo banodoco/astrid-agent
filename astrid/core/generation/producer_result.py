@@ -41,7 +41,10 @@ def _read_correlated_result(path: Path, *, task_id: str | None, attempt_id: str 
     outputs = [{**output, 'content_hash': 'sha256:' + output['sha256']}
                for output in payload['outputs']]
     if outputs:
-        validate_result_manifest({**payload, 'outputs': outputs}, staging_root=path.parent)
+        from astrid.core.foundation.output_receipts import bind_output_receipts
+        receipts = bind_output_receipts(payload, path.parent)
+        validate_result_manifest({**payload, 'outputs': outputs}, staging_root=path.parent,
+                                 output_receipts=receipts)
     else:
         # The universal custody validator requires a concrete output. There
         # are no bytes to verify on an empty failure; retain the existing
