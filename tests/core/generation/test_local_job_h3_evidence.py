@@ -224,6 +224,15 @@ def test_source_free_composition_and_verification_enforce_requested_dimensions(t
     assert composition["coverage"]["candidate"]["video"]["width"] == 512
     assert composition["coverage"]["candidate"]["video"]["height"] == 288
     assert verify_candidate(preparation=preparation, composition=composition)["status"] == "verified"
+    import copy
+    legacy = copy.deepcopy(composition)
+    del legacy["coverage"]["candidate"]["video"]["width"]
+    del legacy["coverage"]["candidate"]["video"]["height"]
+    verified = verify_candidate(preparation=preparation, composition=legacy)
+    assert verified["coverage"]["video"]["width"] == 512
+    legacy["coverage"]["candidate"]["video"]["width"] = 1024
+    with pytest.raises(VerificationError, match="candidate coverage does not match"):
+        verify_candidate(preparation=preparation, composition=legacy)
     decoded = subprocess.run(["ffmpeg", "-v", "error", "-i", str(candidate), "-frames:v", "1",
                               "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], check=True, capture_output=True)
     assert len(decoded.stdout) == 512 * 288 * 3
@@ -233,3 +242,38 @@ def test_source_free_composition_and_verification_enforce_requested_dimensions(t
     composition["candidate"]["size"] = candidate.stat().st_size
     with pytest.raises(VerificationError, match="candidate video size is 1024x576, requested 512x288"):
         verify_candidate(preparation=preparation, composition=composition)
+
+
+def test_source_backed_generated_video_must_match_canvas(tmp_path):
+    import subprocess
+    from astrid.packs.h3_av.shared.compose import CompositionError, compose_candidate
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from astrid.packs.h3_av.shared.verify import verify_candidate
+
+    def video(path, size, color):
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                        f"color=c={color}:s={size}:r=24:d=1", "-f", "lavfi", "-i",
+                        "sine=frequency=440:sample_rate=48000:duration=1", "-c:v", "libx264",
+                        "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(path)],
+                       check=True, capture_output=True)
+        return path
+
+    source = video(tmp_path / "source.mp4", "512x288", "blue")
+    request = normalize_request({"version": 2, "prompt": "Edit the scene", "duration": 1,
+        "output": {"size": [512, 288]}, "media": [{"id": "source", "asset": "source.mp4",
+        "role": "timeline", "modality": "video", "at": {"frame": 0}, "range": [0, 1],
+        "edit": [{"stream": "video", "during": [0, 1], "mask": {"full_frame": True}}]}]})
+    preparation = prepare_request(request, asset_map={"source.mp4": str(source)})
+    assert preparation["mask_schedule"]["branch"] == "source_backed_v2v"
+    wrong = video(tmp_path / "wrong.mp4", "1024x576", "red")
+    with pytest.raises(CompositionError, match="generated video size is 1024x576, requested 512x288"):
+        compose_candidate(preparation=preparation, generated=wrong, source=source, out_dir=tmp_path / "bad")
+    generated = video(tmp_path / "generated.mp4", "512x288", "red")
+    composition = compose_candidate(preparation=preparation, generated=generated, source=source, out_dir=tmp_path / "good")
+    verification = verify_candidate(preparation=preparation, composition=composition, source=source)
+    candidate = composition["candidate"]["path"]
+    decoded = subprocess.run(["ffmpeg", "-v", "error", "-i", candidate, "-frames:v", "1", "-f",
+                              "rawvideo", "-pix_fmt", "rgb24", "-"], check=True, capture_output=True)
+    assert len(decoded.stdout) == 512 * 288 * 3
+    assert verification["status"] == "verified"

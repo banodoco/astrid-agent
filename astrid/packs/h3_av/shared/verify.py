@@ -312,7 +312,15 @@ def verify_candidate(
             for key, entry in value.items()
         }
 
-    if portable_coverage(declared_candidate) != portable_coverage(actual_coverage):
+    declared_portable = portable_coverage(declared_candidate)
+    actual_portable = portable_coverage(actual_coverage)
+    # Older settled records predate dimension evidence. The candidate was just
+    # measured and validated above; compare dimensions whenever recorded.
+    if isinstance(declared_portable, Mapping) and isinstance(declared_portable.get("video"), Mapping):
+        for field in ("width", "height"):
+            if field not in declared_portable["video"]:
+                actual_portable["video"].pop(field, None)
+    if declared_portable != actual_portable:
         raise VerificationError("candidate coverage does not match composition evidence")
 
     schedule = preparation["mask_schedule"]
@@ -424,7 +432,7 @@ def verify_candidate(
             "spatial_complement": spatial_evidence,
         },
         "provenance": composition.get("provenance", {}),
-        "coverage": composition.get("coverage", {}).get("candidate", {}),
+        "coverage": actual_coverage,
         "lifecycle": {"prepared": True, "composed": True, "verified": True},
         "status": "verified",
     }

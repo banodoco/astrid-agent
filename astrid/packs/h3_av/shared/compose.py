@@ -262,6 +262,11 @@ def _validate_generated_coverage(
         return {"video": video, "audio": audio, "timing": plan}
     timing = _continuation_timing(preparation)
     if timing is None:
+        schedule = preparation.get("mask_schedule")
+        if isinstance(schedule, Mapping) and schedule.get("branch") == "source_backed_v2v":
+            video = _video_coverage(generated_video)
+            _validate_video_size(preparation, video, role="generated")
+            return {"video": video}
         return {}
     video = _video_coverage(generated_video)
     audio = _audio_coverage(generated_audio or generated_video)
