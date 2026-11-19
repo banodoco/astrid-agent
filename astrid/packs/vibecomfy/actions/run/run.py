@@ -745,7 +745,7 @@ def _after_outputs(spec: Any) -> Any:
     if capture_evidence:
         # The public callable keeps its historical list contract. Only the
         # managed materializer opts into the structured callback explicitly.
-        finish.with_evidence = lambda outputs: engine.finish(run_job, outputs)
+        setattr(finish, "with_evidence", lambda outputs: engine.finish(run_job, outputs))
     return finish
 
 
