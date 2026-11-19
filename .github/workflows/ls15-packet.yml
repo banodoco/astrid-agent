@@ -52,7 +52,7 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
-          ref: 493616c1cfc7a83f18894dc81773571e977f26ef
+          ref: e379565641414bc183cd02edebab1cbf77617931
           path: base
           persist-credentials: false
       - uses: actions/setup-python@v5
@@ -83,8 +83,8 @@ jobs:
               print(key + '=' + value)
           print('comfy_repository=' + sources['comfyui']['repository'].removeprefix('https://github.com/').removesuffix('.git'))
           PY
-          git -C head fetch --no-tags origin 493616c1cfc7a83f18894dc81773571e977f26ef
-          git -C head merge-base --is-ancestor 493616c1cfc7a83f18894dc81773571e977f26ef HEAD
+          git -C head fetch --no-tags origin e379565641414bc183cd02edebab1cbf77617931
+          git -C head merge-base --is-ancestor e379565641414bc183cd02edebab1cbf77617931 HEAD
       - uses: actions/checkout@v4
         with:
           repository: banodoco/astrid-runtime
