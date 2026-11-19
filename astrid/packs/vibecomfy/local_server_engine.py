@@ -6,6 +6,7 @@ save prefixes, image upload, owned-prompt cleanup) reads as one unit.
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import json
 import logging
@@ -467,6 +468,33 @@ def _project_native_attempt(path: Path, destination: Path, *, alignment: Any, pr
     write_json_atomic(path, attempt)
 
 
+def _project_prepared_approval_diagnostics(payload: dict[str, Any], destination: Path, provider: Any) -> None:
+    """Carry cold approval evidence into each prepared job's native records.
+
+    The pinned producer records prepared-template provenance instead of the
+    provider's approval diagnostics. Preserve both without recompiling a warm
+    job or changing the prepared record that authorizes its prompt.
+    """
+    diagnostics = getattr(provider, "_approval_diagnostics", None)
+    if not diagnostics:
+        return
+    from astrid.core.foundation.atomic_io import write_json_atomic
+
+    producer = payload["evidence"]["producer"]
+    producer["runtime"]["schema_provenance"]["approval_diagnostics"] = copy.deepcopy(diagnostics)
+    for kind in ("attempt", "metadata"):
+        evidence = producer[kind]
+        path = _custody_file(Path(evidence["path"]), destination, kind)
+        record = json.loads(path.read_text(encoding="utf-8"))
+        embedded = evidence["record"]
+        for view in (record, record.get("runtime_evidence", {}),
+                     embedded, embedded.get("runtime_evidence", {})):
+            if isinstance(view.get("schema_provenance"), dict):
+                view["schema_provenance"]["approval_diagnostics"] = copy.deepcopy(diagnostics)
+        _custody_file(path, destination, kind)
+        write_json_atomic(path, record)
+
+
 def run_local_server(
     resolved: Any, destination: Path, *, comfy_url: str, comfy_output_dir: str,
     task_identity: str, attempt_identity: str | None, run_inputs: Mapping[str, Any] | None,
@@ -717,6 +745,8 @@ def _run_local_server(
                 schema_provenance["workflow_conversion_object_info_sha256"] = (
                     workflow_conversion_object_info_sha256
                 )
+            if prepared_workflow is not None:
+                _project_prepared_approval_diagnostics(payload, destination, provider)
             from astrid.core.foundation.atomic_io import write_json_atomic
             _custody_file(result_path, destination, "managed result")
             write_json_atomic(result_path, payload)

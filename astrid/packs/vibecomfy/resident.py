@@ -342,6 +342,7 @@ class VibeComfySession(CanonicalCatalogue):
         from astrid.sdk import current_pack_job
 
         from .local_server_engine import (
+            _approve_live,
             _live_preflight,
             local_server_bundle,
             prepare_local_workflow,
@@ -388,6 +389,13 @@ class VibeComfySession(CanonicalCatalogue):
                 provider = _live_preflight(bundle, bindings, comfy_url, destination, client=client,
                     target_custody=declared_rows(bundle.workflow) if job.settings.get("align") == "trust" else None,
                     prepared_models=declared_rows(bundle.workflow) if prepared is not None else None)
+                # A cold resident keeps the ordinary approval's source/model
+                # checks and provenance. The prepared-template API does not
+                # publish those diagnostics; without this admission step a
+                # trusted auxiliary model loses its declared-unverified record.
+                # The held provider retains these source-bound facts for warm
+                # jobs, which still perform no approval or schema work.
+                _approve_live(bundle, bindings, provider)
                 scope = _digest(job.session_identity)
                 context = PreparedWorkflowContext(loaded.workflow_content_digest, job.capability_identity,
                     scope, _digest(dict(job.settings.get("managed_engine_preparation", {}).get("installation", {}))
