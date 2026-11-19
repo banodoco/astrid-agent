@@ -321,3 +321,41 @@ def test_public_h3_dimension_checks_reject_missing_or_malformed_media(tmp_path, 
         compose_candidate(preparation=invalid, generated=generated, source=source, out_dir=tmp_path / "bad")
     with pytest.raises(VerificationError, match="no usable requested video dimensions"):
         verify_candidate(preparation=invalid, composition=composition, source=source)
+
+
+def test_public_h3_boundaries_reject_missing_decoded_dimensions(tmp_path, monkeypatch):
+    import subprocess
+    from astrid.packs.h3_av.shared import compose as compose_module
+    from astrid.packs.h3_av.shared.compose import CompositionError, compose_candidate
+    from astrid.packs.h3_av.shared.generation import generation_timing
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from astrid.packs.h3_av.shared.verify import VerificationError, verify_candidate
+
+    preparation = prepare_request(normalize_request({
+        "version": 2, "prompt": "A scene", "duration": 1,
+        "output": {"size": [512, 288]}, "media": [],
+    }))
+    generated = tmp_path / "generated.mp4"
+    frames = generation_timing(1)["raw_frames"]
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "color=c=blue:s=512x288:r=24", "-f", "lavfi", "-i",
+                    "sine=frequency=440:sample_rate=48000", "-frames:v", str(frames),
+                    "-t", str(frames / 24), "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    "-c:a", "aac", str(generated)], check=True, capture_output=True)
+    composition = compose_candidate(preparation=preparation, generated=generated, out_dir=tmp_path / "good")
+    original_probe = compose_module._probe
+
+    def without_dimensions(path):
+        probe = original_probe(path)
+        if probe:
+            for stream in probe.get("streams", []):
+                stream.pop("width", None)
+                stream.pop("height", None)
+        return probe
+
+    monkeypatch.setattr(compose_module, "_probe", without_dimensions)
+    with pytest.raises(CompositionError, match="generated video has no usable decoded dimensions"):
+        compose_candidate(preparation=preparation, generated=generated, out_dir=tmp_path / "bad")
+    with pytest.raises(VerificationError, match="candidate video has no usable decoded dimensions"):
+        verify_candidate(preparation=preparation, composition=composition)

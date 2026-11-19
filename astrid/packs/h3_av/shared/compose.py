@@ -124,7 +124,6 @@ def _video_coverage(path: Path) -> dict[str, Any]:
     if probe is None or len(video) != 1:
         raise CompositionError("generated/candidate media must contain exactly one video stream")
     stream = video[0]
-    width, height = _video_dimensions(probe, role="generated/candidate")
     rate_text = stream.get("avg_frame_rate") or stream.get("r_frame_rate")
     try:
         rate = Fraction(str(rate_text))
@@ -144,15 +143,22 @@ def _video_coverage(path: Path) -> dict[str, Any]:
         frames = round(observed_duration * float(rate))
     if frames <= 0:
         raise CompositionError("video stream contains no frames")
-    return {
+    coverage = {
         "path": str(path),
         "frames": frames,
         "fps": float(rate),
-        "width": width,
-        "height": height,
         "duration": frames / float(rate),
         "stream_count": 1,
     }
+    # Synthetic coverage callers may provide only timing fields. Public
+    # composition and verification require usable dimensions separately.
+    try:
+        width, height = _video_dimensions(probe, role="generated/candidate")
+    except CompositionError:
+        pass
+    else:
+        coverage.update(width=width, height=height)
+    return coverage
 
 
 def _audio_coverage(path: Path) -> dict[str, Any]:
