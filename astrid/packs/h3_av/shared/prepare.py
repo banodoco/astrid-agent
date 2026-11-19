@@ -97,26 +97,29 @@ def _admit_conditioning(request: H3Request, assets: list[dict[str, Any]], warnin
         if path is None:
             continue
         measurement["bound_file"] = str(path)
+        if modality == "image":
+            try:
+                from PIL import Image
+                with Image.open(path) as image:
+                    width, height = image.size
+                    image.verify()
+            except Exception as exc:
+                raise PreparationError(f"conditioning image metadata is unreadable: {item['occurrence_id']}") from exc
+            measurement["tracks"] = ["video"]
+            measurement["effective_size"] = _reference_size(modality, width, height)
+            measurement["retained_picture_frames"] = 1
+            measurement["resource_estimate"].update({"schema_valid": True, "raw_bytes": measurement["effective_size"]["width"] * measurement["effective_size"]["height"] * 3})
+            continue
         probe = _probe_conditioning(path)
         measurement["tracks"] = [str(row.get("codec_type")) for row in probe.get("streams", []) if isinstance(row, Mapping)]
-        streams = _streams(probe, "video" if modality == "image" else modality)
+        streams = _streams(probe, modality)
         if not streams:
             raise PreparationError(f"conditioning clip 2–15 seconds: {item['occurrence_id']} has no {modality} stream")
         stream = streams[0]
         measured = _number(stream.get("duration"))
         size = (stream.get("width"), stream.get("height"))
         if all(isinstance(value, int) and value > 0 for value in size):
-            measurement["effective_size"] = _reference_size(modality, size[0], size[1]) if modality in {"image", "video"} else None
-        if modality == "image":
-            try:
-                from PIL import Image
-                with Image.open(path) as image:
-                    image.verify()
-            except Exception as exc:
-                raise PreparationError(f"conditioning image metadata is unreadable: {item['occurrence_id']}") from exc
-            measurement["retained_picture_frames"] = 1
-            measurement["resource_estimate"].update({"schema_valid": True, "raw_bytes": measurement["effective_size"]["width"] * measurement["effective_size"]["height"] * 3 if measurement["effective_size"] else None})
-            continue
+            measurement["effective_size"] = _reference_size(modality, size[0], size[1]) if modality == "video" else None
         if measured is None:
             raise PreparationError(f"conditioning clip 2–15 seconds: cannot measure {item['occurrence_id']} duration")
         selected = item.get("resolved_range")
