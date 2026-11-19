@@ -1,0 +1,82 @@
+{
+  "README.md": {
+    "bytes": 7926,
+    "sha256": "9d5f91d0f2c907519f76cb230b27b2a4c70b6904e6241f6779c483a757e7e10d"
+  },
+  "assertion-preservation.json": {
+    "bytes": 3257,
+    "sha256": "d5f55c37b1b0a457a384b143e0d2bb53653f6386ba0194b81aeb6a2ed207063d"
+  },
+  "captured-sibling-104-invocation.json": {
+    "bytes": 31609,
+    "sha256": "515930fe405c4f40e8e8a43426e7015ec1f155a6b8406710d2ddd5728e46c1a2"
+  },
+  "captured-sibling-104-results.collection.json.gz": {
+    "bytes": 1738,
+    "sha256": "84f3179f97d3499c4d4b358ed0b68a1114aaa87044f35df34034f59a36064433"
+  },
+  "captured-sibling-104-results.jsonl.gz": {
+    "bytes": 27195,
+    "sha256": "28d03fbcce028fa398a1b537e1a12f46b1baafc08f07523de3b90d39ad9e6cc6"
+  },
+  "captured-sibling-104-results.log.gz": {
+    "bytes": 37000,
+    "sha256": "b0ccf03fcba881f248527616fb93738ddd707473efbb1f22fb4fa7c1531d607f"
+  },
+  "captured-sibling-104-results.reference.json.gz": {
+    "bytes": 1738,
+    "sha256": "84f3179f97d3499c4d4b358ed0b68a1114aaa87044f35df34034f59a36064433"
+  },
+  "captured-sibling-104-results.xml.gz": {
+    "bytes": 19932,
+    "sha256": "2d785875eb208b15be001e8e525758017d69b5b6044b27f479f4c8f757741a71"
+  },
+  "diagnostic-inverse-four-invocation.json": {
+    "bytes": 2568,
+    "sha256": "c26fb590f6b31e677a1aa69f41a62c72a0ab807d15ed437b54758a2b66b1c807"
+  },
+  "diagnostic-inverse-four-results.collection.json.gz": {
+    "bytes": 350,
+    "sha256": "11de87f8a1919a783ac7489357fae2aac6027169dab2bcc7d3bc796e4b94ce4d"
+  },
+  "diagnostic-inverse-four-results.jsonl.gz": {
+    "bytes": 5513,
+    "sha256": "cabc23ca16a490234aaf3b04955c5ecdbb5746e36155186b3690b97c68aaa36c"
+  },
+  "diagnostic-inverse-four-results.log.gz": {
+    "bytes": 5561,
+    "sha256": "fa6215a73bc27bf9aae9443927af916c09269dc8445555f8b0fee4d4f512c76f"
+  },
+  "diagnostic-inverse-four-results.reference.json.gz": {
+    "bytes": 350,
+    "sha256": "11de87f8a1919a783ac7489357fae2aac6027169dab2bcc7d3bc796e4b94ce4d"
+  },
+  "diagnostic-inverse-four-results.xml.gz": {
+    "bytes": 5234,
+    "sha256": "692a8b784ae46e0a07541e4230ccc64a6a3b95f5c98aee6d2c25d0604b9fda3e"
+  },
+  "inverse-differences-by-id.json": {
+    "bytes": 27485,
+    "sha256": "f794f0496cb87b328d7427092bf0d4e168ed29557f473827c5862e0f4be13de3"
+  },
+  "inverse-observer.jsonl.gz": {
+    "bytes": 18117,
+    "sha256": "bd89b053e82d13c8945788cb2b8801433a048764e31782fef76800e345f8bf6b"
+  },
+  "native-files.json": {
+    "bytes": 1666,
+    "sha256": "ce5100e0d4ed33f66906e55419d53e2695996396824f560951089d5dde78fac6"
+  },
+  "outcomes-by-id.json": {
+    "bytes": 47869,
+    "sha256": "0f7d282b40f4b17e8ab8e508af73babef656ac71511ead09e91ad74e01474c95"
+  },
+  "run-summary.json": {
+    "bytes": 35896,
+    "sha256": "d14c39188f8d7ed711116345e739f31022fb15f86a9805abf478db03c5fc8d6a"
+  },
+  "s01_inverse_observer.py": {
+    "bytes": 5719,
+    "sha256": "c564939e87c7687a512baa6fe238b01d2248b8b0132e77d304b77a06da47ac0e"
+  }
+}
