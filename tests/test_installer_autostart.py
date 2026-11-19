@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import plistlib
+import shutil
 import signal
 import socket
 import subprocess
@@ -72,11 +73,12 @@ def selected_python(folder):
     python_version = f"python{sys.version_info.major}.{sys.version_info.minor}"
     selected_site = Path(sys.prefix) / "lib" / python_version / "site-packages"
     site = environment / "lib" / python_version / "site-packages"
+    shutil.copytree(Path(__file__).resolve().parents[1] / "astrid", site / "astrid",
+                    ignore=shutil.ignore_patterns("__pycache__"))
     (site / "selected-inputs.pth").write_text("\n".join(map(str, (
         selected_site, Path(runtime_protocol.__file__).resolve().parents[1],
-        Path(__file__).resolve().parents[1],
     ))) + "\n")
-    return environment / "bin" / "python"
+    return environment / "bin" / "python", site
 
 
 def manager_fixture(tmp_path, monkeypatch, system, *, systemd=True):
@@ -349,9 +351,10 @@ def real_install(tmp_path, monkeypatch):
         "restart": "always", "ready": {"file": "generic-host.ready.json", "timeout_seconds": 5},
     }]})
     profile = folder / "profile.json"
+    python, source = selected_python(folder)
     write_json(profile, {"profile": "astrid", "runtime_checkout": str(Path(runtime_protocol.__file__).resolve().parent.parent),
-                         "source_checkout": str(Path(__file__).resolve().parents[1]), "service_declaration": str(services)})
-    version = Version(folder, selected_python(folder), profile, {
+                         "source_checkout": str(source), "service_declaration": str(services)})
+    version = Version(folder, python, profile, {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"), "ASTRID_RUNTIME_DOOR_PORT": str(port),
         "ASTRID_RUNTIME_DATA_ROOT": str(data),
     }, 7)
@@ -453,8 +456,10 @@ def test_saved_off_reconciles_all_activation_routes_with_real_backend(real_insta
     else:
         realm = backend.workspace(version, data)
         candidate_root = root / "versions" / "two"
-        write_json(candidate_root / "profile.json", read_json(version.profile))
-        candidate = Version(candidate_root, selected_python(candidate_root), candidate_root / "profile.json",
+        candidate_python, candidate_source = selected_python(candidate_root)
+        write_json(candidate_root / "profile.json", {
+            **read_json(version.profile), "source_checkout": str(candidate_source)})
+        candidate = Version(candidate_root, candidate_python, candidate_root / "profile.json",
                             version.env, version.release)
         write_json(candidate_root / "version.json", candidate.document())
         class ControllerExit(BaseException):

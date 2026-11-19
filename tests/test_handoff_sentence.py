@@ -4,6 +4,8 @@ import importlib.util
 import re
 from pathlib import Path
 
+import pytest
+
 from astrid.installer.outcome import Outcome
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -56,14 +58,26 @@ def test_the_sentence_text_is_held_in_one_agent_code_place():
     assert hits == ["astrid/installer/outcome.py"], hits
 
 
-def test_skills_off_closes_with_a_scan_hint_that_matches_the_command_on_path():
-    from astrid.installer.outcome import SCAN_HINT, SCAN_HINT_LAUNCHER
+@pytest.mark.parametrize(
+    ("platform", "expected_command"),
+    [("linux", "./run-astrid generate scan"),
+     ("win32", ".\\run-astrid.cmd generate scan")],
+)
+def test_skills_off_closes_with_a_runnable_launcher_scan_hint(
+        monkeypatch, platform, expected_command):
+    import astrid.installer.outcome as outcome
+
+    monkeypatch.setattr(outcome.sys, "platform", platform)
+    from astrid.installer.outcome import SCAN_HINT
 
     on_path = Outcome("updated", 12, None, 12, skills=False).headline()
     assert on_path == ["Astrid installed: Release 12.", SCAN_HINT]
     assert "astrid generate scan" in SCAN_HINT and SENTENCE not in on_path
     launcher = Outcome("updated", 12, None, 12, skills=False, command=False).headline()
-    assert launcher[1] == SCAN_HINT_LAUNCHER and "run-astrid generate scan" in launcher[1]
+    assert launcher[1] == (
+        f"Next: run `{expected_command}` in Astrid's install folder to find your ComfyUI."
+    )
+    assert SENTENCE not in launcher
 
 
 def test_installed_line_names_the_build_when_the_manifest_named_it():

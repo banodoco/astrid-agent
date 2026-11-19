@@ -32,6 +32,7 @@ from astrid.core.foundation.atomic_io import write_json_atomic
 from astrid.core.util.credentials_scope import CredentialsScope
 from astrid.core.generation.backends.base import BackendAdapter, GenerationResult
 from astrid.core.generation.storage_policy import OPENAI_IMAGE_STORAGE_POLICY
+from astrid.core.util.http import os_trust_ssl_context, request_error_host
 
 API_URL = "https://api.openai.com/v1/images/generations"
 DEFAULT_MODEL = "gpt-image-2"
@@ -381,7 +382,7 @@ def _request_json(request: Request, timeout: int, *, expected_count: int) -> dic
     # Base64 expands the bounded outputs by 4/3, plus bounded response metadata.
     maximum = expected_count * ((MAX_OUTPUT_BYTES + 2) // 3 * 4) + 1024 * 1024
     try:
-        with urlopen(request, timeout=timeout) as response:
+        with request_error_host(request.full_url), urlopen(request, timeout=timeout, context=os_trust_ssl_context()) as response:
             data = response.read(maximum + 1)
         if len(data) > maximum:
             raise ValueError("OpenAI response exceeds bounded byte limit")

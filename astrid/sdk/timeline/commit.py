@@ -429,13 +429,19 @@ def _failure(reason, message, base, current=None, *, conflicts=None, path=(),
                    status=status)
 
 
-def _load(port, context, revision):
-    document = port.revision_closure(revision)
-    request = context["request"]
-    _require(document.get("project_id") == request["project_id"]
-             and document.get("timeline_id") == request["timeline_id"]
-             and document.get("parent_revision", {}).get("revision_id") == revision,
-             "Runtime returned a different revision or project/timeline scope")
+def _load(port, context, revision, memo=None):
+    """Load one revision closure. A memo keeps only the verified document;
+    every use still opens a fresh bundle, because scans mutate bundles."""
+    document = memo.get(revision) if memo is not None else None
+    if document is None:
+        document = port.revision_closure(revision)
+        request = context["request"]
+        _require(document.get("project_id") == request["project_id"]
+                 and document.get("timeline_id") == request["timeline_id"]
+                 and document.get("parent_revision", {}).get("revision_id") == revision,
+                 "Runtime returned a different revision or project/timeline scope")
+        if memo is not None:
+            document = memo[revision] = copy.deepcopy(document)
     return bundle_from_document(document)
 
 
@@ -727,7 +733,15 @@ def _reservation_refs(state):
     return refs
 
 
-def _check_reservations(port, plan, current, rejected, base):
+def _check_reservations(port, plan, current, rejected, base, memo):
+    """Refuse a create that claims an identity accepted history reserved.
+
+    ``memo`` belongs to one provider instance, so one realm run, and maps
+    (project, timeline) to (publication, revision, reserved, recorded) for the
+    newest history this provider has scanned cleanly. Ancestry is immutable,
+    so reserved(head) = reserved(memo head) + what the newer entries add; the
+    scan reads only those entries.
+    """
     from astrid.sdk.timeline.commands import CommandError
 
     from ._command_state import State, equal, one, root_identity
@@ -763,9 +777,11 @@ def _check_reservations(port, plan, current, rejected, base):
         return
     reserved, recorded = set(), False
     context = {'request': {key: plan.bundle[key] for key in ('project_id', 'timeline_id')}}
+    documents = {}
+    scope = (plan.bundle['project_id'], plan.bundle['timeline_id'])
 
     def boundary(revision):
-        return _load(port, context, revision)
+        return _load(port, context, revision, documents)
 
     def restore_native_fork(state, record, write, accepted_base, requested_base, recorder_abi):
         """Retain the native fork proof while replaying an accepted birth."""
@@ -994,8 +1010,23 @@ def _check_reservations(port, plan, current, rejected, base):
             for write in record['derived_writes']:
                 state.set(write['ref'], write['path'], write['after'])
 
+    def read_history():
+        """Entries newer than the stored publication, or all of them."""
+        nonlocal reserved, recorded
+        row = memo.get(scope)
+        if row is not None:
+            after = {'publication_id': row[0], 'revision_id': row[1]}
+            try:
+                entries = _history(port, current, after, rejected, base)
+                reserved, recorded = set(row[2]), row[3]
+                return entries
+            except rejected:
+                pass  # not an ancestor of this head: read it all
+        reserved, recorded = set(), False
+        return _history(port, current, None, rejected, base)
+
     try:
-        for entry in _history(port, current, None, rejected, base):
+        for entry in read_history():
             if (not recorded and entry.get('intent') in {'bootstrap', 'legacy_unknown'}
                     and entry.get('records') is None):
                 # Unknown legacy intent is not allocation proof. The first
@@ -1018,6 +1049,7 @@ def _check_reservations(port, plan, current, rejected, base):
     except (AuthoringBundleError, CommandError, KeyError, TypeError, ValueError) as exc:
         raise rejected(_failure('history_unavailable', 'semantic identity history is unavailable',
                                 base, current)) from exc
+    memo[scope] = (current['publication_id'], current['revision_id'], frozenset(reserved), recorded)
     scan(plan.records, boundary(current['revision_id']), ordinary=True, output=plan.bundle,
          accepted_base=current, requested_base=base)
 
@@ -1028,6 +1060,7 @@ class RuntimeCommitService:
 
     def __init__(self, contract_digest):
         self.contract_digest = contract_digest
+        self._reserved = {}
 
     def capture_candidate_inputs(self, document, *, candidate):
         """Pure optional inputs for Runtime's working-copy verification."""
@@ -1395,7 +1428,7 @@ class RuntimeCommitService:
                 for record in plan.records:
                     if record['command']['op'] == 'timeline.inverse' and undo_steps is not None:
                         record['command']['args']['steps'] = copy.deepcopy(undo_steps)
-                _check_reservations(port, plan, current, CommitRejected, base)
+                _check_reservations(port, plan, current, CommitRejected, base, self._reserved)
                 from astrid.sdk.timeline.validation import validate_final_candidate
 
                 validation_bundle = plan.bundle
@@ -1409,6 +1442,9 @@ class RuntimeCommitService:
                         plan.bundle['source_mapping'].get('pinned_documents', []))
                 validate_final_candidate(
                     validation_bundle,
+                    # A source copy is Runtime-authenticated content; it is checked for shape only.
+                    authenticated_copy=bool(plan.records) and all(
+                        record['command']['op'] == 'timeline.duplicate' for record in plan.records),
                     baseline=(closures[restored_from['revision_id']] if restored_from is not None
                               else bundle if current == base else head_bundle),
                     schema_inputs=schema_inputs,

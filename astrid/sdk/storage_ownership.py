@@ -7,8 +7,8 @@ registry.
 
 from __future__ import annotations
 
-import os
 import json
+import os
 import re
 import shutil
 import stat
@@ -21,6 +21,7 @@ from typing import Callable
 _OWNED_ROOTS_FILE = "storage-owned-roots.json"
 # Shared by the host's private incarnation directories and their reclaim policy.
 ATTEMPT_ROOT_PREFIX = "astrid-attempt-"
+_ATTEMPT_POLICIES = frozenset({"attempt-roots", "private-attempt-roots"})
 
 
 @dataclass(frozen=True)
@@ -72,6 +73,7 @@ def registered_roots(data_root: Path, *, temporary_root: Path | None = None, cac
         RootPolicy("fast-lane-capture", "per-call frame capture work", "timeline visualize fast lane", "expire after 1 day", temp / "astrid-fast-lane", 86400, lambda p: p.is_dir() and p.name.startswith("capture-")),
         RootPolicy("fast-lane-verify", "per-call timeline verification work", "timeline visualize fast lane", "expire after 7 days", temp / "astrid-fast-lane", 7 * 86400, lambda p: p.is_dir() and p.name.startswith("verify-")),
         RootPolicy("attempt-roots", "crash-abandoned executor attempts", "generic pack host", "expire after 2 days", temp, 2 * 86400, lambda p: p.is_dir() and p.name.startswith(ATTEMPT_ROOT_PREFIX)),
+        RootPolicy("private-attempt-roots", "kept or crash-abandoned private executor attempts and their short runtime folders", "generic pack host", "expire together after 2 days; retain unresolved evidence", data_root / "attempts", 2 * 86400, lambda p: p.is_dir() and p.name.startswith(ATTEMPT_ROOT_PREFIX)),
         RootPolicy("host-log-archives", "rotated host logs", "runtime operator diagnostics", "expire after 30 days", data_root, 30 * 86400, lambda p: p.is_file() and (p.name.endswith(".gz") or ".log." in p.name)),
         RootPolicy("runtime-presentations", "named copy-on-write render views", "runs open desktop media reader", "expire after 30 days", data_root / "runtime" / "realms", 30 * 86400, lambda p: p.is_file()),
         RootPolicy("replay-output", "renderer replay outputs", "renderer replay tooling", "expire after 7 days", data_root / "renderer", 7 * 86400, lambda p: p.is_dir() and p.name.endswith(".replay-output")),
@@ -152,6 +154,7 @@ def _reclaimable_attempt_root(path: Path) -> bool:
     try:
         metadata = path.lstat()
         if (not stat.S_ISDIR(metadata.st_mode)
+                or getattr(metadata, "st_file_attributes", 0) & 0x400
                 or (os.name == "posix" and (metadata.st_uid != os.getuid()
                     or metadata.st_mode & 0o022))):
             return False
@@ -168,6 +171,17 @@ def _candidates(policy: RootPolicy) -> list[Path]:
     root = policy.path
     if not root.exists() or root.is_symlink():
         return []
+    if policy.name == "private-attempt-roots":
+        if not _reclaimable_attempt_root(root):
+            return []
+        try:
+            return [attempt
+                    for base in root.iterdir()
+                    if re.fullmatch(r"[0-9a-f]{16}", base.name) and _reclaimable_attempt_root(base)
+                    for attempt in base.glob(ATTEMPT_ROOT_PREFIX + "*")
+                    if _reclaimable_attempt_root(attempt)]
+        except OSError:
+            return []
     if policy.name in {"fast-lane-capture", "fast-lane-verify", "attempt-roots", "replay-output", "replay-workdir"}:
         if policy.name in {"replay-output", "replay-workdir"}:
             return [root] if policy.selector(root) and not root.is_symlink() else []
@@ -241,15 +255,38 @@ def reclaim(data_root: Path, *, dry_run: bool = False, now: float | None = None,
     for policy in registered_roots(data_root, temporary_root=temporary_root, cache_root=cache_root):
         items = []
         for path in _candidates(policy):
-            if policy.name == "attempt-roots" and not _reclaimable_attempt_root(path):
+            is_attempt = policy.name in _ATTEMPT_POLICIES
+            if is_attempt and not _reclaimable_attempt_root(path):
                 continue
+            short_runtime = None
+            if is_attempt:
+                from astrid.core.generation.vibecomfy_runtime_root import (
+                    remove_windows_runtime_root,
+                    vibecomfy_runtime_root,
+                )
+                runtime_root = Path(vibecomfy_runtime_root(path / "outputs"))
+                # POSIX runtime scratch is already counted inside the attempt.
+                if not runtime_root.is_relative_to(path):
+                    if os.path.lexists(runtime_root.parent) and not _reclaimable_attempt_root(runtime_root.parent):
+                        continue
+                    if os.path.lexists(runtime_root) and not _reclaimable_attempt_root(runtime_root):
+                        continue
+                    short_runtime = runtime_root
             size = _tree_bytes(path)
+            if short_runtime is not None:
+                size += _tree_bytes(short_runtime)
             stale = _older_than(path, clock - policy.ttl_seconds)
             removed = False
             if stale and not dry_run:
-                if policy.name == "attempt-roots" and not _reclaimable_attempt_root(path):
+                if is_attempt and not _reclaimable_attempt_root(path):
                     continue
                 try:
+                    if is_attempt:
+                        # Keep the attempt's identity when short-root deletion
+                        # fails, so the next reclaim can retry the same pair.
+                        remove_windows_runtime_root(path / "outputs")
+                        if short_runtime is not None and os.path.lexists(short_runtime):
+                            raise OSError("short runtime cleanup was not verified")
                     shutil.rmtree(path) if path.is_dir() else path.unlink()
                     removed = not path.exists()
                 except OSError:

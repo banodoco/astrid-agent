@@ -232,7 +232,7 @@ def reservation_check(monkeypatch, plan, history_records=()):
         target = accepted['receipt']['receipt_id']
     port = RuntimeHistoryPort(realm, replacement=history_records or None,
                               target_publication=target)
-    commit._check_reservations(port, plan, realm.head, HistoryRejected, realm.head)
+    commit._check_reservations(port, plan, realm.head, HistoryRejected, realm.head, {})
 
 
 
@@ -248,7 +248,7 @@ def test_typed_roots_are_valid_local_creations_and_retired_roots_are_reserved():
                   copy.deepcopy(realm.documents), copy.deepcopy(realm.prepared))
         with pytest.raises(CommandError, match='already reserved') as error:
             commit._check_reservations(
-                RuntimeHistoryPort(realm), plan, realm.head, HistoryRejected, realm.head)
+                RuntimeHistoryPort(realm), plan, realm.head, HistoryRejected, realm.head, {})
         assert error.value.kind == 'identity_collision'
         assert (realm.head, realm.entries, realm.documents, realm.prepared) == before
 
