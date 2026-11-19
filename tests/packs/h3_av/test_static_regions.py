@@ -483,3 +483,110 @@ def test_failed_second_permission_cleans_new_files_and_preserves_previous(tmp_pa
     assert not list(destination.glob(".permission_mask_*-*"))
     compile_preparation(preparation, out_dir=destination)
     assert all(path.read_bytes() == content for path, content in previous.items())
+
+
+@pytest.mark.parametrize("kind", ["box", "still"])
+def test_planner_preview_and_saved_preparation_match_compiled_permission(tmp_path, kind):
+    import json
+    from pathlib import Path
+    from astrid.packs.h3_av.shared.planner import plan_request
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from tests.packs.h3_av.test_moving_masks import _fixtures
+
+    source, _ = _fixtures(tmp_path)
+    import subprocess
+    resized = tmp_path / "resized.mkv"
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(source),
+                    "-vf", "scale=512:288", "-c:v", "ffv1", "-c:a", "copy", str(resized)],
+                   check=True, capture_output=True)
+    source = resized
+    assets = {"source": str(source)}
+    if kind == "box":
+        mask = {"rectangle": [256, 144, 256, 144]}
+    else:
+        path = tmp_path / "small.png"
+        image = Image.new("L", (2, 2), 0)
+        image.putpixel((0, 0), 200)
+        image.save(path)
+        assets["mask"] = str(path)
+        mask = {"asset": "mask", "threshold": 128}
+    request = normalize_request({"version": 2, "prompt": "Edit", "duration": 1,
+        "output": {"size": [512, 288]},
+        "media": [{"asset": "source", "role": "timeline", "modality": "video",
+                   "at": {"frame": 0}, "range": [0, 1],
+                   "edit": [{"stream": "video", "during": [0, 1], "mask": mask}]}]})
+    plan = plan_request(request, asset_map=assets, out_dir=tmp_path / "plan")
+    assert plan["compilation"]["status"] == "compiled"
+    saved = json.loads(Path(plan["preparation_path"]).read_text())
+    binding = saved["mask_schedule"]["video"]["changes"][0]["prepared_mask_asset"]
+    prepared = next(row["path"] for row in saved["assets"] if row["asset"] == binding)
+    with Image.open(prepared) as compiled, Image.open(plan["bindings"]["regions"][0]["mask"]) as preview:
+        assert compiled.size == preview.size == (512, 288)
+        assert list(compiled.getdata()) == list(preview.getdata())
+        assert compiled.getpixel((128, 72) if kind == "box" else (0, 0)) == 255
+
+
+@pytest.mark.parametrize("target,mask", [
+    ((512, 288), {"rectangle": [32, 32, 64, 64]}),
+    ((1024, 576), {"rectangle": [32, 32, 64, 64], "canvas": [512, 288]}),
+    ((512, 288), {"asset": "mask"}),
+    ((1024, 576), {"asset": "mask", "threshold": 128}),
+])
+def test_legacy_unprepared_static_permission_fails_closed(tmp_path, target, mask):
+    from astrid.packs.h3_av.shared.compose import CompositionError, compose_candidate
+    from astrid.packs.h3_av.shared.verify import VerificationError, verify_candidate
+
+    path = tmp_path / "mask.png"
+    Image.new("L", (1024, 576), 255).save(path)
+    preparation = {"status": "prepared", "media": {"width": target[0], "height": target[1]},
+                   "assets": [{"asset": "mask", "status": "resolved", "path": str(path)}],
+                   "mask_schedule": {"video": {"changes": [{"action": "generate", "area": mask}]}}}
+    with pytest.raises(CompositionError, match="requires a compiled mask"):
+        compose_candidate(preparation=preparation, generated=path, out_dir=tmp_path / "out")
+    with pytest.raises(VerificationError, match="requires a compiled mask"):
+        verify_candidate(preparation=preparation, composition={"status": "composed"})
+
+
+def test_legacy_equivalent_static_permissions_remain_accepted(tmp_path):
+    from astrid.packs.h3_av.shared.compose import _guard_unprepared_static_permissions
+
+    path = tmp_path / "mask.png"
+    Image.new("L", (1024, 576), 255).save(path)
+    preparation = {"media": {"width": 1024, "height": 576},
+                   "assets": [{"asset": "mask", "status": "resolved", "path": str(path)}],
+                   "mask_schedule": {"video": {"changes": [
+                       {"action": "generate", "area": {"rectangle": [32, 32, 64, 64]}},
+                       {"action": "generate", "area": {"asset": "mask"}},
+                   ]}}}
+    _guard_unprepared_static_permissions(preparation)
+
+
+def test_legacy_moving_mask_remains_accepted_on_nondefault_canvas(tmp_path):
+    import subprocess
+    from astrid.packs.h3_av.shared.compose import _guard_unprepared_static_permissions
+
+    path = tmp_path / "mask.mkv"
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "color=white:size=512x288:rate=24:duration=1", "-c:v", "ffv1", str(path)],
+                   check=True, capture_output=True)
+    preparation = {"media": {"width": 512, "height": 288},
+                   "assets": [{"asset": "mask", "status": "resolved", "path": str(path)}],
+                   "mask_schedule": {"video": {"changes": [
+                       {"action": "generate", "area": {"asset": "mask"}}]}}}
+    _guard_unprepared_static_permissions(preparation)
+
+
+def test_legacy_partial_gray_still_fails_closed(tmp_path):
+    from astrid.packs.h3_av.shared.compose import CompositionError, compose_candidate
+    from astrid.packs.h3_av.shared.verify import VerificationError, verify_candidate
+
+    path = tmp_path / "gray.png"
+    Image.new("L", (1024, 576), 128).save(path)
+    preparation = {"status": "prepared", "media": {"width": 1024, "height": 576},
+                   "assets": [{"asset": "mask", "status": "resolved", "path": str(path)}],
+                   "mask_schedule": {"video": {"changes": [
+                       {"action": "generate", "area": {"asset": "mask"}}]}}}
+    with pytest.raises(CompositionError, match="requires a compiled mask"):
+        compose_candidate(preparation=preparation, generated=path, out_dir=tmp_path / "out")
+    with pytest.raises(VerificationError, match="requires a compiled mask"):
+        verify_candidate(preparation=preparation, composition={"status": "composed"})
