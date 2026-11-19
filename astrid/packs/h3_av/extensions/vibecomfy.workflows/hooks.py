@@ -138,6 +138,8 @@ def build(inputs, files, out, *, engine=None, check_runtime=False):
     plan = {**stages._sealed_plan(compilation), "request_digest": request.digest}
     source_id = stages._authoritative_source_asset_id(request)
     source = paths[source_id] if source_id else None
+    if any(item.get("role") == "timeline" and item.get("modality") == "image" for item in request.value.get("media", [])):
+        source = str(work / "plan" / "compile" / "prepared-still-source.mkv")
     if source is not None and "source_video" in bindings:
         plan["source_av"] = dict(facts.measure_source_av(source))
     stages.save_build_state(work, request=request, document=document, preparation=preparation, source=source, plan=plan)

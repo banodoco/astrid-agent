@@ -1019,3 +1019,83 @@ def test_fractional_pre_splice_duplicates_mono_context_for_stereo_fixed_pcm(tmp_
     mask = manifest["capabilities"]["audio_time_mask"]["requested_frame_values"]
     assert mask[:12] == [0] * 12
     assert mask[12:24] == [0.5] * 12
+
+@pytest.mark.ffmpeg
+def test_timeline_still_uses_source_backed_generation_and_exact_first_frame(tmp_path):
+    import subprocess
+    from PIL import Image
+    from astrid.packs.h3_av.shared.compose import compose_candidate, _decode_exact_pcm
+    from astrid.packs.h3_av.shared.prepare import prepare_request, PreparationError
+    from vibecomfy.cli_loader import load_workflow_any
+
+    still = tmp_path / "still.png"
+    pixels = bytes((x * 7 + y * 13 + channel * 71) % 256 for y in range(576) for x in range(1024) for channel in range(3))
+    Image.frombytes("RGB", (1024, 576), pixels).save(still)
+    generated = tmp_path / "standin.mkv"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=1024x576:rate=24",
+                    "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-frames:v", "24",
+                    "-t", "1", "-c:v", "ffv1", "-pix_fmt", "gbrp", "-c:a", "pcm_s16le", str(generated)], check=True)
+    raw = {"version": 2, "duration": 1, "prompt": "Animate", "media": [
+        {"asset": "still", "role": "timeline", "modality": "image", "at": {"frame": 0}}]}
+    preparation = prepare_request(normalize_request(raw), asset_map={"still": str(still)})
+    manifest = compile_preparation(preparation, out_dir=tmp_path / "compiled")
+    source = tmp_path / "compiled" / "prepared-still-source.mkv"
+    assert source.is_file()
+    mask = manifest["capabilities"]["audio_time_mask"]
+    assert len(mask["decoded_frame_values"]) == manifest["capabilities"]["generation_timing"]["raw_frames"]
+    assert all(value == 1 for value in mask["decoded_frame_values"])
+    assert len(mask["resampled_40hz"]) == round(len(mask["decoded_frame_values"]) * 40 / 24)
+    assert all(value == 1 for value in mask["resampled_40hz"])
+    assert mask["padding"] == "generated"
+    api = load_workflow_any(manifest["workflow"]["workflow.py"]["path"]).compile(
+        "api", run_inputs=manifest["workflow_inputs"])
+    v2v = next(row for row in api.values() if row["class_type"] == "H3V2VGranularFractionalDenoise")
+    assert v2v["inputs"]["audio_strength"] == 0
+    source_batch = api[v2v["inputs"]["source_frames"][0]]
+    assert source_batch["class_type"] == "ImageBatch"
+    source_loader = api[source_batch["inputs"]["image1"][0]]
+    source_row = next(row for row in manifest["managed_assets"]["manifest"]["assets"] if row["binding"] == "source_video")
+    assert source_loader["inputs"]["video"] == manifest["workflow_inputs"]["source_video"] == Path(source_row["member"]).name
+    mask_node = api[v2v["inputs"]["source_mask"][0]]
+    mask_batch = api[mask_node["inputs"]["image"][0]]
+    mask_loader = api[mask_batch["inputs"]["image1"][0]]
+    mask_row = next(row for row in manifest["managed_assets"]["manifest"]["assets"] if row["binding"] == "video_mask_0")
+    assert mask_loader["inputs"]["video"] == manifest["workflow_inputs"]["video_mask_0"] == Path(mask_row["member"]).name
+    import zipfile
+    with zipfile.ZipFile(manifest["managed_assets"]["path"]) as archive:
+        assert archive.read(source_row["member"]) == source.read_bytes()
+        managed_mask = tmp_path / "managed-mask.mkv"
+        managed_mask.write_bytes(archive.read(mask_row["member"]))
+    decoded_mask = subprocess.run(["ffmpeg", "-v", "error", "-i", str(managed_mask), "-frames:v", "2", "-pix_fmt", "gray", "-f", "rawvideo", "-"], check=True, capture_output=True).stdout
+    mask_size = 1024 * 576
+    assert decoded_mask[:mask_size] == bytes(mask_size)
+    assert decoded_mask[mask_size:] == bytes([255]) * mask_size
+    assert any(row["class_type"] == "MiniMaxH3SetAVNoiseMask" for row in api.values())
+    result = compose_candidate(preparation=preparation, generated=generated, source=source, out_dir=tmp_path / "composed")
+    def frames(path):
+        return subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-vf", "scale=1024:576:flags=lanczos,format=gbrp,format=rgb24", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], check=True, capture_output=True).stdout
+    original, standin, actual = map(frames, (source, generated, result["candidate"]["path"]))
+    size = 1024 * 576 * 3
+    assert len(original) == 24 * size
+    assert original[:size] == pixels
+    assert standin[:size] != standin[size:2 * size]
+    assert original[:size] != standin[:size]
+    assert actual[:size] == pixels
+    assert actual[size:2 * size] == standin[size:2 * size]
+    delivered, channels = _decode_exact_pcm(Path(result["candidate"]["path"]))
+    soundtrack, _ = _decode_exact_pcm(generated, expected_channels=channels, generated=True)
+    silence, source_channels = _decode_exact_pcm(source)
+    assert len(silence) == 48000 * source_channels * 2 and not any(silence)
+    assert len(delivered) == 48000 * channels * 2
+    assert delivered == soundtrack[:len(delivered)]
+    raw["media"][0]["at"] = {"frame": 1}
+    with pytest.raises(PreparationError, match="timeline image frame"):
+        prepare_request(normalize_request(raw), asset_map={"still": str(still)})
+
+
+def test_timeline_still_rejects_latent_pin():
+    from astrid.packs.h3_av.shared.request import H3RequestError
+    raw = {"version": 2, "duration": 1, "prompt": "Animate", "media": [
+        {"asset": "still", "role": "timeline", "modality": "image", "at": {"frame": 0}, "latent_pin": True}]}
+    with pytest.raises(H3RequestError, match="latent_pin"):
+        normalize_request(raw)

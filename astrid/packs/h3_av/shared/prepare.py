@@ -19,7 +19,7 @@ from .masks import (
     merge_intervals,
 )
 from .request import H3Request, H3RequestError, _asset_ids
-from .request_v2 import branch_for
+from .request_v2 import branch_for, timeline_image_limit_error
 from .generation import LIMITS
 
 
@@ -522,6 +522,9 @@ def _v2_mask_schedule(
 
     for item in value["media"]:
         if item["role"] == "timeline":
+            if item.get("modality") == "image":
+                baselines["video"].append([0, 1 / 24])
+                continue
             start = float(item["resolved_at"]["value"]) / 24.0
             raw_range = item.get("range")
             span = (
@@ -652,6 +655,9 @@ def prepare_request(
         warnings.append({"limit": "job_duration_seconds", "message": duration_limits["warning"]})
     if request.value.get("version") == 2:
         assets = _resolve_assets(request, asset_map)
+        still_error = timeline_image_limit_error(request.value)
+        if still_error:
+            raise PreparationError(still_error)
         conditioning_measurements = _admit_conditioning(request, assets, warnings)
         if branch_for(request) == "source_free" and not request.value["media"]:
             warnings.append({"limit": "text_only_documented_use", "message": "Text-only generation is outside the documented use of the Ref2VA checkpoint."})
