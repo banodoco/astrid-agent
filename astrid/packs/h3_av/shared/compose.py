@@ -236,6 +236,8 @@ def _validate_video_size(preparation: Mapping[str, Any], video: Mapping[str, Any
         type(media.get(key)) is not int or media[key] <= 0 for key in ("width", "height")
     ):
         raise CompositionError("preparation has no usable requested video dimensions")
+    if any(type(video.get(key)) is not int or video[key] <= 0 for key in ("width", "height")):
+        raise CompositionError(f"{role} video has no usable decoded dimensions")
     actual = (video["width"], video["height"])
     requested = (media["width"], media["height"])
     if actual != requested:
@@ -300,7 +302,6 @@ def _validate_candidate_coverage(
     """Prove final duration and AV stream coverage from delivered bytes."""
 
     video = _video_coverage(candidate)
-    _validate_video_size(preparation, video, role="candidate")
     audio = _audio_coverage(candidate)
     timing = _continuation_timing(preparation)
     if _is_source_free_generation(preparation):
@@ -1744,6 +1745,7 @@ def compose_candidate(
                 preparation=preparation,
                 candidate=candidate,
             )
+            _validate_video_size(preparation, candidate_coverage["video"], role="candidate")
         elif _continuation_timing(preparation) is not None:
             raise CompositionError("H3 continuation result is not decodable audiovisual media")
 

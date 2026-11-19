@@ -277,3 +277,47 @@ def test_source_backed_generated_video_must_match_canvas(tmp_path):
                               "rawvideo", "-pix_fmt", "rgb24", "-"], check=True, capture_output=True)
     assert len(decoded.stdout) == 512 * 288 * 3
     assert verification["status"] == "verified"
+
+
+@pytest.mark.parametrize("source_backed", [False, True])
+@pytest.mark.parametrize("media", [None, {}, {"width": 512, "height": "288"}])
+def test_public_h3_dimension_checks_reject_missing_or_malformed_media(tmp_path, source_backed, media):
+    import copy
+    import subprocess
+    from astrid.packs.h3_av.shared.compose import CompositionError, compose_candidate
+    from astrid.packs.h3_av.shared.generation import generation_timing
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from astrid.packs.h3_av.shared.verify import VerificationError, verify_candidate
+
+    def video(path, frames):
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                        "color=c=blue:s=512x288:r=24", "-f", "lavfi", "-i",
+                        "sine=frequency=440:sample_rate=48000", "-frames:v", str(frames),
+                        "-t", str(frames / 24), "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                        "-c:a", "aac", str(path)], check=True, capture_output=True)
+        return path
+
+    request = {"version": 2, "prompt": "A scene", "duration": 1,
+               "output": {"size": [512, 288]}, "media": []}
+    source = None
+    if source_backed:
+        source = video(tmp_path / "source.mp4", 24)
+        request["media"] = [{"id": "source", "asset": "source.mp4", "role": "timeline",
+                             "modality": "video", "at": {"frame": 0}, "range": [0, 1],
+                             "edit": [{"stream": "video", "during": [0, 1],
+                                       "mask": {"full_frame": True}}]}]
+    preparation = prepare_request(normalize_request(request),
+                                  asset_map={"source.mp4": str(source)} if source else None)
+    generated = video(tmp_path / "generated.mp4", 24 if source else generation_timing(1)["raw_frames"])
+    composition = compose_candidate(preparation=preparation, generated=generated, source=source,
+                                    out_dir=tmp_path / "good")
+    invalid = copy.deepcopy(preparation)
+    if media is None:
+        invalid.pop("media")
+    else:
+        invalid["media"] = media
+    with pytest.raises(CompositionError, match="no usable requested video dimensions"):
+        compose_candidate(preparation=invalid, generated=generated, source=source, out_dir=tmp_path / "bad")
+    with pytest.raises(VerificationError, match="no usable requested video dimensions"):
+        verify_candidate(preparation=invalid, composition=composition, source=source)

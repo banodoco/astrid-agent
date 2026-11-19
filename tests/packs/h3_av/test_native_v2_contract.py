@@ -668,3 +668,21 @@ def test_timeline_still_public_boundaries_reject_split_and_controls(tmp_path, ca
     assert main(["plan", "--spec", str(request_path), "--out", str(tmp_path / "plan")]) != 0
     captured = capsys.readouterr()
     assert "timeline image frame" in captured.out + captured.err
+
+
+def test_candidate_coverage_helper_accepts_synthetic_preparation_without_media(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(compose_module, "_video_coverage", lambda _: {
+        "fps": 24.0, "frames": 24, "duration": 1.0,
+    })
+    monkeypatch.setattr(compose_module, "_audio_coverage", lambda _: {
+        "duration": 1.0, "sample_rate": 48_000,
+    })
+    coverage = _validate_candidate_coverage(
+        preparation={"request": {"version": 2},
+                     "mask_schedule": {"branch": "source_backed_v2v", "duration": 1.0}},
+        candidate=tmp_path / "synthetic.mkv",
+    )
+    assert coverage["status"] == "covered"
+    assert coverage["requested_duration"] == 1.0
