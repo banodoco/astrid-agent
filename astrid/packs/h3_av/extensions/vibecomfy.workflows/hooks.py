@@ -169,7 +169,7 @@ def _load_graph(trio: Path):
                        schema_provider=get_authoring_schema_provider(on_demand_schemas=False)).workflow
 
 
-def after_outputs(job_dir, inputs, files, outputs, *, engine=None, workflow_hook_evidence=False):
+def after_outputs(job_dir, inputs, files, outputs, *, engine=None):
     """Compose the generated candidate and verify it; a failure raises and fails the job."""
     if engine is not None:
         _shared("engine_facts").install(engine)
@@ -197,7 +197,4 @@ def after_outputs(job_dir, inputs, files, outputs, *, engine=None, workflow_hook
             composition=composition.get("composition") if isinstance(composition, Mapping) else None,
         )
     facts.write_json_atomic(work / "verify.json", verification)
-    produced = [composition["candidate"]["path"], *outputs[1:]]
-    if workflow_hook_evidence is True:
-        return {"outputs": produced, "evidence": {"reference_view": verification.get("reference_view")}}
-    return produced
+    return [composition["candidate"]["path"], *outputs[1:]]
