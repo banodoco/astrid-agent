@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .errors import PreparationError
+from .generation import _BUILDER_SLOT_VALUES, LIMITS
 from .masks import (
     MaskScheduleError,
     build_mask_schedule,
@@ -20,7 +21,6 @@ from .masks import (
 )
 from .request import H3Request, H3RequestError, _asset_ids
 from .request_v2 import branch_for
-from .generation import LIMITS
 
 
 def _probe_conditioning(path: Path) -> dict[str, Any]:
@@ -65,7 +65,7 @@ def _reference_size(modality: str, width: int, height: int) -> dict[str, int]:
 
 def _admit_conditioning(request: H3Request, assets: list[dict[str, Any]], warnings: list[dict[str, str]] | None = None) -> list[dict[str, Any]]:
     """Apply the shared reference table before scheduling any paid/runtime work."""
-    from .compose import _streams, _number
+    from .compose import _number, _streams
     warnings = warnings if warnings is not None else []
     resolved = {str(row["asset"]): Path(str(row["path"])) for row in assets
                 if row.get("status") == "resolved" and isinstance(row.get("path"), str)}
@@ -74,7 +74,7 @@ def _admit_conditioning(request: H3Request, assets: list[dict[str, Any]], warnin
     totals = {"image": Fraction(0), "video": Fraction(0), "audio": Fraction(0)}
     total_uncertainty = {"video": Fraction(0), "audio": Fraction(0)}
     files = 0
-    entry = LIMITS["builder_slots"]["value"]
+    entry = _BUILDER_SLOT_VALUES
     duration_clock = {"video": 24, "audio": 48000}
     measurements: list[dict[str, Any]] = []
     for item in refs:

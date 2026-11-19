@@ -701,7 +701,12 @@ def _compile_native_masked_edit(
     from vibecomfy.workflow_bundle import emit_bundle
 
     from .compose import CompositionError, probe_mask
-    from .generation import CHARACTER_SWAP_SHA256, build_generation_workflow, generation_inputs_from_bindings, generation_timing
+    from .generation import (
+        CHARACTER_SWAP_SHA256,
+        build_generation_workflow,
+        generation_inputs_from_bindings,
+        generation_timing,
+    )
     from .spec import Region, canonical_spec
     from .static_regions import resolve_static_region
 
@@ -990,14 +995,14 @@ def _compile_character_swap_v2(
     from vibecomfy.workflow_bundle import emit_bundle
 
     from .generation import (
-        LIMITS,
         CHARACTER_SWAP_FILENAME,
         CHARACTER_SWAP_REPOSITORY,
         CHARACTER_SWAP_REVISION,
+        LIMITS,
         TURBO_FILENAME,
         build_generation_workflow,
-        generation_inputs_from_bindings,
         character_swap_asset_sha256,
+        generation_inputs_from_bindings,
         generation_timing,
     )
 
@@ -1401,7 +1406,12 @@ def _compile_generation(
     from vibecomfy.security.provenance import Provenance
     from vibecomfy.workflow_bundle import emit_bundle
 
-    from .generation import IMAGE_REFERENCE_CAPACITY, build_generation_workflow, generation_inputs_from_bindings, generation_timing
+    from .generation import (
+        IMAGE_REFERENCE_CAPACITY,
+        build_generation_workflow,
+        generation_inputs_from_bindings,
+        generation_timing,
+    )
 
     native_v2 = request.value.get("version") == 2
     conditioning = None
@@ -1415,20 +1425,19 @@ def _compile_generation(
         audio_references = list(audio_references or [])
         bindings = {f"reference_{index}": assets[item["asset"]] for index, item in enumerate(references)}
         bindings.update({f"audio_reference_{index}": assets[item["asset"]] for index, item in enumerate(audio_references)})
-    for binding, path in bindings.items():
-        if not binding.startswith("reference_"):
+    for binding_name, path in bindings.items():
+        if not binding_name.startswith("reference_"):
             continue
         try:
             with Image.open(path) as image:
                 if getattr(image, "n_frames", 1) != 1:
-                    raise CompilationError(f"{binding} must be a still image")
+                    raise CompilationError(f"{binding_name} must be a still image")
                 image.verify()
         except (OSError, ValueError) as exc:
-            raise CompilationError(f"{binding} must be a decodable still image") from exc
+            raise CompilationError(f"{binding_name} must be a decodable still image") from exc
     manifest = _write_asset_bundle(destination / "managed-assets.zip", bindings) if bindings else None
     members = _member_by_binding(manifest) if manifest is not None else {}
     image_members = [members[f"reference_{index}"] for index in range(len(references))]
-    audio_members = [members[f"audio_reference_{index}"] for index in range(len(audio_references))]
     if native_settings is None:
         settings = {**_DEFAULTS, **request.value["overrides"]}
         scheduler = "simple"
