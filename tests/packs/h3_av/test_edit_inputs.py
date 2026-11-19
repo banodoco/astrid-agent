@@ -579,3 +579,17 @@ def test_unresolved_modalities_cannot_bypass_reference_limits():
     items = [{"occurrence_id": f"unknown-{index}", "asset": f"asset-{index}", "role": "reference"} for index in range(13)]
     with pytest.raises(prepare.PreparationError, match=r"unknown-0.*unresolved modality"):
         prepare._admit_conditioning(_request(items), [])
+
+
+def test_legacy_persisted_canvas_override_cannot_change_request_identity():
+    from astrid.packs.h3_av.shared.request_v2 import read_prepared_request
+
+    normalized = normalize_v2(_size_request())
+    legacy = dict(normalized.value)
+    del legacy["canvas"]
+    restored = read_prepared_request(legacy, normalized.digest, require_normalized_v2=True)
+    with pytest.raises(prepare.PreparationError, match="cannot override the normalized request canvas"):
+        prepare.prepare_request(restored, width=512, height=288)
+    prepared = prepare.prepare_request(restored, width=DEFAULT_SIZE[0], height=DEFAULT_SIZE[1])
+    assert prepared["request_digest"] == normalized.digest
+    assert (prepared["media"]["width"], prepared["media"]["height"]) == DEFAULT_SIZE

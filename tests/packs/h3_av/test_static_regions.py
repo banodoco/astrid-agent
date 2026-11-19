@@ -340,3 +340,146 @@ def test_nonempty_grant_vanishing_on_target_grid_names_grant(tmp_path):
     mask.save(path)
     with pytest.raises(CompilationError, match="mouth.*vanishes"):
         _combined_strength_mask([(path, "image", (0, 1), 0.75, "mouth")], frames=1, destination=tmp_path, size=(32, 32))
+
+
+def test_recompile_permission_with_authored_binding_collision(tmp_path):
+    import copy
+    from astrid.packs.h3_av.shared.compile import compile_preparation
+    from astrid.packs.h3_av.shared.prepare import _v2_mask_schedule
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from tests.packs.h3_av.test_native_masked_edit import WATERMARK, _prepare
+
+    raw = copy.deepcopy(WATERMARK)
+    raw["media"][0]["edit"][0]["mask"] = {"rectangle": [0, 0, 128, 128]}
+    preparation = _prepare(raw, tmp_path)
+    preparation["mask_schedule"] = _v2_mask_schedule(normalize_request(raw))
+    authored = dict(preparation["assets"][0], asset="permission_mask_0")
+    preparation["assets"].append(authored)
+    first = compile_preparation(preparation, out_dir=tmp_path / "first")
+    change = preparation["mask_schedule"]["video"]["changes"][0]
+    asset_id = change["prepared_mask_asset"]
+    assert asset_id != "permission_mask_0"
+    first_hash = next(r["sha256"] for r in preparation["assets"] if r["asset"] == asset_id)
+    second = compile_preparation(preparation, out_dir=tmp_path / "second")
+    assert change["prepared_mask_asset"] == asset_id
+    assert [r for r in preparation["assets"] if r["asset"] == "permission_mask_0"] == [authored]
+    derived = [r for r in preparation["assets"] if r["asset"] == asset_id]
+    assert len(derived) == 1 and derived[0]["sha256"] == first_hash
+    assert first["managed_assets"]["manifest"] == second["managed_assets"]["manifest"]
+
+
+def test_permission_handoff_survives_failed_recompile_and_retry(tmp_path):
+    import copy
+    from pathlib import Path
+    from astrid.packs.h3_av.shared.compile import compile_preparation
+    from astrid.packs.h3_av.shared.prepare import _v2_mask_schedule
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from tests.packs.h3_av.test_native_masked_edit import WATERMARK, _prepare
+
+    raw = copy.deepcopy(WATERMARK)
+    raw["media"][0]["edit"][0]["mask"] = {"rectangle": [0, 0, 128, 128]}
+    preparation = _prepare(raw, tmp_path)
+    preparation["mask_schedule"] = _v2_mask_schedule(normalize_request(raw))
+    compile_preparation(preparation, out_dir=tmp_path / "first")
+    before = copy.deepcopy(preparation)
+    blocked = tmp_path / "blocked"
+    (blocked / "permission_mask_0.png").mkdir(parents=True)
+    with pytest.raises(OSError):
+        compile_preparation(preparation, out_dir=blocked)
+    assert preparation == before
+    compile_preparation(preparation, out_dir=tmp_path / "retry")
+    change = preparation["mask_schedule"]["video"]["changes"][0]
+    derived = [row for row in preparation["assets"] if row["asset"] == change["prepared_mask_asset"]]
+    assert len(derived) == 1
+    assert Path(derived[0]["path"]).parent == tmp_path / "retry"
+    assert Path(derived[0]["path"]).is_file()
+
+
+def test_same_directory_failed_permission_write_preserves_handoff(tmp_path, monkeypatch):
+    import copy
+    import tempfile
+    from pathlib import Path
+    from astrid.packs.h3_av.shared.compile import compile_preparation
+    from astrid.packs.h3_av.shared.prepare import _v2_mask_schedule
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from tests.packs.h3_av.test_native_masked_edit import WATERMARK, _prepare
+
+    raw = copy.deepcopy(WATERMARK)
+    raw["media"][0]["edit"][0]["mask"] = {"rectangle": [0, 0, 128, 128]}
+    preparation = _prepare(raw, tmp_path)
+    preparation["mask_schedule"] = _v2_mask_schedule(normalize_request(raw))
+    destination = tmp_path / "compile"
+    compile_preparation(preparation, out_dir=destination)
+    before = copy.deepcopy(preparation)
+    asset_id = before["mask_schedule"]["video"]["changes"][0]["prepared_mask_asset"]
+    old_path = Path(next(row["path"] for row in before["assets"] if row["asset"] == asset_id))
+    old_bytes = old_path.read_bytes()
+    real_tempfile = tempfile.NamedTemporaryFile
+
+    def failed_write(*args, **kwargs):
+        wrapped = real_tempfile(*args, **kwargs)
+        class Failure:
+            def __enter__(self):
+                self.handle = wrapped.__enter__()
+                self.name = self.handle.name
+                return self
+            def write(self, data):
+                self.handle.write(data[:10])
+                raise OSError("injected short write")
+            def __exit__(self, *args):
+                return wrapped.__exit__(*args)
+        return Failure()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(tempfile, "NamedTemporaryFile", failed_write)
+        with pytest.raises(OSError, match="injected short write"):
+            compile_preparation(preparation, out_dir=destination)
+    assert preparation == before
+    assert old_path.read_bytes() == old_bytes
+    compile_preparation(preparation, out_dir=destination)
+    assert old_path.read_bytes() == old_bytes
+    assert preparation["mask_schedule"]["video"]["changes"][0]["prepared_mask_asset"] == asset_id
+
+
+def test_failed_second_permission_cleans_new_files_and_preserves_previous(tmp_path, monkeypatch):
+    import copy
+    import os
+    from pathlib import Path
+    from astrid.packs.h3_av.shared.compile import compile_preparation
+    from astrid.packs.h3_av.shared.prepare import _v2_mask_schedule
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from tests.packs.h3_av.test_native_masked_edit import WATERMARK, _prepare
+
+    raw = copy.deepcopy(WATERMARK)
+    raw["media"][0]["edit"] = [
+        {"stream": "video", "during": [0, 12], "mask": {"rectangle": [0, 0, 128, 128]}},
+        {"stream": "video", "during": [0, 12], "mask": {"rectangle": [256, 0, 128, 128]}},
+    ]
+    preparation = _prepare(raw, tmp_path)
+    preparation["mask_schedule"] = _v2_mask_schedule(normalize_request(raw))
+    destination = tmp_path / "compile"
+    compile_preparation(preparation, out_dir=destination)
+    before = copy.deepcopy(preparation)
+    previous = {Path(row["path"]): Path(row["path"]).read_bytes() for row in before["assets"]
+                if row.get("binding", "").startswith("permission_mask_")}
+    assert len(previous) == 2
+    real_replace = os.replace
+    calls = 0
+
+    def fail_second(source, target):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("injected second publication failure")
+        return real_replace(source, target)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "replace", fail_second)
+        with pytest.raises(OSError, match="second publication"):
+            compile_preparation(preparation, out_dir=destination)
+    assert preparation == before
+    assert {path: path.read_bytes() for path in previous} == previous
+    assert set(destination.glob("permission_mask_*.png")) == set(previous)
+    assert not list(destination.glob(".permission_mask_*-*"))
+    compile_preparation(preparation, out_dir=destination)
+    assert all(path.read_bytes() == content for path, content in previous.items())
