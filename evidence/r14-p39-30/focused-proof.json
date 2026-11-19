@@ -1,0 +1,38 @@
+[
+  {
+    "command": [
+      "python3.11",
+      "-I",
+      "scripts/ci/test_bun_selection.py",
+      "-v"
+    ],
+    "python_version": "Python 3.11.18",
+    "raw_exit": 0,
+    "log": "test_bun_selection.log",
+    "sha256": "9a199b89dea5ec3c97278def4156069f901a1fa90938b96953cb89154ce5f87b"
+  },
+  {
+    "command": [
+      "python3.11",
+      "-I",
+      "scripts/ci/test_failure_ceiling.py",
+      "-v"
+    ],
+    "python_version": "Python 3.11.18",
+    "raw_exit": 0,
+    "log": "test_failure_ceiling.log",
+    "sha256": "f592c053ef3593fddcedd29b4618208463c23fd022fb77f0f26a62218f725bcb"
+  },
+  {
+    "command": [
+      "python3.11",
+      "-I",
+      "scripts/ci/test_ceiling_hosted.py",
+      "-v"
+    ],
+    "python_version": "Python 3.11.18",
+    "raw_exit": 0,
+    "log": "test_ceiling_hosted.log",
+    "sha256": "3a720407edca48220e5da637b98d8d9460a40a2476cbbd0089ae1f35c9dcc849"
+  }
+]

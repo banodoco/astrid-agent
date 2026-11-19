@@ -1,0 +1,68 @@
+{
+  "source_commit": "e84bbd52725cba1da7ac655771f840cb7af25fc2",
+  "actual_execution_commit": "16075358e229149b34f7586e5e7c6b5cad6d88e3",
+  "verified_equal_execution_tree": "28adcd87b8c23602b3643e364fa46ce30f7a5d8a",
+  "source_path": "astrid/chat/sessionConfigOptions.test.ts",
+  "source_url": "https://github.com/banodoco/astrid-agent/blob/e84bbd52725cba1da7ac655771f840cb7af25fc2/astrid/chat/sessionConfigOptions.test.ts",
+  "source_blob": "aecd048f540f915ccd253af1156c9e86481c0452",
+  "source_sha256": "53c874a4e63c7e7c44dd7ffaf20a5034788259ca70db67373bb166c296708648",
+  "artifact_url": "https://github.com/banodoco/astrid-agent/actions/runs/44580348392/artifacts/14560192158",
+  "command": "bun run test:chat --reporter=junit --reporter-outfile=\"$CEILING_STEP_DIR/bun-results.xml\"",
+  "receipt": {
+    "schema": 1,
+    "repository": "banodoco/astrid-agent",
+    "head": "16075358e229149b34f7586e5e7c6b5cad6d88e3",
+    "tuple": {
+      "banodoco/astrid-agent": "16075358e229149b34f7586e5e7c6b5cad6d88e3"
+    },
+    "step": "step-06",
+    "job": "chat",
+    "matrix_index": "0",
+    "run_id": "44580348392",
+    "attempt": "1",
+    "shell": "bash",
+    "command_sha256": "6cef40b0fcaace2de4cc5fecbe2824901c8cb70983c1fba8b9c6d08827b8edba",
+    "installed_sources": {},
+    "tuple_conflicts": [],
+    "started_at": 1795111512.970457,
+    "complete": true,
+    "raw_exit": 0,
+    "finished_at": 1795111666.0180337
+  },
+  "job": {
+    "workflow": "Chat service",
+    "job": "chat",
+    "head": "e84bbd52725cba1da7ac655771f840cb7af25fc2",
+    "run_id": 44580348392,
+    "job_id": 135758988867,
+    "attempt": 1,
+    "conclusion": "success"
+  },
+  "cases": [
+    {
+      "native_id": "[\"astrid/chat/sessionConfigOptions.test.ts\",\"20\",\"ACP session config options\",\"reads Claude effort with recommendation capability %s\"]",
+      "attributes": {
+        "name": "reads Claude effort with recommendation capability %s",
+        "classname": "ACP session config options",
+        "time": "0.000149",
+        "file": "astrid/chat/sessionConfigOptions.test.ts",
+        "line": "20",
+        "assertions": "2"
+      },
+      "xml": "<testcase name=\"reads Claude effort with recommendation capability %s\" classname=\"ACP session config options\" time=\"0.000149\" file=\"astrid/chat/sessionConfigOptions.test.ts\" line=\"20\" assertions=\"2\" />\n      "
+    },
+    {
+      "native_id": "[\"astrid/chat/sessionConfigOptions.test.ts\",\"20\",\"ACP session config options\",\"reads Claude effort with recommendation capability %s\"]",
+      "attributes": {
+        "name": "reads Claude effort with recommendation capability %s",
+        "classname": "ACP session config options",
+        "time": "0.000042",
+        "file": "astrid/chat/sessionConfigOptions.test.ts",
+        "line": "20",
+        "assertions": "2"
+      },
+      "xml": "<testcase name=\"reads Claude effort with recommendation capability %s\" classname=\"ACP session config options\" time=\"0.000042\" file=\"astrid/chat/sessionConfigOptions.test.ts\" line=\"20\" assertions=\"2\" />\n      "
+    }
+  ],
+  "disposition": "Existing duplicate canonical identity; both observations retained, no rename/deduplication/qualification. Separate Lead disposition required."
+}

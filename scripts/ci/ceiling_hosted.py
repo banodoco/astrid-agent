@@ -31,6 +31,33 @@ def module(name):
 
 core = module("failure_ceiling")
 adapters = module("ceiling_adapters")
+TRUSTED_ROOT = Path(__file__).resolve().parents[2]
+
+
+def trusted_bun_command(spec, expected, directory):
+    """Bind selection to the exported immutable workflow, never candidate text.
+
+    Bun commands currently use a single-line run and named step. Refuse other
+    YAML forms instead of interpreting an unsupported command or selector.
+    """
+    filename = spec["workflow_file"]
+    core.require(re.fullmatch(r"[A-Za-z0-9_-]+\.yml", filename), "invalid trusted workflow path")
+    workflow = TRUSTED_ROOT / ".github/workflows" / filename
+    core.require(workflow.is_file(), "trusted Bun workflow snapshot unavailable")
+    source = workflow.read_text(encoding="utf-8")
+    jobs = re.findall(r"^  " + re.escape(spec["job_id"]) + r":\n(.*?)(?=^  [A-Za-z0-9_-]+:|\Z)", source, re.MULTILINE | re.DOTALL)
+    core.require(len(jobs) == 1, "trusted Bun job missing/ambiguous")
+    steps = re.split(r"^      - ", jobs[0], flags=re.MULTILINE)[1:]
+    steps = [step for step in steps if step.splitlines()[0] == "name: " + expected["name"]]
+    core.require(len(steps) == 1, "trusted Bun step missing/ambiguous")
+    shell = re.findall(r"^        shell: (.+)$", steps[0], re.MULTILINE)
+    core.require(len(shell) == 1 and re.search(r" --step " + re.escape(expected["id"]) + r" --shell (?:pwsh|bash) ", shell[0]),
+                 "trusted Bun step receipt binding missing")
+    commands = re.findall(r"^        run: (bun .+)$", steps[0], re.MULTILINE)
+    core.require(len(commands) == 1, "trusted Bun command unsupported/ambiguous")
+    command = (directory / "command.txt").read_text(encoding="utf-8").rstrip("\n")
+    core.require(command == commands[0], "Bun command differs from trusted workflow selection")
+    return commands[0]
 
 
 class ArtifactRedirect(urllib.request.HTTPRedirectHandler):
@@ -170,7 +197,8 @@ def normalized_job(spec, raw, run, roots, repository, head, candidate, tup, api=
                     suite = adapters.native_stream(stream, expected["lane"], expected["id"])
                 suites.append(suite)
             for xml in sorted(directory.glob("bun-*.xml")):
-                suites.append(adapters.bun_junit(xml, directory / "command.log", expected["lane"], expected["id"], receipt["raw_exit"]))
+                command = trusted_bun_command(spec, expected, directory)
+                suites.append(adapters.bun_junit(xml, directory / "command.log", expected["lane"], expected["id"], receipt["raw_exit"], command))
             core.require(suites, f"test step has no native results: {expected['name']}")
             core.require(len(suites) == expected.get("invocations", 1), f"missing/extra native invocation: {expected['name']}")
             if receipt["raw_exit"] and not any(s["raw_exit"] for s in suites):

@@ -1,0 +1,34 @@
+{
+  "steps": {
+    "step-03": {
+      "before": "ACCEPTED",
+      "after": "ACCEPTED",
+      "native_exit": 0,
+      "identities": 24
+    },
+    "step-04": {
+      "before": "REFUSED",
+      "after": "ACCEPTED",
+      "native_exit": 0,
+      "identities": 11
+    }
+  },
+  "earlier_official": {
+    "before": "FAIL",
+    "after": "FAIL",
+    "unknown_before": 4,
+    "unknown_after": 3
+  },
+  "windows_only_policy": {
+    "merge": {
+      "verdict": "FAIL",
+      "packet_errors": 36,
+      "scope": "Windows-only diagnostic input; other required jobs deliberately absent; not qualification"
+    },
+    "release": {
+      "verdict": "FAIL",
+      "packet_errors": 36,
+      "scope": "Windows-only diagnostic input; other required jobs deliberately absent; not qualification"
+    }
+  }
+}
