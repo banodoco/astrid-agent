@@ -670,7 +670,13 @@ def _run_local_server(
             attempt_id=attempt_identity or task_identity,
         )
 
+    from astrid.core.generation.producer_result import retain_workflow_for_failure
     from astrid.core.generation.target_inventory import POD_STOP
+
+    # Attempt prefixes can create an in-memory child while its source pair
+    # remains the admitted parent. Recovery must use this exact approved child;
+    # its receipt revision still has to match in the ordinary projection guard.
+    retain_workflow_for_failure(bundle, destination, task_id=task_identity, attempt_id=attempt_identity)
     pod_stop = POD_STOP.get()
 
     def stop(signum: int, _frame: Any) -> None:

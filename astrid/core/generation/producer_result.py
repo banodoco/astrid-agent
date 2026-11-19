@@ -5,8 +5,9 @@ import hashlib
 import json
 from collections.abc import Mapping
 from contextlib import contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
-from dataclasses import is_dataclass, replace
+from dataclasses import dataclass, is_dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,27 @@ from astrid.core._shared.result_manifest import (
     validate_result_manifest,
 )
 from astrid.core.generation.vibecomfy_runtime_root import vibecomfy_runtime_root
+
+
+@dataclass
+class _ProducerFailureScope:
+    destination: Path
+    task_id: str
+    attempt_id: str | None
+    workflow_bundle: Any
+
+
+_producer_failure_scope: ContextVar[_ProducerFailureScope | None] = ContextVar(
+    "producer_failure_scope", default=None,
+)
+
+
+def retain_workflow_for_failure(bundle, destination: Path, *, task_id: str, attempt_id: str | None) -> None:
+    """Keep the executed candidate only inside its producer's recovery scope."""
+    scope = _producer_failure_scope.get()
+    if (scope is not None and scope.destination == Path(destination).resolve()
+            and scope.task_id == task_id and scope.attempt_id == attempt_id):
+        scope.workflow_bundle = bundle
 
 
 def public_alignment_evidence(alignment: Mapping[str, Any]) -> dict[str, Any]:
@@ -415,6 +437,8 @@ def preserve_result_on_error(destination: Path, *, task_id: str, attempt_id: str
     """
     destination = Path(destination).resolve()
     previous_receipts = set(vibecomfy_runtime_root(destination).glob('out/runs/*/attempt.json'))
+    scope = _ProducerFailureScope(destination, task_id, attempt_id, workflow_bundle)
+    token = _producer_failure_scope.set(scope)
     try:
         yield
     except BaseException as error:
@@ -458,7 +482,9 @@ def preserve_result_on_error(destination: Path, *, task_id: str, attempt_id: str
                 try:
                     _native_failure_result(error, receipts[0], destination, task_id=task_id,
                         attempt_id=attempt_id, source=source, workflow_path=workflow_path,
-                        transport=transport, workflow_bundle=workflow_bundle, artifact_roots=artifact_roots)
+                        transport=transport, workflow_bundle=scope.workflow_bundle, artifact_roots=artifact_roots)
                 except Exception as evidence_error:
                     error.add_note(f'Could not retain native producer failure evidence: {evidence_error}')
         raise
+    finally:
+        _producer_failure_scope.reset(token)
