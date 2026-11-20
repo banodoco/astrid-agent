@@ -1,0 +1,140 @@
+{
+  "id": 135920667064,
+  "run_id": 44626225586,
+  "workflow_name": "Chat service",
+  "head_branch": "release/14/plan-39",
+  "run_url": "https://api.github.com/repos/banodoco/astrid-agent/actions/runs/44626225586",
+  "run_attempt": 1,
+  "node_id": "CR_kwDOSOeWsc8AAAAfpYDJuA",
+  "head_sha": "b1e53baf5facbb340dfc42b1688f7152c255e351",
+  "url": "https://api.github.com/repos/banodoco/astrid-agent/actions/jobs/135920667064",
+  "html_url": "https://github.com/banodoco/astrid-agent/actions/runs/44626225586/job/135920667064",
+  "status": "completed",
+  "conclusion": "success",
+  "created_at": "2026-11-19T22:11:39Z",
+  "started_at": "2026-11-19T22:34:53Z",
+  "completed_at": "2026-11-19T22:35:49Z",
+  "name": "windows-launchers",
+  "steps": [
+    {
+      "name": "Set up job",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 1,
+      "started_at": "2026-11-19T22:34:54Z",
+      "completed_at": "2026-11-19T22:34:56Z"
+    },
+    {
+      "name": "Run actions/checkout@v4",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 2,
+      "started_at": "2026-11-19T22:34:56Z",
+      "completed_at": "2026-11-19T22:35:06Z"
+    },
+    {
+      "name": "Set up Plan39 evidence collector",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 3,
+      "started_at": "2026-11-19T22:35:06Z",
+      "completed_at": "2026-11-19T22:35:06Z"
+    },
+    {
+      "name": "Run oven-sh/setup-bun@v2",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 4,
+      "started_at": "2026-11-19T22:35:06Z",
+      "completed_at": "2026-11-19T22:35:09Z"
+    },
+    {
+      "name": "Plan39 recorded command 02",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 5,
+      "started_at": "2026-11-19T22:35:09Z",
+      "completed_at": "2026-11-19T22:35:26Z"
+    },
+    {
+      "name": "Exercise native Windows chat child launches",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 6,
+      "started_at": "2026-11-19T22:35:26Z",
+      "completed_at": "2026-11-19T22:35:28Z"
+    },
+    {
+      "name": "Allow slow Windows model discovery through HTTP",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 7,
+      "started_at": "2026-11-19T22:35:28Z",
+      "completed_at": "2026-11-19T22:35:40Z"
+    },
+    {
+      "name": "Parse the operator diagnostic with Windows PowerShell",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 8,
+      "started_at": "2026-11-19T22:35:40Z",
+      "completed_at": "2026-11-19T22:35:43Z"
+    },
+    {
+      "name": "Parse the operator diagnostic with PowerShell Core",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 9,
+      "started_at": "2026-11-19T22:35:43Z",
+      "completed_at": "2026-11-19T22:35:44Z"
+    },
+    {
+      "name": "Retain actual Plan39 command and native result evidence",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 10,
+      "started_at": "2026-11-19T22:35:44Z",
+      "completed_at": "2026-11-19T22:35:45Z"
+    },
+    {
+      "name": "Post Run oven-sh/setup-bun@v2",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 18,
+      "started_at": "2026-11-19T22:35:45Z",
+      "completed_at": "2026-11-19T22:35:46Z"
+    },
+    {
+      "name": "Post Set up Plan39 evidence collector",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 19,
+      "started_at": "2026-11-19T22:35:46Z",
+      "completed_at": "2026-11-19T22:35:46Z"
+    },
+    {
+      "name": "Post Run actions/checkout@v4",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 20,
+      "started_at": "2026-11-19T22:35:46Z",
+      "completed_at": "2026-11-19T22:35:48Z"
+    },
+    {
+      "name": "Complete job",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 21,
+      "started_at": "2026-11-19T22:35:48Z",
+      "completed_at": "2026-11-19T22:35:48Z"
+    }
+  ],
+  "check_run_url": "https://api.github.com/repos/banodoco/astrid-agent/check-runs/135920667064",
+  "labels": [
+    "windows-latest"
+  ],
+  "runner_id": 1000047570,
+  "runner_name": "GitHub Actions 1000047570",
+  "runner_group_id": 0,
+  "runner_group_name": "GitHub Actions"
+}

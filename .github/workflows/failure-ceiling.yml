@@ -45,6 +45,7 @@ jobs:
         run: |
           python -I scripts/ci/test_failure_ceiling.py -v
           python -I scripts/ci/test_ceiling_hosted.py -v
+          python -I scripts/ci/test_bun_selection.py -v
 
   trusted-ceiling:
     name: trusted failure ceiling
@@ -97,7 +98,7 @@ jobs:
             echo "::error::Trusted comparator is absent from merge base $base. Initial bootstrap needs Lead review; candidate code will not qualify itself."
             exit 1
           fi
-          git archive "$base" ci scripts/ci | tar -x -C "$trusted"
+          git archive "$base" ci scripts/ci .github/workflows | tar -x -C "$trusted"
           echo "root=$trusted" >> "$GITHUB_OUTPUT"
           echo "head=$CANDIDATE_SHA" >> "$GITHUB_OUTPUT"
           echo "tier=$tier" >> "$GITHUB_OUTPUT"

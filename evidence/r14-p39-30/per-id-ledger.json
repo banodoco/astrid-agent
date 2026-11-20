@@ -1,0 +1,786 @@
+{
+  "schema": 1,
+  "repository": "banodoco/astrid-agent",
+  "head": "b1e53baf5facbb340dfc42b1688f7152c255e351",
+  "run_id": 44626225586,
+  "artifact_id": 14581372377,
+  "artifact_sha256": "d09886c2c17d4215f829ee15aad20aa097023547815ccda9297f50abcde5a315",
+  "artifact_url": "https://github.com/banodoco/astrid-agent/actions/runs/44626225586/artifacts/14581372377",
+  "steps": {
+    "step-03": {
+      "command": "bun test --reporter=junit --reporter-outfile=\"$env:CEILING_STEP_DIR/bun-results.xml\" ./astrid/chat/discoveryProbe.test.ts ./astrid/chat/astridAcpLauncher.windows.test.ts ./astrid/chat/acpProcessHost.test.ts",
+      "command_receipt": {
+        "schema": 1,
+        "repository": "banodoco/astrid-agent",
+        "head": "b1e53baf5facbb340dfc42b1688f7152c255e351",
+        "tuple": {
+          "banodoco/astrid-agent": "b1e53baf5facbb340dfc42b1688f7152c255e351"
+        },
+        "step": "step-03",
+        "job": "windows-launchers",
+        "matrix_index": "0",
+        "run_id": "44626225586",
+        "attempt": "1",
+        "shell": "pwsh",
+        "command_sha256": "e6651531ae5537abc11da9bb6399d9c4a5b046ec9c7986f74b6553d305faf8bb",
+        "installed_sources": {},
+        "tuple_conflicts": [],
+        "started_at": 1795127726.8258438,
+        "complete": true,
+        "raw_exit": 0,
+        "finished_at": 1795127728.7859123
+      },
+      "root_junit_attributes": {
+        "name": "bun test",
+        "tests": "24",
+        "assertions": "48",
+        "failures": "0",
+        "skipped": "1",
+        "time": "1.5555673"
+      },
+      "terminal_log": "bun test v1.3.14 (0d9b296a)\n\n::group::astrid\\chat\\discoveryProbe.test.ts:\n(pass) Windows discovery probes route npm command shims through cmd.exe [0.59ms]\n(pass) native Windows discovery launches a harmless .cmd probe through cmd.exe [36.97ms]\n(pass) a discovery deadline kills a wrapper and its hanging CLI child [1116.22ms]\n(pass) discovery preserves nonzero status diagnostics for explicit signed-out detection [76.08ms]\n(pass) an unavailable discovery command rejects promptly [1.59ms]\n\n::endgroup::\n\n::group::astrid\\chat\\astridAcpLauncher.windows.test.ts:\n(pass) native Windows ACP profile and context lookups can launch a .cmd Astrid shim [51.15ms]\n(skip) profile lookup reports safe status without returning child stderr\n\n::endgroup::\n\n::group::astrid\\chat\\acpProcessHost.test.ts:\n(pass) AcpProcessHost > keeps a long prompt active and deduplicated past the control deadline, then delivers its result [50.84ms]\n(pass) AcpProcessHost > can cancel a prompt after the control deadline and waits for the agent cancellation response [46.71ms]\n(pass) AcpProcessHost > rejects a long prompt when its process exits instead of leaving it pending forever [47.83ms]\n(pass) AcpProcessHost > runs Windows command shims through cmd.exe with a quoted entry and arguments [1.56ms]\n(pass) AcpProcessHost > forwards initialize/new/close and preserves the opaque OMP session id [0.54ms]\n(pass) AcpProcessHost > surfaces the installed agent session-not-found detail instead of generic Internal error [0.28ms]\n(pass) AcpProcessHost > explains an unavailable saved model on session/load and permits a new chat [0.36ms]\n(pass) AcpProcessHost > explains an unavailable saved model on session/resume and permits a new chat [0.18ms]\n(pass) AcpProcessHost > forwards notifications and answers explicit permission callbacks without ambient authority [0.69ms]\n(pass) AcpProcessHost > fails closed when a required filesystem callback is absent [0.23ms]\n(pass) AcpProcessHost > rejects pending calls when the owned process disconnects and builds the explicit omp acp launch [0.32ms]\n(pass) AcpProcessHost > builds the real Astrid launcher command with identity, cwd, and session custody [0.57ms]\n(pass) AcpProcessHost > resolves the packaged Astrid profile through the installed command without a user-home seed [0.38ms]\n(pass) AcpProcessHost > omits the session override so OMP owns canonical cwd-derived storage [0.36ms]\n(pass) AcpProcessHost > pins the hosted installed package profile despite ambient named mode while preserving appended instructions and OMP custody [0.31ms]\n(pass) AcpProcessHost > rejects a validation-only custom base override rather than pretending to execute it [0.13ms]\n(pass) AcpProcessHost > fails closed before spawn when the canonical prompt file is unavailable [0.20ms]\n\n::endgroup::\n\n1 tests skipped:\n(skip) profile lookup reports safe status without returning child stderr\n\n 23 pass\n 1 skip\n 0 fail\n 48 expect() calls\nRan 24 tests across 3 files. [1.56s]\n",
+      "cases": [
+        {
+          "file": "astrid/chat/discoveryProbe.test.ts",
+          "line": 9,
+          "name": "Windows discovery probes route npm command shims through cmd.exe",
+          "classname": "",
+          "junit_outcome": "pass",
+          "classification": "executed_pass",
+          "terminal_outcome": "pass",
+          "time": "0.000593",
+          "readable_id": "astrid/chat/discoveryProbe.test.ts::Windows discovery probes route npm command shims through cmd.exe",
+          "native_id": "[\"astrid\\\\chat\\\\discoveryProbe.test.ts\",\"9\",\"\",\"Windows discovery probes route npm command shims through cmd.exe\"]",
+          "source": {
+            "sha256": "23de14c4a53f5d6a5f87b8bb82f380a506fa3678aea5846c84afd775668c5240",
+            "git_blob_sha": "e76d4490729fa1b5d6a4fda625e735cfd37c7fc0",
+            "source_url": "https://github.com/banodoco/astrid-agent/blob/b1e53baf5facbb340dfc42b1688f7152c255e351/astrid/chat/discoveryProbe.test.ts"
+          },
+          "lane": "Chat service/windows-launchers/step-03"
+        },
+        {
+          "file": "astrid/chat/discoveryProbe.test.ts",
+          "line": 23,
+          "name": "native Windows discovery launches a harmless .cmd probe through cmd.exe",
+          "classname": "",
+          "junit_outcome": "pass",
+          "classification": "executed_pass",
+          "terminal_outcome": "pass",
+          "time": "0.036968",
+          "readable_id": "astrid/chat/discoveryProbe.test.ts::native Windows discovery launches a harmless .cmd probe through cmd.exe",
+          "native_id": "[\"astrid\\\\chat\\\\discoveryProbe.test.ts\",\"23\",\"\",\"native Windows discovery launches a harmless .cmd probe through cmd.exe\"]",
+          "source": {
+            "sha256": "23de14c4a53f5d6a5f87b8bb82f380a506fa3678aea5846c84afd775668c5240",
+            "git_blob_sha": "e76d4490729fa1b5d6a4fda625e735cfd37c7fc0",
+            "source_url": "https://github.com/banodoco/astrid-agent/blob/b1e53baf5facbb340dfc42b1688f7152c255e351/astrid/chat/discoveryProbe.test.ts"
+          },
+          "lane": "Chat service/windows-launchers/step-03"
+        },
+        {
+          "file": "astrid/chat/discoveryProbe.test.ts",
+          "line": 35,
+          "name": "a discovery deadline kills a wrapper and its hanging CLI child",
+          "classname": "",
+          "junit_outcome": "pass",
+          "classification": "executed_pass",
+          "terminal_outcome": "pass",
+          "time": "1.11622",
+          "readable_id": "astrid/chat/discoveryProbe.test.ts::a discovery deadline kills a wrapper and its hanging CLI child",
+          "native_id": "[\"astrid\\\\chat\\\\discoveryProbe.test.ts\",\"35\",\"\",\"a discovery deadline kills a wrapper and its hanging CLI child\"]",
+          "source": {
+            "sha256": "23de14c4a53f5d6a5f87b8bb82f380a506fa3678aea5846c84afd775668c5240",
+            "git_blob_sha": "e76d4490729fa1b5d6a4fda625e735cfd37c7fc0",
+            "source_url": "https://github.com/banodoco/astrid-agent/blob/b1e53baf5facbb340dfc42b1688f7152c255e351/astrid/chat/discoveryProbe.test.ts"
+          },
+          "lane": "Chat service/windows-launchers/step-03"
+        },
+        {
+          "file": "astrid/chat/discoveryProbe.test.ts",
+          "line": 65,
+          "name": "discovery preserves nonzero status diagnostics for explicit signed-out detection",
+          "classname": "",
+          "junit_outcome": "pass",
+          "classification": "executed_pass",
+          "terminal_outcome": "pass",
+          "time": "0.076079",
+          "readable_id": "astrid/chat/discoveryProbe.test.ts::discovery preserves nonzero status diagnostics for explicit signed-out detection",
+          "native_id": "[\"astrid\\\\chat\\\\discoveryProbe.test.ts\",\"65\",\"\",\"discovery preserves nonzero status diagnostics for explicit signed-out detection\"]",
+          "source": {
+            "sha256": "23de14c4a53f5d6a5f87b8bb82f380a506fa3678aea5846c84afd775668c5240",
+            "git_blob_sha": "e76d4490729fa1b5d6a4fda625e735cfd37c7fc0",
+            "source_url": "https://github.com/banodoco/astrid-agent/blob/b1e53baf5facbb340dfc42b1688f7152c255e351/astrid/chat/discoveryProbe.test.ts"
+          },
+          "lane": "Chat service/windows-launchers/step-03"
+        },
+        {
+          "file": "astrid/chat/discoveryProbe.test.ts",
+          "line": 73,
+          "name": "an unavailable discovery command rejects promptly",
+          "classname": "",
+          "junit_outcome": "pass",
+          "classification": "executed_pass",
+          "terminal_outcome": "pass",
+          "time": "0.001593",
+          "readable_id": "astrid/chat/discoveryProbe.test.ts::an unavailable discovery command rejects promptly",
+          "native_id": "[\"astrid\\\\chat\\\\discoveryProbe.test.ts\",\"73\",\"\",\"an unavailable discovery command rejects promptly\"]",
+          "source": {
+            "sha256": "23de14c4a53f5d6a5f87b8bb82f380a506fa3678aea5846c84afd775668c5240",
+            "git_blob_sha": "e76d4490729fa1b5d6a4fda625e735cfd37c7fc0",
+            "source_url": "https://github.com/banodoco/astrid-agent/blob/b1e53baf5facbb340dfc42b1688f7152c255e351/astrid/chat/discoveryProbe.test.ts"
+          },
+          "lane": "Chat service/windows-launchers/step-03"
+        },
+        {
+          "file": "astrid/chat/astridAcpLauncher.windows.test.ts",
+          "line": 8,
+          "name": "native Windows ACP profile and context lookups can launch a .cmd Astrid shim",
+          "classname": "",
+          "junit_outcome": "pass",
+          "classification": "executed_pass",
+          "terminal_outcome": "pass",
+          "time": "0.05115",
+          "readable_id": "astrid/chat/astridAcpLauncher.windows.test.ts::native Windows ACP profile and context lookups can launch a .cmd Astrid shim",
+          "native_id": "[\"astrid\\\\chat\\\\astridAcpLauncher.windows.test.ts\",\"8\",\"\",\"native Windows ACP profile and context lookups can launch a .cmd Astrid shim\"]",
+          "source": {
+            "sha256": "343258e27cb7fc18402ed1337708fce83d92d2129b6139c046902547a9a5606d",
+            "git_blob_sha": "c35daae9c2f095153c8783960388e5a5e6e80aad",
+            "source_url": "https://github.com/banodoco/astrid-agent/blob/b1e53baf5facbb340dfc42b1688f7152c255e351/astrid/chat/astridAcpLauncher.windows.test.ts"
+          },
+          "lane": "Chat service/windows-launchers/step-03"
+        },
+        {
+          "file": "astrid/chat/astridAcpLauncher.windows.test.ts",
+          "line": 43,
+          "name": "profile lookup reports safe status without returning child stderr",
+          "classname": "",
+          "junit_outcome": "skipped",
+          "classification": "declared_skip",
+          "terminal_outcome": "skip",
+          "time": "0",
+          "readable_id": "astrid/chat/astridAcpLauncher.windows.test.ts::profile lookup reports safe status without returning child stderr",
+          "native_id": "[\"astrid\\\\chat\\\\astridAcpLauncher.windows.test.ts\",\"43\",\"\",\"profile lookup reports safe status without returning child stderr\"]",
+          "source": {
+            "sha256": "343258e27cb7fc18402ed1337708fce83d92d2129b6139c046902547a9a5606d",
+            "git_blob_sha": "c35daae9c2f095153c8783960388e5a5e6e80aad",
+            "source_url": "https://github.com/banodoco/astrid-agent/blob/b1e53baf5facbb340dfc42b1688f7152c255e351/astrid/chat/astridAcpLauncher.windows.test.ts"
+          },
+          "lane": "Chat service/windows-launchers/step-03"
+        },
+        {
+          "file": "astrid/chat/acpProcessHost.test.ts",
+          "line": 84,
+          "name": "keeps a long prompt active and deduplicated past the control deadline, then delivers its result",
+          "classname": "AcpProcessHost",
+          "junit_outcome": "pass",
+          "classification": "executed_pass",
+          "terminal_outcome": "pass",
+          "time": "0.050836",
+          "readable_id": "astrid/chat/acpProcessHost.test.ts::AcpProcessHost::keeps a long prompt active and deduplicated past the control deadline, then delivers its result",
+          "native_id": "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"84\",\"AcpProcessHost\",\"keeps a long prompt active and deduplicated past the control deadline, then delivers its result\"]",
+          "source": {
+            "sha256": "454e3ab8e395ea04093217002c87de2dd43bdce1db3200306b525c056a215d27",
+            "git_blob_sha": "7fb8b8be049d9e1cdf580211bb42f0e07e7b6288",
+            "source_url": "https://github.com/banodoco/astrid-agent/blob/b1e53baf5facbb340dfc42b1688f7152c255e351/astrid/chat/acpProcessHost.test.ts"
+          },
+          "lane": "Chat service/windows-launchers/step-03"
+        },
+        {
+          "file": "astrid/chat/acpProcessHost.test.ts",
+          "line": 124,
+          "name": "can cancel a prompt after the control deadline and waits for the agent cancellation response",
+          "classname": "AcpProcessHost",
+          "junit_outcome": "pass",
+          "classification": "executed_pass",
+          "terminal_outcome": "pass",
+          "time": "0.046707",
+          "readable_id": "astrid/chat/acpProcessHost.test.ts::AcpProcessHost::can cancel a prompt after the control deadline and waits for the agent cancellation response",
+          "native_id": "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"124\",\"AcpProcessHost\",\"can cancel a prompt after the control deadline and waits for the agent cancellation response\"]",
+          "source": {
+            "sha256": "454e3ab8e395ea04093217002c87de2dd43bdce1db3200306b525c056a215d27",
+            "git_blob_sha": "7fb8b8be049d9e1cdf580211bb42f0e07e7b6288",
+            "source_url": "https://github.com/banodoco/astrid-agent/blob/b1e53baf5facbb340dfc42b1688f7152c255e351/astrid/chat/acpProcessHost.test.ts"
+          },
+          "lane": "Chat service/windows-launchers/step-03"
+        },
+        {
+          "file": "astrid/chat/acpProcessHost.test.ts",
+          "line": 142,
+          "name": "rejects a long prompt when its process exits instead of leaving it pending forever",
+          "classname": "AcpProcessHost",
+          "junit_outcome": "pass",
+          "classification": "executed_pass",
+          "terminal_outcome": "pass",
+          "time": "0.04783",
+          "readable_id": "astrid/chat/acpProcessHost.test.ts::AcpProcessHost::rejects a long prompt when its process exits instead of leaving it pending forever",
+          "native_id": "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"142\",\"AcpProcessHost\",\"rejects a long prompt when its process exits instead of leaving it pending forever\"]",
+          "source": {
+            "sha256": "454e3ab8e395ea04093217002c87de2dd43bdce1db3200306b525c056a215d27",
+            "git_blob_sha": "7fb8b8be049d9e1cdf580211bb42f0e07e7b6288",
+            "source_url": "https://github.com/banodoco/astrid-agent/blob/b1e53baf5facbb340dfc42b1688f7152c255e351/astrid/chat/acpProcessHost.test.ts"
+          },
+          "lane": "Chat service/windows-launchers/step-03"
+        },
+        {
+          "file": "astrid/chat/acpProcessHost.test.ts",
+          "line": 157,
+          "name": "runs Windows command shims through cmd.exe with a quoted entry and arguments",
+          "classname": "AcpProcessHost",
+          "junit_outcome": "pass",
+          "classification": "executed_pass",
+          "terminal_outcome": "pass",
+          "time": "0.001557",
+          "readable_id": "astrid/chat/acpProcessHost.test.ts::AcpProcessHost::runs Windows command shims through cmd.exe with a quoted entry and arguments",
+          "native_id": "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"157\",\"AcpProcessHost\",\"runs Windows command shims through cmd.exe with a quoted entry and arguments\"]",
+          "source": {
+            "sha256": "454e3ab8e395ea04093217002c87de2dd43bdce1db3200306b525c056a215d27",
+            "git_blob_sha": "7fb8b8be049d9e1cdf580211bb42f0e07e7b6288",
+            "source_url": "https://github.com/banodoco/astrid-agent/blob/b1e53baf5facbb340dfc42b1688f7152c255e351/astrid/chat/acpProcessHost.test.ts"
+          },
+          "lane": "Chat service/windows-launchers/step-03"
+        },
+        {
+          "file": "astrid/chat/acpProcessHost.test.ts",
+          "line": 171,
+          "name": "forwards initialize/new/close and preserves the opaque OMP session id",
+          "classname": "AcpProcessHost",
+          "junit_outcome": "pass",
+          "classification": "executed_pass",
+          "terminal_outcome": "pass",
+          "time": "0.000536",
+          "readable_id": "astrid/chat/acpProcessHost.test.ts::AcpProcessHost::forwards initialize/new/close and preserves the opaque OMP session id",
+          "native_id": "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"171\",\"AcpProcessHost\",\"forwards initialize/new/close and preserves the opaque OMP session id\"]",
+          "source": {
+            "sha256": "454e3ab8e395ea04093217002c87de2dd43bdce1db3200306b525c056a215d27",
+            "git_blob_sha": "7fb8b8be049d9e1cdf580211bb42f0e07e7b6288",
+            "source_url": "https://github.com/banodoco/astrid-agent/blob/b1e53baf5facbb340dfc42b1688f7152c255e351/astrid/chat/acpProcessHost.test.ts"
+          },
+          "lane": "Chat service/windows-launchers/step-03"
+        },
+        {
+          "file": "astrid/chat/acpProcessHost.test.ts",
+          "line": 202,
+          "name": "surfaces the installed agent session-not-found detail instead of generic Internal error",
+          "classname": "AcpProcessHost",
+          "junit_outcome": "pass",
+          "classification": "executed_pass",
+          "terminal_outcome": "pass",
+          "time": "0.000279",
+          "readable_id": "astrid/chat/acpProcessHost.test.ts::AcpProcessHost::surfaces the installed agent session-not-found detail instead of generic Internal error",
+          "native_id": "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"202\",\"AcpProcessHost\",\"surfaces the installed agent session-not-found detail instead of generic Internal error\"]",
+          "source": {
+            "sha256": "454e3ab8e395ea04093217002c87de2dd43bdce1db3200306b525c056a215d27",
+            "git_blob_sha": "7fb8b8be049d9e1cdf580211bb42f0e07e7b6288",
+            "source_url": "https://github.com/banodoco/astrid-agent/blob/b1e53baf5facbb340dfc42b1688f7152c255e351/astrid/chat/acpProcessHost.test.ts"
+          },
+          "lane": "Chat service/windows-launchers/step-03"
+        },
+        {
+          "file": "astrid/chat/acpProcessHost.test.ts",
+          "line": 217,
+          "name": "explains an unavailable saved model on session/load and permits a new chat",
+          "classname": "AcpProcessHost",
+          "junit_outcome": "pass",
+          "classification": "executed_pass",
+          "terminal_outcome": "pass",
+          "time": "0.000362",
+          "readable_id": "astrid/chat/acpProcessHost.test.ts::AcpProcessHost::explains an unavailable saved model on session/load and permits a new chat",
+          "native_id": "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"217\",\"AcpProcessHost\",\"explains an unavailable saved model on session/load and permits a new chat\"]",
+          "source": {
+            "sha256": "454e3ab8e395ea04093217002c87de2dd43bdce1db3200306b525c056a215d27",
+            "git_blob_sha": "7fb8b8be049d9e1cdf580211bb42f0e07e7b6288",
+            "source_url": "https://github.com/banodoco/astrid-agent/blob/b1e53baf5facbb340dfc42b1688f7152c255e351/astrid/chat/acpProcessHost.test.ts"
+          },
+          "lane": "Chat service/windows-launchers/step-03"
+        },
+        {
+          "file": "astrid/chat/acpProcessHost.test.ts",
+          "line": 217,
+          "name": "explains an unavailable saved model on session/resume and permits a new chat",
+          "classname": "AcpProcessHost",
+          "junit_outcome": "pass",
+          "classification": "executed_pass",
+          "terminal_outcome": "pass",
+          "time": "0.000184",
+          "readable_id": "astrid/chat/acpProcessHost.test.ts::AcpProcessHost::explains an unavailable saved model on session/resume and permits a new chat",
+          "native_id": "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"217\",\"AcpProcessHost\",\"explains an unavailable saved model on session/resume and permits a new chat\"]",
+          "source": {
+            "sha256": "454e3ab8e395ea04093217002c87de2dd43bdce1db3200306b525c056a215d27",
+            "git_blob_sha": "7fb8b8be049d9e1cdf580211bb42f0e07e7b6288",
+            "source_url": "https://github.com/banodoco/astrid-agent/blob/b1e53baf5facbb340dfc42b1688f7152c255e351/astrid/chat/acpProcessHost.test.ts"
+          },
+          "lane": "Chat service/windows-launchers/step-03"
+        },
+        {
+          "file": "astrid/chat/acpProcessHost.test.ts",
+          "line": 237,
+          "name": "forwards notifications and answers explicit permission callbacks without ambient authority",
+          "classname": "AcpProcessHost",
+          "junit_outcome": "pass",
+          "classification": "executed_pass",
+          "terminal_outcome": "pass",
+          "time": "0.000686",
+          "readable_id": "astrid/chat/acpProcessHost.test.ts::AcpProcessHost::forwards notifications and answers explicit permission callbacks without ambient authority",
+          "native_id": "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"237\",\"AcpProcessHost\",\"forwards notifications and answers explicit permission callbacks without ambient authority\"]",
+          "source": {
+            "sha256": "454e3ab8e395ea04093217002c87de2dd43bdce1db3200306b525c056a215d27",
+            "git_blob_sha": "7fb8b8be049d9e1cdf580211bb42f0e07e7b6288",
+            "source_url": "https://github.com/banodoco/astrid-agent/blob/b1e53baf5facbb340dfc42b1688f7152c255e351/astrid/chat/acpProcessHost.test.ts"
+          },
+          "lane": "Chat service/windows-launchers/step-03"
+        },
+        {
+          "file": "astrid/chat/acpProcessHost.test.ts",
+          "line": 271,
+          "name": "fails closed when a required filesystem callback is absent",
+          "classname": "AcpProcessHost",
+          "junit_outcome": "pass",
+          "classification": "executed_pass",
+          "terminal_outcome": "pass",
+          "time": "0.000231",
+          "readable_id": "astrid/chat/acpProcessHost.test.ts::AcpProcessHost::fails closed when a required filesystem callback is absent",
+          "native_id": "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"271\",\"AcpProcessHost\",\"fails closed when a required filesystem callback is absent\"]",
+          "source": {
+            "sha256": "454e3ab8e395ea04093217002c87de2dd43bdce1db3200306b525c056a215d27",
+            "git_blob_sha": "7fb8b8be049d9e1cdf580211bb42f0e07e7b6288",
+            "source_url": "https://github.com/banodoco/astrid-agent/blob/b1e53baf5facbb340dfc42b1688f7152c255e351/astrid/chat/acpProcessHost.test.ts"
+          },
+          "lane": "Chat service/windows-launchers/step-03"
+        },
+        {
+          "file": "astrid/chat/acpProcessHost.test.ts",
+          "line": 289,
+          "name": "rejects pending calls when the owned process disconnects and builds the explicit omp acp launch",
+          "classname": "AcpProcessHost",
+          "junit_outcome": "pass",
+          "classification": "executed_pass",
+          "terminal_outcome": "pass",
+          "time": "0.000317",
+          "readable_id": "astrid/chat/acpProcessHost.test.ts::AcpProcessHost::rejects pending calls when the owned process disconnects and builds the explicit omp acp launch",
+          "native_id": "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"289\",\"AcpProcessHost\",\"rejects pending calls when the owned process disconnects and builds the explicit omp acp launch\"]",
+          "source": {
+            "sha256": "454e3ab8e395ea04093217002c87de2dd43bdce1db3200306b525c056a215d27",
+            "git_blob_sha": "7fb8b8be049d9e1cdf580211bb42f0e07e7b6288",
+            "source_url": "https://github.com/banodoco/astrid-agent/blob/b1e53baf5facbb340dfc42b1688f7152c255e351/astrid/chat/acpProcessHost.test.ts"
+          },
+          "lane": "Chat service/windows-launchers/step-03"
+        },
+        {
+          "file": "astrid/chat/acpProcessHost.test.ts",
+          "line": 316,
+          "name": "builds the real Astrid launcher command with identity, cwd, and session custody",
+          "classname": "AcpProcessHost",
+          "junit_outcome": "pass",
+          "classification": "executed_pass",
+          "terminal_outcome": "pass",
+          "time": "0.000565",
+          "readable_id": "astrid/chat/acpProcessHost.test.ts::AcpProcessHost::builds the real Astrid launcher command with identity, cwd, and session custody",
+          "native_id": "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"316\",\"AcpProcessHost\",\"builds the real Astrid launcher command with identity, cwd, and session custody\"]",
+          "source": {
+            "sha256": "454e3ab8e395ea04093217002c87de2dd43bdce1db3200306b525c056a215d27",
+            "git_blob_sha": "7fb8b8be049d9e1cdf580211bb42f0e07e7b6288",
+            "source_url": "https://github.com/banodoco/astrid-agent/blob/b1e53baf5facbb340dfc42b1688f7152c255e351/astrid/chat/acpProcessHost.test.ts"
+          },
+          "lane": "Chat service/windows-launchers/step-03"
+        },
+        {
+          "file": "astrid/chat/acpProcessHost.test.ts",
+          "line": 356,
+          "name": "resolves the packaged Astrid profile through the installed command without a user-home seed",
+          "classname": "AcpProcessHost",
+          "junit_outcome": "pass",
+          "classification": "executed_pass",
+          "terminal_outcome": "pass",
+          "time": "0.000383",
+          "readable_id": "astrid/chat/acpProcessHost.test.ts::AcpProcessHost::resolves the packaged Astrid profile through the installed command without a user-home seed",
+          "native_id": "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"356\",\"AcpProcessHost\",\"resolves the packaged Astrid profile through the installed command without a user-home seed\"]",
+          "source": {
+            "sha256": "454e3ab8e395ea04093217002c87de2dd43bdce1db3200306b525c056a215d27",
+            "git_blob_sha": "7fb8b8be049d9e1cdf580211bb42f0e07e7b6288",
+            "source_url": "https://github.com/banodoco/astrid-agent/blob/b1e53baf5facbb340dfc42b1688f7152c255e351/astrid/chat/acpProcessHost.test.ts"
+          },
+          "lane": "Chat service/windows-launchers/step-03"
+        },
+        {
+          "file": "astrid/chat/acpProcessHost.test.ts",
+          "line": 386,
+          "name": "omits the session override so OMP owns canonical cwd-derived storage",
+          "classname": "AcpProcessHost",
+          "junit_outcome": "pass",
+          "classification": "executed_pass",
+          "terminal_outcome": "pass",
+          "time": "0.000355",
+          "readable_id": "astrid/chat/acpProcessHost.test.ts::AcpProcessHost::omits the session override so OMP owns canonical cwd-derived storage",
+          "native_id": "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"386\",\"AcpProcessHost\",\"omits the session override so OMP owns canonical cwd-derived storage\"]",
+          "source": {
+            "sha256": "454e3ab8e395ea04093217002c87de2dd43bdce1db3200306b525c056a215d27",
+            "git_blob_sha": "7fb8b8be049d9e1cdf580211bb42f0e07e7b6288",
+            "source_url": "https://github.com/banodoco/astrid-agent/blob/b1e53baf5facbb340dfc42b1688f7152c255e351/astrid/chat/acpProcessHost.test.ts"
+          },
+          "lane": "Chat service/windows-launchers/step-03"
+        },
+        {
+          "file": "astrid/chat/acpProcessHost.test.ts",
+          "line": 421,
+          "name": "pins the hosted installed package profile despite ambient named mode while preserving appended instructions and OMP custody",
+          "classname": "AcpProcessHost",
+          "junit_outcome": "pass",
+          "classification": "executed_pass",
+          "terminal_outcome": "pass",
+          "time": "0.000309",
+          "readable_id": "astrid/chat/acpProcessHost.test.ts::AcpProcessHost::pins the hosted installed package profile despite ambient named mode while preserving appended instructions and OMP custody",
+          "native_id": "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"421\",\"AcpProcessHost\",\"pins the hosted installed package profile despite ambient named mode while preserving appended instructions and OMP custody\"]",
+          "source": {
+            "sha256": "454e3ab8e395ea04093217002c87de2dd43bdce1db3200306b525c056a215d27",
+            "git_blob_sha": "7fb8b8be049d9e1cdf580211bb42f0e07e7b6288",
+            "source_url": "https://github.com/banodoco/astrid-agent/blob/b1e53baf5facbb340dfc42b1688f7152c255e351/astrid/chat/acpProcessHost.test.ts"
+          },
+          "lane": "Chat service/windows-launchers/step-03"
+        },
+        {
+          "file": "astrid/chat/acpProcessHost.test.ts",
+          "line": 431,
+          "name": "rejects a validation-only custom base override rather than pretending to execute it",
+          "classname": "AcpProcessHost",
+          "junit_outcome": "pass",
+          "classification": "executed_pass",
+          "terminal_outcome": "pass",
+          "time": "0.000129",
+          "readable_id": "astrid/chat/acpProcessHost.test.ts::AcpProcessHost::rejects a validation-only custom base override rather than pretending to execute it",
+          "native_id": "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"431\",\"AcpProcessHost\",\"rejects a validation-only custom base override rather than pretending to execute it\"]",
+          "source": {
+            "sha256": "454e3ab8e395ea04093217002c87de2dd43bdce1db3200306b525c056a215d27",
+            "git_blob_sha": "7fb8b8be049d9e1cdf580211bb42f0e07e7b6288",
+            "source_url": "https://github.com/banodoco/astrid-agent/blob/b1e53baf5facbb340dfc42b1688f7152c255e351/astrid/chat/acpProcessHost.test.ts"
+          },
+          "lane": "Chat service/windows-launchers/step-03"
+        },
+        {
+          "file": "astrid/chat/acpProcessHost.test.ts",
+          "line": 435,
+          "name": "fails closed before spawn when the canonical prompt file is unavailable",
+          "classname": "AcpProcessHost",
+          "junit_outcome": "pass",
+          "classification": "executed_pass",
+          "terminal_outcome": "pass",
+          "time": "0.000204",
+          "readable_id": "astrid/chat/acpProcessHost.test.ts::AcpProcessHost::fails closed before spawn when the canonical prompt file is unavailable",
+          "native_id": "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"435\",\"AcpProcessHost\",\"fails closed before spawn when the canonical prompt file is unavailable\"]",
+          "source": {
+            "sha256": "454e3ab8e395ea04093217002c87de2dd43bdce1db3200306b525c056a215d27",
+            "git_blob_sha": "7fb8b8be049d9e1cdf580211bb42f0e07e7b6288",
+            "source_url": "https://github.com/banodoco/astrid-agent/blob/b1e53baf5facbb340dfc42b1688f7152c255e351/astrid/chat/acpProcessHost.test.ts"
+          },
+          "lane": "Chat service/windows-launchers/step-03"
+        }
+      ],
+      "unexpected_missing_ids": [],
+      "files_sha256": {
+        "bun-results.xml": "a4411d4e824698c832739ea6a0b1931b1bdd2835799a155892f97c5263e59e13",
+        "command.json": "354244fba6aba7677486e34de8995bef0e1e63aa2ba1c3bffb348ff8a6a85d98",
+        "command.log": "7659c809c696fb5d27350820c568c1b5e05c2c2e67431d3227bf60734c3967cf",
+        "command.txt": "e6651531ae5537abc11da9bb6399d9c4a5b046ec9c7986f74b6553d305faf8bb",
+        "execute.ps1": "15ac83a483983f8151847f0e3c7511a93e6d8a329727664693489d66f4fd6e9e"
+      },
+      "earlier_refusal_native_cases_match": true,
+      "earlier_refusal_command_bytes_match": true,
+      "required_check": {
+        "id": "step-03",
+        "name": "Exercise native Windows chat child launches",
+        "kind": "tests",
+        "optional": false,
+        "runner": "bun",
+        "invocations": 1,
+        "lane": "Chat service/windows-launchers/step-03"
+      },
+      "lane": "Chat service/windows-launchers/step-03"
+    },
+    "step-04": {
+      "command": "bun test --reporter=junit --reporter-outfile=\"$env:CEILING_STEP_DIR/bun-results.xml\" ./astrid/chat/astrid-agent-models.test.ts -t \"model discovery allows sequential OMP startup\"",
+      "command_receipt": {
+        "schema": 1,
+        "repository": "banodoco/astrid-agent",
+        "head": "b1e53baf5facbb340dfc42b1688f7152c255e351",
+        "tuple": {
+          "banodoco/astrid-agent": "b1e53baf5facbb340dfc42b1688f7152c255e351"
+        },
+        "step": "step-04",
+        "job": "windows-launchers",
+        "matrix_index": "0",
+        "run_id": "44626225586",
+        "attempt": "1",
+        "shell": "pwsh",
+        "command_sha256": "7e58462b561257cc419df06e2b076c30dbf5c98ff1ed4ab40b53b61cd6f997f7",
+        "installed_sources": {},
+        "tuple_conflicts": [],
+        "started_at": 1795127729.009721,
+        "complete": true,
+        "raw_exit": 0,
+        "finished_at": 1795127740.674308
+      },
+      "root_junit_attributes": {
+        "name": "bun test",
+        "tests": "11",
+        "assertions": "0",
+        "failures": "0",
+        "skipped": "10",
+        "time": "11.2630341"
+      },
+      "terminal_log": "bun test v1.3.14 (0d9b296a)\n\n::group::astrid\\chat\\astrid-agent-models.test.ts:\n(pass) model discovery allows sequential OMP startup to exceed the old ten-second cutoff [11142.46ms]\n\n::endgroup::\n\n 1 pass\n 10 filtered out\n 0 fail\nRan 1 test across 1 file. [11.26s]\n",
+      "cases": [
+        {
+          "file": "astrid/chat/astrid-agent-models.test.ts",
+          "line": 85,
+          "name": "model discovery allows sequential OMP startup to exceed the old ten-second cutoff",
+          "classname": "",
+          "junit_outcome": "pass",
+          "classification": "executed_pass",
+          "terminal_outcome": "pass",
+          "time": "11.142459",
+          "readable_id": "astrid/chat/astrid-agent-models.test.ts::model discovery allows sequential OMP startup to exceed the old ten-second cutoff",
+          "native_id": "[\"astrid\\\\chat\\\\astrid-agent-models.test.ts\",\"85\",\"\",\"model discovery allows sequential OMP startup to exceed the old ten-second cutoff\"]",
+          "source": {
+            "sha256": "625757330be585b0e964acfd71310326d9526de5b912253b6117180caf1d7ffa",
+            "git_blob_sha": "395c5bca8559dc8b139cd6ddf4dcf8509f722db0",
+            "source_url": "https://github.com/banodoco/astrid-agent/blob/b1e53baf5facbb340dfc42b1688f7152c255e351/astrid/chat/astrid-agent-models.test.ts"
+          },
+          "lane": "Chat service/windows-launchers/step-04"
+        },
+        {
+          "file": "astrid/chat/astrid-agent-models.test.ts",
+          "line": 114,
+          "name": "agent model catalog maps the CLI response to the safe ACP projection and preserves CLI state",
+          "classname": "",
+          "junit_outcome": "skipped",
+          "classification": "deliberately_unselected",
+          "terminal_outcome": "filtered out",
+          "time": "0",
+          "readable_id": "astrid/chat/astrid-agent-models.test.ts::agent model catalog maps the CLI response to the safe ACP projection and preserves CLI state",
+          "native_id": "[\"astrid\\\\chat\\\\astrid-agent-models.test.ts\",\"114\",\"\",\"agent model catalog maps the CLI response to the safe ACP projection and preserves CLI state\"]",
+          "source": {
+            "sha256": "625757330be585b0e964acfd71310326d9526de5b912253b6117180caf1d7ffa",
+            "git_blob_sha": "395c5bca8559dc8b139cd6ddf4dcf8509f722db0",
+            "source_url": "https://github.com/banodoco/astrid-agent/blob/b1e53baf5facbb340dfc42b1688f7152c255e351/astrid/chat/astrid-agent-models.test.ts"
+          },
+          "lane": "Chat service/windows-launchers/step-04"
+        },
+        {
+          "file": "astrid/chat/astrid-agent-models.test.ts",
+          "line": 147,
+          "name": "agent catalog discovery never invokes the global default mutation",
+          "classname": "",
+          "junit_outcome": "skipped",
+          "classification": "deliberately_unselected",
+          "terminal_outcome": "filtered out",
+          "time": "0",
+          "readable_id": "astrid/chat/astrid-agent-models.test.ts::agent catalog discovery never invokes the global default mutation",
+          "native_id": "[\"astrid\\\\chat\\\\astrid-agent-models.test.ts\",\"147\",\"\",\"agent catalog discovery never invokes the global default mutation\"]",
+          "source": {
+            "sha256": "625757330be585b0e964acfd71310326d9526de5b912253b6117180caf1d7ffa",
+            "git_blob_sha": "395c5bca8559dc8b139cd6ddf4dcf8509f722db0",
+            "source_url": "https://github.com/banodoco/astrid-agent/blob/b1e53baf5facbb340dfc42b1688f7152c255e351/astrid/chat/astrid-agent-models.test.ts"
+          },
+          "lane": "Chat service/windows-launchers/step-04"
+        },
+        {
+          "file": "astrid/chat/astrid-agent-models.test.ts",
+          "line": 161,
+          "name": "agent model adapter rejects unsupported schemas and malformed JSON, and redacts CLI diagnostics",
+          "classname": "",
+          "junit_outcome": "skipped",
+          "classification": "deliberately_unselected",
+          "terminal_outcome": "filtered out",
+          "time": "0",
+          "readable_id": "astrid/chat/astrid-agent-models.test.ts::agent model adapter rejects unsupported schemas and malformed JSON, and redacts CLI diagnostics",
+          "native_id": "[\"astrid\\\\chat\\\\astrid-agent-models.test.ts\",\"161\",\"\",\"agent model adapter rejects unsupported schemas and malformed JSON, and redacts CLI diagnostics\"]",
+          "source": {
+            "sha256": "625757330be585b0e964acfd71310326d9526de5b912253b6117180caf1d7ffa",
+            "git_blob_sha": "395c5bca8559dc8b139cd6ddf4dcf8509f722db0",
+            "source_url": "https://github.com/banodoco/astrid-agent/blob/b1e53baf5facbb340dfc42b1688f7152c255e351/astrid/chat/astrid-agent-models.test.ts"
+          },
+          "lane": "Chat service/windows-launchers/step-04"
+        },
+        {
+          "file": "astrid/chat/astrid-agent-models.test.ts",
+          "line": 190,
+          "name": "agent model launch logs ENOENT without exposing child output",
+          "classname": "",
+          "junit_outcome": "skipped",
+          "classification": "deliberately_unselected",
+          "terminal_outcome": "filtered out",
+          "time": "0",
+          "readable_id": "astrid/chat/astrid-agent-models.test.ts::agent model launch logs ENOENT without exposing child output",
+          "native_id": "[\"astrid\\\\chat\\\\astrid-agent-models.test.ts\",\"190\",\"\",\"agent model launch logs ENOENT without exposing child output\"]",
+          "source": {
+            "sha256": "625757330be585b0e964acfd71310326d9526de5b912253b6117180caf1d7ffa",
+            "git_blob_sha": "395c5bca8559dc8b139cd6ddf4dcf8509f722db0",
+            "source_url": "https://github.com/banodoco/astrid-agent/blob/b1e53baf5facbb340dfc42b1688f7152c255e351/astrid/chat/astrid-agent-models.test.ts"
+          },
+          "lane": "Chat service/windows-launchers/step-04"
+        },
+        {
+          "file": "astrid/chat/astrid-agent-models.test.ts",
+          "line": 204,
+          "name": "agent catalog discovery kills a hanging CLI and rejects its partial output",
+          "classname": "",
+          "junit_outcome": "skipped",
+          "classification": "deliberately_unselected",
+          "terminal_outcome": "filtered out",
+          "time": "0",
+          "readable_id": "astrid/chat/astrid-agent-models.test.ts::agent catalog discovery kills a hanging CLI and rejects its partial output",
+          "native_id": "[\"astrid\\\\chat\\\\astrid-agent-models.test.ts\",\"204\",\"\",\"agent catalog discovery kills a hanging CLI and rejects its partial output\"]",
+          "source": {
+            "sha256": "625757330be585b0e964acfd71310326d9526de5b912253b6117180caf1d7ffa",
+            "git_blob_sha": "395c5bca8559dc8b139cd6ddf4dcf8509f722db0",
+            "source_url": "https://github.com/banodoco/astrid-agent/blob/b1e53baf5facbb340dfc42b1688f7152c255e351/astrid/chat/astrid-agent-models.test.ts"
+          },
+          "lane": "Chat service/windows-launchers/step-04"
+        },
+        {
+          "file": "astrid/chat/astrid-agent-models.test.ts",
+          "line": 238,
+          "name": "the Python Astrid model wrapper and its nested OMP CLI exit on discovery timeout",
+          "classname": "",
+          "junit_outcome": "skipped",
+          "classification": "deliberately_unselected",
+          "terminal_outcome": "filtered out",
+          "time": "0",
+          "readable_id": "astrid/chat/astrid-agent-models.test.ts::the Python Astrid model wrapper and its nested OMP CLI exit on discovery timeout",
+          "native_id": "[\"astrid\\\\chat\\\\astrid-agent-models.test.ts\",\"238\",\"\",\"the Python Astrid model wrapper and its nested OMP CLI exit on discovery timeout\"]",
+          "source": {
+            "sha256": "625757330be585b0e964acfd71310326d9526de5b912253b6117180caf1d7ffa",
+            "git_blob_sha": "395c5bca8559dc8b139cd6ddf4dcf8509f722db0",
+            "source_url": "https://github.com/banodoco/astrid-agent/blob/b1e53baf5facbb340dfc42b1688f7152c255e351/astrid/chat/astrid-agent-models.test.ts"
+          },
+          "lane": "Chat service/windows-launchers/step-04"
+        },
+        {
+          "file": "astrid/chat/astrid-agent-models.test.ts",
+          "line": 286,
+          "name": "agents endpoint survives a hanging catalog and profile bootstrap, and reaps discovery children",
+          "classname": "",
+          "junit_outcome": "skipped",
+          "classification": "deliberately_unselected",
+          "terminal_outcome": "filtered out",
+          "time": "0",
+          "readable_id": "astrid/chat/astrid-agent-models.test.ts::agents endpoint survives a hanging catalog and profile bootstrap, and reaps discovery children",
+          "native_id": "[\"astrid\\\\chat\\\\astrid-agent-models.test.ts\",\"286\",\"\",\"agents endpoint survives a hanging catalog and profile bootstrap, and reaps discovery children\"]",
+          "source": {
+            "sha256": "625757330be585b0e964acfd71310326d9526de5b912253b6117180caf1d7ffa",
+            "git_blob_sha": "395c5bca8559dc8b139cd6ddf4dcf8509f722db0",
+            "source_url": "https://github.com/banodoco/astrid-agent/blob/b1e53baf5facbb340dfc42b1688f7152c255e351/astrid/chat/astrid-agent-models.test.ts"
+          },
+          "lane": "Chat service/windows-launchers/step-04"
+        },
+        {
+          "file": "astrid/chat/astrid-agent-models.test.ts",
+          "line": 286,
+          "name": "agents endpoint survives a hanging catalog and initialize bootstrap, and reaps discovery children",
+          "classname": "",
+          "junit_outcome": "skipped",
+          "classification": "deliberately_unselected",
+          "terminal_outcome": "filtered out",
+          "time": "0",
+          "readable_id": "astrid/chat/astrid-agent-models.test.ts::agents endpoint survives a hanging catalog and initialize bootstrap, and reaps discovery children",
+          "native_id": "[\"astrid\\\\chat\\\\astrid-agent-models.test.ts\",\"286\",\"\",\"agents endpoint survives a hanging catalog and initialize bootstrap, and reaps discovery children\"]",
+          "source": {
+            "sha256": "625757330be585b0e964acfd71310326d9526de5b912253b6117180caf1d7ffa",
+            "git_blob_sha": "395c5bca8559dc8b139cd6ddf4dcf8509f722db0",
+            "source_url": "https://github.com/banodoco/astrid-agent/blob/b1e53baf5facbb340dfc42b1688f7152c255e351/astrid/chat/astrid-agent-models.test.ts"
+          },
+          "lane": "Chat service/windows-launchers/step-04"
+        },
+        {
+          "file": "astrid/chat/astrid-agent-models.test.ts",
+          "line": 286,
+          "name": "agents endpoint survives a hanging catalog and session/new bootstrap, and reaps discovery children",
+          "classname": "",
+          "junit_outcome": "skipped",
+          "classification": "deliberately_unselected",
+          "terminal_outcome": "filtered out",
+          "time": "0",
+          "readable_id": "astrid/chat/astrid-agent-models.test.ts::agents endpoint survives a hanging catalog and session/new bootstrap, and reaps discovery children",
+          "native_id": "[\"astrid\\\\chat\\\\astrid-agent-models.test.ts\",\"286\",\"\",\"agents endpoint survives a hanging catalog and session/new bootstrap, and reaps discovery children\"]",
+          "source": {
+            "sha256": "625757330be585b0e964acfd71310326d9526de5b912253b6117180caf1d7ffa",
+            "git_blob_sha": "395c5bca8559dc8b139cd6ddf4dcf8509f722db0",
+            "source_url": "https://github.com/banodoco/astrid-agent/blob/b1e53baf5facbb340dfc42b1688f7152c255e351/astrid/chat/astrid-agent-models.test.ts"
+          },
+          "lane": "Chat service/windows-launchers/step-04"
+        },
+        {
+          "file": "astrid/chat/astrid-agent-models.test.ts",
+          "line": 286,
+          "name": "agents endpoint survives a hanging catalog and session/close bootstrap, and reaps discovery children",
+          "classname": "",
+          "junit_outcome": "skipped",
+          "classification": "deliberately_unselected",
+          "terminal_outcome": "filtered out",
+          "time": "0",
+          "readable_id": "astrid/chat/astrid-agent-models.test.ts::agents endpoint survives a hanging catalog and session/close bootstrap, and reaps discovery children",
+          "native_id": "[\"astrid\\\\chat\\\\astrid-agent-models.test.ts\",\"286\",\"\",\"agents endpoint survives a hanging catalog and session/close bootstrap, and reaps discovery children\"]",
+          "source": {
+            "sha256": "625757330be585b0e964acfd71310326d9526de5b912253b6117180caf1d7ffa",
+            "git_blob_sha": "395c5bca8559dc8b139cd6ddf4dcf8509f722db0",
+            "source_url": "https://github.com/banodoco/astrid-agent/blob/b1e53baf5facbb340dfc42b1688f7152c255e351/astrid/chat/astrid-agent-models.test.ts"
+          },
+          "lane": "Chat service/windows-launchers/step-04"
+        }
+      ],
+      "unexpected_missing_ids": [],
+      "files_sha256": {
+        "bun-results.xml": "4fd4135a85110e5ddea05f196624c4ecdcec3922d8645575714f21d01e4562b9",
+        "command.json": "32cf9a6c01cd9c2e5c232f421c97d93113271156386c4479688ff0d81d511f1d",
+        "command.log": "058574d1039adfaf87c7c3853e24e6c69d70fe23c4f1420ad03439491a393d98",
+        "command.txt": "7e58462b561257cc419df06e2b076c30dbf5c98ff1ed4ab40b53b61cd6f997f7",
+        "execute.ps1": "69e9cba830c5acef61c3e8063072a2de4d6081586a5ab2156708d736b2d29abd"
+      },
+      "earlier_refusal_native_cases_match": true,
+      "earlier_refusal_command_bytes_match": true,
+      "required_check": {
+        "id": "step-04",
+        "name": "Allow slow Windows model discovery through HTTP",
+        "kind": "tests",
+        "optional": false,
+        "runner": "bun",
+        "invocations": 1,
+        "lane": "Chat service/windows-launchers/step-04"
+      },
+      "lane": "Chat service/windows-launchers/step-04"
+    }
+  },
+  "earlier_trusted_refusal": {
+    "head": "e84bbd52725cba1da7ac655771f840cb7af25fc2",
+    "run_id": 44580348107,
+    "artifact_id": 14566167356,
+    "artifact_sha256": "562c1f4ebdc78eed1da6838bc518b3cdd1c188af8686979a9b3e422ac2aecbcb",
+    "artifact_url": "https://github.com/banodoco/astrid-agent/actions/runs/44580348107/artifacts/14566167356",
+    "verdict": {
+      "schema": 1,
+      "repository": "banodoco/astrid-agent",
+      "head": "e84bbd52725cba1da7ac655771f840cb7af25fc2",
+      "tier": "merge",
+      "tuple": {
+        "banodoco/astrid-agent": "e84bbd52725cba1da7ac655771f840cb7af25fc2"
+      },
+      "verdict": "FAIL",
+      "errors": [
+        "aggregate collection did not complete"
+      ],
+      "unknown": [
+        "unqualified workflow CI / run 44580875391: status=in_progress, conclusion=None",
+        "('Chat service', 'windows-launchers'): Bun terminal summary missing/truncated",
+        "('Windows task host journey', 'Windows task host journey (powershell.exe)'): unresolved installed/dependency custody: App installer ref defaults to mutable main; installed Agent/Runtime are selected App manifest revisions, not sibling checkouts. An installed tuple receipt and reviewed expected pins are required.",
+        "('Windows task host journey', 'Windows task host journey (pwsh.exe)'): unresolved installed/dependency custody: App installer ref defaults to mutable main; installed Agent/Runtime are selected App manifest revisions, not sibling checkouts. An installed tuple receipt and reviewed expected pins are required."
+      ],
+      "covered": [],
+      "retired": [],
+      "retirement_receipts": [],
+      "warnings": [],
+      "raw_outcomes_preserved": true
+    },
+    "note": "Earlier official refusal applies to e84bbd52725cba1da7ac655771f840cb7af25fc2, not the exact b1e53baf landing. Windows launcher command and JUnit IDs/statuses match by independent comparison.",
+    "raw_exit": 1,
+    "job_id": 135758987828,
+    "raw_exit_evidence": "trusted-job-135758987828.log, 2026-11-19T19:19:07.8734676Z Process completed with exit code 1."
+  }
+}

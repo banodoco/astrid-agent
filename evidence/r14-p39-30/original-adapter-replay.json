@@ -1,0 +1,262 @@
+{
+  "step-03": {
+    "adapter_result": "accepted_native_stream",
+    "normalized": {
+      "name": "Exercise native Windows chat child launches",
+      "lane": "Chat service/windows-launchers/step-03",
+      "format": "bun",
+      "complete": true,
+      "raw_exit": 0,
+      "summary_count": 24,
+      "collected": [
+        "[\"astrid\\\\chat\\\\discoveryProbe.test.ts\",\"9\",\"\",\"Windows discovery probes route npm command shims through cmd.exe\"]",
+        "[\"astrid\\\\chat\\\\discoveryProbe.test.ts\",\"23\",\"\",\"native Windows discovery launches a harmless .cmd probe through cmd.exe\"]",
+        "[\"astrid\\\\chat\\\\discoveryProbe.test.ts\",\"35\",\"\",\"a discovery deadline kills a wrapper and its hanging CLI child\"]",
+        "[\"astrid\\\\chat\\\\discoveryProbe.test.ts\",\"65\",\"\",\"discovery preserves nonzero status diagnostics for explicit signed-out detection\"]",
+        "[\"astrid\\\\chat\\\\discoveryProbe.test.ts\",\"73\",\"\",\"an unavailable discovery command rejects promptly\"]",
+        "[\"astrid\\\\chat\\\\astridAcpLauncher.windows.test.ts\",\"8\",\"\",\"native Windows ACP profile and context lookups can launch a .cmd Astrid shim\"]",
+        "[\"astrid\\\\chat\\\\astridAcpLauncher.windows.test.ts\",\"43\",\"\",\"profile lookup reports safe status without returning child stderr\"]",
+        "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"84\",\"AcpProcessHost\",\"keeps a long prompt active and deduplicated past the control deadline, then delivers its result\"]",
+        "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"124\",\"AcpProcessHost\",\"can cancel a prompt after the control deadline and waits for the agent cancellation response\"]",
+        "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"142\",\"AcpProcessHost\",\"rejects a long prompt when its process exits instead of leaving it pending forever\"]",
+        "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"157\",\"AcpProcessHost\",\"runs Windows command shims through cmd.exe with a quoted entry and arguments\"]",
+        "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"171\",\"AcpProcessHost\",\"forwards initialize/new/close and preserves the opaque OMP session id\"]",
+        "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"202\",\"AcpProcessHost\",\"surfaces the installed agent session-not-found detail instead of generic Internal error\"]",
+        "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"217\",\"AcpProcessHost\",\"explains an unavailable saved model on session/load and permits a new chat\"]",
+        "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"217\",\"AcpProcessHost\",\"explains an unavailable saved model on session/resume and permits a new chat\"]",
+        "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"237\",\"AcpProcessHost\",\"forwards notifications and answers explicit permission callbacks without ambient authority\"]",
+        "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"271\",\"AcpProcessHost\",\"fails closed when a required filesystem callback is absent\"]",
+        "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"289\",\"AcpProcessHost\",\"rejects pending calls when the owned process disconnects and builds the explicit omp acp launch\"]",
+        "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"316\",\"AcpProcessHost\",\"builds the real Astrid launcher command with identity, cwd, and session custody\"]",
+        "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"356\",\"AcpProcessHost\",\"resolves the packaged Astrid profile through the installed command without a user-home seed\"]",
+        "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"386\",\"AcpProcessHost\",\"omits the session override so OMP owns canonical cwd-derived storage\"]",
+        "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"421\",\"AcpProcessHost\",\"pins the hosted installed package profile despite ambient named mode while preserving appended instructions and OMP custody\"]",
+        "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"431\",\"AcpProcessHost\",\"rejects a validation-only custom base override rather than pretending to execute it\"]",
+        "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"435\",\"AcpProcessHost\",\"fails closed before spawn when the canonical prompt file is unavailable\"]"
+      ],
+      "tests": [
+        {
+          "lane": "Chat service/windows-launchers/step-03",
+          "native_id": "[\"astrid\\\\chat\\\\discoveryProbe.test.ts\",\"9\",\"\",\"Windows discovery probes route npm command shims through cmd.exe\"]",
+          "parameter": null,
+          "subtest": null,
+          "stage": "call",
+          "outcome": "passed",
+          "diagnostic": ""
+        },
+        {
+          "lane": "Chat service/windows-launchers/step-03",
+          "native_id": "[\"astrid\\\\chat\\\\discoveryProbe.test.ts\",\"23\",\"\",\"native Windows discovery launches a harmless .cmd probe through cmd.exe\"]",
+          "parameter": null,
+          "subtest": null,
+          "stage": "call",
+          "outcome": "passed",
+          "diagnostic": ""
+        },
+        {
+          "lane": "Chat service/windows-launchers/step-03",
+          "native_id": "[\"astrid\\\\chat\\\\discoveryProbe.test.ts\",\"35\",\"\",\"a discovery deadline kills a wrapper and its hanging CLI child\"]",
+          "parameter": null,
+          "subtest": null,
+          "stage": "call",
+          "outcome": "passed",
+          "diagnostic": ""
+        },
+        {
+          "lane": "Chat service/windows-launchers/step-03",
+          "native_id": "[\"astrid\\\\chat\\\\discoveryProbe.test.ts\",\"65\",\"\",\"discovery preserves nonzero status diagnostics for explicit signed-out detection\"]",
+          "parameter": null,
+          "subtest": null,
+          "stage": "call",
+          "outcome": "passed",
+          "diagnostic": ""
+        },
+        {
+          "lane": "Chat service/windows-launchers/step-03",
+          "native_id": "[\"astrid\\\\chat\\\\discoveryProbe.test.ts\",\"73\",\"\",\"an unavailable discovery command rejects promptly\"]",
+          "parameter": null,
+          "subtest": null,
+          "stage": "call",
+          "outcome": "passed",
+          "diagnostic": ""
+        },
+        {
+          "lane": "Chat service/windows-launchers/step-03",
+          "native_id": "[\"astrid\\\\chat\\\\astridAcpLauncher.windows.test.ts\",\"8\",\"\",\"native Windows ACP profile and context lookups can launch a .cmd Astrid shim\"]",
+          "parameter": null,
+          "subtest": null,
+          "stage": "call",
+          "outcome": "passed",
+          "diagnostic": ""
+        },
+        {
+          "lane": "Chat service/windows-launchers/step-03",
+          "native_id": "[\"astrid\\\\chat\\\\astridAcpLauncher.windows.test.ts\",\"43\",\"\",\"profile lookup reports safe status without returning child stderr\"]",
+          "parameter": null,
+          "subtest": null,
+          "stage": "call",
+          "outcome": "skipped",
+          "diagnostic": ":"
+        },
+        {
+          "lane": "Chat service/windows-launchers/step-03",
+          "native_id": "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"84\",\"AcpProcessHost\",\"keeps a long prompt active and deduplicated past the control deadline, then delivers its result\"]",
+          "parameter": null,
+          "subtest": null,
+          "stage": "call",
+          "outcome": "passed",
+          "diagnostic": ""
+        },
+        {
+          "lane": "Chat service/windows-launchers/step-03",
+          "native_id": "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"124\",\"AcpProcessHost\",\"can cancel a prompt after the control deadline and waits for the agent cancellation response\"]",
+          "parameter": null,
+          "subtest": null,
+          "stage": "call",
+          "outcome": "passed",
+          "diagnostic": ""
+        },
+        {
+          "lane": "Chat service/windows-launchers/step-03",
+          "native_id": "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"142\",\"AcpProcessHost\",\"rejects a long prompt when its process exits instead of leaving it pending forever\"]",
+          "parameter": null,
+          "subtest": null,
+          "stage": "call",
+          "outcome": "passed",
+          "diagnostic": ""
+        },
+        {
+          "lane": "Chat service/windows-launchers/step-03",
+          "native_id": "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"157\",\"AcpProcessHost\",\"runs Windows command shims through cmd.exe with a quoted entry and arguments\"]",
+          "parameter": null,
+          "subtest": null,
+          "stage": "call",
+          "outcome": "passed",
+          "diagnostic": ""
+        },
+        {
+          "lane": "Chat service/windows-launchers/step-03",
+          "native_id": "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"171\",\"AcpProcessHost\",\"forwards initialize/new/close and preserves the opaque OMP session id\"]",
+          "parameter": null,
+          "subtest": null,
+          "stage": "call",
+          "outcome": "passed",
+          "diagnostic": ""
+        },
+        {
+          "lane": "Chat service/windows-launchers/step-03",
+          "native_id": "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"202\",\"AcpProcessHost\",\"surfaces the installed agent session-not-found detail instead of generic Internal error\"]",
+          "parameter": null,
+          "subtest": null,
+          "stage": "call",
+          "outcome": "passed",
+          "diagnostic": ""
+        },
+        {
+          "lane": "Chat service/windows-launchers/step-03",
+          "native_id": "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"217\",\"AcpProcessHost\",\"explains an unavailable saved model on session/load and permits a new chat\"]",
+          "parameter": null,
+          "subtest": null,
+          "stage": "call",
+          "outcome": "passed",
+          "diagnostic": ""
+        },
+        {
+          "lane": "Chat service/windows-launchers/step-03",
+          "native_id": "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"217\",\"AcpProcessHost\",\"explains an unavailable saved model on session/resume and permits a new chat\"]",
+          "parameter": null,
+          "subtest": null,
+          "stage": "call",
+          "outcome": "passed",
+          "diagnostic": ""
+        },
+        {
+          "lane": "Chat service/windows-launchers/step-03",
+          "native_id": "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"237\",\"AcpProcessHost\",\"forwards notifications and answers explicit permission callbacks without ambient authority\"]",
+          "parameter": null,
+          "subtest": null,
+          "stage": "call",
+          "outcome": "passed",
+          "diagnostic": ""
+        },
+        {
+          "lane": "Chat service/windows-launchers/step-03",
+          "native_id": "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"271\",\"AcpProcessHost\",\"fails closed when a required filesystem callback is absent\"]",
+          "parameter": null,
+          "subtest": null,
+          "stage": "call",
+          "outcome": "passed",
+          "diagnostic": ""
+        },
+        {
+          "lane": "Chat service/windows-launchers/step-03",
+          "native_id": "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"289\",\"AcpProcessHost\",\"rejects pending calls when the owned process disconnects and builds the explicit omp acp launch\"]",
+          "parameter": null,
+          "subtest": null,
+          "stage": "call",
+          "outcome": "passed",
+          "diagnostic": ""
+        },
+        {
+          "lane": "Chat service/windows-launchers/step-03",
+          "native_id": "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"316\",\"AcpProcessHost\",\"builds the real Astrid launcher command with identity, cwd, and session custody\"]",
+          "parameter": null,
+          "subtest": null,
+          "stage": "call",
+          "outcome": "passed",
+          "diagnostic": ""
+        },
+        {
+          "lane": "Chat service/windows-launchers/step-03",
+          "native_id": "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"356\",\"AcpProcessHost\",\"resolves the packaged Astrid profile through the installed command without a user-home seed\"]",
+          "parameter": null,
+          "subtest": null,
+          "stage": "call",
+          "outcome": "passed",
+          "diagnostic": ""
+        },
+        {
+          "lane": "Chat service/windows-launchers/step-03",
+          "native_id": "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"386\",\"AcpProcessHost\",\"omits the session override so OMP owns canonical cwd-derived storage\"]",
+          "parameter": null,
+          "subtest": null,
+          "stage": "call",
+          "outcome": "passed",
+          "diagnostic": ""
+        },
+        {
+          "lane": "Chat service/windows-launchers/step-03",
+          "native_id": "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"421\",\"AcpProcessHost\",\"pins the hosted installed package profile despite ambient named mode while preserving appended instructions and OMP custody\"]",
+          "parameter": null,
+          "subtest": null,
+          "stage": "call",
+          "outcome": "passed",
+          "diagnostic": ""
+        },
+        {
+          "lane": "Chat service/windows-launchers/step-03",
+          "native_id": "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"431\",\"AcpProcessHost\",\"rejects a validation-only custom base override rather than pretending to execute it\"]",
+          "parameter": null,
+          "subtest": null,
+          "stage": "call",
+          "outcome": "passed",
+          "diagnostic": ""
+        },
+        {
+          "lane": "Chat service/windows-launchers/step-03",
+          "native_id": "[\"astrid\\\\chat\\\\acpProcessHost.test.ts\",\"435\",\"AcpProcessHost\",\"fails closed before spawn when the canonical prompt file is unavailable\"]",
+          "parameter": null,
+          "subtest": null,
+          "stage": "call",
+          "outcome": "passed",
+          "diagnostic": ""
+        }
+      ]
+    }
+  },
+  "step-04": {
+    "adapter_result": "refused_native_stream",
+    "exception_type": "InvalidEvidence",
+    "error": "Bun terminal summary missing/truncated"
+  }
+}
