@@ -68,7 +68,7 @@ jobs:
           uname -a > "$evidence/runner.txt"
           df -B1 . >> "$evidence/runner.txt"
           for repo in agent runtime vibe life; do git -C "../$repo" rev-parse HEAD >> "$evidence/runner.txt"; done
-          export PYTHONPATH="$PWD/scripts"
+          export PYTHONPATH="$PWD/scripts:$PWD/scripts/ci"
           verdict=0
           for trial in 1 2 3; do
             for ref in "$DESTINATION" "$CANDIDATE"; do
