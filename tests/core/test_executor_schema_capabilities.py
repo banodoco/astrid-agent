@@ -228,7 +228,10 @@ class ExecutorSchemaCapabilityTest(unittest.TestCase):
             ),
         ]
         for external_runtime, expected in invalid_cases:
-            with self.subTest(expected=expected), self.assertRaisesRegex(ExecutorValidationError, expected):
+            subtest_context = {"expected": expected}
+            if expected == "source.url":
+                subtest_context["source_kind"] = external_runtime["source"]["kind"]
+            with self.subTest(**subtest_context), self.assertRaisesRegex(ExecutorValidationError, expected):
                 validate_executor_definition(
                     _manifest(
                         id="external.demo",
