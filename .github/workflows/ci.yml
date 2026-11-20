@@ -562,13 +562,11 @@ jobs:
         # Read the committed baseline for selection; write only this shard's
         # measured tests so the eight artifacts can be merged without stale entries.
         env:
-          # The native pytest entrypoint re-adds this source path after -I;
-          # installer child interpreters using -I keep the installed Runtime.
-          PYTHONPATH: ${{ github.workspace }}/scripts:${{ env.ASTRID_RUNTIME_CHECKOUT }}
+          PYTHONPATH: ${{ github.workspace }}/scripts
           PYTHONUNBUFFERED: 1
           ASTRID_PYTEST_HARD_EXIT_ON_LEAKED_THREADS: 1
           TEST_RESULTS_DIR: ${{ runner.temp }}/test-results-unit-shard-${{ matrix.group }}-${{ runner.os }}
-        run: mkdir -p "$TEST_RESULTS_DIR" && python -P -m ci.run_pytest -p ceiling_pytest -v -rA --junitxml="$TEST_RESULTS_DIR/unit-shard.xml" --durations=40 --splits 8 --group ${{ matrix.group }} --durations-path tests/.test_durations --store-durations --clean-durations
+        run: mkdir -p "$TEST_RESULTS_DIR" && python -P -m ci.run_pytest -p ceiling_pytest -o "pythonpath=$ASTRID_RUNTIME_CHECKOUT" -v -rA --junitxml="$TEST_RESULTS_DIR/unit-shard.xml" --durations=40 --splits 8 --group ${{ matrix.group }} --durations-path tests/.test_durations --store-durations --clean-durations
         if: ${{ !cancelled() }}
         shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-18 --shell bash "{0}"
 
