@@ -1,892 +1,102 @@
-# Default run per push (testing plan UA.1). The heavy lanes run elsewhere: darwin_native, remotion, chrome and codex_cli
-# in the darwin-native job below; integration and opt_in nightly in .github/workflows/lanes.yml. The lanes with no job
-# (workstation, omp, gpu, app_checkout) are listed by name at the end of every run (tests/lanes.py).
-name: CI
-
-on:
-  schedule:
-    - cron: "17 1 * * *"
-  push:
-    branches: [main, release-1, "int/**", "release/*/main", "release/*/plan-*"]
-  # Plan39 K2 requires every native job and all eight shards on PRs.
-  pull_request:
-    branches: ["release/*/main", "release/*/plan-*"]
-  workflow_dispatch:
-    inputs:
-      target_branch:
-        description: "Destination branch whose merge base covers the whole task"
-        required: true
-        type: string
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/int/r1' && !(startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main')) }}
-
-env:
-  PYTEST_ADDOPTS: -rA
-
+name: P39 SDK child discovery comparison
+on: workflow_dispatch
+permissions:
+  contents: read
 jobs:
-  windows-native-and-installer:
-    runs-on: windows-latest
-    timeout-minutes: 90
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     env:
-      ASTRID_CI_JOB: windows-native-and-installer
-      ASTRID_CI_MATRIX: ${{ strategy.job-index || 0 }}
+      DESTINATION: b1e53baf5facbb340dfc42b1688f7152c255e351
+      CANDIDATE: f0283b919d5584fb2c6773d91a6b7090f98a4d8f
+      CASE: tests/core/execution/test_generic_host_child_bridge_d18.py::test_real_sdk_verified_artifacts_and_managed_outputs[python]
+      ASTRID_CI_JOB: lanes-integration
+      ASTRID_CI_MATRIX: '0'
+      ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/runtime
+      ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/vibe
+      ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/life
     steps:
       - uses: actions/checkout@v4
-      - name: Restore pip cache (C-08)
-        id: c08-agent-ci-5
-        uses: actions/cache/restore@v4
         with:
-          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
-          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
+          persist-credentials: false
+          ref: ${{ env.DESTINATION }}
+          path: agent
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          repository: banodoco/astrid-runtime
+          ref: 2537fed24385ec1c24f48a812e09af4bb63fb794
+          path: runtime
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          repository: banodoco/VibeComfy
+          ref: c27fe76b79d917fd9c08246660bc77211be64146
+          path: vibe
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          repository: banodoco/runpod-lifecycle
+          ref: 7f0b025e9391baac9f5c2fb7393617ea6fef0704
+          path: life
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-      - name: Prepare test result directory
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-03 --shell pwsh "{0}"
-        run: New-Item -ItemType Directory -Force "$env:RUNNER_TEMP/test-results-windows-native-and-installer" | Out-Null
-      - name: Install package with dev extras
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-04 --shell pwsh "{0}"
-        run: python -m pip install -e '.[dev]'
-      - name: Install the pinned Runtime and client
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-05 --shell pwsh "{0}"
-        run: python scripts/ci_install_runtime.py
-      - name: Check native PowerShell cleanup exit codes
-        env:
-          PYTHONPATH: ${{ github.workspace }}/scripts
-        if: ${{ !cancelled() }}
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-06 --shell pwsh "{0}"
-        run: python -P -m ci.run_pytest -p ceiling_pytest -q -rA --junitxml="$env:RUNNER_TEMP/test-results-windows-native-and-installer/installer-windows-tasks.xml" tests/test_installer_windows_tasks.py
-      - name: Check Windows pack-host identity and service launcher binding
-        env:
-          PYTHONPATH: ${{ github.workspace }}/scripts
-        if: ${{ !cancelled() }}
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-07 --shell pwsh "{0}"
-        run: python -P -m ci.run_pytest -p ceiling_pytest -q -rA --junitxml="$env:RUNNER_TEMP/test-results-windows-native-and-installer/host-recovery-services.xml" tests/sdk/test_host_recovery.py tests/test_services.py -k windows
-      - name: Check Remotion admission and captured source handoff
-        env:
-          PYTHONPATH: ${{ github.workspace }}/scripts
-        if: ${{ !cancelled() }}
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-08 --shell pwsh "{0}"
-        run: python -P -m ci.run_pytest -p ceiling_pytest -q -rA --junitxml="$env:RUNNER_TEMP/test-results-windows-native-and-installer/remotion-host-regressions.xml" tests/core/rendering/test_remotion_host_regressions.py
-      - name: Check native Windows process and permission behavior
-        env:
-          PYTHONPATH: ${{ github.workspace }}/scripts
-        if: ${{ !cancelled() }}
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-09 --shell pwsh "{0}"
-        run: >-
-          python -P -m ci.run_pytest -p ceiling_pytest -q -rA --junitxml="$env:RUNNER_TEMP/test-results-windows-native-and-installer/native-windows.xml"
-          tests/core/execution/test_platform_helpers.py::test_windows_scope_job_kills_descendants_after_leader_exit
-          tests/core/execution/test_platform_helpers.py::test_windows_lock_and_owner_permissions_are_native
-          tests/core/execution/test_platform_helpers.py::test_windows_scope_dies_when_owner_process_exits
-          tests/test_generic_host_child_output.py
-          tests/test_host_child_stdin.py
-          tests/test_windows_child_stdin.py
-          tests/test_journey_diagnostic_checkpoint.py::test_native_windows_locked_owner_file_is_not_read
-          tests/test_journey_windows_acl_capture.py::test_windows_explicit_users_ace_and_hardlink -rAP
-      - name: Summarize test result XML
-        if: always()
-        env:
-          PYTHONPATH: ${{ github.workspace }}/scripts
-          TEST_RESULTS_DIR: ${{ runner.temp }}/test-results-windows-native-and-installer
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-10 --shell pwsh "{0}"
-        run: python -P -m ci.check_results "${{ env.TEST_RESULTS_DIR }}" --expected 4
-
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v4
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@v6
         with:
-          name: test-results-windows-native-and-installer-all-${{ runner.os }}
-          path: |
-            ${{ runner.temp }}/test-results-windows-native-and-installer/*.xml
-            ${{ runner.temp }}/test-results-windows-native-and-installer/*.jsonl
-            ${{ runner.temp }}/test-results-windows-native-and-installer/*.log
-            ${{ runner.temp }}/test-results-windows-native-and-installer/*.json
-          retention-days: 90
-          if-no-files-found: warn
-
-      - name: Save pip cache on main or int branches (C-08)
-        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/') || (startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main'))) && steps.c08-agent-ci-5.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
-        with:
-          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
-          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
-      - name: Retain actual Plan39 command and native result evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: failure-ceiling-${{ github.job }}-${{ strategy.job-index || '0' }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/failure-ceiling/${{ github.job }}/
-          retention-days: 90
-          if-no-files-found: error
-
-  checks:
-    name: fast checks
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      ASTRID_CI_MATRIX: ${{ strategy.job-index || 0 }}
-      ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/astrid-runtime
-      ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/vibecomfy-checkout
-      ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/runpod-lifecycle-checkout
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Resolve the comparison merge base
-        env:
-          PYTHONPATH: ${{ github.workspace }}/scripts
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-01 --shell bash "{0}"
-        run: python -P -m ci.gate_base
-
-      - name: Read the pinned Runtime commit
-        id: runtime-pin
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-02 --shell bash "{0}"
-        run: echo "commit=$(python -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')" >> "$GITHUB_OUTPUT"
-
-      - name: Check out the Runtime (test fixtures)
-        uses: actions/checkout@v4
-        with:
-          repository: banodoco/astrid-runtime
-          ref: ${{ steps.runtime-pin.outputs.commit }}
-          path: astrid-runtime
-
-      - name: Read the pinned RunPod lifecycle revision
-        id: lifecycle-pin
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-04 --shell bash "{0}"
-        run: |
-          python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import json
-          from pathlib import Path
-          source = json.loads(Path("astrid/packs/runpod/pins.json").read_text())["sources"]["lifecycle"]
-          print(f"repository={source['repository'].removeprefix('https://github.com/').removesuffix('.git')}")
-          print(f"revision={source['revision']}")
-          PY
-
-      - name: Check out the pinned RunPod lifecycle (test fixtures)
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ steps.lifecycle-pin.outputs.repository }}
-          ref: ${{ steps.lifecycle-pin.outputs.revision }}
-          path: runpod-lifecycle-checkout
-
-      - name: Restore pip cache (C-08)
-        id: c08-agent-ci-4
-        uses: actions/cache/restore@v4
-        with:
-          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
-          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install system media tools
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-08 --shell bash "{0}"
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
-
-      - name: Install package with dev extras
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-09 --shell bash "{0}"
-        run: python -m pip install -e '.[dev]'
-
-      - name: Install the pinned Runtime and client
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-10 --shell bash "{0}"
-        run: python scripts/ci_install_runtime.py
-
-      # The collection gate imports every test module in the same environment the shards use, so it needs the pinned
-      # VibeComfy checkout; without it every module that imports vibecomfy reports a collection error that is only this job.
-      - name: Read the pinned VibeComfy revision
-        id: vibecomfy-pin
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-11 --shell bash "{0}"
-        run: |
-          rev="$(python3 scripts/vibecomfy_pin.py)"
-          if [[ ! "$rev" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "VibeComfy engine recipe must resolve to a full lowercase 40-hex revision" >&2
-            exit 1
-          fi
-          echo "revision=$rev" >> "$GITHUB_OUTPUT"
-
-      - name: Check out VibeComfy at the pinned engine revision
-        uses: actions/checkout@v4
-        with:
-          repository: banodoco/VibeComfy
-          ref: ${{ steps.vibecomfy-pin.outputs.revision }}
-          path: vibecomfy-checkout
-
-      - name: Install VibeComfy
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-13 --shell bash "{0}"
-        run: python -m pip install -e ./vibecomfy-checkout
-
-      - name: Structure baseline gate
-        if: ${{ !cancelled() }}
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-14 --shell bash "{0}"
-        run: make structure
-
-      - name: Structure ceiling policy from merge base
-        if: ${{ !cancelled() }}
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-15 --shell bash "{0}"
+          version: '0.11.32'
+      - name: Install the source and dependencies used by the original case
+        working-directory: agent
         run: |
           set -euo pipefail
-          trusted_structure="$(mktemp -d "$RUNNER_TEMP/structure-gate.XXXXXX")"
-          trap 'rm -rf "$trusted_structure"' EXIT
-          echo "Structure policy merge base: $ASTRID_GATE_BASE"
-          git archive "$ASTRID_GATE_BASE" | tar -x -C "$trusted_structure"
-          python -I "$trusted_structure/scripts/reshape/check_structure_ceiling.py" --root "$GITHUB_WORKSPACE"
-
-      - name: Baseline and suppression controls gate
-        env:
-          PYTHONPATH: ${{ github.workspace }}/scripts
-        if: ${{ !cancelled() }}
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-16 --shell bash "{0}"
-        run: python -P -m reshape.identity_gate controls
-
-      - name: Ruff baseline gate
-        if: ${{ !cancelled() }}
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-17 --shell bash "{0}"
-        run: make ruff
-
-      # Mypy checks the project only with the YAML stubs, and with a NumPy whose bundled stubs parse under the configured
-      # Python 3.11 target; unpinned, the latest NumPy stubs make mypy stop before it checks anything.
-      - name: Install mypy stubs and the NumPy that mypy can parse
-        if: ${{ !cancelled() }}
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-18 --shell bash "{0}"
-        run: python -m pip install types-PyYAML 'numpy<2.4'
-
-      - name: Mypy baseline gate
-        if: ${{ !cancelled() }}
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-19 --shell bash "{0}"
-        run: make mypy
-
-      - name: Import cycles gate
-        if: ${{ !cancelled() }}
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-20 --shell bash "{0}"
-        run: make cycles
-
-      # Root-level TLS tests are outside the PR's single unit shard. Keep the
-      # transport inventory and certificate refusal probes on every PR.
-      - name: Check Agent TLS policy and review regressions
-        if: ${{ !cancelled() }}
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-21 --shell bash "{0}"
-        run: >-
-          python -m pytest -p ceiling_pytest -q -rA
-          tests/core/util/test_http_trust.py
-          tests/installer/test_tls_fallback.py
-          tests/test_721_remaining_tls_policy.py
-          tests/test_721_urllib_os_tls_policy.py
-          tests/test_721_tls_review.py
-          tests/test_721_http_policy_guard.py
-          tests/test_astrid_error_contract.py
-          --deselect=tests/test_astrid_error_contract.py::test_to_envelope_omits_code_and_source_type_when_none
-          --junitxml=tls-policy-regressions.xml
-
-      # The unchanged contract contradiction also fails on the release base.
-      # Execute it separately, even after an earlier failure, with its normal
-      # failing exit. Together these two steps still run every original case.
-      - name: Check independently failing error contract
-        if: ${{ always() }}
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-22 --shell bash "{0}"
-        run: >-
-          python -m pytest -p ceiling_pytest -q -rA
-          tests/test_astrid_error_contract.py::test_to_envelope_omits_code_and_source_type_when_none
-          --junitxml=tls-error-contract.xml
-
-      - name: Retain TLS policy regression results
-        if: ${{ always() && hashFiles('tls-policy-regressions.xml') != '' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: tls-policy-regressions
-          path: tls-policy-regressions.xml
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: Retain independent error contract result
-        if: ${{ always() && hashFiles('tls-error-contract.xml') != '' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: tls-error-contract
-          path: tls-error-contract.xml
-          if-no-files-found: error
-          retention-days: 30
-
-      # Runs even when an earlier gate failed: a collection error stops every shard, and the ruff, mypy and cycle gates
-      # being red on this branch must not hide it.
-      - name: Collection errors gate
-        if: ${{ !cancelled() }}
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-25 --shell bash "{0}"
-        run: make collection
-
-      - name: Gate regression probes
-        env:
-          PYTHONPATH: ${{ github.workspace }}/scripts
-        if: ${{ !cancelled() }}
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-26 --shell bash "{0}"
-        run: >-
-          python -P -m ci.run_pytest -p ceiling_pytest -q -rA
-          --junitxml="${{ runner.temp }}/agent-gate-probes/probes.xml"
-          tests/reshape/test_identity_gate.py tests/scripts/test_ci_test_evidence.py
-          tests/test_release_branch_workflows.py tests/scripts/test_gate_integrity.py tests/scripts/test_gate_base.py
-          tests/reshape/test_structure_ceiling.py
-
-      - name: Upload gate probe evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: agent-gate-probes
-          path: ${{ runner.temp }}/agent-gate-probes/
-          retention-days: 90
-          if-no-files-found: warn
-
-      - name: Save pip cache on main or int branches (C-08)
-        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/') || (startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main'))) && steps.c08-agent-ci-4.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
-        with:
-          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
-          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
-      - name: Retain actual Plan39 command and native result evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: failure-ceiling-${{ github.job }}-${{ strategy.job-index || '0' }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/failure-ceiling/${{ github.job }}/
-          retention-days: 90
-          if-no-files-found: error
-
-  unit-shard:
-    name: unit shard ${{ matrix.group }} / 8 (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    # Shard 7 has a ~35-minute tail after ~15 minutes of tests; 60 minutes cancels healthy runs.
-    # Shards 1 and 6 were cancelled at 120 minutes on 05346e9f at 92%; shard 1 then took 2h03 of pytest on 1e94061c.
-    # With the 120 s per-test timeout a hang fails after 2 minutes, so 180 minutes is a wall, not an allowance.
-    timeout-minutes: 180
-    env:
-      # The test run's skip registry (tests/lanes.py) reads this: a lane this job provides fails, not skips, when its dependency is missing.
-      ASTRID_CI_JOB: unit-shard-${{ matrix.os }}
-      ASTRID_CI_MATRIX: ${{ strategy.job-index || 0 }}
-      ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/astrid-runtime
-      ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/vibecomfy-checkout
-      ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/runpod-lifecycle-checkout
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest]
-        # A pull request runs shard 1 of 8 only; the job name and --splits 8 are unchanged.
-        group: [1,2,3,4,5,6,7,8]
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      # These release-0 rollback and launcher tests archive a pinned historical
-      # Agent source tree; the default shallow checkout does not contain it.
-      - name: Fetch release-0 Agent archive for installer rollback tests
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-01 --shell bash "{0}"
+          git fetch --no-tags --depth=1 origin "$CANDIDATE"
+          git diff --exit-code "$DESTINATION" "$CANDIDATE" -- pyproject.toml runtime.lock.json astrid/packs/runpod/pins.json tests/core/execution/test_generic_host_child_bridge_d18.py astrid/core/execution/generic_host.py scripts/ci/run_pytest.py scripts/ci/pytest_entrypoint.py scripts/ci/ceiling_pytest.py
+          test "$(git rev-parse HEAD)" = "$DESTINATION"
+          test "$(git -C ../runtime rev-parse HEAD)" = "$(jq -r .source_commit runtime.lock.json)"
+          test "$(git -C ../vibe rev-parse HEAD)" = "$(jq -r .sources.vibecomfy.revision astrid/packs/runpod/pins.json)"
+          test "$(git -C ../life rev-parse HEAD)" = "$(jq -r .sources.lifecycle.revision astrid/packs/runpod/pins.json)"
+          python -m pip install -e '.[dev]'
+          python -m pip install --no-deps -e ../runtime -e ../runtime/packages/python
+          python -m pip install -e ../vibe
+      - name: Alternate the original case on the two frozen refs
+        working-directory: agent
         run: |
           set -euo pipefail
-          release0_agent=3204bb00135bec8ee2d2d3fb21eed5abfceca649
-          git fetch --no-tags --depth=1 origin "$release0_agent"
-          test "$(git rev-parse "${release0_agent}^{commit}")" = "$release0_agent"
-          git cat-file -e "${release0_agent}:astrid/installer/core.py"
-          git archive --format=tar "$release0_agent" astrid >/dev/null
-          echo "- Release-0 Agent archive: $release0_agent (tree and archive available)" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Read the pinned Runtime commit
-        id: runtime-pin
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-02 --shell bash "{0}"
-        run: echo "commit=$(python -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')" >> "$GITHUB_OUTPUT"
-
-      - name: Check out the Runtime (test fixtures)
-        uses: actions/checkout@v4
-        with:
-          repository: banodoco/astrid-runtime
-          ref: ${{ steps.runtime-pin.outputs.commit }}
-          path: astrid-runtime
-
-      - name: Read the pinned RunPod lifecycle revision
-        id: lifecycle-pin
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-04 --shell bash "{0}"
-        run: |
-          python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import json
-          from pathlib import Path
-          source = json.loads(Path("astrid/packs/runpod/pins.json").read_text())["sources"]["lifecycle"]
-          print(f"repository={source['repository'].removeprefix('https://github.com/').removesuffix('.git')}")
-          print(f"revision={source['revision']}")
-          PY
-
-      - name: Check out the pinned RunPod lifecycle (test fixtures)
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ steps.lifecycle-pin.outputs.repository }}
-          ref: ${{ steps.lifecycle-pin.outputs.revision }}
-          path: runpod-lifecycle-checkout
-
-      - name: Record RunPod lifecycle checkout
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-06 --shell bash "{0}"
-        env:
-          LIFECYCLE_REVISION: ${{ steps.lifecycle-pin.outputs.revision }}
-        run: |
-          set -euo pipefail
-          checked_out="$(git -C "$ASTRID_TEST_LIFECYCLE_CHECKOUT" rev-parse HEAD)"
-          test "$checked_out" = "$LIFECYCLE_REVISION"
-          echo "- RunPod lifecycle: $checked_out" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Restore pip cache (C-08)
-        id: c08-agent-ci-3
-        uses: actions/cache/restore@v4
-        with:
-          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
-          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Set up pinned uv
-        uses: astral-sh/setup-uv@v6
-        with:
-          version: "0.11.32"
-
-      # The product's pinned Node (.node-version), the one the installer ships: the tests run the same Node the product does.
-      - name: Set up Node.js from .node-version
-        uses: actions/setup-node@v4
-        with:
-          node-version-file: .node-version
-
-      - name: Install system media tools and a system font
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-dejavu-core
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-11 --shell bash "{0}"
-
-      - name: Install package with dev extras
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-12 --shell bash "{0}"
-        run: python -m pip install -e '.[dev]'
-
-      - name: Install the pinned Runtime and client
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-13 --shell bash "{0}"
-        run: python scripts/ci_install_runtime.py
-
-      - name: Read the pinned VibeComfy revision
-        id: vibecomfy-pin
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-14 --shell bash "{0}"
-        run: |
-          rev="$(python3 scripts/vibecomfy_pin.py)"
-          if [[ ! "$rev" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "VibeComfy engine recipe must resolve to a full lowercase 40-hex revision" >&2
-            exit 1
-          fi
-          echo "revision=$rev" >> "$GITHUB_OUTPUT"
-
-      - name: Check out VibeComfy at the pinned engine revision
-        uses: actions/checkout@v4
-        with:
-          repository: banodoco/VibeComfy
-          ref: ${{ steps.vibecomfy-pin.outputs.revision }}
-          path: vibecomfy-checkout
-
-      - name: Record VibeComfy checkout
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-16 --shell bash "{0}"
-        env:
-          VIBECOMFY_REVISION: ${{ steps.vibecomfy-pin.outputs.revision }}
-        run: |
-          set -euo pipefail
-          checked_out="$(git -C "$ASTRID_VIBECOMFY_CHECKOUT" rev-parse HEAD)"
-          test "$checked_out" = "$VIBECOMFY_REVISION"
-          echo "- VibeComfy: $checked_out" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Install VibeComfy
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-17 --shell bash "{0}"
-        run: python -m pip install -e ./vibecomfy-checkout
-
-      - name: Unit tests (default lane shard)
-        # Read the committed baseline for selection; write only this shard's
-        # measured tests so the eight artifacts can be merged without stale entries.
-        env:
-          PYTHONPATH: ${{ github.workspace }}/scripts
-          PYTHONUNBUFFERED: 1
-          ASTRID_PYTEST_HARD_EXIT_ON_LEAKED_THREADS: 1
-          TEST_RESULTS_DIR: ${{ runner.temp }}/test-results-unit-shard-${{ matrix.group }}-${{ runner.os }}
-        run: mkdir -p "$TEST_RESULTS_DIR" && python -P -m ci.run_pytest -p ceiling_pytest -v -rA --junitxml="$TEST_RESULTS_DIR/unit-shard.xml" --durations=40 --splits 8 --group ${{ matrix.group }} --durations-path tests/.test_durations --store-durations --clean-durations
-        if: ${{ !cancelled() }}
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-18 --shell bash "{0}"
-
-      - name: Upload measured test durations
+          evidence="$RUNNER_TEMP/discovery-receipts"
+          mkdir -p "$evidence"
+          python -m pip freeze > "$evidence/python.txt"
+          uname -a > "$evidence/runner.txt"
+          df -B1 . >> "$evidence/runner.txt"
+          for repo in agent runtime vibe life; do git -C "../$repo" rev-parse HEAD >> "$evidence/runner.txt"; done
+          export PYTHONPATH="$PWD/scripts"
+          verdict=0
+          for trial in 1 2 3; do
+            for ref in "$DESTINATION" "$CANDIDATE"; do
+              git checkout --quiet --detach "$ref"
+              test "$(git rev-parse HEAD)" = "$ref"
+              git diff --exit-code HEAD
+              cell="$evidence/$trial-$ref"
+              mkdir "$cell"
+              git rev-parse HEAD 'HEAD^{tree}' > "$cell/source.txt"
+              df -B1 . > "$cell/disk.txt"
+              scratch="$(mktemp -d "$RUNNER_TEMP/child-discovery.XXXXXX")"
+              rc=0
+              (
+                export HOME="$scratch/home" TMPDIR="$scratch/tmp" ASTRID_HOME="$scratch/astrid"
+                export ASTRID_WORKSPACE_CONFIG_DIR="$scratch/workspace" XDG_RUNTIME_DIR="$scratch/run"
+                mkdir -m 700 "$HOME" "$TMPDIR" "$ASTRID_HOME" "$ASTRID_WORKSPACE_CONFIG_DIR" "$XDG_RUNTIME_DIR"
+                export CEILING_STEP_DIR="$cell"
+                python -P -m ci.run_pytest -p ceiling_pytest -v -rA --junitxml="$cell/test.xml" -m 'integration and not opt_in and not app_checkout' "$CASE"
+              ) > "$cell/launcher.log" 2>&1 || rc=$?
+              echo "$rc" > "$cell/exit.txt"
+              if (( rc != 0 )); then verdict=1; fi
+              if ! python -c 'import os,sys,xml.etree.ElementTree as ET; cases=ET.parse(sys.argv[1]).findall(".//testcase"); assert len(cases)==1 and cases[0].get("name")==os.environ["CASE"].split("::")[-1] and cases[0].find("skipped") is None' "$cell/test.xml"; then verdict=1; fi
+            done
+          done
+          exit "$verdict"
+      - uses: actions/upload-artifact@v4
         if: always()
-        uses: actions/upload-artifact@v4
         with:
-          retention-days: 3
-          name: test-durations-${{ matrix.group }}-${{ matrix.os }}
-          path: tests/.test_durations
-          include-hidden-files: true
+          name: p39-original-sdk-child-discovery
+          path: ${{ runner.temp }}/discovery-receipts
           if-no-files-found: error
-
-      - name: Summarize test result XML
-        if: always()
-        env:
-          PYTHONPATH: ${{ github.workspace }}/scripts
-          TEST_RESULTS_DIR: ${{ runner.temp }}/test-results-unit-shard-${{ matrix.group }}-${{ runner.os }}
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-20 --shell bash "{0}"
-        run: python -P -m ci.check_results "${{ env.TEST_RESULTS_DIR }}" --expected 1
-
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-results-unit-shard-${{ matrix.group }}-${{ runner.os }}
-          path: |
-            ${{ runner.temp }}/test-results-unit-shard-${{ matrix.group }}-${{ runner.os }}/*.xml
-            ${{ runner.temp }}/test-results-unit-shard-${{ matrix.group }}-${{ runner.os }}/*.jsonl
-            ${{ runner.temp }}/test-results-unit-shard-${{ matrix.group }}-${{ runner.os }}/*.log
-            ${{ runner.temp }}/test-results-unit-shard-${{ matrix.group }}-${{ runner.os }}/*.json
-          retention-days: 90
-          if-no-files-found: warn
-
-      - name: Save pip cache on main or int branches (C-08)
-        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/') || (startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main'))) && steps.c08-agent-ci-3.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
-        with:
-          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
-          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
-      - name: Retain actual Plan39 command and native result evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: failure-ceiling-${{ github.job }}-${{ strategy.job-index || '0' }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/failure-ceiling/${{ github.job }}/
-          retention-days: 90
-          if-no-files-found: error
-
-  unit:
-    name: unit
-    if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    needs: [checks, unit-shard]
-    env:
-      CHECKS_RESULT: ${{ needs.checks.result }}
-      SHARDS_RESULT: ${{ needs.unit-shard.result }}
-    steps:
-      - name: Require all unit shards and fast checks to pass
-        run: |
-          if [[ "$CHECKS_RESULT" != success || "$SHARDS_RESULT" != success ]]; then
-            echo "::error::unit requires successful dependencies: fast checks=$CHECKS_RESULT, unit shards=$SHARDS_RESULT"
-            exit 1
-          fi
-          echo "unit passed"
-
-  darwin-native:
-    name: darwin native
-    runs-on: macos-latest
-    timeout-minutes: 120
-    env:
-      ASTRID_CI_JOB: darwin-native
-      ASTRID_CI_MATRIX: ${{ strategy.job-index || 0 }}
-      # A test in both the integration and a darwin lane starts real Runtime daemons from this checkout (tests/helpers/runtime.py).
-      ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/astrid-runtime
-      ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/vibecomfy-checkout
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Read the pinned Runtime commit
-        id: runtime-pin
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-01 --shell bash "{0}"
-        run: echo "commit=$(python3 -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')" >> "$GITHUB_OUTPUT"
-
-      - name: Check out the Runtime (astrid-runtime)
-        uses: actions/checkout@v4
-        with:
-          repository: banodoco/astrid-runtime
-          ref: ${{ steps.runtime-pin.outputs.commit }}
-          path: astrid-runtime
-
-      - name: Restore pip cache (C-08)
-        id: c08-agent-ci-2
-        uses: actions/cache/restore@v4
-        with:
-          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
-          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: Prepare test result directory
-        run: mkdir -p "$RUNNER_TEMP/test-results-darwin-native"
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-05 --shell bash "{0}"
-
-      - name: Restore npm cache (C-08)
-        id: c08-agent-ci-1
-        uses: actions/cache/restore@v4
-        with:
-          path: "${{ runner.os == 'Windows' && '~/AppData/Local/npm-cache' || '~/.npm' }}"
-          key: npm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('remotion/package-lock.json') }}
-      - name: Set up Node.js from .node-version
-        uses: actions/setup-node@v4
-        with:
-          node-version-file: .node-version
-
-      - name: Install ffmpeg
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-08 --shell bash "{0}"
-        run: brew install ffmpeg
-
-      - name: Install Remotion dependencies
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-09 --shell bash "{0}"
-        run: npm ci --prefix remotion
-
-      - name: Install package with dev extras
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-10 --shell bash "{0}"
-        run: python -m pip install -e '.[dev]'
-
-      - name: Install the Runtime and client from the checkout
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-11 --shell bash "{0}"
-        run: python -m pip install --no-deps -e ./astrid-runtime -e ./astrid-runtime/packages/python
-
-      - name: Read the pinned VibeComfy revision
-        id: vibecomfy-pin
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-12 --shell bash "{0}"
-        run: |
-          rev="$(python3 scripts/vibecomfy_pin.py)"
-          if [[ ! "$rev" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "VibeComfy engine recipe must resolve to a full lowercase 40-hex revision" >&2
-            exit 1
-          fi
-          echo "revision=$rev" >> "$GITHUB_OUTPUT"
-
-      - name: Check out VibeComfy at the pinned engine revision
-        uses: actions/checkout@v4
-        with:
-          repository: banodoco/VibeComfy
-          ref: ${{ steps.vibecomfy-pin.outputs.revision }}
-          path: vibecomfy-checkout
-
-      - name: Record VibeComfy checkout
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-14 --shell bash "{0}"
-        env:
-          VIBECOMFY_REVISION: ${{ steps.vibecomfy-pin.outputs.revision }}
-        run: |
-          set -euo pipefail
-          checked_out="$(git -C "$ASTRID_VIBECOMFY_CHECKOUT" rev-parse HEAD)"
-          test "$checked_out" = "$VIBECOMFY_REVISION"
-          echo "- VibeComfy: $checked_out" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Install VibeComfy
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-15 --shell bash "{0}"
-        run: python -m pip install -e ./vibecomfy-checkout
-
-      - name: Provision the Remotion browser
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-16 --shell bash "{0}"
-        run: npx remotion browser ensure
-        working-directory: remotion
-
-      - name: Install the Codex CLI (the codex_cli lane starts its native binary in the host sandbox)
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-17 --shell bash "{0}"
-        run: npm install -g @openai/codex@0.163.0
-
-      # The lanes the default run deselects and only this job provides: native macOS, the Remotion install, headless Chromium, the Codex CLI.
-      - name: Darwin native, Remotion and browser tests
-        run: python -P -m ci.run_pytest -p ceiling_pytest -q -rA --junitxml="$TEST_RESULTS_DIR/darwin-native.xml" -m "darwin_native or remotion or chrome or codex_cli"
-        if: ${{ !cancelled() }}
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-18 --shell bash "{0}"
-        env:
-          PYTHONPATH: ${{ github.workspace }}/scripts
-          TEST_RESULTS_DIR: ${{ runner.temp }}/test-results-darwin-native
-      - name: Summarize test result XML
-        if: always()
-        env:
-          PYTHONPATH: ${{ github.workspace }}/scripts
-          TEST_RESULTS_DIR: ${{ runner.temp }}/test-results-darwin-native
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-19 --shell bash "{0}"
-        run: python -P -m ci.check_results "${{ env.TEST_RESULTS_DIR }}" --expected 1
-
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-results-darwin-native-all-${{ runner.os }}
-          path: |
-            ${{ runner.temp }}/test-results-darwin-native/*.xml
-            ${{ runner.temp }}/test-results-darwin-native/*.jsonl
-            ${{ runner.temp }}/test-results-darwin-native/*.log
-            ${{ runner.temp }}/test-results-darwin-native/*.json
-          retention-days: 90
-          if-no-files-found: warn
-
-  # Release wheel (testing plan R-1: kept from the old m8 artifact job). Hashed build tools, one wheel,
-  # installed with only the hashed runtime lock, and the toolchain recorded next to it. It is also the
-  # one check that every Python pyproject.toml admits (>=3.11) installs and imports Astrid.
-      - name: Save npm cache on main or int branches (C-08)
-        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/') || (startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main'))) && steps.c08-agent-ci-1.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
-        with:
-          path: "${{ runner.os == 'Windows' && '~/AppData/Local/npm-cache' || '~/.npm' }}"
-          key: npm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('remotion/package-lock.json') }}
-      - name: Save pip cache on main or int branches (C-08)
-        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/') || (startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main'))) && steps.c08-agent-ci-2.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
-        with:
-          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
-          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
-      - name: Retain actual Plan39 command and native result evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: failure-ceiling-${{ github.job }}-${{ strategy.job-index || '0' }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/failure-ceiling/${{ github.job }}/
-          retention-days: 90
-          if-no-files-found: error
-
-  release:
-    name: release wheel / Python ${{ matrix.python-version }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.12"]
-
-    env:
-      ASTRID_CI_MATRIX: ${{ strategy.job-index || 0 }}
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Set up pinned uv
-        uses: astral-sh/setup-uv@v6
-        with:
-          version: "0.11.32"
-
-      - name: Install system media tools
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-03 --shell bash "{0}"
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
-
-      - name: Install wheel builder
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-04 --shell bash "{0}"
-        run: python -m pip install --disable-pip-version-check --no-input --require-hashes -r requirements/build.lock
-
-      - name: Build exactly one wheel
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-05 --shell bash "{0}"
-        run: |
-          python -m build --wheel --no-isolation --outdir dist
-          test "$(ls dist/*.whl | wc -l)" -eq 1
-
-      - name: Install the wheel with the hashed runtime lock only
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-06 --shell bash "{0}"
-        run: |
-          python -m venv "$RUNNER_TEMP/release-venv"
-          "$RUNNER_TEMP/release-venv/bin/python" -m pip install --disable-pip-version-check --no-input --require-hashes -r requirements/runtime.lock
-          "$RUNNER_TEMP/release-venv/bin/python" scripts/ci_install_runtime.py
-          "$RUNNER_TEMP/release-venv/bin/python" -m pip install --no-deps dist/*.whl
-          "$RUNNER_TEMP/release-venv/bin/python" -m pip check
-          cd "$RUNNER_TEMP" && "$RUNNER_TEMP/release-venv/bin/python" -c "import astrid"
-
-      # The default-lane home for "the shipped wheel works when installed" (testing plan R-1):
-      # it adopts the wheel and venv built above, so the wheel that is uploaded is the wheel that is smoked.
-      - name: Smoke the installed wheel
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-07 --shell bash "{0}"
-        run: bash scripts/smoke_wheel_install.sh --wheel dist/*.whl --venv "$RUNNER_TEMP/release-venv"
-
-      - name: Validate locks and record the release toolchain
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-08 --shell bash "{0}"
-        run: python -m scripts.reshape.release_reproducibility --expected-python ${{ matrix.python-version }} --output dist/toolchain.json
-
-      - name: Upload the wheel and its toolchain record
-        uses: actions/upload-artifact@v4
-        with:
-          retention-days: 14
-          name: release-wheel-${{ matrix.python-version }}
-          path: dist/
-
-  # Boundary: every vendored copy matches the immutable Runtime commit selected by runtime.lock.json.
-  # The default-lane test catches local edits; this job also verifies producer manifest and source bytes.
-      - name: Retain actual Plan39 command and native result evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: failure-ceiling-${{ github.job }}-${{ strategy.job-index || '0' }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/failure-ceiling/${{ github.job }}/
-          retention-days: 90
-          if-no-files-found: error
-
-  boundary:
-    name: boundary
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    env:
-      ASTRID_CI_MATRIX: ${{ strategy.job-index || 0 }}
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Read the pinned Runtime commit
-        id: runtime-pin
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-01 --shell bash "{0}"
-        run: echo "commit=$(python -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')" >> "$GITHUB_OUTPUT"
-
-      - name: Check out the Runtime (producer)
-        uses: actions/checkout@v4
-        with:
-          repository: banodoco/astrid-runtime
-          ref: ${{ steps.runtime-pin.outputs.commit }}
-          path: runtime-producer
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: All vendored Runtime artifacts match the pinned producer
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-04 --shell bash "{0}"
-        run: python scripts/vendor_lock.py check runtime.lock.json --producer runtime-producer
-
-  # A pull request into a release branch comes from a branch of that release and names what it belongs
-  # to: the plan (a plan branch does so by its name) or the astrid-dev issue. See the Release skill,
-  # "How a release runs".
-      - name: Retain actual Plan39 command and native result evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: failure-ceiling-${{ github.job }}-${{ strategy.job-index || '0' }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/failure-ceiling/${{ github.job }}/
-          retention-days: 90
-          if-no-files-found: error
-
-  landing-reference:
-    name: landing reference
-    if: ${{ github.event_name == 'pull_request' && startsWith(github.base_ref, 'release/') && endsWith(github.base_ref, '/main') }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: The pull request comes from a branch of this release and names its plan or issue
-        env:
-          BASE_REF: ${{ github.base_ref }}
-          HEAD_REF: ${{ github.head_ref }}
-          TITLE: ${{ github.event.pull_request.title }}
-          BODY: ${{ github.event.pull_request.body }}
-        run: |
-          release="${BASE_REF#release/}"; release="${release%/main}"
-          if ! printf '%s' "$HEAD_REF" | grep -Eq "^release/${release}/[a-z0-9][a-z0-9-]*$" || [ "$HEAD_REF" = "$BASE_REF" ]; then
-            echo "::error::A pull request into ${BASE_REF} must come from a branch of that release: release/${release}/plan-<PP> or release/${release}/<topic>. This one comes from '${HEAD_REF}'."
-            exit 1
-          fi
-          if printf '%s' "$HEAD_REF" | grep -Eq "^release/${release}/plan-[0-9]+$"; then
-            echo "Plan branch: $HEAD_REF"; exit 0
-          fi
-          if printf '%s\n%s\n' "$TITLE" "$BODY" | grep -Eiq '(plan[ -]?[0-9]+|astrid-dev#[0-9]+|astrid-dev/issues/[0-9]+)'; then
-            echo "Reference found."; exit 0
-          fi
-          echo "::error::A pull request into a release branch must name the plan or the astrid-dev issue it belongs to, for example 'Plan 55' or 'banodoco/astrid-dev#721'."
-          exit 1
