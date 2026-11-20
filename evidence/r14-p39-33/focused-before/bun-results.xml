@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="7" assertions="12" failures="0" skipped="0" time="0.353835938">
+  <testsuite name="astrid/chat/sessionConfigOptions.test.ts" file="astrid/chat/sessionConfigOptions.test.ts" tests="7" assertions="12" failures="0" skipped="0" time="0" hostname="fc832b8b36d3">
+    <testsuite name="ACP session config options" file="astrid/chat/sessionConfigOptions.test.ts" line="8" tests="7" assertions="12" failures="0" skipped="0" time="0.005" hostname="fc832b8b36d3">
+      <testcase name="reads Codex base model and reasoning effort, ahead of its legacy model ID with effort suffix" classname="ACP session config options" time="0.005506" file="astrid/chat/sessionConfigOptions.test.ts" line="9" assertions="2" />
+      <testcase name="reads Claude effort with recommendation capability %s" classname="ACP session config options" time="0.000233" file="astrid/chat/sessionConfigOptions.test.ts" line="20" assertions="2" />
+      <testcase name="reads Claude effort with recommendation capability %s" classname="ACP session config options" time="0.000194" file="astrid/chat/sessionConfigOptions.test.ts" line="20" assertions="2" />
+      <testcase name="identifies categories with opaque IDs and handles OMP grouped models and thinking" classname="ACP session config options" time="0.000177" file="astrid/chat/sessionConfigOptions.test.ts" line="31" assertions="1" />
+      <testcase name="names levels in sentence case" classname="ACP session config options" time="0.000165" file="astrid/chat/sessionConfigOptions.test.ts" line="38" assertions="1" />
+      <testcase name="does not invent levels for Hermes without a thought_level option" classname="ACP session config options" time="0.000382" file="astrid/chat/sessionConfigOptions.test.ts" line="44" assertions="2" />
+      <testcase name="does not invent levels for Astrid without a thought_level option" classname="ACP session config options" time="0.000104" file="astrid/chat/sessionConfigOptions.test.ts" line="44" assertions="2" />
+    </testsuite>
+  </testsuite>
+</testsuites>

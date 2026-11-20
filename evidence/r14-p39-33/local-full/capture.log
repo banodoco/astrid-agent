@@ -1,0 +1,280 @@
+$ bun test ./astrid/chat "--reporter=junit" "--reporter-outfile=/workspace/scratch/b269a8894312/astrid-agent/evidence/r14-p39-33/local-full/failure-ceiling/chat/step-06/bun-results.xml"
+bun test v1.3.14 (0d9b296a)
+
+astrid/chat/sessionConfigOptions.test.ts:
+(pass) ACP session config options > reads Codex base model and reasoning effort, ahead of its legacy model ID with effort suffix [2.59ms]
+(pass) ACP session config options > reads Claude effort with recommendation capability false [0.14ms]
+(pass) ACP session config options > reads Claude effort with recommendation capability true [0.06ms]
+(pass) ACP session config options > identifies categories with opaque IDs and handles OMP grouped models and thinking [0.12ms]
+(pass) ACP session config options > names levels in sentence case [0.13ms]
+(pass) ACP session config options > does not invent levels for Hermes without a thought_level option [0.14ms]
+(pass) ACP session config options > does not invent levels for Astrid without a thought_level option [0.08ms]
+
+astrid/chat/astridAcpLauncher.windows.test.ts:
+(skip) native Windows ACP profile and context lookups can launch a .cmd Astrid shim
+(pass) profile lookup reports safe status without returning child stderr [46.27ms]
+
+astrid/chat/acpProcessHost.test.ts:
+(pass) AcpProcessHost > keeps a long prompt active and deduplicated past the control deadline, then delivers its result [37.69ms]
+(pass) AcpProcessHost > can cancel a prompt after the control deadline and waits for the agent cancellation response [32.08ms]
+(pass) AcpProcessHost > rejects a long prompt when its process exits instead of leaving it pending forever [32.00ms]
+(pass) AcpProcessHost > runs Windows command shims through cmd.exe with a quoted entry and arguments [0.38ms]
+(pass) AcpProcessHost > forwards initialize/new/close and preserves the opaque OMP session id [0.45ms]
+(pass) AcpProcessHost > surfaces the installed agent session-not-found detail instead of generic Internal error [0.21ms]
+(pass) AcpProcessHost > explains an unavailable saved model on session/load and permits a new chat [0.25ms]
+(pass) AcpProcessHost > explains an unavailable saved model on session/resume and permits a new chat [0.11ms]
+(pass) AcpProcessHost > forwards notifications and answers explicit permission callbacks without ambient authority [0.54ms]
+(pass) AcpProcessHost > fails closed when a required filesystem callback is absent [0.17ms]
+(pass) AcpProcessHost > rejects pending calls when the owned process disconnects and builds the explicit omp acp launch [0.21ms]
+(pass) AcpProcessHost > builds the real Astrid launcher command with identity, cwd, and session custody [0.37ms]
+(pass) AcpProcessHost > resolves the packaged Astrid profile through the installed command without a user-home seed [0.31ms]
+(pass) AcpProcessHost > omits the session override so OMP owns canonical cwd-derived storage [0.23ms]
+(pass) AcpProcessHost > pins the hosted installed package profile despite ambient named mode while preserving appended instructions and OMP custody [0.24ms]
+(pass) AcpProcessHost > rejects a validation-only custom base override rather than pretending to execute it [0.08ms]
+(pass) AcpProcessHost > fails closed before spawn when the canonical prompt file is unavailable [0.09ms]
+
+astrid/chat/astrid-agent-models.test.ts:
+(pass) model discovery allows sequential OMP startup to exceed the old ten-second cutoff [11046.88ms]
+(pass) agent model catalog maps the CLI response to the safe ACP projection and preserves CLI state [29.26ms]
+(pass) agent catalog discovery never invokes the global default mutation [65.67ms]
+(pass) agent model adapter rejects unsupported schemas and malformed JSON, and redacts CLI diagnostics [69.41ms]
+(pass) agent model launch logs ENOENT without exposing child output [1.34ms]
+(pass) agent catalog discovery kills a hanging CLI and rejects its partial output [30044.96ms]
+Astrid model command failed (signal=SIGKILL, timeout=true).
+(pass) the Python Astrid model wrapper and its nested OMP CLI exit on discovery timeout [30036.87ms]
+Astrid model command failed (signal=SIGKILL, timeout=true).
+(pass) agents endpoint survives a hanging catalog and profile bootstrap, and reaps discovery children [15089.07ms]
+Astrid model command failed (signal=SIGKILL, timeout=true).
+(pass) agents endpoint survives a hanging catalog and initialize bootstrap, and reaps discovery children [15112.82ms]
+Astrid model command failed (signal=SIGKILL, timeout=true).
+(pass) agents endpoint survives a hanging catalog and session/new bootstrap, and reaps discovery children [15095.51ms]
+Astrid model command failed (signal=SIGKILL, timeout=true).
+(pass) agents endpoint survives a hanging catalog and session/close bootstrap, and reaps discovery children [15096.15ms]
+
+astrid/chat/astrid-project-chat.test.ts:
+(pass) routes prefixed external sessions, including Hermes, to their own agent identity [0.13ms]
+(pass) New selects and promotes the created chat to Main [2.64ms]
+(pass) New assigns Main when the project has no previous Main chat [0.44ms]
+(pass) failed chat creation clears its claim so an immediate retry can succeed [0.76ms]
+(pass) New preserves a concurrent Make Main choice while selecting its created chat [0.93ms]
+(pass) rename trims titles, enforces ownership, and advances the project chat revision [0.75ms]
+(pass) ensure replaces an empty selected session in its existing chat entry when its transcript is missing [0.91ms]
+(pass) targeted reload reuses an empty chat when its ACP session still resumes [0.32ms]
+(pass) recovery preserves a chat that starts during verification [0.74ms]
+(pass) recovery preserves a chat that starts during creation [0.92ms]
+(pass) empty marker and model metadata writes preserve the chat selection revision [0.36ms]
+(pass) identical draft retries acknowledge without writes while divergent stale payloads retain CAS protection [0.97ms]
+(pass) parallel identical drafts survive project version retries without advancing twice [0.33ms]
+
+astrid/chat/astridAcpBridge.test.ts:
+(pass) Astrid App ACP HTTP bridge > rejects nested inline project-draft media before durable storage in hosted local-only mode [12.76ms]
+(pass) Astrid App ACP HTTP bridge > routes project session creation, selection, draft persistence, and ownership-checked prompts [17.40ms]
+(pass) Astrid App ACP HTTP bridge > defaults to OMP canonical session storage when no override is configured [0.27ms]
+(pass) Astrid App ACP HTTP bridge > limits session config changes to advertised thinking values on an owned session [10.39ms]
+(pass) Astrid App ACP HTTP bridge > forwards browser lifecycle controls with host-owned cwd and ephemeral connection identity [9.64ms]
+(pass) Astrid App ACP HTTP bridge > answers local permission and terminal callbacks instead of forcing ACP fallback retries [9.71ms]
+
+astrid/chat/astrid-acp-bridge.test.ts:
+(pass) ACP uses dedicated token, legacy fallback, explicit hosted-only policy and known binary forms [0.53ms]
+(pass) PATCH chat rename route validates the body without opening a listener [2.55ms]
+(pass) session model and thought-level routes use advertised config IDs and refresh options without a socket [10.43ms]
+(pass) thinking level waits for session/list without a socket [3.01ms]
+(pass) thinking level waits for session/load without a socket [3.27ms]
+(pass) thinking level refuses an active prompt without a socket [1.21ms]
+(pass) real HTTP bridge enforces RPC and project policy for hosted calls and preserves project session/config ownership [40.44ms]
+(pass) writer disconnect automatically promotes exactly one survivor and preserves an active turn [3.68ms]
+(pass) writer expiry automatically promotes exactly one survivor and preserves an active turn [2.14ms]
+
+astrid/chat/acp-client-capabilities.test.ts:
+(pass) Windows OMP uses its embedded shell and other ACP routes retain terminals [1.07ms]
+
+astrid/chat/paths.test.ts:
+(pass) absolute paths use the native path implementation, including Windows drives and UNC [0.10ms]
+(pass) terminal paths remain inside their host root on POSIX and Windows [0.13ms]
+
+astrid/chat/astrid-local-agent-host.test.ts:
+(pass) external agents receive the profile with the package root filled in and frontmatter removed [0.30ms]
+(pass) external ACP bridge namespaces sessions and routes context, permissions, and cancellation through its Bun launch shim [136.63ms]
+(pass) external agent readiness fails closed for missing CLIs and sign-in, but does not require a local adapter install [107.63ms]
+(pass) claude-code delivers grounding through its capability and preserves it across session operations [139.55ms]
+(pass) codex delivers grounding through its capability and preserves it across session operations [133.32ms]
+(pass) hermes delivers grounding through its capability and preserves it across session operations [95.13ms]
+(pass) codex preserves an empty chat, thinking level and first grounding during browser handoff [294.90ms]
+(pass) hermes preserves an empty chat, thinking level and first grounding during browser handoff [186.34ms]
+(pass) claude-code starts without a preferences block after empty output from the context command [93.16ms]
+(pass) codex starts without a preferences block after empty output from the context command [86.02ms]
+(pass) hermes starts without a preferences block after empty output from the context command [84.18ms]
+(pass) claude-code starts without preferences and records a failed context lookup [86.13ms]
+(pass) codex starts without preferences and records a failed context lookup [91.35ms]
+(pass) hermes starts without preferences and records a failed context lookup [104.39ms]
+(pass) resolveAstridAgentContext runs `astrid --agent-context` and never throws [68.72ms]
+
+astrid/chat/astridProjectChat.test.ts:
+(pass) ProjectChatRegistry > persists session association and draft across registry instances, preserving unrelated metadata and isolating projects [1.35ms]
+(pass) ProjectChatRegistry > rejects stale selection and draft writes without replacing the newer saved text [0.54ms]
+(pass) ProjectChatRegistry > uses a CAS claim so simultaneous ensure calls cannot both create defaults [1.86ms]
+(pass) ProjectChatRegistry > replays the operation session identity without changing a later user selection [0.58ms]
+(pass) ProjectChatRegistry > New promotes Main while explicit Make Main remains available [1.05ms]
+(pass) ProjectChatRegistry > keeps a concurrent Make Main choice while New completes without promotion [1.02ms]
+(pass) ProjectChatRegistry > preserves Main/history/draft when New creation fails [0.63ms]
+(pass) ProjectChatRegistry > preserves Main/history/draft when New commit fails [0.42ms]
+(pass) ProjectChatRegistry > creates a fresh chat for a legacy registry without assigning Main [0.61ms]
+(pass) ProjectChatRegistry > retains an explicit Main choice made while ensure creation is in flight [0.76ms]
+(pass) ProjectChatRegistry > arbitrates concurrent ensure creation with the existing host claim [1.56ms]
+(pass) ProjectChatRegistry > marks only definite missing sessions and verifies the next candidate before reuse [0.78ms]
+(pass) ProjectChatRegistry > uses an atomic durable host claim to prevent concurrent cross-project attachment [0.82ms]
+
+astrid/chat/astrid-project-chat-runtime.test.ts:
+(pass) chat store resolves moved Runtime endpoint and rotated credential for each operation [11.33ms]
+(pass) chat store retains the explicit endpoint and token-file fallback [3.42ms]
+
+astrid/chat/astrid-shared-acp-sessions.test.ts:
+(pass) prompt dispatch reserves and deduplicates the turn while persisting its start marker [0.86ms]
+(pass) a failed start marker prevents native forwarding and releases the prompt reservation [0.41ms]
+(pass) concurrent session loads share one native load, keep its full result, and replay journal once per client [0.41ms]
+(pass) cached load clears caller queue immediately before full journal replay only [0.24ms]
+(pass) writer takeover is atomic around turns, retries dedupe, and detach retains a shared physical host [1.42ms]
+(pass) rejected prompts release their request ID for same or different payload retries [0.41ms]
+(pass) session agent IDs remain isolated across Astrid, Claude Code, and Codex and hosted attach stays sticky [0.61ms]
+(pass) a model switch reserves the native session across takeover until its acknowledgement [0.59ms]
+(pass) queued config changes recheck prompt state after a non-prompt RPC fails [0.45ms]
+(pass) forwarded config waits on the physical session host after creator handoff [0.30ms]
+(pass) queued config rechecks attachment and writer after takeover [0.26ms]
+(pass) queued config rechecks attachment and writer after detach [0.08ms]
+(pass) queued validation receives metadata accepted by the previous setter [0.36ms]
+
+astrid/chat/astrid-local-agent-readiness.test.ts:
+(pass) claude-code host and bridge return specific readiness errors with recovery commands [15.04ms]
+(pass) codex host and bridge return specific readiness errors with recovery commands [15.24ms]
+(pass) hermes host and bridge return specific readiness errors with recovery commands [8.52ms]
+
+astrid/chat/service.test.ts:
+(pass) Windows executable discovery keeps native exe names [0.16ms]
+Astrid chat listening on 127.0.0.1:17526
+(pass) chat publishes only after binding, cleans up its registration, and preserves another owner (bindFails=false) [3.11ms]
+(pass) chat publishes only after binding, cleans up its registration, and preserves another owner (bindFails=true) [0.33ms]
+Astrid chat listening on 127.0.0.1:46315
+(pass) chat creates its working directory before serving and registers the actual loopback listener [14.89ms]
+Astrid chat listening on 127.0.0.1:17527
+(pass) Runtime stdin EOF stops chat, removes its registration and waits for ACP cleanup (alreadyEnded=false) [3.11ms]
+(pass) Runtime stdin EOF stops chat, removes its registration and waits for ACP cleanup (alreadyEnded=true) [3.00ms]
+
+astrid/chat/astrid-local-agent-skills.test.ts:
+(pass) first connect syncs once per harness and caches success without failing connections [35.24ms]
+(pass) first connect syncs once per harness and caches failure without failing connections [29.73ms]
+(pass) first connect syncs once per harness and caches timeout without failing connections [306.10ms]
+(pass) cheap check requires a live entry pointing at the generated view and honors harness and state roots [2.87ms]
+(pass) missing Astrid interpreter is a cached best-effort failure [0.13ms]
+(pass) Astrid agents response reads the shim record for sign-in copy, steps and terminal command [2.80ms]
+
+astrid/chat/astridAcpPrompt.test.ts:
+(pass) ASTRID_ACP_CONTEXT_SYSTEM_PROMPT runtime commands > does not reference the removed retime-clip command [0.03ms]
+(pass) ASTRID_ACP_CONTEXT_SYSTEM_PROMPT runtime commands > routes timeline editing through the timeline skill and omits the retired publish command [0.02ms]
+(pass) ASTRID_ACP_CONTEXT_SYSTEM_PROMPT runtime commands > only uses timeline verbs that the current Astrid CLI provides [0.09ms]
+(pass) ASTRID_ACP_CONTEXT_SYSTEM_PROMPT runtime commands > does not mention flags that only the removed retime-clip route accepted [0.03ms]
+(pass) ASTRID_ACP_CONTEXT_SYSTEM_PROMPT runtime commands > invokes only family and verb paths that the vendored cli-surface.json defines [0.07ms]
+(pass) ASTRID_ACP_CONTEXT_SYSTEM_PROMPT runtime commands > passes only flags that the invoked verb defines in cli-surface.json [0.03ms]
+
+astrid/chat/astrid-local-agents.test.ts:
+(pass) Astrid sign-in line uses absolute OS-specific launcher syntax and quotes custom roots [0.05ms]
+(pass) reports Not installed when external CLIs are absent and has no adapter fields [2.75ms]
+(pass) Windows PATH uses expanded user and machine registry values without starting a shell [0.97ms]
+(pass) Windows discovery finds a user CLI .cmd shim from the registry PATH [17.86ms]
+(pass) Windows Claude npm shims resolve to the JavaScript entrypoint used by auth checks and ACP launch [18.80ms]
+(pass) Windows Codex npm shims run the package entrypoint for auth status and retain the shim for ACP launch [43.32ms]
+(pass) falls back to the default passwd shell when SHELL is unset [2.03ms]
+(pass) macOS falls back to the account shell from Directory Service when passwd lacks the user [3.13ms]
+(pass) signed-in CLIs are Ready with no adapters installed and launch uses each pinned Bun command [5.06ms]
+(pass) prefers the login-shell CLI and service Bun, with login Bun as fallback [5.49ms]
+(pass) falls back to login-shell Bun when service PATH has no Bun [1.77ms]
+(pass) reads Claude JSON login status and falls back to text only when JSON is invalid [5.87ms]
+(pass) reads successful Codex status from stderr and does not trust failed diagnostics [5.80ms]
+(pass) claude-json discovery times out, kills its child, and preserves other agent choices [5011.01ms]
+(pass) claude-text discovery times out, kills its child, and preserves other agent choices [5036.03ms]
+(pass) codex discovery times out, kills its child, and preserves other agent choices [5010.00ms]
+(pass) discovers Hermes with hermes acp --check and launches its native ACP command [11.47ms]
+(pass) keeps Hermes ready when ACP check is inconclusive or times out [3018.60ms]
+(pass) mixed external-agent authentication states stay associated with their agent [6.49ms]
+(pass) linux setup steps use the table's install and sign-in commands in order [2.55ms]
+(pass) linux missing Bun names the Astrid installer as the recovery command [2.59ms]
+(pass) win32 setup steps use the table's install and sign-in commands in order [0.25ms]
+(pass) win32 missing Bun names the Astrid installer as the recovery command [0.66ms]
+(pass) discovery retains each probe sign-in result without changing legacy readiness [13.12ms]
+(pass) agent schema accepts old rows and the optional contract fields, dropping future fields [0.57ms]
+
+astrid/chat/astrid-acp-models.test.ts:
+(pass) astrid applies its model once when created and preserves it through attach, takeover and prompts [8.35ms]
+(pass) claude-code applies its model once when created and preserves it through attach, takeover and prompts [4.36ms]
+(pass) codex applies its model once when created and preserves it through attach, takeover and prompts [3.92ms]
+(pass) agents lazily share one bootstrap per ready agent, hide native sessions, and recheck readiness on menu refresh [5.97ms]
+(pass) a real new session fills and refreshes its service catalog without a bootstrap [2.40ms]
+(pass) service remembers successful choices and bootstrap exclusions across restarts without changing the CLI default [3.77ms]
+(pass) non-ready agents do not bootstrap and every recovery row has its service line [0.56ms]
+(pass) Astrid sign-in preserves keyless model access; unknown auth remains ready [2.39ms]
+(pass) bootstrap failures release hosts and retry only on the next explicit menu refresh [1.32ms]
+(pass) a completed empty bootstrap does not create throwaway sessions on every menu opening [0.68ms]
+(pass) a unavailable config model choice fails before any prompt and does not become the remembered agent [1.48ms]
+(pass) a missing-metadata config model choice fails before any prompt and does not become the remembered agent [0.94ms]
+(pass) a rejected config model choice fails before any prompt and does not become the remembered agent [0.86ms]
+(pass) a mismatch config model choice fails before any prompt and does not become the remembered agent [1.05ms]
+(pass) a unavailable legacy model choice fails before any prompt and does not become the remembered agent [0.67ms]
+(pass) a missing-metadata legacy model choice fails before any prompt and does not become the remembered agent [0.77ms]
+(pass) a rejected legacy model choice fails before any prompt and does not become the remembered agent [0.68ms]
+(pass) a mismatch legacy model choice fails before any prompt and does not become the remembered agent [0.81ms]
+(pass) model discovery and retired mutation routes retain bearer and protocol protections [0.90ms]
+(pass) catalog levels belong only to the model that advertised them and stale support clears [0.62ms]
+
+astrid/chat/astrid-agent-key.test.ts:
+(pass) key route updates the remembered model, clears model discovery and refreshes provider sign-in [200.97ms]
+(pass) key route redacts child output for {"exit":3} [41.45ms]
+(pass) key route redacts child output for {"exit":4} [58.00ms]
+(pass) key route redacts child output for {"exit":7} [36.20ms]
+(pass) key route redacts child output for {"badJson":true} [31.32ms]
+(pass) key route redacts child output for {"leak":true} [32.99ms]
+(pass) null currentModel preserves the bridge default [67.43ms]
+(pass) key route validates auth, protocol, provider, shape, whitespace, length and body cap before spawning [2.52ms]
+(pass) shipped chat bundle serves the key route without logging keys or child diagnostics [125.51ms]
+
+astrid/chat/discoveryProbe.test.ts:
+(pass) Windows discovery probes route npm command shims through cmd.exe [0.18ms]
+(skip) native Windows discovery launches a harmless .cmd probe through cmd.exe
+(pass) a discovery deadline kills a wrapper and its hanging CLI child [1024.85ms]
+(pass) discovery preserves nonzero status diagnostics for explicit signed-out detection [29.16ms]
+(pass) an unavailable discovery command rejects promptly [1.32ms]
+
+astrid/chat/chat-registration.test.ts:
+(pass) agent chat registration > sits next to discovery.json as chat.json [0.32ms]
+(pass) agent chat registration > is the exact endpoint and token the Runtime door reads [0.06ms]
+(pass) agent chat registration > refuses a bad bridge port or an empty credential [0.28ms]
+(pass) agent chat registration > writes the registration owner-only, parseable, with no temporary file left behind [0.77ms]
+(pass) agent chat registration > removes only a registration the predicate owns, and tolerates missing or unparsable files [0.66ms]
+
+astrid/chat/astrid-acp-local-models.test.ts:
+(pass) local ACP models are scoped and fixed from the connection default at new session creation > config adapter [5.31ms]
+(pass) local ACP models are scoped and fixed from the connection default at new session creation > models adapter [1.23ms]
+(pass) local ACP connections without advertised models keep the ordinary session path [1.08ms]
+(pass) shared external session model catalog follows the writer and takeover for config and legacy model APIs > config adapter [2.56ms]
+(pass) shared external session model catalog follows the writer and takeover for config and legacy model APIs > models adapter [1.04ms]
+(pass) project registry session creation applies the connection default and rejects unavailable defaults [1.15ms]
+(pass) missing Claude and Codex persisted sessions recover in place with the agent default model > claude-code [1.92ms]
+(pass) missing Claude and Codex persisted sessions recover in place with the agent default model > codex [0.70ms]
+(pass) targeted recovery retains each same-agent chat model and leaves started missing chats alone [2.53ms]
+(pass) config model update notifications refresh only an owned session model cache [0.86ms]
+
+astrid/chat/astrid-acp-empty-session-recovery.test.ts:
+(pass) an empty local-agent session recovers once after host replacement, then stays pinned when its first prompt starts [4.58ms]
+
+astrid/chat/astrid-acp-takeover.test.ts:
+(pass) astrid: two HTTP clients follow one live native session and transfer its writer without sending twice [15.18ms]
+(pass) codex: two HTTP clients follow one live native session and transfer its writer without sending twice [8.80ms]
+(pass) claude-code: two HTTP clients follow one live native session and transfer its writer without sending twice [7.76ms]
+
+2 tests skipped:
+(skip) native Windows ACP profile and context lookups can launch a .cmd Astrid shim
+(skip) native Windows discovery launches a harmless .cmd probe through cmd.exe
+
+ 208 pass
+ 2 skip
+ 0 fail
+ 445 expect() calls
+Ran 210 tests across 25 files. [154.31s]

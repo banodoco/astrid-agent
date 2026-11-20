@@ -1,0 +1,123 @@
+{
+  "source_commit": "3a50507ceef9bf3520f44938e2e8ef6d4ef43a42",
+  "execution_commit": "3a50507ceef9bf3520f44938e2e8ef6d4ef43a42",
+  "source_and_execution_tree": "4df3dbc6625400c873d2eb08de89accab5a6a648",
+  "run_id": 44635819742,
+  "job_id": 135953917442,
+  "artifact_id": 14583582456,
+  "artifact_digest": "sha256:550111b2a33dd976ec61e41e9ada226ff1889f95fdb80930e901932443d240e3",
+  "artifact_size": 19895,
+  "raw_exit": 0,
+  "native_root": {
+    "name": "bun test",
+    "tests": "210",
+    "assertions": "445",
+    "failures": "0",
+    "skipped": "2",
+    "time": "153.428617986"
+  },
+  "counts": {
+    "passed": 208,
+    "skipped": 2
+  },
+  "observations": 210,
+  "unique_native_ids": 209,
+  "assertions": 445,
+  "command": "bun run test:chat --reporter=junit --reporter-outfile=\"$CEILING_STEP_DIR/bun-results.xml\"",
+  "runner": "Bun 1.3.14+0d9b296af",
+  "environment": {
+    "os": "Ubuntu 26.04.1 LTS",
+    "image": "ubuntu-26.04 20261111.196.1",
+    "node": "20.19.4",
+    "npm": "10.8.2",
+    "dependency_install": "npm ci --ignore-scripts"
+  },
+  "terminal_observations": 210,
+  "terminal_junit_multiset_equal": true,
+  "terminal_junit_order_equal": false,
+  "duplicate_observations": [
+    {
+      "observation_index": 204,
+      "native_id": "[\"astrid/chat/sessionConfigOptions.test.ts\",\"20\",\"ACP session config options\",\"reads Claude effort with recommendation capability %s\"]",
+      "same_id_occurrence": 1,
+      "attributes": {
+        "name": "reads Claude effort with recommendation capability %s",
+        "classname": "ACP session config options",
+        "time": "0.000204",
+        "file": "astrid/chat/sessionConfigOptions.test.ts",
+        "line": "20",
+        "assertions": "2"
+      },
+      "assertions": 2,
+      "outcome": "passed",
+      "children": []
+    },
+    {
+      "observation_index": 205,
+      "native_id": "[\"astrid/chat/sessionConfigOptions.test.ts\",\"20\",\"ACP session config options\",\"reads Claude effort with recommendation capability %s\"]",
+      "same_id_occurrence": 2,
+      "attributes": {
+        "name": "reads Claude effort with recommendation capability %s",
+        "classname": "ACP session config options",
+        "time": "0.000049",
+        "file": "astrid/chat/sessionConfigOptions.test.ts",
+        "line": "20",
+        "assertions": "2"
+      },
+      "assertions": 2,
+      "outcome": "passed",
+      "children": []
+    }
+  ],
+  "skips": [
+    {
+      "observation_index": 116,
+      "native_id": "[\"astrid/chat/discoveryProbe.test.ts\",\"23\",\"\",\"native Windows discovery launches a harmless .cmd probe through cmd.exe\"]",
+      "same_id_occurrence": 1,
+      "attributes": {
+        "name": "native Windows discovery launches a harmless .cmd probe through cmd.exe",
+        "classname": "",
+        "time": "0",
+        "file": "astrid/chat/discoveryProbe.test.ts",
+        "line": "23",
+        "assertions": "0"
+      },
+      "assertions": 0,
+      "outcome": "skipped",
+      "children": [
+        {
+          "tag": "skipped",
+          "attributes": {},
+          "text": null
+        }
+      ]
+    },
+    {
+      "observation_index": 129,
+      "native_id": "[\"astrid/chat/astridAcpLauncher.windows.test.ts\",\"8\",\"\",\"native Windows ACP profile and context lookups can launch a .cmd Astrid shim\"]",
+      "same_id_occurrence": 1,
+      "attributes": {
+        "name": "native Windows ACP profile and context lookups can launch a .cmd Astrid shim",
+        "classname": "",
+        "time": "0",
+        "file": "astrid/chat/astridAcpLauncher.windows.test.ts",
+        "line": "8",
+        "assertions": "0"
+      },
+      "assertions": 0,
+      "outcome": "skipped",
+      "children": [
+        {
+          "tag": "skipped",
+          "attributes": {},
+          "text": null
+        }
+      ]
+    }
+  ],
+  "trusted_suite_finding": {
+    "accepted": false,
+    "reason": "empty/duplicate collected IDs: Chat service/chat/step-06"
+  },
+  "historical_boolean_attribution": "unknown: original receipt has no per-observation boolean parameter; no historical true/false attribution made"
+}

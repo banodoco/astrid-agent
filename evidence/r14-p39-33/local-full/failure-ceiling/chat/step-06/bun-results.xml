@@ -1,0 +1,285 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="210" assertions="445" failures="0" skipped="2" time="154.309399453">
+  <testsuite name="astrid/chat/sessionConfigOptions.test.ts" file="astrid/chat/sessionConfigOptions.test.ts" tests="7" assertions="12" failures="0" skipped="0" time="0" hostname="fc832b8b36d3">
+    <testsuite name="ACP session config options" file="astrid/chat/sessionConfigOptions.test.ts" line="8" tests="7" assertions="12" failures="0" skipped="0" time="0.002" hostname="fc832b8b36d3">
+      <testcase name="reads Codex base model and reasoning effort, ahead of its legacy model ID with effort suffix" classname="ACP session config options" time="0.002591" file="astrid/chat/sessionConfigOptions.test.ts" line="9" assertions="2" />
+      <testcase name="reads Claude effort with recommendation capability false" classname="ACP session config options" time="0.000141" file="astrid/chat/sessionConfigOptions.test.ts" line="20" assertions="2" />
+      <testcase name="reads Claude effort with recommendation capability true" classname="ACP session config options" time="0.000063" file="astrid/chat/sessionConfigOptions.test.ts" line="20" assertions="2" />
+      <testcase name="identifies categories with opaque IDs and handles OMP grouped models and thinking" classname="ACP session config options" time="0.000116" file="astrid/chat/sessionConfigOptions.test.ts" line="31" assertions="1" />
+      <testcase name="names levels in sentence case" classname="ACP session config options" time="0.000132" file="astrid/chat/sessionConfigOptions.test.ts" line="38" assertions="1" />
+      <testcase name="does not invent levels for Hermes without a thought_level option" classname="ACP session config options" time="0.000139" file="astrid/chat/sessionConfigOptions.test.ts" line="44" assertions="2" />
+      <testcase name="does not invent levels for Astrid without a thought_level option" classname="ACP session config options" time="0.000079" file="astrid/chat/sessionConfigOptions.test.ts" line="44" assertions="2" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="astrid/chat/astridAcpLauncher.windows.test.ts" file="astrid/chat/astridAcpLauncher.windows.test.ts" tests="2" assertions="0" failures="0" skipped="1" time="0.046" hostname="fc832b8b36d3">
+    <testcase name="native Windows ACP profile and context lookups can launch a .cmd Astrid shim" classname="" time="0" file="astrid/chat/astridAcpLauncher.windows.test.ts" line="8" assertions="0">
+      <skipped />
+    </testcase>
+    <testcase name="profile lookup reports safe status without returning child stderr" classname="" time="0.04627" file="astrid/chat/astridAcpLauncher.windows.test.ts" line="43" assertions="0" />
+  </testsuite>
+  <testsuite name="astrid/chat/acpProcessHost.test.ts" file="astrid/chat/acpProcessHost.test.ts" tests="17" assertions="48" failures="0" skipped="0" time="0" hostname="fc832b8b36d3">
+    <testsuite name="AcpProcessHost" file="astrid/chat/acpProcessHost.test.ts" line="83" tests="17" assertions="48" failures="0" skipped="0" time="0.1" hostname="fc832b8b36d3">
+      <testcase name="keeps a long prompt active and deduplicated past the control deadline, then delivers its result" classname="AcpProcessHost" time="0.03769" file="astrid/chat/acpProcessHost.test.ts" line="84" assertions="10" />
+      <testcase name="can cancel a prompt after the control deadline and waits for the agent cancellation response" classname="AcpProcessHost" time="0.032085" file="astrid/chat/acpProcessHost.test.ts" line="124" assertions="2" />
+      <testcase name="rejects a long prompt when its process exits instead of leaving it pending forever" classname="AcpProcessHost" time="0.031998" file="astrid/chat/acpProcessHost.test.ts" line="142" assertions="1" />
+      <testcase name="runs Windows command shims through cmd.exe with a quoted entry and arguments" classname="AcpProcessHost" time="0.000375" file="astrid/chat/acpProcessHost.test.ts" line="157" assertions="5" />
+      <testcase name="forwards initialize/new/close and preserves the opaque OMP session id" classname="AcpProcessHost" time="0.000452" file="astrid/chat/acpProcessHost.test.ts" line="171" assertions="7" />
+      <testcase name="surfaces the installed agent session-not-found detail instead of generic Internal error" classname="AcpProcessHost" time="0.000213" file="astrid/chat/acpProcessHost.test.ts" line="202" assertions="1" />
+      <testcase name="explains an unavailable saved model on session/load and permits a new chat" classname="AcpProcessHost" time="0.000251" file="astrid/chat/acpProcessHost.test.ts" line="217" assertions="2" />
+      <testcase name="explains an unavailable saved model on session/resume and permits a new chat" classname="AcpProcessHost" time="0.000108" file="astrid/chat/acpProcessHost.test.ts" line="217" assertions="2" />
+      <testcase name="forwards notifications and answers explicit permission callbacks without ambient authority" classname="AcpProcessHost" time="0.000539" file="astrid/chat/acpProcessHost.test.ts" line="237" assertions="2" />
+      <testcase name="fails closed when a required filesystem callback is absent" classname="AcpProcessHost" time="0.000169" file="astrid/chat/acpProcessHost.test.ts" line="271" assertions="1" />
+      <testcase name="rejects pending calls when the owned process disconnects and builds the explicit omp acp launch" classname="AcpProcessHost" time="0.000208" file="astrid/chat/acpProcessHost.test.ts" line="289" assertions="2" />
+      <testcase name="builds the real Astrid launcher command with identity, cwd, and session custody" classname="AcpProcessHost" time="0.000369" file="astrid/chat/acpProcessHost.test.ts" line="316" assertions="2" />
+      <testcase name="resolves the packaged Astrid profile through the installed command without a user-home seed" classname="AcpProcessHost" time="0.000305" file="astrid/chat/acpProcessHost.test.ts" line="356" assertions="4" />
+      <testcase name="omits the session override so OMP owns canonical cwd-derived storage" classname="AcpProcessHost" time="0.000231" file="astrid/chat/acpProcessHost.test.ts" line="386" assertions="2" />
+      <testcase name="pins the hosted installed package profile despite ambient named mode while preserving appended instructions and OMP custody" classname="AcpProcessHost" time="0.00024" file="astrid/chat/acpProcessHost.test.ts" line="421" assertions="2" />
+      <testcase name="rejects a validation-only custom base override rather than pretending to execute it" classname="AcpProcessHost" time="0.000078" file="astrid/chat/acpProcessHost.test.ts" line="431" assertions="1" />
+      <testcase name="fails closed before spawn when the canonical prompt file is unavailable" classname="AcpProcessHost" time="0.000093" file="astrid/chat/acpProcessHost.test.ts" line="435" assertions="2" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="astrid/chat/astrid-agent-models.test.ts" file="astrid/chat/astrid-agent-models.test.ts" tests="11" assertions="0" failures="0" skipped="0" time="131.682" hostname="fc832b8b36d3">
+    <testcase name="model discovery allows sequential OMP startup to exceed the old ten-second cutoff" classname="" time="11.046878" file="astrid/chat/astrid-agent-models.test.ts" line="85" assertions="0" />
+    <testcase name="agent model catalog maps the CLI response to the safe ACP projection and preserves CLI state" classname="" time="0.029256" file="astrid/chat/astrid-agent-models.test.ts" line="114" assertions="0" />
+    <testcase name="agent catalog discovery never invokes the global default mutation" classname="" time="0.065671" file="astrid/chat/astrid-agent-models.test.ts" line="147" assertions="0" />
+    <testcase name="agent model adapter rejects unsupported schemas and malformed JSON, and redacts CLI diagnostics" classname="" time="0.069409" file="astrid/chat/astrid-agent-models.test.ts" line="161" assertions="0" />
+    <testcase name="agent model launch logs ENOENT without exposing child output" classname="" time="0.001344" file="astrid/chat/astrid-agent-models.test.ts" line="190" assertions="0" />
+    <testcase name="agent catalog discovery kills a hanging CLI and rejects its partial output" classname="" time="30.044956" file="astrid/chat/astrid-agent-models.test.ts" line="204" assertions="0" />
+    <testcase name="the Python Astrid model wrapper and its nested OMP CLI exit on discovery timeout" classname="" time="30.036866" file="astrid/chat/astrid-agent-models.test.ts" line="238" assertions="0" />
+    <testcase name="agents endpoint survives a hanging catalog and profile bootstrap, and reaps discovery children" classname="" time="15.08907" file="astrid/chat/astrid-agent-models.test.ts" line="286" assertions="0" />
+    <testcase name="agents endpoint survives a hanging catalog and initialize bootstrap, and reaps discovery children" classname="" time="15.112819" file="astrid/chat/astrid-agent-models.test.ts" line="286" assertions="0" />
+    <testcase name="agents endpoint survives a hanging catalog and session/new bootstrap, and reaps discovery children" classname="" time="15.095513" file="astrid/chat/astrid-agent-models.test.ts" line="286" assertions="0" />
+    <testcase name="agents endpoint survives a hanging catalog and session/close bootstrap, and reaps discovery children" classname="" time="15.09615" file="astrid/chat/astrid-agent-models.test.ts" line="286" assertions="0" />
+  </testsuite>
+  <testsuite name="astrid/chat/astrid-project-chat.test.ts" file="astrid/chat/astrid-project-chat.test.ts" tests="13" assertions="0" failures="0" skipped="0" time="0.002" hostname="fc832b8b36d3">
+    <testcase name="routes prefixed external sessions, including Hermes, to their own agent identity" classname="" time="0.000125" file="astrid/chat/astrid-project-chat.test.ts" line="10" assertions="0" />
+    <testcase name="New selects and promotes the created chat to Main" classname="" time="0.002639" file="astrid/chat/astrid-project-chat.test.ts" line="32" assertions="0" />
+    <testcase name="New assigns Main when the project has no previous Main chat" classname="" time="0.000442" file="astrid/chat/astrid-project-chat.test.ts" line="64" assertions="0" />
+    <testcase name="failed chat creation clears its claim so an immediate retry can succeed" classname="" time="0.000757" file="astrid/chat/astrid-project-chat.test.ts" line="76" assertions="0" />
+    <testcase name="New preserves a concurrent Make Main choice while selecting its created chat" classname="" time="0.000926" file="astrid/chat/astrid-project-chat.test.ts" line="97" assertions="0" />
+    <testcase name="rename trims titles, enforces ownership, and advances the project chat revision" classname="" time="0.000754" file="astrid/chat/astrid-project-chat.test.ts" line="129" assertions="0" />
+    <testcase name="ensure replaces an empty selected session in its existing chat entry when its transcript is missing" classname="" time="0.000915" file="astrid/chat/astrid-project-chat.test.ts" line="151" assertions="0" />
+    <testcase name="targeted reload reuses an empty chat when its ACP session still resumes" classname="" time="0.000316" file="astrid/chat/astrid-project-chat.test.ts" line="183" assertions="0" />
+    <testcase name="recovery preserves a chat that starts during verification" classname="" time="0.00074" file="astrid/chat/astrid-project-chat.test.ts" line="212" assertions="0" />
+    <testcase name="recovery preserves a chat that starts during creation" classname="" time="0.000915" file="astrid/chat/astrid-project-chat.test.ts" line="212" assertions="0" />
+    <testcase name="empty marker and model metadata writes preserve the chat selection revision" classname="" time="0.00036" file="astrid/chat/astrid-project-chat.test.ts" line="242" assertions="0" />
+    <testcase name="identical draft retries acknowledge without writes while divergent stale payloads retain CAS protection" classname="" time="0.000965" file="astrid/chat/astrid-project-chat.test.ts" line="265" assertions="0" />
+    <testcase name="parallel identical drafts survive project version retries without advancing twice" classname="" time="0.000331" file="astrid/chat/astrid-project-chat.test.ts" line="298" assertions="0" />
+  </testsuite>
+  <testsuite name="astrid/chat/astridAcpBridge.test.ts" file="astrid/chat/astridAcpBridge.test.ts" tests="6" assertions="48" failures="0" skipped="0" time="0" hostname="fc832b8b36d3">
+    <testsuite name="Astrid App ACP HTTP bridge" file="astrid/chat/astridAcpBridge.test.ts" line="118" tests="6" assertions="48" failures="0" skipped="0" time="0.057" hostname="fc832b8b36d3">
+      <testcase name="rejects nested inline project-draft media before durable storage in hosted local-only mode" classname="Astrid App ACP HTTP bridge" time="0.012755" file="astrid/chat/astridAcpBridge.test.ts" line="119" assertions="4" />
+      <testcase name="routes project session creation, selection, draft persistence, and ownership-checked prompts" classname="Astrid App ACP HTTP bridge" time="0.017405" file="astrid/chat/astridAcpBridge.test.ts" line="151" assertions="14" />
+      <testcase name="defaults to OMP canonical session storage when no override is configured" classname="Astrid App ACP HTTP bridge" time="0.000273" file="astrid/chat/astridAcpBridge.test.ts" line="220" assertions="2" />
+      <testcase name="limits session config changes to advertised thinking values on an owned session" classname="Astrid App ACP HTTP bridge" time="0.010395" file="astrid/chat/astridAcpBridge.test.ts" line="238" assertions="6" />
+      <testcase name="forwards browser lifecycle controls with host-owned cwd and ephemeral connection identity" classname="Astrid App ACP HTTP bridge" time="0.009643" file="astrid/chat/astridAcpBridge.test.ts" line="317" assertions="18" />
+      <testcase name="answers local permission and terminal callbacks instead of forcing ACP fallback retries" classname="Astrid App ACP HTTP bridge" time="0.00971" file="astrid/chat/astridAcpBridge.test.ts" line="445" assertions="4" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="astrid/chat/astrid-acp-bridge.test.ts" file="astrid/chat/astrid-acp-bridge.test.ts" tests="9" assertions="0" failures="0" skipped="0" time="0.064" hostname="fc832b8b36d3">
+    <testcase name="ACP uses dedicated token, legacy fallback, explicit hosted-only policy and known binary forms" classname="" time="0.000529" file="astrid/chat/astrid-acp-bridge.test.ts" line="45" assertions="0" />
+    <testcase name="PATCH chat rename route validates the body without opening a listener" classname="" time="0.002549" file="astrid/chat/astrid-acp-bridge.test.ts" line="61" assertions="0" />
+    <testcase name="session model and thought-level routes use advertised config IDs and refresh options without a socket" classname="" time="0.010426" file="astrid/chat/astrid-acp-bridge.test.ts" line="110" assertions="0" />
+    <testcase name="thinking level waits for session/list without a socket" classname="" time="0.003007" file="astrid/chat/astrid-acp-bridge.test.ts" line="171" assertions="0" />
+    <testcase name="thinking level waits for session/load without a socket" classname="" time="0.003272" file="astrid/chat/astrid-acp-bridge.test.ts" line="171" assertions="0" />
+    <testcase name="thinking level refuses an active prompt without a socket" classname="" time="0.001213" file="astrid/chat/astrid-acp-bridge.test.ts" line="171" assertions="0" />
+    <testcase name="real HTTP bridge enforces RPC and project policy for hosted calls and preserves project session/config ownership" classname="" time="0.040436" file="astrid/chat/astrid-acp-bridge.test.ts" line="229" assertions="0" />
+    <testcase name="writer disconnect automatically promotes exactly one survivor and preserves an active turn" classname="" time="0.003683" file="astrid/chat/astrid-acp-bridge.test.ts" line="421" assertions="0" />
+    <testcase name="writer expiry automatically promotes exactly one survivor and preserves an active turn" classname="" time="0.002142" file="astrid/chat/astrid-acp-bridge.test.ts" line="421" assertions="0" />
+  </testsuite>
+  <testsuite name="astrid/chat/acp-client-capabilities.test.ts" file="astrid/chat/acp-client-capabilities.test.ts" tests="1" assertions="0" failures="0" skipped="0" time="0.001" hostname="fc832b8b36d3">
+    <testcase name="Windows OMP uses its embedded shell and other ACP routes retain terminals" classname="" time="0.001075" file="astrid/chat/acp-client-capabilities.test.ts" line="8" assertions="0" />
+  </testsuite>
+  <testsuite name="astrid/chat/paths.test.ts" file="astrid/chat/paths.test.ts" tests="2" assertions="20" failures="0" skipped="0" time="0" hostname="fc832b8b36d3">
+    <testcase name="absolute paths use the native path implementation, including Windows drives and UNC" classname="" time="0.000098" file="astrid/chat/paths.test.ts" line="5" assertions="8" />
+    <testcase name="terminal paths remain inside their host root on POSIX and Windows" classname="" time="0.000128" file="astrid/chat/paths.test.ts" line="15" assertions="12" />
+  </testsuite>
+  <testsuite name="astrid/chat/astrid-local-agent-host.test.ts" file="astrid/chat/astrid-local-agent-host.test.ts" tests="15" assertions="0" failures="0" skipped="0" time="1.702" hostname="fc832b8b36d3">
+    <testcase name="external agents receive the profile with the package root filled in and frontmatter removed" classname="" time="0.000299" file="astrid/chat/astrid-local-agent-host.test.ts" line="14" assertions="0" />
+    <testcase name="external ACP bridge namespaces sessions and routes context, permissions, and cancellation through its Bun launch shim" classname="" time="0.13663" file="astrid/chat/astrid-local-agent-host.test.ts" line="130" assertions="0" />
+    <testcase name="external agent readiness fails closed for missing CLIs and sign-in, but does not require a local adapter install" classname="" time="0.107632" file="astrid/chat/astrid-local-agent-host.test.ts" line="255" assertions="0" />
+    <testcase name="claude-code delivers grounding through its capability and preserves it across session operations" classname="" time="0.139554" file="astrid/chat/astrid-local-agent-host.test.ts" line="276" assertions="0" />
+    <testcase name="codex delivers grounding through its capability and preserves it across session operations" classname="" time="0.133317" file="astrid/chat/astrid-local-agent-host.test.ts" line="276" assertions="0" />
+    <testcase name="hermes delivers grounding through its capability and preserves it across session operations" classname="" time="0.095128" file="astrid/chat/astrid-local-agent-host.test.ts" line="276" assertions="0" />
+    <testcase name="codex preserves an empty chat, thinking level and first grounding during browser handoff" classname="" time="0.294904" file="astrid/chat/astrid-local-agent-host.test.ts" line="351" assertions="0" />
+    <testcase name="hermes preserves an empty chat, thinking level and first grounding during browser handoff" classname="" time="0.186341" file="astrid/chat/astrid-local-agent-host.test.ts" line="351" assertions="0" />
+    <testcase name="claude-code starts without a preferences block after empty output from the context command" classname="" time="0.093162" file="astrid/chat/astrid-local-agent-host.test.ts" line="418" assertions="0" />
+    <testcase name="codex starts without a preferences block after empty output from the context command" classname="" time="0.086025" file="astrid/chat/astrid-local-agent-host.test.ts" line="418" assertions="0" />
+    <testcase name="hermes starts without a preferences block after empty output from the context command" classname="" time="0.084181" file="astrid/chat/astrid-local-agent-host.test.ts" line="418" assertions="0" />
+    <testcase name="claude-code starts without preferences and records a failed context lookup" classname="" time="0.086126" file="astrid/chat/astrid-local-agent-host.test.ts" line="453" assertions="0" />
+    <testcase name="codex starts without preferences and records a failed context lookup" classname="" time="0.091348" file="astrid/chat/astrid-local-agent-host.test.ts" line="453" assertions="0" />
+    <testcase name="hermes starts without preferences and records a failed context lookup" classname="" time="0.104391" file="astrid/chat/astrid-local-agent-host.test.ts" line="453" assertions="0" />
+    <testcase name="resolveAstridAgentContext runs `astrid --agent-context` and never throws" classname="" time="0.06872" file="astrid/chat/astrid-local-agent-host.test.ts" line="492" assertions="0" />
+  </testsuite>
+  <testsuite name="astrid/chat/astridProjectChat.test.ts" file="astrid/chat/astridProjectChat.test.ts" tests="13" assertions="48" failures="0" skipped="0" time="0" hostname="fc832b8b36d3">
+    <testsuite name="ProjectChatRegistry" file="astrid/chat/astridProjectChat.test.ts" line="29" tests="13" assertions="48" failures="0" skipped="0" time="0.005" hostname="fc832b8b36d3">
+      <testcase name="persists session association and draft across registry instances, preserving unrelated metadata and isolating projects" classname="ProjectChatRegistry" time="0.001351" file="astrid/chat/astridProjectChat.test.ts" line="31" assertions="4" />
+      <testcase name="rejects stale selection and draft writes without replacing the newer saved text" classname="ProjectChatRegistry" time="0.000539" file="astrid/chat/astridProjectChat.test.ts" line="47" assertions="3" />
+      <testcase name="uses a CAS claim so simultaneous ensure calls cannot both create defaults" classname="ProjectChatRegistry" time="0.001864" file="astrid/chat/astridProjectChat.test.ts" line="60" assertions="4" />
+      <testcase name="replays the operation session identity without changing a later user selection" classname="ProjectChatRegistry" time="0.00058" file="astrid/chat/astridProjectChat.test.ts" line="78" assertions="4" />
+      <testcase name="New promotes Main while explicit Make Main remains available" classname="ProjectChatRegistry" time="0.00105" file="astrid/chat/astridProjectChat.test.ts" line="92" assertions="9" />
+      <testcase name="keeps a concurrent Make Main choice while New completes without promotion" classname="ProjectChatRegistry" time="0.001024" file="astrid/chat/astridProjectChat.test.ts" line="113" assertions="6" />
+      <testcase name="preserves Main/history/draft when New creation fails" classname="ProjectChatRegistry" time="0.000632" file="astrid/chat/astridProjectChat.test.ts" line="134" assertions="2" />
+      <testcase name="preserves Main/history/draft when New commit fails" classname="ProjectChatRegistry" time="0.000422" file="astrid/chat/astridProjectChat.test.ts" line="134" assertions="2" />
+      <testcase name="creates a fresh chat for a legacy registry without assigning Main" classname="ProjectChatRegistry" time="0.000606" file="astrid/chat/astridProjectChat.test.ts" line="147" assertions="2" />
+      <testcase name="retains an explicit Main choice made while ensure creation is in flight" classname="ProjectChatRegistry" time="0.000764" file="astrid/chat/astridProjectChat.test.ts" line="160" assertions="2" />
+      <testcase name="arbitrates concurrent ensure creation with the existing host claim" classname="ProjectChatRegistry" time="0.001555" file="astrid/chat/astridProjectChat.test.ts" line="179" assertions="2" />
+      <testcase name="marks only definite missing sessions and verifies the next candidate before reuse" classname="ProjectChatRegistry" time="0.000781" file="astrid/chat/astridProjectChat.test.ts" line="192" assertions="3" />
+      <testcase name="uses an atomic durable host claim to prevent concurrent cross-project attachment" classname="ProjectChatRegistry" time="0.000824" file="astrid/chat/astridProjectChat.test.ts" line="206" assertions="5" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="astrid/chat/astrid-project-chat-runtime.test.ts" file="astrid/chat/astrid-project-chat-runtime.test.ts" tests="2" assertions="0" failures="0" skipped="0" time="0.014" hostname="fc832b8b36d3">
+    <testcase name="chat store resolves moved Runtime endpoint and rotated credential for each operation" classname="" time="0.01133" file="astrid/chat/astrid-project-chat-runtime.test.ts" line="72" assertions="0" />
+    <testcase name="chat store retains the explicit endpoint and token-file fallback" classname="" time="0.003419" file="astrid/chat/astrid-project-chat-runtime.test.ts" line="112" assertions="0" />
+  </testsuite>
+  <testsuite name="astrid/chat/astrid-shared-acp-sessions.test.ts" file="astrid/chat/astrid-shared-acp-sessions.test.ts" tests="13" assertions="0" failures="0" skipped="0" time="0.001" hostname="fc832b8b36d3">
+    <testcase name="prompt dispatch reserves and deduplicates the turn while persisting its start marker" classname="" time="0.000861" file="astrid/chat/astrid-shared-acp-sessions.test.ts" line="38" assertions="0" />
+    <testcase name="a failed start marker prevents native forwarding and releases the prompt reservation" classname="" time="0.000406" file="astrid/chat/astrid-shared-acp-sessions.test.ts" line="68" assertions="0" />
+    <testcase name="concurrent session loads share one native load, keep its full result, and replay journal once per client" classname="" time="0.000414" file="astrid/chat/astrid-shared-acp-sessions.test.ts" line="81" assertions="0" />
+    <testcase name="cached load clears caller queue immediately before full journal replay only" classname="" time="0.000245" file="astrid/chat/astrid-shared-acp-sessions.test.ts" line="119" assertions="0" />
+    <testcase name="writer takeover is atomic around turns, retries dedupe, and detach retains a shared physical host" classname="" time="0.001416" file="astrid/chat/astrid-shared-acp-sessions.test.ts" line="146" assertions="0" />
+    <testcase name="rejected prompts release their request ID for same or different payload retries" classname="" time="0.000406" file="astrid/chat/astrid-shared-acp-sessions.test.ts" line="221" assertions="0" />
+    <testcase name="session agent IDs remain isolated across Astrid, Claude Code, and Codex and hosted attach stays sticky" classname="" time="0.00061" file="astrid/chat/astrid-shared-acp-sessions.test.ts" line="244" assertions="0" />
+    <testcase name="a model switch reserves the native session across takeover until its acknowledgement" classname="" time="0.00059" file="astrid/chat/astrid-shared-acp-sessions.test.ts" line="284" assertions="0" />
+    <testcase name="queued config changes recheck prompt state after a non-prompt RPC fails" classname="" time="0.00045" file="astrid/chat/astrid-shared-acp-sessions.test.ts" line="314" assertions="0" />
+    <testcase name="forwarded config waits on the physical session host after creator handoff" classname="" time="0.000298" file="astrid/chat/astrid-shared-acp-sessions.test.ts" line="339" assertions="0" />
+    <testcase name="queued config rechecks attachment and writer after takeover" classname="" time="0.000257" file="astrid/chat/astrid-shared-acp-sessions.test.ts" line="368" assertions="0" />
+    <testcase name="queued config rechecks attachment and writer after detach" classname="" time="0.000082" file="astrid/chat/astrid-shared-acp-sessions.test.ts" line="368" assertions="0" />
+    <testcase name="queued validation receives metadata accepted by the previous setter" classname="" time="0.000359" file="astrid/chat/astrid-shared-acp-sessions.test.ts" line="389" assertions="0" />
+  </testsuite>
+  <testsuite name="astrid/chat/astrid-local-agent-readiness.test.ts" file="astrid/chat/astrid-local-agent-readiness.test.ts" tests="3" assertions="0" failures="0" skipped="0" time="0.038" hostname="fc832b8b36d3">
+    <testcase name="claude-code host and bridge return specific readiness errors with recovery commands" classname="" time="0.015039" file="astrid/chat/astrid-local-agent-readiness.test.ts" line="16" assertions="0" />
+    <testcase name="codex host and bridge return specific readiness errors with recovery commands" classname="" time="0.015238" file="astrid/chat/astrid-local-agent-readiness.test.ts" line="16" assertions="0" />
+    <testcase name="hermes host and bridge return specific readiness errors with recovery commands" classname="" time="0.008523" file="astrid/chat/astrid-local-agent-readiness.test.ts" line="16" assertions="0" />
+  </testsuite>
+  <testsuite name="astrid/chat/service.test.ts" file="astrid/chat/service.test.ts" tests="6" assertions="41" failures="0" skipped="0" time="0.022" hostname="fc832b8b36d3">
+    <testcase name="Windows executable discovery keeps native exe names" classname="" time="0.000162" file="astrid/chat/service.test.ts" line="11" assertions="3" />
+    <testcase name="chat publishes only after binding, cleans up its registration, and preserves another owner (bindFails=false)" classname="" time="0.003113" file="astrid/chat/service.test.ts" line="18" assertions="6" />
+    <testcase name="chat publishes only after binding, cleans up its registration, and preserves another owner (bindFails=true)" classname="" time="0.000326" file="astrid/chat/service.test.ts" line="18" assertions="6" />
+    <testcase name="chat creates its working directory before serving and registers the actual loopback listener" classname="" time="0.014892" file="astrid/chat/service.test.ts" line="54" assertions="7" />
+    <testcase name="Runtime stdin EOF stops chat, removes its registration and waits for ACP cleanup (alreadyEnded=false)" classname="" time="0.003114" file="astrid/chat/service.test.ts" line="91" assertions="10" />
+    <testcase name="Runtime stdin EOF stops chat, removes its registration and waits for ACP cleanup (alreadyEnded=true)" classname="" time="0.002995" file="astrid/chat/service.test.ts" line="91" assertions="9" />
+  </testsuite>
+  <testsuite name="astrid/chat/astrid-local-agent-skills.test.ts" file="astrid/chat/astrid-local-agent-skills.test.ts" tests="6" assertions="0" failures="0" skipped="0" time="0.374" hostname="fc832b8b36d3">
+    <testcase name="first connect syncs once per harness and caches success without failing connections" classname="" time="0.035241" file="astrid/chat/astrid-local-agent-skills.test.ts" line="58" assertions="0" />
+    <testcase name="first connect syncs once per harness and caches failure without failing connections" classname="" time="0.029728" file="astrid/chat/astrid-local-agent-skills.test.ts" line="58" assertions="0" />
+    <testcase name="first connect syncs once per harness and caches timeout without failing connections" classname="" time="0.306096" file="astrid/chat/astrid-local-agent-skills.test.ts" line="58" assertions="0" />
+    <testcase name="cheap check requires a live entry pointing at the generated view and honors harness and state roots" classname="" time="0.002866" file="astrid/chat/astrid-local-agent-skills.test.ts" line="96" assertions="0" />
+    <testcase name="missing Astrid interpreter is a cached best-effort failure" classname="" time="0.000129" file="astrid/chat/astrid-local-agent-skills.test.ts" line="133" assertions="0" />
+    <testcase name="Astrid agents response reads the shim record for sign-in copy, steps and terminal command" classname="" time="0.002801" file="astrid/chat/astrid-local-agent-skills.test.ts" line="139" assertions="0" />
+  </testsuite>
+  <testsuite name="astrid/chat/astridAcpPrompt.test.ts" file="astrid/chat/astridAcpPrompt.test.ts" tests="6" assertions="11" failures="0" skipped="0" time="0" hostname="fc832b8b36d3">
+    <testsuite name="ASTRID_ACP_CONTEXT_SYSTEM_PROMPT runtime commands" file="astrid/chat/astridAcpPrompt.test.ts" line="78" tests="6" assertions="11" failures="0" skipped="0" time="0" hostname="fc832b8b36d3">
+      <testcase name="does not reference the removed retime-clip command" classname="ASTRID_ACP_CONTEXT_SYSTEM_PROMPT runtime commands" time="0.000027" file="astrid/chat/astridAcpPrompt.test.ts" line="79" assertions="1" />
+      <testcase name="routes timeline editing through the timeline skill and omits the retired publish command" classname="ASTRID_ACP_CONTEXT_SYSTEM_PROMPT runtime commands" time="0.000016" file="astrid/chat/astridAcpPrompt.test.ts" line="83" assertions="2" />
+      <testcase name="only uses timeline verbs that the current Astrid CLI provides" classname="ASTRID_ACP_CONTEXT_SYSTEM_PROMPT runtime commands" time="0.000087" file="astrid/chat/astridAcpPrompt.test.ts" line="88" assertions="2" />
+      <testcase name="does not mention flags that only the removed retime-clip route accepted" classname="ASTRID_ACP_CONTEXT_SYSTEM_PROMPT runtime commands" time="0.000026" file="astrid/chat/astridAcpPrompt.test.ts" line="98" assertions="3" />
+      <testcase name="invokes only family and verb paths that the vendored cli-surface.json defines" classname="ASTRID_ACP_CONTEXT_SYSTEM_PROMPT runtime commands" time="0.00007" file="astrid/chat/astridAcpPrompt.test.ts" line="104" assertions="2" />
+      <testcase name="passes only flags that the invoked verb defines in cli-surface.json" classname="ASTRID_ACP_CONTEXT_SYSTEM_PROMPT runtime commands" time="0.00003" file="astrid/chat/astridAcpPrompt.test.ts" line="110" assertions="1" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="astrid/chat/astrid-local-agents.test.ts" file="astrid/chat/astrid-local-agents.test.ts" tests="25" assertions="0" failures="0" skipped="0" time="18.215" hostname="fc832b8b36d3">
+    <testcase name="Astrid sign-in line uses absolute OS-specific launcher syntax and quotes custom roots" classname="" time="0.000049" file="astrid/chat/astrid-local-agents.test.ts" line="34" assertions="0" />
+    <testcase name="reports Not installed when external CLIs are absent and has no adapter fields" classname="" time="0.002745" file="astrid/chat/astrid-local-agents.test.ts" line="41" assertions="0" />
+    <testcase name="Windows PATH uses expanded user and machine registry values without starting a shell" classname="" time="0.000967" file="astrid/chat/astrid-local-agents.test.ts" line="62" assertions="0" />
+    <testcase name="Windows discovery finds a user CLI .cmd shim from the registry PATH" classname="" time="0.01786" file="astrid/chat/astrid-local-agents.test.ts" line="82" assertions="0" />
+    <testcase name="Windows Claude npm shims resolve to the JavaScript entrypoint used by auth checks and ACP launch" classname="" time="0.018802" file="astrid/chat/astrid-local-agents.test.ts" line="102" assertions="0" />
+    <testcase name="Windows Codex npm shims run the package entrypoint for auth status and retain the shim for ACP launch" classname="" time="0.043315" file="astrid/chat/astrid-local-agents.test.ts" line="129" assertions="0" />
+    <testcase name="falls back to the default passwd shell when SHELL is unset" classname="" time="0.002032" file="astrid/chat/astrid-local-agents.test.ts" line="155" assertions="0" />
+    <testcase name="macOS falls back to the account shell from Directory Service when passwd lacks the user" classname="" time="0.003131" file="astrid/chat/astrid-local-agents.test.ts" line="166" assertions="0" />
+    <testcase name="signed-in CLIs are Ready with no adapters installed and launch uses each pinned Bun command" classname="" time="0.005056" file="astrid/chat/astrid-local-agents.test.ts" line="186" assertions="0" />
+    <testcase name="prefers the login-shell CLI and service Bun, with login Bun as fallback" classname="" time="0.005486" file="astrid/chat/astrid-local-agents.test.ts" line="210" assertions="0" />
+    <testcase name="falls back to login-shell Bun when service PATH has no Bun" classname="" time="0.001774" file="astrid/chat/astrid-local-agents.test.ts" line="235" assertions="0" />
+    <testcase name="reads Claude JSON login status and falls back to text only when JSON is invalid" classname="" time="0.005871" file="astrid/chat/astrid-local-agents.test.ts" line="256" assertions="0" />
+    <testcase name="reads successful Codex status from stderr and does not trust failed diagnostics" classname="" time="0.0058" file="astrid/chat/astrid-local-agents.test.ts" line="273" assertions="0" />
+    <testcase name="claude-json discovery times out, kills its child, and preserves other agent choices" classname="" time="5.011007" file="astrid/chat/astrid-local-agents.test.ts" line="292" assertions="0" />
+    <testcase name="claude-text discovery times out, kills its child, and preserves other agent choices" classname="" time="5.036034" file="astrid/chat/astrid-local-agents.test.ts" line="292" assertions="0" />
+    <testcase name="codex discovery times out, kills its child, and preserves other agent choices" classname="" time="5.010002" file="astrid/chat/astrid-local-agents.test.ts" line="292" assertions="0" />
+    <testcase name="discovers Hermes with hermes acp --check and launches its native ACP command" classname="" time="0.011474" file="astrid/chat/astrid-local-agents.test.ts" line="335" assertions="0" />
+    <testcase name="keeps Hermes ready when ACP check is inconclusive or times out" classname="" time="3.018599" file="astrid/chat/astrid-local-agents.test.ts" line="347" assertions="0" />
+    <testcase name="mixed external-agent authentication states stay associated with their agent" classname="" time="0.006489" file="astrid/chat/astrid-local-agents.test.ts" line="359" assertions="0" />
+    <testcase name="linux setup steps use the table&apos;s install and sign-in commands in order" classname="" time="0.00255" file="astrid/chat/astrid-local-agents.test.ts" line="374" assertions="0" />
+    <testcase name="linux missing Bun names the Astrid installer as the recovery command" classname="" time="0.002591" file="astrid/chat/astrid-local-agents.test.ts" line="393" assertions="0" />
+    <testcase name="win32 setup steps use the table&apos;s install and sign-in commands in order" classname="" time="0.000246" file="astrid/chat/astrid-local-agents.test.ts" line="374" assertions="0" />
+    <testcase name="win32 missing Bun names the Astrid installer as the recovery command" classname="" time="0.00066" file="astrid/chat/astrid-local-agents.test.ts" line="393" assertions="0" />
+    <testcase name="discovery retains each probe sign-in result without changing legacy readiness" classname="" time="0.013121" file="astrid/chat/astrid-local-agents.test.ts" line="405" assertions="0" />
+    <testcase name="agent schema accepts old rows and the optional contract fields, dropping future fields" classname="" time="0.000567" file="astrid/chat/astrid-local-agents.test.ts" line="423" assertions="0" />
+  </testsuite>
+  <testsuite name="astrid/chat/astrid-acp-models.test.ts" file="astrid/chat/astrid-acp-models.test.ts" tests="20" assertions="217" failures="0" skipped="0" time="0.03" hostname="fc832b8b36d3">
+    <testcase name="astrid applies its model once when created and preserves it through attach, takeover and prompts" classname="" time="0.008355" file="astrid/chat/astrid-acp-models.test.ts" line="84" assertions="23" />
+    <testcase name="claude-code applies its model once when created and preserves it through attach, takeover and prompts" classname="" time="0.004363" file="astrid/chat/astrid-acp-models.test.ts" line="84" assertions="23" />
+    <testcase name="codex applies its model once when created and preserves it through attach, takeover and prompts" classname="" time="0.003924" file="astrid/chat/astrid-acp-models.test.ts" line="84" assertions="23" />
+    <testcase name="agents lazily share one bootstrap per ready agent, hide native sessions, and recheck readiness on menu refresh" classname="" time="0.005974" file="astrid/chat/astrid-acp-models.test.ts" line="120" assertions="61" />
+    <testcase name="a real new session fills and refreshes its service catalog without a bootstrap" classname="" time="0.002399" file="astrid/chat/astrid-acp-models.test.ts" line="161" assertions="8" />
+    <testcase name="service remembers successful choices and bootstrap exclusions across restarts without changing the CLI default" classname="" time="0.003767" file="astrid/chat/astrid-acp-models.test.ts" line="181" assertions="8" />
+    <testcase name="non-ready agents do not bootstrap and every recovery row has its service line" classname="" time="0.000556" file="astrid/chat/astrid-acp-models.test.ts" line="206" assertions="3" />
+    <testcase name="Astrid sign-in preserves keyless model access; unknown auth remains ready" classname="" time="0.002393" file="astrid/chat/astrid-acp-models.test.ts" line="216" assertions="3" />
+    <testcase name="bootstrap failures release hosts and retry only on the next explicit menu refresh" classname="" time="0.001318" file="astrid/chat/astrid-acp-models.test.ts" line="233" assertions="5" />
+    <testcase name="a completed empty bootstrap does not create throwaway sessions on every menu opening" classname="" time="0.000683" file="astrid/chat/astrid-acp-models.test.ts" line="248" assertions="2" />
+    <testcase name="a unavailable config model choice fails before any prompt and does not become the remembered agent" classname="" time="0.001479" file="astrid/chat/astrid-acp-models.test.ts" line="258" assertions="5" />
+    <testcase name="a missing-metadata config model choice fails before any prompt and does not become the remembered agent" classname="" time="0.000939" file="astrid/chat/astrid-acp-models.test.ts" line="258" assertions="5" />
+    <testcase name="a rejected config model choice fails before any prompt and does not become the remembered agent" classname="" time="0.000856" file="astrid/chat/astrid-acp-models.test.ts" line="258" assertions="5" />
+    <testcase name="a mismatch config model choice fails before any prompt and does not become the remembered agent" classname="" time="0.00105" file="astrid/chat/astrid-acp-models.test.ts" line="258" assertions="5" />
+    <testcase name="a unavailable legacy model choice fails before any prompt and does not become the remembered agent" classname="" time="0.000673" file="astrid/chat/astrid-acp-models.test.ts" line="258" assertions="5" />
+    <testcase name="a missing-metadata legacy model choice fails before any prompt and does not become the remembered agent" classname="" time="0.000765" file="astrid/chat/astrid-acp-models.test.ts" line="258" assertions="5" />
+    <testcase name="a rejected legacy model choice fails before any prompt and does not become the remembered agent" classname="" time="0.000684" file="astrid/chat/astrid-acp-models.test.ts" line="258" assertions="5" />
+    <testcase name="a mismatch legacy model choice fails before any prompt and does not become the remembered agent" classname="" time="0.000806" file="astrid/chat/astrid-acp-models.test.ts" line="258" assertions="5" />
+    <testcase name="model discovery and retired mutation routes retain bearer and protocol protections" classname="" time="0.000899" file="astrid/chat/astrid-acp-models.test.ts" line="275" assertions="11" />
+    <testcase name="catalog levels belong only to the model that advertised them and stale support clears" classname="" time="0.00062" file="astrid/chat/astrid-acp-models.test.ts" line="290" assertions="7" />
+  </testsuite>
+  <testsuite name="astrid/chat/astrid-agent-key.test.ts" file="astrid/chat/astrid-agent-key.test.ts" tests="9" assertions="0" failures="0" skipped="0" time="0.592" hostname="fc832b8b36d3">
+    <testcase name="key route updates the remembered model, clears model discovery and refreshes provider sign-in" classname="" time="0.200968" file="astrid/chat/astrid-agent-key.test.ts" line="54" assertions="0" />
+    <testcase name="key route redacts child output for {&quot;exit&quot;:3}" classname="" time="0.041447" file="astrid/chat/astrid-agent-key.test.ts" line="104" assertions="0" />
+    <testcase name="key route redacts child output for {&quot;exit&quot;:4}" classname="" time="0.058003" file="astrid/chat/astrid-agent-key.test.ts" line="104" assertions="0" />
+    <testcase name="key route redacts child output for {&quot;exit&quot;:7}" classname="" time="0.0362" file="astrid/chat/astrid-agent-key.test.ts" line="104" assertions="0" />
+    <testcase name="key route redacts child output for {&quot;badJson&quot;:true}" classname="" time="0.031315" file="astrid/chat/astrid-agent-key.test.ts" line="104" assertions="0" />
+    <testcase name="key route redacts child output for {&quot;leak&quot;:true}" classname="" time="0.032987" file="astrid/chat/astrid-agent-key.test.ts" line="104" assertions="0" />
+    <testcase name="null currentModel preserves the bridge default" classname="" time="0.067428" file="astrid/chat/astrid-agent-key.test.ts" line="119" assertions="0" />
+    <testcase name="key route validates auth, protocol, provider, shape, whitespace, length and body cap before spawning" classname="" time="0.002519" file="astrid/chat/astrid-agent-key.test.ts" line="133" assertions="0" />
+    <testcase name="shipped chat bundle serves the key route without logging keys or child diagnostics" classname="" time="0.125507" file="astrid/chat/astrid-agent-key.test.ts" line="153" assertions="0" />
+  </testsuite>
+  <testsuite name="astrid/chat/discoveryProbe.test.ts" file="astrid/chat/discoveryProbe.test.ts" tests="5" assertions="0" failures="0" skipped="1" time="1.054" hostname="fc832b8b36d3">
+    <testcase name="Windows discovery probes route npm command shims through cmd.exe" classname="" time="0.000176" file="astrid/chat/discoveryProbe.test.ts" line="9" assertions="0" />
+    <testcase name="native Windows discovery launches a harmless .cmd probe through cmd.exe" classname="" time="0" file="astrid/chat/discoveryProbe.test.ts" line="23" assertions="0">
+      <skipped />
+    </testcase>
+    <testcase name="a discovery deadline kills a wrapper and its hanging CLI child" classname="" time="1.024852" file="astrid/chat/discoveryProbe.test.ts" line="35" assertions="0" />
+    <testcase name="discovery preserves nonzero status diagnostics for explicit signed-out detection" classname="" time="0.029156" file="astrid/chat/discoveryProbe.test.ts" line="65" assertions="0" />
+    <testcase name="an unavailable discovery command rejects promptly" classname="" time="0.00132" file="astrid/chat/discoveryProbe.test.ts" line="73" assertions="0" />
+  </testsuite>
+  <testsuite name="astrid/chat/chat-registration.test.ts" file="astrid/chat/chat-registration.test.ts" tests="5" assertions="0" failures="0" skipped="0" time="0" hostname="fc832b8b36d3">
+    <testsuite name="agent chat registration" file="astrid/chat/chat-registration.test.ts" line="11" tests="5" assertions="0" failures="0" skipped="0" time="0" hostname="fc832b8b36d3">
+      <testcase name="sits next to discovery.json as chat.json" classname="agent chat registration" time="0.000322" file="astrid/chat/chat-registration.test.ts" line="12" assertions="0" />
+      <testcase name="is the exact endpoint and token the Runtime door reads" classname="agent chat registration" time="0.00006" file="astrid/chat/chat-registration.test.ts" line="16" assertions="0" />
+      <testcase name="refuses a bad bridge port or an empty credential" classname="agent chat registration" time="0.000277" file="astrid/chat/chat-registration.test.ts" line="20" assertions="0" />
+      <testcase name="writes the registration owner-only, parseable, with no temporary file left behind" classname="agent chat registration" time="0.00077" file="astrid/chat/chat-registration.test.ts" line="27" assertions="0" />
+      <testcase name="removes only a registration the predicate owns, and tolerates missing or unparsable files" classname="agent chat registration" time="0.000664" file="astrid/chat/chat-registration.test.ts" line="38" assertions="0" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="astrid/chat/astrid-acp-local-models.test.ts" file="astrid/chat/astrid-acp-local-models.test.ts" tests="10" assertions="0" failures="0" skipped="0" time="0.004" hostname="fc832b8b36d3">
+    <testsuite name="local ACP models are scoped and fixed from the connection default at new session creation" file="astrid/chat/astrid-acp-local-models.test.ts" line="12" tests="2" assertions="0" failures="0" skipped="0" time="0.006" hostname="fc832b8b36d3">
+      <testcase name="config adapter" classname="local ACP models are scoped and fixed from the connection default at new session creation" time="0.005307" file="astrid/chat/astrid-acp-local-models.test.ts" line="13" assertions="0" />
+      <testcase name="models adapter" classname="local ACP models are scoped and fixed from the connection default at new session creation" time="0.001227" file="astrid/chat/astrid-acp-local-models.test.ts" line="13" assertions="0" />
+    </testsuite>
+    <testcase name="local ACP connections without advertised models keep the ordinary session path" classname="" time="0.001083" file="astrid/chat/astrid-acp-local-models.test.ts" line="99" assertions="0" />
+    <testsuite name="shared external session model catalog follows the writer and takeover for config and legacy model APIs" file="astrid/chat/astrid-acp-local-models.test.ts" line="121" tests="2" assertions="0" failures="0" skipped="0" time="0.003" hostname="fc832b8b36d3">
+      <testcase name="config adapter" classname="shared external session model catalog follows the writer and takeover for config and legacy model APIs" time="0.002564" file="astrid/chat/astrid-acp-local-models.test.ts" line="122" assertions="0" />
+      <testcase name="models adapter" classname="shared external session model catalog follows the writer and takeover for config and legacy model APIs" time="0.001037" file="astrid/chat/astrid-acp-local-models.test.ts" line="122" assertions="0" />
+    </testsuite>
+    <testcase name="project registry session creation applies the connection default and rejects unavailable defaults" classname="" time="0.001149" file="astrid/chat/astrid-acp-local-models.test.ts" line="218" assertions="0" />
+    <testsuite name="missing Claude and Codex persisted sessions recover in place with the agent default model" file="astrid/chat/astrid-acp-local-models.test.ts" line="260" tests="2" assertions="0" failures="0" skipped="0" time="0.001" hostname="fc832b8b36d3">
+      <testcase name="claude-code" classname="missing Claude and Codex persisted sessions recover in place with the agent default model" time="0.001919" file="astrid/chat/astrid-acp-local-models.test.ts" line="265" assertions="0" />
+      <testcase name="codex" classname="missing Claude and Codex persisted sessions recover in place with the agent default model" time="0.000698" file="astrid/chat/astrid-acp-local-models.test.ts" line="265" assertions="0" />
+    </testsuite>
+    <testcase name="targeted recovery retains each same-agent chat model and leaves started missing chats alone" classname="" time="0.00253" file="astrid/chat/astrid-acp-local-models.test.ts" line="334" assertions="0" />
+    <testcase name="config model update notifications refresh only an owned session model cache" classname="" time="0.000859" file="astrid/chat/astrid-acp-local-models.test.ts" line="416" assertions="0" />
+  </testsuite>
+  <testsuite name="astrid/chat/astrid-acp-empty-session-recovery.test.ts" file="astrid/chat/astrid-acp-empty-session-recovery.test.ts" tests="1" assertions="0" failures="0" skipped="0" time="0.004" hostname="fc832b8b36d3">
+    <testcase name="an empty local-agent session recovers once after host replacement, then stays pinned when its first prompt starts" classname="" time="0.004576" file="astrid/chat/astrid-acp-empty-session-recovery.test.ts" line="12" assertions="0" />
+  </testsuite>
+  <testsuite name="astrid/chat/astrid-acp-takeover.test.ts" file="astrid/chat/astrid-acp-takeover.test.ts" tests="3" assertions="0" failures="0" skipped="0" time="0.03" hostname="fc832b8b36d3">
+    <testcase name="astrid: two HTTP clients follow one live native session and transfer its writer without sending twice" classname="" time="0.015176" file="astrid/chat/astrid-acp-takeover.test.ts" line="26" assertions="0" />
+    <testcase name="codex: two HTTP clients follow one live native session and transfer its writer without sending twice" classname="" time="0.008797" file="astrid/chat/astrid-acp-takeover.test.ts" line="26" assertions="0" />
+    <testcase name="claude-code: two HTTP clients follow one live native session and transfer its writer without sending twice" classname="" time="0.007759" file="astrid/chat/astrid-acp-takeover.test.ts" line="26" assertions="0" />
+  </testsuite>
+</testsuites>

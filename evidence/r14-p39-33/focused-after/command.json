@@ -1,0 +1,23 @@
+{
+  "kind": "local-native-execution",
+  "command": [
+    "/workspace/scratch/984232aa1788/proof-js/node_modules/@oven/bun-linux-x64/bin/bun",
+    "test",
+    "./astrid/chat/sessionConfigOptions.test.ts",
+    "--reporter=junit",
+    "--reporter-outfile=/workspace/scratch/b269a8894312/astrid-agent/evidence/r14-p39-33/focused-after/bun-results.xml"
+  ],
+  "base_head": "3a50507ceef9bf3520f44938e2e8ef6d4ef43a42",
+  "base_tree": "4df3dbc6625400c873d2eb08de89accab5a6a648",
+  "tracked_diff": "diff --git a/astrid/chat/sessionConfigOptions.test.ts b/astrid/chat/sessionConfigOptions.test.ts\nindex aecd048f540..9d5a1ced4d4 100644\n--- a/astrid/chat/sessionConfigOptions.test.ts\n+++ b/astrid/chat/sessionConfigOptions.test.ts\n@@ -17,7 +17,7 @@ describe('ACP session config options', () => {\n     expect(defaultThoughtLevel(parsed!.thoughtLevel!)).toBe('low');\n   });\n \n-  it.each([false, true])('reads Claude effort with recommendation capability %s', withRecommendation => {\n+  for (const withRecommendation of [false, true]) it(`reads Claude effort with recommendation capability ${withRecommendation}`, () => {\n     // claude-agent-acp@0.93.0 dist/session-effort.js buildEffortConfigOption\n     const levels = [{ value: 'low', name: 'Low' }, { value: 'medium', name: 'Medium' }, { value: 'high', name: 'High' }];\n     const effort = { id: 'effort', name: 'Effort', description: 'Available effort levels for this model', category: 'thought_level', type: 'select',\n",
+  "test_blob": "9d5a1ced4d4eaf16b8092594e27d4f3fd1aa811d",
+  "bun_version": "1.3.14",
+  "bun_sha256": "9fd36f87e4b90b07632b987a2e4ec81ca15a62c81bf983190cea6d715be2ad74",
+  "node_version": "v24.22.3",
+  "python_version": "3.12.14",
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "started_at": 1795139089.150467,
+  "finished_at": 1795139089.4077415,
+  "raw_exit": 0,
+  "package_lock_sha256": "946d5c7d5964aafa6b9fd9f74599285d846ab6349162bdd88b37eab35077230a"
+}

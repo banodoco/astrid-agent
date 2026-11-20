@@ -1,0 +1,74 @@
+{
+  "base": "3a50507ceef9bf3520f44938e2e8ef6d4ef43a42",
+  "base_tree": "4df3dbc6625400c873d2eb08de89accab5a6a648",
+  "source_commit": "c3f25128fac5fc493046c9e9807046c611819b8a",
+  "source_tree": "0d1c31f7ea36d42cf9d2fcda6c601d19f093cbe7",
+  "only_source_path": "astrid/chat/sessionConfigOptions.test.ts",
+  "before_blob": "aecd048f540f915ccd253af1156c9e86481c0452",
+  "after_blob": "9d5a1ced4d4eaf16b8092594e27d4f3fd1aa811d",
+  "replace_only_changed_declaration_restores_original_bytes": true,
+  "line_count_preserved": true,
+  "boolean_inputs_and_order": "[false, true] unchanged; lexical binding per iteration",
+  "body_setup_and_assertions_byte_identical": true,
+  "preserved_paths": [
+    {
+      "path": ".github/workflows/chat.yml",
+      "sha256": "b90a425342ecb2d41d16c723219fd8e7788a0eea203fa004a17ae1704ea7fd35",
+      "byte_identical_to_base": true
+    },
+    {
+      "path": "scripts/ci/ceiling_capture.py",
+      "sha256": "a19174a70946c5ca7d4b7e16385da17a13b868eed4019c5a5e734623fce840a1",
+      "byte_identical_to_base": true
+    },
+    {
+      "path": "scripts/ci/ceiling_adapters.py",
+      "sha256": "fadd505b101bf3d9c77d54c66b32a485943f54eef66303bf1f519518c19e0a92",
+      "byte_identical_to_base": true
+    },
+    {
+      "path": "scripts/ci/ceiling_hosted.py",
+      "sha256": "392a0265587f3431d1b8286629006be274a0cff83633b0250b91bc5b57dd11b1",
+      "byte_identical_to_base": true
+    },
+    {
+      "path": "scripts/ci/failure_ceiling.py",
+      "sha256": "a5e977a0e8744973f35f10ac682b1ef4b80c6250a71c3a9bca93584b5c4145ed",
+      "byte_identical_to_base": true
+    },
+    {
+      "path": "ci/required-checks.json",
+      "sha256": "98c104bc0c12063adee7213ab87fc46991634f3f5ca3fee01bb411658fd51f94",
+      "byte_identical_to_base": true
+    },
+    {
+      "path": "ci/failure-ceiling.json",
+      "sha256": "c51f2c5ad8aceef6be30dbb89e781d69d54ecb7f918b688cfc1d715dd31ec4ac",
+      "byte_identical_to_base": true
+    },
+    {
+      "path": "ci/test-inventory.json.gz",
+      "sha256": "bf6d574192d3643e451aa0ec933622bfae2f75d4861c07263d5b463400b484ab",
+      "byte_identical_to_base": true
+    },
+    {
+      "path": "package.json",
+      "sha256": "a25d4f5e21cebfe2013dd2b229bf27c149316b2a427f7c03e7e479f858918f7d",
+      "byte_identical_to_base": true
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "946d5c7d5964aafa6b9fd9f74599285d846ab6349162bdd88b37eab35077230a",
+      "byte_identical_to_base": true
+    }
+  ],
+  "existing_policy_Chat_service_chat_inventory_rows": 0,
+  "existing_policy_tiers": {
+    "merge": false,
+    "release": false
+  },
+  "published_source_commit": "3ee361a5c50af79e1b7ac8d98f44e6cbc88cb964",
+  "published_source_tree": "0d1c31f7ea36d42cf9d2fcda6c601d19f093cbe7",
+  "native_git_push_result": "fatal: could not read Username for https://github.com: terminal prompts disabled",
+  "publication": "Authenticated GitHub connector; exact source tree equality verified locally after fetching published commit"
+}

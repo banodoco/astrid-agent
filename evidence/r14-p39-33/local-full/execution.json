@@ -1,0 +1,27 @@
+{
+  "kind": "local-native-execution-not-hosted",
+  "command": "bun run test:chat --reporter=junit --reporter-outfile=\"$CEILING_STEP_DIR/bun-results.xml\"",
+  "capture_argv": [
+    "python3",
+    "-I",
+    "scripts/ci/ceiling_capture.py",
+    "--step",
+    "step-06",
+    "--matrix",
+    "0",
+    "--shell",
+    "bash",
+    "/workspace/scratch/b269a8894312/historical-inputs/original-linux-chat-14583582456/step-06/command.txt"
+  ],
+  "head": "c3f25128fac5fc493046c9e9807046c611819b8a",
+  "tree": "0d1c31f7ea36d42cf9d2fcda6c601d19f093cbe7",
+  "tracked_diff": "",
+  "bun_version": "1.3.14",
+  "bun_sha256": "9fd36f87e4b90b07632b987a2e4ec81ca15a62c81bf983190cea6d715be2ad74",
+  "node_version": "v24.22.3",
+  "python_version": "3.12.14",
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "started_at": 1795139117.092932,
+  "finished_at": 1795139271.5470252,
+  "raw_exit": 0
+}

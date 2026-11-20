@@ -1,0 +1,189 @@
+{
+  "before": {
+    "raw_exit": 0,
+    "count": 210,
+    "distinct_ids": 209,
+    "assertions": 445,
+    "outcomes": {
+      "passed": 208,
+      "skipped": 2
+    },
+    "skips": [
+      {
+        "index": 116,
+        "native_id": [
+          "astrid/chat/discoveryProbe.test.ts",
+          "23",
+          "",
+          "native Windows discovery launches a harmless .cmd probe through cmd.exe"
+        ],
+        "occurrence": 1,
+        "assertions": 0,
+        "outcome": "skipped",
+        "diagnostics": [
+          {
+            "tag": "skipped",
+            "attributes": {},
+            "text": null
+          }
+        ]
+      },
+      {
+        "index": 129,
+        "native_id": [
+          "astrid/chat/astridAcpLauncher.windows.test.ts",
+          "8",
+          "",
+          "native Windows ACP profile and context lookups can launch a .cmd Astrid shim"
+        ],
+        "occurrence": 1,
+        "assertions": 0,
+        "outcome": "skipped",
+        "diagnostics": [
+          {
+            "tag": "skipped",
+            "attributes": {},
+            "text": null
+          }
+        ]
+      }
+    ],
+    "terminal_junit_multiset_equal": true,
+    "trusted_suite": {
+      "accepted": false,
+      "reason": "empty/duplicate collected IDs: Chat service/chat/step-06"
+    },
+    "native_files": {
+      "bun-results.xml": "88b6eb5a72c53a97188d6d2490aabf39e4d81c4e947fdea245fdf750e9ed9c05",
+      "command.log": "74a2fd2380fd9b1c56f59914ab0cecf92c5f6ac7d3c126197046eed76a210533",
+      "command.json": "98affdcbf03b428372073953c237c76153b742ac6ff55e7bf1a031ee9ca07b71"
+    }
+  },
+  "after": {
+    "raw_exit": 0,
+    "count": 210,
+    "distinct_ids": 210,
+    "assertions": 445,
+    "outcomes": {
+      "passed": 208,
+      "skipped": 2
+    },
+    "skips": [
+      {
+        "index": 7,
+        "native_id": [
+          "astrid/chat/astridAcpLauncher.windows.test.ts",
+          "8",
+          "",
+          "native Windows ACP profile and context lookups can launch a .cmd Astrid shim"
+        ],
+        "occurrence": 1,
+        "assertions": 0,
+        "outcome": "skipped",
+        "diagnostics": [
+          {
+            "tag": "skipped",
+            "attributes": {},
+            "text": null
+          }
+        ]
+      },
+      {
+        "index": 187,
+        "native_id": [
+          "astrid/chat/discoveryProbe.test.ts",
+          "23",
+          "",
+          "native Windows discovery launches a harmless .cmd probe through cmd.exe"
+        ],
+        "occurrence": 1,
+        "assertions": 0,
+        "outcome": "skipped",
+        "diagnostics": [
+          {
+            "tag": "skipped",
+            "attributes": {},
+            "text": null
+          }
+        ]
+      }
+    ],
+    "terminal_junit_multiset_equal": true,
+    "trusted_suite": {
+      "accepted": true
+    },
+    "native_files": {
+      "bun-results.xml": "16ec30f22d5801692e10348745cadb3b785ac4536d15655e919ace920c45add1",
+      "command.log": "e518ccab1c2bfa42fa2dac000d3d5102ebb61826faf0702f1c577a7a58a1536d",
+      "command.json": "e57e1ef5750fb109683167ecea94b1bc29033d7e380081a967ca54807befdff9"
+    }
+  },
+  "comparison": {
+    "historical_duplicate_observations": [
+      {
+        "index": 204,
+        "native_id": [
+          "astrid/chat/sessionConfigOptions.test.ts",
+          "20",
+          "ACP session config options",
+          "reads Claude effort with recommendation capability %s"
+        ],
+        "occurrence": 1,
+        "assertions": 2,
+        "outcome": "passed",
+        "diagnostics": []
+      },
+      {
+        "index": 205,
+        "native_id": [
+          "astrid/chat/sessionConfigOptions.test.ts",
+          "20",
+          "ACP session config options",
+          "reads Claude effort with recommendation capability %s"
+        ],
+        "occurrence": 2,
+        "assertions": 2,
+        "outcome": "passed",
+        "diagnostics": []
+      }
+    ],
+    "proposed_distinct_observations": [
+      {
+        "index": 1,
+        "native_id": [
+          "astrid/chat/sessionConfigOptions.test.ts",
+          "20",
+          "ACP session config options",
+          "reads Claude effort with recommendation capability false"
+        ],
+        "occurrence": 1,
+        "assertions": 2,
+        "outcome": "passed",
+        "diagnostics": []
+      },
+      {
+        "index": 2,
+        "native_id": [
+          "astrid/chat/sessionConfigOptions.test.ts",
+          "20",
+          "ACP session config options",
+          "reads Claude effort with recommendation capability true"
+        ],
+        "occurrence": 1,
+        "assertions": 2,
+        "outcome": "passed",
+        "diagnostics": []
+      }
+    ],
+    "historical_boolean_attribution": "unknown; no per-observation parameter in original native record",
+    "unchanged_observations": 208,
+    "unchanged_native_roster": true,
+    "lost_or_changed_unaffected_rows": [],
+    "added_or_changed_unaffected_rows": [],
+    "terminal_roster_equal_after_only_title_substitution": true,
+    "terminal_order_within_each_file_equal_after_only_title_substitution": true,
+    "raw_exit_equal": true,
+    "assertions_equal": true,
+    "outcomes_equal": true
+  }
+}
