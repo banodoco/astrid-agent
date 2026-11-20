@@ -469,9 +469,9 @@ jobs:
         shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-12 --shell bash "{0}"
         run: python -m pip install -e '.[dev]'
 
-      # Unit source-identity tests must import the same pinned checkout they inspect.
-      # Archive installation leaves runtime_protocol in site-packages, outside that tree;
-      # the Darwin native lane already installs the Runtime as editable source.
+      # Installer/rollback tests need a real, noneditable installed Runtime.
+      # The unit pytest process separately imports the same pinned checkout via
+      # its PYTHONPATH; Python -I installer children retain genuine site-packages.
       - name: Install the pinned Runtime and client
         shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-13 --shell bash "{0}"
         run: |
@@ -480,11 +480,31 @@ jobs:
           checkout="$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse HEAD)"
           test "$checkout" = "$expected"
           echo "Runtime checkout root: $ASTRID_RUNTIME_CHECKOUT; pinned HEAD: $checkout"
-          python -m pip install --no-deps -e "$ASTRID_RUNTIME_CHECKOUT" -e "$ASTRID_RUNTIME_CHECKOUT/packages/python"
-          # Match the -P Python mode used by the original native pytest command.
+          python scripts/ci_install_runtime.py
+          # The installer interpreter must see the physically installed packages.
           python -P - <<'PY'
           import importlib
+          import sysconfig
+          from pathlib import Path
+
+          site = Path(sysconfig.get_path("purelib")).resolve()
+          for name, relative in (
+              ("runtime_protocol", "runtime_protocol/__init__.py"),
+              ("runtime_protocol.timeline_commit_store", "runtime_protocol/timeline_commit_store.py"),
+              ("astrid_runtime", "astrid_runtime/__init__.py"),
+          ):
+              actual = Path(importlib.import_module(name).__file__).resolve()
+              expected = site / relative
+              print(f"Runtime installed: module={name} imported={actual} expected={expected}")
+              assert actual == expected, (name, actual, expected)
+          PY
+          # -P retains PYTHONPATH, while isolated installer children do not.
+          PYTHONPATH="$ASTRID_RUNTIME_CHECKOUT:${PYTHONPATH:-}" python -P - <<'PY'
+          import importlib
           import os
+          import subprocess
+          import sys
+          import sysconfig
           from pathlib import Path
 
           root = Path(os.environ["ASTRID_RUNTIME_CHECKOUT"]).resolve()
@@ -493,11 +513,17 @@ jobs:
               ("runtime_protocol.timeline_commit_store", "runtime_protocol/timeline_commit_store.py"),
               ("astrid_runtime", "astrid_runtime/__init__.py"),
           ):
-              module = importlib.import_module(name)
-              actual = Path(module.__file__).resolve()
-              expected = (root / relative).resolve()
+              actual = Path(importlib.import_module(name).__file__).resolve()
+              expected = root / relative
               print(f"Runtime source: module={name} checkout={root} imported={actual} expected={expected}")
               assert actual == expected, (name, actual, expected)
+          isolated = subprocess.check_output(
+              [sys.executable, "-I", "-c", "import runtime_protocol; print(runtime_protocol.__file__)"],
+              text=True,
+          ).strip()
+          installed = Path(sysconfig.get_path("purelib")).resolve() / "runtime_protocol/__init__.py"
+          print(f"Runtime isolated child: imported={isolated} expected={installed}")
+          assert Path(isolated).resolve() == installed
           PY
 
       - name: Read the pinned VibeComfy revision
@@ -536,7 +562,9 @@ jobs:
         # Read the committed baseline for selection; write only this shard's
         # measured tests so the eight artifacts can be merged without stale entries.
         env:
-          PYTHONPATH: ${{ github.workspace }}/scripts
+          # The native pytest entrypoint re-adds this source path after -I;
+          # installer child interpreters using -I keep the installed Runtime.
+          PYTHONPATH: ${{ github.workspace }}/scripts:${{ env.ASTRID_RUNTIME_CHECKOUT }}
           PYTHONUNBUFFERED: 1
           ASTRID_PYTEST_HARD_EXIT_ON_LEAKED_THREADS: 1
           TEST_RESULTS_DIR: ${{ runner.temp }}/test-results-unit-shard-${{ matrix.group }}-${{ runner.os }}
