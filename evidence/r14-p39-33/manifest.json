@@ -1,0 +1,90 @@
+{
+  "README.md": {
+    "bytes": 8768,
+    "sha256": "937906b28eaaa48e3edf3c7b4de54cef5d349c902f3237566befe4f5e2a487b8"
+  },
+  "compare_native.py": {
+    "bytes": 8542,
+    "sha256": "76bf06348e6b0531ad5cf6c44b59dd362a90a03596f2a3e4706755b116fb9cb7"
+  },
+  "focused-after/bun-results.xml": {
+    "bytes": 2098,
+    "sha256": "fd9d19c4501ce8ddd93a18fbc5f6e5df049730d909d611dabec1cd5c54564196"
+  },
+  "focused-after/command.json": {
+    "bytes": 1942,
+    "sha256": "be8ec09446725b10761a94e464928b319be9f25be30425eb096baafa31874569"
+  },
+  "focused-after/command.log": {
+    "bytes": 907,
+    "sha256": "09d86bf8d0f76d9cd17d607dc975c434e97b51ebb78a61f78b9312ba6816cfd7"
+  },
+  "focused-before/bun-results.xml": {
+    "bytes": 2093,
+    "sha256": "ca7aa64332446318e4a1110c2bc73cabf260a58cf268e67672d15d5b35bee88c"
+  },
+  "focused-before/command.json": {
+    "bytes": 893,
+    "sha256": "8b2ec4600ae68d2c158943628b709535e78a337f370e6fb001a8668093073c42"
+  },
+  "focused-before/command.log": {
+    "bytes": 903,
+    "sha256": "6c991697993bc2794fe8f82177a0dbc5e1759e56e6b4186b33b6d8235beb4f7c"
+  },
+  "focused-comparison.json": {
+    "bytes": 11395,
+    "sha256": "b58383f8c51c47198ae66fd58347705ac3f8e6b52d192bfaffedd0028270bf80"
+  },
+  "local-full/capture.log": {
+    "bytes": 23876,
+    "sha256": "e518ccab1c2bfa42fa2dac000d3d5102ebb61826faf0702f1c577a7a58a1536d"
+  },
+  "local-full/execution.json": {
+    "bytes": 878,
+    "sha256": "cdcc064ed25bd32ba89d0e5a6867db6823c6930ea6461eb0c03d4fe4063f732c"
+  },
+  "local-full/failure-ceiling/chat/step-06/bun-results.xml": {
+    "bytes": 52326,
+    "sha256": "16ec30f22d5801692e10348745cadb3b785ac4536d15655e919ace920c45add1"
+  },
+  "local-full/failure-ceiling/chat/step-06/command.json": {
+    "bytes": 585,
+    "sha256": "e57e1ef5750fb109683167ecea94b1bc29033d7e380081a967ca54807befdff9"
+  },
+  "local-full/failure-ceiling/chat/step-06/command.log": {
+    "bytes": 23876,
+    "sha256": "e518ccab1c2bfa42fa2dac000d3d5102ebb61826faf0702f1c577a7a58a1536d"
+  },
+  "local-full/failure-ceiling/chat/step-06/command.txt": {
+    "bytes": 89,
+    "sha256": "6cef40b0fcaace2de4cc5fecbe2824901c8cb70983c1fba8b9c6d08827b8edba"
+  },
+  "local-full-comparison.json.gz": {
+    "bytes": 28498,
+    "sha256": "656cef0015d590519e674055e6f205dc144a4a57dd2d2399343eaf0ee0c09f5f"
+  },
+  "local-full-summary.json": {
+    "bytes": 5143,
+    "sha256": "8937c8213ea67f32fbd96dd3ccec3d407421d67b9b5c2ffa91d5161c9b1f694e"
+  },
+  "local-source-commit.txt": {
+    "bytes": 258,
+    "sha256": "5ee60aa5c29b0377af7556ef3ac1697f401b9c7452eccd46eecffd56c7b377fe"
+  },
+  "original/original-linux-chat-14583582456.zip": {
+    "bytes": 19895,
+    "sha256": "550111b2a33dd976ec61e41e9ada226ff1889f95fdb80930e901932443d240e3"
+  },
+  "original/original-summary.json": {
+    "bytes": 4084,
+    "sha256": "2072e16a9b062d79aeda094955d7381a6b9b86368b586a8911af3f530a5cebd9"
+  },
+  "published-source-commit.txt": {
+    "bytes": 395,
+    "sha256": "6d9887d2c0c17b9b6d0684438d09414055c526c0c08e78c7261a574e703f85bd"
+  },
+  "source-preservation.json": {
+    "bytes": 2972,
+    "sha256": "9c1a023210565b414a7a69061c4b5672d1ca08f22d96ff2125541cbb00dfca11"
+  }
+}

@@ -1,0 +1,15 @@
+bun test v1.3.14 (0d9b296a)
+
+astrid/chat/sessionConfigOptions.test.ts:
+(pass) ACP session config options > reads Codex base model and reasoning effort, ahead of its legacy model ID with effort suffix [5.51ms]
+(pass) ACP session config options > reads Claude effort with recommendation capability %s [0.23ms]
+(pass) ACP session config options > reads Claude effort with recommendation capability %s [0.19ms]
+(pass) ACP session config options > identifies categories with opaque IDs and handles OMP grouped models and thinking [0.18ms]
+(pass) ACP session config options > names levels in sentence case [0.16ms]
+(pass) ACP session config options > does not invent levels for Hermes without a thought_level option [0.38ms]
+(pass) ACP session config options > does not invent levels for Astrid without a thought_level option [0.10ms]
+
+ 7 pass
+ 0 fail
+ 12 expect() calls
+Ran 7 tests across 1 file. [353.00ms]
