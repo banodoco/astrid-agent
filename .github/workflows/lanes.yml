@@ -99,6 +99,7 @@ jobs:
           9ef808711a5207f5be74dc5f267af6fdd7bc9550
           6d53a19070faf63fc15ae1f81417722edc2c8a5f
           b2a1d9fd82121a5509769531a2e91aece97d78b9
+          b92d3e7a05eec65c142294ef4873edd059e9b31d
 
       - name: Verify Runtime sources before tests
         shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-07 --shell bash "{0}"
@@ -134,6 +135,12 @@ jobs:
           git -C "$ASTRID_RUNTIME_CHECKOUT" cat-file -e "${historical_manifest_runtime}^{tree}"
           git archive --format=tar "$historical_manifest_agent" >/dev/null
           git -C "$ASTRID_RUNTIME_CHECKOUT" archive --format=tar "$historical_manifest_runtime" >/dev/null
+          # The authenticated media HTTP cases retain this historical Runtime.
+          historical_media_http_runtime=b92d3e7a05eec65c142294ef4873edd059e9b31d
+          test "$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse "${historical_media_http_runtime}^{commit}")" = "$historical_media_http_runtime"
+          test "$(git -C "$ASTRID_RUNTIME_CHECKOUT" cat-file -t "$historical_media_http_runtime")" = commit
+          git -C "$ASTRID_RUNTIME_CHECKOUT" cat-file -e "${historical_media_http_runtime}^{tree}"
+          git -C "$ASTRID_RUNTIME_CHECKOUT" archive --format=tar "$historical_media_http_runtime" >/dev/null
           {
             echo "## Effective Runtime sources"
             echo "- Runtime checkout: $ASTRID_RUNTIME_CHECKOUT"
@@ -143,6 +150,7 @@ jobs:
             echo "- R12 historical Agent tree: $historical_r12_agent (commit, tree and archive available)"
             echo "- Media-manifest historical Agent tree: $historical_manifest_agent (commit, tree and archive available)"
             echo "- Media-manifest historical Runtime tree: $historical_manifest_runtime (commit, tree and archive available)"
+            echo "- Authenticated media HTTP historical Runtime tree: $historical_media_http_runtime (commit, tree and archive available)"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Record checked-out refs
