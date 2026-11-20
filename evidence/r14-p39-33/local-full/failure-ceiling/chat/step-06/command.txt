@@ -1,0 +1,1 @@
+bun run test:chat --reporter=junit --reporter-outfile="$CEILING_STEP_DIR/bun-results.xml"

@@ -1,0 +1,22 @@
+{
+  "kind": "local-native-execution",
+  "command": [
+    "/workspace/scratch/984232aa1788/proof-js/node_modules/@oven/bun-linux-x64/bin/bun",
+    "test",
+    "./astrid/chat/sessionConfigOptions.test.ts",
+    "--reporter=junit",
+    "--reporter-outfile=/workspace/scratch/b269a8894312/astrid-agent/evidence/r14-p39-33/focused-before/bun-results.xml"
+  ],
+  "head": "3a50507ceef9bf3520f44938e2e8ef6d4ef43a42",
+  "tree": "4df3dbc6625400c873d2eb08de89accab5a6a648",
+  "tracked_diff": "",
+  "bun_version": "1.3.14",
+  "bun_sha256": "9fd36f87e4b90b07632b987a2e4ec81ca15a62c81bf983190cea6d715be2ad74",
+  "node_version": "v24.22.3",
+  "python_version": "3.12.14",
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "started_at": 1795139071.2040782,
+  "finished_at": 1795139071.9442463,
+  "raw_exit": 0,
+  "package_lock_sha256": "946d5c7d5964aafa6b9fd9f74599285d846ab6349162bdd88b37eab35077230a"
+}

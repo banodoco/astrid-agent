@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "repository": "banodoco/astrid-agent",
+  "head": "c3f25128fac5fc493046c9e9807046c611819b8a",
+  "tuple": {
+    "banodoco/astrid-agent": "c3f25128fac5fc493046c9e9807046c611819b8a"
+  },
+  "step": "step-06",
+  "job": "chat",
+  "matrix_index": "0",
+  "run_id": "local-r14-P39-33-1",
+  "attempt": "1",
+  "shell": "bash",
+  "command_sha256": "6cef40b0fcaace2de4cc5fecbe2824901c8cb70983c1fba8b9c6d08827b8edba",
+  "installed_sources": {},
+  "tuple_conflicts": [],
+  "started_at": 1795139117.1506493,
+  "complete": true,
+  "raw_exit": 0,
+  "finished_at": 1795139271.4846003
+}

@@ -1,0 +1,8 @@
+tree 0d1c31f7ea36d42cf9d2fcda6c601d19f093cbe7
+parent 3a50507ceef9bf3520f44938e2e8ef6d4ef43a42
+author POM <peter@omalley.io> 1795139260 +0100
+committer POM <peter@omalley.io> 1795139260 +0100
+
+test(chat): render distinct Boolean recommendation case names
+
+R14-P39-33 / Plan39 K2-K3. Preserve both Boolean inputs, their order, the body and assertions, source lines and all other native identities.
