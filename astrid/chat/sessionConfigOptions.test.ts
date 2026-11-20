@@ -17,7 +17,7 @@ describe('ACP session config options', () => {
     expect(defaultThoughtLevel(parsed!.thoughtLevel!)).toBe('low');
   });
 
-  it.each([false, true])('reads Claude effort with recommendation capability %s', withRecommendation => {
+  for (const withRecommendation of [false, true]) it(`reads Claude effort with recommendation capability ${withRecommendation}`, () => {
     // claude-agent-acp@0.93.0 dist/session-effort.js buildEffortConfigOption
     const levels = [{ value: 'low', name: 'Low' }, { value: 'medium', name: 'Medium' }, { value: 'high', name: 'High' }];
     const effort = { id: 'effort', name: 'Effort', description: 'Available effort levels for this model', category: 'thought_level', type: 'select',
