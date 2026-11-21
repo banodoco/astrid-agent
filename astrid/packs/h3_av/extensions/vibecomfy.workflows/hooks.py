@@ -8,8 +8,8 @@ It is pure and deterministic: it runs on the controller through ``requirements()
 copy-back. It shares ``build``'s job directory, reads the saved state and never re-runs prepare
 or compile.
 
-This module imports nothing from Astrid. It loads the pack's own modules by path (they use
-relative imports) and takes engine-side facts from the ``engine`` argument the engine passes.
+This module loads its own pack modules by path and takes engine-side facts from the
+``engine`` argument. Controller capabilities use Astrid's workflow contribution contract.
 """
 from __future__ import annotations
 
@@ -131,8 +131,27 @@ def _state_dir(job_dir) -> Path:
     return (Path(job_dir) if job_dir else Path(tempfile.mkdtemp(prefix="astrid-h3-"))) / "h3"
 
 
+def inspect_inputs(inputs):
+    """Declare the controller's project media dependencies before build."""
+    from astrid.core.generation.entries import read_file_map_document
+    from astrid.core.generation.workflows import InputRequirements
+    from astrid.sdk.exceptions import CapabilityValidationError
+    from astrid.sdk.media_handles import is_media_handle
+
+    supplied = read_file_map_document(
+        inputs.get("asset_map") or {}, allow_output_handles=True, allow_empty=True)
+    if isinstance(supplied, Mapping) and "__astrid_h3_prepared__" in supplied:
+        raise CapabilityValidationError("the H3 prepared-source handoff is reserved for the runtime")
+    if not inputs.get("request"):
+        return InputRequirements()
+    request = _shared("request")
+    value = request.normalize_request(request.load_request_document(inputs["request"]))
+    handles = tuple(asset for asset in request._asset_ids(value) if is_media_handle(asset))
+    return InputRequirements(handle_ids=handles, file_map_port="asset_map", lineage_port="request.asset")
+
+
 def build(inputs, files, out, *, engine=None, check_runtime=False, publish_source=None):
-    """{workflow, bindings, plan, assets, bundle}: the chosen trio's graph, bindings, sealed plan, media, folder."""
+    """Build the chosen trio, its bindings and media, and the controller transport."""
     # Source inspection checks its own tools during planning. Output composition
     # tools belong to execution, on the machine that will run after_outputs.
     if check_runtime:
@@ -211,8 +230,19 @@ def build(inputs, files, out, *, engine=None, check_runtime=False, publish_sourc
     _shared("prepare").write_preparation(work / "preparation.json", preparation)
     stages.save_build_state(work, request=request, document=document, preparation=preparation, source=source, plan=plan, reference_assets=reference_assets)
     runtime_assets = {binding: path for binding, path in assets.items() if binding in bindings}
+    from astrid.core.generation.workflows import BuildTransport, RemoteBuildTransport
+    remote = None
+    # Remote live builds publish on the controller and check output tools on the worker.
+    if publish_source is not None and not check_runtime and source is not None:
+        handoff = _shared("handoff")._h3_remote_handoff({"job_dir": work.parent}, work)
+        if handoff is not None:
+            remote = RemoteBuildTransport(
+                inputs=handoff["inputs"], descriptor=handoff["descriptor"],
+                idempotency={"h3_prepared_source": handoff["lineage"]})
+    transport = BuildTransport(
+        lineage=stages.source_asset_lineage(plan), preflight_source_video=False, remote=remote)
     return {"workflow": _load_graph(trio), "bindings": bindings, "plan": plan, "assets": runtime_assets,
-            "bundle": str(trio)}
+            "bundle": str(trio), "transport": transport}
 
 
 def _load_graph(trio: Path):
