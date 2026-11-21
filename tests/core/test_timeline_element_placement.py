@@ -349,7 +349,7 @@ def test_authenticated_old_placement_receipt_and_inverse(monkeypatch, tmp_path, 
     owner.history.side_effect = lambda *args, **kwargs: DomainResult.success(copy.deepcopy(history))
     result = _place(owner, ref)
     assert result.ok, result.error
-    assert result.receipt == receipt
+    assert result.receipt.as_dict() == receipt
     assert 'placement' not in receipt['result']['commands'][0]['args']
     owner.commit.assert_not_called()
 
