@@ -162,3 +162,33 @@ def test_prepare_request_rejects_source_range_not_covered_by_both_streams(tmp_pa
 
     with pytest.raises(PreparationError, match="source streams must cover the requested range"):
         prepare_request(_request(), asset_map={"source": str(source)}, out_dir=tmp_path / "prepared")
+
+@pytest.mark.ffmpeg
+def test_v2_conform_and_frozen_source_follow_requested_canvas(tmp_path: Path) -> None:
+    from astrid.packs.h3_av.shared.request_v2 import normalize_v2
+
+    _install_facts()
+    source = tmp_path / "source.mp4"
+    _source(source)
+    request = normalize_v2({
+        "version": 2, "prompt": "Continue.", "duration": 1.5,
+        "output": {"size": [512, 512]},
+        "media": [{"asset": "source", "role": "timeline", "modality": "video",
+                   "at": {"frame": 0}, "range": [0.5, 2.0]}],
+    })
+    prepared = prepare_request(request, asset_map={"source": str(source)}, out_dir=tmp_path / "controller")
+    record = prepared["source_conform"]
+    derivative = tmp_path / "controller/conformed-source/source.mp4"
+    video = next(s for s in _probe(derivative)["streams"] if s["codec_type"] == "video")
+    assert (video["width"], video["height"]) == (512, 512)
+    assert (record["output"]["width"], record["output"]["height"]) == (512, 512)
+    digest = record["output"]["sha256"]
+    envelope = {"version": 1, "request_digest": request.digest, "asset": "source",
+                "conform": record, "managed_source": {"digest": "sha256:" + digest, "sha256": digest}}
+    remote = prepare_request(request, asset_map={"source": str(derivative)},
+                             out_dir=tmp_path / "remote", frozen_source=envelope)
+    assert remote["source_conform"] == record
+    envelope["conform"] = {**record, "output": {**record["output"], "width": 1024}}
+    with pytest.raises(PreparationError, match="provenance does not match"):
+        prepare_request(request, asset_map={"source": str(derivative)},
+                        out_dir=tmp_path / "bad", frozen_source=envelope)

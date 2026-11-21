@@ -12,6 +12,7 @@ from pathlib import Path
 from astrid.core.media_framing import fill_filter, probe_streams
 
 from .errors import PreparationError
+from .generation import DEFAULT_SIZE
 from .prepare import _check_source_av_rate
 
 
@@ -127,13 +128,14 @@ def _decoded_audio_coverage(path: Path, stream: dict, start: Fraction, end: Frac
         raise PreparationError(f'cannot verify decoded source audio coverage: {exc}') from exc
 
 
-def conform_source(source: Path, destination: Path, *, start: str, end: str, fit: str, validate) -> dict:
+def conform_source(source: Path, destination: Path, *, start: str, end: str, fit: str, validate, canvas: tuple[int, int] = DEFAULT_SIZE) -> dict:
     """Extract a half-open source interval, with explicit centered fit, to a new directory.
 
     Round the selected duration to the 24 fps grid without changing playback speed.
     Reject significant audio offsets or shortfalls; record any bounded repair.
     Sources without an audio stream remain video-only.
     """
+    width, height = canvas
     try:
         first, last = Fraction(start), Fraction(end)
     except (ValueError, ZeroDivisionError) as exc:
@@ -214,7 +216,7 @@ def conform_source(source: Path, destination: Path, *, start: str, end: str, fit
     # selected decoded pixels must survive it for exact preservation.
     lossless_video = (
         not has_audio
-        and (video_stream.get('width'), video_stream.get('height')) == (1024, 576)
+        and (video_stream.get('width'), video_stream.get('height')) == (width, height)
         and sample_aspect == 1
         and video_stream.get('pix_fmt') == 'yuv420p'
         and video_stream.get('r_frame_rate') == video_stream.get('avg_frame_rate') == '24/1'
@@ -260,11 +262,11 @@ def conform_source(source: Path, destination: Path, *, start: str, end: str, fit
         work = Path(temporary)
         output = work / 'source.mp4'
         if fit == 'fill':
-            scale = fill_filter(1024, 576, square_default=square_default)
+            scale = fill_filter(width, height, square_default=square_default)
         else:
-            scale = ("scale=w='if(gt(dar,16/9),1024,max(2,trunc(576*dar/2)*2))':"
-                     "h='if(gt(dar,16/9),max(2,trunc(1024/dar/2)*2),576)',"
-                     "setsar=1,pad=1024:576:(ow-iw)/2:(oh-ih)/2")
+            scale = (f"scale=w='if(gt(dar,{width}/{height}),{width},max(2,trunc({height}*dar/2)*2))':"
+                     f"h='if(gt(dar,{width}/{height}),max(2,trunc({width}/dar/2)*2),{height})',"
+                     f"setsar=1,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2")
             if square_default:
                 scale = 'setsar=1,' + scale
         start_time = format(float(anchor), '.15f')
@@ -285,7 +287,7 @@ def conform_source(source: Path, destination: Path, *, start: str, end: str, fit
             raise PreparationError(f'could not conform source: {getattr(exc, "stderr", "") or exc}') from exc
         if _digest(source) != source_hash:
             raise PreparationError('source changed while conforming')
-        _check_source_av_rate('conformed source', output)
+        _check_source_av_rate('conformed source', output, expected_size=(width, height))
         try:
             measurement = validate(output) if has_audio else {'has_audio': False}
             if hasattr(measurement, 'to_dict'):
@@ -305,7 +307,7 @@ def conform_source(source: Path, destination: Path, *, start: str, end: str, fit
                                'sample_aspect_ratio': '1:1' if square_default else str(aspect),
                                'sample_aspect_assumed_square': square_default},
                     'output': {'file': 'source.mp4', 'sha256': _digest(output), 'range_seconds': [0, float(duration)],
-                               'frames': int(frames), 'fps': 24, 'width': 1024, 'height': 576, 'fit': fit},
+                               'frames': int(frames), 'fps': 24, 'width': width, 'height': height, 'fit': fit},
                     'audio': {'sample_rate': 48000, 'codec': 'aac'} if has_audio else None,
                     'timing': {'requested_duration_seconds': float(last - first),
                                'prepared_duration_seconds': float(target_duration),
