@@ -1854,7 +1854,8 @@ class GenerationFacade:
                     try:
                         validated = _validate_workflow_build_inputs(candidate, inputs)
                     except ValueError as exc:
-                        raise generation_error(exc, code="input_rejected") from exc
+                        raise generation_error(exc, entry={"id": identifier, "engine": "comfyui", "mode": mode},
+                                               code="input_rejected") from exc
                     admission = {"inputs": validated,
                                  **_admit_workflow_inputs(candidate, validated, controls, _job_dirs, state)}
                     state.entries[admission_key] = admission
