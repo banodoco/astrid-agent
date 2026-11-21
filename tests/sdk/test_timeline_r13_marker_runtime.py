@@ -198,6 +198,7 @@ def share_r13_child(service, client, project, outbox):
     from astrid.sdk.timeline import Timeline
     from astrid.sdk.timeline.commit import bundle_from_document
     from astrid.sdk.timeline.native_occurrence_shared import capture_occurrence_place_shared
+    from astrid.sdk.timeline.sync import CommitRefused
     from runtime_protocol.util import canonical_json
 
     history = _history(service, project)
@@ -206,7 +207,11 @@ def share_r13_child(service, client, project, outbox):
     command = capture_occurrence_place_shared(
         bundle_from_document(before), "occurrence:first-shot", "second-shot", on=1,
     )
-    preview = timeline.commit([command], label="Share R13 child", dry_run=True)
+    try:
+        preview = timeline.commit([command], label="Share R13 child", dry_run=True)
+    except CommitRefused as exc:
+        exc.add_note(str(exc.failure))
+        raise
     assert preview["data"]["would_status"] == "accepted" and preview["receipt"] is None
     assert _history(service, project) == history
 
