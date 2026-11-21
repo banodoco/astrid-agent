@@ -27,6 +27,7 @@ if __package__:
         M4_6_SLOT_IDS,
         RELEASE1_JOB_IDS,
         RELEASE1_MATRIX,
+        FIX17_MATRIX,
         RELEASE1_AUTOMATIC_MATRIX,
         RELEASE11_UPDATE_MATRIX,
         RELEASE13_UPDATE_MATRIX,
@@ -51,6 +52,7 @@ else:
             M4_6_SLOT_IDS,
             RELEASE1_JOB_IDS,
             RELEASE1_MATRIX,
+            FIX17_MATRIX,
             RELEASE1_AUTOMATIC_MATRIX,
             RELEASE11_UPDATE_MATRIX,
             RELEASE13_UPDATE_MATRIX,
@@ -74,6 +76,7 @@ else:
             M4_6_SLOT_IDS,
             RELEASE1_JOB_IDS,
             RELEASE1_MATRIX,
+            FIX17_MATRIX,
             RELEASE1_AUTOMATIC_MATRIX,
             RELEASE11_UPDATE_MATRIX,
             RELEASE13_UPDATE_MATRIX,
@@ -917,10 +920,11 @@ def evaluate_release1_matrix(candidate, results, scope="nine", job_id=None):
             raise ValueError("selected Release-1 job id must be nonempty")
         if scope != "nine":
             raise ValueError("one named Release-1 row requires the full direct-row scope")
-        matched = tuple(row for row in RELEASE1_MATRIX if row["job_id"] == job_id)
-        if len(matched) != 1:
-            raise ValueError("unknown or duplicate named Release-1 job id: " + job_id)
-        contracts = matched
+        matched = tuple(row for row in (*RELEASE1_MATRIX, *FIX17_MATRIX)
+                        if row["job_id"] == job_id)
+        if not matched or any(row != matched[0] for row in matched[1:]):
+            raise ValueError("unknown or conflicting named Release-1/FIX-17 job id: " + job_id)
+        contracts = (matched[0],)
     errors = []
     expected = {row["job_id"]: row for row in contracts}
     found = {}
