@@ -690,12 +690,13 @@ def _validate_legacy_placement_markers(
         old_track = old_tracks.get(track_id, {})
         app, old_app = track_app(track), track_app(old_track)
         marker = app.get(CLIP_PLACEMENT_VERSION)
+        legacy_marker = is_legacy_clip_placement_version(marker)
         inherited = is_legacy_clip_placement_version(old_app.get(CLIP_PLACEMENT_VERSION))
-        if inherited and (_same_fields(track, old_track, ("fit", "scale"))
-                          and _same_fields(app, old_app, (SCALE_APPLIES_TO_POSITIONED_CLIPS,))):
+        if (legacy_marker and inherited and _same_fields(track, old_track, ("fit", "scale"))
+                and _same_fields(app, old_app, (SCALE_APPLIES_TO_POSITIONED_CLIPS,))):
             continue
         canonical = type(marker) is int and marker == CLIP_PLACEMENT_VERSION_CURRENT
-        if is_legacy_clip_placement_version(marker) or (inherited and not canonical):
+        if legacy_marker or (inherited and not canonical):
             _fail(f"{path}[{track_id!r}].app.{CLIP_PLACEMENT_VERSION}", "is invalid for authored placement")
 
 
