@@ -165,3 +165,28 @@ def test_authored_v2_marker_is_refused_without_writes(realm):
             "before": {"state": "present", "value": tracks}, "value": updated,
         }, "rejected")
     assert _history(service, project) == history
+
+
+def test_guarded_placement_edit_on_legacy_track_requires_version_one(realm, tmp_path):
+    from runtime_protocol.errors import RuntimeErrorBase
+
+    service, _client, project = realm
+    seed_r13_timeline(service, project, tmp_path / "still.png")
+    history = _history(service, project)
+    revision = service.get_project_parent_composition_revision(project, "main", "r13-parent")
+    tracks = revision["payload"]["config"]["tracks"]
+    proposed = copy.deepcopy(tracks)
+    proposed[0]["fit"] = "cover"
+    del proposed[0]["app"][_MARKER]
+    change = {"op": "set", "ref": "parent", "path": ["config", "tracks"],
+              "before": {"state": "present", "value": tracks}, "value": proposed}
+    with pytest.raises(RuntimeErrorBase, match=r"app\.clipPlacementVersion"):
+        _patch(service, project, change, "without-version")
+    assert _history(service, project) == history
+
+    proposed[0]["app"][_MARKER] = 1
+    accepted = _patch(service, project, change, "canonical-version")
+    assert accepted["data"]["status"] == "accepted"
+    parent = accepted["data"]["canonical_document"]["parent_revision"]["payload"]
+    assert parent["config"]["tracks"] == proposed
+    assert service.get_project_parent_composition_revision(project, "main", "r13-parent") == revision

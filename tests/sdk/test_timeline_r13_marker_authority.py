@@ -41,5 +41,8 @@ def test_legacy_marker_cannot_be_retained_when_placement_changes(field, value):
     location[field] = value
     with pytest.raises(FinalCandidateError, match=r"app\.clipPlacementVersion"):
         validate_final_candidate(candidate, baseline=baseline)
+    del track["app"]["clipPlacementVersion"]
+    with pytest.raises(FinalCandidateError, match=r"app\.clipPlacementVersion"):
+        validate_final_candidate(candidate, baseline=baseline)
     track["app"]["clipPlacementVersion"] = 1
     validate_final_candidate(candidate, baseline=baseline)
