@@ -447,6 +447,9 @@ actions:
     - kind: implementation
       path: actions/edit/run.py
   run:
+    session:
+      kind: resident
+      protocol: astrid.pack-session.v1
     cache:
       mode: none
     description: Run a VibeComfy workflow through the VibeComfy CLI.
@@ -586,6 +589,18 @@ actions:
       runtime_module: astrid.packs.vibecomfy.actions.run.run
       output_result_manifest: true
       vibecomfy_command: run
+      resident_invocation:
+        kind: python
+        path: actions/run/resident.py
+        function: run
+      resident_job_context:
+        protocol: astrid.job-context.v1
+        max_jobs: 2
+      resident_environment:
+        VIBECOMFY_COMFY_CONFIGURATION: '{}'
+        VIBECOMFY_WARM: never
+        VIBECOMFY_SCHEMA_WARN_ONLY: '0'
+        VIBECOMFY_HEADLESS: '1'
       workflow_input_contract:
         description: UI JSON or complete canonical Python/companion/source sibling
           bundle.

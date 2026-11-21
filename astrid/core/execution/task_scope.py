@@ -67,6 +67,7 @@ class ScopeReport:
 _journal: Path | None = None
 _journal_lock = threading.Lock()
 _owners: weakref.WeakValueDictionary[int, subprocess.Popen] = weakref.WeakValueDictionary()
+_stop_lock_guard = threading.RLock()
 
 
 def set_orphan_journal(path: Path | str | None) -> None:
@@ -272,10 +273,38 @@ def _signal_denied_cause() -> str:
 
 def stop(process: subprocess.Popen, grace: float = 2.0, kill_wait: float = 3.0) -> ScopeReport:
     """TERM the group, wait ``grace``, KILL it, reap the leader, confirm absence."""
-    report = _stop(process, grace, kill_wait)
-    if _journal is not None and report.status == "settled":
-        _journal_edit(_journal, lambda entries: [e for e in entries if e.get("pgid") != report.pgid])
-    return report
+    # Serialize retained owners, never reusable PIDs. Waiting for another
+    # cleanup has its own bounded budget; native cleanup keeps its full budget.
+    wait = max(grace, 0.0) + max(kill_wait, 0.0)
+    deadline = time.monotonic() + wait
+    busy = ScopeReport("unresolved", process.pid,
+                       detail="retained scope cleanup already in progress")
+    if not _stop_lock_guard.acquire(timeout=wait):
+        return busy
+    try:
+        lock = getattr(process, "_astrid_scope_stop_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            setattr(process, "_astrid_scope_stop_lock", lock)
+    finally:
+        _stop_lock_guard.release()
+    if not lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+        return busy
+    try:
+        # A foreground shutdown callback can reenter on this same thread.
+        # Defer it without native close, settlement or journal removal.
+        if getattr(process, "_astrid_scope_stopping", False):
+            return busy
+        try:
+            setattr(process, "_astrid_scope_stopping", True)
+            report = _stop(process, grace, kill_wait)
+            if _journal is not None and report.status == "settled":
+                _journal_edit(_journal, lambda entries: [e for e in entries if e.get("pgid") != report.pgid])
+            return report
+        finally:
+            setattr(process, "_astrid_scope_stopping", False)
+    finally:
+        lock.release()
 
 
 def _stop(process: subprocess.Popen, grace: float, kill_wait: float) -> ScopeReport:

@@ -61,8 +61,10 @@ from runtime_protocol.errors import ConflictError
 from runtime_protocol.storage import free_disk_floor_bytes
 
 from astrid.core.execution.pipe_io import PipeReader, PipeWriter, close_pipe_workers
+from astrid.core.execution.resident_concurrency import ConcurrentResidentAdapter
 from astrid.core.execution.resident_sessions import (
-    ResidentPackAdapter, declared_resident, open_resident_task, retire_changed_session,
+    ResidentPackAdapter, declared_resident, host_preparation_for_record, open_resident_task,
+    retire_changed_session,
 )
 from astrid.core.execution.task_waits import AttemptWait, renewal_delay, renewal_margin, settlement_progress
 from astrid.core.execution.platform_helpers import (
@@ -1542,7 +1544,7 @@ def _prepare_vibecomfy_execution_identity(
     inputs: Mapping[str, Any],
     scratch: Path,
     readiness_profile: Mapping[str, Any] | None,
-    *, prepare_engine: Any = None,
+    *, prepare_engine: Any = None, resident_cache: Any = None,
 ) -> tuple[str, str, str, Mapping[str, Any]]:
     """Select and identify the exact VibeComfy input form before launch."""
     from astrid.core.generation.engine_contracts import CustodyUnresolved
@@ -1571,11 +1573,8 @@ def _prepare_vibecomfy_execution_identity(
                 )
 
                 comfy_url = validate_comfy_url(comfy_url)
-            loaded = load_workflow_path(
-                workflow_path,
-                scratch / "canonical-loader",
-                comfy_url=comfy_url,
-            )
+            loaded = (resident_cache.load(workflow_path, url=comfy_url) if resident_cache is not None
+                      else load_workflow_path(workflow_path, scratch / "canonical-loader", comfy_url=comfy_url))
             identity = loaded_workflow_execution_identity(loaded, readiness_profile)
             if prepare_engine is not None:
                 prepare_engine(workflow_path, identity, loaded)
@@ -10695,12 +10694,46 @@ class GenericPackHost:
             uploaded.append(uploaded_row)
         return uploaded
 
-    def _run_command_definition(self, record: CapabilityRecord, inputs: Mapping[str, Any], output_root: Path, attempt: Path, *, cancelled=None, authority_context: Mapping[str, Any] | None = None, admission: Mapping[str, Any] | None = None, network_broker: _NetworkBrokerContext | None = None, storage_estimate: Mapping[str, int] | None = None, child_bridge: Any | None = None, allow_runtime_connection: bool = True, import_binding: Mapping[str, Any] | None = None) -> Any:
+    def _run_command_definition(self, record: CapabilityRecord, inputs: Mapping[str, Any], output_root: Path, attempt: Path, *, cancelled=None, authority_context: Mapping[str, Any] | None = None, admission: Mapping[str, Any] | None = None, network_broker: _NetworkBrokerContext | None = None, storage_estimate: Mapping[str, int] | None = None, child_bridge: Any | None = None, allow_runtime_connection: bool = True, import_binding: Mapping[str, Any] | None = None, resident_token=None, resident_project=None) -> Any:
         """Run a manifest command without importing Astrid's project authority.
 
         Built-in pipeline steps and command capabilities are both runnable from
         an attempt directory alone.
         """
+        if resident_token is not None:
+            from .resident_sessions import ResidentPackAdapter
+            resident_adapter = self.managed_tool_session.adapter_for(resident_token)
+            if not isinstance(resident_adapter, ResidentPackAdapter):
+                raise HostError("command resident dispatch has no admitted resident owner")
+            scoped = dict(admission or {})
+            # Keep the ordinary command's per-dispatch environment contract.
+            # Resident startup is separately constructed by _environment,
+            # which removes Runtime credentials and binds explicit job policy.
+            env, secrets = self._child_environment(record, attempt, admission=scoped,
+                authority_context=authority_context, network_broker=network_broker,
+                managed_preparation=scoped.get("managed_engine_preparation"),
+                align=scoped.get("align"), generation_entry=scoped.get("entry"),
+                allow_runtime_connection=allow_runtime_connection and child_bridge is None,
+                network_policy=_network_policy(record, inputs),
+                explicit_env={
+                    **({} if os.environ.get('ASTRID_HOST_EXECUTION_PROFILE') == 'installed' else {
+                        "PYTHONPATH": os.pathsep.join((str(Path(__file__).resolve().parents[3]), *resident_adapter.dependency_pythonpath)),
+                    }),
+                    ASTRID_INTERNAL_INVOCATION: "1",
+                    "ASTRID_PROGRESS_PATH": str(attempt / ".astrid-progress.json"),
+                })
+            try:
+                return self.invoke_capability(capability_kind="executor", capability_id=record.id,
+                    request={"out": str(output_root), "inputs": inputs, "project": resident_project,
+                             "project_was_auto_resolved": True, "python_exec": sys.executable,
+                             "run_id": scoped.get("task_id"), "run_root": str(attempt), "invocation": "runtime"},
+                    attempt=attempt, cancelled=cancelled, definition=record.definition.to_dict(),
+                    admission=scoped, child_env=env, storage_estimate=storage_estimate,
+                    child_bridge=child_bridge, captured_record=record, resident_token=resident_token,
+                    concurrent_resident_dispatch=True)
+            finally:
+                env.clear()
+                secrets.clear()
         command_admission = dict(admission or {})
         align = command_admission.pop("align", None)
         generation_entry = command_admission.pop("entry", None)
@@ -11199,6 +11232,7 @@ class GenericPackHost:
         child_bridge: Any | None = None,
         captured_record: CapabilityRecord | None = None,
         resident_token: AdmissionToken | None = None,
+        concurrent_resident_dispatch: bool = False,
     ) -> Any:
         """Run one pack capability in a dedicated child process.
 
@@ -11243,13 +11277,22 @@ class GenericPackHost:
             adapter = self.managed_tool_session.adapter_for(resident_token)
             if not isinstance(adapter, ResidentPackAdapter):
                 raise StaleAdmissionError("resident admission has another adapter")
-            return adapter.invoke(
-                resident_token, request=request, admission=admission or {}, attempt=attempt_path,
-                cancelled=cancelled,
-                storage_guard=lambda: _assert_live_storage_envelope(
-                    storage_estimate, attempt_path, attempt_path / "outputs",
-                    storage_floor_exempt=storage_floor_exempt),
-            )
+            release_lock = concurrent_resident_dispatch and getattr(adapter, "concurrent", False)
+            idle_seconds = self._requested_idle_seconds
+            if release_lock:
+                self._session_task_lock.release()
+            try:
+                return adapter.invoke(
+                    resident_token, request=request, admission=admission or {}, attempt=attempt_path,
+                    cancelled=cancelled,
+                    storage_guard=lambda: _assert_live_storage_envelope(
+                        storage_estimate, attempt_path, attempt_path / "outputs",
+                        storage_floor_exempt=storage_floor_exempt),
+                )
+            finally:
+                if release_lock:
+                    self._session_task_lock.acquire()
+                    self._requested_idle_seconds = idle_seconds
         request_path = attempt_path / ".astrid-capability-request.json"
         result_path = attempt_path / ".astrid-capability-result.json"
         remotion_lease = None
@@ -13175,6 +13218,9 @@ class GenericPackHost:
         child_bridge = None
         session_hold = None
         engine_preparation = None
+        resident_preparation = None
+        resident_preparation_retained = False
+        resident_allowed = True
         prepared_identity = None
         assert_managed_input_identity = None
         target_context = machine_policy = None
@@ -13299,6 +13345,13 @@ class GenericPackHost:
             for input_root in (root / "inputs", root / "managed-objects"):
                 immutable_input_baseline.update(self.execution_policy.immutable_input_baseline(input_root))
             evidence_root = root
+            if capability_id == "vibecomfy.run" and machine_policy is None and readiness_profile is None:
+                resident_preparation = host_preparation_for_record(self, record, task_data, inputs,
+                    align=_align_admission(task_data).get("align", "check"),
+                    entry=_align_admission(task_data).get("entry"))
+                resident_allowed = resident_preparation is not None
+                resident_preparation_retained = (resident_preparation is not None and resident_preparation in
+                    getattr(self.managed_tool_session.current_adapter, "retained_resources", ()))
             if (capability_id == "vibecomfy.run" and machine_policy is None
                     and not inputs.get("comfy_url") and readiness_profile is None):
                 from concurrent.futures import CancelledError
@@ -13308,6 +13361,10 @@ class GenericPackHost:
                 engine_preparation = ManagedEnginePreparation(task=str(task_id), attempt=str(attempt_id),
                     mode=admitted_mode, deadline=lifetime.deadline(), cancelled=cancelled,
                     scratch=root / "engine-preparation", device=local_device, logs_root=_host_log_root(root))
+                if resident_preparation is not None:
+                    resident_preparation.observe_managed(self, engine_preparation)
+                    resident_preparation_retained = resident_preparation in getattr(
+                        self.managed_tool_session.current_adapter, "retained_resources", ())
                 from contextlib import suppress
 
                 from astrid.core.generation.engine_custody import declare_engine_log
@@ -13340,9 +13397,26 @@ class GenericPackHost:
                     if current != original_baseline or input_nodes(current) != original_nodes:
                         raise HostError("managed generation admitted input bytes changed during preparation")
                 def prepare_engine(workflow_path, identity, loaded):
+                    nonlocal resident_preparation_retained
                     assert_managed_input_identity()
                     from astrid.packs.vibecomfy.production_engine import _canonical_bundle_value
                     canonical = _canonical_bundle_value(loaded.resolved)
+                    retained = resident_preparation.managed if resident_preparation is not None else None
+                    report = retained.reuse(engine_preparation, execution_identity=identity,
+                        input_digests=original_input_digests) if retained is not None else None
+                    if report is not None:
+                        self._local_engine_idle.retain(engine_preparation.context.service_client)
+                        assert_managed_input_identity()
+                        retained.register(engine_preparation, root / "outputs")
+                        _terminal["managed_engine_preparation"] = report
+                        network_admission.update(managed_engine_preparation=report,
+                                                 managed_readiness_generation=retained.generation)
+                        inputs["comfy_url"] = report["endpoint"]
+                        return
+                    if retained is not None:
+                        resident_preparation.retire_managed(self, clear_catalogue=False)
+                        resident_preparation_retained = False
+                        engine_preparation.readiness_reuse = None
                     report = engine_preparation.prepare(workflow_path, execution_identity=identity, inputs=inputs,
                                                         canonical_workflow=canonical.workflow, input_digests=original_input_digests)
                     self._local_engine_idle.retain(engine_preparation.context.service_client)
@@ -13382,9 +13456,16 @@ class GenericPackHost:
                     _terminal["managed_engine_preparation"] = report
                     network_admission["managed_engine_preparation"] = report
                     inputs["comfy_url"] = report["endpoint"]
+                    if resident_preparation is not None:
+                        from astrid.core.generation.retained_preparation import RetainedPreparation
+                        retained = RetainedPreparation(engine_preparation)
+                        retained.register(engine_preparation, root / "outputs")
+                        resident_preparation.managed = retained
+                        network_admission["managed_readiness_generation"] = retained.generation
                 try:
                     prepared_identity = _prepare_vibecomfy_execution_identity(
-                        inputs, root / "workflow-identity", readiness_profile, prepare_engine=prepare_engine)
+                        inputs, root / "workflow-identity", readiness_profile, prepare_engine=prepare_engine,
+                        resident_cache=resident_preparation)
                 except (CancelledError, HostCancelled):
                     raise HostCancelled("task cancelled during managed engine preparation") from None
             if capability_id == "vibecomfy.run" and inputs.get("comfy_url"):
@@ -13476,6 +13557,7 @@ class GenericPackHost:
                         inputs,
                         root / "workflow-identity",
                         readiness_profile,
+                        resident_cache=resident_preparation,
                     )
                 )
                 network_admission["execution_identity"] = execution_identity
@@ -13515,13 +13597,28 @@ class GenericPackHost:
                     # workflow switch stays in the same owned session.
                     execution_identity=stable_session_identity,
                 )
+            per_job_adapter = managed_adapter
+            network_admission.update(_align_admission(task_data))
+            if resident_preparation is not None:
+                resident_allowed = resident_preparation.can_retain(inputs,
+                    align=_align_admission(task_data).get("align", "check"))
+                network_admission["pack_preparation_generation"] = resident_preparation.scope
             resident = open_resident_task(
                 self, record=record, task=task_data, admission=network_admission,
                 terminal=_terminal, binding=managed_binding,
                 private_runtime_context=private_runtime_context, machine_policy=machine_policy,
-            )
+                effective_policy=_network_policy(record, inputs),
+            ) if resident_allowed else None
             if resident is not None:
                 managed_capability, managed_binding, managed_adapter = resident
+                if resident_preparation is not None:
+                    caches = getattr(managed_adapter, "vibecomfy_preparations", None)
+                    if caches is None:
+                        caches = managed_adapter.vibecomfy_preparations = {}
+                    if resident_preparation.scope not in caches:
+                        caches[resident_preparation.scope] = resident_preparation
+                        managed_adapter.retained_resources.append(resident_preparation)
+                    resident_preparation_retained = True
             elif capability_id == "wan2gp.generate_video":
                 managed_binding = self.prepare_wan_session(**self._wan_session_context(task_data))
                 managed_adapter = self.managed_tool_session.current_adapter
@@ -13532,6 +13629,9 @@ class GenericPackHost:
                     warm_reuse_expected=True,
                 )
             else:
+                if getattr(self.managed_tool_session.current_adapter, "has_jobs", False):
+                    from .managed_tool_session import SessionCapacityError
+                    raise SessionCapacityError("session replacement is pending active resident admissions")
                 self._open_managed_task_session(
                     capability=managed_capability,
                     binding=managed_binding,
@@ -13543,6 +13643,8 @@ class GenericPackHost:
                 capability_id=capability_id,
                 invocation_id=f"{task_id}:{attempt_id}:{fence}",
             )
+            if isinstance(managed_adapter, ConcurrentResidentAdapter):
+                managed_adapter.bind_admission(managed_token, per_job_adapter)
             if record.adapter.family == "provider" and record.definition.isolation.network:
                 policy = _network_policy(record)
                 descriptor = (policy or {}).get("broker", {})
@@ -13632,7 +13734,8 @@ class GenericPackHost:
                             if isinstance(spec, Mapping)
                             else None
                         ),
-                        admission={**network_admission, **_align_admission(task_data)},
+                        admission={**network_admission, **_align_admission(task_data),
+                                   **({"runtime_epoch": claim_epoch} if isinstance(managed_adapter, ResidentPackAdapter) else {})},
                         network_broker=network_broker,
                         storage_estimate=storage_estimate,
                         child_bridge=child_bridge,
@@ -13646,6 +13749,8 @@ class GenericPackHost:
                                 else None) for key in ("parent_task_id", "parent_attempt_id")},
                             **{key: task_data.get(key) for key in ("operation_id", "submission_id")},
                         },
+                        **({"resident_token": managed_token, "resident_project": task_data.get("project_id")}
+                           if isinstance(managed_adapter, ResidentPackAdapter) else {}),
                     )
                     # Checkout-server VibeComfy commands run inside the
                     # attested VibeComfy output root. Carry that effective root
@@ -13668,6 +13773,11 @@ class GenericPackHost:
                     worker_env, worker_secrets = self._child_environment(
                         record, root, admission=network_admission, network_broker=network_broker,
                         allow_runtime_connection=not private_runtime_context and not isinstance(managed_adapter, ResidentPackAdapter))
+                    worker_options: dict[str, Any] = {}
+                    if isinstance(managed_adapter, ResidentPackAdapter):
+                        worker_options.update(resident_token=managed_token, concurrent_resident_dispatch=True)
+                    if captured_record is not None:
+                        worker_options["captured_record"] = captured_record
                     try:
                         result = self.invoke_capability(
                             capability_kind="executor",
@@ -13691,8 +13801,7 @@ class GenericPackHost:
                             network_broker_required=network_broker is not None,
                             storage_estimate=storage_estimate,
                             child_bridge=child_bridge,
-                            **({"resident_token": managed_token} if isinstance(managed_adapter, ResidentPackAdapter) else {}),
-                            **({"captured_record": captured_record} if captured_record is not None else {}),
+                            **worker_options,
                         )
                     finally:
                         worker_env.clear()
@@ -13904,6 +14013,9 @@ class GenericPackHost:
                 payload["machine"] = dict(_terminal["machine"])
             if _terminal.get("managed_engine_preparation") is not None:
                 payload["managed_engine_preparation"] = _terminal["managed_engine_preparation"]
+                readiness_reuse = getattr(engine_preparation, "readiness_reuse", None)
+                if readiness_reuse is not None:
+                    payload["managed_readiness_reuse"] = readiness_reuse
             if self.attempt_root is not None:
                 scratch_disposition = "caller_owned_pending"
                 retained_owner = "caller"
@@ -13996,6 +14108,8 @@ class GenericPackHost:
         except BaseException as exc:
             if claim_failure_recorder is not None:
                 claim_failure_recorder(exc)
+            if resident_preparation is not None:
+                resident_preparation.invalidate()
             _terminal.setdefault("error", exc)
             if _terminal.get("disposition") == "authority_refused":
                 raise
@@ -14135,6 +14249,13 @@ class GenericPackHost:
                             self.managed_tool_session.fence(reason="cancel_unconfirmed")
                         except Exception as fence_exc:
                             cleanup_errors.append(f"managed fence: {fence_exc}")
+                elif isinstance(managed_adapter, ConcurrentResidentAdapter) and managed_adapter.has_completed(managed_token):
+                    # This job returned complete failure evidence. Consume its
+                    # lifecycle token without revoking another live admission.
+                    from .resident_sessions import token_identity
+                    self.managed_tool_session.settle(managed_token, result_evidence=token_identity(managed_token))
+                    managed_adapter.finish_admission(managed_token, failed=True)
+                    managed_settled = True
                 else:
                     try:
                         self.managed_tool_session.fence(reason="task_failed")
@@ -14143,8 +14264,10 @@ class GenericPackHost:
             if managed_opened:
                 retain_persistent_session = (
                     isinstance(managed_adapter, tuple(_WARM_SESSION_ADAPTERS))
-                    and managed_settled
-                    and settled
+                    and ((managed_settled and settled)
+                         or (isinstance(managed_adapter, ConcurrentResidentAdapter)
+                             and self.managed_tool_session.active
+                             and not managed_adapter.has_token(managed_token)))
                 )
                 if not retain_persistent_session:
                     try:
@@ -14161,8 +14284,12 @@ class GenericPackHost:
                         cleanup_errors.append(f"managed release: {exc}")
             try:
                 if engine_preparation is not None:
-                    engine_preparation.close(execution_root=root / "outputs",
-                        worker_drained=command_cleanup_error is None and not bool(self._active_processes))
+                    drained = command_cleanup_error is None and not bool(self._active_processes)
+                    retained = getattr(engine_preparation, "retained_readiness", None)
+                    if retained is not None:
+                        retained.finish(engine_preparation, worker_drained=drained)
+                    else:
+                        engine_preparation.close(execution_root=root / "outputs", worker_drained=drained)
             except Exception as exc:
                 retain_attempt = True
                 # Keep the live lock object reachable. Releasing it while an
@@ -14176,6 +14303,8 @@ class GenericPackHost:
                 self._latch_cleanup_uncertainty("managed preparation cleanup is unconfirmed")
                 cleanup_errors.append(f"managed preparation release: {exc}")
             try:
+                if resident_preparation is not None and not resident_preparation_retained:
+                    resident_preparation.close()
                 if session_hold is not None:
                     self._settle_session_hold(session_hold)
             except Exception:
@@ -18457,6 +18586,54 @@ class _ManagedStdinShutdown:
         if self.cleanup_error is not None:
             raise self.cleanup_error
 
+    @contextmanager
+    def input_lines(self, source: IO[str]):
+        """Observe shutdown at an idle input boundary, never inside a frame."""
+        lines: queue.Queue[Any] = queue.Queue(maxsize=1)
+        stopped = threading.Event()
+
+        def send(value):
+            while not stopped.is_set():
+                try:
+                    lines.put(value, timeout=0.05)
+                    return True
+                except queue.Full:
+                    pass
+            return False
+
+        def read():
+            try:
+                for line in source:
+                    if not send(line):
+                        return
+                send(None)
+            except BaseException as exc:  # noqa: BLE001 - preserve the original input failure.
+                send(exc)
+
+        def receive():
+            while not self.shutdown_requested.is_set():
+                try:
+                    line = lines.get(timeout=0.05)
+                except queue.Empty:
+                    continue
+                if self.shutdown_requested.is_set():
+                    break
+                if isinstance(line, BaseException):
+                    raise line
+                if line is None:
+                    return
+                yield line
+            self.wait_for_shutdown_cleanup()
+
+        # Like the EOF watcher, this CLI-lifetime reader may wait on an open
+        # client pipe. It never runs frames or closes the client's stream.
+        reader = threading.Thread(target=read, name="pack-host-stdin-lines", daemon=True)
+        reader.start()
+        try:
+            yield receive()
+        finally:
+            stopped.set()
+
     def run_loop(self, run: Callable[[], Any]) -> Any:
         try:
             result = run()
@@ -18915,19 +19092,15 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
             "source_closure_digest": identity_attestation["source"].get("closure_digest"),
             "ready_file": str(ready_path) if ready_path is not None else None,
         }
-    stdin_shutdown = (
-        _ManagedStdinShutdown(host)
-        if service_mode and args.command == "run"
-        else None
-    )
-    if stdin_shutdown is not None:
-        managed_shutdowns.append(stdin_shutdown)
+    shutdown = _ManagedStdinShutdown(host)
+    managed_shutdowns.append(shutdown)
+    stdin_shutdown = shutdown if service_mode and args.command == "run" else None
 
     def handle_shutdown(_signum, _frame):
-        if stdin_shutdown is not None:
-            stdin_shutdown.request_shutdown(_signum)
-        else:
-            _handle_host_shutdown_signal(host, _signum)
+        # A foreground signal must not raise into an interrupted native close
+        # before its owner records completion. The existing coordinator retains
+        # cleanup errors, and _cli waits for that owner before it can exit.
+        shutdown.request_shutdown(_signum)
 
     platform.install_stop_handlers(handle_shutdown)
     # `kill -USR1 <pid>` writes every thread's Python stack to the host log,
@@ -19086,7 +19259,8 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
             args.supervisor_state,
             max_frame_bytes=args.max_frame_bytes,
         )
-        supervisor.serve(sys.stdin, sys.stdout)
+        with shutdown.input_lines(sys.stdin) as lines:
+            supervisor.serve(lines, sys.stdout)
     return 0
 
 

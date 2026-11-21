@@ -1,0 +1,246 @@
+{
+  "packet": "R14-P55-09",
+  "row": "LS-15",
+  "session": "r14-P55-09-1",
+  "status": "Local repair proof complete; hosted native/Windows repair proof pending",
+  "tested_product": {
+    "commit": "afde8661923aeb0a63fc08a4cdf13ed249eae544",
+    "tree": "bde8fc118e007511d40afe720df6bce27ba951d7"
+  },
+  "accepted_base": "91cb4cb499306b2f09686de0fb67b803bcb89077",
+  "directed_merge": "c3f25f227ae1579eb8c0a9457b1fcfec1a2e8f19",
+  "publication_note": "The following evidence commit changes documentation and limits the Windows 3+3 step to one matrix suite; tested product and test sources are unchanged.",
+  "local_outcomes": {
+    "ls15-7e50-unit": {
+      "tests": 27,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 10.51,
+      "exit": 0
+    },
+    "ls15-7e50-host": {
+      "tests": 7,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 142.978,
+      "exit": 0
+    },
+    "ls15-50db-unit": {
+      "tests": 28,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 14.392,
+      "exit": 0
+    },
+    "ls15-50db-host": {
+      "tests": 7,
+      "failures": 2,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 143.514,
+      "exit": 1
+    },
+    "ls15-base-7e50-probe": {
+      "tests": 1,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 40.843,
+      "exit": 1
+    },
+    "ls15-command-env-before": {
+      "tests": 1,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 6.468,
+      "exit": 1
+    },
+    "ls15-command-env-after": {
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 5.163,
+      "exit": 0
+    },
+    "ls15-afde-unit": {
+      "tests": 28,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 13.452,
+      "exit": 0
+    },
+    "ls15-afde-host": {
+      "tests": 7,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 137.342,
+      "exit": 0
+    }
+  },
+  "warm_counters": {
+    "test_second_admitted_job_reuse0": {
+      "parent_counts": {
+        "source_validation": 46
+      },
+      "child_counts": {
+        "source_validation": 5,
+        "per_job_authorization": 5
+      },
+      "captures": [
+        {
+          "pack": "vibecomfy",
+          "files": 68,
+          "bytes": 504225,
+          "capture_seconds": 0.03182106600434054
+        }
+      ]
+    },
+    "test_second_closed_python_job_0": {
+      "parent_counts": {
+        "source_validation": 46
+      },
+      "child_counts": {
+        "source_validation": 5,
+        "per_job_authorization": 5
+      },
+      "captures": [
+        {
+          "pack": "vibecomfy",
+          "files": 68,
+          "bytes": 504225,
+          "capture_seconds": 0.042538883004453965
+        }
+      ]
+    }
+  },
+  "zero_asserted_categories": [
+    "process_starts",
+    "emissions",
+    "compiles",
+    "schema_fetches",
+    "pack_scans",
+    "audits"
+  ],
+  "a615_hosted_run": {
+    "id": 44373655368,
+    "head_sha": "a6155415a706d33e520da39c85d799838046c7e7",
+    "superseded_diagnostic": true
+  },
+  "a615_canonical_comparisons": [
+    {
+      "os": "linux-resident",
+      "base_ids": 582,
+      "candidate_ids": 582,
+      "regressions": 0,
+      "no_baseline": 0,
+      "preexisting": 10,
+      "fixed": 0,
+      "missing": 0,
+      "summary": "/workspace/scratch/b529702c489e/proof/ci-a615/linux-final/comparison/summary.md",
+      "exact_id_lists": "/workspace/scratch/b529702c489e/proof/ci-a615/linux-final/comparison"
+    },
+    {
+      "os": "linux-native",
+      "base_ids": 43,
+      "candidate_ids": 43,
+      "regressions": 4,
+      "no_baseline": 0,
+      "preexisting": 2,
+      "fixed": 0,
+      "missing": 0,
+      "summary": "/workspace/scratch/b529702c489e/proof/ci-a615/native-final/comparison/summary.md",
+      "exact_id_lists": "/workspace/scratch/b529702c489e/proof/ci-a615/native-final/comparison"
+    },
+    {
+      "os": "macos-resident",
+      "base_ids": 582,
+      "candidate_ids": 582,
+      "regressions": 0,
+      "no_baseline": 0,
+      "preexisting": 32,
+      "fixed": 0,
+      "missing": 0,
+      "summary": "/workspace/scratch/b529702c489e/proof/ci-a615/macos-final/comparison/summary.md",
+      "exact_id_lists": "/workspace/scratch/b529702c489e/proof/ci-a615/macos-final/comparison"
+    },
+    {
+      "os": "windows-resident",
+      "base_ids": 575,
+      "candidate_ids": 575,
+      "regressions": 0,
+      "no_baseline": 0,
+      "preexisting": 146,
+      "fixed": 1,
+      "missing": 0,
+      "summary": "/workspace/scratch/b529702c489e/proof/ci-a615/windows-final/comparison/summary.md",
+      "exact_id_lists": "/workspace/scratch/b529702c489e/proof/ci-a615/windows-final/comparison"
+    }
+  ],
+  "a615_artifacts": [
+    {
+      "artifact_id": 14460698582,
+      "name": "ls15-resident-ubuntu-latest-a6155415a706d33e520da39c85d799838046c7e7",
+      "sha256": "d851a18ca78570e9faf0a4b1af8f7a02dca370053c912ca78f9bb85a72738fa0",
+      "archive": "/workspace/scratch/b529702c489e/proof/ci-a615/linux-final.zip",
+      "extracted": "/workspace/scratch/b529702c489e/proof/ci-a615/linux-final"
+    },
+    {
+      "artifact_id": 14463225517,
+      "name": "ls15-native-ubuntu-latest-a6155415a706d33e520da39c85d799838046c7e7",
+      "sha256": "a1f2876353177b016e221f138a7b73efb51ba8e27bd2825880e1f87541c4efa4",
+      "archive": "/workspace/scratch/b529702c489e/proof/ci-a615/native-final.zip",
+      "extracted": "/workspace/scratch/b529702c489e/proof/ci-a615/native-final"
+    },
+    {
+      "artifact_id": 14462469390,
+      "name": "ls15-resident-macos-latest-a6155415a706d33e520da39c85d799838046c7e7",
+      "sha256": "cde1f09d6c5a8debfb2fdf03d34445c5f8f84ee918e9063ee497f95987d4cb10",
+      "archive": "/workspace/scratch/b529702c489e/proof/ci-a615/macos-final.zip",
+      "extracted": "/workspace/scratch/b529702c489e/proof/ci-a615/macos-final"
+    },
+    {
+      "artifact_id": 14462424656,
+      "name": "ls15-resident-windows-latest-a6155415a706d33e520da39c85d799838046c7e7",
+      "sha256": "41a3549cb03fcfa0e449fa3573dd8a82cd4174f91ac53a84c7d6dfe1599f4512",
+      "archive": "/workspace/scratch/b529702c489e/proof/ci-a615/windows-final.zip",
+      "extracted": "/workspace/scratch/b529702c489e/proof/ci-a615/windows-final"
+    }
+  ],
+  "a615_native_regressions": [
+    "tests/integrations/test_managed_host_preparation.py::test_managed_host_prepares_before_sandboxed_worker[device-default]",
+    "tests/integrations/test_managed_host_preparation.py::test_managed_host_prepares_before_sandboxed_worker[device-explicit]",
+    "tests/integrations/test_managed_host_preparation.py::test_managed_host_prepares_before_sandboxed_worker[repairs-before-worker]",
+    "tests/integrations/test_managed_host_preparation.py::test_managed_host_prepares_before_sandboxed_worker[trust-skips-absent-auxiliary]"
+  ],
+  "a615_windows_fixed_id": "tests/core/execution/test_resident_sessions.py::test_inflight_identity_loss_fails_once_without_replay[kill]",
+  "a615_windows_relocation": "3/3 isolated executions pass on each source",
+  "root_cause_corrections": [
+    "a615 explicit network policy did not fix the four unchanged native regressions. 50db preserves the ordinary command automatic-hook startup mode; actual hosted AF_UNIX proof remains pending.",
+    "50db then exposed two warm Git subprocesses in import-root resolution; afde retains the startup-approved roots on the incarnation. Source/profile keys and content checks remain active.",
+    "7e50 retains bounded static source declarations with per-job copies and catalogue-byte generations, removing a repeated coverage_manifest scan.",
+    "7e50 replaces resident-only advisory Git revision subprocess lookup with bounded on-disk metadata reads; unsupported discovery remains unknown. Mandatory source attestation is unchanged.",
+    "The new native fixture now explicitly selects align for all three jobs and additionally asserts nodes/prepare/doctor cold commands. All prior assertions are retained."
+  ],
+  "archive": {
+    "file": "followup-observations.zip",
+    "bytes": 3290211,
+    "members": 477,
+    "sha256": "03d3b4281ffa9f752797c8b47b177cc2e0f2af87ff3838727d10fbbbb70f983b"
+  },
+  "limits": [
+    "No hosted qualification of afde or later source is included in this checkpoint.",
+    "The native a615 probe produced two valid records but selected check mode and failed before generation-replacement proof.",
+    "Windows a615 packet probes timed out; counter child stacks identify advisory Git communicate. They do not establish every other timeout cause.",
+    "Local native AF_UNIX setup is unavailable. No local native pass, GPU, installed-user latency or LS-14 result is claimed.",
+    "Baseline disposable children are not instrumented. Counter and real Runtime record probes are separate.",
+    "Precommit command-environment isolated probe logs do not themselves record source SHA; exact 50db and afde unit runs independently contain the passing probe.",
+    "No independent review verdict. Plan38, issue896 follow-ups and LS-15.1 remain outside packet ownership."
+  ]
+}

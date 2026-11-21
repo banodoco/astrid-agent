@@ -6,6 +6,7 @@ save prefixes, image upload, owned-prompt cleanup) reads as one unit.
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import json
 import logging
@@ -425,9 +426,9 @@ def _trust_from_environment(bundle: Any) -> tuple[dict[str, Any], ...] | None:
     """``--align trust`` on an attached ComfyUI: the workflow's declared rows; otherwise none."""
     from astrid.core.generation import target_inventory
 
-    child_trust = os.environ.pop(target_inventory.TRUST_ENV, None) == "trust"
     pod_align = target_inventory.POD_ALIGN.get()
-    if not (child_trust if pod_align is None else pod_align == "trust"):
+    child_trust = (os.environ.pop(target_inventory.TRUST_ENV, None) == "trust") if pod_align is None else pod_align == "trust"
+    if not child_trust:
         return None
     return target_inventory.declared_rows(bundle.workflow)
 
@@ -467,17 +468,48 @@ def _project_native_attempt(path: Path, destination: Path, *, alignment: Any, pr
     write_json_atomic(path, attempt)
 
 
+def _project_prepared_approval_diagnostics(payload: dict[str, Any], destination: Path, provider: Any) -> None:
+    """Carry cold approval evidence into each prepared job's native records.
+
+    The pinned producer records prepared-template provenance instead of the
+    provider's approval diagnostics. Preserve both without recompiling a warm
+    job or changing the prepared record that authorizes its prompt.
+    """
+    diagnostics = getattr(provider, "_approval_diagnostics", None)
+    if not diagnostics:
+        return
+    from astrid.core.foundation.atomic_io import write_json_atomic
+
+    producer = payload["evidence"]["producer"]
+    producer["runtime"]["schema_provenance"]["approval_diagnostics"] = copy.deepcopy(diagnostics)
+    for kind in ("attempt", "metadata"):
+        evidence = producer[kind]
+        path = _custody_file(Path(evidence["path"]), destination, kind)
+        record = json.loads(path.read_text(encoding="utf-8"))
+        embedded = evidence["record"]
+        for view in (record, record.get("runtime_evidence", {}),
+                     embedded, embedded.get("runtime_evidence", {})):
+            if isinstance(view.get("schema_provenance"), dict):
+                view["schema_provenance"]["approval_diagnostics"] = copy.deepcopy(diagnostics)
+        _custody_file(path, destination, kind)
+        write_json_atomic(path, record)
+
+
 def run_local_server(
     resolved: Any, destination: Path, *, comfy_url: str, comfy_output_dir: str,
     task_identity: str, attempt_identity: str | None, run_inputs: Mapping[str, Any] | None,
     workflow_conversion_object_info_sha256: str | None = None,
     prepared_workflow: PreparedLocalWorkflow | None = None,
     prepared_context: Any = None,
+    retained_session: Any = None,
 ) -> ProductionRunResult:
+    from contextlib import nullcontext
+
     from astrid.core.generation.backends.comfy_held import ComfyTargetSession
     from astrid.core.generation.backends.comfy_target import ComfyRequestNotStarted, ComfyTarget
 
-    with ComfyTargetSession(ComfyTarget(comfy_url, "attached")) as session:
+    with (nullcontext(retained_session) if retained_session is not None
+          else ComfyTargetSession(ComfyTarget(comfy_url, "attached"))) as session:
         for preparation in range(2):
             try:
                 return _run_local_server(
@@ -630,10 +662,19 @@ def _run_local_server(
 
     pins = {"VIBECOMFY_COMFY_CONFIGURATION": "{}", "VIBECOMFY_WARM": "never",
             "VIBECOMFY_SCHEMA_WARN_ONLY": "0"}
-    previous = {key: os.environ.get(key) for key in pins}
-    restore = platform.install_stop_handlers(stop)
+    from astrid.core.execution.resident_sessions import _JOB
+    job = _JOB.get()
+    explicit = job is not None and bool(job.session_identity)
+    if explicit and any(os.environ.get(key) != value for key, value in pins.items()):
+        raise ProductionEngineError("resident process configuration differs from its admitted pins")
+    previous = {} if explicit else {key: os.environ.get(key) for key in pins}
+    restore = (lambda: None) if explicit else platform.install_stop_handlers(stop)
+    if explicit:
+        from astrid.packs.vibecomfy.resident import run_cancellable
+        run_sync = run_cancellable
     try:
-        os.environ.update(pins)
+        if not explicit:
+            os.environ.update(pins)
         try:
             context = None
             if prepared is not None:
@@ -704,6 +745,8 @@ def _run_local_server(
                 schema_provenance["workflow_conversion_object_info_sha256"] = (
                     workflow_conversion_object_info_sha256
                 )
+            if prepared_workflow is not None:
+                _project_prepared_approval_diagnostics(payload, destination, provider)
             from astrid.core.foundation.atomic_io import write_json_atomic
             _custody_file(result_path, destination, "managed result")
             write_json_atomic(result_path, payload)

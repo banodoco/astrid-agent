@@ -1,0 +1,328 @@
+name: LS-15 resident VibeComfy proof
+
+on:
+  pull_request:
+    branches: [release/14/plan-55]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ls15-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  resident:
+    if: github.event_name == 'workflow_dispatch' || github.head_ref == 'p55/ls-15'
+    name: LS-15 (${{ matrix.suite }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest, suite: resident}
+          - {os: macos-latest, suite: resident}
+          - {os: windows-latest, suite: resident}
+          - {os: ubuntu-latest, suite: regression}
+          - {os: macos-latest, suite: regression}
+          - {os: windows-latest, suite: regression}
+          - {os: ubuntu-latest, suite: native}
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/runtime
+      ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/vibecomfy
+      ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/comfyui
+      GIT_CONFIG_COUNT: "2"
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: "false"
+      GIT_CONFIG_KEY_1: core.eol
+      GIT_CONFIG_VALUE_1: lf
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: head
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: e379565641414bc183cd02edebab1cbf77617931
+          path: base
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Linux media tools for unchanged integration cases
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
+      - name: Verify unchanged dependency pins and integrated ancestry
+        id: pins
+        run: |
+          mkdir -p proof
+          git -C head rev-parse HEAD 'HEAD^{tree}' > proof/head.txt
+          git -C base rev-parse HEAD 'HEAD^{tree}' > proof/base.txt
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, pathlib
+          pairs = {}
+          for name in ('base', 'head'):
+              root = pathlib.Path(name)
+              runtime = json.loads((root / 'runtime.lock.json').read_text())['source_commit']
+              sources = json.loads((root / 'astrid/packs/runpod/pins.json').read_text())['sources']
+              vibe = json.loads((root / 'astrid/packs/vibecomfy/pins.json').read_text())['sources']['vibecomfy']['revision']
+              pairs[name] = runtime, vibe, sources['comfyui']['revision']
+          assert pairs['base'] == pairs['head'], 'dependency identity differs; this pair is not comparable'
+          for key, value in zip(('runtime', 'vibe', 'comfy'), pairs['head']):
+              print(key + '=' + value)
+          print('comfy_repository=' + sources['comfyui']['repository'].removeprefix('https://github.com/').removesuffix('.git'))
+          PY
+          git -C head fetch --no-tags origin e379565641414bc183cd02edebab1cbf77617931
+          git -C head merge-base --is-ancestor e379565641414bc183cd02edebab1cbf77617931 HEAD
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-runtime
+          ref: ${{ steps.pins.outputs.runtime }}
+          path: runtime
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/VibeComfy
+          ref: ${{ steps.pins.outputs.vibe }}
+          path: vibecomfy
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.pins.outputs.comfy_repository }}
+          ref: ${{ steps.pins.outputs.comfy }}
+          path: comfyui
+          persist-credentials: false
+      - name: Install exact test inputs
+        id: install
+        run: |
+          python -m pip install -e './head[dev]' uv
+          python -m pip install --no-deps -e ./runtime -e ./runtime/packages/python
+          python -m pip install -e ./vibecomfy
+          mkdir -p proof
+          git -C head rev-parse HEAD 'HEAD^{tree}' > proof/head.txt
+          git -C base rev-parse HEAD 'HEAD^{tree}' > proof/base.txt
+          git -C runtime rev-parse HEAD > proof/runtime.txt
+          git -C vibecomfy rev-parse HEAD > proof/vibecomfy.txt
+          python -VV > proof/python.txt
+          python -m pip freeze > proof/environment.txt
+          python - <<'PY'
+          import os, pathlib, tempfile
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as output:
+              print('ASTRID_RUNTIME_DATA_ROOT=' + tempfile.mkdtemp(prefix='astrid-ls15-'), file=output)
+          PY
+      - name: Candidate packet route, context and generation proofs
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && matrix.suite == 'resident' }}
+        run: |
+          python head/tests/helpers/ls15_run.py head proof packet-unit \
+            tests/core/execution/test_ls15_resident_route.py tests/core/execution/test_ls15_concurrency.py \
+            tests/core/generation/test_ls15_retained_preparation.py \
+            tests/packs/vibecomfy/test_ls15_catalogue_generation.py
+      - name: Candidate actual host zero-work proof
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && matrix.suite == 'resident' }}
+        env:
+          ASTRID_CI_JOB: lanes-integration
+        run: |
+          python head/tests/helpers/ls15_run.py head proof packet-counter -m integration \
+            -o tmp_path_retention_policy=all --basetemp="$GITHUB_WORKSPACE/proof/counter-tmp" \
+            tests/packs/vibecomfy/test_ls15_resident_host.py::test_second_admitted_job_reuses_worker_template_and_target
+      - name: Candidate closed Python zero-work proof
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && matrix.suite == 'resident' }}
+        env:
+          ASTRID_CI_JOB: lanes-integration
+        run: |
+          python head/tests/helpers/ls15_run.py head proof packet-canonical -m integration \
+            -o tmp_path_retention_policy=all --basetemp="$GITHUB_WORKSPACE/proof/canonical-tmp" \
+            tests/packs/vibecomfy/test_ls15_resident_host.py::test_second_closed_python_job_reuses_catalogue
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && matrix.suite == 'resident' }}
+        with:
+          name: ls15-counter-${{ matrix.os }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            proof/*.txt
+            proof/*.log
+            proof/*.xml
+            proof/*.exit
+            proof/*-command.json
+            proof/*-tmp/**/warm-counters.json
+            proof/*-tmp/**/runtime-records.json
+            proof/*-tmp/**/managed-warm-counters.json
+            proof/*-tmp/**/child-counters.jsonl
+            proof/*-tmp/**/child-stacks.txt
+            proof/*-tmp/**/result.json
+            proof/*-tmp/**/manifest.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Candidate actual concurrent isolation, failure and crash proofs
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && matrix.suite == 'resident' }}
+        env:
+          ASTRID_CI_JOB: lanes-integration
+        run: |
+          outcome=0
+          proof_index=0
+          for selector in \
+            'test_concurrent_vibe_jobs_keep_inputs_outputs_and_cancellation_separate[both-complete]' \
+            'test_concurrent_vibe_jobs_keep_inputs_outputs_and_cancellation_separate[cancel-one]' \
+            'test_failed_resident_job_requires_fresh_preparation_for_the_next_admission' \
+            'test_worker_crash_reconciles_both_owned_prompts_before_replacement'; do
+            proof_index=$((proof_index + 1))
+            python head/tests/helpers/ls15_run.py head proof "packet-host-$proof_index" -m integration \
+              -o tmp_path_retention_policy=all --basetemp="$GITHUB_WORKSPACE/proof/host-$proof_index-tmp" \
+              "tests/packs/vibecomfy/test_ls15_resident_host.py::$selector" || outcome=1
+          done
+          exit "$outcome"
+      - name: Candidate public SDK and Runtime record proof
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && matrix.suite == 'resident' }}
+        env:
+          ASTRID_CI_JOB: lanes-integration
+        run: |
+          python head/tests/helpers/ls15_run.py head proof packet-runtime -m integration \
+            -o tmp_path_retention_policy=all --basetemp="$GITHUB_WORKSPACE/proof/runtime-tmp" \
+            tests/integrations/test_ls15_runtime_resident.py \
+            tests/packs/vibecomfy/test_ls15_trust_evidence.py
+      - name: Linux managed generation reuse, replacement and custody proof
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && matrix.suite == 'native' }}
+        env:
+          ASTRID_CI_JOB: lanes-integration
+        run: |
+          python head/tests/helpers/ls15_run.py head proof packet-managed -m integration \
+            -o tmp_path_retention_policy=all --basetemp="$GITHUB_WORKSPACE/proof/managed-tmp" \
+            tests/integrations/test_ls15_managed_resident.py
+      - name: Windows unchanged personal relocation in three isolated runs per source
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && runner.os == 'Windows' && matrix.suite == 'resident' }}
+        run: |
+          outcome=0
+          for source in base head; do
+            for sample in 1 2 3; do
+              python head/tests/helpers/ls15_run.py "$source" proof "$source-personal-$sample" \
+                tests/core/pack/test_verified_relocations.py::test_namespace_accepts_exact_canonical_personal_relocation || outcome=1
+            done
+          done
+          exit "$outcome"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ls15-early-${{ matrix.suite }}-${{ matrix.os }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            proof/*.txt
+            proof/*.log
+            proof/*.xml
+            proof/*.exit
+            proof/*-command.json
+            proof/*-tmp/**/warm-counters.json
+            proof/*-tmp/**/runtime-records.json
+            proof/*-tmp/**/managed-warm-counters.json
+            proof/*-tmp/**/child-counters.jsonl
+            proof/*-tmp/**/child-stacks.txt
+            proof/*-tmp/**/result.json
+            proof/*-tmp/**/manifest.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Unchanged base regressions including inherited failures
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && matrix.suite == 'regression' }}
+        run: |
+          python head/tests/helpers/ls15_run.py base proof base \
+            tests/core/execution/test_managed_tool_session.py \
+            tests/core/execution/test_warm_hold.py \
+            tests/core/execution/test_resident_sessions.py \
+            tests/core/execution/test_resident_session_lifetime.py \
+            tests/core/execution/test_generic_host_actions_v3.py \
+            tests/core/execution/test_network_policy_popen_class.py \
+            tests/core/execution/test_private_network_command.py \
+            tests/test_generic_host_child_output.py \
+            tests/packs/test_canonical_pack_v3.py tests/packs/test_pack_discovery_v3.py \
+            tests/core/pack/test_verified_relocations.py \
+            tests/core/generation/backends/test_comfy_held_transport.py tests/core/generation/backends/test_comfy_held_rework.py \
+            tests/core/generation/test_managed_preparation.py \
+            tests/sdk/test_ls6_default_materialization.py tests/sdk/test_ls6_materialization_regressions.py
+      - name: Unchanged candidate regressions including inherited failures
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && matrix.suite == 'regression' }}
+        run: |
+          python head/tests/helpers/ls15_run.py head proof head \
+            tests/core/execution/test_managed_tool_session.py \
+            tests/core/execution/test_warm_hold.py \
+            tests/core/execution/test_resident_sessions.py \
+            tests/core/execution/test_resident_session_lifetime.py \
+            tests/core/execution/test_generic_host_actions_v3.py \
+            tests/core/execution/test_network_policy_popen_class.py \
+            tests/core/execution/test_private_network_command.py \
+            tests/test_generic_host_child_output.py \
+            tests/packs/test_canonical_pack_v3.py tests/packs/test_pack_discovery_v3.py \
+            tests/core/pack/test_verified_relocations.py \
+            tests/core/generation/backends/test_comfy_held_transport.py tests/core/generation/backends/test_comfy_held_rework.py \
+            tests/core/generation/test_managed_preparation.py \
+            tests/sdk/test_ls6_default_materialization.py tests/sdk/test_ls6_materialization_regressions.py
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && matrix.suite == 'regression' }}
+        with:
+          name: ls15-comparison-${{ matrix.os }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            proof/*.txt
+            proof/*.log
+            proof/*.xml
+            proof/*.exit
+            proof/*-command.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Unchanged attached-server integration on both sides
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && matrix.suite == 'regression' }}
+        env:
+          ASTRID_CI_JOB: lanes-integration
+        run: |
+          outcome=0
+          for source in base head; do
+            python head/tests/helpers/ls15_run.py "$source" proof "$source-vibe" -m integration \
+              tests/packs/vibecomfy/test_local_server_run.py \
+              tests/packs/vibecomfy/test_prepared_local_server.py \
+              tests/packs/vibecomfy/test_ls5_rework_run.py || outcome=1
+          done
+          exit "$outcome"
+      - name: Unchanged Linux managed preparation on both sides
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && matrix.suite == 'native' }}
+        env:
+          ASTRID_CI_JOB: lanes-integration
+        run: |
+          outcome=0
+          for source in base head; do
+            python head/tests/helpers/ls15_run.py "$source" proof "$source-managed" -m integration \
+              tests/integrations/test_managed_host_preparation.py || outcome=1
+          done
+          exit "$outcome"
+      - name: Unchanged Linux installation-lock contention on both sides
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && matrix.suite == 'native' }}
+        run: |
+          outcome=0
+          for source in base head; do
+            python head/tests/helpers/ls15_run.py "$source" proof "$source-contention" \
+              tests/core/generation/test_managed_preparation_contention.py || outcome=1
+          done
+          exit "$outcome"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ls15-${{ matrix.suite }}-${{ matrix.os }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            proof/*.txt
+            proof/*.log
+            proof/*.xml
+            proof/*.exit
+            proof/*-command.json
+            proof/*-tmp/**/warm-counters.json
+            proof/*-tmp/**/runtime-records.json
+            proof/*-tmp/**/managed-warm-counters.json
+            proof/*-tmp/**/child-counters.jsonl
+            proof/*-tmp/**/child-stacks.txt
+            proof/*-tmp/**/result.json
+            proof/*-tmp/**/manifest.json
+          if-no-files-found: error
+          retention-days: 30

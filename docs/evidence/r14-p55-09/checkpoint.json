@@ -1,0 +1,151 @@
+{
+  "packet": "R14-P55-09",
+  "row": "LS-15",
+  "session": "r14-P55-09-1",
+  "destination": "release/14/plan-55",
+  "topic": "p55/ls-15",
+  "accepted_base": "91cb4cb499306b2f09686de0fb67b803bcb89077",
+  "directed_merge": "c3f25f227ae1579eb8c0a9457b1fcfec1a2e8f19",
+  "hosted_candidate": {
+    "commit": "705900b5cc152b3aee805851a8133016863c7b88",
+    "tree": "f2f0e836b150c2c27e98ca21600e142d4b2a6bd9",
+    "run": 44361088825
+  },
+  "local_candidate": {
+    "commit": "4efff70f9fbb3fb26079613a2b1dda41050c6d84",
+    "tree": "4589ac7cf45b4f6c79b236556c6c10a3a4106bfd"
+  },
+  "dependencies": {
+    "vibecomfy": "d8e61a507f7eb0c133db9d39a41bc429cb12f54b",
+    "runtime": "f3dc970af71e7d413871b4a8e45e4ba0fbfabf5e"
+  },
+  "local_test_outcomes": {
+    "second_job_and_public_sdk": {
+      "passed": 2,
+      "pytest_exit": 0,
+      "seconds": 69.02
+    },
+    "route_context_readiness": {
+      "passed": 17,
+      "pytest_exit": 0,
+      "seconds": 11.86
+    },
+    "actual_host_concurrency_failure_crash": {
+      "passed": 4,
+      "pytest_exit": 0,
+      "seconds": 62.54
+    },
+    "base_counter": {
+      "failed": 1,
+      "pytest_exit": 1,
+      "seconds": 44.76
+    }
+  },
+  "baseline_warm_parent_counts": {
+    "source_validation": 6,
+    "schema_fetches": 63,
+    "compiles": 5,
+    "pack_scans": 7,
+    "emissions": 1,
+    "process_starts": 5
+  },
+  "baseline_child_instrumented": false,
+  "local_warm_counts": {
+    "parent": {
+      "source_validation": 36
+    },
+    "child": {
+      "source_validation": 3,
+      "per_job_authorization": 5
+    }
+  },
+  "zero_asserted_categories": [
+    "process_starts",
+    "emissions",
+    "compiles",
+    "schema_fetches",
+    "pack_scans",
+    "audits"
+  ],
+  "selected_pack_capture": [
+    {
+      "pack": "vibecomfy",
+      "files": 68,
+      "bytes": 499540,
+      "capture_seconds": 0.033723953005392104
+    }
+  ],
+  "runtime_records": [
+    {
+      "task_id": "c877f59888c94b6593d84ed6cf8ba7a9",
+      "attempt_id": "7444564baf634e5baf3750fa38d9b7dd",
+      "state": "succeeded",
+      "images": [
+        "sha256:f0d3f642c1606da47a655d2927f4ac29a7e07a43daf44b3aef9e1dcc31120be1"
+      ]
+    },
+    {
+      "task_id": "3c325f2028a54148b719cb68bad277f3",
+      "attempt_id": "d884f6edf1ec42edb1a8c1b38807b49a",
+      "state": "succeeded",
+      "images": [
+        "sha256:47a391a288dfd7b7b9aeb585b305707587ea817e3c09911f7964b54395f3665e"
+      ]
+    }
+  ],
+  "hosted_comparison": {
+    "linux": {
+      "test_ids_each_side": 625,
+      "regression": 4,
+      "no-baseline": 0,
+      "preexisting": 12,
+      "fixed": 0,
+      "missing": 0
+    },
+    "windows": {
+      "test_ids_each_side": 575,
+      "regression": 1,
+      "no-baseline": 0,
+      "preexisting": 146,
+      "fixed": 0,
+      "missing": 0
+    },
+    "macos": "NO-RESULT: cancelled before steps"
+  },
+  "hosted_artifacts": [
+    {
+      "id": 14458929337,
+      "sha256": "4a39b539fa3cbbccd5e811ccd410449992c8d44e44e0b060b9b73de76fc1ecae"
+    },
+    {
+      "id": 14458692046,
+      "sha256": "44bdde2345f9f0a0c3e7cabd481cdefccbe2de049839e8196dd01c117f4d6591"
+    }
+  ],
+  "observations_archive": {
+    "file": "observations.zip",
+    "sha256": "205fd70b7ef9eb29b46ada1affbe699adf08ae369c073a2f54bd510c96004517",
+    "bytes": 564653,
+    "members": 118
+  },
+  "limits": [
+    "CPU Comfy stand-in, no GPU or installed-user latency qualification",
+    "Counters and public SDK are separate probes",
+    "705900 native environment regressions and managed timeout are failed evidence; repairs require new proof",
+    "Windows cold resident wait remains unqualified; child trace instrumentation added",
+    "Local native setup has no passing result; a separate direct AF_UNIX socket creation probe returned PermissionError before bind",
+    "No independent review; Lead owns review and destination integration"
+  ],
+  "repair_probe": {
+    "base_commit": "4efff70f9fbb3fb26079613a2b1dda41050c6d84",
+    "pytest_exit": 0,
+    "passed": 17,
+    "seconds": 0.86,
+    "files_sha256": {
+      "astrid/core/execution/generic_host.py": "25b8f4642751d30c851760359545e41903037f7ca23f628e4bff5623a7df9686",
+      "astrid/core/generation/retained_preparation.py": "7137a91e9f045af1baca8c37c04ec2466beacab4cd2f3df60a5d649547328ab3",
+      "tests/core/generation/test_ls15_retained_preparation.py": "44ae91a16a3dfba3e7ae08270f655bb2aae8ed902ab8fbe3b8741a2880ac0dd4",
+      "tests/helpers/ls15_run.py": "5e86a9a92576e96c3127d9e71e2a73fdb8aa8b2f9f2382ad5d28d92e8149a0a2"
+    }
+  }
+}

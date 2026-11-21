@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import threading
 import time
 import uuid
 from contextvars import ContextVar
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
 from typing import Any, Callable, Mapping
@@ -48,6 +49,11 @@ class ResidentJobContext:
     attempt_root: Path
     output_root: Path
     cancelled: Callable[[], bool]
+    session_identity: tuple[Any, ...] = ()
+    capability_identity: str = ""
+    settings: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
+    environment: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
+    on_cancel: Any = None
 
 
 _JOB: ContextVar[ResidentJobContext | None] = ContextVar("astrid_resident_job", default=None)
@@ -66,9 +72,59 @@ def declared_resident(record: Any) -> bool:
     declaration = metadata.get("action_declaration")
     return (isinstance(declaration, Mapping)
             and declaration.get("session") == _DECLARATION
-            and isinstance(metadata.get("action_invocation"), Mapping)
-            and metadata["action_invocation"].get("kind") == "python"
-            and record.definition.command is None)
+            and resident_invocation(metadata) is not None)
+
+
+def resident_invocation(metadata: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """The admitted Python callable; a command can retain its disposable entry."""
+    invocation = metadata.get("resident_invocation") or metadata.get("action_invocation")
+    if isinstance(invocation, Mapping) and invocation.get("kind") == "python":
+        return invocation
+    return None
+
+
+
+def host_preparation_for_record(host: Any, record: Any, task: Mapping[str, Any],
+                                inputs: Mapping[str, Any], *, align: str,
+                                entry: str | None) -> Any:
+    """Resolve a built-in pack's host cache through its admitted resident entry.
+
+    This is not a general permission for a selected pack to run inside the
+    host. The only enabled action is the reviewed built-in VibeComfy resident.
+    Its normal job still executes across the existing child protocol.
+    """
+    metadata = record.definition.metadata
+    if record.id != "vibecomfy.run" or not declared_resident(record):
+        return None
+    if metadata.get("source_pack") != "vibecomfy":
+        return None
+    invocation = resident_invocation(metadata)
+    if (invocation is None or invocation.get("path") != "actions/run/resident.py"
+            or invocation.get("function") != "run"):
+        raise ResidentProtocolError("VibeComfy host preparation requires its declared resident entry")
+    original = getattr(record, "captured_from", None) or record
+    original_root = original.definition.metadata.get("pack_root")
+    built_in = Path(__file__).resolve().parents[2] / "packs" / "vibecomfy"
+    if (not isinstance(original_root, str) or
+            Path(original_root).resolve() != built_in.resolve()):
+        return None  # An arbitrary external pack cannot execute code in the host.
+    from astrid.core.pack.resolver import importlib_resolve
+
+    module = ".".join(("astrid", "packs", metadata["source_pack"],
+                       *Path(invocation["path"]).with_suffix("").parts))
+    prepare = importlib_resolve(module, "host_preparation")
+    return prepare(host, record, task, inputs, align=align, entry=entry)
+
+def resident_capacity(metadata: Mapping[str, Any]) -> int:
+    """Only explicit, bounded job-context actions may overlap their dispatches."""
+    value = metadata.get("resident_job_context")
+    if value is None:
+        return 1
+    if (not isinstance(value, Mapping) or set(value) != {"protocol", "max_jobs"}
+            or value["protocol"] != "astrid.job-context.v1"
+            or type(value["max_jobs"]) is not int or not 1 <= value["max_jobs"] <= 8):
+        raise ResidentProtocolError("invalid resident job-context declaration")
+    return value["max_jobs"]
 
 
 def _digest(value: Any) -> str:
@@ -182,7 +238,7 @@ def _authority_generation(host: Any, record: Any, *, resolved_secrets=None) -> s
         values.clear()
 
 
-def _environment(host: Any, record: Any, attempt: Path, admission: Mapping[str, Any]):
+def _environment(host: Any, record: Any, attempt: Path, admission: Mapping[str, Any], *, policy=None):
     from . import generic_host as core
 
     env, secrets = host._child_environment(record, attempt, admission=admission,
@@ -203,17 +259,26 @@ def _environment(host: Any, record: Any, attempt: Path, admission: Mapping[str, 
     env["ASTRID_INTERNAL_INVOCATION"] = "1"
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PYTHONNOUSERSITE"] = "1"
+    constants = record.definition.metadata.get("resident_environment", {})
+    if not isinstance(constants, Mapping) or any(
+            not isinstance(name, str) or not isinstance(value, str)
+            or not name.isidentifier() or name != name.upper() or len(value) > 4096
+            or name.startswith(("ASTRID_", "PYTHON", "LD_", "DYLD_"))
+            or name in {"PATH", "HOME", "USERPROFILE", "TMPDIR", "TEMP", "TMP"}
+            or name in core._required_secret_names(record)
+            for name, value in constants.items()):
+        raise ResidentProtocolError("invalid resident process environment")
+    env.update(constants)
     # Preserve the exact source-capture area for child-side custody validation.
     from astrid.sdk.storage_root import resolve_runtime_data_root
     env["ASTRID_RUNTIME_DATA_ROOT"] = str(resolve_runtime_data_root())
-    policy = core._network_policy(record)
     return env, dict(policy) if policy is not None else None, authority
 
 
 def open_resident_task(host: Any, *, record: Any, task: Mapping[str, Any],
                        admission: Mapping[str, Any], terminal: dict[str, Any],
                        binding: SessionBinding, private_runtime_context: bool,
-                       machine_policy: Any) -> tuple[CapabilityDescriptor, SessionBinding, Any] | None:
+                       machine_policy: Any, effective_policy=None) -> tuple[CapabilityDescriptor, SessionBinding, Any] | None:
     """Select one adapter in the existing slot, under the host task lock.
 
     Delegating, brokered/native, and remote work keeps its disposable route.
@@ -223,9 +288,9 @@ def open_resident_task(host: Any, *, record: Any, task: Mapping[str, Any],
 
     if not declared_resident(record) or private_runtime_context or machine_policy is not None:
         return None
-    policy = core._network_policy(record)
+    policy = effective_policy if effective_policy is not None else core._network_policy(record)
     if admission.get("allowed_routes", []) != list((policy or {}).get("allowed_routes", (policy or {}).get("allowed_destinations", ()))):
-        return None  # Admitted route overrides remain disposable until LS-15.
+        return None  # An unbound override cannot widen a retained worker's routes.
     if (policy is not None and (policy.get("broker") or policy.get("proxy"))
             or record.adapter.family in {"provider", "render"}):
         return None
@@ -242,7 +307,7 @@ def open_resident_task(host: Any, *, record: Any, task: Mapping[str, Any],
     if any(captured_installations[name]["pin"] != entry["pin"]
            for name, entry in installation["selected_packs"].items()):
         raise StaleAdmissionError("resident captured installation differs from the selected installation")
-    environment, policy, authority = _environment(host, record, terminal["root"], admission)
+    environment, policy, authority = _environment(host, record, terminal["root"], admission, policy=policy)
     scope = {"project_id": task.get("project_id"), "realm_id": task.get("realm_id"),
              "runtime_instance_id": binding.runtime_instance_id, "endpoint": binding.endpoint,
              "runtime_epoch": binding.runtime_epoch,
@@ -252,7 +317,9 @@ def open_resident_task(host: Any, *, record: Any, task: Mapping[str, Any],
     key = _digest({"definition": original_record.definition.to_dict(), "source": originals,
                    "dependency": record.dependency_digest, "installation": installation,
                    "scope": scope, "environment": environment, "network_policy": policy,
-                   "authority_generation": authority})
+                   "authority_generation": authority,
+                   "pack_preparation_generation": admission.get("pack_preparation_generation"),
+                   "managed_readiness_generation": admission.get("managed_readiness_generation")})
     manager = host.managed_tool_session
     adapter = manager.current_adapter
     if isinstance(adapter, ResidentPackAdapter) and adapter.key == key and manager.active:
@@ -263,13 +330,25 @@ def open_resident_task(host: Any, *, record: Any, task: Mapping[str, Any],
             manager.release(reason="resident_identity_changed")
         else:
             environment.clear()
+            if getattr(adapter, "at_capacity", False):
+                from .managed_tool_session import SessionCapacityError
+                raise SessionCapacityError("resident admission capacity is occupied")
             return manager.current_capability, adapter.binding, adapter
-    capability = CapabilityDescriptor(record.id, admission_capacity="serial",
+    capacity = resident_capacity(record.definition.metadata)
+    if isinstance(adapter, ResidentPackAdapter) and getattr(adapter, "has_jobs", False):
+        # A different request cannot replace another job's live custody.
+        from .managed_tool_session import SessionCapacityError
+        raise SessionCapacityError("resident replacement is pending active admissions")
+    capability = CapabilityDescriptor(record.id, admission_capacity="concurrent" if capacity > 1 else "serial",
                                       resources_claimed=tuple(record.resource_keys), warm_reuse_expected=True)
     session_binding = replace(binding, session_id="resident:" + uuid.uuid4().hex,
                               config_digest=key, source_digest=admission["source_digest"],
                               execution_identity=key, engine_birth_id=uuid.uuid4().hex)
-    adapter = ResidentPackAdapter(host=host, key=key, binding=session_binding,
+    adapter_type = ResidentPackAdapter
+    if capacity > 1:
+        from .resident_concurrency import ConcurrentResidentAdapter
+        adapter_type = ConcurrentResidentAdapter
+    adapter = adapter_type(host=host, key=key, binding=session_binding,
                                   record=record, admission=admission, environment=environment,
                                   policy=policy, originals=originals, installation=installation,
                                   authority=authority,
@@ -326,7 +405,8 @@ class ResidentPackAdapter:
                  originals, installation, authority, captures) -> None:
         self.host, self.key, self.binding, self.record = host, key, binding, record
         self.admission = json.loads(json.dumps({key: value for key, value in admission.items()
-            if key not in {"task_id", "attempt_id", "fence", "runtime_epoch", "network_nonce", "allowed_routes"}}))
+            if key not in {"task_id", "attempt_id", "fence", "runtime_epoch", "network_nonce", "allowed_routes",
+                           "align", "entry", "execution_identity", "managed_engine_preparation"}}))
         self.environment, self.policy = environment, policy
         self.originals, self.installation = originals, installation
         self._authority = authority
@@ -348,6 +428,8 @@ class ResidentPackAdapter:
         self._released = False
         self._root: Path | None = None
         self.ready = False
+        self.retained_resources: list[Any] = []
+        self.dependency_pythonpath: tuple[str, ...] = ()
 
     def assert_current(self) -> None:
         from astrid.core.pack.imports import validate_selected_pack_map
@@ -367,6 +449,10 @@ class ResidentPackAdapter:
             core._verify_admitted_source(self.admission)
             if core._runtime_external_sources is not None:
                 core._runtime_external_sources.verify()
+            for resource in self.retained_resources:
+                validate = getattr(resource, "assert_current", None)
+                if validate is not None:
+                    validate()
         except (OSError, ValueError, core.HostError) as exc:
             raise StaleAdmissionError("resident source identity changed or could not be verified") from exc
 
@@ -382,6 +468,10 @@ class ResidentPackAdapter:
         self._captures = self._pending_captures.pop_all()
         self._pending_captures = None
         self.assert_current()
+        # Keep the startup-approved import locations with this incarnation.
+        # Per-job command projection must not re-run checkout subprocesses.
+        if os.environ.get("ASTRID_HOST_EXECUTION_PROFILE") != "installed":
+            self.dependency_pythonpath = core._dependency_pythonpath()
         area = resolve_runtime_data_root() / "runtime" / "pack-sessions"
         if area.is_symlink():
             raise ResidentProtocolError("resident session area must not be a symlink")
@@ -572,6 +662,9 @@ class ResidentPackAdapter:
         self._fenced.set()
         return {"ok": True, "reason": reason}
 
+    def _release_admissions(self, *, reason):
+        """Concurrent adapters reconcile attempt ownership after native drain."""
+
     def release(self, *, reason):
         from . import generic_host as core
 
@@ -592,10 +685,17 @@ class ResidentPackAdapter:
                             stream.close()
                 finally:
                     self._command_lock.release()
+            self._release_admissions(reason=reason)
+            for resource in reversed(self.retained_resources):
+                resource.close()
+            self.retained_resources.clear()
             if self._captures is not None:
                 self._captures.close()
             if self._root is not None:
-                self._root.rmdir()
+                # Native absence is proved above. Dispose only this owned
+                # incarnation's cache, including after a worker crash.
+                import shutil
+                shutil.rmtree(self._root)
             if self.process is not None:
                 self.host._untrack_host_lifetime_process(self.process)
             self.environment.clear()

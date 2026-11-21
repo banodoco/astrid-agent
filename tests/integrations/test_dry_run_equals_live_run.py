@@ -65,7 +65,7 @@ def _output_reachable(graph):
 
 def _spy_child_align(monkeypatch, path):
     """Observe the real action child across its process boundary, without replacing the engine."""
-    from astrid.core.execution import generic_host
+    from astrid.core.execution import generic_host, task_scope
     bootstrap = f'''import json, runpy, sys
 from pathlib import Path
 with Path({str(path)!r}).open("a") as sink:
@@ -113,10 +113,41 @@ entries.engine_table = table
 sys.argv = ["astrid.core.execution.generic_host_worker", *sys.argv[1:]]
 runpy.run_module("astrid.core.execution.generic_host_worker", run_name="__main__")
 '''
+    # Selected-pack workers must finish their real import admission before the
+    # observer imports pack code. Keep the original admission and its result.
+    observation = bootstrap.partition('sys.argv = ["astrid.core.execution.generic_host_worker"')[0]
+    admitted_observer = f'''from astrid.core.pack import imports as _observed_imports
+_original_install = _observed_imports.install_pack_imports
+_observer_installed = False
+def _install_observed_pack(*args, **kwargs):
+    global _observer_installed
+    selected = _original_install(*args, **kwargs)
+    if selected == "astrid.packs.vibecomfy" and not _observer_installed:
+        _observer_installed = True
+        exec({observation!r}, globals())
+        with Path({str(path)!r}).open("a") as sink:
+            sink.write(json.dumps({{"event": "admitted_pack", "engine_origin": local_server_engine.__file__}}) + "\\n")
+    return selected
+_observed_imports.install_pack_imports = _install_observed_pack
+'''
+    # A retained template approves during preparation, then fills the real job
+    # with its issued namespace. Observe that fill without altering its result.
+    resident_observation = observation.replace('"event": "runtime_bindings"', '"event": "preparation_bindings"') + f'''
+original_fill = local_server_engine.PreparedLocalWorkflow.fill
+def fill(self, bundle, bindings, **kwargs):
+    record, filled_bundle = original_fill(self, bundle, bindings, **kwargs)
+    with Path({str(path)!r}).open("a") as sink:
+        sink.write(json.dumps({{"event": "output_namespace", "identity": record.output_identity}}) + "\\n")
+        sink.write(json.dumps({{"event": "runtime_bindings", "bindings": bindings}}) + "\\n")
+    return record, filled_bundle
+local_server_engine.PreparedLocalWorkflow.fill = fill
+'''
+    resident_observer = admitted_observer.replace(repr(observation), repr(resident_observation))
     def observe_launch(original):
         def launch(argv, *args, **kwargs):
             env = kwargs.get("env") or {}
-            if env.get("ASTRID_GENERATION_ENTRY"):
+            resident = "--resident-session" in argv
+            if env.get("ASTRID_GENERATION_ENTRY") or resident:
                 if "astrid.packs.vibecomfy.actions.run.run" in argv:
                     index = argv.index("-m")
                     module = argv[index + 1]
@@ -133,14 +164,23 @@ runpy.run_module("astrid.core.execution.generic_host_worker", run_name="__main__
                 elif "-c" in argv:
                     index = argv.index("-c") + 1
                     marker = "runpy.run_module('astrid.core.execution.generic_host_worker',run_name='__main__')"
-                    assert marker in argv[index], "unrecognized generation worker startup"
-                    argv = list(argv)
-                    argv[index] = argv[index].replace(marker, f"exec({bootstrap!r})")
+                    if argv[index] == generic_host._STRICT_NETWORK_STARTUP:
+                        strict_marker = "runpy.run_module(config['module'], run_name='__main__', alter_sys=True)"
+                        assert json.loads(argv[index + 1])["module"] == "astrid.core.execution.generic_host_worker"
+                        assert argv[index].count(strict_marker) == 1
+                        argv = list(argv)
+                        argv[index] = argv[index].replace(strict_marker, f"exec({admitted_observer!r});{strict_marker}")
+                    else:
+                        assert marker in argv[index], "unrecognized generation worker startup"
+                        argv = list(argv)
+                        replacement = f"exec({resident_observer!r});{marker}" if resident else f"exec({bootstrap!r})"
+                        argv[index] = argv[index].replace(marker, replacement)
             return original(argv, *args, **kwargs)
         return launch
     # Observe before process custody wraps the worker in its private tree launcher.
     for name in ("spawn_task_scope", "popen_owned_group"):
         monkeypatch.setattr(generic_host, name, observe_launch(getattr(generic_host, name)))
+    monkeypatch.setattr(task_scope, "spawn", observe_launch(task_scope.spawn))
 
 
 def _spy_host_align(monkeypatch):

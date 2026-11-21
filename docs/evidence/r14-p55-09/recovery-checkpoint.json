@@ -1,0 +1,56 @@
+{
+  "packet": "R14-P55-09",
+  "task": "LS-15",
+  "session": "r14-P55-09-2",
+  "status": "pre-hosted replacement recovery; fixture ruling pending",
+  "published_parent": "c9f7940bf10f08c0d04ddecee3fef6798b867176",
+  "recovered_ancestor": "50db28a37f8d6df1fa18135d8a49e324722a250a",
+  "recovered_ancestry": [
+    "7e50a1a6933a256196b945b02588041cf3095daa",
+    "50db28a37f8d6df1fa18135d8a49e324722a250a",
+    "afde8661923aeb0a63fc08a4cdf13ed249eae544",
+    "c9f7940bf10f08c0d04ddecee3fef6798b867176"
+  ],
+  "merge": "f457f0f5092eee13511a81dfb03d852ceed4b3de",
+  "destination": "493616c1cfc7a83f18894dc81773571e977f26ef",
+  "product": "d8db907e7ac89637109815cbe3a5b0f84feb351a",
+  "product_tree": "6b83c195dcbc73e76f99ad718a1be06fe3701a06",
+  "workflow": "125cdb011293ec3e7d966b8d94699998be915c31",
+  "workflow_tree": "8cbe2887f7c09ea843faa85ae392b76c0c5a6090",
+  "pins": {
+    "runtime": "f3dc970af71e7d413871b4a8e45e4ba0fbfabf5e",
+    "vibecomfy": "d8e61a507f7eb0c133db9d39a41bc429cb12f54b",
+    "unchanged_from_destination": true
+  },
+  "archive": {
+    "path": "recovery-observations.zip",
+    "sha256": "8ddea6735dd4dc74797cea7ef09f04d3e8f391acfb6b34fafa1cca970eb1bd46",
+    "bytes": 2256519,
+    "member_count": 252
+  },
+  "local_summary": {
+    "member": "local/ls15-local-evidence-summary.json",
+    "sha256": "7e74d255a68c36df55b2f5a9ea70f650bdb43107ee6b7778bd0173911a224ef6"
+  },
+  "fixture_request": "https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6997732085",
+  "fixture_block": "https://github.com/banodoco/astrid-dev/issues/796#issuecomment-6997967389",
+  "fixture_proposal_applied": false,
+  "limits": [
+    "Local runs used Python 3.13.5; new hosted workflow uses Python 3.11.",
+    "Before and after final trust probe bytes are identical; before fails on missing model diagnostics.",
+    "Working bytes were committed after local proof; source-byte identity is recorded, not an invented execution-time SHA.",
+    "Initial focused invocation failed 2 of36 due missing optional local socksio; targeted2 pass after environment repair.",
+    "New hosted native and Windows qualification required; unchanged fixture failures remain visible pending ruling.",
+    "No GPU, latency, LS-14, LS-15.1 or overall CI qualification."
+  ],
+  "publication_mapping": {
+    "local_merge": "f457f0f5092eee13511a81dfb03d852ceed4b3de",
+    "published_merge": "86a9653d2e32c5c35365940faedbd9ebcac8ef60",
+    "local_product": "d8db907e7ac89637109815cbe3a5b0f84feb351a",
+    "published_product": "027657aae28c8f555efc7474541c4b50053c6b93",
+    "local_workflow": "125cdb011293ec3e7d966b8d94699998be915c31",
+    "published_workflow": "4aab7942415c786467957bd7c44831e8cec7a623",
+    "trees_verified_equal": true,
+    "reason": "Local HTTPS Git push has no write credential. GitHub connector creates equivalent immutable Git objects with new commit metadata; existing remote history is preserved and only packet ref will advance."
+  }
+}

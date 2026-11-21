@@ -274,7 +274,7 @@ def run_executor(request: ExecutorRunRequest, registry: ExecutorRegistry | None 
 def _run_executor_inner(request: ExecutorRunRequest, executor: ExecutorDefinition,
                         *, _admission: Mapping[str, Any] | None = None) -> ExecutorRunResult:
     _validate_scoped_configs_at_dispatch(executor)
-    invocation = executor.metadata.get("action_invocation")
+    invocation = _current_action_invocation(executor)
     python_action = isinstance(invocation, Mapping) and invocation.get("kind") == "python"
     values = _action_input_values(executor, request) if python_action else _request_values(request, executor)
     if python_action:
@@ -336,7 +336,7 @@ def _run_python_action(executor: ExecutorDefinition, request: ExecutorRunRequest
     from astrid.core.execution.generic_host import _verify_action_admission
     from astrid.sdk.actions import validate_action_output_definition
 
-    invocation = executor.metadata["action_invocation"]
+    invocation = _current_action_invocation(executor)
     root = Path(str(executor.metadata["pack_root"])).expanduser().resolve()
     raw_path, function_name = invocation.get("path"), invocation.get("function")
     relative = Path(raw_path) if isinstance(raw_path, str) else Path()
@@ -372,6 +372,17 @@ def _run_python_action(executor: ExecutorDefinition, request: ExecutorRunRequest
                              outputs=_resolve_declared_outputs(executor, request),
                              executor_version=executor_definition_digest(executor),
                              run_id=request.run_id, run_root=request.run_root)
+
+
+def _current_action_invocation(executor: ExecutorDefinition):
+    from astrid.core.execution.resident_sessions import _JOB, resident_invocation
+
+    context = _JOB.get()
+    if context is not None and context.session_identity:
+        if context.cancelled():
+            raise ExecutorRunnerError("resident action has been cancelled")
+        return resident_invocation(executor.metadata)
+    return executor.metadata.get("action_invocation")
 
 
 def _resolve_declared_outputs(
