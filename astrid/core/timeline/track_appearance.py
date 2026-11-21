@@ -9,6 +9,11 @@ CLIP_PLACEMENT_VERSION = "clipPlacementVersion"
 CLIP_PLACEMENT_VERSION_CURRENT = 1
 
 
+def is_legacy_clip_placement_version(value: Any) -> bool:
+    """Identify the exact marker accepted by the R13 open track app field."""
+    return type(value) is int and value == 2
+
+
 def label_track_with_id(track: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
     """Give a track without a label its id as label.
 
