@@ -1,0 +1,117 @@
+{
+  "packet": "R14-FIX-13",
+  "issue": "banodoco/astrid-dev#964",
+  "session": "r14-FIX-13-1",
+  "state": "focused proof complete; submitted candidate still requires Lead review",
+  "base_commit": "aa988878b383fb965b5fc05601baa15a93849d42",
+  "candidate_source_commit": "95bdeb309bb4abfaea1e38e23e9313c89e7a9b0c",
+  "candidate_source_tree": "df2da32d43925a3cf7b5cabcf32ff815401cb33c",
+  "mechanical_move_commit": "3edc9ca04755fe60d1fdb1dca7b4bb7f70685488",
+  "six_literal_refresh_commit": "95bdeb309bb4abfaea1e38e23e9313c89e7a9b0c",
+  "lead_approval": "https://github.com/banodoco/astrid-dev/issues/796#issuecomment-7000713627",
+  "blocked_request_resolved": "https://github.com/banodoco/astrid-dev/issues/796#issuecomment-7000651839",
+  "policy_module_sha256": "a7544f124981170d39ef72b93177bf4f1f9982b199b8c9cb2eb8d79ef5b579dc",
+  "tls_policy_before_after": {
+    "before_passed": 157,
+    "after_passed": 157,
+    "before_exit": 0,
+    "after_exit": 0
+  },
+  "independently_executed_error_contract": {
+    "before_failed": 1,
+    "after_failed": 1,
+    "before_exit": 1,
+    "after_exit": 1,
+    "id": "tests/test_astrid_error_contract.py::test_to_envelope_omits_code_and_source_type_when_none"
+  },
+  "transport_before_after": {
+    "before_passed": 15,
+    "after_passed": 15,
+    "before_exit": 0,
+    "after_exit": 0,
+    "after_carried_from": "3edc9ca04755fe60d1fdb1dca7b4bb7f70685488"
+  },
+  "all_executed_ids": {
+    "before": 173,
+    "after": 173,
+    "passed": 172,
+    "failed": 1,
+    "regressions": 0,
+    "missing": 0,
+    "no_baseline": 0,
+    "skipped": 0,
+    "xfail": 0
+  },
+  "structure": {
+    "before": 103,
+    "after": 102,
+    "trusted_ceiling": 102,
+    "after_structure_exit": 0,
+    "after_ceiling_exit": 0,
+    "new_findings": 0,
+    "ceiling_errors": 0
+  },
+  "tls_opening_inventory": {
+    "new": 0,
+    "changed": 0,
+    "stale": 0
+  },
+  "guard_injections": {
+    "seventh_changed_function": {
+      "raw_exit": 1,
+      "failure": "original guard assertion",
+      "new": 0,
+      "changed": 1,
+      "stale": 0
+    },
+    "new_opening": {
+      "raw_exit": 1,
+      "failure": "original guard assertion",
+      "new": 1,
+      "changed": 0,
+      "stale": 0
+    }
+  },
+  "static_analysis": {
+    "ruff": {
+      "before": 4,
+      "after": 4,
+      "new_identities": 0
+    },
+    "mypy": {
+      "before": 11,
+      "after": 11,
+      "new_identities": 0
+    },
+    "guard_file_raw_ruff_mypy_exits": {
+      "before": [
+        0,
+        0
+      ],
+      "after": [
+        0,
+        0
+      ]
+    }
+  },
+  "assertions": {
+    "original_assertions": 234,
+    "preserved_ASTs": 234,
+    "weakened": 0,
+    "removed": 0
+  },
+  "limits": [
+    "GL.2 is replayed locally using byte-identical approved Plan 39 gate files from 68e7aa8593d13eaeb6a55da1d97bed8b494df15b; they are not present in release/14/main, and no gate/workflow edits are proposed.",
+    "The separate inherited envelope-contract failure remains executed and visible.",
+    "Ruff/mypy retain four/eleven inherited diagnostic identities; this is a no-new-findings result, not a raw zero-diagnostic claim.",
+    "Linux Python 3.13.5 proof; no new native Windows/macOS execution or whole-CI/release-green claim.",
+    "Initial ambient SSL_CERT_FILE guidance failure is retained and explained. Controlled paired TLS proof clears only SSL_CERT_FILE/SSL_CERT_DIR; explicit override and verification-refusal tests remain unchanged."
+  ],
+  "archive": {
+    "path": "qualification-95bdeb3.tar.gz",
+    "sha256": "4bbf8e6cac36678664e00897b7edaaaf1c10c957435f1691e88682df964dae0c",
+    "size": 55580,
+    "files": 86
+  },
+  "routes_used": "Unknown \u2014 authenticated host route provenance is unavailable; a read-only helper recovered historical test selections. No independent review commissioned."
+}

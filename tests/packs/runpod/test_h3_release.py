@@ -719,7 +719,7 @@ def test_bootstrap_packages_exact_product_sources_deterministically():
 
 
 @pytest.mark.parametrize("source", [
-    "_tls_policy.py",
+    pytest.param("installer/_tls_policy.py", id="_tls_policy.py"),
     "core/generation/engine_contracts.py", "core/generation/model_downloader.py",
     "packs/runpod/h3_release_remote.py", "packs/runpod/h3_release_bootstrap.py",
     *("runtime_protocol/" + name for name in bootstrap._RUNTIME_SOURCES),
@@ -801,7 +801,7 @@ def test_actual_transport_bootstrap_downloads_and_skips_on_stdlib_only_cold_targ
     env["TMPDIR"] = str(temporary)
     source_hashes = {
         "astrid/" + name: hashlib.sha256((Path(build.__file__).parents[2] / name).read_bytes()).hexdigest()
-        for name in ("_tls_policy.py", "core/generation/engine_contracts.py", "core/generation/model_downloader.py")
+        for name in ("installer/_tls_policy.py", "core/generation/engine_contracts.py", "core/generation/model_downloader.py")
     }
     source_hashes.update({
         "runtime_protocol/" + name: hashlib.sha256(

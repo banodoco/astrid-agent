@@ -15,12 +15,13 @@ import urllib.error
 import urllib.request
 from types import SimpleNamespace
 
-from astrid import _tls_policy, omp_agent
+from astrid import omp_agent
 from astrid.core.generation import model_downloader
 from astrid.core.generation.backends import comfy_target
 from astrid.core.generation.engine_contracts import ModelSpec
 from astrid.core.model_setup import acquire
 from astrid.core.util import http as http_util
+from astrid.installer import _tls_policy
 
 
 def test_installed_and_standalone_callers_share_the_same_policy():
