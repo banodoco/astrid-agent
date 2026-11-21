@@ -531,7 +531,7 @@ def _speaking(backend, say):
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(prog="astrid install", description="Install or update Astrid.")
     mode = result.add_mutually_exclusive_group()
-    mode.add_argument("--update", action="store_true", help=argparse.SUPPRESS)
+    mode.add_argument("--update", action="store_true", help="update the existing Astrid installation")
     mode.add_argument("--update-app", action="store_true", help="update and relaunch Pinokio's app when no workspace migration is needed")
     mode.add_argument("--uninstall", action="store_true")
     mode.add_argument("--rollback", action="store_true", help="switch back to the retained R0 service, keeping both data roots")
@@ -541,7 +541,8 @@ def parser() -> argparse.ArgumentParser:
                       help="plan or apply data-preserving recovery of unresolved update evidence")
     result.add_argument("--delete-data", action="store_true", help="also delete the selected data root during uninstall")
     result.add_argument("--root", type=Path, help="absolute managed program directory")
-    result.add_argument("--managed-by", choices=["pinokio"], help="install without a login service; Pinokio owns the process")
+    result.add_argument("--managed-by", choices=["pinokio"],
+                        help="let Pinokio start and stop Astrid; disable Astrid sign-in autostart")
     result.add_argument("--data-root", type=Path, help="absolute workspace support directory")
     result.add_argument("--manifest", type=Path, help="local copy of the pinned hosted install manifest")
     result.add_argument("--update-job", help=argparse.SUPPRESS)
