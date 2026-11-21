@@ -746,6 +746,8 @@ class Service:
             script = action[-1] if len(action) >= 5 and action[1:5] == ["-X", "utf8", "-I", "-c"] else None
             if not self._known_launch_action(action, data, windows=False, script=script):
                 raise ValueError("The launchd service action is not owned by this installation.")
+        except FileNotFoundError as exc:
+            raise ValueError("The launchd service configuration is missing.") from exc
         except (OSError, TypeError, KeyError, plistlib.InvalidFileException) as exc:
             raise ValueError("The launchd service configuration is malformed.") from exc
         if loaded_argv is None:
@@ -838,6 +840,15 @@ class Service:
                         self._validated_launchd_stop_checked = True
                     return None
                 raise
+            # The label is shared by per-user installs. With autostart off,
+            # no plist is published for this installation, so a loaded job
+            # under that label belongs elsewhere and is not ours to stop.
+            record = self.recorded()
+            saved_autostart = resolve_choices(
+                explicit=None, saved=record.get("choices"), existing_install=bool(record)
+            )["autostart"]
+            if not self.path.exists() and not saved_autostart:
+                return None
             identity, observation = self._launchd_stop_identity(value, data)
             state, pid = observation["state"], observation["pid"]
             if expected_identity is not None and identity != expected_identity:
