@@ -184,7 +184,10 @@ def normalize_revision_closure(parent, internals):
     """Normalize copies while each source still has its own tracks and canvas."""
     parent, internals = copy.deepcopy(parent), copy.deepcopy(internals)
     payload = parent['payload']
-    config = payload['config']
+    config = payload.get('config')
+    if not isinstance(config, dict):
+        raise CommandError('parent payload.config must be an object',
+                           kind='invalid_revision', ref='parent', path=('payload', 'config'))
     separate = payload.get('clips', [])
     embedded = config.get('clips', [])
     if separate and embedded and separate != embedded:
