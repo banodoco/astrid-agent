@@ -14,7 +14,9 @@ import { findDraft, sha256 } from './scripts/journey_required_update_browser.mjs
 
 const config = { projectId: 'project', timelineId: 'timeline', draftLabel: 'A complete draft' };
 const path = '/v1/projects/project/timelines/timeline/commit';
-const payload = { label: config.draftLabel, ['__proto__']: 'opaque saved key' };
+const after = { project_id: 'project', timeline_id: 'timeline',
+  parent_revision: { payload: { config: { tracks: [{ id: 'V1', label: config.draftLabel }] } } } };
+const payload = { after, ['__proto__']: 'opaque saved key' };
 const row = {
   scope: { projectId: 'project', timelineId: 'timeline', realmId: 'realm', actorId: 'actor' },
   ownerId: 'owner',
@@ -40,6 +42,45 @@ assert.equal(await findDraft(page, config), undefined, 'an earlier partial save 
 setWireLabel(config.draftLabel);
 row.pending.request.key = 'different-key';
 assert.equal(await findDraft(page, { ...config, expectedDraft: observed.draft }), undefined);
+"""
+    subprocess.run(
+        ["node", "--input-type=module", "-"], input=program, text=True, cwd=ROOT, check=True, timeout=15,
+    )
+
+
+def test_durable_draft_recognizes_released_document_patch_track_rename():
+    program = r"""
+import assert from 'node:assert/strict';
+import { findDraft, sha256 } from './scripts/journey_required_update_browser.mjs';
+
+const config = { projectId: 'project', timelineId: 'timeline', draftLabel: 'Full draft' };
+const path = '/v1/projects/project/timelines/timeline/commit';
+const fields = { op: 'set', ref: 'parent', before: { state: 'present', value: 'Saved' }, value: config.draftLabel };
+const tracks = [{ id: 'V1', label: config.draftLabel }];
+const after = { project_id: 'project', timeline_id: 'timeline', parent_revision: { payload: { config: { tracks } } } };
+const row = {
+  scope: { projectId: 'project', timelineId: 'timeline', realmId: 'realm', actorId: 'actor' },
+  ownerId: 'owner',
+  intents: [{ id: 'draft-intent', payload: { kind: 'local-save', after } }],
+  pending: { intentId: 'draft-intent', request: { method: 'POST', path, key: 'original-key' } },
+};
+function setChange(...path) {
+  row.pending.request.body = JSON.stringify({
+    commands: [{ op: 'doc.patch', select: null, args: { changes: [{ ...fields, path }] } }],
+  });
+}
+const page = { evaluate: async () => JSON.stringify([row]) };
+for (const prefix of [[], ['config']]) {
+  setChange(...prefix, 'tracks', 'id:V1', 'label');
+  const observed = await findDraft(page, config);
+  assert.ok(observed, 'the shipped document patch must bind the full V1 label');
+  assert.equal(observed.draft.requestSha256, sha256(row.pending.request.body));
+}
+setChange('config', 'tracks', 'id:V2', 'label');
+assert.equal(await findDraft(page, config), undefined, 'another track cannot stand in for the draft');
+setChange('config', 'tracks', 'id:V1', 'label');
+tracks[0].label = 'partial';
+assert.equal(await findDraft(page, config), undefined, 'the persisted after-image must carry the same complete label');
 """
     subprocess.run(
         ["node", "--input-type=module", "-"], input=program, text=True, cwd=ROOT, check=True, timeout=15,

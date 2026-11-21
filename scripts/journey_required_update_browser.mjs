@@ -101,9 +101,18 @@ function trackLabelFromWire(raw) {
     const { commands } = JSON.parse(raw);
     if (!Array.isArray(commands) || commands.length !== 1) return undefined;
     const [command] = commands;
-    if (command?.op !== 'track.set' || command.select !== 'parent/track:V1'
-      || command.args?.clear?.length !== 0) return undefined;
-    return command.args.values?.label;
+    if (command?.op === 'track.set' && command.select === 'parent/track:V1' && command.args?.clear?.length === 0) {
+      return command.args.values?.label;
+    }
+    if (command?.op !== 'doc.patch' || command.select !== null || !Array.isArray(command.args?.changes)) return undefined;
+    // R13's installed editor can encode the same label-only gesture as a
+    // document patch, using either the parent or its config's tracks collection.
+    const labelChanges = command.args.changes.filter((change) => {
+      if (change?.op !== 'set' || change.ref !== 'parent' || !Array.isArray(change.path)) return false;
+      const path = change.path[0] === 'config' ? change.path.slice(1) : change.path;
+      return path.length === 3 && path[0] === 'tracks' && path[1] === 'id:V1' && path[2] === 'label';
+    });
+    return labelChanges.length === 1 ? labelChanges[0].value : undefined;
   } catch {
     return undefined;
   }
@@ -111,6 +120,14 @@ function trackLabelFromWire(raw) {
 
 function sameScope(row, config) {
   return row.scope?.projectId === config.projectId && row.scope?.timelineId === config.timelineId;
+}
+
+function canonicalTrackLabel(document, config) {
+  if (document?.project_id !== config.projectId || document.timeline_id !== config.timelineId) return undefined;
+  const tracks = document.parent_revision?.payload?.config?.tracks;
+  if (!Array.isArray(tracks)) return undefined;
+  const target = tracks.filter((track) => track?.id === 'V1');
+  return target.length === 1 ? target[0].label : undefined;
 }
 
 // Keep the raw persisted request in memory. Only scoped IDs and digests leave the browser runner.
@@ -124,7 +141,7 @@ export async function findDraft(page, config) {
       || typeof pending.body !== 'string' || typeof pending.key !== 'string' || !pending.key
       || trackLabelFromWire(pending.body) !== config.draftLabel) continue;
     const intent = row.intents?.find((entry) => entry.id === row.pending.intentId);
-    if (!intent || intent.payload === undefined) continue;
+    if (!intent || canonicalTrackLabel(intent.payload?.after, config) !== config.draftLabel) continue;
     const draft = {
       realmId: row.scope.realmId, actorId: row.scope.actorId, projectId: row.scope.projectId,
       timelineId: row.scope.timelineId, ownerId: row.ownerId, intentId: intent.id,
@@ -220,9 +237,10 @@ export async function author(page, config, { onQueuedAttempt, onPhase, newDocume
     evidence.responseStatus = response.status();
     const body = await response.json().catch(() => ({}));
     if (/^[a-zA-Z0-9_.-]{1,80}$/.test(body.error?.code ?? '')) evidence.responseCode = body.error.code;
+    evidence.acceptedLabelMatches = canonicalTrackLabel(body.data?.canonical_document, config) === config.savedLabel;
     evidence.outcome = 'scoped-post-failed';
     check(response.ok() && body.data?.status === 'accepted' && body.data.accepted_revision_id
-      && body.receipt?.receipt_id, 'R13 did not accept the saved composition edit');
+      && body.receipt?.receipt_id && evidence.acceptedLabelMatches, 'R13 did not accept the saved composition edit');
     const accepted = { revision: body.data.accepted_revision_id, publication: body.receipt.receipt_id };
     evidence.outcome = 'accepted';
     onPhase?.('settle-r13-edit');
@@ -239,8 +257,8 @@ export async function author(page, config, { onQueuedAttempt, onPhase, newDocume
     check(queued, 'The scoped R13 draft request was not captured');
     const { request } = queued;
     const requestBody = request.postData() ?? '';
-    evidence.heldTrackSetMatches = trackLabelFromWire(requestBody) === config.draftLabel;
-    check(evidence.heldTrackSetMatches, 'The held request did not carry the complete draft label');
+    evidence.heldLabelMatches = trackLabelFromWire(requestBody) === config.draftLabel;
+    check(evidence.heldLabelMatches, 'The held request did not carry the complete draft label');
     const { draft, pending } = await waitForDraft(page, config);
     check(draft.ownerId === ownerId && blockedPosts > 0 && pending.body === requestBody
       && pending.key === request.headers()['idempotency-key'],
