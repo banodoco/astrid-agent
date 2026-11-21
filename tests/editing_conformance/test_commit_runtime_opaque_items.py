@@ -103,9 +103,48 @@ def opaque_film(request, tmp_path, monkeypatch):
             bundle_from_document(original), "occurrence:occurrence-2",
         )]), "opaque-delete-source")
         staged = deleted["data"]["canonical_document"]
+        source_owner, third_owner = "occurrence-1", "occurrence-3"
+        if request.param in ("item_id", "both"):
+            # The historical film has reserved occurrence-2 already. Copy the
+            # accepted deletion into a NEW timeline with fresh temporary IDs;
+            # do not recycle any source or retired destination identity.
+            from astrid.sdk.timeline.native_timeline_duplicate import copy_command
+
+            head = edit.head()
+            assert isinstance(head["publication_id"], str) and head["publication_id"]
+            old_rows = staged["parent_revision"]["payload"]["occurrences"]
+            assert [row["occurrence_id"] for row in old_rows] == [
+                "occurrence-1", "occurrence-3",
+            ]
+            shot_map = {row["shot_id"]: "opaque-s10-" + row["shot_id"]
+                        for row in staged["shot_revisions"]}
+            owner_map = {row["occurrence_id"]: "opaque-s10-" + row["occurrence_id"]
+                         for row in old_rows}
+            assert len(shot_map) == len(staged["shot_revisions"])
+            assert set(shot_map.values()).isdisjoint(shot_map)
+            assert set(owner_map.values()).isdisjoint(owner_map)
+            source_ref = {
+                "project_id": edit.project, "timeline_id": edit.timeline,
+                "revision_id": head["revision_id"],
+                "publication_id": head["publication_id"],
+                "content_digest": staged["parent_revision"]["content_digest"],
+            }
+            destination = "opaque-shared-s10"
+            edit.service.create_timeline(
+                edit.project, destination, idempotency_key="opaque-shared-s10-create",
+            )
+            edit.timeline = destination
+            edit.path = f"/v1/projects/{edit.project}/timelines/{destination}/commit"
+            copied = edit.commit(edit.body([copy_command(
+                source_ref, shot_map, owner_map,
+            )]), "opaque-authenticated-copy")
+            staged = copied["data"]["canonical_document"]
+            assert edit.document() == staged
+            source_owner = owner_map["occurrence-1"]
+            third_owner = owner_map["occurrence-3"]
         target = copy.deepcopy(staged)
         parent = target["parent_revision"]["payload"]
-        _, shot, internal = occurrence_image(target, "occurrence-1")
+        _, shot, internal = occurrence_image(target, source_owner)
         internal["payload"]["clips"][0]["hold"] = 0.25
         media = shot["payload"]["provenance"]["source_media"]
         shot["payload"]["items"] = [{
@@ -142,40 +181,110 @@ def opaque_film(request, tmp_path, monkeypatch):
         setup = emit_document_commands(staged_bundle, authored_target)
         source_row = copy.deepcopy(staged["parent_revision"]["payload"]["occurrences"][0])
         source_row.update(data=opaque(), app=opaque(), opaque=opaque())
-        setup.append(occurrence_patch(staged, [source_row, *staged["parent_revision"]["payload"]["occurrences"][1:]]))
-        source = edit.commit(body_with_ordered_patch(edit, setup), "opaque-source")
+        if request.param in ("item_id", "both"):
+            # The emitted child promotion and metadata are TWO accepted
+            # publications: Runtime refuses their unauthenticated same-commit
+            # intermediate image. Use fresh native before-values on the second.
+            source = edit.commit(body_with_ordered_patch(edit, setup), "opaque-source")
+            promoted = source["data"]["canonical_document"]
+            previous = next(row for row in promoted["parent_revision"]["payload"]["occurrences"]
+                            if row["occurrence_id"] == source_owner)
+            promoted_revision = previous["shot_revision_id"]
+            fields = [{
+                "op": "set", "ref": "parent",
+                "path": ["occurrences", "occurrence_id:" + source_owner, key],
+                "before": present(previous[key]) if key in previous else {"state": "absent"},
+                "value": copy.deepcopy(source_row[key]),
+            } for key in ("data", "app", "opaque")
+                if previous.get(key) != source_row[key]]
+            if fields:
+                patch = {
+                    "schema_version": 1, "op": "doc.patch", "version": "1",
+                    "select": None, "args": {"changes": fields},
+                }
+                source = edit.commit(
+                    body_with_ordered_patch(edit, [patch]), "opaque-source-metadata",
+                )
+            promoted = source["data"]["canonical_document"]
+            published = next(row for row in promoted["parent_revision"]["payload"]["occurrences"]
+                             if row["occurrence_id"] == source_owner)
+            assert published["shot_revision_id"] == promoted_revision
+            assert all(published[key] == source_row[key]
+                       for key in ("data", "app", "opaque"))
+            assert edit.document(promoted["parent_revision"]["revision_id"]) == promoted
+        else:
+            # Id-only compatibility is still a historical-data/product stop.
+            setup.append(occurrence_patch(staged, [
+                source_row, *staged["parent_revision"]["payload"]["occurrences"][1:],
+            ]))
+            source = edit.commit(body_with_ordered_patch(edit, setup), "opaque-source")
 
         source_document = source["data"]["canonical_document"]
-        shared = capture_occurrence_place_shared(
-            bundle_from_document(source_document), "occurrence:occurrence-1", "occurrence-2", on=1,
-        )
-        shared_result = edit.commit(edit.body([shared]), "opaque-shared-source")
-        shared_document = shared_result["data"]["canonical_document"]
+        if request.param in ("item_id", "both"):
+            # The destination has never reserved occurrence-1/2/3. Their
+            # physical links and original names are created exclusively by
+            # three supported, authenticated place-shared commands.
+            accepted_rows = {row["occurrence_id"]: row for row in
+                             source_document["parent_revision"]["payload"]["occurrences"]}
+            first_on = accepted_rows[source_owner]["placement"]["start_ms"] / 1000
+            third_on = accepted_rows[third_owner]["placement"]["start_ms"] / 1000
+            for new_id, old_id, on in (
+                ("occurrence-1", source_owner, first_on),
+                ("occurrence-2", source_owner, 1),
+                ("occurrence-3", third_owner, third_on),
+            ):
+                command = capture_occurrence_place_shared(
+                    bundle_from_document(edit.document()), "occurrence:" + old_id,
+                    new_id, on=on,
+                )
+                shared = edit.commit(edit.body([command]), "opaque-place-" + new_id)
+                assert edit.document() == shared["data"]["canonical_document"]
 
-        # Restore the premigration occurrence rows and order while retaining
-        # the authenticated source revision returned by place-shared.
-        current = {row["occurrence_id"]: row for row in
-                   shared_document["parent_revision"]["payload"]["occurrences"]}
-        original_rows = {
-            row["occurrence_id"]: row
-            for row in original["parent_revision"]["payload"]["occurrences"]
-        }
-        rows = []
-        for occurrence_id in (
-            row["occurrence_id"] for row in original["parent_revision"]["payload"]["occurrences"]
-        ):
-            row = copy.deepcopy(original_rows[occurrence_id])
-            if occurrence_id in ("occurrence-1", "occurrence-2"):
-                source_row = current[occurrence_id]
-                row["shot_id"] = source_row["shot_id"]
-                row["shot_revision_id"] = source_row["shot_revision_id"]
-                row.update(data=opaque(), app=opaque(), opaque=opaque())
-            rows.append(row)
-        baseline = edit.commit(
-            body_with_ordered_patch(edit, [occurrence_patch(shared_document, rows)]),
-            "opaque-baseline",
-        )
-        baseline_document = baseline["data"]["canonical_document"]
+            # Temporary authenticated copy identities remain reserved after
+            # retirement. Never delete/recreate a real original ID.
+            for old_id in (source_owner, third_owner):
+                command = capture_occurrence_delete(
+                    bundle_from_document(edit.document()), "occurrence:" + old_id,
+                )
+                retired = edit.commit(edit.body([command]), "opaque-retire-" + old_id)
+                assert edit.document() == retired["data"]["canonical_document"]
+            baseline_document = edit.document()
+            assert [row["occurrence_id"] for row in
+                    baseline_document["parent_revision"]["payload"]["occurrences"]] == [
+                "occurrence-1", "occurrence-2", "occurrence-3",
+            ]
+            assert_readback(edit, baseline_document)
+        else:
+            shared = capture_occurrence_place_shared(
+                bundle_from_document(source_document), "occurrence:occurrence-1", "occurrence-2", on=1,
+            )
+            shared_result = edit.commit(edit.body([shared]), "opaque-shared-source")
+            shared_document = shared_result["data"]["canonical_document"]
+
+            # Restore the premigration occurrence rows and order while retaining
+            # the authenticated source revision returned by place-shared.
+            current = {row["occurrence_id"]: row for row in
+                       shared_document["parent_revision"]["payload"]["occurrences"]}
+            original_rows = {
+                row["occurrence_id"]: row
+                for row in original["parent_revision"]["payload"]["occurrences"]
+            }
+            rows = []
+            for occurrence_id in (
+                row["occurrence_id"] for row in original["parent_revision"]["payload"]["occurrences"]
+            ):
+                row = copy.deepcopy(original_rows[occurrence_id])
+                if occurrence_id in ("occurrence-1", "occurrence-2"):
+                    source_row = current[occurrence_id]
+                    row["shot_id"] = source_row["shot_id"]
+                    row["shot_revision_id"] = source_row["shot_revision_id"]
+                    row.update(data=opaque(), app=opaque(), opaque=opaque())
+                rows.append(row)
+            baseline = edit.commit(
+                body_with_ordered_patch(edit, [occurrence_patch(shared_document, rows)]),
+                "opaque-baseline",
+            )
+            baseline_document = baseline["data"]["canonical_document"]
         first = occurrence_image(baseline_document, "occurrence-1")
         second = occurrence_image(baseline_document, "occurrence-2")
         assert first[1]["revision_id"] == second[1]["revision_id"]
