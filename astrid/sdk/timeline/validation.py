@@ -778,12 +778,23 @@ def validate_final_candidate(
     if not isinstance(shots_value, Mapping):
         _fail("candidate.shots", "must be an object")
     shots: Mapping[str, Any] = shots_value
-    baseline_shots = (baseline or {}).get("shots", {})
+    marker_baseline = (baseline or {}) if _same_fields(candidate, baseline, ("project_id", "timeline_id")) else {}
+    baseline_shots = marker_baseline.get("shots", {})
+    baseline_sources = marker_baseline.get("source_mapping", {}).get("shots", {})
+    candidate_sources = candidate.get("source_mapping", {}).get("shots", {})
+    source_fields = ("shot_id", "revision_id", "content_digest", "internal_timeline_id",
+                     "internal_timeline_revision_id", "internal_timeline_content_digest")
     for shot_id, shot in shots.items():
         internal = shot.get("internal_timeline") if isinstance(shot, Mapping) else None
         if not isinstance(internal, Mapping):
             continue
-        previous = baseline_shots.get(shot_id, {}).get("internal_timeline", {})
+        source = candidate_sources.get(shot_id)
+        previous_source = baseline_sources.get(shot_id)
+        previous = {}
+        if (isinstance(source, Mapping) and isinstance(previous_source, Mapping)
+                and all(key in previous_source for key in source_fields)
+                and _same_fields(source, previous_source, source_fields)):
+            previous = baseline_shots.get(shot_id, {}).get("internal_timeline", {})
         path = f"candidate.shots[{shot_id!r}].internal_timeline.tracks"
         _validate_legacy_placement_markers(internal, previous, path=path)
     for occurrence_id, placement in placements.items():
