@@ -124,7 +124,7 @@ def capture_mode(mode: str) -> dict:
                 event["read_error"] = f"{type(error).__name__}: {error}"
         evidence["ordered_native_operations"].append(event)
         try:
-            new_root, before = original_apply(root, change, physical=physical)
+            new_root, _ = original_apply(root, change, physical=physical)
         except Exception as error:
             event["refusal"] = {"type": type(error).__name__, "message": str(error),
                                 "kind": getattr(error, "kind", None)}
