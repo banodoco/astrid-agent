@@ -437,3 +437,53 @@ def test_editing_the_word_declaration_text_is_refused():
     child_clips(value)[0]["app"]["astrid"]["on"] = "word:hello again"
     with pytest.raises(AuthoringBundleError, match="missing exact word binding"):
         validate_final_candidate(value, baseline=baseline)
+
+
+# --- scope: a real commit gives the edited shot a new revision_id as well (content-addressed ids) ----------------
+# Captured from the real Almost Ready commit of clip.set-element: the candidate's shot carried a new
+# revision_id AND a new internal_timeline_revision_id; its untouched clips still had a 3 ms overrun and an
+# unbound word declaration. The baseline must carry over for the same shot and internal timeline.
+
+def _bump_shot_revisions(value):
+    row = value["source_mapping"]["shots"][SHOT]
+    row["revision_id"] = "authoring-shot-revision-next"
+    row["internal_timeline_revision_id"] = "authoring-timeline-revision-next"
+
+
+def _real_shaped_head():
+    head = _overrunning_shot_head()
+    child_clips(head)[1].setdefault("app", {}).setdefault("astrid", {})["on"] = "word:hello"
+    return head
+
+
+def test_new_shot_revision_keeps_untouched_overrun_and_unbound_word_from_blocking_an_unrelated_edit():
+    baseline = _real_shaped_head()
+    value = copy.deepcopy(baseline)
+    _bump_shot_revisions(value)
+    unrelated_change(value)
+    child_clips(value).append({**copy.deepcopy(child_clips(value)[1]), "id": "added", "at": 8})
+    child_clips(value)[-1]["app"]["astrid"].pop("on")
+    validate_final_candidate(value, baseline=baseline)
+
+
+def test_new_shot_revision_still_refuses_a_touched_overrun_and_a_touched_word_binding():
+    baseline = _real_shaped_head()
+    value = copy.deepcopy(baseline)
+    _bump_shot_revisions(value)
+    child_clips(value)[0]["hold"] = 0.104
+    with pytest.raises(AuthoringBundleError, match="half-open bounds"):
+        validate_final_candidate(value, baseline=baseline)
+    value = copy.deepcopy(baseline)
+    _bump_shot_revisions(value)
+    child_clips(value)[1]["app"]["astrid"]["on"] = "word:goodbye"
+    with pytest.raises(AuthoringBundleError, match="missing exact word binding"):
+        validate_final_candidate(value, baseline=baseline)
+
+
+def test_new_shot_revision_of_another_internal_timeline_carries_no_baseline_over():
+    baseline = _real_shaped_head()
+    value = copy.deepcopy(baseline)
+    _bump_shot_revisions(value)
+    value["source_mapping"]["shots"][SHOT]["internal_timeline_id"] = "another-internal-timeline"
+    with pytest.raises(AuthoringBundleError, match="half-open bounds"):
+        validate_final_candidate(value, baseline=baseline)
