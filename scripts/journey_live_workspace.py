@@ -191,6 +191,70 @@ def seed(client, project, generation, task_id=None, create_project=False):
             "object_digest": hashlib.sha256(payload).hexdigest(), "generation": generation}
 
 
+def seed_authored_timeline(client, project, generation):
+    """Prepare a real canonical editor document using public Runtime endpoints.
+
+    The installed Runtime must accept the same timeline.init envelope used by
+    the App's native direct-journey fixture; no direct SQLite, fixture injection,
+    source-overlay or fake client can stand in for this cross-version test.
+    """
+    keys = seed(client, project, generation, task_id=None, create_project=True)
+    timeline_path = path("projects", keys["project"], "timelines", keys["timeline"])
+    current = client.request("GET", timeline_path)
+    base_revision = current.get("head_revision_id") if isinstance(current, dict) else None
+    base_publication = current.get("head_publication_id") if isinstance(current, dict) else None
+    if not (isinstance(base_revision, str) and base_revision
+            and isinstance(base_publication, str) and base_publication):
+        raise RuntimeError("Installed Runtime did not publish a canonical timeline bootstrap head")
+
+    label = "Initialize mixed-version creative timeline"
+    command = {
+        "schema_version": 1, "op": "timeline.init", "version": "1", "select": "parent",
+        "args": {"name": "Main", "slug": "main",
+                 "output": {"resolution": "1280x720", "fps": 30, "file": "output.mp4",
+                            "background": None, "background_scale": None}},
+    }
+    reads = [{"kind": "scope", "ref": "timeline", "path": []}]
+    body = {
+        "api_version": 1, "project_id": keys["project"], "timeline_id": keys["timeline"],
+        "base_revision_id": base_revision, "base_publication_id": base_publication,
+        "commands": [command], "label": label,
+        "steps": [{"id": "fix17-init", "label": "timeline.init", "intent": label,
+                   "tags": [], "command_ordinals": [0], "patch": [], "reads": reads}],
+        "merge": "atomic", "reads": reads, "dry_run": False, "source": {"via": "python"},
+    }
+    accepted = client.request("POST", timeline_path + "/commit", body,
+                              key="fix17-mixed-init-" + generation)
+    data = accepted.get("data") if isinstance(accepted, dict) else None
+    receipt = accepted.get("receipt") if isinstance(accepted, dict) else None
+    if (not isinstance(data, dict) or data.get("status") != "accepted"
+            or not isinstance(receipt, dict)
+            or not isinstance(data.get("accepted_revision_id"), str)
+            or not isinstance(receipt.get("receipt_id"), str)):
+        raise RuntimeError("Installed Runtime refused or failed to acknowledge canonical initialization")
+    canonical = data.get("canonical_document")
+    parent = canonical.get("parent_revision") if isinstance(canonical, dict) else None
+    payload = parent.get("payload") if isinstance(parent, dict) else None
+    config = payload.get("config") if isinstance(payload, dict) else None
+    tracks = config.get("tracks") if isinstance(config, dict) else None
+    if not isinstance(tracks, list) or not any(
+            isinstance(track, dict) and track.get("id") == "V1" and track.get("label") == "V1"
+            for track in tracks):
+        raise RuntimeError("The accepted canonical document lacks the visible original V1 track")
+
+    reopened = client.request("GET", timeline_path)
+    if (reopened.get("head_revision_id") != data["accepted_revision_id"]
+            or reopened.get("head_publication_id") != receipt["receipt_id"]):
+        raise RuntimeError("Canonical initializer did not persist the accepted head and publication")
+    return {
+        "project": keys["project"], "timeline": keys["timeline"],
+        "project_name": "Release-0 user project " + generation,
+        "timeline_name": "Main", "track_id": "V1", "initial_label": "V1",
+        "revision_id": data["accepted_revision_id"],
+        "publication_id": receipt["receipt_id"], "authored": True,
+    }
+
+
 R11_PACK_REFUSAL = "stable selected pack capture requires Linux file lease support"
 
 
@@ -330,7 +394,7 @@ def check_selection(data, root, expected):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("seed", "snapshot", "save_timeline_after_update", "reopen_saved_timeline"))
+    parser.add_argument("action", choices=("seed", "snapshot", "seed_authored_timeline", "save_timeline_after_update", "reopen_saved_timeline"))
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--selection", type=Path, required=True)
@@ -372,6 +436,8 @@ def execute(args):
         result = seed(client, **request)
     elif args.action == "snapshot":
         result = snapshot(client, request)
+    elif args.action == "seed_authored_timeline":
+        result = seed_authored_timeline(client, **request)
     elif args.action == "save_timeline_after_update":
         result = save_timeline_after_update(client, request)
     else:
