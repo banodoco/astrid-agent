@@ -359,10 +359,12 @@ class Row:
             raise RowError("launcher install requires a full immutable App SHA")
         self.env["ASTRID_APP_REF"] = app_sha
         code = ("const {spawnSync}=require('node:child_process'); const action=require(process.argv[1]);"
-                "(async()=>{for(const step of await action()){if(typeof step.method==='function'){await step.method();continue;}"
+                "(async()=>{const result=await action(); const steps=Array.isArray(result)?result:result?.run;"
+                "if(!Array.isArray(steps))throw Error('Pinokio install action must return a run array');"
+                "for(const step of steps){if(typeof step.method==='function'){await step.method();continue;}"
                 "if(step.method!=='shell.run')throw Error('unsupported Pinokio install action step '+step.method);"
-                "const p=step.params, win=process.platform==='win32'; const args=win?['-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-Command',p.message]:['-lc',p.message];"
-                "const r=spawnSync(p.shell,args,{cwd:p.path,env:process.env,encoding:'utf8',stdio:['ignore','pipe','pipe']});"
+                "const p=step.params, win=process.platform==='win32'; const args=win?['-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-Command',p.message]:['--noprofile','--norc','-c',p.message];"
+                "const env={...process.env,...(p.env||{})}; const r=spawnSync(p.shell,args,{cwd:p.path,env,encoding:'utf8',stdio:['ignore','pipe','pipe']});"
                 "if(r.stdout)process.stdout.write(r.stdout);if(r.stderr)process.stderr.write(r.stderr);"
                 "if(r.error||r.status!==0)throw Error('Pinokio install shell action failed: '+(r.error?.message||r.status));}})().catch(e=>{console.error(e.stack||e);process.exit(1)});")
         self.command(["node", "-e", code, self.launcher / "pinokio" / "install.js"], timeout=3600)
