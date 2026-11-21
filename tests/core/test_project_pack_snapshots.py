@@ -412,3 +412,32 @@ def test_component_compile_failure_names_component_and_never_advances(configured
     with pytest.raises(ValueError, match='component.tsx.*failed to compile'):
         packs.admit_project_pack('realm', 'project')
     assert selection.read_bytes() == before
+
+
+def _stage_selection(source, snapshot):
+    reference, verified, _, _ = source
+    config = {'clips': [{'id': 'c', 'elementRef': reference}],
+              'app': {'astrid_project_element_snapshots': [
+                  {'realm': 'realm', 'project': 'project', 'reference': reference, 'verified': verified, 'snapshot': snapshot}]}}
+    return config
+
+
+def test_render_stages_the_admitted_compiled_module_as_the_component(configured, tmp_path):
+    """Preview and render run the same compiled bytes: staging replaces the component source with them."""
+    from astrid.core.rendering.project_elements import stage_project_elements
+    from astrid.pack_api import VERSION
+    root, directory, manifest = test_project_packs.seed()
+    manifest['pack_api'] = '%d.%d' % VERSION  # the scaffold's own manifest omits it; the loader needs it
+    (root / 'pack.yaml').write_text(yaml.safe_dump(manifest))
+    record = packs.admit_project_pack('realm', 'project')['elements'][0]
+    source = capture_input(configured, record)
+    admission = source[1]['document']['content']['admissions'][0]
+    snapshot = {**admission['snapshot_object'],
+                'bytes_base64': base64.b64encode(configured.media.objects[('project', admission['snapshot_object']['object_id'])]).decode('ascii')}
+    registry, roots = stage_project_elements(_stage_selection(source, snapshot), tmp_path)
+    staged = Path(roots[0]['root']) / record['snapshot']['componentPath']
+    compiled = (Path(record['snapshot']['root']) / record['compiled']['path']).read_bytes()
+    assert staged.read_bytes() == compiled != (directory / 'component.tsx').read_bytes()
+    assert b'react/jsx-runtime' in compiled  # externals stay for webpack to resolve
+    # The stored closure still holds the original TSX; only the render staging swaps it.
+    assert (Path(record['snapshot']['root']) / record['snapshot']['componentPath']).read_bytes().startswith(b"import React from 'react';")

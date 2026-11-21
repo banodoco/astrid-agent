@@ -205,7 +205,7 @@ def resolve_project_elements(config: Mapping[str, Any], *, project: str, client:
 def stage_project_elements(
     config: Mapping[str, Any], root: Path, *, registry: ElementRegistry | None = None,
 ) -> tuple[ElementRegistry, list[dict[str, str]]]:
-    """Recheck frozen bytes and stage separate, unmodified pack source trees."""
+    """Recheck frozen bytes and stage separate pack trees whose element components are the admitted compiled modules."""
     require_project_snapshots(config)
     registry = registry if registry is not None else load_default_registry()
     roots = []
@@ -239,6 +239,12 @@ def stage_project_elements(
         if len(exact) != 1:
             raise ValueError(f"Staged project element snapshot is unavailable for {label}: {ref}")
         element = exact[0]
+        # Render consumes the module admission compiled (and the editor previews), not a second esbuild's output:
+        # it stands in for the component source, and webpack only resolves its react/remotion externals.
+        compiled = project_packs._compiled_path(element.component.relative_to(pack_root).as_posix())
+        if compiled not in files:
+            raise ValueError(f"Project element snapshot for {label} has no compiled module; re-admit the pack")
+        element.component.write_bytes(files[compiled])
         metadata = {**element.metadata, "render_revision": descriptor["revision"],
                     "render_key": key, "render_import_scope": f"pack-{key}-elements"}
         registry.register(replace(element, metadata=metadata))
