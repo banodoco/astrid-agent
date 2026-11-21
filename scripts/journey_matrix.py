@@ -79,8 +79,11 @@ RELEASE1_AUTOSTART_MATRIX: Final = (
     {"job_id": "direct-linux-autostart-off", "mode": "direct", "runner": "ubuntu-24.04", "shell": "sh", "os": "linux", "leg": "fresh-install-autostart-off"},
     {"job_id": "direct-macos-autostart-off", "mode": "direct", "runner": "macos-15", "shell": "sh", "os": "macos", "leg": "fresh-install-autostart-off"},
 )
+# FIX-17 ports the prior-release user journeys only. Keep the five existing
+# direct rows and their unchanged automatic gate; historical R9/R11/autostart
+# rows are reference code, not silently added to the R14 publication matrix.
 RELEASE1_MATRIX: Final = (*_RELEASE1_DIRECT_LEGACY, *RELEASE1_DIRECT_FRESH_MATRIX,
-                          *RELEASE9_INSTALL_MATRIX, *RELEASE11_UPDATE_MATRIX, *RELEASE13_UPDATE_MATRIX, *RELEASE13_KILLED_MATRIX, *RELEASE1_AUTOSTART_MATRIX)
+                          *RELEASE13_UPDATE_MATRIX, *RELEASE13_KILLED_MATRIX)
 # An automatic push or schedule (no row input) runs the five rows that existed before the
 # release9 and release11 legs. row=direct runs all of RELEASE1_MATRIX.
 RELEASE1_AUTOMATIC_MATRIX: Final = (*_RELEASE1_DIRECT_LEGACY, *RELEASE1_DIRECT_FRESH_MATRIX)
