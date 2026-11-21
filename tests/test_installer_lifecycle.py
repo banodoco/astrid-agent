@@ -2133,10 +2133,10 @@ def test_real_c1_post_stop_failure_retries_fence_before_old_activation(tmp_path,
     root = backend.root
     folder = root / "versions" / "old"
     folder.mkdir(parents=True)
-    old = Version(folder, Path(sys.executable), folder / "profile.json", {})
+    old = Version(folder, Path(sys.executable), folder / "profile.json", {}, release=1)
     write_json(folder / "version.json", old.document())
     switch(root, old)
-    candidate = Version(root / "versions" / "new", Path(sys.executable), folder / "profile.json", {})
+    candidate = Version(root / "versions" / "new", Path(sys.executable), folder / "profile.json", {}, release=2)
     record = {"owner": LABEL, "program_root": str(root), "data_root": str(data)}
     write_json(backend.service.selection, record)
     backend.service.validate_stop_target = lambda *_args, **_kwargs: None
@@ -2270,7 +2270,7 @@ def test_repair_skips_down_for_proven_dead_runtime_and_keeps_discovery(tmp_path,
         )
         folder = backend.root / "versions" / "installed"
         folder.mkdir(parents=True)
-        old = Version(folder, folder / "py/bin/python", folder / "profile.json", {})
+        old = Version(folder, folder / "py/bin/python", folder / "profile.json", {}, release=1)
         old.python.parent.mkdir(parents=True)
         old.python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         write_json(folder / "version.json", old.document())
