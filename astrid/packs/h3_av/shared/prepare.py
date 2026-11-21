@@ -675,7 +675,7 @@ def _v2_mask_schedule(
 
 
 def _validate_frozen_source(request: H3Request, source: Mapping[str, Any], path: Path,
-                            envelope: Mapping[str, Any]) -> dict[str, Any]:
+                            envelope: Mapping[str, Any], *, canvas: tuple[int, int]) -> dict[str, Any]:
     """Verify the controller's sealed derivative before using local coordinates."""
     record = envelope.get("conform")
     if (envelope.get("version") != 1 or envelope.get("request_digest") != request.digest
@@ -696,7 +696,7 @@ def _validate_frozen_source(request: H3Request, source: Mapping[str, Any], path:
                  and len(actual_range) == 2 and expected_range == actual_range
                  and output["fit"] == source.get("fit", "fill")
                  and output["frames"] == expected_frames
-                 and output["fps"] == 24 and output["width"] == 1024 and output["height"] == 576
+                 and output["fps"] == 24 and (output["width"], output["height"]) == canvas
                  and output["range_seconds"] == [0, expected_frames / 24])
         digest = output["sha256"]
         original_digest = origin["sha256"]
@@ -711,6 +711,24 @@ def _validate_frozen_source(request: H3Request, source: Mapping[str, Any], path:
     if (managed.get("digest") != "sha256:" + digest or managed.get("sha256") != digest
             or not path.is_file() or _file_digest(path) != digest):
         raise PreparationError("prepared source digest mismatch")
+    # A sealed digest binds bytes, but the envelope can still claim the wrong
+    # geometry for those bytes. Probe the managed file before accepting it.
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe is None:
+        raise _missing_ffprobe("prepared source geometry check requires ffprobe")
+    try:
+        probe = subprocess.run(
+            [ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries",
+             "stream=width,height", "-of", "csv=p=0:s=x", str(path)],
+            check=True, capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise PreparationError("cannot probe prepared source geometry") from exc
+    if probe.stdout.strip() != f"{canvas[0]}x{canvas[1]}":
+        raise PreparationError(
+            f"prepared source video dimensions {probe.stdout.strip() or 'unknown'} "
+            f"do not match requested {canvas[0]}x{canvas[1]}"
+        )
     if not isinstance(record.get("decoded_av"), Mapping):
         raise PreparationError("prepared source decoded AV measurement is missing")
     return dict(record)
@@ -767,9 +785,7 @@ def prepare_request(
     original_request = request
     source_conform = None
     is_v2 = request.value.get("version") == 2
-    # The legacy conform produces a fixed-size derivative. Non-default v2
-    # sources must already match the requested canvas and pass preflight below.
-    if out_dir is not None and (not is_v2 or (width, height) == DEFAULT_SIZE):
+    if out_dir is not None:
         if is_v2:
             candidates = [(i, item) for i, item in enumerate(request.value["media"])
                           if item.get("role") == "timeline" and item.get("modality") == "video"]
@@ -785,12 +801,12 @@ def prepare_request(
                 source_conform = conform_source(
                     original_path, Path(out_dir) / "conformed-source", start=str(start), end=str(end),
                     fit=source.get("fit", "fill"),
-                    validate=facts().measure_source_av,
+                    validate=facts().measure_source_av, canvas=(width, height),
                 )
                 asset_map = dict(asset_map)
                 asset_map[source["asset"]] = str(Path(out_dir) / "conformed-source" / "source.mp4")
             else:
-                source_conform = _validate_frozen_source(request, source, original_path, frozen_source)
+                source_conform = _validate_frozen_source(request, source, original_path, frozen_source, canvas=(width, height))
             adjusted = copy.deepcopy(request.value)
             if is_v2:
                 from .request_v2 import _identity_value, json_times

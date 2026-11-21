@@ -276,7 +276,7 @@ def after_outputs(job_dir, inputs, files, outputs, *, engine=None):
     # Keep the path-free sealed view with settled verification. The separate
     # CPU re-decode derives the VHS frame count from the exact managed bytes and
     # leaves the metadata upper-bound estimate distinct.
-    if isinstance(state["plan"].get("reference_view"), Mapping):
+    if isinstance(state.get("plan", {}).get("reference_view"), Mapping):
         verification["reference_view"] = stages._settled_reference_view(
             state["plan"]["reference_view"], reference_assets=state.get("reference_assets", {}), workdir=work,
             composition=composition.get("composition") if isinstance(composition, Mapping) else None,
