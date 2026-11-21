@@ -1,8 +1,6 @@
 name: FIX-18 R13 R14 focused reproductions
 
 on:
-  push:
-    branches: [release/14/fix18-r13-differences]
   workflow_dispatch:
 
 permissions:
