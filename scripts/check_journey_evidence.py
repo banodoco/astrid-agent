@@ -113,11 +113,12 @@ RELEASE13_IDENTITY = {
     "schema_digest": "sha256:9628bb5fd6e1dbbec392dd39f2e01031622dcf52d7ccff7cd1f0ad10743dcb1c",
 }
 RELEASE13_CHECKS = tuple("release13_install" if name == "release11_install" else name for name in RELEASE11_CHECKS)
+RELEASE13_CHECKS += ("timeline_saved", "timeline_reopened")
 # The Windows release13-then-update row seeds a project and a workspace marker through the installed command
 # line instead of the live API, and adds astrid doctor and a dry-run generation. Its run receipt is read
 # where the Windows installer writes it and is checked when present.
 RELEASE13_WINDOWS_CHECKS = ("release13_install", "update_exit", "release", "one_runtime", "service", "health",
-                            "doctor", "dry_run", "data_marker", "unrelated_sentinel")
+                            "doctor", "dry_run", "data_marker", "timeline_saved", "timeline_reopened", "unrelated_sentinel")
 RELEASE13_WINDOWS_DRY_RUN_CAPABILITY = "generation.generate_speech"
 AUTOSTART_LEG = "fresh-install-autostart-off"
 AUTOSTART_CHECKS = ("install_exit", "selection_autostart_false", "update_status_autostart_off",
@@ -588,6 +589,17 @@ def _release13_row_errors(job_id, row, target_release, os_name="linux"):
     for check in (RELEASE13_WINDOWS_CHECKS if windows else RELEASE13_CHECKS):
         if checks.get(check) != "pass":
             errors.append(f"{job_id}: {check} assertion did not pass")
+    saved = row.get("timeline_save")
+    reopened = row.get("timeline_reopen")
+    if (not isinstance(saved, dict) or saved.get("saved") is not True
+            or not isinstance(saved.get("saved_name"), str) or not saved["saved_name"]):
+        errors.append(f"{job_id}: installed timeline edit/save evidence is missing")
+    if (not isinstance(reopened, dict) or reopened.get("reopened") is not True
+            or not isinstance(saved, dict)
+            or reopened.get("saved_name") != saved.get("saved_name")
+            or reopened.get("project") != saved.get("project")
+            or reopened.get("timeline") != saved.get("timeline")):
+        errors.append(f"{job_id}: fresh-process timeline reopen did not prove the saved change")
     if windows:
         errors.extend(_release13_windows_errors(job_id, row))
     return errors
