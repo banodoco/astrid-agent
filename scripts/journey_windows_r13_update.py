@@ -38,10 +38,12 @@ if __package__:
     from . import check_journey_evidence as evidence_gate
     from . import ci_journey as journey
     from . import journey_version_jumps as jumps
+    from . import windows_r13_prereconcile as task_prereconcile
 else:
     import check_journey_evidence as evidence_gate
     import ci_journey as journey
     import journey_version_jumps as jumps
+    import windows_r13_prereconcile as task_prereconcile
 
 LEG = "release13-then-update"
 KILLED_LEG = "release13-then-killed-update"
@@ -223,6 +225,29 @@ def windows_live_runtime_owners(data: Path) -> list[dict]:
         owners.append({"data_root": str(root), "pid": pid,
                        "runtime_instance_id": discovery.get("runtime_instance_id")})
     return owners
+
+
+def fix17_diagnostic_enabled(args, root: Path) -> bool:
+    """Keep diagnostic continuation confined to the exact hosted Fix17 rows and roots."""
+    run_root = Path(os.environ.get("RUNNER_TEMP", "")).resolve() / "f17"
+    return (os.environ.get("ASTRID_FIX17_DIAGNOSTIC") == "1"
+            and args.job_id in {"direct-windows-r13-update", "direct-windows-r13-killed-update"}
+            and os.environ.get("GITHUB_REF") == "refs/heads/release/14/fix17-diag"
+            and run_root == root.parent.resolve())
+
+
+def diagnostic_probe(result: dict, result_path: Path, key: str, operation, receipts: list) -> bool:
+    """Run and retain one independent post-R14 probe, allowing its diagnostic peers to run."""
+    try:
+        with step(result, result_path, key):
+            operation()
+    except WindowsR13StepError as exc:
+        receipts.append({"step": key, "status": "fail", "error": str(exc)})
+        journey.write_json(result_path, result)
+        return False
+    receipts.append({"step": key, "status": "pass"})
+    journey.write_json(result_path, result)
+    return True
 
 
 def candidate_update_windows(app: Path, manifest_path: Path, shell: str, evidence: Path,
@@ -407,7 +432,84 @@ def recover_killed_r13_update(args, result: dict, result_path: Path, *,
             raise RuntimeError("Interrupted update disturbed an unrelated process")
         result["checks"]["unrelated_sentinel"] = "pass"
         result["status"] = "pass"
-        return result
+
+    # This one outside-editor retry is a NON-PROOF diagnostic. It is eligible
+    # only after the owned interrupted update recovered cleanly to pinned R13.
+    # Never synthesize the recovery state or substitute a different root.
+    if fix17_diagnostic_enabled(args, root):
+        retry_receipt = {"status": "running", "mark": "NON-PROOF OUTSIDE-EDITOR RETRY",
+                         "roots": {"program": str(root), "data": str(data)},
+                         "manifest": str(candidate_path), "attempts": 1}
+        result["outside_editor_retry"] = retry_receipt
+        retry_path = evidence / "killed-update-outside-editor-retry.json"
+        retry_evidence = evidence / "outside-editor-retry"
+        retry_evidence.mkdir(parents=True, exist_ok=True)
+        journey.write_json(retry_path, retry_receipt)
+        journey.write_json(result_path, result)
+        try:
+            manifest = journey.read_json(candidate_path)
+            if manifest.get("release") != 14:
+                raise RuntimeError("Outside-editor retry requires the frozen R14 manifest")
+            update = candidate_update_windows(app, candidate_path, args.shell, retry_evidence, root, data)
+            retry_receipt["update"] = update
+            journey.write_json(retry_path, retry_receipt)
+            if update.get("exit_code") != 0:
+                raise RuntimeError(f"Public candidate install --update exited {update.get('exit_code')}")
+
+            version_path, selected_data, version = journey.installation(root, data)
+            selected = jumps.selected_candidate(
+                manifest, version, {"agent": jumps.RELEASE13_IDENTITY["agent"],
+                                    "runtime": jumps.RELEASE13_IDENTITY["runtime"]})
+            expected = {"app": result["sources"]["app"]["sha"],
+                        "agent": manifest["agent"]["sha"], "runtime": manifest["runtime"]["sha"]}
+            actual = {"app": result["sources"]["app"]["sha"], **selected}
+            if jumps.installed_release(version) != 14 or actual != expected:
+                raise RuntimeError(f"Outside-editor retry selected {actual}, expected live R14 {expected}")
+            retry_receipt["installed_tuple"] = actual
+            journey.write_json(retry_path, retry_receipt)
+            active_data = jumps.selected_data_root(root, data)
+            if selected_data != active_data:
+                raise RuntimeError("Outside-editor retry selected an unexpected data root")
+            journey.wait_ready(active_data, timeout=wait_timeout())
+            health = journey.healthy(active_data)
+            if (health.get("identity") or {}).get("release") != 14:
+                raise RuntimeError("Outside-editor retry Runtime does not report R14")
+            owners = windows_live_runtime_owners(data)
+            if [owner["data_root"] for owner in owners] != [str(active_data)]:
+                raise RuntimeError(f"Outside-editor retry requires exactly one live owned Runtime: {owners}")
+            service = journey.assert_direct_service_ownership(root, active_data)
+            retry_receipt.update(runtime_instance_id=health.get("runtime_instance_id"),
+                                 live_runtimes=owners, service_manager=service)
+            journey.write_json(retry_path, retry_receipt)
+            content_evidence = retry_evidence / "content"
+            content_evidence.mkdir(parents=True, exist_ok=True)
+            if marker.is_symlink():
+                raise RuntimeError("Original workspace marker became a symlink during outside-editor retry")
+            marker_digest = hashlib.sha256(marker.read_bytes()).hexdigest()
+            retry_receipt["marker_check"] = {"status": "pass" if marker_digest == digest else "fail",
+                                              "expected_sha256": digest, "actual_sha256": marker_digest}
+            journey.write_json(retry_path, retry_receipt)
+            if marker_digest != digest:
+                raise RuntimeError("Original workspace marker changed during outside-editor retry")
+            journey.assert_content(version, content_evidence,
+                                   PROJECT, marker, digest)
+            saved = jumps.live_workspace(root, active_data, retry_evidence / "timeline-save",
+                                         "save_timeline_after_update", result["timeline_seed"])
+            retry_receipt.update(content_check="pass", timeline_save=saved)
+            journey.write_json(retry_path, retry_receipt)
+            reopened = jumps.live_workspace(root, active_data, retry_evidence / "timeline-reopen",
+                                            "reopen_saved_timeline", saved)
+            if reopened.get("reopened") is not True or reopened.get("saved_name") != saved.get("saved_name"):
+                raise RuntimeError("Outside-editor retry did not freshly reopen the recovered timeline edit")
+            retry_receipt.update(status="pass", timeline_reopen=reopened)
+        except Exception as exc:
+            retry_receipt.update(status="fail", error=f"{type(exc).__name__}: {exc}")
+            journey.write_json(retry_path, retry_receipt)
+            journey.write_json(result_path, result)
+            raise RuntimeError(f"NON-PROOF outside-editor retry failed; see {retry_path}: {exc}") from exc
+        journey.write_json(retry_path, retry_receipt)
+        journey.write_json(result_path, result)
+    return result
 
 
 def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) -> dict:
@@ -497,6 +599,28 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) 
                 {"project": PROJECT + "-timeline", "generation": "release13-windows",
                  "task_id": None, "create_project": True})
 
+        # Explicitly opted-in hosted diagnostic for the exact Fix17 Windows
+        # R13 update row and its isolated f17 run root only.
+        diagnostic = fix17_diagnostic_enabled(args, root)
+        if diagnostic:
+            task_prereconcile_receipt = {"status": "running", "mark": "NON-PROOF DIAGNOSTIC BYPASS"}
+            result["task_prereconcile"] = task_prereconcile_receipt
+            journey.write_json(result_path, result)
+            try:
+                task_prereconcile_receipt.update(task_prereconcile.prereconcile(
+                    journey=journey, job_id=args.job_id, shell=args.shell,
+                    agent_checkout=Path(args.candidate_agent_checkout), root=root, data=data,
+                    version_document=old, marker=marker, marker_sha256=digest))
+            except BaseException as exc:
+                task_prereconcile_receipt.update(status="fail", exception_class=type(exc).__name__,
+                                                 mark="NON-PROOF DIAGNOSTIC BYPASS")
+                safe = getattr(exc.__cause__, "safe_diagnostic", None) or getattr(exc, "safe_diagnostic", None)
+                if isinstance(safe, dict):
+                    task_prereconcile_receipt.update(safe)
+                journey.write_json(result_path, result)
+                raise RuntimeError("R13 task prereconcile failed; see safe diagnostic receipt") from None
+            journey.write_json(result_path, result)
+
         if killed:
             return recover_killed_r13_update(
                 args, result, result_path, app=app, candidate_path=candidate_path,
@@ -554,23 +678,24 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) 
             }
             result["checks"].update(service="pass", health="pass")
             result["installed_tuple"] = {"app": result["sources"]["app"]["sha"], **selected}
-            journey.verify("update", version_path, active_data, evidence, before=evidence / "verify-observe.json")
-            journey.verify("install", version_path, active_data, evidence)
-            result["import_origins"] = (
-                journey.read_json(evidence / "verify-install.json").get("details") or {}).get("origin.imports")
+            if not diagnostic:
+                journey.verify("update", version_path, active_data, evidence,
+                               before=evidence / "verify-observe.json")
+                journey.verify("install", version_path, active_data, evidence)
+                result["import_origins"] = (
+                    journey.read_json(evidence / "verify-install.json").get("details") or {}).get("origin.imports")
 
-        # 6. astrid doctor, from the installed candidate.
-        with step(result, result_path, "doctor"):
+        # The diagnostic lane retains every independent post-R14 probe result
+        # after native selection, live identity, health and service ownership pass.
+        def doctor_probe():
             result["doctor"] = run_doctor(version, evidence)
             result["checks"]["doctor"] = "pass"
 
-        # 7. A dry-run generation, from the installed candidate.
-        with step(result, result_path, "dry_run"):
+        def dry_run_probe():
             result["dry_run"] = run_dry_run(version, evidence)
             result["checks"]["dry_run"] = "pass"
 
-        # 8. The seeded data survived and the unrelated sentinel is alive.
-        with step(result, result_path, "data_check"):
+        def data_probe():
             journey.assert_content(version, evidence, PROJECT, marker, digest)
             result["data_marker"]["survived"] = True
             result["checks"]["data_marker"] = "pass"
@@ -579,17 +704,21 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) 
             if not settled["alive"]:
                 raise RuntimeError("Unrelated sentinel did not survive the Release 13 install and the update")
             result["checks"]["unrelated_sentinel"] = "pass"
-        with step(result, result_path, "save_timeline"):
-            seed = result["timeline_seed"]
+
+        saved_holder = {}
+
+        def save_probe():
             saved = jumps.live_workspace(
                 root, active_data, evidence / "candidate-save",
-                "save_timeline_after_update", seed)
+                "save_timeline_after_update", result["timeline_seed"])
             if saved.get("saved") is not True:
                 raise RuntimeError("Installed candidate did not save the timeline edit")
+            saved_holder["value"] = saved
             result["timeline_save"] = saved
             result["checks"]["timeline_saved"] = "pass"
 
-        with step(result, result_path, "reopen_timeline"):
+        def reopen_probe():
+            saved = saved_holder["value"]
             reopened = jumps.live_workspace(
                 root, active_data, evidence / "candidate-reopen",
                 "reopen_saved_timeline", saved)
@@ -597,6 +726,49 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) 
                 raise RuntimeError("The installed candidate did not reopen the saved timeline edit")
             result["timeline_reopen"] = reopened
             result["checks"]["timeline_reopened"] = "pass"
+
+        if diagnostic:
+            receipts = result["diagnostic_stage_receipts"] = []
+            verify_receipt = {"step": "installed_verify", "status": "running"}
+            receipts.append(verify_receipt)
+            journey.write_json(result_path, result)
+            try:
+                journey.verify("update", version_path, active_data, evidence,
+                               before=evidence / "verify-observe.json")
+                journey.verify("install", version_path, active_data, evidence)
+                result["import_origins"] = (
+                    journey.read_json(evidence / "verify-install.json").get("details") or {}).get("origin.imports")
+                verify_receipt["status"] = "pass"
+            except Exception as exc:
+                verify_receipt.update(status="fail", error=f"{type(exc).__name__}: {exc}")
+            journey.write_json(result_path, result)
+            passed = [diagnostic_probe(result, result_path, key, operation, receipts)
+                      for key, operation in (("doctor", doctor_probe), ("dry_run", dry_run_probe),
+                                             ("data_check", data_probe), ("save_timeline", save_probe))]
+            if passed[-1]:
+                diagnostic_probe(result, result_path, "reopen_timeline", reopen_probe, receipts)
+            else:
+                message = "not-run because the installed candidate timeline save probe failed"
+                result["steps"].append({"step": "reopen_timeline", "label": STEP_LABELS["reopen_timeline"],
+                                        "status": "not-run", "error": message})
+                receipts.append({"step": "reopen_timeline", "status": "not-run", "error": message})
+                journey.write_json(result_path, result)
+            failures = [row for row in receipts if row["status"] == "fail"]
+            if failures:
+                raise RuntimeError("Diagnostic post-R14 probes failed: " + "; ".join(
+                    f"{row['step']}: {row['error']}" for row in failures))
+        else:
+            # Strict default behavior remains fail-fast, preserving the original order.
+            with step(result, result_path, "doctor"):
+                doctor_probe()
+            with step(result, result_path, "dry_run"):
+                dry_run_probe()
+            with step(result, result_path, "data_check"):
+                data_probe()
+            with step(result, result_path, "save_timeline"):
+                save_probe()
+            with step(result, result_path, "reopen_timeline"):
+                reopen_probe()
         result["status"] = "pass"
     except Exception as exc:
         result.update(status="fail", error=f"{type(exc).__name__}: {exc}")

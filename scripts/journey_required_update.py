@@ -77,17 +77,20 @@ def _browser(config, *, app, expected_app, dist, release_app, manifest, python, 
             **config, "diagnostic": __import__("os").environ.get("ASTRID_FIX17_DIAGNOSTIC") == "1",
             "origin": hosted.ORIGIN, "result": str(result_path), "spki": server.leaf_spki,
         }
-        if config.get("mode") == "publicationProbe":
+        private_probe = config.get("mode") in {"publicationProbe", "skewProbe"}
+        if private_probe:
             saved_config = {key: value for key, value in saved_config.items()
-                            if key not in {"profileDir", "publicationManifestPath", "r13ManifestPath"}}
+                            if key not in {"profileDir", "publicationManifestPath", "r13ManifestPath",
+                                           "runtimeHealthUrl"}}
         journey.write_json(config_path, saved_config)
         runtime_config_path = config_path
-        if config.get("mode") == "publicationProbe":
-            # The probe starts against the actual R13 manifest; Playwright switches only
-            # this response to the candidate's exact staged bytes after the baseline.
+        if private_probe:
+            # Keep local profile and staged manifest paths out of the saved
+            # diagnostic record; the transient config is removed after execution.
             saved_config["profileDir"] = config["profileDir"]
             saved_config["publicationManifestPath"] = config["publicationManifestPath"]
-            saved_config["r13ManifestPath"] = config["r13ManifestPath"]
+            if config.get("r13ManifestPath"):
+                saved_config["r13ManifestPath"] = config["r13ManifestPath"]
             runtime_config_path = evidence / "browser-input-runtime.json"
             journey.write_json(runtime_config_path, saved_config)
         try:
@@ -103,7 +106,7 @@ def _browser(config, *, app, expected_app, dist, release_app, manifest, python, 
                 runtime_config_path.unlink(missing_ok=True)
         observed = journey.read_json(result_path)
         expected_status = "non-proof" if config.get("mode") in {
-            "publicationProbe", "recoveryProbe",
+            "publicationProbe", "recoveryProbe", "skewProbe",
         } else "pass"
         if observed.get("status") != expected_status or observed.get("mode") != config["mode"]:
             raise RuntimeError("Hosted App did not finish " + config["mode"])
@@ -245,10 +248,16 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) 
                     timeline["preservation_unavailable"] = "R13 authoring did not produce a real queued draft"
                 result["timelines"].append(timeline)
                 if diagnostic and mode == FIX17_PROMPT_LEG:
+                    # Keep publication observation in a disposable profile so
+                    # its empty outbox cannot replace or consume the R13 draft.
                     probe_evidence = evidence / (slug + "-publication-probe")
+                    probe_profile = evidence / ("_" + slug + "-publication-profile")
+                    shutil.rmtree(probe_profile, ignore_errors=True)
+                    probe_profile.mkdir(mode=0o700)
                     try:
                         observed = _browser({
                             **config, "mode": "publicationProbe",
+                            "profileDir": str(probe_profile), "diagnostic": True,
                             "publicationManifestPath": str(path.resolve(strict=True)),
                             "r13ManifestPath": str(old_path.resolve(strict=True)),
                             "expectedAppCommit": jumps.RELEASE13_APP_COMMIT,
@@ -262,6 +271,10 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) 
                         record_leg(slug, "publication_probe", "unavailable",
                                    error=f"{type(exc).__name__}: sanitized diagnostic failure",
                                    evidence_path=slug + "-publication-probe/browser-result.json")
+                    finally:
+                        shutil.rmtree(probe_profile, ignore_errors=True)
+                        result.setdefault("publication_probe_profiles_removed", []).append(
+                            not probe_profile.exists())
                 if mode == FIX17_PROMPT_LEG:
                     try:
                         with stage(result, result_path, "required_prompt"):
@@ -307,6 +320,39 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) 
                 journey.read_json(verify / "verify-install.json").get("details") or {}).get("origin.imports")
             if not result["import_origins"]:
                 raise RuntimeError("Installed import origins are absent")
+
+            # Observe the pinned R13 App against the live candidate Runtime in
+            # its own profile, independently of project authoring or seeding.
+            if diagnostic and mode == FIX17_PROMPT_LEG:
+                probe_evidence = evidence / "r13-app-r14-runtime-skew"
+                skew_profile = evidence / "_r13-app-r14-runtime-profile"
+                shutil.rmtree(skew_profile, ignore_errors=True)
+                skew_profile.mkdir(mode=0o700)
+                try:
+                    runtime_health = journey.healthy(data)
+                    health_identity = runtime_health.get("identity") or {}
+                    observed = _browser({
+                        "mode": "skewProbe", "profileDir": str(skew_profile),
+                        "browserDriverApp": str(old_app),
+                        "publicationManifestPath": str(path.resolve(strict=True)),
+                        "runtimeHealthUrl": journey.HEALTH_URL,
+                        "expectedAppCommit": jumps.RELEASE13_APP_COMMIT,
+                        "servedAppCommit": jumps.RELEASE13_APP_COMMIT,
+                        "expectedRuntimeRelease": health_identity.get("release"),
+                        "expectedSchemaDigest": runtime_health.get("schema_digest"),
+                    }, app=old_app, expected_app=jumps.RELEASE13_APP_COMMIT,
+                        dist=args.release13_browser_dist, release_app=app, manifest=path,
+                        python=version["python"], evidence=probe_evidence)
+                    result["skew_probe"] = observed
+                    record_leg("runtime-skew", "r13_app_r14_runtime_skew", "observed",
+                               evidence_path="r13-app-r14-runtime-skew/browser-result.json")
+                except Exception as exc:
+                    record_leg("runtime-skew", "r13_app_r14_runtime_skew", "unavailable",
+                               error=f"{type(exc).__name__}: sanitized diagnostic failure",
+                               evidence_path="r13-app-r14-runtime-skew/browser-result.json")
+                finally:
+                    shutil.rmtree(skew_profile, ignore_errors=True)
+                    result["skew_browser_profile_removed"] = not skew_profile.exists()
 
         with stage(result, result_path, "r14_reopen"):
             if mode == FIX17_REALM_LEG:

@@ -10,6 +10,16 @@ import { chromiumArgs } from './journey_update_button.mjs';
 const TIMEOUT = 90_000;
 const COMMIT_PATH = /\/v1\/projects\/[^/]+\/timelines\/[^/]+\/commit$/;
 
+// Runtime versions have been served at the origin or below a small set of
+// known API base paths. Normalize only those exact prefixes before matching.
+function runtimePath(pathname) {
+  if (typeof pathname !== 'string') return '';
+  for (const prefix of ['/api/runtime/v1']) {
+    if (pathname === prefix || pathname.startsWith(prefix + '/')) return '/v1' + pathname.slice(prefix.length);
+  }
+  return pathname;
+}
+
 function check(value, message) {
   if (!value) throw new Error(message);
 }
@@ -19,7 +29,7 @@ function digest(value) {
 }
 
 function commitPost(request) {
-  return request.method() === 'POST' && COMMIT_PATH.test(new URL(request.url()).pathname);
+  return request.method() === 'POST' && COMMIT_PATH.test(runtimePath(new URL(request.url()).pathname));
 }
 
 async function openEditor(page, config) {
@@ -75,10 +85,10 @@ async function openEditor(page, config) {
   return track;
 }
 function isCommit(request, config) {
-  const path = new URL(request.url()).pathname;
-  return request.method() === 'POST' && path.endsWith(
-    '/projects/' + encodeURIComponent(config.projectId) + '/timelines/'
-    + encodeURIComponent(config.timelineId) + '/commit');
+  const path = runtimePath(new URL(request.url()).pathname);
+  return request.method() === 'POST' && path === '/v1/projects/'
+    + encodeURIComponent(config.projectId) + '/timelines/'
+    + encodeURIComponent(config.timelineId) + '/commit';
 }
 
 async function editTrack(track, value) {
@@ -266,7 +276,7 @@ async function recoveryProbe(page, config, context) {
     if (request.method() !== 'POST') return route.continue();
     const url = new URL(request.url());
     const body = request.postData() || '';
-    const exact = url.pathname === selectedPath;
+    const exact = runtimePath(url.pathname) === selectedPath;
     let correlation = false;
     if (exact && selectedIntent) {
       const key = request.headers()['idempotency-key'];
@@ -302,7 +312,7 @@ async function recoveryProbe(page, config, context) {
     else {
       const { row, intent, pending } = matches[0];
       selectedIntent = { key: pending.request.key, body: pending.request.body };
-      if (pending.request.method !== 'POST' || pending.request.path !== selectedPath
+      if (pending.request.method !== 'POST' || runtimePath(pending.request.path) !== selectedPath
         || row.scope?.realmId !== config.expectedDraft.realmId
         || row.scope?.actorId !== config.expectedDraft.actorId
         || intent.id !== config.expectedDraft.intentId
@@ -318,7 +328,7 @@ async function recoveryProbe(page, config, context) {
       if (await retry.isVisible().catch(() => false)) {
         clickAttempted = true;
         const responsePromise = page.waitForResponse((response) => response.request().method() === 'POST'
-          && new URL(response.url()).pathname === selectedPath, { timeout: remaining() }).catch(() => null);
+          && runtimePath(new URL(response.url()).pathname) === selectedPath, { timeout: remaining() }).catch(() => null);
         await retry.click({ timeout: remaining() });
         const response = await responsePromise;
         if (!response) fail(Date.now() >= deadline ? 'timeout' : 'no_selected_response');
@@ -404,7 +414,7 @@ async function publicationProbe(page, config, context) {
   const pageFor = (request) => { try { return request.frame()?.page(); } catch { return null; } };
   context.on('request', (request) => {
     let pathname;
-    try { pathname = new URL(request.url()).pathname; } catch { return; }
+    try { pathname = runtimePath(new URL(request.url()).pathname); } catch { return; }
     const name = pageNames.get(pageFor(request));
     if (!name) return;
     if (/^\/v1\/handshake(?:\/|$)/.test(pathname)) events.push({ tab: name, kind: 'handshake', ms: at() });
@@ -425,7 +435,7 @@ async function publicationProbe(page, config, context) {
   await context.route('**/v1/**', async (route) => {
     const request = route.request();
     let pathname;
-    try { pathname = new URL(request.url()).pathname; } catch { return route.continue(); }
+    try { pathname = runtimePath(new URL(request.url()).pathname); } catch { return route.continue(); }
     if (isWorkspaceWrite(pathname, request.method())) return route.abort('blockedbyclient');
     return route.continue();
   });
@@ -535,7 +545,158 @@ async function publicationProbe(page, config, context) {
   };
 }
 
-const actions = { author, prompt, reopen, publicationProbe, recoveryProbe };
+// Bounded R13-App/R14-Runtime skew observation. This runs only after the
+// native R14 update has succeeded, with a new profile that has no draft state.
+async function skewProbe(page, config, context) {
+  const began = Date.now();
+  const deadline = began + 30_000;
+  const events = [];
+  const responses = [];
+  const writes = [];
+  const manifestBytes = readFileSync(config.publicationManifestPath);
+  const manifestSha256 = createHash('sha256').update(manifestBytes).digest('hex');
+  const classify = (pathname) => {
+    pathname = runtimePath(pathname);
+    if (pathname === '/install-manifest.json') return 'manifest';
+    if (pathname === '/build.json') return 'build';
+    if (pathname === '/v1/health' || pathname.endsWith('/api/runtime/v1/health')) return 'health';
+    if (pathname === '/v1/handshake') return 'handshake';
+    if (/^\/v1\/projects(?:\/|$)/.test(pathname)) return 'workspace-project';
+    if (/^\/v1\/(?:timelines|shots|references|preferences|app-state)(?:\/|$)/.test(pathname)) return 'workspace-other';
+    if (pathname.startsWith('/v1/')) return 'runtime-api';
+    return 'app-asset';
+  };
+  const blockedMutation = (route, method) => !['GET', 'HEAD'].includes(method) && route !== 'handshake';
+  const timing = () => Date.now() - began;
+  const safePath = (request) => {
+    try { return new URL(request.url()).pathname; } catch { return ''; }
+  };
+
+  // Install observers and guards before the first navigation. Persist route
+  // classes, status, timing and digests only; never persist URLs or payloads.
+  context.on('request', (request) => {
+    const route = classify(safePath(request));
+    const method = request.method();
+    events.push({ event: 'request', route, method, ms: timing() });
+    if (blockedMutation(route, method)) writes.push({ route, method, ms: timing(), blocked: true });
+  });
+  context.on('response', (response) => {
+    responses.push({ route: classify(safePath(response.request())), status: response.status(), ms: timing() });
+  });
+  await context.route('**/install-manifest.json', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: manifestBytes }));
+  await context.route('**/v1/**', (route) => {
+    const request = route.request();
+    if (blockedMutation(classify(safePath(request)), request.method())) return route.abort('blockedbyclient');
+    return route.continue();
+  });
+
+  let navigation = 'pending';
+  try {
+    await page.goto(config.origin + '/tools/video-editor', {
+      waitUntil: 'domcontentloaded', timeout: Math.max(1, deadline - Date.now()),
+    });
+    navigation = 'loaded';
+  } catch { navigation = 'incomplete'; }
+  const build = await page.evaluate(async (timeout) => {
+    try {
+      const response = await fetch('/build.json', { cache: 'no-store', signal: AbortSignal.timeout(timeout) });
+      if (!response.ok) return null;
+      const value = await response.json();
+      return typeof value.app === 'string' ? value.app : null;
+    } catch { return null; }
+  }, Math.max(1, Math.min(3_000, deadline - Date.now()))).catch(() => null);
+  let health = null;
+  try {
+    const healthUrl = new URL(config.runtimeHealthUrl);
+    if (healthUrl.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(healthUrl.hostname)
+        || healthUrl.username || healthUrl.password) throw new Error('invalid loopback health endpoint');
+    events.push({ event: 'request', route: 'health', method: 'GET', ms: timing() });
+    const response = await page.request.get(healthUrl.href, {
+      timeout: Math.max(1, Math.min(5_000, deadline - Date.now())), maxRedirects: 0, maxRetries: 0,
+      headers: { Origin: 'https://astrid.haus' },
+    });
+    const length = Number(response.headers()['content-length']);
+    if (response.ok() && Number.isFinite(length) && length >= 0 && length <= 16_384) {
+      const body = await response.body();
+      if (body.length <= 16_384) {
+        const value = JSON.parse(body.toString('utf8'));
+        health = { status: response.status(), protocol: value.protocol ?? null,
+          schema: value.schema_digest ?? null, release: value.identity?.release ?? null };
+      }
+    } else health = { status: response.status() };
+    responses.push({ route: 'health', status: response.status(), ms: timing() });
+  } catch { health = null; }
+  const healthVerified = health?.status === 200 && health?.protocol === 'workspace.v1'
+    && typeof health?.schema === 'string' && health.schema === config.expectedSchemaDigest
+    && Number.isInteger(health?.release) && health.release === config.expectedRuntimeRelease
+    && health.release === 14;
+
+  let connected = false;
+  let gate = null;
+  let quiet = null;
+  const firstSeen = { update_needed_ms: null, quiet_notice_ms: null, quiet_required_ms: null };
+  const visibleTexts = async (locator) => locator.evaluateAll((elements) => elements
+    .filter((element) => element.getClientRects().length)
+    .map((element) => (element.innerText || element.textContent || '').trim().slice(0, 160))
+    .filter(Boolean).slice(0, 8)).catch(() => []);
+  while (Date.now() < deadline) {
+    connected = await page.locator('[data-testid="runtime-connection-status"][data-state="connected"]')
+      .isVisible().catch(() => false);
+    const updateCard = page.locator('[data-testid="runtime-not-connected"][data-state="update_needed"]');
+    if (await updateCard.isVisible().catch(() => false)) {
+      if (firstSeen.update_needed_ms === null) firstSeen.update_needed_ms = timing();
+      gate = {
+        present: true,
+        headings: await visibleTexts(updateCard.locator('h1,h2,h3,[role="heading"]')),
+        actions: await visibleTexts(updateCard.locator('button,[role="button"],a')),
+      };
+    }
+    const notice = page.getByTestId('quiet-update-notice');
+    const noticePresent = await notice.isVisible().catch(() => false);
+    if (noticePresent) {
+      if (firstSeen.quiet_notice_ms === null) firstSeen.quiet_notice_ms = timing();
+      const details = notice.getByTestId('required-update-reason');
+      const required = await notice.getByText('Required', { exact: true }).isVisible().catch(() => false);
+      if (required) {
+        if (firstSeen.quiet_required_ms === null) firstSeen.quiet_required_ms = timing();
+        if (!(await details.evaluate((element) => element.open).catch(() => false))) {
+          await details.locator('summary').click().catch(() => {});
+        }
+        quiet = {
+          present: true, required: true,
+          heading: (await visibleTexts(notice.locator('h1,h2,h3,[role="heading"]')))[0] ?? null,
+          details: (await details.innerText().catch(() => '')).trim().slice(0, 500) || null,
+          actions: await visibleTexts(notice.locator('button,[role="button"],a')),
+        };
+      } else if (quiet === null) {
+        quiet = { present: true, required: false,
+          heading: (await visibleTexts(notice.locator('h1,h2,h3,[role="heading"]')))[0] ?? null,
+          actions: await visibleTexts(notice.locator('button,[role="button"],a')) };
+      }
+    }
+    // Keep observing both independent R13 surfaces through the full bounded window.
+    if (Date.now() >= deadline) break;
+    await page.waitForTimeout(Math.min(200, Math.max(1, deadline - Date.now()))).catch(() => {});
+  }
+  const handshake = events.find((item) => item.route === 'handshake' && item.event === 'request');
+  return {
+    evidence_class: 'NON-PROOF', probe: 'r13-app-r14-runtime-skew',
+    app_commit: config.expectedAppCommit, served_app_commit: build,
+    pinned_build_verified: config.expectedAppCommit === build,
+    staged_manifest_sha256: manifestSha256,
+    health: { verified: healthVerified, status: health?.status ?? null,
+      release: health?.release ?? null, schema_digest: health?.schema ?? null,
+      protocol: health?.protocol ?? null, response_seen: health?.status === 200 },
+    navigation, connected, first_seen_ms: firstSeen,
+    update_needed_card: gate, quiet_update_notice: quiet,
+    handshake_ms: handshake?.ms ?? null, first_workspace_write_attempt: writes[0] ?? null,
+    events, responses, writes, elapsed_ms: timing(),
+    completion: Date.now() >= deadline ? 'deadline' : navigation === 'loaded' ? 'observed' : 'incomplete',
+  };
+}
+
+const actions = { author, prompt, reopen, publicationProbe, recoveryProbe, skewProbe };
 
 export async function execute(config, chromium) {
   check(Object.hasOwn(actions, config.mode), 'Unknown FIX-17 browser step');
@@ -557,6 +718,10 @@ export async function execute(config, chromium) {
       return { status: 'non-proof', mode: config.mode,
         ...await publicationProbe(page, config, context) };
     }
+    if (config.mode === 'skewProbe') {
+      return { status: 'non-proof', mode: config.mode,
+        ...await skewProbe(page, config, context) };
+    }
     if (config.mode === 'recoveryProbe') {
       return { status: 'non-proof', mode: config.mode,
         ...await recoveryProbe(page, config, context) };
@@ -574,10 +739,10 @@ async function main() {
     result = await execute(config);
   } catch (error) {
     result = { status: 'fail', mode: config.mode,
-      error: ['publicationProbe', 'recoveryProbe'].includes(config.mode)
+      error: ['publicationProbe', 'recoveryProbe', 'skewProbe'].includes(config.mode)
         ? `${error?.name || 'Error'}: sanitized diagnostic failure`
         : String(error).slice(0, 500) };
-    if (!['publicationProbe', 'recoveryProbe'].includes(config.mode)) console.error(result.error);
+    if (!['publicationProbe', 'recoveryProbe', 'skewProbe'].includes(config.mode)) console.error(result.error);
     process.exitCode = 1;
   }
   writeFileSync(config.result, JSON.stringify(result, null, 2) + '\n');
