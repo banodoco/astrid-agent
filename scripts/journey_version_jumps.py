@@ -1502,9 +1502,10 @@ def execute_release13_then_update(args, root: Path, data: Path, evidence: Path, 
         "sentinel": {"pid": sentinel.pid, "birth": birth},
         "release13_source": None, "candidate_bootstrap": None, "update": None,
         "release_transition": None, "live_runtimes": None, "semantic_data": None,
+        "timeline_save": None, "timeline_reopen": None,
         "checks": {key: "not-run" for key in (
             "release13_install", "update_exit", "run_receipt", "release", "one_runtime", "service", "health",
-            "semantic_data", "task_settled", "unrelated_sentinel")},
+            "semantic_data", "task_settled", "timeline_saved", "timeline_reopened", "unrelated_sentinel")},
     }
     result_path = evidence / "journey-result.json"
     journey.write_json(result_path, result)
@@ -1612,6 +1613,22 @@ def execute_release13_then_update(args, root: Path, data: Path, evidence: Path, 
         result["checks"]["semantic_data"] = "pass"
         task_after_update(version, evidence / "candidate-working-task", project)
         result["checks"]["task_settled"] = "pass"
+
+        # Save and reload against the *installed candidate's* selected Runtime.
+        # Each helper call launches a fresh process, so reopen cannot observe
+        # a retained in-memory editor or source-checkout object.
+        saved = live_workspace(root, active_data, evidence / "candidate-save", 
+                               "save_timeline_after_update", keys)
+        if saved.get("saved") is not True:
+            raise RuntimeError("Installed candidate did not acknowledge the timeline edit")
+        result["timeline_save"] = saved
+        result["checks"]["timeline_saved"] = "pass"
+        reopened = live_workspace(root, active_data, evidence / "candidate-reopen",
+                                  "reopen_saved_timeline", saved)
+        if reopened.get("reopened") is not True or reopened.get("saved_name") != saved["saved_name"]:
+            raise RuntimeError("Installed candidate did not durably reopen the saved edit")
+        result["timeline_reopen"] = reopened
+        result["checks"]["timeline_reopened"] = "pass"
         settled_sentinel = journey.sentinel_observation(sentinel, birth)
         result["sentinel"]["at_settlement"] = settled_sentinel
         if not settled_sentinel["alive"]:
