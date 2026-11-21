@@ -142,7 +142,28 @@ def opaque_film(request, tmp_path, monkeypatch):
         setup = emit_document_commands(staged_bundle, authored_target)
         source_row = copy.deepcopy(staged["parent_revision"]["payload"]["occurrences"][0])
         source_row.update(data=opaque(), app=opaque(), opaque=opaque())
-        setup.append(occurrence_patch(staged, [source_row, *staged["parent_revision"]["payload"]["occurrences"][1:]]))
+        if request.param in ("item_id", "both"):
+            # Earlier commands advance the managed shot_revision_id. Guard only
+            # these authored fields so the accepted revision and links survive.
+            previous = staged["parent_revision"]["payload"]["occurrences"][0]
+            fields = []
+            for key in ("data", "app", "opaque"):
+                if key in previous and previous[key] == source_row[key]:
+                    continue
+                fields.append({
+                    "op": "set", "ref": "parent",
+                    "path": ["occurrences", "occurrence_id:" + source_row["occurrence_id"], key],
+                    "before": present(previous[key]) if key in previous else {"state": "absent"},
+                    "value": copy.deepcopy(source_row[key]),
+                })
+            if fields:
+                setup.append({
+                    "schema_version": 1, "op": "doc.patch", "version": "1",
+                    "select": None, "args": {"changes": fields},
+                })
+        else:
+            # Historical id-only input still needs authentic source/Pro review.
+            setup.append(occurrence_patch(staged, [source_row, *staged["parent_revision"]["payload"]["occurrences"][1:]]))
         source = edit.commit(body_with_ordered_patch(edit, setup), "opaque-source")
 
         source_document = source["data"]["canonical_document"]
