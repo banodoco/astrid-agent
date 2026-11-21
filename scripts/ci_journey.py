@@ -65,7 +65,8 @@ OWNER_FILE = "tst-b1-owner.json"
 VERSION_JUMP_LEGS = ("update-from-served", "update-from-release:pre-updater",
                      "update-over-old-declaration", "old-runtime-busy",
                      "release9-then-install", "r0-handoff-then-update", "release11-then-update", "release13-then-update", "release13-then-killed-update",
-                     "fresh-install-autostart-off", "windows-upgrade-refusal")
+                     "fresh-install-autostart-off", "windows-upgrade-refusal",
+                     "mixed-r14-app-r13-installed", "mixed-r13-app-r14-installed")
 RUNNER_FAMILY = {"ubuntu-24.04": "linux", "ubuntu-22.04": "linux",
                  "windows-2022": "win32", "macos-14": "darwin", "macos-15": "darwin"}
 GITHUB_RUNNER_OS = {"Linux": "linux", "Windows": "win32", "macOS": "darwin"}
@@ -3975,6 +3976,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="a checkout containing the pinned Release-13 App commit")
     parser.add_argument("--allow-release13-to-candidate", action="store_true",
                         help="admit the pinned direct update from Release 13")
+    parser.add_argument("--mixed-candidate-dist", type=Path,
+                        help="exact hosted candidate App build from the frozen checkout")
+    parser.add_argument("--mixed-release13-dist", type=Path,
+                        help="exact hosted Release 13 App build from its pinned checkout")
     parser.add_argument("--source-override", action="store_true", help="TEST MODE: install Agent and Runtime from local Git commits")
     parser.add_argument("--agent-checkout", type=Path)
     parser.add_argument("--runtime-checkout", type=Path)
@@ -4055,7 +4060,8 @@ def main(argv: list[str] | None = None) -> int:
                          "and admits no release-0 or release-9 source")
     elif args.release11_app_checkout is not None or args.allow_release11_to_candidate:
         parser.error("release-11 admission is only valid for the release11-then-update leg")
-    if args.leg in {"release13-then-update", "release13-then-killed-update"}:
+    if args.leg in {"release13-then-update", "release13-then-killed-update",
+                    "mixed-r14-app-r13-installed", "mixed-r13-app-r14-installed"}:
         if diagnostic or args.diagnostic_keep_going or args.retain_for_next_leg:
             parser.error("release13-then-update requires a disposable direct qualification job")
         if not (args.job_id and args.mode == "direct" and args.candidate):
@@ -4074,7 +4080,20 @@ def main(argv: list[str] | None = None) -> int:
                 or args.allow_release0_to_release1):
             parser.error("release13-then-update requires its pinned Release-13 source only")
     elif args.release13_app_checkout is not None or args.allow_release13_to_candidate:
-        parser.error("release-13 admission is only valid for the release13-then-update leg")
+        parser.error("release-13 admission is only valid for a named previous-release/mixed row")
+    mixed = args.leg in {"mixed-r14-app-r13-installed", "mixed-r13-app-r14-installed"}
+    if mixed:
+        if (sys.platform != "linux" or args.shell != "sh" or args.mode != "direct"
+                or diagnostic or args.diagnostic_keep_going or args.retain_for_next_leg
+                or args.source_override or args.old_launcher_ref or args.stopped_path_agent_ref):
+            parser.error("mixed-version rows require isolated native Linux direct qualification")
+        if args.mixed_candidate_dist is None or args.mixed_release13_dist is None:
+            parser.error("mixed-version rows require both pinned hosted App builds")
+        if (args.mixed_candidate_dist.resolve() != args.app_checkout.resolve() / "dist"
+                or args.mixed_release13_dist.resolve() != args.release13_app_checkout.resolve() / "dist"):
+            parser.error("mixed-version App builds must be children of their exact checkouts")
+    elif args.mixed_candidate_dist is not None or args.mixed_release13_dist is not None:
+        parser.error("mixed-version build arguments are only valid on named mixed rows")
     if args.leg in {"release9-then-install", "r0-handoff-then-update", "windows-upgrade-refusal"}:
         if args.leg == "windows-upgrade-refusal" and (sys.platform != "win32" or args.job_id != "direct-windows" or diagnostic or args.diagnostic_keep_going or args.retain_for_next_leg):
             parser.error("windows-upgrade-refusal requires the disposable direct-windows qualification job")

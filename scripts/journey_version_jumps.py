@@ -2045,6 +2045,14 @@ def execute_windows_refusal(args, root: Path, data: Path, evidence: Path, sentin
 
 
 def execute_owned(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) -> dict:
+    if args.leg in {"mixed-r14-app-r13-installed", "mixed-r13-app-r14-installed"}:
+        if sys.platform != "linux":
+            raise RuntimeError("Mixed-version browser rows require native Linux installed service ownership")
+        if __package__:
+            from . import journey_mixed_versions
+        else:
+            import journey_mixed_versions
+        return journey_mixed_versions.execute(args, root, data, evidence, sentinel, birth)
     if args.leg == "windows-upgrade-refusal":
         return execute_windows_refusal(args, root, data, evidence, sentinel, birth)
     if args.leg == R0_HANDOFF_LEG:

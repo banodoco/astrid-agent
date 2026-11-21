@@ -76,7 +76,10 @@ def _git_source(checkout: Path, expected: str) -> dict:
 
 
 def _dist(checkout: Path, supplied: Path) -> Path:
-    actual = supplied.resolve(strict=True)
+    try:
+        actual = supplied.resolve(strict=True)
+    except OSError as exc:
+        raise RuntimeError("Mixed App build is absent from its exact pinned checkout") from exc
     if supplied.is_symlink() or actual != checkout.resolve(strict=True) / "dist":
         raise RuntimeError("Mixed App build does not belong to the checked immutable source")
     if any(not (actual / name).is_file() for name in ("index.html", "build.json")):
