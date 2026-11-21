@@ -51,12 +51,15 @@ _MANAGED_KIND_RULES: dict[str, dict[str, Any]] = {
 
 def managed_media_type(source: Path, kind: str) -> str:
     """Validate a managed workflow input and retain its upload content type."""
+    source = Path(source)
+    if source.is_symlink() or not source.is_file():
+        raise ValueError(f"managed {kind} is not a local regular file: {source}")
     media_type = mimetypes.guess_type(source.name)[0] or ""
     if media_type.startswith(f"{kind}/"):
         return media_type
     if kind == "audio" and media_type.startswith("video/"):
         try:
-            probe = ffprobe_metadata_strict(source.resolve())
+            probe = ffprobe_metadata_strict(source, local_only=True)
         except MediaProbeError as exc:
             raise ValueError(f"could not inspect {source.name} for an audio stream: {exc}") from exc
         if probe.has_audio_stream:
@@ -350,7 +353,6 @@ class ComfyTargetClient:
         subfolder = f"astrid/{validate_identity(task_id)}"
         if source.is_symlink() or not source.is_file():
             raise ValueError(f"managed {kind} is not a regular file: {source}")
-        media_type = managed_media_type(source, kind)
         with source.open("rb") as handle:
             data = handle.read(MAX_UPLOAD_BYTES + 1)
         if len(data) > MAX_UPLOAD_BYTES:
@@ -359,6 +361,11 @@ class ComfyTargetClient:
         if (rule["hash_required"] or expected_sha256 is not None) and (
                 expected_sha256 is None or digest != _digest_hex(expected_sha256)):
             raise ValueError(f"managed {kind} failed hash verification: {source.name}")
+        # Inspect the same bounded bytes that passed custody verification and will be uploaded.
+        with tempfile.TemporaryDirectory(prefix="astrid-media-probe-") as staging:
+            frozen = Path(staging) / source.name
+            frozen.write_bytes(data)
+            media_type = managed_media_type(frozen, kind)
         filename = source.name.replace('"', "_").replace("\r", "_").replace("\n", "_")
         if self.endpoint_transport is not None:
             root = self._pod_directory("input_directory")

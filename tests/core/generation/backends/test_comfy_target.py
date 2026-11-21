@@ -405,3 +405,83 @@ def test_pod_target_requires_attested_transport(endpoint, network, tmp_path):
         with pytest.raises(ValueError):
             ComfyTargetClient(ComfyTarget(endpoint.url.replace("/single", "/other"), "pod"), endpoint_transport=transport)
     assert network["upstream"] == []
+
+
+def test_managed_audio_rejects_remote_inputs_and_restricts_probe(tmp_path, monkeypatch):
+    from astrid.core.media import MediaProbeError, ffprobe_metadata_strict
+
+    calls = []
+    monkeypatch.setattr('astrid.core.media.shutil.which', lambda _: '/usr/bin/ffprobe')
+    def run(argv, **kwargs):
+        calls.append(argv)
+        return SimpleNamespace(returncode=0, stdout='{"streams": [{"codec_type": "audio"}]}', stderr='')
+    monkeypatch.setattr('astrid.core.media.subprocess.run', run)
+    for remote in ('https://example.invalid/a.mp4', 'tcp://example.invalid/a.mp4'):
+        with pytest.raises((ValueError, MediaProbeError), match='local'):
+            comfy_target.managed_media_type(remote, 'audio')
+        with pytest.raises(MediaProbeError, match='local'):
+            ffprobe_metadata_strict(remote, local_only=True)
+    assert not calls
+    local = tmp_path / 'clip.mp4'
+    local.write_bytes(b'video')
+    assert comfy_target.managed_media_type(local, 'audio') == 'video/mp4'
+    assert calls[0][calls[0].index('-protocol_whitelist') + 1] == 'file,pipe'
+    assert calls[0][-1] == str(local.resolve())
+
+
+def test_upload_bounds_and_freezes_bytes_before_probe(tmp_path, monkeypatch):
+    source = tmp_path / 'clip.mp4'
+    source.write_bytes(b'original')
+    client = ComfyTargetClient(ComfyTarget('http://127.0.0.1:8188', 'attached'))
+    monkeypatch.setattr(comfy_target, 'MAX_UPLOAD_BYTES', 7)
+    monkeypatch.setattr(comfy_target, 'managed_media_type', lambda *a: pytest.fail('oversized media was probed'))
+    with pytest.raises(ValueError, match='too large'):
+        client.upload_media(source, task_id='task-1', kind='audio', expected_sha256=hashlib.sha256(b'original').hexdigest())
+    monkeypatch.setattr(comfy_target, 'MAX_UPLOAD_BYTES', 100)
+    def inspect(frozen, kind):
+        assert frozen != source
+        assert frozen.read_bytes() == b'original'
+        source.write_bytes(b'changed')
+        return 'video/mp4'
+    monkeypatch.setattr(comfy_target, 'managed_media_type', inspect)
+    class Response:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def read(self, size):
+            if getattr(self, 'done', False): return b''
+            self.done = True
+            return b'{"name":"clip.mp4","subfolder":"astrid/task-1","type":"input"}'
+    def opener(request, **kwargs):
+        assert b'original' in request.data
+        assert b'changed' not in request.data
+        return Response()
+    client._opener = opener
+    assert client.upload_media(source, task_id='task-1', kind='audio', expected_sha256=hashlib.sha256(b'original').hexdigest()) == 'astrid/task-1/clip.mp4'
+
+
+def test_local_playlist_cannot_open_remote_protocol(tmp_path):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+    from astrid.core.media import MediaProbeError, ffprobe_metadata_strict
+
+    requests = []
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            requests.append(self.path)
+            self.send_response(200)
+            self.end_headers()
+        def log_message(self, *args): pass
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        playlist = tmp_path / 'remote.m3u8'
+        playlist.write_text(f'#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\nhttp://127.0.0.1:{server.server_port}/segment.ts\n#EXT-X-ENDLIST\n')
+        with pytest.raises(MediaProbeError, match='ffprobe failed'):
+            ffprobe_metadata_strict(playlist, local_only=True)
+        assert requests == []
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
