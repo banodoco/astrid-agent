@@ -514,6 +514,12 @@ def admit_project_pack(realm: str, project: str, *, client=None, collection='def
         # The raw TSX stays in the snapshot for render.
         _compile_components(staging,components)
         files=_closure(staging,entry,resources)
+        source_digest=_closure_digest([item for item in files if item['path'] in resources])
+        for definition,_ in definitions:
+            descriptor=_element_descriptor(definition)
+            matching=[a for a in content['admissions'] if all(a[k]==descriptor[k] for k in ('id','kind','revision'))]
+            if any('compiled' not in a and a['snapshot_digest']!=source_digest for a in matching):
+                raise ValueError('Legacy selected pack admission source closure changed; restore its original pack resources before re-admitting')
         closure_hash=_closure_digest(files)
         snapshot_root=snapshots/closure_hash
         if snapshot_root.exists():
@@ -541,7 +547,7 @@ def admit_project_pack(realm: str, project: str, *, client=None, collection='def
             if len(matching)>1:
                 raise ValueError('Ambiguous selected pack admission')
             if matching and 'compiled' not in matching[0]:
-                # A pre-compiled-module admission: same revision (source is unchanged), upgraded in place to the new
+                # A pre-compiled-module admission with its original source closure, upgraded in place to the new
                 # closure and compiled file. Its snapshot object is republished under the new digest.
                 new=dict(admission,descriptor=descriptor,compiled=record['compiled'],
                     authoring={'packRoot':str(root),'descriptorPath':Path(record['authoring']['descriptorPath']).relative_to(root).as_posix(),
