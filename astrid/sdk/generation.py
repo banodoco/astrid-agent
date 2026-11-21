@@ -11,7 +11,7 @@ import builtins
 import importlib
 import json
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from functools import wraps
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Protocol
@@ -351,25 +351,72 @@ def _validate_workflow_build_inputs(entry: dict[str, Any], inputs: Mapping[str, 
     return validate_inputs(entry, values)
 
 
+@dataclass
+class _WorkflowAdmissionState:
+    documents: dict[tuple[str, str], Any] = field(default_factory=dict)
+    entries: dict[tuple[str, str, str], dict[str, Any]] = field(default_factory=dict)
+
+
 def _admit_workflow_inputs(
     entry: str | Mapping[str, Any], inputs: Mapping[str, Any],
-    controls: Mapping[str, Any], job_dirs: list[Path],
+    controls: Mapping[str, Any], job_dirs: list[Path], state: _WorkflowAdmissionState,
 ) -> dict[str, Any]:
     """Apply a controller inspection hook and stage its project-owned dependencies."""
+    from shutil import copyfile
     from tempfile import mkdtemp
 
     from astrid.core.contracts.errors import AstridError
-    from astrid.core.generation.entries import inspect_entry_inputs, read_file_map_document
+    from astrid.core.generation.entries import (
+        file_map_is_valid,
+        find_entry,
+        inspect_entry_inputs,
+        read_file_map_document,
+    )
     from astrid.sdk.media_handles import resolve_media_handle
 
+    if isinstance(entry, str):
+        entry = find_entry(entry)
+    if entry is None or not entry.get("inspect_inputs_declared"):
+        return {}
+
+    values = dict(inputs)
     try:
-        requirements = inspect_entry_inputs(entry, inputs)
+        for port in entry.get("inputs", []):
+            name = port["name"]
+            if name not in values:
+                continue
+            kind = port["type"]
+            key = (name, kind)
+            if name == "request" and kind == "file":
+                # The SDK's public request control is a document. Keep its file
+                # format and inspect the same copy that the build will open.
+                if key not in state.documents:
+                    original = Path(values[name]).expanduser().resolve(strict=True)
+                    directory = Path(mkdtemp(prefix="astrid-generation-request-"))
+                    job_dirs.append(directory)
+                    state.documents[key] = str(copyfile(original, directory / original.name))
+                values[name] = state.documents[key]
+            elif kind == "file_map":
+                if key not in state.documents:
+                    supplied = read_file_map_document(values[name], allow_output_handles=True)
+                    if not isinstance(supplied, Mapping) or supplied and not file_map_is_valid(
+                            supplied, allow_output_handles=True):
+                        raise CapabilityValidationError(f"{name} must be a readable map of asset IDs to files")
+                    state.documents[key] = {
+                        asset: str(Path(path).expanduser().absolute()) for asset, path in supplied.items()
+                    }
+                mapping = state.documents[key]
+                if mapping and not file_map_is_valid(
+                        mapping, allow_output_handles=port.get("allow_output_handle_keys") is True):
+                    raise CapabilityValidationError(f"{name} must be a readable map of asset IDs to files")
+                values[name] = dict(mapping)
+        requirements = inspect_entry_inputs(entry, values)
     except (ValueError, OSError) as exc:
         if isinstance(exc, AstridError):
             raise
         raise CapabilityValidationError(str(exc)) from exc
     if requirements is None or not requirements.handle_ids:
-        return {}
+        return {"inputs": values}
 
     client = controls.get("client")
     _, project = _resolve_invoke_destination(client=client, out=controls.get("out"),
@@ -380,12 +427,9 @@ def _admit_workflow_inputs(
     if "media_handles" in context:
         raise CapabilityValidationError("media_handles is reserved for resolved media lineage")
     port = requirements.file_map_port
-    supplied_map = read_file_map_document(inputs.get(port) or {}, allow_output_handles=True, allow_empty=True)
-    if not isinstance(supplied_map, Mapping):
-        raise CapabilityValidationError(f"{port} must be a readable map of asset IDs to files")
     root = Path(mkdtemp(prefix="astrid-media-handles-"))
     job_dirs.append(root)
-    mapping = dict(supplied_map)
+    mapping = dict(values.get(port) or {})
     lineage = []
     for index, handle in enumerate(requirements.handle_ids):
         descriptor, record = resolve_media_handle(client, project, handle)
@@ -397,7 +441,7 @@ def _admit_workflow_inputs(
             raise CapabilityValidationError(f"cannot open media handle {handle!r}: {opened.error.message}")
         mapping[handle] = opened.data["local_path"]
     context["media_handles"] = lineage
-    return {"project": project, "inputs": {**inputs, port: mapping}, "idempotency_context": context}
+    return {"project": project, "inputs": {**values, port: mapping}, "idempotency_context": context}
 
 
 def offline_request_preflight(entry_id: str, *, mode: str | None, inputs: Mapping[str, Any]) -> None:
@@ -1573,10 +1617,13 @@ class GenerationFacade:
         import shutil
 
         job_dirs: list[Path] = []
+        state = _WorkflowAdmissionState()
         try:
             if kwargs.get("model") is not None:
                 kwargs.update(_admit_workflow_inputs(
-                    kwargs["model"], kwargs.get("inputs") or {}, kwargs, job_dirs))
+                    kwargs["model"], kwargs.get("inputs") or {}, kwargs, job_dirs, state))
+            else:
+                kwargs["_admission_state"] = state
             if not kwargs.get("dry_run") and kwargs.get("placement") is not None:
                 from astrid.core.generation import placement as placements
                 resolved = placements.validate_placement(placements.resolve_placement(
@@ -1605,6 +1652,7 @@ class GenerationFacade:
         dry_run: bool,
         workflow_entry: dict[str, Any] | None = None,
         retained_source: dict[str, Any] | None = None,
+        _admission_state: _WorkflowAdmissionState | None = None,
         **controls: Any,
     ) -> Any:
         """Bind a catalog template and admit it through the workflow facade.
@@ -1775,10 +1823,17 @@ class GenerationFacade:
 
         selected = None
         failures: list[str] = []
+        state = _admission_state or _WorkflowAdmissionState()
         for source, candidate in candidates:
             source_ref = retained_source
             identifier = candidate.id if source == "catalog" else candidate["id"]
-            if automatic and identifier != pinned and source == "workflow" and candidate.get('hooks_declared'):
+            inspect_candidate = model is None and source == "workflow" and candidate.get("inspect_inputs_declared")
+            admission = None
+            if inspect_candidate:
+                admission_key = (identifier, candidate["contribution"], candidate.get("pack_root", ""))
+                admission = state.entries.get(admission_key)
+            if (admission is None and automatic and identifier != pinned and source == "workflow"
+                    and candidate.get('hooks_declared')):
                 # A contributed default may require a different public input shape. Only
                 # skip it for missing required inputs; a chosen candidate's build errors
                 # and explicitly pinned entries remain fail-closed.
@@ -1792,16 +1847,19 @@ class GenerationFacade:
                     continue
             candidate_inputs = inputs
             candidate_controls = dict(controls)
-            if model is None and source == "workflow" and candidate.get("inspect_inputs_declared"):
-                # Explicit models were admitted before target preflight. Implicit
-                # selection must inspect the exact contribution about to build.
-                try:
-                    candidate_inputs = _validate_workflow_build_inputs(candidate, inputs)
-                except ValueError as exc:
-                    raise generation_error(exc, code="input_rejected") from exc
-                admission = _admit_workflow_inputs(candidate, candidate_inputs, controls, _job_dirs)
-                candidate_inputs = admission.pop("inputs", candidate_inputs)
-                candidate_controls.update(admission)
+            if inspect_candidate:
+                # The remote dry and live passes share inputs and custody from
+                # the same selected contribution's controller admission.
+                if admission is None:
+                    try:
+                        validated = _validate_workflow_build_inputs(candidate, inputs)
+                    except ValueError as exc:
+                        raise generation_error(exc, code="input_rejected") from exc
+                    admission = {"inputs": validated,
+                                 **_admit_workflow_inputs(candidate, validated, controls, _job_dirs, state)}
+                    state.entries[admission_key] = admission
+                candidate_inputs = admission["inputs"]
+                candidate_controls.update({key: value for key, value in admission.items() if key != "inputs"})
             try:
                 assets = {}
                 transport = BuildTransport()

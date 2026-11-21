@@ -264,3 +264,99 @@ def test_invalid_request_preserves_structured_error_in_sdk_and_cli(tmp_path, cap
     assert issue["details"] == {"field": "request", "fix": caught.value.fix}
     assert json.loads(captured.out) == sdk_error
     assert "Traceback" not in captured.err
+
+
+def test_selected_video_build_uses_inspected_documents(selected_video, monkeypatch, tmp_path):
+    from astrid.core.generation import entries, preflight
+
+    class ObservedBuild(Exception):
+        pass
+
+    inputs = _inputs(tmp_path, "source", "ordinary-mask")
+    request = Path(inputs["request"])
+    expected = request.read_bytes()
+    document = tmp_path / "assets.json"
+    document.write_text(json.dumps({"source": "original.mp4"}), encoding="utf-8")
+    snapshots = []
+
+    def change_documents(*args, **kwargs):
+        edited = json.loads(expected)
+        edited["source"]["asset"] = _digest(b"outside-project")
+        request.write_text(json.dumps(edited), encoding="utf-8")
+        document.write_text(json.dumps({"__astrid_h3_prepared__": "replace.json"}), encoding="utf-8")
+
+    def build(entry, values, job_dir, **kwargs):
+        assert values["asset_map"] == {"source": str(tmp_path / "original.mp4")}
+        snapshot = Path(values["request"])
+        assert snapshot.suffix == request.suffix
+        assert snapshot.read_bytes() == expected
+        snapshots.append(snapshot)
+        raise ObservedBuild
+
+    monkeypatch.setattr(preflight, "require_generation_target_readiness", change_documents)
+    monkeypatch.setattr(entries, "build_entry", build)
+    with pytest.raises(ObservedBuild):
+        selected_video(placement="local", mode="v2v", dry_run=True,
+                       request=inputs["request"], asset_map=str(document))
+    assert len(snapshots) == 1 and not snapshots[0].exists()
+
+
+def test_selected_video_reuses_admission_for_remote_live_build(selected_video, monkeypatch, tmp_path):
+    from astrid.core.generation import entries, placement
+    from astrid.sdk import generation
+
+    class ObservedDryBuild(Exception):
+        pass
+
+    class ObservedLiveBuild(Exception):
+        pass
+
+    source = _digest(b"source")
+    client = _Client({source: b"source"})
+    inputs = _inputs(tmp_path, source, "ordinary-mask")
+    request = Path(inputs["request"])
+    expected = request.read_bytes()
+    document = tmp_path / "assets.json"
+    document.write_text(json.dumps({"ordinary-mask": "original.png"}), encoding="utf-8")
+    target = placement.Placement(kind="runpod", machine="example-machine")
+    monkeypatch.setattr(placement, "resolve_placement", lambda *args, **kwargs: target)
+    monkeypatch.setattr(placement, "validate_placement", lambda value: value)
+    monkeypatch.setattr(generation, "_require_claimed_machine", lambda *args: None)
+    monkeypatch.setattr(entries, "runpod_engine", lambda *args: "comfyui")
+
+    original_impl = GenerationFacade._generate_on_target_impl
+
+    def end_dry_preflight(self, **kwargs):
+        try:
+            return original_impl(self, **kwargs)
+        except ObservedDryBuild:
+            assert kwargs["dry_run"]
+            return {}
+
+    staged = []
+    snapshots = []
+
+    def build(entry, values, job_dir, *, publish_source=None, **kwargs):
+        mapping = values["asset_map"]
+        assert mapping["ordinary-mask"] == str(tmp_path / "original.png")
+        staged.append(mapping[source])
+        assert Path(staged[-1]).read_bytes() == b"source"
+        snapshots.append(Path(values["request"]))
+        assert snapshots[-1].read_bytes() == expected
+        if publish_source is None:
+            request.unlink()
+            document.unlink()
+            client.media.digests.clear()
+            raise ObservedDryBuild
+        raise ObservedLiveBuild
+
+    monkeypatch.setattr(GenerationFacade, "_generate_on_target_impl", end_dry_preflight)
+    monkeypatch.setattr(entries, "build_entry", build)
+    with pytest.raises(ObservedLiveBuild):
+        selected_video(placement="runpod", mode="v2v", project="selected-project", client=client,
+                       request=inputs["request"], asset_map=str(document))
+    assert client.media.show_calls == [("selected-project", source)]
+    assert len(staged) == 2 and staged[0] == staged[1]
+    assert not Path(staged[0]).exists()
+    assert len(snapshots) == 2 and snapshots[0] == snapshots[1]
+    assert not snapshots[0].exists()
