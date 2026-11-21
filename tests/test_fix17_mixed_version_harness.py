@@ -136,3 +136,22 @@ def test_mixed_browser_input_does_not_include_any_runtime_credential():
     assert '"credential_file"' not in source
     assert '"authorization"' not in source
     assert "runner-owned" in (ROOT / "scripts" / "journey_mixed_version_browser.mjs").read_text()
+
+
+
+def test_legacy_browser_must_read_the_original_r14_outbox_owner():
+    browser = (ROOT / "scripts" / "journey_mixed_version_browser.mjs").read_text(encoding="utf-8")
+    native = (ROOT / "scripts" / "journey_mixed_versions.py").read_text(encoding="utf-8")
+    checker = (ROOT / "scripts" / "check_journey_evidence.py").read_text(encoding="utf-8")
+    # Two fresh browser contexts would destroy the exact session being tested.
+    assert "launchPersistentContext" in browser
+    assert "config.profileDir" in browser
+    assert "config.expectedOwnerIds" in browser
+    assert "originalOwners.has(row.ownerId)" in browser
+    assert '"profileDir": str(browser_profile)' in native
+    assert '"expectedOwnerIds": original_owner_ids' in native
+    assert "browser_profile_removed" in native
+    assert "shutil.rmtree(browser_profile)" in native
+    assert "original_queue_survives" in checker
+    assert 'row.get("browser_profile_removed") is not True' in checker
+    assert 'legacy.get("persistentProfile") is not True' in checker

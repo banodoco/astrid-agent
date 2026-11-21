@@ -208,24 +208,34 @@ async function caseR14Author(context, config, traffic) {
   const reopened = await openEditor(context, config, traffic);
   check(await reopened.track.inputValue() === config.savedLabel,
     'R14-authored creative edit did not survive browser reopen');
+  const owners = await waitForOutbox(reopened.page, config.projectId, config.timelineId,
+    (rows) => rows.some((row) => row.intents === 0 && !row.pending && !!row.ownerId),
+    'R14-authored edit did not persist a reusable browser save queue');
   await reopened.page.close();
-  return { mode: config.mode, realInstalledEdit: edit, savedLabel: config.savedLabel, reopened: true };
+  return { mode: config.mode, realInstalledEdit: edit, savedLabel: config.savedLabel,
+    reopened: true, outboxAfter: owners };
 }
 
 async function caseR13ReadR14(context, config, traffic) {
+  check(Array.isArray(config.expectedOwnerIds) && config.expectedOwnerIds.length > 0
+    && config.expectedOwnerIds.every((id) => typeof id === 'string' && id),
+    'R13 App must read the existing R14-authored durable browser owner');
+  const originalOwners = new Set(config.expectedOwnerIds);
   const { page, track } = await openEditor(context, config, traffic);
   check((await track.inputValue()) === config.savedLabel,
     'Published R13 App could not read an R14-authored parent timeline');
   const before = await waitForOutbox(page, config.projectId, config.timelineId,
-    (rows) => rows.some((row) => !row.pending && row.intents === 0),
-    'Published R13 App could not read an idle durable save queue');
+    (rows) => rows.some((row) => originalOwners.has(row.ownerId)
+      && !row.pending && row.intents === 0),
+    'Published R13 App could not read the original R14-authored durable save queue');
   await page.close();
   const reopen = await openEditor(context, config, traffic);
   check(await reopen.track.inputValue() === config.savedLabel,
     'Published R13 App could not reopen R14-authored timeline');
   const after = await waitForOutbox(reopen.page, config.projectId, config.timelineId,
-    (rows) => rows.some((row) => !row.pending && row.intents === 0),
-    'Published R13 App lost or changed its save queue on reopen');
+    (rows) => rows.some((row) => originalOwners.has(row.ownerId)
+      && !row.pending && row.intents === 0),
+    'Published R13 App lost the original R14-authored durable save queue on reopen');
   check(traffic.length === 0, 'Read-only R13 App sent an unexpected timeline commit');
   await reopen.page.close();
   return { mode: config.mode, savedLabel: config.savedLabel,
@@ -242,29 +252,48 @@ export async function execute(config, environment = {}) {
   for (const name of ['app', 'projectId', 'timelineId', 'projectName', 'initialLabel', 'savedLabel', 'origin']) {
     check(typeof config[name] === 'string' && config[name].length > 0, 'Missing mixed-version input: ' + name);
   }
-  const browserAPI = environment.chromium || playwrightFrom(config.app).chromium;
-  const browser = await browserAPI.launch({ args: chromiumArgs({ origin: config.origin, spki: config.spki }) });
+  const reuseProfile = config.mode !== 'r14-app-r13-installed';
+  if (reuseProfile) check(typeof config.profileDir === 'string' && config.profileDir,
+    'The R14-to-R13 App switch needs the same persistent browser profile');
+  const browserAPI = environment.chromium || playwrightFrom(config.browserDriverApp || config.app).chromium;
+  const args = chromiumArgs({ origin: config.origin, spki: config.spki });
   const traffic = [];
+  let browser;
+  let context;
   try {
-    const probe = await browser.newPage();
-    const userAgent = (await probe.evaluate(() => navigator.userAgent)) + ' astrid-fix17-mixed-version';
-    await probe.close();
-    const context = await browser.newContext({
-      userAgent,
-      permissions: ['local-network-access'],
-      storageState: { cookies: [], origins: [{ origin: config.origin,
-        localStorage: [{ name: 'astrid-editor-tour-v1', value: '1' }] }] },
-    });
+    if (reuseProfile) {
+      // Keep the same user data directory across the two distinct App builds.
+      // Unlike a fresh context, this preserves the browser's real IndexedDB
+      // outbox owner for the published R13 App to read after R14 authoring.
+      context = await browserAPI.launchPersistentContext(config.profileDir, {
+        args, permissions: ['local-network-access'],
+      });
+      await context.addInitScript(() => {
+        try { localStorage.setItem('astrid-editor-tour-v1', '1'); } catch { /* unavailable origin */ }
+      });
+    } else {
+      browser = await browserAPI.launch({ args });
+      const probe = await browser.newPage();
+      const userAgent = (await probe.evaluate(() => navigator.userAgent)) + ' astrid-fix17-mixed-version';
+      await probe.close();
+      context = await browser.newContext({
+        userAgent,
+        permissions: ['local-network-access'],
+        storageState: { cookies: [], origins: [{ origin: config.origin,
+          localStorage: [{ name: 'astrid-editor-tour-v1', value: '1' }] }] },
+      });
+    }
     const observed = config.mode === 'r14-app-r13-installed'
       ? await caseR14AppR13Installed(context, config, traffic)
       : config.mode === 'r14-author-r14-installed'
         ? await caseR14Author(context, config, traffic)
         : await caseR13ReadR14(context, config, traffic);
-    await context.close();
     return { status: 'pass', phase: 'completed', mode: config.mode,
-      browserApp: config.browserAppSha, realRuntime: true, traffic, ...observed };
+      browserApp: config.browserAppSha, realRuntime: true, traffic,
+      persistentProfile: reuseProfile, ...observed };
   } finally {
-    await browser.close();
+    if (context) await context.close();
+    if (browser) await browser.close();
   }
 }
 
