@@ -485,7 +485,9 @@ def cli(module, argv, name, *, timeout=300):
     installed = version()
     env = {key: value for key, value in os.environ.items() if key not in {"PYTHONPATH", "PYTHONHOME"}}
     env.update(installed["env"])
-    return run([installed["python"], "-I", "-m", module, *argv], name, env=env, timeout=timeout)
+    launcher = (["-c", "import sys; from astrid.console import main; sys.exit(main(sys.argv[1:]))"]
+                if module == "astrid" and argv[:1] == ["packs"] else ["-m", module])
+    return run([installed["python"], "-I", *launcher, *argv], name, env=env, timeout=timeout)
 
 
 def health():
@@ -733,6 +735,13 @@ def install_journey_packs():
     ci_journey.install_journey_packs(lambda argv, name: cli("astrid", argv, name, timeout=600))
 
 
+def create_windows_project(project):
+    created = json.loads(cli("astrid", ["projects", "create", project, "--name", "Windows journey", "--json"],
+                             "project.json"))
+    if created.get("ok") is not True:
+        raise RuntimeError("Project creation failed")
+
+
 def task(project="windows-journey", *, create_project=True):
     # Exercise the installed SDK boundary against the profile written by the
     # real installer. This local SFX action has no external model/GPU needs.
@@ -740,10 +749,7 @@ def task(project="windows-journey", *, create_project=True):
     assert_installed_profile_binding()
     install_journey_packs()
     if create_project:
-        created = json.loads(cli("astrid", ["projects", "create", project, "--name", "Windows journey", "--json"],
-                                 "project.json"))
-        if created.get("ok") is not True:
-            raise RuntimeError("Project creation failed")
+        create_windows_project(project)
     request = {
         "capability_id": "chiptune.sfx",
         "kind": "executor",

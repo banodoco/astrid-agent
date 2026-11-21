@@ -2,10 +2,12 @@
 """Run the R13 required-update and R13 realm-reopen rows on an installed Linux Runtime."""
 from __future__ import annotations
 
+import base64
 from contextlib import contextmanager
 from pathlib import Path
 import platform
 import shutil
+from tempfile import TemporaryDirectory
 
 if __package__:
     from . import check_journey_evidence as gate
@@ -27,12 +29,13 @@ def stage(result: dict, result_path: Path, name: str):
     result["steps"].append(entry)
     journey.write_json(result_path, result)
     try:
-        yield
+        yield entry
     except Exception as error:
         entry.update(state="fail", error=f"{type(error).__name__}: {error}")
         journey.write_json(result_path, result)
         raise
-    entry["state"] = "pass"
+    if entry["state"] == "running":
+        entry["state"] = "pass"
     journey.write_json(result_path, result)
 
 
@@ -68,11 +71,19 @@ def _browser(config, *, app, expected_app, dist, release_app, manifest, python, 
     routes, types = hosted.page_routes(dist)
     routes.update(hosted.release_routes(release_app, manifest.read_bytes()))
     result_path = evidence / "browser-result.json"
-    config_path = evidence / "browser-input.json"
-    with hosted.Intercept(routes, python=python, types=types) as server:
-        journey.write_json(config_path, {
-            **config, "origin": hosted.ORIGIN, "result": str(result_path), "spki": server.leaf_spki,
-        })
+    allowed_config = {"mode", "profileDir", "browserDriverApp", "projectId", "projectName", "timelineId",
+                      "initialLabel", "savedLabel", "draftLabel", "expectedDraft", "requiredReason",
+                      "initialManifestB64"}
+    if set(config) - allowed_config:
+        raise ValueError("Unexpected browser configuration fields")
+    manifest_sha = gate.digest(manifest)
+    with (
+        TemporaryDirectory(prefix="fix17-browser-") as private,
+        hosted.Intercept(routes, python=python, types=types) as server,
+    ):
+        config_path = Path(private) / "input.json"
+        journey.write_json(config_path, {**config, "origin": hosted.ORIGIN, "result": str(result_path),
+                                        "spki": server.leaf_spki, "manifestSha256": manifest_sha})
         try:
             journey.run(["node", journey.ROOT / "scripts/journey_required_update_browser.mjs", config_path],
                         evidence / "browser.log", timeout=420)
@@ -82,20 +93,21 @@ def _browser(config, *, app, expected_app, dist, release_app, manifest, python, 
                 raise RuntimeError(f"{config['mode']} browser: {failure.get('error', 'failed')}") from None
             raise
         observed = journey.read_json(result_path)
-        if observed.get("status") != "pass" or observed.get("mode") != config["mode"]:
-            raise RuntimeError("Hosted App did not finish " + config["mode"])
+        if observed.get("status") not in {"pass", "fail"} or observed.get("mode") != config["mode"]:
+            raise RuntimeError("Hosted App did not return a result for " + config["mode"])
         hits = server.hits()
-        if not any(hit["path"] == hosted.PAGE_ENTRY_ROUTE and hit["status"] == 200 for hit in hits):
+        if observed["status"] == "pass" and not any(
+                hit["path"] == hosted.PAGE_ENTRY_ROUTE and hit["status"] == 200 for hit in hits):
             raise RuntimeError("No successful hosted editor page request")
         # Intercept.preflight binds the installed Python to these same manifest bytes.
         manifest_reads = sum(hit["path"] == hosted.MANIFEST_ROUTE and hit["status"] == 200
                              and hit["method"] == "GET" for hit in hits)
-        if config["mode"] == "prompt" and manifest_reads < 2:
+        if config["mode"] == "publication" and observed["status"] == "pass" and manifest_reads < 2:
             raise RuntimeError("No browser read of the published R14 manifest")
     if server.reverted.get("clean") is not True:
         raise RuntimeError("The hosted intercept did not restore hosts and system trust")
     return {
-        **observed, "app": expected_app, "manifest_sha256": gate.digest(manifest),
+        **observed, "app": expected_app, "manifest_sha256": manifest_sha,
         "build_sha256": gate.digest(build), "manifest_reads": manifest_reads,
         "intercept_reverted": True,
     }
@@ -110,6 +122,26 @@ def _installed(root, data, manifest, release):
             or (health.get("identity") or {}).get("release") != release):
         raise RuntimeError(f"Expected the native Runtime and install for Release {release}")
     return path, version, selected, ownership
+
+
+def _reopen_catalog(root: Path, data: Path, evidence: Path) -> dict:
+    catalog_path = data / "runtime" / "catalog.json"
+    if catalog_path.is_symlink():
+        raise RuntimeError("Run-owned Runtime catalog is a symlink")
+    catalog = journey.read_json(catalog_path)
+    entries = catalog.get("realms")
+    if not isinstance(entries, list) or not entries or any(
+            not isinstance(entry, dict) or not isinstance(entry.get("realm_id"), str)
+            or not entry["realm_id"].strip() for entry in entries):
+        raise RuntimeError("Run-owned Runtime catalog does not list valid realm IDs")
+    ids = sorted(entry["realm_id"] for entry in entries)
+    live = jumps.live_workspace(root, data, evidence, "realm_inventory", {})
+    # R13 (and this R14 path) opens one selected realm. Require that the live
+    # realm covers the entire catalog. This refuses any unopened catalog entry.
+    if (ids != [live.get("realm_id")] or ids != [catalog.get("selected_realm_id")]
+            or Path(entries[0].get("data_root", "")) != journey.workspace_root(data)):
+        raise RuntimeError("Live timelines and history did not cover every ID in the Runtime catalog")
+    return {**live, "realm_ids": ids}
 
 
 def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) -> dict:
@@ -155,8 +187,6 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) 
                 root, data, journey.read_json(old_path), 13)
 
         with stage(result, result_path, "r13_authoring"):
-            # The native direct owner has one realm. Enumerate its entire API scope
-            # in the realm row and author independent projects in that same realm.
             count = 2 if mode == FIX17_REALM_LEG else 1
             for number in range(1, count + 1):
                 slug = f"fix17-project-{number}"
@@ -168,26 +198,40 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) 
                     "timelineId": seed["timeline"], "initialLabel": seed["initial_label"],
                     "savedLabel": f"FIX17 saved edit {number}", "draftLabel": f"FIX17 draft {number}",
                 }
-                author = _browser({**config, "mode": "author"},
-                                  app=old_app, expected_app=jumps.RELEASE13_APP_COMMIT,
-                                  dist=args.release13_browser_dist, release_app=source, manifest=old_path,
-                                  python=old_version["python"], evidence=evidence / (slug + "-r13"))
+                if mode == FIX17_PROMPT_LEG:
+                    publication = _browser({
+                        **config, "mode": "publication",
+                        "requiredReason": manifest["required"]["reason"],
+                        "initialManifestB64": base64.b64encode(old_path.read_bytes()).decode("ascii"),
+                    }, app=old_app, expected_app=jumps.RELEASE13_APP_COMMIT,
+                        dist=args.release13_browser_dist, release_app=app, manifest=path,
+                        python=old_version["python"], evidence=evidence / "required-prompt")
+                    result["prompt"] = {**publication, "mode": "prompt"}
+                    author = {
+                        **(publication.get("author") or {}), "app": jumps.RELEASE13_APP_COMMIT,
+                        "manifest_sha256": result["release13_source"]["manifest_sha256"],
+                        "build_sha256": publication["build_sha256"], "intercept_reverted": True,
+                    }
+                else:
+                    author = _browser({**config, "mode": "author"},
+                                      app=old_app, expected_app=jumps.RELEASE13_APP_COMMIT,
+                                      dist=args.release13_browser_dist, release_app=source, manifest=old_path,
+                                      python=old_version["python"], evidence=evidence / (slug + "-r13"))
                 result["timelines"].append({
                     "config": {key: config[key] for key in
                                ("projectId", "projectName", "timelineId", "savedLabel", "draftLabel")},
                     "author": author,
                 })
-                if mode == FIX17_PROMPT_LEG:
-                    with stage(result, result_path, "required_prompt"):
-                        result["prompt"] = _browser({
-                            **config, "mode": "prompt", "expectedDraft": author["draft"],
-                            "requiredReason": manifest["required"]["reason"],
-                        }, app=old_app, expected_app=jumps.RELEASE13_APP_COMMIT,
-                            dist=args.release13_browser_dist, release_app=app, manifest=path,
-                            python=old_version["python"], evidence=evidence / "required-prompt")
+                if author.get("status") != "pass":
+                    raise RuntimeError("R13 App did not author the original scoped saved and unsaved edits: "
+                                       + str(author.get("error") or (result.get("prompt") or {}).get("error")
+                                             or "missing evidence"))
             if mode == FIX17_REALM_LEG:
-                result["realm_before"] = jumps.live_workspace(
-                    root, data, evidence / "before", "realm_inventory", {})
+                result["realm_before"] = _reopen_catalog(root, data, evidence / "before")
+        if mode == FIX17_PROMPT_LEG:
+            with stage(result, result_path, "required_prompt") as entry:
+                if result["prompt"].get("status") != "pass":
+                    entry.update(state="fail", error=result["prompt"].get("error", "Required prompt evidence absent"))
 
         with stage(result, result_path, "native_r14_update"):
             result["update"] = jumps.candidate_update(app, path, args.shell, evidence / "r14-update", root, data)
@@ -211,20 +255,28 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) 
             if not result["import_origins"]:
                 raise RuntimeError("Installed import origins are absent")
 
-        with stage(result, result_path, "r14_reopen"):
+        with stage(result, result_path, "r14_reopen") as entry:
             if mode == FIX17_REALM_LEG:
-                result["realm_after"] = jumps.live_workspace(
-                    root, data, evidence / "after", "realm_inventory", {})
+                result["realm_after"] = _reopen_catalog(root, data, evidence / "after")
                 if result["realm_before"] != result["realm_after"]:
                     raise RuntimeError("An R13 project, timeline or published history changed during the update")
             for number, timeline in enumerate(result["timelines"], start=1):
                 config = timeline["config"]
                 timeline["reopen"] = _browser({
                     **config, "mode": "reopen", "expectedDraft": timeline["author"]["draft"],
-                    "requireDraftUI": mode == FIX17_PROMPT_LEG,
                     "profileDir": str(profile), "browserDriverApp": str(app),
                 }, app=app, expected_app=candidate["app"], dist=args.candidate_browser_dist,
                     release_app=app, manifest=path, python=version["python"], evidence=evidence / f"reopen-{number}")
+                reopened = timeline["reopen"]
+                if reopened["status"] != "pass":
+                    entry.update(state="fail", error=reopened.get("error", "Draft Retry did not finish"))
+                    continue
+                reopened["accepted_readback"] = jumps.live_workspace(
+                    root, data, evidence / f"readback-{number}", "reopen_browser_composition", {
+                        "project_id": config["projectId"], "timeline_id": config["timelineId"],
+                        "revision_id": reopened["retry"]["revision"],
+                        "publication_id": reopened["retry"]["publication"], "label": config["draftLabel"],
+                    })
 
         with stage(result, result_path, "native_end"):
             _installed(root, data, manifest, 14)
@@ -235,6 +287,9 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) 
             result["sentinel"]["at_settlement"] = settled
             if not settled["alive"]:
                 raise RuntimeError("The update disturbed the unrelated sentinel")
+        failed = [entry["stage"] for entry in result["steps"] if entry["state"] != "pass"]
+        if failed:
+            raise RuntimeError("Failed browser qualification stages: " + ", ".join(failed))
         result["status"] = "pass"
     except Exception as exc:
         result.update(status="fail", error=f"{type(exc).__name__}: {exc}")

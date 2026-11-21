@@ -1413,6 +1413,8 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
 def print_direct_windows_failure_diagnostics(run_root: Path) -> None:
     """Print the row's nested Runtime logs and matching processes before cleanup."""
     log_dir = run_root / "localappdata" / "Astrid Runtime" / "logs"
+    process_match = ("*astrid-r1-direct-windows*" if run_root.name == "astrid-r1-direct-windows"
+                     else "*" + str(run_root).replace("/", "\\") + "*")
     code = r"""
 $ErrorActionPreference = 'Continue'
 $logRoot = __LOG_ROOT__
@@ -1428,16 +1430,17 @@ if (Test-Path -LiteralPath $logRoot -PathType Container) {
 } else {
     Write-Output '(log directory is unavailable)'
 }
-Write-Output '=== Win32_Process matching *astrid-r1-direct-windows* ==='
+Write-Output '=== Win32_Process matching this journey root ==='
 $processes = @(Get-CimInstance -ClassName Win32_Process -ErrorAction Continue |
-    Where-Object { $_.CommandLine -like '*astrid-r1-direct-windows*' } |
+    Where-Object { $_.CommandLine -like __PROCESS_MATCH__ } |
     Select-Object ProcessId, ParentProcessId, CommandLine)
 if ($processes.Count -gt 0) {
     $processes | Format-List ProcessId, ParentProcessId, CommandLine | Out-String -Width 4096 | Write-Output
 } else {
     Write-Output '(no matching processes found)'
 }
-""".replace("__LOG_ROOT__", windows._powershell_quote(log_dir))
+""".replace("__LOG_ROOT__", windows._powershell_quote(log_dir)).replace(
+        "__PROCESS_MATCH__", windows._powershell_quote(process_match))
     print("Direct Windows failure diagnostics:", flush=True)
     try:
         output = windows.powershell(code, "direct-windows-failure-diagnostics.txt",
@@ -2802,14 +2805,33 @@ def _process_command(pid: int) -> str:
                           text=True, timeout=10, check=False).stdout.strip()
 
 
-def pack_host_ready_path() -> Path:
+def pack_host_ready_path(*, pinokio_row: dict | None = None) -> Path:
     """The pack host's ready marker beside the selection record's data root."""
     record_path = selection_path()
     record = read_json(record_path) if record_path.is_file() else {}
     data_root = record.get("data_root")
     if not isinstance(data_root, str) or not data_root:
         raise RuntimeError("The selection record names no data root for the pack host")
-    return Path(data_root) / "runtime" / PACK_HOST_READY
+    selected_data = Path(data_root)
+    if pinokio_row is not None:
+        program = Path(pinokio_row["program_root"])
+        expected_data = Path(pinokio_row["data_root"])
+        home = Path(pinokio_row["home"])
+        run_root = home.parent
+        install_path = program / "install.json"
+        install = read_json(install_path)
+        if (record_path.is_symlink() or record.get("owner") != "haus.astrid.runtime"
+                or install_path.is_symlink() or install.get("owner") != "haus.astrid.runtime"
+                or install.get("managed_by") != "pinokio" or Path(install.get("data_root", "")) != expected_data
+                or not program.is_absolute() or program != program.resolve()
+                or not expected_data.is_absolute() or expected_data != expected_data.resolve()
+                or home != run_root / "home" or home != home.resolve()
+                or program != run_root / "pinokio-home" / "api" / "astrid-row" / "app" / "astrid"
+                or not expected_data.is_relative_to(home)
+                or not _same_path(record.get("program_root"), program)
+                or not _same_path(data_root, expected_data)):
+            raise RuntimeError("Pinokio selection does not match this isolated row's owned roots")
+    return selected_data / "runtime" / PACK_HOST_READY
 
 
 def pack_host_snapshot() -> dict:
@@ -2943,12 +2965,12 @@ def existing_pack_registration_problems(capability_id: str, observation: dict) -
     return problems
 
 
-def _observe_pack_registration(version: dict, evidence: Path) -> dict:
+def _observe_pack_registration(version: dict, evidence: Path, *, pinokio_row: dict | None = None) -> dict:
     """One Runtime-side observation: registration, outbox, live host and Runtime instance."""
     observation = {"registration": None, "registration_error": None, "outbox": None, "ready": None,
                    "host_alive": False, "runtime_instance_id": None}
     try:
-        ready_path = pack_host_ready_path()
+        ready_path = pack_host_ready_path(pinokio_row=pinokio_row)
         ready = read_json(ready_path)
         observation["ready"] = ready
         pid = ready.get("pid")
@@ -2958,19 +2980,25 @@ def _observe_pack_registration(version: dict, evidence: Path) -> dict:
         data = ready_path.parent.parent
         selection = read_json(selection_path())
         program = Path(version["root"]).parent.parent
-        owner_file = program.parent / OWNER_FILE
-        owner = read_json(owner_file)
-        original_data = Path(owner["data_root"])
-        if (owner_file.is_symlink() or owner.get("schema_version") != 1
-                or not re.fullmatch(r"[0-9a-f]{32}", str(owner.get("run_id", "")))
-                or owner.get("root") != str(program) or program.name != "program"
-                or original_data != program.parent / "data"
-                or data not in (original_data, Path(str(original_data) + "-r1"))
-                or not data.is_absolute() or data != data.resolve()
-                or selection.get("owner") != "haus.astrid.runtime"
-                or not _same_path(selection.get("program_root"), program)
-                or not _same_path(selection.get("data_root"), data)):
-            raise RuntimeError("Selected Runtime data root is not owned by this journey")
+        if pinokio_row is None:
+            owner_file = program.parent / OWNER_FILE
+            owner = read_json(owner_file)
+            original_data = Path(owner["data_root"])
+            if (owner_file.is_symlink() or owner.get("schema_version") != 1
+                    or not re.fullmatch(r"[0-9a-f]{32}", str(owner.get("run_id", "")))
+                    or owner.get("root") != str(program) or program.name != "program"
+                    or original_data != program.parent / "data"
+                    or data not in (original_data, Path(str(original_data) + "-r1"))
+                    or not data.is_absolute() or data != data.resolve()
+                    or selection.get("owner") != "haus.astrid.runtime"
+                    or not _same_path(selection.get("program_root"), program)
+                    or not _same_path(selection.get("data_root"), data)):
+                raise RuntimeError("Selected Runtime data root is not owned by this journey")
+        elif (program != Path(pinokio_row["program_root"]) or data != Path(pinokio_row["data_root"])
+              or selection.get("owner") != "haus.astrid.runtime"
+              or not _same_path(selection.get("program_root"), program)
+              or not _same_path(selection.get("data_root"), data)):
+            raise RuntimeError("Selected Runtime roots are not owned by this Pinokio row")
         discovery = healthy(data)
         endpoint = discovery.get("endpoint")
         if (not isinstance(endpoint, str) or not re.fullmatch(r"http://127\.0\.0\.1:[0-9]{1,5}", endpoint)
@@ -3001,7 +3029,7 @@ def _observe_pack_registration(version: dict, evidence: Path) -> dict:
 
 
 def _poll_pack_registration(version: dict, evidence: Path, pack_id: str, *, mode: str,
-                            timeout: float, interval: float) -> None:
+                            timeout: float, interval: float, pinokio_row: dict | None = None) -> None:
     capability_id = JOURNEY_PACK_CAPABILITIES.get(pack_id)
     if capability_id is None:
         return
@@ -3014,7 +3042,7 @@ def _poll_pack_registration(version: dict, evidence: Path, pack_id: str, *, mode
     try:
         while True:
             receipt["polls"] += 1
-            observation = _observe_pack_registration(version, evidence)
+            observation = _observe_pack_registration(version, evidence, pinokio_row=pinokio_row)
             receipt.update(last=observation["registration"], last_error=observation["registration_error"],
                            outbox=observation["outbox"], host_alive=observation["host_alive"],
                            runtime_instance_id=observation["runtime_instance_id"])
@@ -3046,7 +3074,8 @@ def _poll_pack_registration(version: dict, evidence: Path, pack_id: str, *, mode
 
 
 def wait_pack_registered(version: dict, evidence: Path, pack_id: str, *,
-                         timeout: float = PACK_REGISTRATION_TIMEOUT, interval: float = 3.0) -> None:
+                         timeout: float = PACK_REGISTRATION_TIMEOUT, interval: float = 3.0,
+                         pinokio_row: dict | None = None) -> None:
     """Wait for RUNTIME-SIDE readiness after `packs add`: no restart, no refresh-outbox gate.
 
     Readiness is the Runtime's own registration of the pack host's executor listing the
@@ -3055,16 +3084,19 @@ def wait_pack_registered(version: dict, evidence: Path, pack_id: str, *,
     assert_pack_hot_refreshed, prove the rest. Each poll's registration, outbox and the
     sanitized host identity are uploaded; the failure staging uploads host and service logs.
     """
-    _poll_pack_registration(version, evidence, pack_id, mode="added", timeout=timeout, interval=interval)
+    _poll_pack_registration(version, evidence, pack_id, mode="added", timeout=timeout, interval=interval,
+                            pinokio_row=pinokio_row)
 
 
 def wait_existing_pack_current(version: dict, evidence: Path, pack_id: str, *,
-                               timeout: float = PACK_REGISTRATION_TIMEOUT, interval: float = 3.0) -> None:
+                               timeout: float = PACK_REGISTRATION_TIMEOUT, interval: float = 3.0,
+                               pinokio_row: dict | None = None) -> None:
     """GATE for a pack that is already listed: its registration must be current for the live host.
 
     See existing_pack_registration_problems; a bare status=ready is not enough.
     """
-    _poll_pack_registration(version, evidence, pack_id, mode="existing", timeout=timeout, interval=interval)
+    _poll_pack_registration(version, evidence, pack_id, mode="existing", timeout=timeout, interval=interval,
+                            pinokio_row=pinokio_row)
 
 
 def invocation_outcome(invocation: dict) -> tuple[bool | None, object]:
@@ -3118,7 +3150,7 @@ def record_existing_pack_gate_skip(evidence: Path, pack_id: str, reason: str) ->
 
 def submit_task(version: dict, evidence: Path, project: str, *, create_project: bool = True,
                 duration_s: float = 0.1, existing_pack_gate: bool | str = True,
-                diagnostic_pack_setup=None) -> str:
+                diagnostic_pack_setup=None, pinokio_row: dict | None = None) -> str:
     """Admit one chiptune SFX task through the installed SDK and return its id, unfollowed."""
     SDK_CAPTURE_RECEIPTS.pop(evidence.absolute(), None)
     if diagnostic_pack_setup is None:
@@ -3145,8 +3177,10 @@ def submit_task(version: dict, evidence: Path, project: str, *, create_project: 
                                                                console=True, timeout=600),
                               routes_packs=lambda: installed_routes_packs(version, evidence),
                               before_add=lambda: before_journey_pack_add(evidence),
-                              wait_registered=lambda pack_id: wait_pack_registered(version, evidence, pack_id),
-                              existing_ready=((lambda pack_id: wait_existing_pack_current(version, evidence, pack_id))
+                              wait_registered=lambda pack_id: wait_pack_registered(version, evidence, pack_id,
+                                                                                   pinokio_row=pinokio_row),
+                              existing_ready=((lambda pack_id: wait_existing_pack_current(version, evidence, pack_id,
+                                                                                           pinokio_row=pinokio_row))
                                               if existing_pack_gate is True else
                                               (lambda pack_id: record_existing_pack_gate_skip(
                                                   evidence, pack_id, str(existing_pack_gate)))))
@@ -3224,7 +3258,7 @@ def task_follow_failure_summary(task_id: str, observed: dict, final: dict, *, ca
 
 
 def task(version: dict, evidence: Path, project: str, *, create_project: bool = True,
-         existing_pack_gate: bool | str = True) -> str:
+         existing_pack_gate: bool | str = True, pinokio_row: dict | None = None) -> str:
     """Exercise the installed SDK through a settled, materialized SFX output.
 
     ``existing_pack_gate`` is True (the gate runs) or the approved skip reason: only for a
@@ -3234,7 +3268,7 @@ def task(version: dict, evidence: Path, project: str, *, create_project: bool = 
     if existing_pack_gate is not True and (not isinstance(existing_pack_gate, str) or not existing_pack_gate):
         raise ValueError("existing_pack_gate is True or a named skip reason")
     task_id = submit_task(version, evidence, project, create_project=create_project,
-                          existing_pack_gate=existing_pack_gate)
+                          existing_pack_gate=existing_pack_gate, pinokio_row=pinokio_row)
     try:
         installed_cli(version, ["tasks", "follow", task_id, "--project", project,
                                 "--poll-seconds", "2", "--timeout-seconds", "900", "--json"],
@@ -3452,7 +3486,11 @@ def _execute_owned(args: argparse.Namespace, root: Path, data: Path,
             windows.EVIDENCE = evidence
             windows.wait_for("pack-host is running with its current ready file", windows.host_ready)
             windows.snapshot("processes-host-ready.json")
-            windows.task(task_project)
+            if args.leg == "fresh-install":
+                windows.create_windows_project(task_project)
+                windows.task(task_project, create_project=False)
+            else:
+                windows.task(task_project)
         else:
             try:
                 task(version, evidence, task_project)
@@ -3561,7 +3599,8 @@ def execute(args: argparse.Namespace) -> dict:
             except Exception as diagnostic_error:
                 host_availability_diagnostic = {"capture_error": type(diagnostic_error).__name__}
         if narrow_refusal:
-            prior_run = run_root.with_name("astrid-r1-direct-windows")
+            prior_run = (run_root.with_name("f17") if run_root.name == "f17r"
+                         else run_root.with_name("astrid-r1-direct-windows"))
             related_selection = (prior_run / "program", prior_run / "data")
             assert_host_available(host_leg, root, data, skip_process_check=True,
                                   related_uninstalled_selection=related_selection)

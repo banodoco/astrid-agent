@@ -46,6 +46,8 @@ def handoff_upgrade_fields():
 
 def release1_receipts(tmp_path):
     candidate = {key: letter * 40 for key, letter in zip(("app", "agent", "runtime", "pinokio"), "abcd")}
+    # The upgraded rows in this fixture represent a candidate manifest at release 2.
+    candidate["release"] = 10
     for contract in gate.RELEASE1_MATRIX:
         runner_os, image_os = gate.RUNNER_PROVENANCE[contract["runner"]]
         service = {"required": True, "outcome": "pass", "manager": "native", "version": "1",

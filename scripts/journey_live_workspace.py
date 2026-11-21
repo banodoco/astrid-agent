@@ -208,10 +208,11 @@ def seed_authored_timeline(client, project, generation):
         raise RuntimeError("Installed Runtime did not publish a canonical timeline bootstrap head")
 
     label = "Initialize Release 13 creative timeline"
+    original_file = "fix17-r13-" + generation + ".mp4"
     command = {
         "schema_version": 1, "op": "timeline.init", "version": "1", "select": "parent",
         "args": {"name": "Main", "slug": "main",
-                 "output": {"resolution": "1280x720", "fps": 30, "file": "output.mp4",
+                 "output": {"resolution": "1280x720", "fps": 30, "file": original_file,
                             "background": None, "background_scale": None}},
     }
     reads = [{"kind": "scope", "ref": "timeline", "path": []}]
@@ -246,12 +247,21 @@ def seed_authored_timeline(client, project, generation):
     if (reopened.get("head_revision_id") != data["accepted_revision_id"]
             or reopened.get("head_publication_id") != receipt["receipt_id"]):
         raise RuntimeError("Canonical initializer did not persist the accepted head and publication")
+    composition = read_composition_head(client, keys["project"], keys["timeline"],
+                                        data["accepted_revision_id"], receipt["receipt_id"])
+    if composition["payload"]["config"]["output"]["file"] != original_file:
+        raise RuntimeError("The original R13 composition did not retain its authored edit")
+    keys["head"] = data["accepted_revision_id"]
     return {
-        "project": keys["project"], "timeline": keys["timeline"],
+        **keys,
         "project_name": "Release-0 user project " + generation,
-        "timeline_name": "Main", "track_id": "V1", "initial_label": "V1",
+        "timeline_name": reopened["name"], "track_id": "V1", "initial_label": "V1",
         "revision_id": data["accepted_revision_id"],
         "publication_id": receipt["receipt_id"], "authored": True,
+        "composition": {"project_id": keys["project"], "timeline_id": keys["timeline"],
+                        "accepted_revision_id": data["accepted_revision_id"],
+                        "publication_id": receipt["receipt_id"],
+                        "document_sha256": composition_digest(composition), "edit": original_file},
     }
 
 
@@ -335,7 +345,7 @@ def snapshot(client, keys):
     # The public timeline resource is the only timeline identity a user's HTTP client sees.
     # Its name and head must be the ones the seed recorded from that same resource.
     try:
-        if timeline["name"] != "User edit " + generation:
+        if timeline["name"] != keys.get("timeline_name", "User edit " + generation):
             raise ValueError("Seeded timeline identity differs from the requested data")
         if timeline["head_revision_id"] != keys["head"]:
             raise ValueError("Seeded timeline head differs from the seeded head")
@@ -394,6 +404,88 @@ def save_timeline_after_update(client, keys):
         raise ValueError("Timeline metadata save unexpectedly changed its document head")
     return {"project": keys["project"], "timeline": keys["timeline"],
             "saved_name": saved_name, "head": keys["head"], "saved": True}
+
+
+def save_composition_after_update(client, keys):
+    """Commit a real document edit and prove the accepted revision via public reads."""
+    base = path("projects", keys["project"], "timelines", keys["timeline"])
+    timeline = client.request("GET", base)
+    revision_id, publication_id = timeline.get("head_revision_id"), timeline.get("head_publication_id")
+    if (not all(isinstance(value, str) and value for value in (revision_id, publication_id))
+            or revision_id != keys.get("revision_id") or publication_id != keys.get("publication_id")):
+        raise ValueError("Selected composition is not the seeded timeline and publication before the save")
+    revision = read_composition_head(client, keys["project"], keys["timeline"], revision_id, publication_id)
+    payload = revision.get("payload") if isinstance(revision, dict) else None
+    config = payload.get("config") if isinstance(payload, dict) else None
+    output = config.get("output") if isinstance(config, dict) else None
+    if not isinstance(output, dict) or not isinstance(output.get("file"), str):
+        raise RuntimeError("Seeded composition has no editable output file")
+    changed = dict(output)
+    changed["file"] = "fix17-saved-" + keys["generation"] + ".mp4"
+    change = {"op": "set", "ref": "parent", "path": ["config", "output"],
+              "before": {"state": "present", "value": output}, "value": changed}
+    label = "Save composition after Release 14 update"
+    command = {"schema_version": 1, "op": "doc.patch", "version": "1", "select": None, "created": [],
+               "args": {"changes": [change]}}
+    reads = [{"kind": "scope", "ref": "timeline", "path": []}]
+    accepted = client.request("POST", base + "/commit", {
+        "api_version": 1, "project_id": keys["project"], "timeline_id": keys["timeline"],
+        "base_revision_id": revision_id, "base_publication_id": publication_id,
+        "commands": [command], "label": label,
+        "steps": [{"id": "fix17-composition-save", "label": "doc.patch", "intent": label,
+                   "tags": [], "command_ordinals": [0], "patch": [change], "reads": reads}],
+        "merge": "atomic", "reads": reads, "dry_run": False, "source": {"via": "python"},
+    }, key="fix17-composition-save-" + keys["generation"])
+    data, receipt = accepted.get("data"), accepted.get("receipt")
+    accepted_id = data.get("accepted_revision_id") if isinstance(data, dict) else None
+    publication = receipt.get("receipt_id") if isinstance(receipt, dict) else None
+    if (not isinstance(data, dict) or data.get("status") != "accepted"
+            or not isinstance(accepted_id, str) or not accepted_id or accepted_id == revision_id
+            or not isinstance(publication, str) or not publication or publication == publication_id):
+        raise RuntimeError("Runtime did not accept and publish the composition edit")
+    fresh = read_composition_head(client, keys["project"], keys["timeline"], accepted_id, publication)
+    if fresh["payload"]["config"]["output"]["file"] != changed["file"]:
+        raise RuntimeError("Fresh composition revision read did not contain the accepted edit")
+    return {"project_id": keys["project"], "timeline_id": keys["timeline"],
+            "base_revision_id": revision_id, "accepted_revision_id": accepted_id,
+            "publication_id": publication, "document_sha256": composition_digest(fresh),
+            "edit": changed["file"], "saved": True}
+
+
+def read_composition_head(client, project, timeline_id, revision_id, publication_id):
+    base = path("projects", project, "timelines", timeline_id)
+    timeline = client.request("GET", base)
+    revision = client.request("GET", base + "/composition-revisions/" + quote(revision_id, safe=""))
+    if (timeline.get("head_revision_id") != revision_id or timeline.get("head_publication_id") != publication_id
+            or revision.get("revision_id") != revision_id or revision.get("project_id") != project
+            or revision.get("timeline_id") != timeline_id or not isinstance(revision.get("payload"), dict)):
+        raise ValueError("Fresh Runtime client did not reopen the accepted composition revision")
+    return revision
+
+
+def composition_digest(revision):
+    return hashlib.sha256(json.dumps(revision["payload"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def reopen_saved_composition(client, saved):
+    """Fresh client read of the exact accepted composition revision and edited value."""
+    revision = read_composition_head(client, saved["project_id"], saved["timeline_id"],
+                                     saved["accepted_revision_id"], saved["publication_id"])
+    if (composition_digest(revision) != saved["document_sha256"]
+            or revision["payload"]["config"]["output"]["file"] != saved["edit"]):
+        raise ValueError("Fresh Runtime client did not reopen the accepted composition edit")
+    return {key: saved[key] for key in ("project_id", "timeline_id", "accepted_revision_id",
+                                       "publication_id", "document_sha256", "edit")} | {"reopened": True}
+
+
+def reopen_browser_composition(client, saved):
+    """Independently read the published revision accepted by the editor's Retry."""
+    revision = read_composition_head(client, saved["project_id"], saved["timeline_id"],
+                                     saved["revision_id"], saved["publication_id"])
+    tracks = revision["payload"]["config"]["tracks"]
+    if not any(track["id"] == "V1" and track.get("label") == saved["label"] for track in tracks):
+        raise ValueError("Accepted composition revision is missing the browser's original track edit")
+    return {**saved, "document_sha256": composition_digest(revision), "reopened": True}
 
 
 def reopen_saved_timeline(client, saved):
@@ -463,7 +555,9 @@ def check_selection(data, root, expected):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("seed", "snapshot", "seed_authored_timeline", "realm_inventory",
-                                           "save_timeline_after_update", "reopen_saved_timeline"))
+                                           "save_timeline_after_update", "reopen_saved_timeline",
+                                           "save_composition_after_update", "reopen_saved_composition",
+                                           "reopen_browser_composition"))
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--selection", type=Path, required=True)
@@ -511,8 +605,14 @@ def execute(args):
         result = realm_inventory(client)
     elif args.action == "save_timeline_after_update":
         result = save_timeline_after_update(client, request)
-    else:
+    elif args.action == "reopen_saved_timeline":
         result = reopen_saved_timeline(client, request)
+    elif args.action == "save_composition_after_update":
+        result = save_composition_after_update(client, request)
+    elif args.action == "reopen_saved_composition":
+        result = reopen_saved_composition(client, request)
+    else:
+        result = reopen_browser_composition(client, request)
     check_selection(data, root, selection)
     print(json.dumps(result, sort_keys=True))
 

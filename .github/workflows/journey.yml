@@ -498,6 +498,9 @@ jobs:
     needs: config
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ startsWith(matrix.job_id, 'direct-windows') && 300 || 150 }}
+    env:
+      # Each Windows job has its own hosted runner. Keep the installer archive paths short.
+      JOURNEY_ROOT_NAME: ${{ matrix.os == 'windows' && 'f17' || format('astrid-r1-{0}', matrix.job_id) }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.config.outputs.matrix) }}
@@ -592,12 +595,14 @@ jobs:
             echo "- Manifest SHA-256: $(python -c 'import hashlib; print(hashlib.sha256(open("app/public/install-manifest.json", "rb").read()).hexdigest())')"
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Freeze and validate candidate inputs
+        id: candidate_files
         shell: bash
         env:
           CANDIDATE: ${{ needs.config.outputs.candidate }}
         run: |
           printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/candidate.json"
           python agent/scripts/check_journey_evidence.py --candidate "$RUNNER_TEMP/candidate.json" --app-checkout app --prepare-only
+          python -c 'import json; print("release=" + str(json.load(open("app/public/install-manifest.json")).get("release", "")))' >> "$GITHUB_OUTPUT"
       - name: Establish Linux user service manager
         if: matrix.mode == 'direct' && matrix.os == 'linux'
         shell: bash
@@ -826,7 +831,7 @@ jobs:
       # The fresh Linux row updates by clicking Update now in the candidate's own hosted App build:
       # the driver serves this build at https://astrid.haus through the update leg's intercept.
       - name: Set up Node for the hosted App build
-        if: matrix.job_id == 'direct-linux-fresh' || matrix.leg == 'fresh-install-autostart-off' || (matrix.leg == 'release13-required-update' || matrix.leg == 'release13-realm-reopen')
+        if: matrix.job_id == 'direct-linux-fresh' || matrix.leg == 'fresh-install-autostart-off' || (matrix.leg == 'release13-required-update' || matrix.leg == 'release13-realm-reopen') || (startsWith(matrix.job_id, 'pinokio-') && steps.candidate_files.outputs.release == '14')
         uses: actions/setup-node@v4
         with:
           node-version-file: app/.nvmrc
@@ -845,6 +850,26 @@ jobs:
           npm run build:hosted
           test -f dist/index.html && test -f dist/build.json
           npx playwright install --with-deps chromium
+          git status --porcelain --untracked-files=no | (! grep .)
+      - name: Build the staged App for Pinokio Open Astrid
+        if: startsWith(matrix.job_id, 'pinokio-') && steps.candidate_files.outputs.release == '14'
+        shell: bash
+        working-directory: app
+        timeout-minutes: 30
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/journey-chromium
+        run: |
+          set -euo pipefail
+          npm ci --legacy-peer-deps
+          unset ASTRID_APP_DIRECT_DOOR_PORT
+          npm run build:hosted
+          test -f dist/index.html && test -f dist/build.json
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            npx playwright install --with-deps chromium
+          else
+            npx playwright install chromium
+          fi
           git status --porcelain --untracked-files=no | (! grep .)
       - name: Build staged App for R14 reopen
         if: (matrix.leg == 'release13-required-update' || matrix.leg == 'release13-realm-reopen')
@@ -885,7 +910,7 @@ jobs:
           ASTRID_CI_WAIT_READY_TIMEOUT: ${{ needs.config.outputs.wait_timeout }}
           M4_4A_EXECUTOR_CONFIGS: ${{ needs.config.outputs.m4_4a_executor_configs }}
         run: |
-          $runRoot = Join-Path $env:RUNNER_TEMP "astrid-r1-${{ matrix.job_id }}"
+          $runRoot = Join-Path $env:RUNNER_TEMP $env:JOURNEY_ROOT_NAME
           $release0Args = @()
           $oldLauncherArgs = @()
           if ('${{ matrix.mode }}' -eq 'pinokio-backend') {
@@ -949,7 +974,7 @@ jobs:
             '${{ inputs.diagnostic_keep_going }}' -ne 'true'
           )
           if ($runWindowsRefusal) {
-            $refusalRoot = Join-Path $env:RUNNER_TEMP 'astrid-r1-direct-windows-refusal'
+            $refusalRoot = Join-Path $env:RUNNER_TEMP 'f17r'
             $env:ASTRID_CI_SANDBOX_PROFILE = '1'
             python -u agent/scripts/ci_journey.py `
               --job-id direct-windows --mode direct --leg windows-upgrade-refusal `
@@ -990,21 +1015,25 @@ jobs:
         env:
           JOB_ID: ${{ matrix.job_id }}
           JOB_OS: ${{ matrix.os }}
+          CANDIDATE_RELEASE: ${{ steps.candidate_files.outputs.release }}
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/journey-chromium
         run: |
           set -euo pipefail
-          # Writes the single pinokio-row-v1 receipt where the evidence boundary expects it.
-          run_root="$RUNNER_TEMP/astrid-r1-$JOB_ID"
+          # Writes the selected lifecycle receipt where the evidence boundary expects it.
+          run_root="$RUNNER_TEMP/$JOURNEY_ROOT_NAME"
           receipt="$run_root/evidence-upload/after-cleanup/journey-result.json"
-          python3 -u agent/scripts/pinokio_row_driver.py \
+          receipt_schema=pinokio-row-v1
+          if [[ "$CANDIDATE_RELEASE" == 14 ]]; then receipt_schema=pinokio-row-v2; fi
+          python -u agent/scripts/pinokio_row_driver.py \
             --job-id "$JOB_ID" --os "$JOB_OS" \
             --candidate "$RUNNER_TEMP/candidate.json" \
             --pinokio-checkout "$PWD/pinokio" --agent-checkout "$PWD/agent" --app-checkout "$PWD/app" \
-            --run-root "$run_root" --receipt "$receipt"
+            --run-root "$run_root" --receipt "$receipt" --schema "$receipt_schema"
       - name: Publish diagnostic table or pre-driver failure
         if: always() && inputs.diagnostic_keep_going == true
         shell: pwsh
         run: |
-          $dir = Join-Path $env:RUNNER_TEMP "astrid-r1-${{ matrix.job_id }}/evidence-upload/before-cleanup"
+          $dir = Join-Path $env:RUNNER_TEMP "$env:JOURNEY_ROOT_NAME/evidence-upload/before-cleanup"
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
           $report = Join-Path $dir 'keepgoing-report.json'
           $table = Join-Path $dir 'keepgoing-report.md'
@@ -1024,7 +1053,7 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          $evidenceRoot = Join-Path $env:RUNNER_TEMP "astrid-r1-${{ matrix.job_id }}/evidence-upload"
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP "$env:JOURNEY_ROOT_NAME/evidence-upload"
           $allowedNames = @(
             'journey-result.json', 'keepgoing-report.json', 'keepgoing-report.md', 'project-create-capture-status.json', 'sdk-capture-status.json',
             'release1-task-sdk-invocation.json', 'release1-task-installed-source.json',
@@ -1218,7 +1247,7 @@ jobs:
           name: journey-receipt-${{ matrix.job_id }}${{ inputs.diagnostic_keep_going && format('-{0}', matrix.leg) || '' }}
           # The collector stages only allowlisted names in these two phase folders.
           # Keep the job-id directory in the artifact to avoid receipt collisions.
-          path: ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/evidence-upload
+          path: ${{ runner.temp }}/${{ env.JOURNEY_ROOT_NAME }}/evidence-upload
           if-no-files-found: warn
           compression-level: 0
       - name: Upload the Pinokio row's working evidence
@@ -1228,14 +1257,14 @@ jobs:
           retention-days: 14
           name: pinokio-work-${{ matrix.job_id }}
           path: |
-            ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/work/evidence
-            ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/work/*.log
-            ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/home/.local/state/astrid-runtime/logs
-            ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/pinokio-home/api/astrid-row/app/astrid/*.log
-            ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/home/AppData/Local/**/*.log
-            ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/home/Library/Logs/Astrid Runtime/*.log
-            ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/home/AppData/Local/Astrid Runtime/runtime/generic-host*.json
-            ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/home/AppData/Local/Astrid Runtime/runtime/pack-host-job-cleanup.json
+            ${{ runner.temp }}/${{ env.JOURNEY_ROOT_NAME }}/work/evidence
+            ${{ runner.temp }}/${{ env.JOURNEY_ROOT_NAME }}/work/*.log
+            ${{ runner.temp }}/${{ env.JOURNEY_ROOT_NAME }}/home/.local/state/astrid-runtime/logs
+            ${{ runner.temp }}/${{ env.JOURNEY_ROOT_NAME }}/pinokio-home/api/astrid-row/app/astrid/*.log
+            ${{ runner.temp }}/${{ env.JOURNEY_ROOT_NAME }}/home/AppData/Local/**/*.log
+            ${{ runner.temp }}/${{ env.JOURNEY_ROOT_NAME }}/home/Library/Logs/Astrid Runtime/*.log
+            ${{ runner.temp }}/${{ env.JOURNEY_ROOT_NAME }}/home/AppData/Local/Astrid Runtime/runtime/generic-host*.json
+            ${{ runner.temp }}/${{ env.JOURNEY_ROOT_NAME }}/home/AppData/Local/Astrid Runtime/runtime/pack-host-job-cleanup.json
           if-no-files-found: warn
 
   release2:

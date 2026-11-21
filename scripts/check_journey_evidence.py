@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import quote
 
 if __package__:
     from .journey_matrix import (
@@ -117,7 +118,8 @@ RELEASE13_LEG = "release13-then-update"
 RELEASE13_KILLED_LEG = "release13-then-killed-update"
 RELEASE13_KILLED_CHECKS = ("release13_install", "interruption_checkpoint", "process_killed",
                            "recovery_exit", "rollback_release", "one_runtime", "service",
-                           "health", "data_marker", "timeline_reopened", "unrelated_sentinel")
+                           "health", "data_marker", "timeline_reopened", "retry_exit",
+                           "retry_live_candidate", "unrelated_sentinel")
 RELEASE13_APP_COMMIT = "de7dd1e668aa6dcf3cbce013c701fa7c76615f99"
 RELEASE13_RELEASE = 13
 RELEASE13_IDENTITY = {
@@ -129,7 +131,7 @@ RELEASE13_CHECKS = tuple("release13_install" if name == "release11_install" else
 RELEASE13_CHECKS += ("timeline_saved", "timeline_reopened")
 # The Windows release13-then-update row seeds a project and a workspace marker through the installed command
 # line instead of the live API, and adds astrid doctor and a dry-run generation. Its run receipt is read
-# where the Windows installer writes it and is checked when present.
+# where the Windows installer writes it.
 RELEASE13_WINDOWS_CHECKS = ("release13_install", "update_exit", "release", "one_runtime", "service", "health",
                             "doctor", "dry_run", "data_marker", "timeline_saved", "timeline_reopened", "unrelated_sentinel")
 RELEASE13_WINDOWS_DRY_RUN_CAPABILITY = "generation.generate_speech"
@@ -555,13 +557,37 @@ def _release13_windows_errors(job_id, row):
 
 
 
-def _release13_killed_errors(job_id, row):
-    """Fail closed unless an owned mid-update kill restored the published R13.
+def _windows_receipt_matches_invocation(receipt, invocation):
+    if not isinstance(receipt, dict) or not isinstance(invocation, dict):
+        return False
+    operation_id = receipt.get("operation_id")
+    return (receipt.get("format") == "astrid-last-run/v1" and receipt.get("mode") == "update"
+            and re.fullmatch(r"[a-f0-9]{32}", str(operation_id)) is not None
+            and operation_id != invocation.get("previous_operation_id")
+            and all(type(record.get(key)) is int and record[key] > 0
+                    for record in (receipt, invocation) for key in ("started_at", "finished_at"))
+            and invocation["started_at"] <= receipt["started_at"] <= receipt["finished_at"] <= invocation["finished_at"])
 
-    The candidate tuple was admitted separately; the terminal *installed* tuple
-    must be R13 instead of the candidate. A fast successful update, a skipped
-    recovery, or one inferred from an unbound process is not a passing row.
-    """
+
+def _windows_update_invocation_matches(update, outcome, exit_code, live_release):
+    if not isinstance(update, dict):
+        return False
+    receipt = update.get("installer_receipt")
+    return (update.get("command") == "install --update" and type(update.get("exit_code")) is int
+            and update["exit_code"] == exit_code and update.get("receipt_invocation_tied") is True
+            and _windows_receipt_matches_invocation(receipt, update.get("invocation"))
+            and receipt.get("kind") == outcome and type(receipt.get("exit_code")) is int and receipt["exit_code"] == exit_code
+            and receipt.get("still") == live_release and receipt.get("target") == 14)
+
+
+def _one_runtime_at(owners, data):
+    return (isinstance(owners, list) and len(owners) == 1 and isinstance(owners[0], dict)
+            and _nonempty_text(data) and owners[0].get("data_root") == data
+            and _nonempty_text(owners[0].get("runtime_instance_id")))
+
+
+def _release13_killed_errors(job_id, row, candidate=None):
+    """Require both the owned exit-3 recovery and the successful public retry on R14."""
     errors = []
     source = row.get("release13_source")
     if (not isinstance(source, dict) or source.get("app_commit") != RELEASE13_APP_COMMIT
@@ -578,38 +604,52 @@ def _release13_killed_errors(job_id, row):
             or type(interrupted.get("installer_exit_code")) is not int
             or interrupted["installer_exit_code"] == 0 or interrupted.get("killed") is not True):
         errors.append(f"{job_id}: owned updater was not killed at a durable nonterminal checkpoint")
-    recovery = row.get("recovery")
-    if (not isinstance(recovery, dict) or recovery.get("exit_code") != 3
-            or recovery.get("command") != "install --update"
+    recovery = row.get("recovery") if isinstance(row.get("recovery"), dict) else {}
+    if (not _windows_update_invocation_matches(recovery, "not-updated", 3, 13)
             or recovery.get("interruption") != interrupted):
         errors.append(f"{job_id}: recovery-only retry receipt is absent or not exit 3")
-    transition = row.get("release_transition")
-    if transition != {"from": 13, "to": 13, "source": "interrupted-candidate-recovered-previous"}:
+    if (recovery.get("release_transition") != {"from": 13, "to": 13,
+                                                "source": "interrupted-candidate-recovered-previous"}
+            or recovery.get("live_release") != 13 or not recovery.get("import_origins")
+            or recovery.get("installed_tuple") != {"app": RELEASE13_APP_COMMIT, **RELEASE13_IDENTITY}):
         errors.append(f"{job_id}: recovered installation did not explicitly stay on R13")
-    live = row.get("live_runtimes")
     roots = row.get("run_roots") if isinstance(row.get("run_roots"), dict) else {}
-    if (not isinstance(live, list) or len(live) != 1 or not isinstance(live[0], dict)
-            or live[0].get("data_root") != roots.get("data")):
+    recovered_owners = recovery.get("live_runtimes")
+    if not _one_runtime_at(recovered_owners, roots.get("data")):
         errors.append(f"{job_id}: exactly one recovered Runtime owner was not proven")
-    manager = row.get("service_manager")
+    manager = recovery.get("service_manager")
     if not isinstance(manager, dict) or manager.get("manager") != "task-scheduler":
         errors.append(f"{job_id}: recovered R13 lacks native Windows Task Scheduler ownership")
-    marker = row.get("data_marker")
+    retry = row.get("retry") if isinstance(row.get("retry"), dict) else {}
+    marker = recovery.get("data_marker")
     if (not isinstance(marker, dict) or marker.get("survived") is not True
             or not DIGEST.fullmatch(str(marker.get("sha256", "")))
-            or not isinstance(marker.get("project"), str) or not marker["project"]):
+            or not _nonempty_text(marker.get("project"))
+            or retry.get("data_marker") != marker or row.get("data_marker") != marker):
         errors.append(f"{job_id}: original R13 workspace marker was not preserved")
-    saved = row.get("timeline_save")
-    reopened = row.get("timeline_reopen")
-    if (not isinstance(saved, dict) or saved.get("saved") is not True
-            or not isinstance(reopened, dict) or reopened.get("reopened") is not True
-            or saved.get("project") != reopened.get("project")
-            or saved.get("timeline") != reopened.get("timeline")
-            or saved.get("saved_name") != reopened.get("saved_name")):
-        errors.append(f"{job_id}: recovered R13 timeline was not saved and freshly reopened")
+    seed = row.get("timeline_seed") if isinstance(row.get("timeline_seed"), dict) else {}
+    original = seed.get("composition") or {}
+    if (not _composition_reopen_matches(original, recovery.get("timeline_reopen"))
+            or not _composition_reopen_matches(original, retry.get("timeline_reopen"))
+            or any(original.get(key) != seed.get(source) for key, source in (
+                ("project_id", "project"), ("timeline_id", "timeline"),
+                ("accepted_revision_id", "revision_id"), ("publication_id", "publication_id")))):
+        errors.append(f"{job_id}: the original composition edit was not freshly reopened after recovery and retry")
+    final_owners = retry.get("live_runtimes")
+    installed = retry.get("installed_tuple")
+    if (not _windows_update_invocation_matches(retry, "updated", 0, 14)
+            or retry.get("live_release") != 14
+            or row.get("release_transition") != {"from": 13, "to": 14, "source": "candidate-install-update"}
+            or not _one_runtime_at(final_owners, roots.get("data")) or final_owners != row.get("live_runtimes")
+            or final_owners == recovered_owners
+            or not isinstance(installed, dict) or installed != row.get("installed_tuple")
+            or (candidate is not None and (
+                any(installed.get(key) != candidate.get(key) for key in ("app", "agent", "runtime", "schema_digest"))
+                or retry.get("candidate_manifest_sha256") != candidate.get("manifest_sha256")))):
+        errors.append(f"{job_id}: outside-editor retry did not exit 0 on the exact live R14 tuple")
     steps = row.get("steps")
     wanted = ["admission", "r13_bootstrap", "r13_start", "r13_seed",
-              "interrupted_update", "recover_old"]
+              "interrupted_update", "recover_old", "retry_candidate"]
     if (not isinstance(steps, list) or [step.get("step") for step in steps
             if isinstance(step, dict)] != wanted
             or len(steps) != len(wanted)
@@ -635,6 +675,78 @@ def _browser_step_matches(step, mode, app, manifest_hash):
             and step.get("app") == app and step.get("manifest_sha256") == manifest_hash
             and DIGEST.fullmatch(str(step.get("build_sha256", "")))
             and step.get("intercept_reverted") is True)
+
+
+def _required_notice_matches(notice, reason):
+    return (isinstance(notice, dict) and bool(reason)
+            and re.fullmatch(r"(Update Astrid|Release 14 is ready)\s+Required\s+Show how",
+                             str(notice.get("title", ""))) is not None
+            and notice.get("reason") == "This update is required: " + reason
+            and notice.get("action") in ("Update now", "Run it yourself"))
+
+
+def _publication_visits_match(step, draft, previous, candidate):
+    visits = step.get("visits")
+    if (not isinstance(visits, list) or len(visits) != 2
+            or any(not isinstance(visit, dict) for visit in visits)):
+        return False
+    warm, fresh = visits
+    reason = candidate["required"]["reason"] if required_release14(candidate) else ""
+    return (warm.get("kind") == "already-open-edited-tab" and warm.get("sameDocument") is True
+            and warm.get("initialManifestSha256") == previous
+            and isinstance(warm.get("manifestResponseSha256"), list)
+            and previous in warm["manifestResponseSha256"] and warm.get("draft") == draft
+            and fresh.get("kind") == "fresh-visit" and fresh.get("freshProfile") is True
+            and all(visit.get("visible") is True and type(visit.get("saveAttemptsBeforePrompt")) is int
+                    and visit["saveAttemptsBeforePrompt"] == 0 and visit.get("saveAttempts") == []
+                    and isinstance(visit.get("manifestResponseSha256"), list)
+                    and candidate.get("manifest_sha256") in visit["manifestResponseSha256"]
+                    and _required_notice_matches(visit.get("prompt"), reason) for visit in visits))
+
+
+def _history_has_bound_head(timeline):
+    if not isinstance(timeline, dict) or not isinstance(timeline.get("history"), list):
+        return False
+    history = timeline["history"]
+    revision = timeline.get("revision_id")
+    publication = timeline.get("publication_id")
+    if revision is None:
+        return publication is None and not history
+    if any(not isinstance(entry, dict)
+           or not _nonempty_text(entry.get("revision_id"))
+           or not _nonempty_text(entry.get("publication_id"))
+           or not DIGEST.fullmatch(str(entry.get("revision_sha256", ""))) for entry in history):
+        return False
+    return (len({entry["revision_id"] for entry in history}) == len(history)
+            and len({entry["publication_id"] for entry in history}) == len(history)
+            and any((entry["revision_id"], entry["publication_id"]) == (revision, publication)
+                    for entry in history))
+
+
+def _retry_matches(reopen, draft, config, r13_accepted):
+    retry = reopen.get("retry") or {}
+    readback = reopen.get("accepted_readback") or {}
+    attempts = reopen.get("saveAttempts")
+    if not isinstance(attempts, list) or any(not isinstance(item, dict) for item in attempts):
+        return False
+    allowed = [item for item in attempts if item.get("disposition") == "allowed"]
+    if not all(_nonempty_text(config.get(key)) for key in ("projectId", "timelineId", "draftLabel")):
+        return False
+    path = "/v1/projects/{}/timelines/{}/commit".format(
+        quote(config["projectId"], safe=""), quote(config["timelineId"], safe=""))
+    return (len(allowed) == 1 and allowed[0].get("method") == "POST" and allowed[0].get("path") == path
+            and allowed[0].get("bodySha256") == draft.get("requestSha256")
+            and allowed[0].get("keySha256") == draft.get("keySha256")
+            and retry.get("clicked") is True and retry.get("name") == "Try again"
+            and retry.get("removedFromQueue") is True and retry.get("idempotencyKeyMatches") is True
+            and type(retry.get("responseStatus")) is int and 200 <= retry["responseStatus"] < 300
+            and all(_nonempty_text(retry.get(key)) and retry[key] != r13_accepted.get(key)
+                    for key in ("revision", "publication"))
+            and reopen.get("freshProfile") is True and reopen.get("reopenedLabel") == config["draftLabel"]
+            and readback.get("reopened") is True and readback.get("label") == config["draftLabel"]
+            and readback.get("project_id") == config["projectId"] and readback.get("timeline_id") == config["timelineId"]
+            and readback.get("revision_id") == retry["revision"] and readback.get("publication_id") == retry["publication"]
+            and DIGEST.fullmatch(str(readback.get("document_sha256", ""))) is not None)
 
 
 def _fix17_browser_errors(job_id, contract, row, candidate):
@@ -679,9 +791,18 @@ def _fix17_browser_errors(job_id, contract, row, candidate):
         errors.append(f"{job_id}: unrelated sentinel survival is absent")
 
     before, after = row.get("realm_before"), row.get("realm_after")
-    if not is_prompt and (not isinstance(before, dict) or not before.get("realm_id")
-                          or before != after or not isinstance(before.get("projects"), dict)):
-        errors.append(f"{job_id}: R13 realm inventory and history were not reopened unchanged")
+    if not is_prompt:
+        if (not isinstance(before, dict) or not _nonempty_text(before.get("realm_id"))
+                or before.get("realm_ids") != [before["realm_id"]] or before != after
+                or not isinstance(before.get("projects"), dict)):
+            errors.append(f"{job_id}: R13 catalog IDs and each realm's inventory and history were not reopened unchanged")
+        else:
+            for project, record in before["projects"].items():
+                inventory = record.get("timelines") if isinstance(record, dict) else None
+                if (not _nonempty_text(project) or not isinstance(inventory, dict)
+                        or any(not _nonempty_text(timeline) or not _history_has_bound_head(history)
+                               for timeline, history in inventory.items())):
+                    errors.append(f"{job_id}: realm history lacks unique revision and publication IDs and a bound head")
     timelines = row.get("timelines")
     if not isinstance(timelines, list) or len(timelines) != (1 if is_prompt else 2):
         return [*errors, f"{job_id}: the expected count of R13-authored browser timelines is absent"]
@@ -697,16 +818,17 @@ def _fix17_browser_errors(job_id, contract, row, candidate):
             errors.append(f"{job_id}: authentic R13 authoring or R14 editor reopen proof is absent")
         if (not all(isinstance(draft.get(key), str) and draft[key] for key in
                     ("realmId", "actorId", "projectId", "timelineId", "ownerId", "intentId"))
-                or not DIGEST.fullmatch(str(draft.get("payloadSha256", "")))
+                or any(not DIGEST.fullmatch(str(draft.get(key, "")))
+                       for key in ("payloadSha256", "requestSha256", "keySha256"))
                 or any(draft.get(key) != config.get(key) for key in ("projectId", "timelineId"))
                 or reopen.get("draft") != draft
-                or (is_prompt and reopen.get("draftVisible") is not True)
-                or not reopen.get("reopenedLabel")
-                or reopen["reopenedLabel"] not in (config.get("savedLabel"), config.get("draftLabel"))):
+                or reopen.get("draftVisible") is not True):
             errors.append(f"{job_id}: original scoped save-queue intent or reopened edit was lost")
         accepted = author.get("accepted") or {}
         if not all(isinstance(accepted.get(key), str) and accepted[key] for key in ("revision", "publication")):
             errors.append(f"{job_id}: real R13 saved revision is absent")
+        if not _retry_matches(reopen, draft, config, accepted):
+            errors.append(f"{job_id}: the exact queued draft lacks an accepted Retry and fresh composition readback")
         project_id, timeline_id = config.get("projectId"), config.get("timelineId")
         if isinstance(project_id, str):
             project_ids.add(project_id)
@@ -716,27 +838,49 @@ def _fix17_browser_errors(job_id, contract, row, candidate):
             history = saved.get("history") or []
             if (draft.get("realmId") != before.get("realm_id") or len(history) < 2
                     or saved.get("revision_id") != accepted.get("revision")
-                    or saved.get("publication_id") != accepted.get("publication")
-                    or not all(DIGEST.fullmatch(str(entry.get("revision_sha256", ""))) for entry in history)):
+                    or saved.get("publication_id") != accepted.get("publication")):
                 errors.append(f"{job_id}: R13 saved timeline and published history are absent from the realm")
     if len(project_ids) != len(timelines):
         errors.append(f"{job_id}: R13 authoring coverage does not contain distinct projects")
 
     if is_prompt:
         step = row.get("prompt") or {}
-        prompt = step.get("prompt") or {}
-        reason = candidate["required"]["reason"] if required_release14(candidate) else ""
         if (not _browser_step_matches(step, "prompt", RELEASE13_APP_COMMIT, candidate.get("manifest_sha256"))
                 or step.get("build_sha256") != author.get("build_sha256")
                 or not isinstance(step.get("manifest_reads"), int) or step["manifest_reads"] < 2
                 or step.get("browserManifestSha256") != candidate.get("manifest_sha256")
                 or step.get("draft") != draft
-                or not re.fullmatch(r"(Update Astrid|Release 14 is ready)\s+Required\s+Show how",
-                                    str(prompt.get("title", "")))
-                or not reason or not str(prompt.get("reason", "")).startswith("This update is required: " + reason)
-                or prompt.get("action") not in ("Update now", "Run it yourself")):
-            errors.append(f"{job_id}: R13 did not show the required R14 prompt and original draft")
+                or not _publication_visits_match(step, draft, start.get("manifest_sha256"), candidate)):
+            errors.append(f"{job_id}: both R13 visits must show the required R14 prompt before any save")
     return errors
+
+COMPOSITION_REOPEN_FIELDS = ("project_id", "timeline_id", "accepted_revision_id",
+                             "publication_id", "document_sha256", "edit")
+
+
+def _nonempty_text(value):
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _composition_reopen_matches(saved, reopened):
+    return (isinstance(saved, dict) and isinstance(reopened, dict)
+            and reopened.get("reopened") is True
+            and all(_nonempty_text(saved.get(key)) and reopened.get(key) == saved[key]
+                    for key in COMPOSITION_REOPEN_FIELDS)
+            and DIGEST.fullmatch(saved["document_sha256"]) is not None)
+
+
+def _composition_save_matches_seed(seed, saved):
+    return (isinstance(seed, dict) and isinstance(saved, dict)
+            and saved.get("saved") is True
+            and all(_nonempty_text(saved.get(key)) for key in (*COMPOSITION_REOPEN_FIELDS, "base_revision_id"))
+            and DIGEST.fullmatch(saved["document_sha256"]) is not None
+            and saved["project_id"] == seed.get("project")
+            and saved["timeline_id"] == seed.get("timeline")
+            and saved["base_revision_id"] == seed.get("revision_id", seed.get("head"))
+            and saved["accepted_revision_id"] != saved["base_revision_id"]
+            and saved["publication_id"] != seed.get("publication_id"))
+
 
 def _release13_row_errors(job_id, row, target_release, os_name="linux"):
     """The release13-then-update row's four assertions, each read from the leg's own receipt fields.
@@ -747,8 +891,7 @@ def _release13_row_errors(job_id, row, target_release, os_name="linux"):
     4. the seeded user data survives (identical semantic digests).
     Every other leg assertion must also pass. Each failure names the missing assertion.
 
-    On Windows the run receipt is checked only when the installer's log directory held one, the seeded data
-    is the project and workspace marker, and doctor and the dry run are required as well.
+    Windows also requires the seeded workspace marker, doctor and the dry run.
     """
     windows = os_name == "windows"
     errors = []
@@ -769,7 +912,9 @@ def _release13_row_errors(job_id, row, target_release, os_name="linux"):
     receipt_ok = (isinstance(receipt, dict) and receipt.get("kind") == "updated" and receipt.get("exit_code") == 0
                   and receipt.get("still") == target_release and receipt.get("target") == target_release)
     if (not isinstance(update, dict) or update.get("command") != "install --update"
-            or update.get("exit_code") != 0 or not (receipt_ok or (windows and receipt is None))):
+            or update.get("exit_code") != 0 or not receipt_ok
+            or (windows and (not _windows_update_invocation_matches(update, "updated", 0, target_release)
+                             or receipt != update.get("installer_receipt")))):
         errors.append(f"{job_id}: candidate install --update receipt does not say updated to release "
                       f"{target_release}")
     live = row.get("live_runtimes")
@@ -791,14 +936,9 @@ def _release13_row_errors(job_id, row, target_release, os_name="linux"):
             errors.append(f"{job_id}: {check} assertion did not pass")
     saved = row.get("timeline_save")
     reopened = row.get("timeline_reopen")
-    if (not isinstance(saved, dict) or saved.get("saved") is not True
-            or not isinstance(saved.get("saved_name"), str) or not saved["saved_name"]):
-        errors.append(f"{job_id}: installed timeline edit/save evidence is missing")
-    if (not isinstance(reopened, dict) or reopened.get("reopened") is not True
-            or not isinstance(saved, dict)
-            or reopened.get("saved_name") != saved.get("saved_name")
-            or reopened.get("project") != saved.get("project")
-            or reopened.get("timeline") != saved.get("timeline")):
+    if not _composition_save_matches_seed(row.get("timeline_seed"), saved):
+        errors.append(f"{job_id}: installed timeline edit/save evidence is missing or differs from the R13 seed")
+    if not _composition_reopen_matches(saved, reopened):
         errors.append(f"{job_id}: fresh-process timeline reopen did not prove the saved change")
     if windows:
         errors.extend(_release13_windows_errors(job_id, row))
@@ -859,15 +999,10 @@ def _release1_row_errors(candidate, contract, row):
                 errors.append(f"{job_id}: {name} checkout differs from frozen candidate")
     sources = row.get("sources") or {}
     installed = row.get("installed_tuple") or {}
-    killed = contract.get("leg") == RELEASE13_KILLED_LEG
-    expected_terminal = ({"app": RELEASE13_APP_COMMIT, **{
-        name: RELEASE13_IDENTITY[name] for name in ("agent", "runtime")}}
-        if killed else candidate)
     for name in ("app", "agent", "runtime"):
         source = sources.get(name) or {}
-        if installed.get(name) != expected_terminal[name] or source.get("sha") != candidate[name]:
-            errors.append(f"{job_id}: {name} installed/source identity differs from the exact "
-                          + ("published R13 recovery and frozen candidate" if killed else "frozen candidate"))
+        if installed.get(name) != candidate[name] or source.get("sha") != candidate[name]:
+            errors.append(f"{job_id}: {name} installed/source identity differs from the frozen candidate")
     if not row.get("import_origins"):
         errors.append(f"{job_id}: installed import origins are absent")
     prerequisite = row.get("service_manager_prerequisite")
@@ -942,7 +1077,7 @@ def _release1_row_errors(candidate, contract, row):
         elif contract.get("leg") == RELEASE13_LEG:
             errors.extend(_release13_row_errors(job_id, row, candidate.get("release"), contract["os"]))
         elif contract.get("leg") == RELEASE13_KILLED_LEG:
-            errors.extend(_release13_killed_errors(job_id, row))
+            errors.extend(_release13_killed_errors(job_id, row, candidate))
         elif contract.get("leg") in FIX17_BROWSER_LEGS:
             errors.extend(_fix17_browser_errors(job_id, contract, row, candidate))
         elif not fresh:
@@ -1349,6 +1484,53 @@ def _pinokio_row_errors(job_id, row, candidate_sha):
     return errors
 
 
+def _pinokio_fresh_errors(job_id, row, candidate):
+    stages = row.get("stages")
+    expected = ("install", "start", "open_app", "stop")
+    keys = ("app", "agent", "runtime", "pinokio", "manifest_sha256")
+    frozen = row.get("candidate")
+    if (row.get("schema") != "pinokio-row-v2" or row.get("os") != PINOKIO_ROW_OS[job_id]
+            or row.get("pinokio_sha") != candidate.get("pinokio") or not isinstance(frozen, dict)
+            or any(not _nonempty_text(candidate.get(key)) or frozen.get(key) != candidate[key] for key in keys)):
+        return [f"{job_id}: Pinokio fresh receipt differs from the exact frozen candidate"]
+    if (not isinstance(stages, list) or len(stages) != len(expected)
+            or any(not isinstance(stage, dict) or stage.get("name") != name or stage.get("status") != "pass"
+                   or not _nonempty_text(stage.get("detail")) or not isinstance(stage.get("observation"), dict)
+                   for stage, name in zip(stages, expected))):
+        return [f"{job_id}: Pinokio fresh install, start, Open Astrid and Stop must each pass in order"]
+    install, start, opened, stop = [stage["observation"] for stage in stages]
+    manifest = install.get("manifest")
+    roots = {"selectedProgramRoot": install.get("selected_program_root"),
+             "selectedDataRoot": install.get("selected_data_root")}
+    errors = []
+    schema = candidate.get("schema_digest")
+    if (not isinstance(manifest, dict) or not required_release14(manifest)
+            or manifest.get("required") != candidate.get("required")
+            or install.get("manifest_sha256") != candidate["manifest_sha256"]
+            or any(not isinstance(manifest.get(key), dict) or manifest[key].get("sha") != candidate[key]
+                   for key in ("agent", "runtime"))
+            or not _nonempty_text(schema) or manifest["runtime"].get("schema_digest") != schema
+            or install.get("installed_manifest_sha256") != hashlib.sha256(
+                (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()).hexdigest()
+            or not all(_nonempty_text(root) and start.get(key) == stop.get(key) == root for key, root in roots.items())):
+        errors.append(f"{job_id}: Pinokio fresh installed manifest, provenance or selected roots are absent")
+    identity = {"release": 14, "managed_by": "pinokio"}
+    instance = start.get("runtimeInstanceId")
+    if (start.get("readySentinel") is not True or not _nonempty_text(instance)
+            or start.get("runtimeIdentity") != identity or start.get("schemaDigest") != schema):
+        errors.append(f"{job_id}: Pinokio start did not bind the live Runtime to the fresh install")
+    if (opened.get("connected") is not True or opened.get("target") != "https://astrid.haus/?connect=1"
+            or opened.get("appBuild") != candidate["app"] or opened.get("manifestVerified") is not True
+            or opened.get("manifestSha256") != candidate["manifest_sha256"]
+            or opened.get("runtimeInstanceId") != instance or opened.get("runtimeIdentity") != identity
+            or opened.get("schemaDigest") != schema):
+        errors.append(f"{job_id}: Open Astrid did not connect the exact App build and installed Runtime")
+    if (stop.get("stopped") is not True or stop.get("runtimeInstanceId") != instance
+            or type(stop.get("sessionExitCode")) is not int or stop["sessionExitCode"] != 0):
+        errors.append(f"{job_id}: Pinokio Stop did not cleanly stop the started Runtime")
+    return errors
+
+
 def evaluate_release1_1_pinokio_matrix(candidate, results, job_ids=None):
     """Check the exact selected Pinokio row receipts (all three when job_ids is None)."""
     expected_ids = set(PINOKIO_ROW_OS) if job_ids is None else set(job_ids)
@@ -1384,7 +1566,10 @@ def evaluate_release1_1_pinokio_matrix(candidate, results, job_ids=None):
         if job_id not in found:
             errors.append(f"{job_id}: missing Pinokio receipt")
             continue
-        errors.extend(_pinokio_row_errors(job_id, found[job_id], candidate_sha))
+        if candidate and candidate.get("release") == 14:
+            errors.extend(_pinokio_fresh_errors(job_id, found[job_id], candidate))
+        else:
+            errors.extend(_pinokio_row_errors(job_id, found[job_id], candidate_sha))
     return errors
 
 
