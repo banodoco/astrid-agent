@@ -7,6 +7,7 @@ import hashlib
 import json
 from unittest.mock import Mock
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -365,3 +366,51 @@ def test_builtin_effect_identity_fails_closed_for_non_effect_and_registry_failur
     assert not _builtin_effect('unknown-effect')
     registry.list.side_effect = RuntimeError('registry unavailable')
     assert not _builtin_effect('known-animation')
+
+@pytest.mark.parametrize('key', ['place-retry', None])
+@pytest.mark.parametrize('race', ['suffix', 'settled', 'new-flight'])
+def test_lost_ack_captured_flight_reconciles_without_flushing_suffix(
+        monkeypatch, tmp_path, configured, key, race):
+    from astrid.sdk.timeline.sync import TimelineSession
+
+    owner, ref, _, _ = _setup(monkeypatch, tmp_path, configured)
+    accepted = _lose_first_ack(owner)
+    assert not _place(owner, ref, key=key).ok
+    original_body = copy.deepcopy(owner.commit.call_args.args[2])
+    original_key = owner.commit.call_args.kwargs['idempotency_key']
+    original_flush = TimelineSession._flush
+    suffix = {'op': 'unrelated', 'args': {'value': 1}}
+
+    def racing_flush(session, **kwargs):
+        if kwargs.get('expected_flight') is not None:
+            if race != 'suffix':
+                original_flush(session)
+                with session.outbox.locked():
+                    state = session._state()
+                    state['pending'].append(copy.deepcopy(suffix))
+                    if race == 'new-flight':
+                        state['flight'] = {'key': 'different-flight'}
+                    session.outbox.write(state)
+            else:
+                with session.outbox.locked():
+                    state = session._state()
+                    state['pending'].append(copy.deepcopy(suffix))
+                    session.outbox.write(state)
+        return original_flush(session, **kwargs)
+
+    monkeypatch.setattr(TimelineSession, '_flush', racing_flush)
+    monkeypatch.setattr('astrid.sdk.timeline_elements.execute',
+                        lambda *args, **kwargs: pytest.fail('retry recaptured'))
+    result = _place(owner, ref, key=key)
+    assert result.ok, result.error
+    assert result.idempotency_key == original_key
+    assert result.receipt.receipt_id == accepted[0].receipt.receipt_id
+    assert owner.commit.call_count == 2
+    assert owner.commit.call_args.args[2] == original_body
+    assert owner.commit.call_args.kwargs['idempotency_key'] == original_key
+    session = TimelineSession.open('project', 'film', client=SimpleNamespace(
+        _remote=SimpleNamespace(_transport=owner._client), timelines=owner))
+    with session.outbox.locked():
+        state = session._state()
+    assert state['pending'] == [suffix]
+    assert state['flight'] == ({'key': 'different-flight'} if race == 'new-flight' else None)
