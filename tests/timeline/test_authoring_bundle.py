@@ -1362,15 +1362,15 @@ def test_frozen_candidate_projects_to_labelled_managed_render_without_publicatio
     )
     assert prepared_picture["asset"]
     assert "media_id" not in prepared_picture
-    assert "fit" not in prepared_picture
+    assert prepared_picture["fit"] == "cover"
     assert "rect" not in prepared_picture
-    assert prepared_track["fit"] == "cover"
+    assert prepared_track["app"]["clipPlacementVersion"] == 1
     assert {key: prepared_picture[key] for key in ("x", "y", "width", "height")} == {
         "x": 0.1, "y": 0.2, "width": 0.3, "height": 0.4,
     }
     projection = prepared_picture["app"]["astrid_authoring_render_projection"]
     assert projection["media_selector"]["media_id"] == OLD
-    assert projection["fit"] == {"value": "cover", "projected_to_track": prepared_picture["track"]}
+    assert "fit" not in projection
     prepared_asset = prepared["timeline_snapshot"]["registry"]["assets"][prepared_picture["asset"]]
     assert prepared_asset["origin"] == "opaque-foreign"
 
