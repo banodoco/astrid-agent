@@ -49,8 +49,8 @@ def _render_compatible_projection(
 
     Detached candidates accept exact Runtime media identities and convenient
     clip-local placement fields.  The renderer consumes the older shared
-    timeline schema, where media is selected through ``clip.asset``, fit is a
-    track property, and rectangles are ordinary clip geometry.  Project those
+    timeline schema, where media is selected through ``clip.asset`` and
+    rectangles are ordinary clip geometry. Project those
     equivalent spellings here, after the immutable composition is resolved but
     before managed-media admission and schema validation.  Publication remains
     byte-for-byte the candidate compiled by the authoring bundle.
@@ -70,34 +70,35 @@ def _render_compatible_projection(
             for metadata_key in EDITOR_ASSET_METADATA_KEYS & set(raw_entry):
                 del raw_entry[metadata_key]
             raw_entry.pop("media_type", None)
+            # ``managed-local`` is the authoring/import description used by the
+            # evaluation helpers.  Once Runtime has admitted the exact media id
+            # and digest, it is an opaque imported source for renderer purposes.
+            if raw_entry.get("origin") == "managed-local":
+                raw_entry["origin"] = "opaque-foreign"
 
-    def media_identity(value: Any) -> str | None:
-        if not isinstance(value, str) or not value.strip():
-            return None
-        stripped = value.removeprefix("sha256:")
-        if len(stripped) == 64 and all(character in "0123456789abcdef" for character in stripped):
-            return "sha256:" + stripped
-        return value
+    # Media selectors (media_id/object_id/asset_id -> asset) are translated by
+    # the one shared reader projection; render keeps its refusal wording.
+    from astrid.core.timeline.reader_projection import (
+        READER_PROJECTION_APP_KEY,
+        MediaSelectorError,
+        normalize_legacy_reader_fields,
+        translate_media_selectors,
+    )
 
-    assets_by_media: dict[str, list[str]] = {}
-    for asset_key, raw_entry in raw_assets.items():
-        if not isinstance(raw_entry, dict):
-            continue
-        # ``managed-local`` is the authoring/import description used by the
-        # evaluation helpers.  Once Runtime has admitted the exact media id and
-        # digest, it is an opaque imported source for renderer purposes.
-        if raw_entry.get("origin") == "managed-local":
-            raw_entry["origin"] = "opaque-foreign"
-        identity = media_identity(raw_entry.get("object_id") or raw_entry.get("media_id"))
-        if identity is not None:
-            assets_by_media.setdefault(identity, []).append(str(asset_key))
+    try:
+        normalized_config, normalized_registry = translate_media_selectors(
+            normalized_config, normalized_registry, strict=True
+        )
+    except MediaSelectorError as exc:
+        raise ManagedRenderValidationError(
+            str(exc),
+            path=exc.path,
+            reason=exc.reason,
+            recovery=exc.recovery,
+            validator="authoring_render_projection",
+        ) from exc
 
-    raw_tracks = normalized_config.get("tracks", [])
-    tracks_by_id = {
-        str(track.get("id")): track
-        for track in raw_tracks
-        if isinstance(track, dict) and isinstance(track.get("id"), str)
-    } if isinstance(raw_tracks, list) else {}
+    normalize_legacy_reader_fields(normalized_config, normalized_registry)
     raw_clips = normalized_config.get("clips", [])
     if not isinstance(raw_clips, list):
         return normalized_config, normalized_registry
@@ -106,98 +107,6 @@ def _render_compatible_projection(
         if not isinstance(raw_clip, dict):
             continue
         compatibility: dict[str, Any] = {}
-        direct_field = next(
-            (field for field in ("media_id", "object_id") if field in raw_clip),
-            None,
-        )
-        if direct_field is not None:
-            direct_value = raw_clip.get(direct_field)
-            identity = media_identity(direct_value)
-            if identity is None:
-                raise ManagedRenderValidationError(
-                    f"canonical timeline clip {index} has an invalid {direct_field}",
-                    path=f"$.clips[{index}].{direct_field}",
-                    reason="direct media selector must be a non-empty Runtime media identity",
-                    recovery="Use the exact media id returned by the project Runtime.",
-                    validator="authoring_render_projection",
-                )
-            matches = sorted(assets_by_media.get(identity, ()))
-            selected_asset = raw_clip.get("asset")
-            if isinstance(selected_asset, str):
-                entry = raw_assets.get(selected_asset)
-                selected_identity = media_identity(
-                    entry.get("object_id") or entry.get("media_id")
-                ) if isinstance(entry, Mapping) else None
-                if selected_identity != identity:
-                    raise ManagedRenderValidationError(
-                        f"canonical timeline clip {index} has conflicting asset and {direct_field}",
-                        path=f"$.clips[{index}]",
-                        reason="asset alias and direct media selector resolve to different identities",
-                        recovery="Keep one exact Runtime media selection for the clip.",
-                        validator="authoring_render_projection",
-                    )
-            elif matches:
-                # Parent and occurrence-local registries may legitimately
-                # contain aliases for the same digest. Prefer the alias in
-                # this projected occurrence so its type/origin provenance is
-                # retained instead of binding the clip to an unrelated global
-                # parent alias merely because it sorts first.
-                clip_id = raw_clip.get("id")
-                namespace = (
-                    str(clip_id).rsplit(":", 1)[0] + ":"
-                    if isinstance(clip_id, str) and ":" in clip_id
-                    else None
-                )
-                local_matches = (
-                    [key for key in matches if key.startswith(namespace)]
-                    if namespace is not None else []
-                )
-                selected_asset = local_matches[0] if local_matches else matches[0]
-            else:
-                digest = identity.removeprefix("sha256:")
-                key_seed = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
-                selected_asset = f"authoring-media-{key_seed}"
-                suffix = 1
-                while selected_asset in raw_assets:
-                    suffix += 1
-                    selected_asset = f"authoring-media-{key_seed}-{suffix}"
-                entry = {"media_id": str(direct_value)}
-                if identity.startswith("sha256:"):
-                    entry["content_sha256"] = digest
-                raw_assets[selected_asset] = entry
-                assets_by_media.setdefault(identity, []).append(selected_asset)
-            raw_clip["asset"] = selected_asset
-            raw_clip.pop("media_id", None)
-            raw_clip.pop("object_id", None)
-            compatibility["media_selector"] = {
-                "field": direct_field,
-                "media_id": str(direct_value),
-                "asset": selected_asset,
-            }
-
-        if "fit" in raw_clip:
-            fit = raw_clip.pop("fit")
-            track_id = raw_clip.get("track")
-            track = tracks_by_id.get(str(track_id))
-            if track is None:
-                raise ManagedRenderValidationError(
-                    f"canonical timeline clip {index} cannot project fit without its track",
-                    path=f"$.clips[{index}].fit",
-                    reason="clip-local fit references a missing track",
-                    recovery="Attach the clip to an existing visual track, then retry.",
-                    validator="authoring_render_projection",
-                )
-            existing_fit = track.get("fit")
-            if existing_fit is not None and existing_fit != fit:
-                raise ManagedRenderValidationError(
-                    f"canonical timeline clip {index} conflicts with track fit {existing_fit!r}",
-                    path=f"$.clips[{index}].fit",
-                    reason="the existing renderer supports one fit policy per track",
-                    recovery="Use a separate visual track for clips with a different fit policy.",
-                    validator="authoring_render_projection",
-                )
-            track["fit"] = fit
-            compatibility["fit"] = {"value": fit, "projected_to_track": str(track_id)}
 
         rect = raw_clip.pop("rect", None)
         if rect is not None:
@@ -236,7 +145,10 @@ def _render_compatible_projection(
             if not isinstance(app, dict):
                 app = {}
                 raw_clip["app"] = app
-            app["astrid_authoring_render_projection"] = compatibility
+            annotation = app.get(READER_PROJECTION_APP_KEY)
+            if not isinstance(annotation, dict):
+                annotation = app[READER_PROJECTION_APP_KEY] = {}
+            annotation.update(compatibility)
 
     return normalized_config, normalized_registry
 
@@ -310,6 +222,19 @@ def _validate_render_element_clip_types(
         if not isinstance(clip, Mapping):
             continue
         clip_type = clip.get("clipType", "media")
+        if 'fit' in clip:
+            tracks = {row.get('id'): row for row in config.get('tracks', []) if isinstance(row, Mapping)}
+            track = tracks.get(clip.get('track'), {})
+            assets = snapshot.registry.get('assets', {}) if isinstance(snapshot.registry, Mapping) else {}
+            asset = assets.get(clip.get('asset'), {}) if isinstance(assets, Mapping) else {}
+            asset_type = str(asset.get('type', '')).lower() if isinstance(asset, Mapping) else ''
+            if (clip_type not in {'media', 'video', 'image'} or track.get('kind') == 'audio'
+                    or asset_type.startswith('audio')):
+                path = f"$.clips[{index}].fit"
+                reason = f"clip {clip.get('id', '?')!r} property fit is unsupported for clip kind {clip_type!r}"
+                raise ManagedRenderValidationError(reason, path=path, reason=reason,
+                                                   recovery='Remove fit or use a visual media clip.',
+                                                   validator='visual_clip_fit')
         if clip_type == "haus.astrid.liveScene":
             from astrid.packs.rendering.shared.live_scenes.package import validate_package
 
@@ -967,15 +892,21 @@ def _project_exact_parent_head(
     )
 
     try:
-        # Snapshot canonical images, keeping GET-only decoration on the read rows.
+        # Preserve each immutable source's track and canvas context before flattening.
+        from astrid.sdk.timeline._appearance import normalize_revision_closure
+
+        parent_image = {**{key: parent[key] for key in PARENT_IMAGE_FIELDS},
+                        "project_id": project_id, "timeline_id": timeline_id}
+        internal_images = [{**{key: row[key] for key in INTERNAL_IMAGE_FIELDS},
+                            "project_id": row.get("project_id", project_id)} for row in internals]
+        parent_image, internal_images, placement_findings = normalize_revision_closure(
+            parent_image, internal_images, legacy_reader=True,
+        )
         projected = project_runtime_parent_composition(
-            {**{key: parent[key] for key in PARENT_IMAGE_FIELDS},
-             "project_id": project_id, "timeline_id": timeline_id},
+            parent_image,
             shot_revisions=[{**{key: row[key] for key in SHOT_IMAGE_FIELDS},
                              "project_id": row.get("project_id", project_id)} for row in shots],
-            internal_timeline_revisions=[
-                {**{key: row[key] for key in INTERNAL_IMAGE_FIELDS},
-                 "project_id": row.get("project_id", project_id)} for row in internals],
+            internal_timeline_revisions=internal_images,
         )
     except ValueError as exc:
         raise ValueError(f"canonical parent revision closure is not renderable: {exc}") from exc
@@ -999,6 +930,7 @@ def _project_exact_parent_head(
         })
     expansion = {
         "canonical": True,
+        "placement_migrations": placement_findings,
         "parent_revision_id": parent_revision_id,
         "children": [
             {

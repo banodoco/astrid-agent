@@ -22,7 +22,7 @@ import os
 from collections.abc import Mapping
 from enum import Enum
 from pathlib import Path
-from typing import Any, List, Literal, TypedDict, Union, cast
+from typing import TYPE_CHECKING, Any, List, Literal, TypedDict, Union, cast
 
 import jsonschema
 
@@ -39,7 +39,7 @@ try:
         ThemeOverrides as SharedThemeOverrides,
     )
     from banodoco_timeline_schema import (
-        TimelineClip as SharedTimelineClip,
+        TimelineClip as UpstreamSharedTimelineClip,
     )
     from banodoco_timeline_schema import (
         TimelineConfig as SharedTimelineConfig,
@@ -50,6 +50,18 @@ try:
     from banodoco_timeline_schema import (
         materialize_output as _materialize_output,
     )
+
+    if TYPE_CHECKING:
+        # The upstream wheel has no typing marker. The runtime validator checks
+        # all upstream fields against the vendored schema.
+        class SharedTimelineClip(TypedDict, total=False):
+            fit: Literal["contain", "cover"]
+    else:
+        class SharedTimelineClip(UpstreamSharedTimelineClip, total=False):
+            """Runtime-owned clip fit added over the pinned upstream schema type."""
+
+            fit: Literal["contain", "cover"]
+
 except ImportError:  # pragma: no cover
     # Neutralized fallback (plan-v5 B2): there is deliberately NO hand-written
     # schema mirror here. The old TypedDict stubs drifted and silently accepted
@@ -348,7 +360,7 @@ _THEME_OVERRIDES_ALLOWED = frozenset({"visual", "generation", "voice", "audio", 
 _CLIP_ALLOWED = frozenset(
     {
         "id", "at", "track", "clipType", "label", "asset", "from", "to", "speed", "hold",
-        "volume", "x", "y", "width", "height", "cropTop", "cropBottom",
+        "volume", "fit", "x", "y", "width", "height", "cropTop", "cropBottom",
         "cropLeft", "cropRight", "opacity", "params", "text", "entrance", "exit",
         "continuous", "transition", "effects", "source_uuid", "generation",
         "pool_id", "clip_order", "app", "label", "keyframes",

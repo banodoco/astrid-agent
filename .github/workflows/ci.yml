@@ -325,6 +325,9 @@ jobs:
         with:
           node-version-file: .node-version
 
+      - name: Install pinned Remotion dependencies
+        run: npm ci --prefix remotion
+
       - name: Install system media tools and a system font
         if: runner.os == 'Linux'
         run: |

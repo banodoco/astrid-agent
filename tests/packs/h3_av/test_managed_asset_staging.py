@@ -23,12 +23,12 @@ def test_compiler_archive_stages_to_comfy_input(tmp_path: Path) -> None:
         {
             "version": 1,
             "operation": "continue",
-            "source": {"asset": "source", "range": [0, 1]},
-            "output": {"duration": 2},
+            "source": {"asset": "source", "range": [0, 5 / 3]},
+            "output": {"duration": 8 / 3},
             "content": {"prompt": "The speaker finishes the sentence in the same room."},
             "changes": {
-                "video": [{"during": [1, 2], "area": {"full_frame": True}, "action": "generate"}],
-                "audio": [{"during": [1, 2], "action": "generate"}],
+                "video": [{"during": [5 / 3, 8 / 3], "area": {"full_frame": True}, "action": "generate"}],
+                "audio": [{"during": [5 / 3, 8 / 3], "action": "generate"}],
             },
             "references": [],
             "overrides": {},

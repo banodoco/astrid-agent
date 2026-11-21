@@ -175,7 +175,7 @@ def test_runtime_expansion_names_shots_from_payload_name_before_shot_id(monkeypa
         def get_project_timeline_revision(self, *_):
             return {'revision_id': 'int1', 'content_digest': 'sha256:' + '2' * 64, 'timeline_id': 'internal', 'payload': {}}
 
-    parent = {'revision_id': 'r', 'content_digest': 'sha256:' + '3' * 64, 'payload': {'occurrences': [{'occurrence_id': 'occ-ch01', 'shot_id': 'ch01', 'shot_revision_id': 'rev1'}]}}
+    parent = {'revision_id': 'r', 'content_digest': 'sha256:' + '3' * 64, 'payload': {'config': {}, 'occurrences': [{'occurrence_id': 'occ-ch01', 'shot_id': 'ch01', 'shot_revision_id': 'rev1'}]}}
     monkeypatch.setattr(mt, '_read_exact_parent_head', lambda **_: parent)
     monkeypatch.setattr(mt, '_exact_revision_reader', lambda _client: Reader())
     import astrid.core.timeline.shot_composition_projection as scp
@@ -337,3 +337,10 @@ def test_cli_adds_queue_time_and_prints_one_timing_line(capsys):
     assert cli._visualization_timing({}, 1000.0)['queued_s'] is None
     cli._print_visualization_timing(None, 1000.0)
     assert 'executor timing unavailable' in capsys.readouterr().out
+
+
+def test_contact_tile_without_words_says_no_words_stored():
+    from astrid.packs.rendering.actions.timeline_visualize.contact_sheet import _tile_caption
+
+    assert _tile_caption({'cut': {'start': 0, 'end': 1}}) == 'no words stored'
+    assert _tile_caption({'cut': {'say': 'Hello there friend'}}) == 'Hello there friend'

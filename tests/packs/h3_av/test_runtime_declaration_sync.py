@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from astrid.packs.h3_av.shared.generation import generation_inputs_from_bindings
+
 import hashlib
 import json
 import re
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -54,10 +57,16 @@ def _assert_runtime(actual: dict, expected: dict[str, str]) -> None:
 def _compile_v2_context(tmp_path: Path, *, with_reference: bool):
     tmp_path.mkdir(parents=True)
     source = tmp_path / "source.mp4"
-    source.write_bytes(b"CPU structural fixture; compilation only archives source bytes")
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+         "color=c=blue:s=1024x576:r=24:d=2", "-an", "-c:v", "libx264", "-pix_fmt",
+         "yuv420p", str(source)],
+        check=True,
+        capture_output=True,
+    )
     media = [{
         "id": "source", "asset": "source.mp4", "role": "timeline", "modality": "video",
-        "at": {"frame": 0}, "range": [0, 1],
+        "at": {"frame": 0}, "range": [0, "39/24"],
     }]
     asset_map = {"source.mp4": str(source)}
     if with_reference:
@@ -77,10 +86,10 @@ def test_active_h3_runtime_declarations_match_the_shared_recipe_and_lock(tmp_pat
     expected = _recipe_runtime()
 
     # The generated native-v1/source-free graph is the active built form.
-    generated = build_generation_workflow(
+    generated = build_generation_workflow(generation_inputs_from_bindings(
         references=["reference.png"], prompt="A scene.", frames=24,
         model="minimax_h3_ref2va_pruned_int8_convrot.safetensors", steps=8, seed=1,
-    )
+    ))
     _assert_runtime(generated.metadata["requirements"]["runtime"], expected)
     reference = tmp_path / "generated/reference.png"
     reference.parent.mkdir(parents=True)
@@ -131,3 +140,19 @@ def test_active_h3_runtime_declarations_match_the_shared_recipe_and_lock(tmp_pat
 
     contribution = yaml.safe_load((PACK / "extensions/vibecomfy.workflows/h3.yaml").read_text())
     assert contribution["entries"][0]["bundle"] == "native_h3_continuation"
+
+
+def test_engine_facts_positional_compatibility_and_canonical_custom_node_sources():
+    from astrid.core.generation.engine_facts import EngineFacts, comfyui_facts
+    from astrid.core.generation.engine_recipe import load_recipe
+    from pathlib import PurePosixPath
+
+    sentinel = object()
+    legacy = EngineFacts(*([sentinel] * 10))
+    assert legacy.custom_node_sources is None
+    actual = comfyui_facts().custom_node_sources()
+    expected = {PurePosixPath(source.relative_path).name: source.pin
+                for source in load_recipe("comfyui", "linux-x86_64-cu130").sources
+                if PurePosixPath(source.relative_path).parent.name == "custom_nodes"}
+    assert actual == expected
+    assert {"ComfyUI-H3-Motion-Context-MultiRef", "ComfyUI-VideoHelperSuite"} <= set(actual)

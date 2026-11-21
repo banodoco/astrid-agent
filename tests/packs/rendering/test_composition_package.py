@@ -62,7 +62,7 @@ def test_locked_release_is_built_and_requires_no_separate_schema_or_theme(tmp_pa
         assert manifest["version"] == COMPOSITION_LOCK["version"]
         members = archive.getmembers()
         files = {member.name for member in members}
-    assert len(members) == 80
+    assert len(members) == 81
     assert all(member.isfile() for member in members)
     assert not any(name.startswith("package/typescript/") for name in files)
     for export in REQUIRED_EXPORTS:

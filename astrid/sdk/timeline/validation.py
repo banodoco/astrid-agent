@@ -108,37 +108,43 @@ def _typed_fps_paths(bundle: Mapping[str, Any]) -> set[str]:
     return paths
 
 
-def _canonical_fps_sources(bundle: Mapping[str, Any]) -> dict[tuple[str, ...], list[tuple[str, Any, set[str]]]]:
-    """Identify typed declarations behind canonical, occurrence-local shot names.
+_PHYSICAL_SHOT_FIELDS = (
+    "shot_id", "revision_id", "content_digest", "internal_timeline_id",
+    "internal_timeline_revision_id", "internal_timeline_content_digest",
+)
 
-    A shared source can acquire or lose local aliases when the canonical document
-    is reopened. Only complete physical source identities, exact authored rates,
-    and the adapter's own naming scheme can establish that continuity.
-    """
+
+def _canonical_shot_sources(
+    bundle: Mapping[str, Any],
+) -> dict[tuple[str, ...], list[tuple[str, Mapping[str, Any], set[str]]]]:
+    """Group canonical occurrence-local aliases by their exact physical source."""
     origins = bundle.get("source_mapping", {}).get("shots", {})
     placements = bundle.get("placements", [])
     source_counts: dict[str, int] = {}
+    owners_by_id: dict[str, list[Mapping[str, Any]]] = {}
     for row in placements:
-        physical = origins.get(row.get("shot_id"), {}).get("shot_id")
+        local_id = row.get("shot_id")
+        if not isinstance(local_id, str):
+            continue
+        origin = origins.get(local_id)
+        physical = origin.get("shot_id") if isinstance(origin, Mapping) else None
         if isinstance(physical, str):
             source_counts[physical] = source_counts.get(physical, 0) + 1
-    groups: dict[tuple[str, ...], list[tuple[str, Any, list[Any]]]] = {}
+        owners_by_id.setdefault(local_id, []).append(row)
+    groups: dict[tuple[str, ...], list[tuple[str, Mapping[str, Any], list[Mapping[str, Any]]]]] = {}
     for local_id, shot in (bundle.get("shots") or {}).items():
-        origin = origins.get(local_id, {})
-        identity = tuple(origin.get(key) for key in (
-            "shot_id", "revision_id", "content_digest", "internal_timeline_id",
-            "internal_timeline_revision_id", "internal_timeline_content_digest"))
+        origin = origins.get(local_id)
+        if not isinstance(shot, Mapping) or not isinstance(origin, Mapping):
+            continue
+        identity = tuple(origin.get(key) for key in _PHYSICAL_SHOT_FIELDS)
         if not all(isinstance(value, str) and value for value in identity):
             continue
-        owners = [row for row in placements if row.get("shot_id") == local_id]
-        groups.setdefault(identity, []).append((local_id, shot, owners))
-    result: dict[tuple[str, ...], list[tuple[str, Any, set[str]]]] = {}
+        groups.setdefault(identity, []).append((local_id, shot, owners_by_id.get(local_id, [])))
+    result = {}
     for identity, members in groups.items():
-        declarations = []
+        aliases = []
         for local_id, shot, owners in members:
-            output = shot.get("internal_timeline", {}).get("output", {})
-            if (not owners or shot.get("shot_id") != local_id
-                    or not isinstance(output, Mapping) or "fps" not in output):
+            if not owners or shot.get("shot_id") != local_id:
                 break
             if any(not isinstance(row.get("occurrence_id"), str)
                    or local_id != _authoring_shot_id(
@@ -146,7 +152,22 @@ def _canonical_fps_sources(bundle: Mapping[str, Any]) -> dict[tuple[str, ...], l
                        identity[0], shared=source_counts[identity[0]] > 1)
                    for row in owners):
                 break
-            declarations.append((local_id, output["fps"], {row["occurrence_id"] for row in owners}))
+            aliases.append((local_id, shot, {row["occurrence_id"] for row in owners}))
+        else:
+            result[identity] = aliases
+    return result
+
+
+def _canonical_fps_sources(bundle: Mapping[str, Any]) -> dict[tuple[str, ...], list[tuple[str, Any, set[str]]]]:
+    """Identify typed declarations behind canonical, occurrence-local shot names."""
+    result = {}
+    for identity, aliases in _canonical_shot_sources(bundle).items():
+        declarations = []
+        for local_id, shot, owners in aliases:
+            output = shot.get("internal_timeline", {}).get("output", {})
+            if not isinstance(output, Mapping) or "fps" not in output:
+                break
+            declarations.append((local_id, output["fps"], owners))
         else:
             result[identity] = declarations
     return result
@@ -206,7 +227,7 @@ def _authenticated_initialization_fps_removals(
     candidate: Mapping[str, Any], baseline: Mapping[str, Any] | None,
     restoration_records: Sequence[Mapping[str, Any]], inverse_records: Sequence[Mapping[str, Any]],
 ) -> set[str]:
-    """Return FPS removed by the complete guarded inverse of ``timeline.init``."""
+    """Allow exact authenticated inverse of initialization or package canvas materialization."""
     allowed: set[str] = set()
     if baseline is None or not inverse_records or not restoration_records:
         return allowed
@@ -231,15 +252,30 @@ def _authenticated_initialization_fps_removals(
         selected = entry_records(inverse_records, entry)
         if not equal(selected, entry.get("records", {}).get("commands")):
             continue
-        init_records = [record for record in selected
-                        if record.get("command", {}).get("op") == "timeline.init"]
-        introduced = any(
-            write.get("ref") == "parent" and write.get("path") == ["config", "output"]
-            and write.get("before") == {"state": "absent"}
-            and write.get("after", {}).get("state") == "present"
-            and isinstance(write.get("after", {}).get("value"), Mapping)
-            and "fps" in write["after"]["value"]
-            for record in init_records for write in record.get("writes", []))
+        def introduced_output(record):
+            op = record.get('command', {}).get('op')
+            for write in record.get('writes', []):
+                after = write.get('after', {})
+                if not (write.get('ref') == 'parent' and write.get('path') == ['config', 'output']
+                        and write.get('before') == {'state': 'absent'} and after.get('state') == 'present'
+                        and isinstance(after.get('value'), Mapping) and 'fps' in after['value']):
+                    continue
+                if op == 'timeline.init':
+                    return True
+                for dependency in record.get('dependencies', []):
+                    pin = dependency.get('pin', {})
+                    if (op in ('clip.set', 'track.set') and dependency.get('key') == 'placement.canvas.materialization'
+                            and pin.get('ref') == 'parent' and pin.get('path') == ['config', 'output']
+                            and equal(pin.get('after'), after['value'])
+                            and equal(baseline.get('parent', {}).get('config', {}).get('output'), after['value'])
+                            and equal(pin.get('authored_canvas'), baseline.get('parent', {}).get('config', {})
+                                      .get('theme_overrides', {}).get('visual', {}).get('canvas'))
+                            and any(w.get('ref') == 'parent' and w.get('path') == ['config', 'output']
+                                    and equal(w.get('before'), after) and w.get('after') == {'state': 'absent'}
+                                    for inverse in restoration_records for w in inverse.get('writes', []))):
+                        return True
+            return False
+        introduced = any(introduced_output(record) for record in selected)
         if not introduced:
             continue
         candidate_output = candidate.get("parent", {}).get("config", {}).get("output")
@@ -714,6 +750,63 @@ def _validate_params(
             _fail(f"{path}.params.{key}", "is not declared by the retained element schema")
 
 
+def _retained_shared_marker_sources(
+    candidate: Mapping[str, Any], baseline: Mapping[str, Any],
+) -> dict[str, Mapping[str, Any]]:
+    """Find the raw prior child when a physical source gains or loses aliases."""
+    before = _canonical_shot_sources(baseline)
+    after = _canonical_shot_sources(candidate)
+    retained = {}
+    for identity in before.keys() & after.keys():
+        old, new = before[identity], after[identity]
+        if not (set().union(*(owners for _, _, owners in old))
+                & set().union(*(owners for _, _, owners in new))):
+            continue
+        original = old[0][1].get("internal_timeline")
+        if not isinstance(original, Mapping):
+            continue
+        # All baseline aliases of the physical revision must describe the same raw image.
+        if all(_same_fields(shot, old[0][1], ("internal_timeline",)) for _, shot, _ in old):
+            retained.update({local_id: original for local_id, _, _ in new})
+    return retained
+
+
+def _validate_legacy_placement_markers(
+    config: Mapping[str, Any], previous: Mapping[str, Any], *, path: str,
+) -> None:
+    from astrid.core.timeline.track_appearance import (
+        CLIP_PLACEMENT_VERSION,
+        CLIP_PLACEMENT_VERSION_CURRENT,
+        SCALE_APPLIES_TO_POSITIONED_CLIPS,
+        is_legacy_clip_placement_version,
+    )
+
+    def rows_by_id(source: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
+        rows = source.get("tracks")
+        if not isinstance(rows, list):
+            return {}
+        return {row["id"]: row for row in rows
+                if isinstance(row, Mapping) and isinstance(row.get("id"), str)}
+
+    def track_app(row: Mapping[str, Any]) -> Mapping[str, Any]:
+        app = row.get("app")
+        return app if isinstance(app, Mapping) else {}
+
+    old_tracks = rows_by_id(previous)
+    for track_id, track in rows_by_id(config).items():
+        old_track = old_tracks.get(track_id, {})
+        app, old_app = track_app(track), track_app(old_track)
+        marker = app.get(CLIP_PLACEMENT_VERSION)
+        legacy_marker = is_legacy_clip_placement_version(marker)
+        inherited = is_legacy_clip_placement_version(old_app.get(CLIP_PLACEMENT_VERSION))
+        if (legacy_marker and inherited and _same_fields(track, old_track, ("fit", "scale"))
+                and _same_fields(app, old_app, (SCALE_APPLIES_TO_POSITIONED_CLIPS,))):
+            continue
+        canonical = type(marker) is int and marker == CLIP_PLACEMENT_VERSION_CURRENT
+        if legacy_marker or (inherited and not canonical):
+            _fail(f"{path}[{track_id!r}].app.{CLIP_PLACEMENT_VERSION}", "is invalid for authored placement")
+
+
 def validate_final_candidate(
     candidate: Mapping[str, Any], *,
     baseline: Mapping[str, Any] | None = None,
@@ -723,6 +816,7 @@ def validate_final_candidate(
     restoration_records: Sequence[Mapping[str, Any]] = (),
     inverse_records: Sequence[Mapping[str, Any]] = (),
     authenticated_copy: bool = False,
+    before_canonical_reopen: Mapping[str, Any] | None = None,
 ) -> None:
     """Validate one complete candidate without changing it.
 
@@ -740,6 +834,8 @@ def validate_final_candidate(
     also used for immutable child reuse when a source is absent from the head.
     ``restoration_records`` are provider-executed guarded history writes; only
     their exact restored declarations may use those authenticated boundaries.
+    ``before_canonical_reopen`` supplies the original parent basis when the
+    provider reopens a shared physical closure under the new candidate head.
     """
     if not isinstance(candidate, Mapping):
         _fail("candidate", "must be an object")
@@ -772,6 +868,16 @@ def validate_final_candidate(
     baseline_parent = (baseline or {}).get("parent", {})
     if not _same_fields(candidate, baseline, ("project_id", "timeline_id", "base_parent")):
         baseline_parent = {}
+    # Reopening shared sources derives a candidate parent pin. The provider's
+    # pre-reopen bundle still contains the authenticated source pin.
+    marker_parent = baseline_parent
+    if (before_canonical_reopen is not None
+            and _same_fields(candidate, before_canonical_reopen, ("project_id", "timeline_id"))
+            and _same_fields(before_canonical_reopen, baseline, ("project_id", "timeline_id", "base_parent"))):
+        marker_parent = (baseline or {}).get("parent", {})
+    _validate_legacy_placement_markers(
+        config, marker_parent.get("config", {}), path="candidate.parent.config.tracks",
+    )
     # An explicit null mirror is legacy storage, never a newly authored list.
     for scope, previous, path in (
         (parent, baseline_parent, "candidate.parent.clips"),
@@ -796,6 +902,30 @@ def validate_final_candidate(
     if not isinstance(shots_value, Mapping):
         _fail("candidate.shots", "must be an object")
     shots: Mapping[str, Any] = shots_value
+    # The commit provider opens both images through the same realm-bound Runtime port.
+    marker_baseline = (baseline or {}) if _same_fields(candidate, baseline, ("project_id", "timeline_id")) else {}
+    baseline_shots = marker_baseline.get("shots", {})
+    baseline_sources = marker_baseline.get("source_mapping", {}).get("shots", {})
+    candidate_sources = candidate.get("source_mapping", {}).get("shots", {})
+    shared_marker_sources = None
+    for shot_id, shot in shots.items():
+        internal = shot.get("internal_timeline") if isinstance(shot, Mapping) else None
+        if not isinstance(internal, Mapping):
+            continue
+        source = candidate_sources.get(shot_id)
+        previous_source = baseline_sources.get(shot_id)
+        if (isinstance(source, Mapping) and isinstance(previous_source, Mapping)
+                and all(key in previous_source for key in _PHYSICAL_SHOT_FIELDS)
+                and _same_fields(source, previous_source, _PHYSICAL_SHOT_FIELDS)):
+            previous = baseline_shots.get(shot_id, {}).get("internal_timeline", {})
+        elif marker_baseline:
+            if shared_marker_sources is None:
+                shared_marker_sources = _retained_shared_marker_sources(candidate, marker_baseline)
+            previous = shared_marker_sources.get(shot_id, {})
+        else:
+            previous = {}
+        path = f"candidate.shots[{shot_id!r}].internal_timeline.tracks"
+        _validate_legacy_placement_markers(internal, previous, path=path)
     for occurrence_id, placement in placements.items():
         shot_id_value = placement.get("shot_id")
         if not isinstance(shot_id_value, str):

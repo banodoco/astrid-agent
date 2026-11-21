@@ -154,7 +154,8 @@ def _run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_
         if evidence is None:
             declare_engine_log(out, preparation.root, preparation.recipe.engine)
         try:
-            report = preparation.prepare(workflow, execution_identity=identity, inputs=members,
+            preparation_inputs = {**members, "workflow_inputs": kwargs.get("workflow_inputs")}
+            report = preparation.prepare(workflow, execution_identity=identity, inputs=preparation_inputs,
                                          canonical_workflow=canonical, input_digests=digests)
         except DeadlineExceeded as exc:
             exc.message = ("managed preparation deadline exceeded; rerun to retry preparation; "
@@ -209,6 +210,52 @@ def _run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_
                 shutil.rmtree(scratch, ignore_errors=True)
 
 
+def _validate_h3_prepared_handoff(inputs: dict[str, Any], files: dict[str, str]) -> None:
+    """Refuse a remote H3 source unless both managed copies match its sealed digest."""
+    import hashlib
+
+    from astrid.packs.h3_av.shared.request import load_request_document, normalize_request
+    from astrid.packs.h3_av.shared.stages import _authoritative_source_asset_id
+
+    request_path = inputs.get("request")
+    if not request_path:
+        if inputs.get("video_ref"):
+            raise JobInputError("H3 worker requires a frozen prepared-source handoff")
+        return
+    try:
+        request = normalize_request(load_request_document(request_path))
+        source_id = _authoritative_source_asset_id(request)
+    except (OSError, ValueError, KeyError) as exc:
+        raise JobInputError(f"H3 worker cannot read the source request: {exc}") from exc
+    if source_id is None:
+        return
+    mapping = inputs.get("asset_map")
+    if not isinstance(mapping, dict) or not mapping.get("__astrid_h3_prepared__") or not files.get("source_video"):
+        raise JobInputError("H3 worker requires a frozen prepared-source handoff")
+    try:
+        envelope = json.loads(Path(mapping["__astrid_h3_prepared__"]).read_text(encoding="utf-8"))
+        digest = envelope["conform"]["output"]["sha256"]
+        descriptor = envelope["managed_source"]
+        if (not isinstance(descriptor, dict) or descriptor.get("digest") != "sha256:" + digest
+                or descriptor.get("sha256") != digest):
+            raise ValueError("prepared managed-source descriptor digest mismatch")
+        if envelope["asset"] != source_id or envelope["request_digest"] != request.digest:
+            raise ValueError("original request identity mismatch")
+        def sha256(path: Any) -> str:
+            source = Path(str(path))
+            if source.is_symlink() or not source.is_file():
+                raise ValueError("prepared source is not a regular file")
+            result = hashlib.sha256()
+            with source.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    result.update(chunk)
+            return result.hexdigest()
+        if sha256(files["source_video"]) != digest or sha256(mapping[source_id]) != digest:
+            raise ValueError("prepared source digest mismatch")
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        raise JobInputError(f"H3 worker rejected prepared-source handoff: {exc}") from exc
+
+
 def run_prepared_job(entry: str, inputs: dict[str, Any], execution: dict[str, Any], bindings: dict[str, Any], out: Path,
                       *, task: str, attempt: str, mode: str | None, align: str) -> dict[str, Any]:
     """Execute a controller-prepared bundle; public inputs never include transport controls."""
@@ -242,8 +289,10 @@ def run_prepared_job(entry: str, inputs: dict[str, Any], execution: dict[str, An
         if described is None:
             raise JobFileError(f"entry {entry!r} is not available on this machine")
         if entries.entry_hooks(described).get("build"):
-            return run_named_entry(described, entry, inputs, {}, out, task=task, attempt=attempt,
-                                    mode=mode, align=align, bindings=bindings)
+            if entry == "h3":
+                _validate_h3_prepared_handoff(inputs, files)
+            return run_named_entry(described, entry, inputs, files if entry == "h3" else {}, out,
+                                    task=task, attempt=attempt, mode=mode, align=align, bindings=bindings)
         # The facade has already bound this exact graph. Rebinding or rebuilding it
         # would discard its chosen seed, native controls and uploaded media bindings.
     from astrid.packs.vibecomfy.shared.bundle_inputs import staged_workflow_path
@@ -284,6 +333,8 @@ def run_named_entry(described: dict[str, Any], named: str, inputs: dict[str, Any
     mode = description.get("mode") or mode
     if not isinstance(mode, str):
         raise JobInputError(f"entry {named!r} did not resolve a mode")
+    if named == "h3":
+        _validate_h3_prepared_handoff(inputs, files)
     # (c) readiness and target schema, on the machine that runs the job. The pod has no attached
     # target client, which is the controller's managed-placement case (client None).
     prerequisite = SimpleNamespace(id=named, modes={mode: SimpleNamespace(
@@ -292,6 +343,10 @@ def run_named_entry(described: dict[str, Any], named: str, inputs: dict[str, Any
     # A contribution's build and after_outputs come from its vibecomfy.workflows entry.
     hooks = entries.entry_hooks(described)
     run_files = dict(files)
+    if named == "h3":
+        # The managed source was verified above. The hook binds its identical
+        # archived copy through managed_assets, avoiding a second input path.
+        run_files.pop("source_video", None)
     job_dir: Path | None = None
     manifest = None
     try:
@@ -319,7 +374,12 @@ def run_named_entry(described: dict[str, Any], named: str, inputs: dict[str, Any
                 import zipfile
 
                 from astrid.packs.vibecomfy.asset_manifest import build_asset_manifest
-                asset_manifest = build_asset_manifest(assets)
+                if named == "h3":
+                    from astrid.packs.h3_av.shared.stages import source_asset_lineage
+                    lineage = source_asset_lineage(built.get("plan") or {})
+                else:
+                    lineage = None
+                asset_manifest = build_asset_manifest(assets, lineage=lineage)
                 archive = job_dir / "assets.zip"
                 with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zipped:
                     zipped.writestr("manifest.json", json.dumps(asset_manifest))

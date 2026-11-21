@@ -11,7 +11,7 @@ import builtins
 import importlib
 import json
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field, replace
 from functools import wraps
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Protocol
@@ -287,6 +287,183 @@ def _runpod_job_preferences(preferences, datacenter):
 
 
 _NO_MACHINE = 'no machine: run `astrid machines claim`'
+LOCAL_REFUSAL_SCOPE = ('refused locally before submission; nothing was sent to a machine; '
+                       'any claimed machine is unaffected')
+
+
+def _offline_invocation_preflight(workflow: Any, *, plan: Mapping[str, Any] | None,
+                                  assets: Mapping[str, Any], comfy_url: str | None,
+                                  lineage: Any, source_video: bool) -> None:
+    """Run the same invocation preflight a live submission runs, offline, on the emitted bundle.
+
+    Every dry run calls this so a request the live path would refuse is refused before a
+    machine is required, claimed, or paid for. Refusals name their scope: they happened
+    locally and nothing was sent anywhere.
+    """
+    from tempfile import TemporaryDirectory
+
+    from vibecomfy.workflow_bundle import emit_bundle
+
+    from astrid.core.generation.backends.comfy_target import managed_media_type
+    from astrid.packs.vibecomfy.asset_manifest import build_asset_manifest, resolve_inputs
+    from astrid.packs.vibecomfy.invocation_preflight import preflight_invocation
+
+    # Mirror the live submission: run inputs come from the staged asset manifest, and a
+    # workflow without managed assets compiles with none (its bindings are already sealed).
+    sent = {name: value for name, value in (dict((plan or {}).get('bindings') or {})).items()
+            if name not in assets}
+    run_inputs: dict[str, Any] = {}
+    source_path = None
+    source_digest = None
+    if assets:
+        manifest = build_asset_manifest(assets, lineage=lineage)
+        run_inputs = resolve_inputs(manifest, sent)
+        record = next((row for row in manifest['assets'] if row.get('binding') == 'source_video'), None)
+        if record is not None and source_video:
+            source_path = assets['source_video']
+            source_digest = 'sha256:' + str(record['sha256'])
+    prompt = run_inputs.get('prompt')
+    expected_prompt = prompt if isinstance(prompt, str) and prompt.strip() else None
+    with TemporaryDirectory(prefix='astrid-dry-preflight-') as scratch:
+        capsule = Path(scratch) / 'workflow.py'
+        emit_bundle(workflow, capsule, {'operation': 'authored'})
+        try:
+            for name, path in assets.items():
+                if getattr(workflow.inputs.get(name), 'media_semantics', None) == 'audio':
+                    managed_media_type(Path(path).expanduser(), 'audio')
+            preflight_invocation(
+                capsule, run_inputs=run_inputs, comfy_url=comfy_url or '',
+                expected_prompt=expected_prompt, source_video_path=source_path,
+                expected_source_digest=source_digest, phase='dry-run')
+        except ValueError as exc:
+            from astrid.core.generation.preflight import generation_error
+            raise generation_error(ValueError(f'{exc}. {LOCAL_REFUSAL_SCOPE}.'),
+                                   code='input_rejected') from exc
+
+
+def _validate_workflow_build_inputs(entry: dict[str, Any], inputs: Mapping[str, Any]) -> dict[str, Any]:
+    from astrid.core.generation.entries import validate_inputs
+
+    values = dict(inputs)
+    if values.get('count') == 1 and not any(
+            'count' in (port['name'], *port.get('aliases', [])) for port in entry.get('inputs', [])):
+        values.pop('count')  # single-output admission was checked by the target route
+    return validate_inputs(entry, values)
+
+
+@dataclass
+class _WorkflowAdmissionState:
+    documents: dict[tuple[str, str], Any] = field(default_factory=dict)
+    entries: dict[tuple[str, str, str], dict[str, Any]] = field(default_factory=dict)
+
+
+def _admit_workflow_inputs(
+    entry: str | Mapping[str, Any], inputs: Mapping[str, Any],
+    controls: Mapping[str, Any], job_dirs: list[Path], state: _WorkflowAdmissionState,
+) -> dict[str, Any]:
+    """Apply a controller inspection hook and stage its project-owned dependencies."""
+    from shutil import copyfile
+    from tempfile import mkdtemp
+
+    from astrid.core.contracts.errors import AstridError
+    from astrid.core.generation.entries import (
+        file_map_is_valid,
+        find_entry,
+        inspect_entry_inputs,
+        read_file_map_document,
+    )
+    from astrid.sdk.media_handles import resolve_media_handle
+
+    if isinstance(entry, str):
+        entry = find_entry(entry)
+    if entry is None or not entry.get("inspect_inputs_declared"):
+        return {}
+
+    values = dict(inputs)
+    try:
+        for port in entry.get("inputs", []):
+            name = port["name"]
+            if name not in values:
+                continue
+            kind = port["type"]
+            key = (name, kind)
+            if name == "request" and kind == "file":
+                # The SDK's public request control is a document. Keep its file
+                # format and inspect the same copy that the build will open.
+                if key not in state.documents:
+                    original = Path(values[name]).expanduser().resolve(strict=True)
+                    directory = Path(mkdtemp(prefix="astrid-generation-request-"))
+                    job_dirs.append(directory)
+                    state.documents[key] = str(copyfile(original, directory / original.name))
+                values[name] = state.documents[key]
+            elif kind == "file_map":
+                if key not in state.documents:
+                    supplied = read_file_map_document(values[name], allow_output_handles=True, allow_empty=True)
+                    if not isinstance(supplied, Mapping) or supplied and not file_map_is_valid(
+                            supplied, allow_output_handles=True):
+                        raise CapabilityValidationError(f"{name} must be a readable map of asset IDs to files")
+                    state.documents[key] = {
+                        asset: str(Path(path).expanduser().absolute()) for asset, path in supplied.items()
+                    }
+                mapping = state.documents[key]
+                if mapping and not file_map_is_valid(
+                        mapping, allow_output_handles=port.get("allow_output_handle_keys") is True):
+                    raise CapabilityValidationError(f"{name} must be a readable map of asset IDs to files")
+                values[name] = dict(mapping)
+        requirements = inspect_entry_inputs(entry, values)
+    except (ValueError, OSError) as exc:
+        if isinstance(exc, AstridError):
+            raise
+        raise CapabilityValidationError(str(exc)) from exc
+    if requirements is None or not requirements.handle_ids:
+        return {"inputs": values}
+
+    client = controls.get("client")
+    _, project = _resolve_invoke_destination(client=client, out=controls.get("out"),
+        project=controls.get("project"), project_root=controls.get("project_root"), dry_run=True)
+    if client is None or not project:
+        raise CapabilityValidationError("media handles require a project and Runtime connection")
+    context = dict(controls.get("idempotency_context") or {})
+    if "media_handles" in context:
+        raise CapabilityValidationError("media_handles is reserved for resolved media lineage")
+    port = requirements.file_map_port
+    root = Path(mkdtemp(prefix="astrid-media-handles-"))
+    job_dirs.append(root)
+    mapping = dict(values.get(port) or {})
+    lineage = []
+    for index, handle in enumerate(requirements.handle_ids):
+        descriptor, record = resolve_media_handle(client, project, handle)
+        lineage.append({"port": requirements.lineage_port, **record})
+        opened = client.media.open(project, descriptor["digest"], materialize=True,
+            cache_root=root / str(index), preview_bytes=0,
+            max_bytes=max(descriptor["size_bytes"], 1))
+        if not opened.ok:
+            raise CapabilityValidationError(f"cannot open media handle {handle!r}: {opened.error.message}")
+        mapping[handle] = opened.data["local_path"]
+    context["media_handles"] = lineage
+    return {"project": project, "inputs": {**values, port: mapping}, "idempotency_context": context}
+
+
+def offline_request_preflight(entry_id: str, *, mode: str | None, inputs: Mapping[str, Any]) -> None:
+    """Refuse an explicit entry request locally, without a facade, Runtime or machine.
+
+    Compiles the named shipped entry for these inputs and runs the invocation preflight a
+    submission would run. Auto-selected requests have no single entry to compile.
+    Entries with a controller inspection hook use the facade for build preflight.
+    """
+    from astrid.core.generation import entries as workflow_entries
+
+    row = workflow_entries.find_entry(entry_id)
+    if (row is None or row.get('action')
+            or workflow_entries.inspect_entry_inputs(row, inputs) is not None):
+        return
+    chosen_mode = mode or (row.get('modes') or [None])[0]
+    values = dict(inputs or {})
+    workflow, plan, assets = workflow_entries.prepare(
+        workflow_entries.bundle_path(row), target_client=None, mode=chosen_mode,
+        binds=row.get('binds'), defaults=row.get('defaults'), values=values)
+    _offline_invocation_preflight(workflow, plan=plan, assets=assets or {}, comfy_url=None,
+                                  lineage=None, source_video=True)
 
 
 def _require_claimed_machine(kind, machine=None):
@@ -1436,10 +1613,26 @@ class GenerationFacade:
         )
 
     def _generate_on_target(self, **kwargs: Any) -> Any:
-        """Run ``_generate_on_target_impl``, then remove any hook job directories it made."""
+        """Run target generation and remove its controller job directories on exit."""
         import shutil
+
         job_dirs: list[Path] = []
+        state = _WorkflowAdmissionState()
         try:
+            if kwargs.get("model") is not None:
+                kwargs.update(_admit_workflow_inputs(
+                    kwargs["model"], kwargs.get("inputs") or {}, kwargs, job_dirs, state))
+            else:
+                kwargs["_admission_state"] = state
+            if not kwargs.get("dry_run") and kwargs.get("placement") is not None:
+                from astrid.core.generation import placement as placements
+                resolved = placements.validate_placement(placements.resolve_placement(
+                    placements.request_from_selector(kwargs["placement"]),
+                    client=kwargs.get("client"), repo=kwargs.get("project_root")))
+                if resolved.kind not in placements.BUILTIN_KINDS:
+                    # A remote request is refused locally, with the same dry-run preflight,
+                    # before the claimed-machine requirement below can apply.
+                    self._generate_on_target_impl(_job_dirs=job_dirs, **{**kwargs, "dry_run": True})
             return self._generate_on_target_impl(_job_dirs=job_dirs, **kwargs)
         finally:
             for directory in job_dirs:
@@ -1459,6 +1652,7 @@ class GenerationFacade:
         dry_run: bool,
         workflow_entry: dict[str, Any] | None = None,
         retained_source: dict[str, Any] | None = None,
+        _admission_state: _WorkflowAdmissionState | None = None,
         **controls: Any,
     ) -> Any:
         """Bind a catalog template and admit it through the workflow facade.
@@ -1502,6 +1696,7 @@ class GenerationFacade:
         from astrid.core.generation import defaults as generation_defaults
         from astrid.core.generation import entries as workflow_entries
         from astrid.core.generation import settings as generation_settings
+        from astrid.core.generation.workflows import BuildTransport, build_transport
         from astrid.packs.vibecomfy.production_engine import ProductionEngineError
         settings_snapshot = generation_settings.read(controls.get('client'))
         pinned = (generation_defaults.pinned_entry(modality, mode, settings_snapshot)
@@ -1615,7 +1810,7 @@ class GenerationFacade:
         backend = VibeComfyBackend(target_client=target_client)
 
         def import_member(path: Path) -> dict[str, Any]:
-            return _import_generation_member(path, controls)
+            return _import_generation_member(path, candidate_controls)
 
         source_ref = retained_source
 
@@ -1628,10 +1823,17 @@ class GenerationFacade:
 
         selected = None
         failures: list[str] = []
+        state = _admission_state or _WorkflowAdmissionState()
         for source, candidate in candidates:
             source_ref = retained_source
             identifier = candidate.id if source == "catalog" else candidate["id"]
-            if automatic and identifier != pinned and source == "workflow" and candidate.get('hooks_declared'):
+            inspect_candidate = model is None and source == "workflow" and candidate.get("inspect_inputs_declared")
+            admission = None
+            if inspect_candidate:
+                admission_key = (identifier, candidate["contribution"], candidate.get("pack_root", ""))
+                admission = state.entries.get(admission_key)
+            if (admission is None and automatic and identifier != pinned and source == "workflow"
+                    and candidate.get('hooks_declared')):
                 # A contributed default may require a different public input shape. Only
                 # skip it for missing required inputs; a chosen candidate's build errors
                 # and explicitly pinned entries remain fail-closed.
@@ -1643,14 +1845,30 @@ class GenerationFacade:
                 except workflow_entries.MissingRequiredEntryInputsError as exc:
                     failures.append(f"{identifier}: {exc}")
                     continue
+            candidate_inputs = inputs
+            candidate_controls = dict(controls)
+            if inspect_candidate:
+                # The remote dry and live passes share inputs and custody from
+                # the same selected contribution's controller admission.
+                if admission is None:
+                    try:
+                        validated = _validate_workflow_build_inputs(candidate, inputs)
+                    except ValueError as exc:
+                        raise generation_error(exc, code="input_rejected") from exc
+                    admission = {"inputs": validated,
+                                 **_admit_workflow_inputs(candidate, validated, controls, _job_dirs, state)}
+                    state.entries[admission_key] = admission
+                candidate_inputs = admission["inputs"]
+                candidate_controls.update({key: value for key, value in admission.items() if key != "inputs"})
             try:
                 assets = {}
+                transport = BuildTransport()
                 if is_remote_target:
                     template = (None if source == "workflow" else _local_template(candidate, mode))
                     if source == "workflow" and candidate.get('hooks_declared'):
                         import tempfile
                         _job_dirs.append(Path(tempfile.mkdtemp(prefix='astrid-job-')))
-                        candidate = workflow_entries.attach_hooks(candidate, inputs, _job_dirs[-1])
+                        candidate = workflow_entries.attach_hooks(candidate, candidate_inputs, _job_dirs[-1])
                     runpod_engine = workflow_entries.runpod_engine(candidate if source == "workflow" else
                         workflow_entries.find_entry(template) if template else None)
                     pending_target = {'engine': runpod_engine, 'placement': 'runpod', 'state': 'pending_host_readiness'}
@@ -1687,14 +1905,36 @@ class GenerationFacade:
                             _job_dirs.append(Path(job_dir))
                         # Discovery checks only required ports. The selected hook must
                         # honor the same declared-controls contract as an explicit entry.
-                        build_inputs = dict(inputs)
-                        if build_inputs.get('count') == 1 and not any(
-                                'count' in (port['name'], *port.get('aliases', []))
-                                for port in candidate.get('inputs', [])):
-                            build_inputs.pop('count')  # single-output admission was checked above
-                        build_inputs = workflow_entries.validate_inputs(candidate, build_inputs)
+                        build_inputs = _validate_workflow_build_inputs(candidate, candidate_inputs)
+                        build_options: dict[str, Any] = {}
+                        published_sources: list[dict[str, Any]] = []
+                        if not dry_run and workflow_entries.publishes_source(candidate):
+                            def publish_source(path: Path, expected: str) -> tuple[Path, dict[str, Any]]:
+                                descriptor = import_member(path)
+                                if descriptor['sha256'] != expected:
+                                    raise CapabilityInvocationError('managed source digest mismatch during publication')
+                                client = candidate_controls.get('client')
+                                project = candidate_controls.get('project')
+                                opened = client.media.open(project, descriptor['digest'], materialize=True,
+                                    cache_root=Path(job_dir) / 'published-source', preview_bytes=0,
+                                    max_bytes=max(descriptor['bytes'], 1))
+                                if not opened.ok:
+                                    raise CapabilityInvocationError(
+                                        f"could not reopen managed source: {opened.error.message}")
+                                published_sources.append(dict(descriptor))
+                                return Path(opened.data['local_path']), descriptor
+                            build_options['publish_source'] = publish_source
                         built = workflow_entries.build_entry(
-                            candidate, build_inputs, job_dir, check_runtime=not dry_run and not is_remote_target)
+                            candidate, build_inputs, job_dir, check_runtime=not dry_run and not is_remote_target,
+                            **build_options)
+                        transport = build_transport(built)
+                        if transport.remote is not None:
+                            descriptor = dict(transport.remote.descriptor)
+                            published = next((source for source in published_sources if source == descriptor), None)
+                            if published is None:
+                                raise CapabilityInvocationError(
+                                    "remote workflow source descriptor must match a source published by this build")
+                            transport = replace(transport, remote=replace(transport.remote, descriptor=published))
                         workflow, assets = built['workflow'], dict(built.get('assets') or {})
                         plan = {'kind': candidate['kind'], 'unbound': [], 'bindings': dict(built['bindings']),
                                 'build_plan': built.get('plan'), 'job_dir': str(job_dir)}
@@ -1713,7 +1953,7 @@ class GenerationFacade:
                                 retain_source(original_path.name, original_path.read_bytes())
                             workflow, plan, assets = workflow_entries.prepare(
                                 frozen, target_client=target_client, mode=mode,
-                                binds=candidate.get("binds"), defaults=candidate.get("defaults"), values=inputs)
+                                binds=candidate.get("binds"), defaults=candidate.get("defaults"), values=candidate_inputs)
                         if plan["kind"] != modality:
                             raise ValueError("entry kind does not match workflow output")
                         if plan["unbound"]:
@@ -1766,6 +2006,8 @@ class GenerationFacade:
                         code='missing_dependency' if 'missing' in str(exc).lower() else 'input_rejected') from exc
                 failures.append(f"{identifier}: {exc}")
                 continue
+            inputs = candidate_inputs
+            controls = candidate_controls
             selected = (identifier, workflow, bundle, plan, schema, approval, assets)
             break
         if selected is None:
@@ -1840,6 +2082,11 @@ class GenerationFacade:
                     from astrid.core.generation.managed_preparation import configured_models_root
                     manifest = {**manifest, 'models_root': configured_models_root()}
                 readiness['entry']['requirements'] = manifest
+            # Every dry run runs the invocation preflight that precedes a paid submission.
+            _offline_invocation_preflight(
+                workflow, plan=plan, assets=assets or {},
+                comfy_url=(target_client.target.url if placement.kind == 'attached' and target_client is not None else None),
+                lineage=transport.lineage, source_video=transport.preflight_source_video)
             readiness['entry'].update(preview)
             if align == 'trust':
                 readiness['alignment'] = {'mode': 'trust', 'verified': False}
@@ -1861,7 +2108,7 @@ class GenerationFacade:
                 import zipfile
 
                 from astrid.packs.vibecomfy.asset_manifest import build_asset_manifest
-                manifest = build_asset_manifest(assets)
+                manifest = build_asset_manifest(assets, lineage=transport.lineage)
                 archive = root / "assets.zip"
                 with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zipped:
                     zipped.writestr("manifest.json", json.dumps(manifest))
@@ -1874,10 +2121,21 @@ class GenerationFacade:
                 # (workflow_inputs). The shipped archive carries it only when the entry
                 # declares it as an input; an entry without that port must not refuse it.
                 archive_inputs = {name: value for name, value in inputs.items() if name != 'filename_prefix'}
+                remote = transport.remote
+                if remote is not None:
+                    asset_arguments['source_video'] = dict(remote.descriptor)
+                    authority = dict(controls.get('idempotency_context') or {})
+                    collisions = authority.keys() & remote.idempotency.keys()
+                    if collisions:
+                        names = ', '.join(sorted(collisions))
+                        raise CapabilityValidationError(f"reserved generation lineage keys: {names}")
+                    controls['idempotency_context'] = {**authority, **remote.idempotency}
+                    archive_inputs = dict(remote.inputs)
                 public, public_values = workflow_entries.resolve_entry_inputs(entry_id, archive_inputs, mode=mode)
                 if 'filename_prefix' in inputs and any(
                         'filename_prefix' in {port['name'], *port.get('aliases', [])} for port in public['inputs']):
-                    public, public_values = workflow_entries.resolve_entry_inputs(entry_id, inputs, mode=mode)
+                    public, public_values = workflow_entries.resolve_entry_inputs(
+                        entry_id, {**archive_inputs, 'filename_prefix': inputs['filename_prefix']}, mode=mode)
                 if 'seed' in {port['name'] for port in public['inputs']} and 'seed' in (plan or {}).get('bindings', {}):
                     public_values['seed'] = plan['bindings']['seed']
                 archive = write_archive(root / 'entry-inputs.zip', public_values, public['inputs'])

@@ -233,7 +233,7 @@ def move(ctx, command):
 
 
 def track_create(ctx, command):
-    owner, row = command['select'], command['args']['row']
+    owner, row = command['select'], copy.deepcopy(command['args']['row'])
     ctx.create(owner, 'track', row)
 
 
@@ -257,8 +257,16 @@ def capture_move(bundle, select, on):
 
 def capture_track_create(bundle, owner, row):
     """Small structural proof: caller allocates the row ID once, before sending."""
+    from astrid.core.timeline.track_appearance import (
+        label_track_with_id,
+        stamp_new_track_appearance,
+    )
+
+    row = copy.deepcopy(row)
+    label_track_with_id(row)
+    stamp_new_track_appearance(row)
     return _capture(bundle, {'schema_version': 1, 'op': 'track.create', 'version': '1',
-                             'select': owner, 'args': {'row': copy.deepcopy(row)}, 'intent': {}})
+                             'select': owner, 'args': {'row': row}, 'intent': {}})
 
 
 def capture_clip_delete(bundle, select):

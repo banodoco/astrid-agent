@@ -8,6 +8,8 @@ workers, or releases a pod. It deliberately does not own generic RunPod
 from __future__ import annotations
 
 import asyncio
+import copy
+import inspect
 import json
 import math
 import os
@@ -716,15 +718,18 @@ async def _wait_provider_ready(config: Any, pod: Any, timeout: int) -> Any:
 async def _protect_allocated_target(config: Any, record: dict[str, Any],
                                     path: Path, timeout: int) -> dict[str, Any]:
     """Publish at first reachable transport, before readiness or verification."""
-    from .pod_watchdog import PodWatchdogTransportError, write_deadline
+    from .pod_watchdog import PodWatchdogError, PodWatchdogTransportError, write_deadline
     from .remote_placement import _HttpsOps
 
-    if not record.get("paid_limits") or record.get("transport") != "https":
+    if not record.get("paid_limits"):
         return record
+    if record.get("transport") != "https":
+        raise PodWatchdogError("RunPod paid claim refused: pod watchdog transport is unavailable")
     deadline = datetime.fromisoformat(record["paid_limits"]["expires_at"].replace("Z", "+00:00")).timestamp()
     generation = record.get("self_stop", {}).get("generation", 0) + 1
     value = {**record, "self_stop": {"deadline": deadline, "generation": generation, "acknowledged": False}}
     replace_target_record(path, value, operation_id=record["operation_id"])
+    record["self_stop"] = value["self_stop"]
     until = time.monotonic() + timeout
     ops = _HttpsOps(record["pod_id"], config.https_token, deadline=until)
     while True:
@@ -737,6 +742,9 @@ async def _protect_allocated_target(config: Any, record: dict[str, Any],
             await asyncio.sleep(min(0.25, max(0, until - time.monotonic())))
     value["self_stop"]["acknowledged"] = protected
     replace_target_record(path, value, operation_id=record["operation_id"])
+    record["self_stop"] = value["self_stop"]
+    if protected is not True:
+        raise PodWatchdogError("RunPod paid claim refused: pod watchdog was not acknowledged")
     return value
 
 
@@ -1457,8 +1465,6 @@ async def acquire_target(
         if not hasattr(config, "ram_tiers_enabled"):
             # Minimal provider configurations must also produce a single RAM
             # tier. Set it explicitly rather than let lifecycle infer a matrix.
-            import copy
-
             config = copy.copy(config)
             config.ram_tiers_enabled = False
         storages = {name for name in [getattr(config, "storage_name", None),
@@ -1508,7 +1514,7 @@ async def acquire_target(
             pre_create = dict(attempt)
 
             def authorize_create():
-                nonlocal attempt
+                nonlocal attempt, config
                 pending = {
                     **attempt,
                     "state": "allocation_pending",
@@ -1519,6 +1525,30 @@ async def acquire_target(
                 }
                 if before_post is not None:
                     pending = before_post(pending)
+                limits = pending.get("paid_limits")
+                if limits is not None:
+                    from runpod_lifecycle import RunPodConfig
+
+                    if "terminate_after" not in inspect.signature(RunPodConfig).parameters:
+                        raise ValueError("RunPod paid claim requires lifecycle support for allocation-time termination")
+                    try:
+                        expiry = datetime.fromisoformat(limits["expires_at"].replace("Z", "+00:00"))
+                        authorized = datetime.fromisoformat(limits["authorized_at"].replace("Z", "+00:00"))
+                        cap, rate = float(limits["max_usd"]), float(limits["hourly_usd"])
+                        deadline = (datetime.fromisoformat(limits["deadline"].replace("Z", "+00:00"))
+                                    if limits.get("deadline") is not None else None)
+                        if (expiry.utcoffset() is None or authorized.utcoffset() is None
+                                or (deadline is not None and deadline.utcoffset() is None)
+                                or not math.isfinite(cap) or not math.isfinite(rate) or cap <= 0 or rate <= 0
+                                or expiry <= authorized or (expiry - authorized).total_seconds() > cap / rate * 3600 + 0.001
+                                or (deadline is not None and expiry > deadline)):
+                            raise ValueError("invalid paid expiry")
+                    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+                        raise ValueError("RunPod paid claim cannot establish an allocation-time termination bound") from exc
+                    bound = expiry.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+                    config = copy.copy(config)
+                    config.terminate_after = bound
+                    pending["allocation_terminate_after"] = bound
                 _check_provider_cancelled()
                 try:
                     current = json.loads(handle_path.read_text(encoding="utf-8"))

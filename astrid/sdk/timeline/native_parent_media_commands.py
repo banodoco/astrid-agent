@@ -22,7 +22,7 @@ DUPLICATE_MEDIA_PARAMETERS = {
 # TimelineData's metadata projection; raw codecs and unknown row fields do not
 # become metadata of a newly duplicated action.
 _CLONE_FIELDS = (
-    'clipType', 'label', 'from', 'to', 'speed', 'hold', 'volume', 'x', 'y', 'width', 'height',
+    'clipType', 'label', 'from', 'to', 'speed', 'hold', 'volume', 'x', 'y', 'width', 'height', 'fit',
     'cropTop', 'cropBottom', 'cropLeft', 'cropRight', 'opacity', 'text', 'entrance', 'exit',
     'continuous', 'transition', 'elementRef', 'effects', 'params', 'pool_id', 'clip_order',
     'source_uuid', 'generation', 'app', 'keyframes',

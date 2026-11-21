@@ -175,3 +175,20 @@ test('cross-volume staging copies the downloaded browser after rename returns EX
   assert.equal(fs.readFileSync(expectedSharedExecutable, 'utf8'), 'fake browser');
   assert.equal(fs.readFileSync(downloadedExecutable, 'utf8'), 'fake browser');
 });
+
+test('native ESM defaults to the module Remotion project, independent of cwd', () => {
+  const remotion = path.join(tmp, 'native-esm-remotion');
+  const renderer = path.join(remotion, 'node_modules', '@remotion', 'renderer');
+  const cache = path.join(tmp, 'native-esm-cache');
+  const browser = path.join(cache, '9.9.9', browserRelativePath('linux', 'x64'));
+  fs.mkdirSync(renderer, {recursive: true});
+  fs.mkdirSync(path.dirname(browser), {recursive: true});
+  fs.writeFileSync(path.join(renderer, 'package.json'), '{"version":"9.9.9"}');
+  fs.writeFileSync(browser, '');
+  fs.copyFileSync(path.join(__dirname, '..', 'shared-browser.mjs'), path.join(remotion, 'shared-browser.mjs'));
+  const url = require('node:url').pathToFileURL(path.join(remotion, 'shared-browser.mjs')).href;
+  const script = `import {sharedBrowserExecutable} from ${JSON.stringify(url)}; console.log(sharedBrowserExecutable({env:{},root:${JSON.stringify(cache)},platform:'linux',arch:'x64'}));`;
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {cwd: tmp, encoding: 'utf8'});
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), browser);
+});

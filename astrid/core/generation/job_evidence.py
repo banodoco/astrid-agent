@@ -129,6 +129,8 @@ class JobEvidence:
                   "vram_free_after_bytes": after, "model_verification_seconds": verify,
                   "started_at": self.started_at, "ended_at": datetime.now(timezone.utc).isoformat(),
                   "phases": phases, "engine_reused": reused,
+                  "checked_classes": getattr(self.preparation, "checked_classes", []),
+                  "engine_restarted": getattr(self.preparation, "engine_restarted", False),
                   "phase_sources": {
                       "verify_models": "managed preparation verification_seconds; model_verification_seconds is an alias",
                       "engine_start_or_reuse": "sum of supervisor probe/start and readiness-health calls, including doctor preparation",

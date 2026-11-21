@@ -86,7 +86,13 @@ def test_shared_fixture_projection(project, case, caplog):
     assert [{"severity": record.levelname.lower(), "code": record.code, "message": record.getMessage()}
             for record in caplog.records] == expected["warnings"]
     assert graph == before
-    assert projection.config["clips"][:len(graph["parent_composition"]["config"]["clips"])] == graph["parent_composition"]["config"]["clips"]
+    parent_clips = copy.deepcopy(graph["parent_composition"]["config"]["clips"])
+    # Plan 59 projects registry references as asset (86031e920); provisional pending F7.
+    if project is runtime_projection:
+        for clip in parent_clips:
+            if clip["id"] in {"clip-0", "above-clip", "below-clip", "same-clip"}:
+                clip["asset"] = clip.pop("asset_id")
+    assert projection.config["clips"][:len(parent_clips)] == parent_clips
     if "track_kinds" in expected:
         assert {track["id"]: track["kind"] for track in tracks} == expected["track_kinds"]
     for start_ms, end_ms in expected.get("transparent_windows_ms", []):
@@ -319,9 +325,12 @@ def test_visual_placement_transform_is_refused_even_for_empty_shots(project, pla
             revision["internal_timeline_revision"]["timeline"]["clips"] = []
     with pytest.raises(ShotCompositionProjectionError) as exc:
         project(graph)
+    property_path = ('opacity' if 'opacity' in placement else
+                     'transform.' + next(iter(placement['transform'])))
     assert str(exc.value) == (
         "Shot opacity and transforms are not supported yet. "
-        "Remove them from the shot placement to render this timeline."
+        "Remove them from the shot placement to render this timeline. "
+        f"Occurrence {graph['occurrences'][0]['occurrence_id']!r} property {property_path}"
     )
 
 

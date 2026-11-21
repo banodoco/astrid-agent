@@ -8,7 +8,10 @@ from collections.abc import Mapping, Sequence
 from functools import lru_cache
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from astrid.core.generation.workflows import InputRequirements
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +84,7 @@ def contributed_entries(*, exclude: Any = ()) -> list[dict[str, Any]]:
                     declared = [name for name in ("build", "after_outputs") if data.get(name)]
                     rows.append({"needs": [], "binds": {}, "defaults": {}, **raw,
                                  **({"hooks_declared": declared} if declared else {}),
+                                 **({"inspect_inputs_declared": True} if data.get("inspect_inputs") else {}),
                                  "bundle": str(bundle if bundle.is_absolute() else (ready / bundle).resolve()),
                                  "contribution": f"{pack.name}.{manifest.stem}", "contribution_scope": root.scope,
                                  "pack_root": str(pack.resolve())})
@@ -643,15 +647,26 @@ def _dimension_values(description, inputs):
     return values
 
 
-def file_map_is_valid(value: Any) -> bool:
-    """A nonempty map of id to file path: string ids without '/', string (or Path) paths that are not blank."""
+def file_map_is_valid(value: Any, *, allow_output_handles: bool = False) -> bool:
+    """Validate file-map IDs, including canonical output handles on opted-in ports."""
+    def valid_id(key: Any) -> bool:
+        if not isinstance(key, str) or not key:
+            return False
+        if '/' not in key:
+            return True
+        if not allow_output_handles:
+            return False
+        from astrid.sdk.media_handles import _OUTPUT_HANDLE
+        match = _OUTPUT_HANDLE.fullmatch(key)
+        return bool(match and match.group(3))
+
     return (isinstance(value, Mapping) and bool(value)
-            and all(isinstance(key, str) and key and '/' not in key
-                    and isinstance(path, (str, Path)) and bool(str(path).strip())
+            and all(valid_id(key) and isinstance(path, (str, Path)) and bool(str(path).strip())
                     for key, path in value.items()))
 
 
-def read_file_map_document(value: Any) -> Any:
+def read_file_map_document(value: Any, *, allow_output_handles: bool = False,
+                           allow_empty: bool = False) -> Any:
     """A ``file_map`` given as a path to its JSON document becomes the map; anything else is returned as is."""
     if not isinstance(value, (str, Path)):
         return value
@@ -662,9 +677,11 @@ def read_file_map_document(value: Any) -> Any:
         raw = json.loads(document.read_text(encoding='utf-8'))
     except (OSError, ValueError) as exc:
         raise ValueError(f'file map document {str(value)!r} is not readable JSON: {exc}') from exc
-    if not file_map_is_valid(raw):
+    if not (allow_empty and isinstance(raw, dict) and not raw) and not file_map_is_valid(
+            raw, allow_output_handles=allow_output_handles):
+        allowed_ids = ('ids without "/" or canonical output handles' if allow_output_handles else 'ids without "/"')
         raise ValueError(f'file map document {str(value)!r} must be a nonempty JSON object of id to file path '
-                         '(ids without "/", non-blank string paths)')
+                         f'({allowed_ids}, non-blank string paths)')
     return {key: (item if Path(item).is_absolute() else str((document.parent / item).resolve()))
             for key, item in raw.items()}
 
@@ -726,7 +743,7 @@ def validate_inputs(description: dict[str, Any], inputs: Mapping[str, Any], *, r
                 # A path to the map's JSON document: read when the job is built
                 # (``entry_job``), not here, so describing and dry-running do not open the media.
                 value = str(value)
-            elif not file_map_is_valid(value):
+            elif not file_map_is_valid(value, allow_output_handles=port.get('allow_output_handle_keys') is True):
                 raise ValueError(f'entry input {name!r} requires a nonempty map of id to file path')
             else:
                 value = {key: str(path) for key, path in value.items()}
@@ -1119,17 +1136,93 @@ def entry_hooks(entry: Mapping[str, Any], registry: Any = None) -> dict[str, Any
     return {}
 
 
+def _entry_contribution(entry: Mapping[str, Any], registry: Any = None) -> Any:
+    if not entry.get('contribution'):
+        return None
+    from astrid.core.extensions.registry import ExtensionRegistry
+    from astrid.core.generation import workflows
+    for contribution in workflows.contributions(registry or ExtensionRegistry().load()):
+        if contribution.id == entry['contribution'] and any(
+            raw['id'] == entry['id'] for raw in contribution.fields.get('entries', [])
+        ):
+            if entry.get('pack_root') and str(contribution.path.parents[2].resolve()) != entry['pack_root']:
+                return None
+            return contribution
+    return None
+
+
+def inspect_entry_inputs(
+    entry: str | Mapping[str, Any] | None, inputs: Mapping[str, Any], *, registry: Any = None,
+) -> InputRequirements | None:
+    """Inspect the selected entry's inputs on the controller without a Runtime connection."""
+    if isinstance(entry, str):
+        entry = find_entry(entry)
+    if entry is None or not entry.get('inspect_inputs_declared'):
+        return None
+    contribution = _entry_contribution(entry, registry)
+    if contribution is None:
+        raise ValueError(f"workflow input inspection is unavailable for entry {entry['id']!r}")
+    from astrid.core.generation import workflows
+    from astrid.sdk.media_handles import is_media_handle
+
+    inspect_inputs = workflows.hook(registry, contribution, 'inspect_inputs')
+    if inspect_inputs is None:
+        raise ValueError(f"workflow input inspection is unavailable for entry {entry['id']!r}")
+    try:
+        inspected = inspect_inputs(dict(inputs))
+    except (ValueError, OSError) as exc:
+        if not callable(getattr(exc, 'astrid_error_fields', None)):
+            raise
+        from astrid.core.generation.preflight import generation_error
+
+        raise generation_error(exc) from exc
+    if (not isinstance(inspected, workflows.InputRequirements)
+            or not isinstance(inspected.handle_ids, tuple)
+            or not all(isinstance(handle, str) and is_media_handle(handle) for handle in inspected.handle_ids)):
+        raise ValueError('workflow input inspection returned invalid handle requirements')
+    if inspected.handle_ids:
+        declaration = next(raw for raw in contribution.fields['entries'] if raw['id'] == entry['id'])
+        port = next((p for p in declaration.get('inputs', []) if p['name'] == inspected.file_map_port), {})
+        if (_input_type(port.get('type')) != 'file_map'
+                or not isinstance(inspected.lineage_port, str) or not inspected.lineage_port.strip()
+                or not file_map_is_valid(
+                    dict.fromkeys(inspected.handle_ids, 'file'),
+                    allow_output_handles=port.get('allow_output_handle_keys') is True,
+                )):
+            raise ValueError('workflow input inspection requires a declared handle-compatible file map and receipt port')
+    return inspected
+
+
+def publishes_source(entry: Mapping[str, Any], *, registry: Any = None) -> bool:
+    """Whether the trusted workflow contribution opts in to managed source publication."""
+    contribution = _entry_contribution(entry, registry)
+    return (contribution is not None and contribution.fields.get('publish_source') is True
+            and bool(contribution.fields.get('build')))
+
+
 def entry_job(entry: Mapping[str, Any], inputs: Mapping[str, Any], job_dir: Any, *, hooks: Mapping[str, Any],
               align: str = 'check') -> dict[str, Any]:
     """The engine job for a hooked entry: its declared file inputs go in ``files``.
 
     A ``file_map`` given as the path of its JSON document is read here, when the job is built.
     """
-    types = {port['name']: _input_type(port.get('type')) for port in entry.get('inputs', [])}
-    inputs = {name: (read_file_map_document(value) if types.get(name) == 'file_map' else value)
-              for name, value in inputs.items()}
-    files = {name: value for name, value in inputs.items() if types.get(name) in {'file', 'file_map'}}
-    return {'hooks': dict(hooks), 'inputs': inputs, 'files': files,
+    ports = {port['name']: port for port in entry.get('inputs', [])}
+    values = dict(inputs)
+    files = {}
+    for name, value in inputs.items():
+        port = ports.get(name, {})
+        kind = _input_type(port.get('type'))
+        if kind == 'file_map':
+            allow_output_keys = port.get('allow_output_handle_keys') is True
+            if isinstance(value, Mapping) and value and not file_map_is_valid(
+                value, allow_output_handles=allow_output_keys,
+            ):
+                raise ValueError(f'entry input {name!r} requires a nonempty map of id to file path')
+            value = read_file_map_document(value, allow_output_handles=allow_output_keys)
+            values[name] = value
+        if kind in {'file', 'file_map'}:
+            files[name] = value
+    return {'hooks': dict(hooks), 'inputs': values, 'files': files,
             'job_dir': job_dir, 'mode': align, 'entry': entry['id']}
 
 
@@ -1146,7 +1239,7 @@ def attach_hooks(entry: Mapping[str, Any], inputs: Mapping[str, Any], job_dir: A
 
 
 def build_entry(entry: Mapping[str, Any], inputs: Mapping[str, Any], job_dir: Any, *, registry: Any = None,
-                check_runtime: bool = False) -> dict[str, Any] | None:
+                check_runtime: bool = False, publish_source: Any = None) -> dict[str, Any] | None:
     """Run the entry's ``build`` through the engine's ``prepare``: ``{workflow, bindings, plan, ...}``, or None."""
     attached = entry if entry.get('hooks') else attach_hooks(entry, inputs, job_dir, registry=registry)
     if not attached.get('hooks'):
@@ -1154,4 +1247,6 @@ def build_entry(entry: Mapping[str, Any], inputs: Mapping[str, Any], job_dir: An
     job = entry_job(entry, inputs, job_dir, hooks=attached['hooks'])
     if check_runtime:
         job['check_runtime'] = True
+    if publish_source is not None:
+        job['publish_source'] = publish_source
     return engine_table()[entry.get('engine') or 'comfyui'].prepare(job)

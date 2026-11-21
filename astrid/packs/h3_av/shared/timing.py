@@ -110,6 +110,10 @@ def plan_continuation(
             "context_frames must be a shared H3 video/audio boundary (39, 90, 141, ...)"
         )
     source_frames = frame_index(source_end, "source.range[1]")
+    if source_frames < context:
+        raise ContinuationTimingError(
+            f"continuation requires at least {context} source frames; received {source_frames}"
+        )
     requested_output_frames = frame_index(output_duration, "output.duration")
     requested_new_frames = requested_output_frames - source_frames
     if requested_new_frames <= 0:

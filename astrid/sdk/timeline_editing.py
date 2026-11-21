@@ -161,6 +161,7 @@ def _set_clip_interval(clip: MutableMapping[str, Any], start: Any, end: Any) -> 
 def add_track(container: MutableMapping[str, Any], *, kind: str = "video", name: str | None = None, track_id: str | None = None) -> MutableMapping[str, Any]:
     """Add and return a valid empty track in a main timeline or shot."""
 
+    from astrid.core.timeline.track_appearance import stamp_new_track_appearance
     from astrid.sdk.timeline.native_checkout import AttachedCheckout
 
     attached = container if isinstance(container, AttachedCheckout) else None
@@ -182,6 +183,7 @@ def add_track(container: MutableMapping[str, Any], *, kind: str = "video", name:
     }
     if name is not None:
         track["name"] = name
+    stamp_new_track_appearance(track)
     if attached is not None:
         from astrid.sdk.timeline._command_state import State
 

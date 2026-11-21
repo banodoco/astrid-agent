@@ -1,0 +1,92 @@
+"""Guarded appearance edits and package-backed inspection."""
+from __future__ import annotations
+
+import json
+import re
+
+
+def command(parsed):
+    from astrid.pack_api import print_result
+    from astrid.packs.timeline.cli_native import _commit_envelope, _render_commit_result
+    from astrid.sdk.contracts import DomainResult, ErrorObject
+    from astrid.sdk.timeline._appearance import (
+        canvas,
+        in_memory_canvas_warnings,
+        normalize_for_read,
+        package_query,
+    )
+    from astrid.sdk.timeline._command_state import State
+    from astrid.sdk.timeline.sync import TimelineSession
+    from astrid.sdk.workspace_client import WorkspaceClientError
+
+    try:
+        ref = parsed.clip or parsed.track
+        kind = 'clip' if parsed.clip else 'track'
+        if not re.fullmatch(rf'(?:parent|occurrence:[^/]+)/{kind}:[^/]+', ref):
+            raise ValueError(f'--{kind} requires an exact parent or occurrence {kind} reference')
+        values = {}
+        for item in parsed.set_values:
+            key, sep, raw = item.partition('=')
+            if not sep or key in values:
+                raise ValueError('--set requires unique FIELD=VALUE entries')
+            try:
+                values[key] = json.loads(raw)
+            except json.JSONDecodeError:
+                values[key] = raw
+        allowed = ({'fit', 'x', 'y', 'width', 'height', 'cropTop', 'cropBottom', 'cropLeft', 'cropRight', 'opacity'}
+                   if kind == 'clip' else {'fit', 'scale', 'opacity', 'blendMode'})
+        if (set(values) | set(parsed.clear)) - allowed:
+            raise ValueError('unsupported appearance property: ' + ', '.join(sorted((set(values) | set(parsed.clear)) - allowed)))
+        session = TimelineSession.open(parsed.project, parsed.ref, client=parsed.client)
+        if values or parsed.clear:
+            operation = {'schema_version': 1, 'op': kind + '.set', 'version': '1', 'select': ref,
+                         'args': {'values': values, 'clear': parsed.clear}}
+            result = session.commit(operation, idempotency_key=parsed.idempotency_key,
+                                    dry_run=parsed.dry_run, via='cli', merge='atomic')
+            shown = _commit_envelope(result, result['idempotency_key'])
+            return print_result(shown, as_json=parsed.json,
+                                human_renderer=lambda value: _render_commit_result(value, dry_run=parsed.dry_run))
+        state = State(session._bundle(session._state()))
+        owner = ref.rsplit('/', 1)[0]
+        config = state.config(owner)
+        normalized = normalize_for_read({**config, 'clips': state.collection(owner, 'clip'),
+            'tracks': state.collection(owner, 'track')}, parent_canvas=owner == 'parent')
+        no_source_canvas = any(finding.get('kind') == 'canvas-not-required'
+                               for finding in normalized['findings'])
+        source_size = None if owner != 'parent' and no_source_canvas else canvas(normalized['config'], ref)
+        if owner != 'parent':
+            parent_config = state.config('parent')
+            parent_normalized = normalize_for_read({**parent_config, 'clips': state.collection('parent', 'clip'),
+                'tracks': state.collection('parent', 'track')}, parent_canvas=True)
+            size = canvas(parent_normalized['config'], ref)
+        else:
+            parent_normalized = None
+            size = source_size
+        findings = (parent_normalized['findings'] if parent_normalized else []) + normalized['findings']
+        canvas_warnings = in_memory_canvas_warnings(findings)
+        legacy_canvas = [f for f in canvas_warnings if f.get('source') == 'legacy-render-resolved']
+        source_description = ('not declared; placed in the parent timeline canvas' if source_size is None else
+                              'legacy render-resolved; not authored' if owner == 'parent' and legacy_canvas else
+                              'declared by the source timeline')
+        if kind == 'track':
+            row = next(row for row in normalized['config']['tracks'] if row.get('id') == ref.rsplit('/', 1)[1].split(':', 1)[1])
+            answer = {'track': row, 'source_canvas': source_size, 'source_canvas_owner': owner,
+                'source_canvas_description': source_description,
+                'canvas': size, 'canvas_owner': 'parent', 'canvas_timeline_id': session.timeline_id,
+                'warnings': canvas_warnings,
+                'migration': findings}
+        else:
+            clip = next(row for row in normalized['config']['clips'] if row.get('id') == ref.rsplit('/', 1)[1].split(':', 1)[1])
+            track = next(row for row in normalized['config']['tracks'] if row.get('id') == clip.get('track'))
+            asset = state.registry(owner).get('assets', {}).get(clip.get('asset'), {})
+            answer = {'placement': package_query({'operation': 'resolve', 'input': {
+                'clip': clip, 'track': track, 'canvas': size}, 'asset': asset}),
+                'source_canvas': source_size, 'source_canvas_owner': owner,
+                'source_canvas_description': source_description,
+                'canvas': size, 'canvas_owner': 'parent', 'canvas_timeline_id': session.timeline_id,
+                'warnings': canvas_warnings, 'migration': findings}
+        return print_result(DomainResult.success(answer), as_json=parsed.json,
+                            human_renderer=lambda value: json.dumps(value, indent=2, ensure_ascii=False))
+    except (WorkspaceClientError, OSError, ValueError, TypeError, KeyError, StopIteration) as exc:
+        return print_result(DomainResult.failure(ErrorObject(getattr(exc, 'code', 'timeline_edit_error'), str(exc), {})),
+                            as_json=parsed.json)

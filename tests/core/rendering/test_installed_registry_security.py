@@ -280,6 +280,34 @@ def test_installed_actual_worker_environment_matches_launch_projection(tmp_path,
     assert runtime._registry_context(actual, generator=False) == runtime._registry_context(candidate, generator=False)
 
 
+def test_direct_installed_startup_refuses_extra_remotion_pack_outside_supplied_roots(tmp_path, monkeypatch):
+    from astrid.core.execution import generic_host as host_module
+    from astrid.sdk import host_bootstrap
+    from tests.test_generic_host import _write_manifest
+
+    monkeypatch.setenv('ASTRID_HOST_EXECUTION_PROFILE', 'installed')
+    supplied_root = tmp_path / 'supplied'
+    supplied_root.mkdir()
+    extra_root = tmp_path / 'personal' / 'worker'
+    manifest = _write_manifest(extra_root)
+    data = json.loads(manifest.read_text())
+    data['metadata']['requires_remotion'] = True
+    manifest.write_text(json.dumps(data))
+    # This is the direct installed --register path: discovery has appended an
+    # admitted personal pack after the CLI roots were supplied.
+    resolved_roots = (supplied_root, extra_root)
+    environment = {
+        'HOME': str(tmp_path), 'PATH': '/usr/bin',
+        'ASTRID_HOST_EXECUTION_PROFILE': 'installed',
+        'ASTRID_REMOTION_PROJECT_DIR': str(tmp_path / 'remotion'),
+    }
+    with pytest.raises(host_module.HostError, match='installed Remotion workers require product-owned pack roots'):
+        host_bootstrap._prepare_render_validation(
+            runtime.REPO_ROOT, environment, tmp_path / 'support', sys.executable,
+            resolved_roots, '0' * 64,
+        )
+
+
 def test_installed_render_worker_foreign_roots_refuse_before_publication(tmp_path, monkeypatch):
     from astrid.core.execution import generic_host as host_module
     from tests.test_generic_host import _write_manifest

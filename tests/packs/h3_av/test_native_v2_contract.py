@@ -32,7 +32,7 @@ def _case(branch: str) -> dict[str, object]:
     if branch == "source_free":
         media = [{"id": "look", "asset": "look.png", "role": "reference", "modality": "image"}]
     elif branch == "audio_only":
-        media = [{"id": "voice", "asset": "voice.wav", "role": "timeline", "modality": "audio", "at": {"frame": 0}, "edit": [{"stream": "audio", "during": [0, 1], "text": "A literal line."}]}]
+        media = [{"id": "voice", "asset": "voice.wav", "role": "timeline", "modality": "audio", "at": {"frame": 0}, "edit": [{"stream": "audio", "during": [0, 1]}]}]
     elif branch == "extension_context":
         media = [{"id": "source", "asset": "source.mp4", "role": "timeline", "modality": "video", "at": {"frame": 0}, "range": [0, 2]}]
     else:
@@ -388,12 +388,12 @@ def test_v2_source_backed_extension_preserves_prefix_through_composition(
 ) -> None:
     source = tmp_path / "source.mkv"
     generated = tmp_path / "generated.mkv"
-    _av(source, frames=24, color="blue", frequency=440)
+    _av(source, frames=40, color="blue", frequency=440)
     request = normalize_request(
         {
             "version": 2,
             "prompt": "Continue the source for one second.",
-            "duration": 2,
+            "duration": "8/3",
             "continuation": True,
             "media": [
                 {
@@ -402,7 +402,7 @@ def test_v2_source_backed_extension_preserves_prefix_through_composition(
                     "role": "timeline",
                     "modality": "video",
                     "at": {"frame": 0},
-                    "range": [0, 1],
+                    "range": [0, "5/3"],
                 }
             ],
             "settings": {},
@@ -411,10 +411,10 @@ def test_v2_source_backed_extension_preserves_prefix_through_composition(
     assert _authoritative_source_asset_id(request) == "source.mkv"
     preparation = prepare_request(request, asset_map={"source.mkv": str(source)})
     schedule = preparation["mask_schedule"]
-    assert schedule["video"]["protected_intervals"] == [[0.0, 1.0]]
-    assert schedule["audio"]["protected_intervals"] == [[0.0, 1.0]]
-    assert schedule["video"]["generated_intervals"] == [[1.0, 2.0]]
-    assert schedule["audio"]["generated_intervals"] == [[1.0, 2.0]]
+    assert schedule["video"]["protected_intervals"] == [[0.0, 5 / 3]]
+    assert schedule["audio"]["protected_intervals"] == [[0.0, 5 / 3]]
+    assert schedule["video"]["generated_intervals"] == [[5 / 3, 8 / 3]]
+    assert schedule["audio"]["generated_intervals"] == [[5 / 3, 8 / 3]]
     compilation = compile_preparation(preparation, out_dir=tmp_path / "compiled")
     _av(
         generated,
@@ -435,7 +435,7 @@ def test_v2_source_backed_extension_preserves_prefix_through_composition(
         source=source,
     )
 
-    assert composition["coverage"]["candidate"]["video"]["frames"] == 48
+    assert composition["coverage"]["candidate"]["video"]["frames"] == 64
     assert verification["preservation"]["status"] == "protected_sample_evidence"
 
 
@@ -445,12 +445,12 @@ def test_v2_full_timeline_audio_composes_with_independent_video_permissions(
 ) -> None:
     source = tmp_path / "source.mkv"
     generated = tmp_path / "generated.mkv"
-    _av(source, frames=24, color="blue", frequency=440)
+    _av(source, frames=40, color="blue", frequency=440)
     request = normalize_request(
         {
             "version": 2,
             "prompt": "Regenerate the soundtrack while extending the picture.",
-            "duration": 2,
+            "duration": "8/3",
             "continuation": True,
             "media": [
                 {
@@ -459,9 +459,9 @@ def test_v2_full_timeline_audio_composes_with_independent_video_permissions(
                     "role": "timeline",
                     "modality": "video",
                     "at": {"frame": 0},
-                    "range": [0, 1],
+                    "range": [0, "5/3"],
                     "edit": [
-                        {"stream": "audio", "during": [0, 2], "text": "New soundtrack."}
+                        {"stream": "audio", "during": [0, "8/3"]}
                     ],
                 }
             ],
@@ -470,10 +470,10 @@ def test_v2_full_timeline_audio_composes_with_independent_video_permissions(
     )
     preparation = prepare_request(request, asset_map={"source.mkv": str(source)})
     schedule = preparation["mask_schedule"]
-    assert schedule["video"]["protected_intervals"] == [[0.0, 1.0]]
-    assert schedule["video"]["generated_intervals"] == [[1.0, 2.0]]
+    assert schedule["video"]["protected_intervals"] == [[0.0, 5 / 3]]
+    assert schedule["video"]["generated_intervals"] == [[5 / 3, 8 / 3]]
     assert schedule["audio"]["protected_intervals"] == []
-    assert schedule["audio"]["generated_intervals"] == [[0.0, 2.0]]
+    assert schedule["audio"]["generated_intervals"] == [[0.0, 8 / 3]]
 
     compilation = compile_preparation(preparation, out_dir=tmp_path / "compiled")
     _av(
@@ -494,10 +494,10 @@ def test_v2_full_timeline_audio_composes_with_independent_video_permissions(
         source=source,
     )
 
-    assert composition["coverage"]["candidate"]["video"]["frames"] == 48
+    assert composition["coverage"]["candidate"]["video"]["frames"] == 64
     assert composition["changed_permissions"] == {
-        "video": [[1.0, 2.0]],
-        "audio": [[0.0, 2.0]],
+        "video": [[5 / 3, 8 / 3]],
+        "audio": [[0.0, 8 / 3]],
     }
     assert verification["preservation"]["status"] == "protected_sample_evidence"
     candidate = Path(composition["candidate"]["path"])
@@ -610,3 +610,112 @@ def test_v1_edit_continue_and_separate_av_semantics_remain_in_the_parent_contrac
     assert continuation.value["operation"] == "continue"
     assert _authoritative_source_asset_id(edit) == "source.mp4"
     assert _authoritative_source_asset_id(continuation) == "source.mp4"
+
+
+@pytest.mark.ffmpeg
+def test_timeline_still_public_plan_and_build(tmp_path, capsys):
+    from astrid.packs.h3_av.cli import main
+    from astrid.packs.h3_av.shared.spec import canonical_spec, normalize_spec
+    from astrid.packs.h3_av.shared.stages import compile_stages
+
+    still = tmp_path / "still.png"
+    Image.new("RGB", (1024, 576), (17, 93, 201)).save(still)
+    raw = {"version": 2, "duration": 1, "prompt": "Animate", "media": [
+        {"asset": "still", "role": "timeline", "modality": "image", "at": {"frame": 0}}]}
+    request = normalize_request(raw, asset_modalities={"still": "image"})
+    spec = normalize_spec(canonical_spec(request), asset_modalities={"still": "image"})
+    assert spec.source.modality == "image"
+    request_path, map_path = tmp_path / "request.json", tmp_path / "assets.json"
+    request_path.write_text(json.dumps(raw))
+    map_path.write_text(json.dumps({"still": str(still)}))
+    assert main(["plan", "--spec", str(request_path), "--asset-map", str(map_path), "--out", str(tmp_path / "plan")]) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["runtime_submission"] == "eligible"
+    assert plan["pass_count"] == 1
+    _, preparation, compilation = compile_stages(request, {"still": str(still)}, tmp_path / "build")
+    assert preparation["status"] == "prepared"
+    assert compilation["status"] == "compiled"
+    source = tmp_path / "build" / "compile" / "prepared-still-source.mkv"
+    assert source.is_file()
+    _, _, repeated = compile_stages(request, {"still": str(still)}, tmp_path / "build-again")
+    repeated_source = tmp_path / "build-again" / "compile" / "prepared-still-source.mkv"
+    assert source.read_bytes() == repeated_source.read_bytes()
+    assert compilation["compilation_digest"] == repeated["compilation_digest"]
+
+
+def test_timeline_still_public_boundaries_reject_split_and_controls(tmp_path, capsys):
+    from dataclasses import replace
+    from astrid.packs.h3_av.cli import main
+    from astrid.packs.h3_av.shared.spec import canonical_spec, normalize_spec, sampling_request_document
+    from astrid.packs.h3_av.shared.request import H3RequestError
+
+    raw = {"version": 2, "duration": 1, "prompt": "Animate", "media": [
+        {"asset": "still", "role": "timeline", "modality": "image", "at": {"frame": 0}}]}
+    request = normalize_request(raw)
+    spec = canonical_spec(request)
+    with pytest.raises(H3RequestError, match="atomic"):
+        sampling_request_document(request, 0)
+    with pytest.raises(H3RequestError, match="joint implicit"):
+        normalize_spec(replace(spec, ops=spec.ops[:1]))
+    for field, value in (("hard", True), ("edit", [{"stream": "video", "during": [0, 1]}])):
+        changed = json.loads(json.dumps(raw))
+        changed["media"][0][field] = value
+        with pytest.raises(H3RequestError, match="explicit edits, anchors or continuation"):
+            canonical_spec(normalize_request(changed))
+    raw["media"][0]["at"] = {"frame": 1}
+    request_path = tmp_path / "request.json"
+    request_path.write_text(json.dumps(raw))
+    assert main(["plan", "--spec", str(request_path), "--out", str(tmp_path / "plan")]) != 0
+    captured = capsys.readouterr()
+    assert "timeline image frame" in captured.out + captured.err
+
+
+def test_candidate_coverage_helper_accepts_synthetic_preparation_without_media(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(compose_module, "_video_coverage", lambda _: {
+        "fps": 24.0, "frames": 24, "duration": 1.0,
+    })
+    monkeypatch.setattr(compose_module, "_audio_coverage", lambda _: {
+        "duration": 1.0, "sample_rate": 48_000,
+    })
+    coverage = _validate_candidate_coverage(
+        preparation={"request": {"version": 2},
+                     "mask_schedule": {"branch": "source_backed_v2v", "duration": 1.0}},
+        candidate=tmp_path / "synthetic.mkv",
+    )
+    assert coverage["status"] == "covered"
+    assert coverage["requested_duration"] == 1.0
+
+
+@pytest.mark.ffmpeg
+def test_continuation_compose_rejects_missing_generated_dimensions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source.mkv"
+    generated = tmp_path / "generated.mkv"
+    _av(source, frames=48, color="blue", frequency=440)
+    # Plan 59's source guard (c518417a10) requires a valid 39-frame prefix.
+    request = normalize_request({
+        "version": 2, "prompt": "Continue the source.", "duration": 2,
+        "continuation": True,
+        "media": [{"id": "source", "asset": "source.mkv", "role": "timeline",
+                   "modality": "video", "at": {"frame": 0}, "range": [0, 1.625]}],
+    })
+    preparation = prepare_request(request, asset_map={"source.mkv": str(source)})
+    timing = compose_module._continuation_timing(preparation)
+    _av(generated, frames=timing.expected_graph_output_frames, color="red", frequency=880)
+    original_probe = compose_module._probe
+
+    def without_generated_dimensions(path):
+        probe = original_probe(path)
+        if probe and Path(path) == generated:
+            for stream in probe.get("streams", []):
+                stream.pop("width", None)
+                stream.pop("height", None)
+        return probe
+
+    monkeypatch.setattr(compose_module, "_probe", without_generated_dimensions)
+    with pytest.raises(CompositionError, match="generated video has no usable decoded dimensions"):
+        compose_candidate(preparation=preparation, generated=generated, source=source,
+                          out_dir=tmp_path / "composition")

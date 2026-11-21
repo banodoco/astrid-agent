@@ -1110,6 +1110,46 @@ def test_duplicate_commit_keeps_a_repeated_shot_shared(saved_source):
     assert [call['op'] for call in bodies[0]['commands']] == ['timeline.duplicate']
 
 
+def test_copy_of_an_unreadable_source_is_not_refused_by_the_reader_gate(saved_source):
+    from astrid.sdk.timeline.commit import create_runtime_commit_service, reader_problem
+    from astrid.sdk.timeline_duplicate import duplicate_timeline
+
+    source = flat_film()
+    # Runtime accepts unknown parent registry keys (shot-composition.json:186–197).
+    # The strict reader refuses them (validators/registry.py:30–36).
+    source['parent']['registry']['legacy_notes'] = {}
+    client, project, document, _bodies = saved_source(source)
+    service = create_runtime_commit_service()
+    problem = reader_problem(service, document('t'))
+    assert problem is not None and "unknown key 'legacy_notes'" in problem
+    assert reader_problem(service, document('t')) is not None
+    # ... and a faithful copy is as readable as its source: duplicating to repair it is allowed.
+    duplicate_timeline(project, 't', slug='copy', client=client)
+    assert reader_problem(service, document('copy')) is not None
+
+
+def test_copy_of_a_readable_source_that_comes_out_unreadable_is_refused(saved_source, monkeypatch):
+    from astrid.sdk.timeline import commit
+    from astrid.sdk.timeline_duplicate import duplicate_timeline
+
+    source = flat_film()
+    for track in source["parent"]["config"]["tracks"]:
+        track["label"] = track["id"]
+    for shot in source["shots"].values():
+        for track in shot["internal_timeline"]["tracks"]:
+            track["label"] = track["id"]
+    client, project, document, _bodies = saved_source(source)
+    real = commit.reader_problem
+    assert real(commit.create_runtime_commit_service(), document('t')) is None
+    # Make only the copy unreadable: the source stays readable, so the gate must refuse.
+    monkeypatch.setattr(commit, "reader_problem", lambda service, doc: (
+        "forced unreadable copy" if doc["timeline_id"] != "t" else real(service, doc)))
+    with pytest.raises(Exception, match="forced unreadable copy"):
+        duplicate_timeline(project, 't', slug='copy', client=client)
+    with pytest.raises(Exception):
+        document('copy')
+
+
 def test_friendly_duplicate_reports_setup_and_copy_receipt_with_complete_fresh_maps(saved_source, tmp_path):
     from astrid.sdk.timeline import open as open_timeline
     from astrid.sdk.timeline.commit import bundle_from_document

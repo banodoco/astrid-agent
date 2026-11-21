@@ -1,0 +1,40 @@
+{
+ "pill": {
+  "bounded-mask.mkv": "3413ad030aebbae5f861f51a840445b86c2f4a4fe03bf2b7a4409a848ceab58d",
+  "compilation.json": "a37397175c532eaf4f10b688c4361b38f349af47b6b09c9df28205f83ebd5561",
+  "managed-assets.zip": "d1e6052eeb23d73cf5a6b4cc49fcee8d6a4582b0de315bfa2d702e25dfe057a2",
+  "native-masked-edit-bundle/.workflow.py.vibe.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "native-masked-edit-bundle/source.json": "7b2369a260e81bb58e97f2d511d645b82e7b31f18abe9b3f18fdf78f3e3741b5",
+  "native-masked-edit-bundle/workflow.py": "49cfb15d654d9422c409fdf9cabdd76201c38f614c4fa55ad4bc53ac5934d5ae",
+  "native-masked-edit-bundle/workflow.vibe.json": "34f504cc7852aa16bda6b5eae5874f297a8fe50f3af38529b853175c8a0dffe8",
+  "resolved-mask.png": "60f587d2d6d543eac9de231150413e55bfafc1ce8362b95325abf3b40f3e7f9f",
+  "workflow-bundle/source.json": "7b2369a260e81bb58e97f2d511d645b82e7b31f18abe9b3f18fdf78f3e3741b5",
+  "workflow-bundle/workflow.py": "49cfb15d654d9422c409fdf9cabdd76201c38f614c4fa55ad4bc53ac5934d5ae",
+  "workflow-bundle/workflow.vibe.json": "34f504cc7852aa16bda6b5eae5874f297a8fe50f3af38529b853175c8a0dffe8"
+ },
+ "two_refs": {
+  "bounded-mask.mkv": "3413ad030aebbae5f861f51a840445b86c2f4a4fe03bf2b7a4409a848ceab58d",
+  "compilation.json": "71b071b04a5d15ac696948700457173d73e3da8b2007998f9f665475a6e8c3be",
+  "managed-assets.zip": "9d8acc737ceb687dc6e0e0990d0cef8576d9b5222cb8e82f60da8b3ed6dfec2a",
+  "native-masked-edit-bundle/.workflow.py.vibe.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "native-masked-edit-bundle/source.json": "7b2369a260e81bb58e97f2d511d645b82e7b31f18abe9b3f18fdf78f3e3741b5",
+  "native-masked-edit-bundle/workflow.py": "83df9128432d6f8dddeed1dea2fb3d5fb3e2336693c1480b4f91b66366b8c060",
+  "native-masked-edit-bundle/workflow.vibe.json": "1dd9598f65ab4279f7b72851d7eb9cfba409fb874f7cbf620c17ce890f98e60b",
+  "resolved-mask.png": "60f587d2d6d543eac9de231150413e55bfafc1ce8362b95325abf3b40f3e7f9f",
+  "workflow-bundle/source.json": "7b2369a260e81bb58e97f2d511d645b82e7b31f18abe9b3f18fdf78f3e3741b5",
+  "workflow-bundle/workflow.py": "83df9128432d6f8dddeed1dea2fb3d5fb3e2336693c1480b4f91b66366b8c060",
+  "workflow-bundle/workflow.vibe.json": "1dd9598f65ab4279f7b72851d7eb9cfba409fb874f7cbf620c17ce890f98e60b"
+ },
+ "watermark": {
+  "compilation.json": "f70ff70b9f26f8a1962fd5f4e620bb6ff6e402a5e2bb87a3b9930802865d9367",
+  "managed-assets.zip": "a812b9548da16017f3b9d739abefca52bfeede7d9b679330d5fe74c7e118ac17",
+  "native-masked-edit-bundle/.workflow.py.vibe.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "native-masked-edit-bundle/source.json": "7b2369a260e81bb58e97f2d511d645b82e7b31f18abe9b3f18fdf78f3e3741b5",
+  "native-masked-edit-bundle/workflow.py": "d812eb6b147008a50eff4b990a56392b1245cad1b0ea32b63a71c1ed4f475285",
+  "native-masked-edit-bundle/workflow.vibe.json": "df5e867405503923a80aaff070b05547b454ad3e1bd94c6a938be1fa6041b03b",
+  "resolved-mask.png": "60f587d2d6d543eac9de231150413e55bfafc1ce8362b95325abf3b40f3e7f9f",
+  "workflow-bundle/source.json": "7b2369a260e81bb58e97f2d511d645b82e7b31f18abe9b3f18fdf78f3e3741b5",
+  "workflow-bundle/workflow.py": "d812eb6b147008a50eff4b990a56392b1245cad1b0ea32b63a71c1ed4f475285",
+  "workflow-bundle/workflow.vibe.json": "df5e867405503923a80aaff070b05547b454ad3e1bd94c6a938be1fa6041b03b"
+ }
+}

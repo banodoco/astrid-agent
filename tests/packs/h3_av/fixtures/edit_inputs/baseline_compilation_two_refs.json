@@ -1,0 +1,246 @@
+{
+  "branch": "source_backed_v2v",
+  "capabilities": {
+    "audio_binding": "source_audio_from_source_video, audio_strength=0",
+    "conditioning": [
+      {
+        "input_binding": {
+          "binding": "reference_0",
+          "port": "ref_images.ref_image_0"
+        },
+        "modality": "image",
+        "occurrence": "occurrence-2",
+        "tag": "<Picture 1>",
+        "trim": null
+      },
+      {
+        "input_binding": {
+          "binding": "reference_1",
+          "port": "ref_images.ref_image_1"
+        },
+        "modality": "image",
+        "occurrence": "occurrence-3",
+        "tag": "<Picture 2>",
+        "trim": null
+      }
+    ],
+    "connected_model_assets": [
+      "minimax_h3_audio_vae_fp32.safetensors",
+      "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+      "minimax_h3_video_vae_int8_convrot.safetensors",
+      "pika_h3_flex_turbo_8step_hd_ref2va.safetensors",
+      "qwen3vl_32b_minimax_h3_int8_convrot.safetensors"
+    ],
+    "edit_binding": {
+      "during_frames": [
+        36,
+        84
+      ],
+      "frame_load_cap": 120,
+      "refs": [
+        "ref-1",
+        "ref-2"
+      ],
+      "seed": 123456789,
+      "strength": 1.0
+    },
+    "effective_audio_tags": [],
+    "effective_reference_count": 2,
+    "effective_reference_order": [
+      "occurrence-2",
+      "occurrence-3"
+    ],
+    "generation_timing": {
+      "duration": 5.0,
+      "fps": 24,
+      "raw_frames": 124,
+      "requested_frames": 120,
+      "trim_tail_frames": 4
+    },
+    "mask_binding": "per-frame video mask",
+    "native_v2_branch": "source_backed_v2v",
+    "operation": "transform",
+    "output_contract": "muxed_av_full_timeline",
+    "overrides": [
+      "model",
+      "steps",
+      "seed",
+      "sampler",
+      "guidance",
+      "turbo_lora",
+      "scheduler",
+      "cfg",
+      "video_shift",
+      "audio_shift"
+    ],
+    "public_generation": {
+      "internal_outputs": [],
+      "modality": "video",
+      "selectors": [
+        {
+          "ordinal": 0,
+          "required": true,
+          "selector": "main-0",
+          "variant_key": "original"
+        }
+      ]
+    },
+    "reference_capacity": 9,
+    "reference_modality_counts": {
+      "audio": 0,
+      "image": 2,
+      "video": 0
+    },
+    "reference_order": [
+      "blue-pill-ref",
+      "red-ref"
+    ],
+    "references": 2,
+    "sampler_mask_precision": "native",
+    "source_binding": "source_video",
+    "source_frame_fit": {
+      "audio_tail": "silence",
+      "internal_tail_frames": 4,
+      "source_window_frames": 120,
+      "video_mask_tail": "preserve",
+      "video_tail": "repeat_last_selected_frame"
+    }
+  },
+  "compilation_digest": "0960cf648f9c951cbd5a06c3a215164bab1371f1765b4074c80c7228f2292d27",
+  "effective_settings": {
+    "audio_shift": 3.0,
+    "cfg": 1.0,
+    "model": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+    "sampler": "res_multistep",
+    "scheduler": "simple",
+    "seed": 123456789,
+    "steps": 8,
+    "turbo": {
+      "enabled": true,
+      "lora": "pika_flex_8step",
+      "strength": 1.0
+    },
+    "video_shift": 12.0
+  },
+  "kind": "h3_av_compilation",
+  "limitations": [
+    "native masked edit is CPU-verified only; spatial mode on ref2va plus Turbo is unproven on GPU",
+    "static boxes, image masks or per-frame mask video; active regions share one reference set and one seed",
+    "polygon masks and per-operation adapters are unsupported",
+    "long windows use one pass without automatic chunking",
+    "zero-reference requests assume MiniMaxH3ReferenceToVideo accepts no ref images (unverified)"
+  ],
+  "managed_assets": {
+    "manifest": {
+      "assets": [
+        {
+          "binding": "permission_mask_0",
+          "lineage": {
+            "filename": "resolved-mask.png",
+            "kind": "source_bytes",
+            "sha256": "sha256:60f587d2d6d543eac9de231150413e55bfafc1ce8362b95325abf3b40f3e7f9f"
+          },
+          "member": "assets/60f587d2d6d543ea-resolved-mask.png",
+          "sha256": "60f587d2d6d543eac9de231150413e55bfafc1ce8362b95325abf3b40f3e7f9f",
+          "size": 1379
+        },
+        {
+          "binding": "reference_0",
+          "lineage": {
+            "filename": "blue-pill-ref.bin",
+            "kind": "source_bytes",
+            "sha256": "sha256:86a1212ffe3b7d6f22b4d62f64b9ebdd678eec0d2f478f3a18c6451626b02c48"
+          },
+          "member": "assets/86a1212ffe3b7d6f-blue-pill-ref.bin",
+          "sha256": "86a1212ffe3b7d6f22b4d62f64b9ebdd678eec0d2f478f3a18c6451626b02c48",
+          "size": 21
+        },
+        {
+          "binding": "reference_1",
+          "lineage": {
+            "filename": "red-ref.bin",
+            "kind": "source_bytes",
+            "sha256": "sha256:0f9d903c49a36ff96307669011322aea229397e108d744a5333a49a2ab3a6692"
+          },
+          "member": "assets/0f9d903c49a36ff9-red-ref.bin",
+          "sha256": "0f9d903c49a36ff96307669011322aea229397e108d744a5333a49a2ab3a6692",
+          "size": 15
+        },
+        {
+          "binding": "source_video",
+          "lineage": {
+            "filename": "matrix-clip.bin",
+            "kind": "source_bytes",
+            "sha256": "sha256:f9b33f46ae72cfb4a28455f227a5063f346ee619bbfc60ac04eb9c56e2425456"
+          },
+          "member": "assets/f9b33f46ae72cfb4-matrix-clip.bin",
+          "sha256": "f9b33f46ae72cfb4a28455f227a5063f346ee619bbfc60ac04eb9c56e2425456",
+          "size": 19
+        },
+        {
+          "binding": "video_mask_0",
+          "lineage": {
+            "filename": "bounded-mask.mkv",
+            "kind": "source_bytes",
+            "sha256": "sha256:3413ad030aebbae5f861f51a840445b86c2f4a4fe03bf2b7a4409a848ceab58d"
+          },
+          "member": "assets/3413ad030aebbae5-bounded-mask.mkv",
+          "sha256": "3413ad030aebbae5f861f51a840445b86c2f4a4fe03bf2b7a4409a848ceab58d",
+          "size": 38114
+        }
+      ],
+      "kind": "vibecomfy_managed_assets",
+      "schema_version": 2,
+      "workflow_inputs": {
+        "guidance": 1.0,
+        "model": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+        "prompt": "The pill in the open palm is deep blue, not red; keep hand, lighting and motion identical.",
+        "reference_0": "86a1212ffe3b7d6f-blue-pill-ref.bin",
+        "reference_1": "0f9d903c49a36ff9-red-ref.bin",
+        "sampler": "res_multistep",
+        "scheduler": "simple",
+        "seed": 123456789,
+        "source_video": "f9b33f46ae72cfb4-matrix-clip.bin",
+        "steps": 8,
+        "video_mask_0": "3413ad030aebbae5-bounded-mask.mkv"
+      }
+    },
+    "path": "<D>/out/managed-assets.zip",
+    "sha256": "e5a49fd4b639aedcac7f3e8e54b1b77989aeac7827806c8a06ea60338b7be90b"
+  },
+  "profile": "h3_av.native.v2",
+  "request_digest": "62c475aed4fb717d649daa02873ba2bef227780c2696a443ef8104e2ae7ba417",
+  "schema_version": 1,
+  "size": {
+    "height": 576,
+    "width": 1024
+  },
+  "status": "compiled",
+  "workflow": {
+    "source.json": {
+      "path": "<D>/out/workflow-bundle/source.json",
+      "sha256": "7b2369a260e81bb58e97f2d511d645b82e7b31f18abe9b3f18fdf78f3e3741b5"
+    },
+    "workflow.py": {
+      "path": "<D>/out/workflow-bundle/workflow.py",
+      "sha256": "83df9128432d6f8dddeed1dea2fb3d5fb3e2336693c1480b4f91b66366b8c060"
+    },
+    "workflow.vibe.json": {
+      "path": "<D>/out/workflow-bundle/workflow.vibe.json",
+      "sha256": "1dd9598f65ab4279f7b72851d7eb9cfba409fb874f7cbf620c17ce890f98e60b"
+    }
+  },
+  "workflow_inputs": {
+    "guidance": 1.0,
+    "model": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+    "prompt": "The pill in the open palm is deep blue, not red; keep hand, lighting and motion identical.",
+    "reference_0": "86a1212ffe3b7d6f-blue-pill-ref.bin",
+    "reference_1": "0f9d903c49a36ff9-red-ref.bin",
+    "sampler": "res_multistep",
+    "scheduler": "simple",
+    "seed": 123456789,
+    "source_video": "f9b33f46ae72cfb4-matrix-clip.bin",
+    "steps": 8,
+    "video_mask_0": "3413ad030aebbae5-bounded-mask.mkv"
+  }
+}

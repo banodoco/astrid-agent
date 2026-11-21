@@ -5,13 +5,23 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["version", "prompt", "media", "settings"],
+  "if": {"not": {"properties": {"continuation": {"const": true}}, "required": ["continuation"]}},
+  "then": {"properties": {"output": {"required": ["size"], "not": {"required": ["lead_in"]}}}},
   "properties": {
     "version": {"const": 2},
     "prompt": {"type": "string", "minLength": 1},
     "duration": {"type": ["number", "string"], "exclusiveMinimum": 0},
     "continuation": {"type": "boolean"},
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "lead_in": {"enum": ["drop", "keep"]},
+        "size": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "integer", "minimum": 32, "maximum": 16384, "multipleOf": 32}}
+      }
+    },
     "settings": {"$ref": "#/$defs/settings"},
-    "media": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/media"}}
+    "media": {"type": "array", "items": {"$ref": "#/$defs/media"}}
   },
   "$defs": {
     "asset": {
@@ -21,8 +31,17 @@
       ]
     },
     "at": {"type": "object", "additionalProperties": false, "minProperties": 1, "maxProperties": 1, "properties": {"frame": {"type": "integer", "minimum": 0}, "seconds": {"type": ["number", "string"], "minimum": 0}}},
-    "edit": {"type": "object", "additionalProperties": false, "required": ["stream"], "properties": {"stream": {"enum": ["video", "audio"]}, "during": {"type": "array", "minItems": 2, "maxItems": 2}, "mask": {}, "guides": {}, "text": {"type": "string"}, "dialogue": {"type": "string"}, "channels": {}, "action": {"enum": ["generate", "preserve"]}, "keep": {"type": "boolean"}, "strength": {"type": "number", "minimum": 0, "maximum": 1}, "seed": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615}}},
-    "media": {"type": "object", "additionalProperties": false, "required": ["asset", "role"], "properties": {"id": {"type": "string", "minLength": 1}, "asset": {"$ref": "#/$defs/asset"}, "role": {"enum": ["timeline", "reference"]}, "modality": {"enum": ["image", "video", "audio"]}, "at": {"$ref": "#/$defs/at"}, "range": {"type": "array", "minItems": 2, "maxItems": 2}, "edit": {"type": "array", "items": {"$ref": "#/$defs/edit"}}, "audio": {"type": "boolean"}, "hard": {"type": "boolean"}, "latent_pin": {"type": "boolean"}}},
+    "mask": {
+      "if": {"type": "object", "required": ["canvas"]},
+      "then": {
+        "required": ["rectangle"],
+        "properties": {
+          "canvas": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "integer", "minimum": 1}}
+        }
+      }
+    },
+    "edit": {"type": "object", "additionalProperties": false, "required": ["stream"], "properties": {"stream": {"enum": ["video", "audio"]}, "during": {"type": "array", "minItems": 2, "maxItems": 2}, "mask": {"$ref": "#/$defs/mask"}, "guides": {}, "channels": {}, "action": {"enum": ["generate", "preserve"]}, "keep": {"type": "boolean"}, "strength": {"type": "number", "minimum": 0, "maximum": 1}, "seed": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615}}},
+    "media": {"type": "object", "additionalProperties": false, "required": ["asset", "role"], "properties": {"id": {"type": "string", "minLength": 1}, "asset": {"$ref": "#/$defs/asset"}, "role": {"enum": ["timeline", "reference"]}, "modality": {"enum": ["image", "video", "audio"]}, "at": {"$ref": "#/$defs/at"}, "range": {"type": "array", "minItems": 2, "maxItems": 2}, "edit": {"type": "array", "items": {"$ref": "#/$defs/edit"}}, "audio": {"type": "boolean"}, "hard": {"type": "boolean"}}},
     "settings": {
       "type": "object",
       "additionalProperties": false,
@@ -32,6 +51,9 @@
         "sampler": {"type": "string"},
         "scheduler": {"type": "string"},
         "seed": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+        "cfg": {"const": 1.0},
+        "video_shift": {"type": "number", "minimum": 0},
+        "audio_shift": {"type": "number", "minimum": 0},
         "guidance_scale": {"type": "number", "minimum": 0},
         "guidance": {"type": "number", "minimum": 0},
         "turbo": {
@@ -39,6 +61,7 @@
           "additionalProperties": false,
           "properties": {
             "enabled": {"type": "boolean"},
+            "lora": {"enum": ["pika_flex_8step", "lightx2v_8step"]},
             "strength": {"type": "number", "minimum": 0}
           }
         },

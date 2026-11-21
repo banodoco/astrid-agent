@@ -881,7 +881,15 @@ def _align_snapshot_to_render(snapshot: dict, video: Path) -> None:
     snapshot["metadata"]["input_extent_seconds"] = input_extent_frames / float(fps)
     snapshot["input_clips"] = input_clips
     snapshot["metadata"]["asset_integrity"] = _asset_integrity_from_registry(snapshot.get("registry"))
-    snapshot["duration_frames"] = rendered_frames
+    from .render_clock import RenderClock
+    clock = RenderClock(snapshot)
+    if (snapshot.get("metadata") or {}).get("timeline_range") is not None:
+        if rendered_frames != clock.end - clock.start:
+            raise ValueError('Rendered video duration disagrees with its timeline range; rerender the timeline.')
+        rendered_end = clock.end
+    else:
+        rendered_end = rendered_frames
+    snapshot["duration_frames"] = rendered_end
     snapshot.setdefault("metadata", {})["rendered_duration_frames"] = rendered_frames
     snapshot["metadata"]["rendered_duration_seconds"] = decoded_duration
     snapshot["metadata"]["authored_duration_frames"] = authored_frames
@@ -891,15 +899,15 @@ def _align_snapshot_to_render(snapshot: dict, video: Path) -> None:
     # authored clock. Clamp both clocks to the decoded render EOF so no label
     # leaks into the excess region or points past a shorter materialization.
     for clip in snapshot.get("clips", []):
-        start = min(max(int(clip.get("start_frame", 0)), 0), authored_frames, rendered_frames)
-        end = min(max(int(clip.get("end_frame", rendered_frames)), 0), authored_frames, rendered_frames)
+        start = min(max(int(clip.get("start_frame", 0)), 0), authored_frames, rendered_end)
+        end = min(max(int(clip.get("end_frame", rendered_end)), 0), authored_frames, rendered_end)
         clip["start_frame"], clip["end_frame"] = start, max(start, end)
         if clip.get("duration") is not None:
             clip["duration"] = max(0.0, (clip["end_frame"] - start) / float(fps))
     clamped_occurrences = []
     for occurrence in snapshot.get("occurrences", []):
-        start = min(max(int(occurrence.get("start_frame", 0)), 0), authored_frames, rendered_frames)
-        end = min(max(int(occurrence.get("end_frame", 0)), 0), authored_frames, rendered_frames)
+        start = min(max(int(occurrence.get("start_frame", 0)), 0), authored_frames, rendered_end)
+        end = min(max(int(occurrence.get("end_frame", 0)), 0), authored_frames, rendered_end)
         if end <= start:
             continue
         item = dict(occurrence, start_frame=start, end_frame=end,
@@ -908,30 +916,30 @@ def _align_snapshot_to_render(snapshot: dict, video: Path) -> None:
     snapshot["occurrences"] = clamped_occurrences
     clamped_scripts = []
     for script in snapshot.get("scripts", []):
-        start = min(max(float(script.get("start", 0)), 0.0), rendered_frames / float(fps))
-        end = min(max(float(script.get("end", 0)), 0.0), rendered_frames / float(fps))
+        start = min(max(float(script.get("start", 0)), 0.0), rendered_end / float(fps))
+        end = min(max(float(script.get("end", 0)), 0.0), rendered_end / float(fps))
         if end > start:
             clamped_scripts.append(dict(script, start=start, end=end))
     snapshot["scripts"] = clamped_scripts
-    tail_start = min(max(authored_frames, 0), rendered_frames)
+    tail_start = min(max(authored_frames, 0), rendered_end)
     tail = None
-    if tail_start < rendered_frames:
+    if tail_start < rendered_end:
         tail = {
             "id": "__rendered_tail__",
             "label": "Unmapped rendered tail",
             "status": "unmapped",
             "mapping_status": "unmapped",
             "start_frame": tail_start,
-            "end_frame": rendered_frames,
+            "end_frame": rendered_end,
             "start_seconds": tail_start / float(fps),
-            "end_seconds": rendered_frames / float(fps),
+            "end_seconds": rendered_end / float(fps),
         }
         snapshot["unmapped_regions"] = [tail]
         snapshot.setdefault("clips", []).append({
             "id": tail["id"], "label": tail["label"], "status": tail["status"],
             "mapping_status": tail["mapping_status"], "at": tail["start_seconds"],
             "duration": tail["end_seconds"] - tail["start_seconds"],
-            "start_frame": tail_start, "end_frame": rendered_frames,
+            "start_frame": tail_start, "end_frame": rendered_end,
             "track": "picture", "kind": "render_tail", "clipType": "render_tail",
             "render_tail": True,
         })
@@ -1808,6 +1816,9 @@ def execute_filmstrip(args, *, authority=None):
                     'speech': {'status': 'no_transcript', 'phrases': []},
                     'coverage': {'state': 'analysis_error'},
                 }
+    if not capture_mode and 'fps_rational' in snapshot and 'duration_frames' in snapshot:
+        from .render_clock import RenderClock
+        analysis = RenderClock(snapshot).project_audio_analysis(analysis)
     existing_audio = snapshot.get('audio') if isinstance(snapshot.get('audio'), dict) else {}
     if isinstance(existing_audio.get('speech'), dict):
         analysis['speech'] = existing_audio['speech']
@@ -1834,12 +1845,13 @@ def execute_filmstrip(args, *, authority=None):
             # Release the provider's lease while the shared owner remains
             # paused behind its bounded idle-expiry timer.
             frame_provider.close()
-    if capture_mode and video is not None:
+    if video is not None:
         media_record = result.get('frame_index', {}).get('media')
         if isinstance(media_record, dict):
             media_record['source_digest'] = authority.get('video_digest')
-            if authority.get('render_run_id'):
-                media_record['render_run_id'] = authority['render_run_id']
+            media_run = authority.get('render_run_id') if capture_mode else snapshot.get('render_run_id')
+            if media_run:
+                media_record['render_run_id'] = media_run
     # Keep optional input evidence as synchronized, full-width timeline panels
     # in the static delivery too.  When output and inputs are both selected,
     # compose those panels onto the same public PNG surface while retaining

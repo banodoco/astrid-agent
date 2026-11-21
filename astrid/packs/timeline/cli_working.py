@@ -111,6 +111,9 @@ def _connected_outbox(parsed: argparse.Namespace, project_id: str, timeline_id: 
                 "key": flight.get("key") if isinstance(flight, Mapping) else None,
                 "command_count": count,
             }
+            if flight.get("kind") != "assembly-admission" and _is_dry_run_flight(flight):
+                # A preview cannot land; `timelines discard` clears it.
+                status["dry_run"] = True
         elif pending:
             status = {"status": "pending", "command_count": len(pending)}
         elif rejected:
@@ -132,6 +135,15 @@ def _connected_outbox(parsed: argparse.Namespace, project_id: str, timeline_id: 
         return outbox, status, scope
     except (AttributeError, OSError, ValueError, TypeError):
         return None, None, None
+
+
+def _is_dry_run_flight(flight) -> bool:
+    """True when the stored request body is a dry run (``"dry_run": true``)."""
+    try:
+        body = json.loads(flight["body"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return isinstance(body, dict) and body.get("dry_run") is True
 
 
 def _discard_recoverable_outbox(outbox, expected_scope, *, return_kept_count=False):
@@ -158,6 +170,19 @@ def _discard_recoverable_outbox(outbox, expected_scope, *, return_kept_count=Fal
             if not _valid_replay_flight(state, expected_scope, outbox):
                 return "invalid"
             kind = flight.get("kind") if isinstance(flight, Mapping) else None
+            if kind != "assembly-admission" and _is_dry_run_flight(flight):
+                # A preview cannot land: the Runtime keeps nothing for it, so
+                # there is no outcome to confirm. Clear it like unsent intent,
+                # keeping acknowledged keys and saved pending records.
+                from astrid.sdk.timeline.sync import _release_preview
+
+                _release_preview(state, flight)
+                state["pending"] = []
+                for key in ("commit_options", "evaluation", "rationale", "group_id",
+                            "media_input", "media_imports", "rejected"):
+                    state.pop(key, None)
+                outbox.write(state)
+                return ("cleared_preview", kept_count) if return_kept_count else "cleared_preview"
             # Assembly admission has no command prefix; its immutable body and key live in flight.
             if kind == "assembly-admission":
                 state["pending"] = []
@@ -188,8 +213,8 @@ def _cmd_lint(parsed: argparse.Namespace) -> int:
     from astrid.packs.timeline.cli_lint_header import print_broken_header
 
     print_broken_header("check")  # a check that could not load is named first, never silently absent
-    from astrid.pack_api import bundle_fps, occurrences_from_bundle, picture_cuts
     from astrid.core.timeline.cuts import find_cut
+    from astrid.pack_api import bundle_fps, occurrences_from_bundle, picture_cuts
     from astrid.packs.rendering.actions.timeline_visualize.layers.base import check_help
     from astrid.packs.rendering.actions.timeline_visualize.motion import model
     from astrid.packs.rendering.actions.timeline_visualize.motion.conditions import run_checks
@@ -387,15 +412,366 @@ def _configure_transcripts_sync(subparser: argparse.ArgumentParser) -> None:
 
 
 @guard(2)
+def _cmd_transcripts_import(parsed: argparse.Namespace) -> int:
+    from astrid.sdk.media_ids import media_id_text, resolve_media_id
+    from astrid.sdk.media_transcript import import_transcript_words
+
+    if bool(parsed.file) == bool(parsed.from_run):
+        raise ValueError("provide exactly one words file or --from-run")
+    project = need_project(parsed)
+    media_id = resolve_media_id(parsed.client, project, parsed.media_id)
+    if parsed.from_run:
+        from astrid.sdk.transcript_run import import_transcription_run
+        status = import_transcription_run(parsed.client, project, media_id, parsed.from_run,
+                                          replace=parsed.replace, expected_version=parsed.expected_version)
+        print(f"{status} transcript for {media_id} from run {parsed.from_run}")
+        return 0
+    payload = json.loads(parsed.file.expanduser().read_text(encoding="utf-8"))
+    words = payload.get("words") if isinstance(payload, Mapping) else payload
+    if not isinstance(words, list):
+        raise ValueError("words file must be a list or an object containing a words list")
+    if isinstance(payload, Mapping):
+        if media_id_text(payload.get("media_id", media_id)) != media_id:
+            raise ValueError("words file media_id does not match the requested media id")
+        if payload.get("source_id", parsed.source) != parsed.source:
+            raise ValueError("words file source_id does not match the requested source id")
+    segment_id = payload.get("segment_id", parsed.segment) if isinstance(payload, Mapping) else parsed.segment
+    text = payload.get("text", parsed.text) if isinstance(payload, Mapping) else parsed.text
+    status = import_transcript_words(
+        parsed.client, project, media_id, words,
+        segment_id=str(segment_id), text=text,
+        source=parsed.source, replace=parsed.replace, expected_version=parsed.expected_version,
+    )
+    print(f"{status} transcript for {media_id} ({parsed.source})")
+    return 0
+
+
+@guard(2)
+def _cmd_transcripts_run(parsed: argparse.Namespace) -> int:
+    import hashlib
+    import tempfile
+
+    from astrid.sdk.generation import generate
+    from astrid.sdk.media_handles import resolve_media_handle
+    from astrid.sdk.transcript_run import import_transcription_run
+
+    project = need_project(parsed)
+    descriptor, _ = resolve_media_handle(parsed.client, project, parsed.media_id)
+    digest = descriptor["digest"]
+    raw = parsed.client.media.read_bytes(digest)
+    if "sha256:" + hashlib.sha256(raw).hexdigest() != digest:
+        raise ValueError("media bytes do not match their digest")
+    with tempfile.TemporaryDirectory(prefix="astrid-transcription-") as tmp:
+        path = Path(tmp) / descriptor["filename"]
+        path.write_bytes(raw)
+        options = {name: getattr(parsed, name) for name in ("placement", "engine", "execution", "align", "recovery_path")
+                   if getattr(parsed, name, None) is not None}
+        dry_run = bool(getattr(parsed, "dry_run", False))
+        result = generate.audio(entry="transcription", mode="transcribe", audio_ref=str(path),
+                                project=project, client=parsed.client, consent=tuple(parsed.consent),
+                                dry_run=dry_run, **options)
+    if getattr(result, "ok", True) is False:
+        raise ValueError(f"transcription failed: {getattr(result, 'error', None)}")
+    from astrid.sdk.transcript_run import transcription_run_id
+
+    value = result.to_dict() if hasattr(result, "to_dict") else result
+    if dry_run:
+        # Staged input, compile and the invocation preflight ran; nothing was admitted or imported.
+        print(json.dumps(value, indent=2, sort_keys=True, default=str))
+        return 0
+    run_id = transcription_run_id(parsed.client, value)
+    status = import_transcription_run(parsed.client, project, digest, run_id,
+                                      replace=parsed.replace, expected_version=parsed.expected_version)
+    print(f"{status} transcript for {digest} from run {run_id}")
+    return 0
+
+
+@guard(2)
+def _cmd_transcripts_refresh(parsed: argparse.Namespace) -> int:
+    """Status of every audio media (parent and child timelines), missing transcripts run on request,
+    an explicit transcript choice recorded in transcriptReferences, and what a refresh cannot fix."""
+    from astrid.sdk.media_ids import media_id_text
+    from astrid.sdk.timeline import words as W
+    from astrid.sdk.timeline_checkout import Checkout
+    from astrid.sdk.timeline_transcript_refresh import (
+        REFERENCES_SCHEMA as W_REFERENCES_SCHEMA,
+    )
+    from astrid.sdk.timeline_transcript_refresh import (
+        cut_words,
+        inventory,
+        stale_anchors,
+        with_reference,
+    )
+
+    project = need_project(parsed)
+    if parsed.run_missing and not parsed.placement:
+        raise VerbError("--run-missing runs transcription on a GPU: name where with --placement (e.g. --placement runpod)", 2)
+    if parsed.use_source and parsed.use_document:
+        raise VerbError("choose one of --use-source and --use-document", 2)
+    if parsed.placement and not parsed.run_missing:
+        print("note: --placement applies only with --run-missing")
+    draft, _existed = working_copy(parsed, create=False)
+    tl = draft if draft is not None else Checkout.open(project, parsed.ref, client=parsed.client)
+    if parsed.shot is not None and str(parsed.shot) not in (tl.bundle.get("shots") or {}):
+        raise VerbError(f"no shot {parsed.shot!r} in timeline {parsed.ref!r}", 2)
+    # --use-source S may name a source outside the default order: load it too.
+    load_sources = list(dict.fromkeys([*W.default_source_order(), *([parsed.use_source] if parsed.use_source else [])]))
+    issues: list[str] = []
+    transcripts = W.load_timeline_transcripts(parsed.client, project, tl.bundle, sources=load_sources, issues=issues)
+    rows = inventory(tl.bundle, transcripts, shot=parsed.shot)
+    print(f"{len(rows)} audio media in {parsed.ref}" + (f" (shot {parsed.shot})" if parsed.shot else "") + ":")
+    for row in rows:
+        where = ", ".join(row["holders"])
+        detail = f"document v{row['version']}" if row["version"] is not None else "no document"
+        print(f"  {media_id_text(row['media_id'])}  {row['status']:<28}  {detail}  "
+              f"[{', '.join(row['clips'])}]  in {where}" + ("  (pinned)" if row["pinned"] else ""))
+    missing = [row for row in rows if row["status"] == "missing"]
+    if parsed.run_missing:
+        for row in missing:
+            command = ["timelines", "transcripts", "run", row["media_id"], "--project", project,
+                       "--placement", parsed.placement]
+            if parsed.dry_run:
+                print(f"  would run: astrid {' '.join(command)}")
+                continue
+            ns = argparse.Namespace(client=parsed.client, project=project, media_id=row["media_id"],
+                                    placement=parsed.placement, engine=None, execution=None, align=None,
+                                    consent=[], recovery_path=None, replace=False, expected_version=None)
+            status = _cmd_transcripts_run(ns)
+            print(f"  ran {media_id_text(row['media_id'])}: {'ok' if status == 0 else f'failed (exit {status})'}")
+        if not parsed.dry_run and missing:
+            issues = []
+            transcripts = W.load_timeline_transcripts(parsed.client, project, tl.bundle,
+                                                      sources=load_sources, issues=issues)
+            rows = inventory(tl.bundle, transcripts, shot=parsed.shot)
+    elif missing:
+        print(f"  {len(missing)} missing: --run-missing --placement P runs them (GPU work)")
+    for note in W.pin_notes(tl.bundle, transcripts):
+        print(f"pin: {note}")
+    for issue in issues:
+        print(f"pin problem: {issue}", file=sys.stderr)
+    for item in stale_anchors(tl.bundle, transcripts):
+        print(f"anchor {item['clip_id']}.{item['field']}: {item['reason']} "
+              f"(pinned v{item['pinned_version']}, now {item['current_version'] if item['current_version'] is not None else 'absent'})")
+    for cut in cut_words(tl.bundle, transcripts, shot=parsed.shot):
+        span = f"{cut['word_start']:.3f}–{cut['word_end']:.3f}s"
+        print(f"cut {cut['edge']} at {cut['point']:.3f}s splits \"{cut['text']}\" ({span}) "
+              f"in clip {cut['clip_id']} [{cut['holder']}]")
+    # Only an explicit choice is recorded; the default pick is never turned into a permanent pin.
+    choice_source, choice_document = parsed.use_source, parsed.use_document
+    if choice_source is None and choice_document is None:
+        print("no transcript choice recorded (pass --use-source S or --use-document D to pin one)")
+        return 0
+    planned = []
+    for row in rows:
+        if row["status"] == "missing" and choice_source is not None:
+            continue
+        docs = transcripts.get(row["media_id"]) or {}
+        target = None
+        if choice_source is not None:
+            target = docs.get(choice_source)
+        else:
+            target = next((doc for doc in docs.values() if doc.get("document_id") == choice_document), None)
+        if target is None:
+            if choice_source is not None:
+                print(f"  {media_id_text(row['media_id'])}: nothing recorded (no stored {choice_source} transcript for this media)")
+            continue
+        if target.get("document_id") in W.transcript_references(tl.bundle):
+            continue  # already pinned to this document
+        planned.append((row["media_id"], docs, target))
+    if parsed.dry_run:
+        for media, docs, target in planned:
+            source = next(name for name, doc in docs.items() if doc is target)
+            print(f"  would record: {media} -> {source} ({target['document_id']})")
+        print("dry run: nothing recorded")
+        return 0
+    if not planned:
+        print("nothing to record: the chosen transcripts are already pinned")
+        return 0
+    working, _existed = working_copy(parsed, create=True)
+    for media, docs, target in planned:
+        source = next(name for name, doc in docs.items() if doc is target)
+        media_ids = {doc.get("document_id") for doc in docs.values() if doc.get("document_id")}
+        bundle_config = working.bundle.setdefault("parent", {}).setdefault("config", {}).setdefault("bundle", {})
+        refs = bundle_config.setdefault("transcriptReferences", {"schema": W_REFERENCES_SCHEMA})
+        refs["schema"] = W_REFERENCES_SCHEMA
+        refs["associations"] = with_reference(working.bundle, media, media_ids, target["document_id"], source)
+        print(f"recorded {media} -> {source} in transcriptReferences")
+    working.save(quiet=True)
+    print("recorded in the working copy (publish to keep it)")
+    return 0
+
+
+@guard(2)
 def _cmd_transcripts_sync(parsed: argparse.Namespace) -> int:
     from astrid.sdk.timeline_checkout import Checkout
     from astrid.sdk.timeline_transcripts import sync_narration_transcripts
+
+    print("note: `timelines transcripts refresh` replaces sync (it also shows what is missing); sync still works",
+          file=sys.stderr)
 
     tl = Checkout.open(need_project(parsed), parsed.ref, client=parsed.client)
     report = sync_narration_transcripts(tl, parsed.client, str(tl.bundle["project_id"]), dry_run=parsed.dry_run)
     print(f"{'dry run: ' if parsed.dry_run else ''}{len(report)} narration transcript item(s)")
     for item in report:
         print(f"  {item['status']}: {item['label']}" + (f" ({item['reason']})" if item.get("reason") else ""))
+    return 0
+
+
+def _show_projected(parsed: argparse.Namespace, tl: Any, source_range: tuple[float, float] | None) -> int:
+    """``transcripts show --timeline``: the shared projection over every placement of the timeline."""
+    from astrid.sdk.timeline.words import (
+        default_source_order,
+        load_timeline_transcripts,
+        project_words,
+    )
+
+    project = need_project(parsed)
+    # Default: the Whisper transcript (what this command has always shown), and a transcriptReferences
+    # pin wins for its media. An explicit --source S shows S and ignores pins.
+    source_choice = [parsed.source] if parsed.source else [default_source_order()[0]]
+    issues: list[str] = []
+    transcripts = load_timeline_transcripts(parsed.client, project, tl.bundle, sources=source_choice,
+                                            any_media=True, issues=issues)
+    for issue in issues:
+        print(f"pin problem: {issue}", file=sys.stderr)
+    rows = project_words(tl.bundle, transcripts, "parent", sources=source_choice, media="any",
+                         references=set() if parsed.source else None)
+    media = parsed.media_id
+    if parsed.clip:
+        if not any(row["clip_id"] == parsed.clip for row in rows) and not any(
+                clip.id == parsed.clip for clip in tl.clips()):
+            raise VerbError(f"clip {parsed.clip!r} does not exist in timeline {parsed.timeline!r}")
+        rows = [row for row in rows if row["clip_id"] == parsed.clip]
+        clip_media = {row["media_id"] for row in rows if row.get("media_id")}
+        if media is None and len(clip_media) > 1:
+            raise VerbError(f"clip {parsed.clip!r} matches different media; provide MEDIA_ID to choose")
+        if media is None:
+            if not clip_media:
+                raise VerbError(f"clip {parsed.clip!r} has no managed media digest")
+            media = next(iter(clip_media))
+    if media is not None:
+        if not transcripts.get(media):
+            raise VerbError(f"no transcript for {media} ({parsed.source or 'any source'})")
+        rows = [row for row in rows if row.get("media_id") == media]
+    if source_range is not None:
+        rows = [row for row in rows if not (row["source_end"] <= source_range[0] or row["source_start"] >= source_range[1])]
+    if parsed.json:
+        print(json.dumps([{key: row.get(key) for key in (
+            "address", "word_id", "text", "media_id", "source", "version", "clip_id", "shot_id", "occurrence",
+            "timeline_start", "timeline_end", "source_start", "source_end")} for row in rows],
+            ensure_ascii=False, indent=2))
+    else:
+        for row in rows:
+            print(f"source {row['source_start']:.3f}–{row['source_end']:.3f}s  {row['text']}  "
+                  f"timeline {row['timeline_start']:.3f}–{row['timeline_end']:.3f}s [{row['clip_id']}]")
+    return 0
+
+
+@guard(2)
+def _cmd_transcripts_show(parsed: argparse.Namespace) -> int:
+    from astrid.sdk.media_transcript import read_transcript
+    from astrid.sdk.timeline_transcript_show import map_transcript_words
+    from astrid.sdk.whisper_transcript import whisper_source_id
+
+    source_range = None
+    if parsed.source_range:
+        try:
+            left, right = parsed.source_range.split("..", 1)
+            source_range = (float(left), float(right))
+        except (ValueError, TypeError) as exc:
+            raise VerbError("--range must be START..END in source-media seconds") from exc
+        if source_range[0] < 0 or source_range[1] <= source_range[0]:
+            raise VerbError("--range must be a non-empty nonnegative source-media interval")
+    if parsed.clip and not parsed.timeline:
+        raise VerbError("--clip requires --timeline")
+    if not parsed.media_id and not parsed.clip:
+        raise VerbError("provide MEDIA_ID or select a timeline --clip")
+    clips = []
+    resolved_media_id = parsed.media_id
+    if parsed.timeline:
+        from astrid.sdk.timeline_checkout import Checkout
+
+        tl = Checkout.open(need_project(parsed), parsed.timeline, client=parsed.client)
+        if isinstance(tl.bundle.get("placements"), list) and isinstance(tl.bundle.get("shots"), Mapping):
+            return _show_projected(parsed, tl, source_range)
+        # A bare working handle without a placement table: map each clip occurrence directly.
+        from astrid.sdk.timeline.doc import _row_start
+
+        # Checkout.clips() exposes one handle per placement but its legacy
+        # handle resolves start through the first placement of a shot. Enumerate
+        # placements explicitly so repeated shots keep their own clocks.
+        seen = set()
+        placements = tl.bundle.get("placements")
+        for clip in tl.clips():
+            identity = (clip.shot_id, clip.id)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            if parsed.clip and clip.id != parsed.clip:
+                continue
+            if clip.shot_id in ("", "parent"):
+                holder = tl.bundle.get("parent") or {}
+            else:
+                shot = (tl.bundle.get("shots") or {}).get(clip.shot_id) or {}
+                holder = shot.get("internal_timeline") or {}
+            registry = holder.get("registry") or (holder.get("config") or {}).get("registry") or {}
+            assets = registry.get("assets") or {}
+            asset = assets.get(clip.asset) if clip.asset else None
+            clip_media_id = (asset.get("media_id") or asset.get("content_sha256")) if isinstance(asset, Mapping) else None
+            if (parsed.clip and parsed.media_id is None and resolved_media_id is not None
+                    and isinstance(clip_media_id, str) and clip_media_id != resolved_media_id):
+                raise VerbError(f"clip {parsed.clip!r} matches different media; provide MEDIA_ID to choose")
+            if resolved_media_id and clip_media_id != resolved_media_id:
+                continue
+            if parsed.clip and not isinstance(clip_media_id, str):
+                raise VerbError(f"clip {clip.id!r} has no managed media digest")
+            if resolved_media_id is None and isinstance(clip_media_id, str):
+                resolved_media_id = clip_media_id
+            raw = clip.data
+            source_in, speed = float(raw.get("from") or 0), float(raw.get("speed") or 1)
+            raw_to = raw.get("to")
+            duration_end = source_in + clip.duration * speed
+            source_out = min(float(raw_to), duration_end) if raw_to is not None else duration_end
+            if clip.shot_id in ("", "parent") or not isinstance(placements, list):
+                clips.append({"clip_id": clip.id, "source_start": source_in,
+                              "source_end": source_out,
+                              "timeline_start": clip.start, "speed": speed})
+            else:
+                for row in placements:
+                    if row.get("shot_id") != clip.shot_id:
+                        continue
+                    # A shot occurrence can be shorter than its internal clip.
+                    # Only map the portion actually visible within that occurrence.
+                    length = float(row.get("duration_ms") or 0) / 1000
+                    visible_start = max(0.0, clip.at)
+                    visible_end = min(length, clip.at + clip.duration)
+                    if visible_end <= visible_start:
+                        continue
+                    clips.append({"clip_id": clip.id,
+                                  "source_start": source_in + (visible_start - clip.at) * speed,
+                                  "source_end": min(source_out, source_in + (visible_end - clip.at) * speed),
+                                  "timeline_start": _row_start(row) / 1000 + visible_start,
+                                  "speed": speed})
+        if not clips:
+            target = f"clip {parsed.clip!r}" if parsed.clip else "any clip"
+            raise VerbError(f"{target} does not use media {resolved_media_id or parsed.media_id} in timeline {parsed.timeline!r}")
+    assert resolved_media_id is not None
+    source = parsed.source or whisper_source_id("large-v3-turbo.pt")
+    document = read_transcript(parsed.client, need_project(parsed), resolved_media_id, source)
+    if document is None:
+        raise VerbError(f"no transcript for {resolved_media_id} ({source})")
+    content = document.get("content") if isinstance(document, Mapping) else None
+    if not isinstance(content, Mapping):
+        raise VerbError("transcript document has no content")
+    rows = map_transcript_words(content, source_range=source_range, clips=clips)
+    if parsed.json:
+        print(json.dumps(rows, ensure_ascii=False, indent=2))
+    else:
+        for row in rows:
+            line = f"source {row['source_start']:.3f}–{row['source_end']:.3f}s  {row.get('text', '')}"
+            if "timeline_start" in row:
+                line += f"  timeline {row['timeline_start']:.3f}–{row['timeline_end']:.3f}s [{row['clip_id']}]"
+            print(line)
     return 0
 
 
@@ -623,11 +999,14 @@ def _cmd_discard(parsed: argparse.Namespace) -> int:
     invalid_outbox = discard_state == "invalid" or bool(
         session_status and session_status.get("status") == "invalid"
     )
-    cleared_session = discard_state == "cleared"
+    cleared_preview = discard_state == "cleared_preview"
+    cleared_session = discard_state in {"cleared", "cleared_preview"}
     tl, _ = working_copy(parsed, create=False)
     name = draft_name(parsed)
     if tl is None:
         print(f"no working copy \"{name}\" to discard")
+        if cleared_preview:
+            print("cleared an unanswered dry run: a preview commits nothing, so there was nothing to keep")
         if cleared_session:
             print("discarded recoverable connected-session commands")
         if retained_flight:
@@ -641,6 +1020,8 @@ def _cmd_discard(parsed: argparse.Namespace) -> int:
     dropped = len(tl.edits().get("changes") or [])
     tl.discard()
     print(f'discarded working copy "{name}" of {parsed.ref} ({clips_changed(dropped)}, dropped)')
+    if cleared_preview:
+        print("cleared an unanswered dry run: a preview commits nothing, so there was nothing to keep")
     if cleared_session:
         print("discarded recoverable connected-session commands")
     if retained_flight:
@@ -725,7 +1106,8 @@ def _configure_restructure(subparser: argparse.ArgumentParser) -> None:
 def _configure_discard(subparser: argparse.ArgumentParser) -> None:
     subparser.description = (
         "Drop the working copy and recoverable unsent session intent. A request with an unknown commit outcome "
-        "is retained; discard does not undo a possibly accepted commit."
+        "is retained; discard does not undo a possibly accepted commit. An unanswered dry run is cleared, "
+        "since a preview commits nothing."
     )
     _timeline_args(subparser, project_required=False)
     subparser.set_defaults(handler=_cmd_discard)

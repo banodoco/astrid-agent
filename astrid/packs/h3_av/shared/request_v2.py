@@ -10,7 +10,16 @@ from copy import deepcopy
 from fractions import Fraction
 from typing import Any, Mapping
 
-from .request import H3Request, H3RequestError, _nonblank, _number, _object, _unknown
+from .request import (
+    DEFAULT_LEAD_IN,
+    H3Request,
+    H3RequestError,
+    _nonblank,
+    _number,
+    _object,
+    _unknown,
+    lead_in_mode,
+)
 
 FPS = Fraction(24, 1)
 SAMPLE_RATE = 48000
@@ -38,7 +47,6 @@ _NATIVE_SCHEDULERS = frozenset({
 })
 _MODALITIES = {"image", "video", "audio"}
 _ROLES = {"timeline", "reference"}
-_PLACEHOLDER = re.compile(r"(?:\{\{?[^{}]+\}?\}|<[^>]+>|\b(?:TODO|FIXME|PLACEHOLDER)\b)", re.I)
 
 
 def _fraction(value: Any, path: str, *, minimum: Fraction = Fraction(0)) -> Fraction:
@@ -180,7 +188,7 @@ def _mask(value: Any, path: str, modalities: Mapping[str, str] | None) -> dict[s
             raise H3RequestError(f"{path} must reference an image/video mask")
         return {"asset": asset, "polarity": "black_preserve_white_edit"}
     item = _object(value, path) or {}
-    _unknown(item, {"asset", "full_frame", "rectangle", "polygon", "range", "polarity", "shape", "edge", "track", "threshold"}, path)
+    _unknown(item, {"asset", "full_frame", "rectangle", "polygon", "range", "polarity", "shape", "edge", "track", "threshold", "canvas"}, path)
     geometry = [key for key in ("full_frame", "rectangle", "polygon") if key in item]
     if "asset" in item and geometry:
         raise H3RequestError(f"{path} cannot combine an asset with geometry")
@@ -194,6 +202,8 @@ def _mask(value: Any, path: str, modalities: Mapping[str, str] | None) -> dict[s
         result["asset"] = asset
         result["edge"] = _edge(item.get("edge", {}), f"{path}.edge")
         if "threshold" in item:
+            if modality == "video":
+                raise H3RequestError(f"{path} has unsupported field: threshold for video mask")
             threshold = item["threshold"]
             if type(threshold) is not int or not 1 <= threshold <= 254:
                 raise H3RequestError(f"{path}.threshold must be an integer 1..254")
@@ -210,6 +220,11 @@ def _mask(value: Any, path: str, modalities: Mapping[str, str] | None) -> dict[s
         if not isinstance(points, list) or len(points) < 3:
             raise H3RequestError(f"{path}.polygon must contain at least three points")
         result["polygon"] = [[_number(coord, f"{path}.polygon[{i}][{axis}]") for axis, coord in enumerate(point)] for i, point in enumerate(points)]
+    if "canvas" in item:
+        canvas = item["canvas"]
+        if "rectangle" not in item or not isinstance(canvas, list) or len(canvas) != 2 or any(type(n) is not int or n <= 0 for n in canvas):
+            raise H3RequestError(f"{path}.canvas must be two positive integers on a rectangle mask")
+        result["canvas"] = list(canvas)
     if "edge" in item and "asset" not in item:
         raise H3RequestError(f"{path}.edge is allowed only with an asset mask")
     if "threshold" in item and "asset" not in item:
@@ -229,14 +244,26 @@ def _mask(value: Any, path: str, modalities: Mapping[str, str] | None) -> dict[s
     return result
 
 
+def v1_native_settings(overrides: Mapping[str, Any]) -> dict[str, Any]:
+    """Translate the v1 spelling into the canonical settings vocabulary."""
+    raw = dict(overrides)
+    choice = raw.pop("turbo_lora", None)
+    if choice is not None:
+        raw["turbo"] = {"lora": choice}
+    return raw
+
+
 def _settings(value: Any) -> dict[str, Any]:
     item = _object(value, "settings") or {}
-    _unknown(item, {"model", "steps", "sampler", "scheduler", "seed", "turbo", "adapter", "guidance_scale", "guidance"}, "settings")
+    _unknown(item, {"model", "steps", "sampler", "scheduler", "seed", "turbo", "adapter", "guidance_scale", "guidance", "cfg", "video_shift", "audio_shift"}, "settings")
     aliases = [name for name in ("guidance", "guidance_scale") if name in item]
     if len(aliases) > 1:
         raise H3RequestError("settings.guidance and settings.guidance_scale are duplicate Turbo aliases")
     turbo = _object(item.get("turbo", {}), "settings.turbo") or {}
-    _unknown(turbo, {"enabled", "strength"}, "settings.turbo")
+    _unknown(turbo, {"enabled", "strength", "lora"}, "settings.turbo")
+    lora = _nonblank(turbo.get("lora", "pika_flex_8step"), "settings.turbo.lora")
+    if lora not in {"pika_flex_8step", "lightx2v_8step"}:
+        raise H3RequestError(f"unknown settings.turbo.lora {lora!r}")
     if aliases and "strength" in turbo:
         raise H3RequestError("legacy guidance and settings.turbo.strength are duplicate spellings")
     result: dict[str, Any] = {
@@ -245,8 +272,13 @@ def _settings(value: Any) -> dict[str, Any]:
         "sampler": "res_multistep",
         "scheduler": "simple",
         "seed": 123456789,
-        "turbo": {"enabled": True, "strength": 0.95},
+        "turbo": {"enabled": True, "strength": 1.0 if lora == "pika_flex_8step" else 0.95, "lora": lora},
+        "cfg": 1.0, "video_shift": 12.0, "audio_shift": 3.0,
     }
+    for key in ("cfg", "video_shift", "audio_shift"):
+        if key in item: result[key] = _number(item[key], f"settings.{key}", minimum=0)
+    if result["cfg"] != 1.0:
+        raise H3RequestError("settings.cfg must be 1.0; native BasicGuider does not support CFG overrides")
     if "model" in item: result["model"] = _nonblank(item["model"], "settings.model")
     if "sampler" in item: result["sampler"] = _nonblank(item["sampler"], "settings.sampler")
     if result["sampler"] not in _NATIVE_SAMPLERS:
@@ -269,6 +301,8 @@ def _settings(value: Any) -> dict[str, Any]:
         result["turbo"]["strength"] = _number(item[alias], f"settings.{alias}", minimum=0)
     elif "strength" in turbo:
         result["turbo"]["strength"] = _number(turbo["strength"], "settings.turbo.strength", minimum=0)
+    if result["turbo"]["enabled"] and (result["model"] != REF2VA_MODEL or lora == "lightx2v_8step"):
+        raise H3RequestError(f"settings.turbo.lora {lora!r} has no matching variant for model {result['model']!r} on the native route")
     if "adapter" in item:
         adapter = _object(item["adapter"], "settings.adapter") or {}
         _unknown(adapter, {"id", "strength"}, "settings.adapter")
@@ -304,8 +338,14 @@ def _validate_character_swap_media(settings: Mapping[str, Any], media: list[dict
     if not isinstance(media, list) or any(not isinstance(item, Mapping) for item in media):
         raise H3RequestError("character_swap_v1 requires normalized v2 media")
     references = [item for item in media if item.get("role") == "reference"]
-    if len(references) != 2 or sorted(str(item.get("modality")) for item in references) != ["image", "video"]:
-        raise H3RequestError("character_swap_v1 requires exactly one typed video reference and one typed replacement image reference")
+    modalities = [str(item.get("modality")) for item in references]
+    from .generation import LIMITS
+    minimum = LIMITS["character_swap_references"]["value"]
+    if (
+        modalities.count("image") < minimum["image"]
+        or modalities.count("video") < minimum["video"]
+    ):
+        raise H3RequestError("character_swap_v1 references: lowering requires at least one video (<Video 1>) and one image (<Picture 1>); further references are allowed but untested")
     if continuation:
         raise H3RequestError("character_swap_v1 does not support continuation")
     timeline = [item for item in media if item.get("role") == "timeline"]
@@ -330,14 +370,66 @@ def _validate_character_swap_media(settings: Mapping[str, Any], media: list[dict
             raise H3RequestError("character_swap_v1 does not support the implicit continuation route; declare the timeline's video edit permissions")
 
 
+def _identity_value(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Identity covers authored intent, not inspection or clock projections."""
+    result = {key: val for key, val in value.items() if key not in {"profile", "output_count"}}
+    # Preserve the pre-canvas v2 identity for requests using the historical
+    # default. Non-default canvases are authored intent and remain digestible.
+    from .generation import DEFAULT_SIZE
+    if result.get("canvas") == {"width": DEFAULT_SIZE[0], "height": DEFAULT_SIZE[1]}:
+        result.pop("canvas")
+    media = []
+    for item in value["media"]:
+        row = {key: val for key, val in item.items()
+               if key not in {"inspection", "modality_inferred", "resolved_at", "resolved_range"}}
+        if item.get("modality_inferred"):
+            row.pop("modality", None)
+            row.pop("use", None)
+            if item.get("audio_inferred"):
+                row.pop("audio", None)
+        row.pop("audio_inferred", None)
+        if "edit" in row:
+            row["edit"] = [{key: val for key, val in edit.items() if key != "resolved"}
+                           for edit in row["edit"]]
+        media.append(row)
+    result["media"] = media
+    return result
+
+
 def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] | None = None) -> H3Request:
-    _unknown(raw, {"version", "prompt", "duration", "media", "settings", "continuation"}, "request")
+    if "_derived_pass_view" in raw:
+        raise H3RequestError("derived pass view cannot be executed: rebuild it from the full request")
+    _unknown(raw, {"version", "prompt", "duration", "media", "settings", "continuation", "output"}, "request")
     if raw.get("version") != 2: raise H3RequestError("version must be 2")
     prompt = _nonblank(raw.get("prompt"), "prompt")
     media_raw = raw.get("media")
-    if not isinstance(media_raw, list) or not media_raw: raise H3RequestError("media must be a non-empty array")
+    if not isinstance(media_raw, list): raise H3RequestError("media must be an array")
     continuation = raw.get("continuation", False)
     if type(continuation) is not bool: raise H3RequestError("continuation must be boolean")
+    from .generation import DEFAULT_SIZE, LIMITS
+    output = _object(raw.get("output", {}), "output") or {}
+    _unknown(output, {"size", "lead_in"}, "output")
+    lead_in = DEFAULT_LEAD_IN
+    if "output" in raw and not continuation and ("size" not in output or "lead_in" in output):
+        raise H3RequestError("output.lead_in is valid only for a continuation; generation output must declare size")
+    if "lead_in" in output:
+        lead_in = lead_in_mode(output["lead_in"], "output.lead_in")
+    size = output.get("size", DEFAULT_SIZE)
+    size_limits = LIMITS["canvas_dimension"]["value"]
+    if (("size" in output and not isinstance(size, list))
+            or not isinstance(size, (list, tuple)) or len(size) != 2
+            or any(type(dimension) is not int for dimension in size)):
+        raise H3RequestError("output.size must be exactly two JSON integers [width, height]")
+    width, height = size
+    if any(dimension < size_limits["min"] or dimension > size_limits["max"]
+           or dimension % size_limits["multiple"] for dimension in (width, height)):
+        raise H3RequestError(
+            "output.size width and height must each be 32–16384 inclusive and divisible by 32"
+        )
+    if continuation and tuple(size) != tuple(LIMITS["continuation_canvas"]["value"]):
+        raise H3RequestError(
+            f"output.size is limited by continuation_canvas: {LIMITS['continuation_canvas']['value']}"
+        )
     duration_fraction = (
         None if raw.get("duration") is None else _fraction(raw["duration"], "duration")
     )
@@ -345,11 +437,10 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
     duration = None if duration_fraction is None else _time_value(duration_fraction)
     occurrences: list[dict[str, Any]] = []
     ids: set[str] = set()
-    reference_counts = {"image": 0, "video": 0, "audio": 0}
     for index, raw_item in enumerate(media_raw):
         path = f"media[{index}]"
         item = _object(raw_item, path) or {}
-        _unknown(item, {"id", "asset", "role", "modality", "at", "range", "edit", "audio", "hard", "latent_pin"}, path)
+        _unknown(item, {"id", "asset", "role", "modality", "at", "range", "edit", "audio", "hard"}, path)
         role = item.get("role")
         if role not in _ROLES: raise H3RequestError(f"{path}.role must be timeline or reference")
         asset, inspected = _asset(item.get("asset"), f"{path}.asset", asset_modalities)
@@ -358,24 +449,29 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
         identifier = _nonblank(item["id"], f"{path}.id") if "id" in item else f"occurrence-{index + 1}"
         if identifier in ids: raise H3RequestError(f"{path}.occurrence_id {identifier!r} is duplicated")
         ids.add(identifier)
-        occurrence: dict[str, Any] = {"occurrence_id": identifier, "asset": asset, "role": role}
+        occurrence: dict[str, Any] = {"occurrence_id": f"occurrence-{index + 1}", "asset": asset, "role": role}
         if "id" in item: occurrence["id"] = identifier
-        if modality is not None: occurrence["modality"] = modality
+        if modality is not None:
+            occurrence["modality"] = modality
+            authored_modality = item.get("modality") or (item["asset"].get("modality") if isinstance(item["asset"], Mapping) else None)
+            if not authored_modality:
+                occurrence["modality_inferred"] = True
         else: occurrence["inspection"] = "deferred"
         if role == "reference":
             if any(key in item for key in ("at", "edit", "hard", "latent_pin")): raise H3RequestError(f"{path} reference entries cannot contain placement or edit fields")
-            if modality in {"image", "video", "audio"}:
-                reference_counts[modality] += 1
-                label = {"image": "Picture", "video": "Video", "audio": "Audio"}[modality]
-                occurrence["model_tag"] = f"<{label} {reference_counts[modality]}>"
             if "audio" in item:
                 if modality != "video" or type(item["audio"]) is not bool: raise H3RequestError(f"{path}.audio is only valid for video references")
                 occurrence["audio"] = item["audio"]
-            elif modality == "video": occurrence["audio"] = True
+            elif modality == "video":
+                occurrence["audio"] = True
+                if occurrence.get("modality_inferred"): occurrence["audio_inferred"] = True
             if "range" in item:
-                if modality != "video": raise H3RequestError(f"{path}.range is unsupported for {modality or 'unresolved'} references")
-                occurrence["range"], occurrence["resolved_range"] = _interval(item["range"], f"{path}.range", FPS)
+                if modality not in {"video", "audio"}: raise H3RequestError(f"{path}.range is unsupported for {modality or 'unresolved'} references")
+                clock = FPS if modality == "video" else Fraction(SAMPLE_RATE)
+                occurrence["range"], occurrence["resolved_range"] = _interval(item["range"], f"{path}.range", clock)
         else:
+            if modality == "image" and item.get("latent_pin"):
+                raise H3RequestError(f"{path}.latent_pin is unsupported for timeline images")
             if "at" not in item: raise H3RequestError(f"{path}.at is required for timeline media")
             at, at_frame = _at(item["at"], f"{path}.at")
             occurrence.update({"at": at, "resolved_at": {"unit": "frames", "value": at_frame}, "hard": item.get("hard", False), "edit": []})
@@ -390,7 +486,7 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
             for edit_index, raw_edit in enumerate(edits):
                 edit_path = f"{path}.edit[{edit_index}]"
                 edit = _object(raw_edit, edit_path) or {}
-                _unknown(edit, {"stream", "during", "mask", "guides", "text", "dialogue", "channels", "action", "keep", "strength", "seed"}, edit_path)
+                _unknown(edit, {"stream", "during", "mask", "guides", "channels", "action", "keep", "strength", "seed"}, edit_path)
                 stream = edit.get("stream")
                 if stream not in {"video", "audio"}: raise H3RequestError(f"{edit_path}.stream must be video or audio")
                 action = "preserve" if edit.get("keep") is True else edit.get("action", "generate")
@@ -401,20 +497,19 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
                 normalized: dict[str, Any] = {"stream": stream, "during": during, "resolved": {"unit": "frames" if stream == "video" else "samples", "range": resolved}, "action": action}
                 if stream == "video": normalized["mask"] = _mask(edit.get("mask", {"full_frame": True}), f"{edit_path}.mask", asset_modalities)
                 if stream == "audio": normalized["channels"] = edit.get("channels", "all")
-                if "text" in edit or "dialogue" in edit:
-                    text = _nonblank(edit.get("text", edit.get("dialogue")), f"{edit_path}.text")
-                    if _PLACEHOLDER.search(text): raise H3RequestError(f"{edit_path}.text must be literal dialogue; unresolved placeholder found")
-                    normalized["text"] = text
                 if "guides" in edit:
                     guides = edit["guides"] if isinstance(edit["guides"], list) else [edit["guides"]]
                     normalized["guides"] = [_nonblank(guide, f"{edit_path}.guides[{i}]") for i, guide in enumerate(guides)]
                 if "strength" in edit or "seed" in edit:
-                    if stream != "video" or action != "generate":
-                        raise H3RequestError(f"{edit_path} strength and seed require a generated video edit")
+                    if action != "generate" or ("seed" in edit and stream != "video"):
+                        raise H3RequestError(f"{edit_path} strength requires a generated edit and seed requires a generated video edit")
                     if "strength" in edit:
-                        strength = _number(edit["strength"], f"{edit_path}.strength", minimum=0)
-                        if strength > 1:
-                            raise H3RequestError(f"{edit_path}.strength must be in the range 0..1")
+                        from .generation import LIMITS
+                        lower, upper = LIMITS["audio_grant_strength"]["value"] if stream == "audio" else (0, 1)
+                        label = "audio grant strength" if stream == "audio" else f"{edit_path}.strength"
+                        strength = _number(edit["strength"], label, minimum=lower)
+                        if strength > upper:
+                            raise H3RequestError(f"{label} must be in the range {lower}..{upper}")
                         normalized["strength"] = strength
                     if "seed" in edit:
                         if type(edit["seed"]) is not int or not 0 <= edit["seed"] <= 2**64 - 1:
@@ -423,14 +518,35 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
                 occurrence["edit"].append(normalized)
         occurrences.append(occurrence)
     by_id = {item.get("id", item["occurrence_id"]): item for item in occurrences}
+    audio_uses: dict[str, set[str]] = {}
     for item in occurrences:
         if item["role"] != "timeline": continue
         if item["resolved_at"]["value"] in {other["resolved_at"]["value"] for other in occurrences if other is not item and other["role"] == "timeline"}: raise H3RequestError("conflicting hard anchors share the same placement")
         for edit in item["edit"]:
-            for guide in edit.get("guides", []):
+            guides = edit.get("guides", [])
+            fixed = edit["stream"] == "audio" and edit["action"] == "generate" and bool(guides)
+            if fixed and len(guides) != 1:
+                raise H3RequestError("replacement audio edit requires guides naming exactly one audio reference")
+            for guide in guides:
                 target = by_id.get(guide)
                 if target is None: raise H3RequestError(f"guide {guide!r} is dangling")
                 if target["role"] != "reference": raise H3RequestError(f"guide {guide!r} points to timeline media, not a reference")
+                if fixed and target.get("modality") != "audio":
+                    raise H3RequestError(f"guide {guide!r} has modality {target.get('modality') or 'unresolved'}; audio edits support modalities: audio")
+                if target.get("modality") == "audio":
+                    audio_uses.setdefault(target["occurrence_id"], set()).add("replacement" if fixed else "conditioning")
+                selected = target.get("resolved_range")
+                if fixed and selected is not None:
+                    first, last = edit["resolved"]["range"]
+                    if selected[1] - selected[0] < last - first:
+                        raise H3RequestError(f"replacement audio length must match or exceed the edited span: {guide!r} is shorter than {last - first} samples at {SAMPLE_RATE} Hz")
+    for item in occurrences:
+        if item["role"] == "reference" and item.get("modality") == "audio":
+            uses = audio_uses.get(item["occurrence_id"], set())
+            if len(uses) > 1:
+                raise H3RequestError(f"{item['occurrence_id']} cannot be both conditioning and replacement audio")
+            item["use"] = next(iter(uses), "conditioning")
+    settings = _settings(raw.get("settings", {}))
     if duration_fraction is None:
         ends: list[Fraction] = []
         for item in occurrences:
@@ -448,17 +564,19 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
         duration_fraction = max(ends)
         duration = _time_value(duration_fraction)
     _ticks(duration_fraction, FPS, "duration")
-    settings = _settings(raw.get("settings", {}))
     _validate_character_swap_media(settings, occurrences, continuation)
-    value = {"version": 2, "prompt": prompt, "duration": duration, "media": occurrences, "settings": settings, "continuation": continuation, "profile": PROFILE, "output_count": 1, "model_tags": {item["occurrence_id"]: item["model_tag"] for item in occurrences if "model_tag" in item}}
-    encoded = json.dumps(json_times(value), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    value = {"version": 2, "prompt": prompt, "duration": duration, "media": occurrences, "settings": settings, "continuation": continuation, "profile": PROFILE, "output_count": 1}
+    value["canvas"] = {"width": width, "height": height}
+    if lead_in != DEFAULT_LEAD_IN:
+        value["output"] = {"lead_in": lead_in}
+    encoded = json.dumps(json_times(_identity_value(value)), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
     return H3Request(value=value, digest=hashlib.sha256(encoded).hexdigest())
 
 
 def read_prepared_request(raw: Mapping[str, Any], expected_digest: Any, *, require_normalized_v2: bool = False) -> H3Request:
     if not isinstance(expected_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_digest): raise H3RequestError("prepared request digest is missing or malformed")
     if raw.get("version") == 2 and raw.get("profile") == PROFILE and raw.get("output_count") == 1:
-        encoded = json.dumps(json_times(raw), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        encoded = json.dumps(json_times(raw if "model_tags" in raw else _identity_value(raw)), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
         request = H3Request(value=_read_times(raw), digest=hashlib.sha256(encoded).hexdigest())
     else:
         request = normalize_v2(raw) if raw.get("version") == 2 else H3Request(value=dict(raw), digest=expected_digest)
@@ -467,6 +585,20 @@ def read_prepared_request(raw: Mapping[str, Any], expected_digest: Any, *, requi
         effective_settings(request)
     if require_normalized_v2 and request.value.get("version") != 2: raise H3RequestError("prepared v2 request is missing normalized derived fields")
     return request
+
+
+
+def timeline_image_limit_error(value: Mapping[str, Any]) -> str | None:
+    from .generation import LIMITS
+    for item in value["media"]:
+        if item.get("role") != "timeline" or item.get("modality") != "image":
+            continue
+        frame = LIMITS["timeline_image_frame"]["value"]
+        if item["resolved_at"]["value"] != frame:
+            return f"timeline image frame: only frame {frame} is supported by this lowering"
+        if item.get("edit") or item.get("hard") or item.get("latent_pin") or value.get("continuation"):
+            return "timeline image lowering does not support explicit edits, anchors or continuation"
+    return None
 
 
 def branch_for(request: H3Request) -> str:

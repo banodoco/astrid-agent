@@ -169,7 +169,7 @@ def findings(review: dict[str, Any]) -> list[str]:
     return lines[:24]
 
 
-def review_render(video: Path, out_root: Path, *, every: float = DEFAULT_EVERY_S, ffmpeg: str | None = None) -> dict[str, Any]:
+def review_render(video: Path, out_root: Path, *, every: float = DEFAULT_EVERY_S, ffmpeg: str | None = None, clock=None) -> dict[str, Any]:
     """Sample the render every `every` seconds, measure its audio, and write the review files."""
     binary = ffmpeg or shutil.which("ffmpeg")
     if not binary:
@@ -182,15 +182,21 @@ def review_render(video: Path, out_root: Path, *, every: float = DEFAULT_EVERY_S
     frames_dir = out_root / "render-frames"
     try:
         frames = sample_frames(video, times, frames_dir, binary)
-        contact = compose_contact(frames, times, out_root / CONTACT_NAME)
+        timeline_times = [clock.timeline_seconds(t) for t in times] if clock else times
+        contact = compose_contact(frames, timeline_times, out_root / CONTACT_NAME)
     finally:
         shutil.rmtree(frames_dir, ignore_errors=True)
     audio = measure_audio(video, binary) if has_audio else {"integrated_lufs": None, "lra_lu": None, "true_peak_dbtp": None, "silences": []}
+    if clock:
+        for silence in audio["silences"]:
+            silence["start"] = clock.timeline_seconds(silence["start"])
+            if silence["end"] is not None:
+                silence["end"] = clock.timeline_seconds(silence["end"])
     review: dict[str, Any] = {
         "video": video.name,
         "duration_s": round(duration, 3),
         "every_s": float(every),
-        "sample_times_s": times,
+        "sample_times_s": timeline_times,
         "contact": contact.name,
         **{key: audio[key] for key in ("integrated_lufs", "lra_lu", "true_peak_dbtp", "silences")},
     }

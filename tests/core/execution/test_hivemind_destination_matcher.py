@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 from astrid.core.execution.network_broker import ObservableNetworkBroker
@@ -43,6 +44,25 @@ def test_https_declaration_admits_https_and_fences_scheme_and_port():
     assert not broker._route_allowed(f"http://{HOST}/rest/v1/items")  # scheme fence
     assert not broker._route_allowed(f"https://{HOST}:8443/rest/v1/items")  # port fence
     assert not broker._route_allowed("https://example.invalid/rest/v1/items")  # host fence
+
+
+@pytest.mark.parametrize("target", [
+    "https://example.invalid/rest/v1/items",
+    f"https://{HOST}:8443/rest/v1/items",
+    f"https://user@{HOST}:443/rest/v1/items",
+    f"https://{HOST}.:443/rest/v1/items",
+    f"https://{HOST}.evil:443/rest/v1/items",
+    "https://[::1",
+])
+def test_https_declaration_refuses_mismatched_or_malformed_authority(target: str):
+    broker = _broker(f"https://{HOST}:443")
+    assert not broker._route_allowed(target)
+
+
+def test_https_declaration_without_port_uses_443_for_connect():
+    broker = _broker(f"https://{HOST}")
+    assert broker._route_allowed(f"tcp://{HOST}:443")
+    assert not broker._route_allowed(f"tcp://{HOST}:8443")
 
 
 def test_bare_host_port_declaration_is_scheme_agnostic():

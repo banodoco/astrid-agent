@@ -1385,6 +1385,25 @@ class RunPodMachine:
             if observer_key is not None:
                 owner.end_failure_observation(observer_key)
 
+    def settle_interrupted_job(self, invocation) -> None:
+        """Reconnect the original invocation for failed-job verification and reset."""
+        from .remote_placement import connect_claimed_for_preparation
+
+        adapter = self._require()
+        owner = adapter.lease_owner
+        record = owner.preparation_claim(invocation)
+        claim = connect_claimed_for_preparation(record)
+        state = adapter.placement.begin_claimed(
+            claim, out=owner.selection.path.parent / "preparation" / invocation.operation_id,
+            deadline_seconds=record["lease"]["paid_expires_at"] - owner.clock())
+        preparation = record["lease"]["preparation"]
+        state.installation = adapter.installation
+        state.installed = preparation["installed"]
+        lease = MachineLease(invocation, claim, state, preparation["custody"], warm=False)
+        lease.failure_diagnostic = {"code": "host_restarted_during_job", "category": "execution"}
+        self.release(lease, warm=False, reason="host_restarted_during_job",
+                     failure=MachineError("host restarted during the job"))
+
     def _release_impl(self, lease: MachineLease, warm: bool, *, reason: str,
                       failure: BaseException | None, stage: str,
                       abort_event: Any = None, observer_key: Any = None) -> None:
@@ -1395,6 +1414,7 @@ class RunPodMachine:
         if lease.released:
             return
         owner = adapter.lease_owner
+        restart = reason == "host_restarted_during_job"
         original_ops = lease.claim.ops
         paid_expiry = None
         verify_deadline = None
@@ -1531,6 +1551,10 @@ class RunPodMachine:
                     reason = "verification_timeout"
                 else:
                     rejection = "engine_unreachable"
+        if restart and reason == "verification_timeout":
+            rejection = reason
+        if restart and stale:
+            rejection = "installation_unverified"
         if rejection is not None:
             warm, reason = False, rejection
         elif failure is not None:

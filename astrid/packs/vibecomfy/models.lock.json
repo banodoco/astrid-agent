@@ -30,6 +30,16 @@
       "destination": "vae/qwen_image_2.1_vae_bf16.safetensors",
       "bytes": 675509688,
       "sha256": "bb21f7473051e1ac368515dd3f2e15cd44d7a11748ee8823e1ddca3e4876b7c9"
+    },
+    {
+      "name": "large-v3-turbo",
+      "repository": null,
+      "revision": null,
+      "path": null,
+      "url": "https://openaipublic.azureedge.net/main/whisper/models/aff26ae408abcba5fbf8813c21e62b0941638c5f6eebfb145be0c9839262a19a/large-v3-turbo.pt",
+      "destination": "stt/whisper/large-v3-turbo.pt",
+      "bytes": 1617941637,
+      "sha256": "aff26ae408abcba5fbf8813c21e62b0941638c5f6eebfb145be0c9839262a19a"
     }
   ]
 }

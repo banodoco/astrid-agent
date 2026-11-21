@@ -20,7 +20,7 @@ export const BROWSER_ENV = 'ASTRID_REMOTION_BROWSER_EXECUTABLE';
 // Native ESM (the frame worker, the scripts) keeps the module-relative default; the config loader runs from
 // the selected Remotion root, so its working directory is the project.
 const here = typeof import.meta.url === 'string' ? path.dirname(fileURLToPath(import.meta.url)) : null;
-const defaultProjectRoot = () => (here === null ? process.cwd() : path.resolve(here, '..'));
+const defaultProjectRoot = () => (here === null ? process.cwd() : here);
 
 export const sharedBrowserRoot = () =>
   path.join(os.homedir(), 'Library', 'Caches', 'astrid-remotion-browser');

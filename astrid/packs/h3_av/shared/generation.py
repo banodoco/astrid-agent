@@ -3,25 +3,164 @@
 Node contract: ComfyUI 423cbd20511becb1f16122ab518e92e58bfa03d9,
 comfy_extras/nodes_minimax_h3.py, MiniMaxH3ReferenceToVideo.
 """
-from __future__ import annotations
-
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
-from typing import Any, Mapping
+from dataclasses import dataclass
+from fractions import Fraction
+from pathlib import Path
+from typing import Any, Mapping, TypedDict
 
 from .engine_facts import facts
 from .timing import frame_index, smallest_h3_run_at_least
 
-IMAGE_REFERENCE_CAPACITY = 9
-VIDEO_REFERENCE_CAPACITY = 3
+
+class _BuilderSlotValues(TypedDict):
+    image: int
+    video: int
+    audio: int
+
+
+class _JobLengthFrameValues(TypedDict):
+    min: int
+    max: int
+    stride: int
+
+
+class _NamedIntLimit(TypedDict):
+    min: int
+    max: int
+    multiple: int
+
+
+class _CharacterSwapReferences(TypedDict):
+    video: int
+    image: int
+    additional: str
+
+
+class _ContinuationReferences(TypedDict):
+    image: int
+    video: int
+    audio: int
+
+
+class _RegionsPerPass(TypedDict):
+    seeds: int
+    reference_sets: int
+
+
+class _LimitSource(TypedDict):
+    value: str
+    source: str
+
+
+class _BuilderSlotsLimit(TypedDict):
+    value: _BuilderSlotValues
+    source: str
+
+
+class _ClipSecondsLimit(TypedDict):
+    value: list[int]
+    source: str
+
+
+class _IntLimit(TypedDict):
+    value: int
+    source: str
+
+
+class _CanvasLimit(TypedDict):
+    value: _NamedIntLimit
+    source: str
+
+
+class _AudioStrengthLimit(TypedDict):
+    value: list[int]
+    source: str
+
+
+class _JobLengthLimit(TypedDict):
+    value: _JobLengthFrameValues
+    source: str
+
+
+class _JobDurationLimit(TypedDict):
+    value: list[float]
+    source: str
+    warning: str
+
+
+class _CharacterSwapReferencesLimit(TypedDict):
+    value: _CharacterSwapReferences
+    source: str
+
+
+class _ContinuationReferencesLimit(TypedDict):
+    value: _ContinuationReferences
+    source: str
+
+
+class _RegionsPerPassLimit(TypedDict):
+    value: _RegionsPerPass
+    source: str
+
+
+class _ContinuationCanvasLimit(TypedDict):
+    value: list[int]
+    source: str
+
+
+class _Limits(TypedDict):
+    builder_slots: _BuilderSlotsLimit
+    clip_seconds: _ClipSecondsLimit
+    modality_seconds: _IntLimit
+    conditioning_files: _IntLimit
+    canvas_dimension: _CanvasLimit
+    audio_grant_strength: _AudioStrengthLimit
+    job_length_frames: _JobLengthLimit
+    job_duration_seconds: _JobDurationLimit
+    character_swap_references: _CharacterSwapReferencesLimit
+    character_swap_mask_rectangle: _LimitSource
+    continuation_references: _ContinuationReferencesLimit
+    continuation_canvas: _ContinuationCanvasLimit
+    timeline_image_frame: _IntLimit
+    regions_per_pass: _RegionsPerPassLimit
+
+
+_BUILDER_SLOT_VALUES: _BuilderSlotValues = {"image": 9, "video": 3, "audio": 3}
+_JOB_LENGTH_FRAME_VALUES: _JobLengthFrameValues = {"min": 5, "max": 3600, "stride": 17}
+
+DEFAULT_SIZE = (1024, 576)
+
+LIMITS: _Limits = {
+    # Model facts.
+    "builder_slots": {"value": _BUILDER_SLOT_VALUES, "source": "node"},
+    "clip_seconds": {"value": [2, 15], "source": "model card"},
+    "modality_seconds": {"value": 15, "source": "model card"},
+    "conditioning_files": {"value": 12, "source": "model card"},
+    "canvas_dimension": {"value": {"min": 32, "max": 16384, "multiple": 32}, "source": "node"},
+    "audio_grant_strength": {"value": [0, 1], "source": "node"},
+    "job_length_frames": {"value": _JOB_LENGTH_FRAME_VALUES, "source": "node"},
+    "job_duration_seconds": {"value": [124 / 24, 362 / 24], "source": "node", "warning": "Outside 124–362 frames is outside the tested range."},
+    # Current lowering limits. SR-3 owns shared seed/reference-set validation;
+    # the regions-per-pass row is not enforced here.
+    "character_swap_references": {"value": {"video": 1, "image": 1, "additional": "allowed but untested"}, "source": "Astrid lowering"},
+    "character_swap_mask_rectangle": {"value": "integer pixel coordinates", "source": "Astrid lowering"},
+    "continuation_references": {"value": {"image": 2, "video": 0, "audio": 0}, "source": "Astrid lowering"},
+    "continuation_canvas": {"value": list(DEFAULT_SIZE), "source": "Astrid lowering"},
+    "timeline_image_frame": {"value": 0, "source": "Astrid lowering"},
+    "regions_per_pass": {"value": {"seeds": 1, "reference_sets": 1}, "source": "Astrid lowering"},
+}
+IMAGE_REFERENCE_CAPACITY = _BUILDER_SLOT_VALUES["image"]
+VIDEO_REFERENCE_CAPACITY = _BUILDER_SLOT_VALUES["video"]
 CHARACTER_SWAP_ID = "character_swap_v1"
 CHARACTER_SWAP_REPOSITORY = "akatz-ai/MiniMax-H3-Character-Swap-LoRA"
 CHARACTER_SWAP_REVISION = "62407e0cc8089c363abd9ce4b0b27662abb237af"
 CHARACTER_SWAP_FILENAME = "h3_character_swap_pro4500_1000.safetensors"
 CHARACTER_SWAP_SHA256 = "4b2a3f420ae804c0aa3422761ff84dbd1bf52eef6900ffab6d2e66df63cb4e79"
+PIKA_REF2VA_FILENAME = "pika_h3_flex_turbo_8step_hd_ref2va.safetensors"
 TURBO_FILENAME = "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors"
 _T9_MODEL_SUBSTITUTE_MODE = "deterministic_cpu_model_boundary_v1"
 _T9_MODEL_SUBSTITUTE_PURPOSE = "h3_character_swap_public_runtime_cpu_acceptance_v1"
@@ -192,23 +331,80 @@ def _required_locked_url(models: Mapping[str, Any], destination: str) -> str:
     return f"https://huggingface.co/{model.repository}/resolve/{model.revision}/{model.path}"
 
 
-def generation_timing(duration: float) -> dict[str, Any]:
+def generation_timing(duration: Fraction | int | float) -> dict[str, Any]:
     frames = frame_index(duration, "output.duration")
+    length = _JOB_LENGTH_FRAME_VALUES
+    if frames < length["min"] or frames > length["max"]:
+        raise ValueError("job length frames 5..3600: requested duration exceeds the node grid")
     raw = smallest_h3_run_at_least(frames)
-    # Bound this adapter to the upstream documented training range.
-    if frames < 5 or raw > 362:
-        raise ValueError("source-free duration must request 5..362 frames at 24 fps")
+    if raw > length["max"]:
+        raise ValueError("job length frames 5..3600: requested duration exceeds the node grid")
     return {"fps": 24, "requested_frames": frames, "raw_frames": raw,
             "trim_tail_frames": raw - frames, "duration": frames / 24}
 
 
-def build_generation_workflow(*, references: list[str], prompt: str, frames: int,
-                              model: str, steps: int, seed: int,
-                              sampler: str = "res_multistep", guidance: float = 0.95,
-                              scheduler: str = "simple", video_references: list[dict[str, Any]] | None = None,
-                              adapter_strength: float | None = None, turbo_enabled: bool = True,
-                              character_swap_sha256: str = CHARACTER_SWAP_SHA256,
-                              masked_edit: dict[str, Any] | None = None):
+@dataclass(frozen=True)
+class GenerationInputs:
+    canvas: Mapping[str, Any]
+    placed: tuple[Mapping[str, Any], ...]
+    grants: tuple[Mapping[str, Any], ...]
+    conditioning: tuple[Mapping[str, Any], ...]
+    prompt: str
+    model: Mapping[str, Any]
+    sampling: Mapping[str, Any]
+
+
+
+def generation_inputs_from_bindings(*, references: list[str], prompt: str, frames: int,
+                                    model: str, steps: int, seed: int,
+                                    canvas_size: tuple[int, int] = DEFAULT_SIZE,
+                                    sampler: str = "res_multistep", guidance: float = 0.95,
+                                    scheduler: str = "simple", video_references: list[dict[str, Any]] | None = None,
+                                    audio_references: list[dict[str, Any]] | None = None,
+                                    adapter_strength: float | None = None, turbo_enabled: bool = True,
+                                    character_swap_sha256: str = CHARACTER_SWAP_SHA256,
+                                    turbo_filename: str = PIKA_REF2VA_FILENAME,
+                                    video_shift: float = 12.0, audio_shift: float = 3.0,
+                                    masked_edit: dict[str, Any] | None = None) -> GenerationInputs:
+    """Adapt the existing binding interface while callers migrate to resolved inputs."""
+    rows = []
+    for i, binding in enumerate(references):
+        rows.append({"occurrence": binding, "modality": "image", "trim": None,
+                     "input_binding": {"binding": binding, "port": f"ref_images.ref_image_{i}"}, "tag": f"<Picture {i + 1}>"})
+    audio_index = 0
+    for i, reference in enumerate(video_references or []):
+        input_binding = dict(reference)
+        input_binding.setdefault("binding", f"video_reference_{i}")
+        input_binding["port"] = f"ref_videos.ref_video_{i}"
+        if input_binding.get("audio", True):
+            audio_index += 1
+            input_binding["soundtrack"] = {"port": f"ref_video_audios.ref_video_audio_{i}", "tag": f"<Audio {audio_index}>"}
+        rows.append({"occurrence": input_binding["binding"], "modality": "video", "trim": None,
+                     "input_binding": input_binding, "tag": f"<Video {i + 1}>"})
+    for i, reference in enumerate(audio_references or []):
+        input_binding = dict(reference)
+        input_binding.setdefault("binding", f"audio_reference_{i}")
+        input_binding["port"] = f"ref_audios.ref_audio_{i}"
+        audio_index += 1
+        rows.append({"occurrence": input_binding["binding"], "modality": "audio", "trim": input_binding.get("resolved_range"),
+                     "input_binding": input_binding, "tag": f"<Audio {audio_index}>"})
+    return GenerationInputs(
+        canvas={"width": canvas_size[0], "height": canvas_size[1], "frames": frames},
+        placed=({"occurrence": "legacy-source", "input_binding": masked_edit["source_binding"],
+                 "start_time": masked_edit["start_time"], "frame_count": masked_edit["frame_load_cap"]},) if masked_edit else (),
+        grants=({"stream": "video", "interval": [0, masked_edit["frame_load_cap"]],
+                 "source_occurrence": "legacy-source", "region_raster": {"input_binding": masked_edit["mask_binding"],
+                 "channel": masked_edit["mask_channel"], "kind": masked_edit.get("mask_kind", "image"),
+                 "sampler_strength": masked_edit.get("strength", 1)}, "strength": masked_edit.get("strength", 1),
+                 "seed": seed, "references": []},) if masked_edit else (), conditioning=tuple(rows),
+        prompt=prompt, model={"base": model, "turbo_filename": turbo_filename, "adapter": ({"id": CHARACTER_SWAP_ID, "strength": adapter_strength,
+                              "sha256": character_swap_sha256} if adapter_strength is not None else None)},
+        sampling={"steps": steps, "seed": seed, "sampler": sampler, "guidance": guidance,
+                  "scheduler": scheduler, "turbo_enabled": turbo_enabled,
+                  "video_shift": video_shift, "audio_shift": audio_shift},
+    )
+
+def build_generation_workflow(inputs: GenerationInputs):
     """Build ordinary H3 nodes and one muxed sink, ready for canonical emission.
 
     ``masked_edit`` (keys ``source_binding``, ``start_time``, ``frame_load_cap``,
@@ -222,20 +418,72 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
     run bindings, not graph defaults; ordered slots bind Picture 1..N without
     implicit keyframe constraints.
     """
-    from vibecomfy.templates import ModelAsset, OutputSpec, ReadyMetadata, new_workflow, node
+    references = [row["input_binding"]["binding"] for row in inputs.conditioning if row["modality"] == "image"]
+    video_references = [dict(row["input_binding"]) for row in inputs.conditioning if row["modality"] == "video"]
+    audio_references = [dict(row["input_binding"]) for row in inputs.conditioning if row["modality"] == "audio"]
+    prompt = inputs.prompt
+    frames = inputs.canvas["frames"]
+    model = inputs.model["base"]
+    adapter = inputs.model.get("adapter")
+    adapter_strength = adapter["strength"] if adapter else None
+    character_swap_sha256 = adapter.get("sha256", CHARACTER_SWAP_SHA256) if adapter else CHARACTER_SWAP_SHA256
+    steps = inputs.sampling["steps"]
+    seed = inputs.sampling["seed"]
+    sampler = inputs.sampling.get("sampler", "res_multistep")
+    guidance = inputs.sampling.get("guidance", 0.95)
+    scheduler = inputs.sampling.get("scheduler", "simple")
+    turbo_enabled = inputs.sampling.get("turbo_enabled", True)
+    turbo_filename = inputs.model.get("turbo_filename", PIKA_REF2VA_FILENAME)
+    video_shift = inputs.sampling.get("video_shift", 12.0)
+    audio_shift = inputs.sampling.get("audio_shift", 3.0)
+    spatial = next((grant for grant in inputs.grants if grant.get("stream") == "video" and grant.get("source_occurrence") and isinstance(grant.get("region_raster"), Mapping) and grant["region_raster"].get("input_binding")), None)
+    masked_edit = None
+    if spatial:
+        source = next(item for item in inputs.placed if item.get("occurrence", item.get("occurrence_id")) == spatial["source_occurrence"])
+        raster = spatial["region_raster"]
+        masked_edit = {"source_binding": source["input_binding"], "start_time": source["start_time"],
+                       "frame_load_cap": source["frame_count"], "mask_binding": raster["input_binding"],
+                       "mask_channel": raster["channel"], "mask_kind": raster.get("sampler_kind", raster["kind"]),
+                       "strength": raster["sampler_strength"],
+                       **({"audio_source_binding": source["audio_input_binding"]} if source.get("audio_input_binding") else {}),
+                       **({"audio_mask_binding": source["audio_mask_binding"]} if source.get("audio_mask_binding") else {})}
     from vibecomfy.nodes.core import (
-        AudioConcat, BasicGuider, BasicScheduler, CLIPLoader, EmptyAudio, EmptyImage,
-        ImageBatch, ImageFromBatch, KSamplerSelect, LoadImage, RepeatImageBatch,
-        LoraLoaderModelOnly, RandomNoise, SamplerCustomAdvanced, UNETLoader,
-        VAEDecode, VAEDecodeAudio, VAELoader,
+        AudioConcat,
+        BasicGuider,
+        BasicScheduler,
+        CLIPLoader,
+        CropMask,
+        EmptyAudio,
+        EmptyImage,
+        ImageBatch,
+        ImageFromBatch,
+        KSamplerSelect,
+        LoadAudio,
+        LoadImage,
+        LoraLoaderModelOnly,
+        RandomNoise,
+        RepeatImageBatch,
+        SamplerCustomAdvanced,
+        TrimAudioDuration,
+        UNETLoader,
+        VAEDecode,
+        VAEDecodeAudio,
+        VAELoader,
     )
     from vibecomfy.nodes.videohelpersuite import VHS_LoadVideoFFmpeg, VHS_VideoCombine
+    from vibecomfy.templates import ModelAsset, OutputSpec, ReadyMetadata, new_workflow, node
 
-    if not (0 if masked_edit else 1) <= len(references) <= IMAGE_REFERENCE_CAPACITY:
-        raise ValueError("this adapter requires one to nine image references")
+    if not 0 <= len(references) <= IMAGE_REFERENCE_CAPACITY:
+        raise ValueError("this adapter supports at most nine image references")
     video_references = list(video_references or [])
+    length = _JOB_LENGTH_FRAME_VALUES
+    if frames < length["min"] or smallest_h3_run_at_least(frames) > length["max"]:
+        raise ValueError("job length frames 5..3600: requested length exceeds the node grid")
+    audio_references = list(audio_references or [])
     if len(video_references) > VIDEO_REFERENCE_CAPACITY:
         raise ValueError("this adapter requires at most three video references")
+    if len(audio_references) > _BUILDER_SLOT_VALUES["audio"]:
+        raise ValueError("this adapter supports at most three standalone audio references")
     locked_models = _h3_locked_urls()
     names = {
         "model": ("diffusion_models", "minimax_h3_ref2va_pruned_int8_convrot.safetensors"),
@@ -249,7 +497,7 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
     }
     if turbo_enabled:
         model_assets["turbo_lora"] = _locked_asset(
-            locked_models, f"loras/{TURBO_FILENAME}", filename=TURBO_FILENAME, subdir="loras")
+            locked_models, f"loras/{turbo_filename}", filename=turbo_filename, subdir="loras")
     if adapter_strength is not None:
         model_assets["character_swap_lora"] = ModelAsset(
             filename=CHARACTER_SWAP_FILENAME,
@@ -259,6 +507,9 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
             sha256=character_swap_sha256,
             hf_revision=CHARACTER_SWAP_REVISION,
         )
+    sources = facts().custom_node_sources()
+    motion = sources["ComfyUI-H3-Motion-Context-MultiRef"]
+    video_helper = sources["ComfyUI-VideoHelperSuite"]
     metadata = ReadyMetadata.build(
         capability="video", template_id="h3_av_reference_generation",
         models=model_assets,
@@ -271,14 +522,15 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
             },
             "custom_node_refs": [
                 {"slug": "ComfyUI-H3-Motion-Context-MultiRef", "source": "git",
-                 "url": "https://github.com/seitanism/ComfyUI-H3-Motion-Context-MultiRef.git",
-                 "commit": "361624fb406b63eb6694442eac6c895fc1533a70",
+                 "url": motion.repository,
+                 "commit": motion.revision,
                  "classes": ["MiniMaxH3AudioVAECompatibility"]
-                            + (["H3V2VGranularFractionalDenoise"] if masked_edit else [])},
+                            + (["H3V2VGranularFractionalDenoise"] if masked_edit else [])
+                            + (["MiniMaxH3SetAVNoiseMask"] if masked_edit and masked_edit.get("audio_mask_binding") else [])},
                 {"slug": "ComfyUI-VideoHelperSuite", "source": "git",
-                 "url": "https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git",
-                 "commit": "4ee72c065db22c9d96c2427954dc69e7b908444b",
-                 "classes": ["VHS_LoadVideoFFmpeg", "VHS_VideoCombine"]},
+                 "url": video_helper.repository,
+                 "commit": video_helper.revision,
+                 "classes": (["VHS_LoadVideoFFmpeg"] if video_references or masked_edit else []) + ["VHS_VideoCombine"]},
             ],
         },
     )
@@ -298,11 +550,11 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
             upstream = character_swap.out("MODEL")
         if turbo_enabled:
             turbo = LoraLoaderModelOnly(
-                model=upstream, lora_name=TURBO_FILENAME,
+                model=upstream, lora_name=turbo_filename,
                 strength_model=guidance, _id="turbo_lora",
             )
             upstream = turbo.out("MODEL")
-        shifted = node("MiniMaxH3SigmaShift", _outputs=("MODEL",), model=upstream, shift_audio=3.0, shift_video=12.0)
+        shifted = node("MiniMaxH3SigmaShift", _outputs=("MODEL",), model=upstream, shift_audio=audio_shift, shift_video=video_shift)
         refs = {}
         for index in range(len(references)):
             ident = f"reference_{index}"
@@ -332,18 +584,27 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
                 audio_port = f"ref_video_audios.ref_video_audio_{index}"
                 refs[audio_port] = loader.out(2)
                 video_audio_inputs.add(audio_port)
+        for index, reference in enumerate(audio_references):
+            ident = str(reference.get("binding", f"audio_reference_{index}"))
+            loader = LoadAudio(audio="", _id=ident)
+            wf.register_input(ident, ident, "audio", "", type="CHOICE", default="", required=True, media_semantics="audio")
+            audio_output = loader.out("audio")
+            selected = reference.get("resolved_range")
+            if isinstance(selected, list):
+                audio_output = TrimAudioDuration(audio=audio_output, start_index=float(selected[0]) / 48000, duration=float(selected[1] - selected[0]) / 48000).out("AUDIO")
+            refs[f"ref_audios.ref_audio_{index}"] = audio_output
         # Retain the pinned define_schema contract: the offline schema predates
         # this node. Declare only the exact dynamic reference ports used here.
         target_inputs = ["clip", "vae", "audio_vae", "prompt", "width", "height", "length", "ref_image_size", *refs]
         target = node("MiniMaxH3ReferenceToVideo", _id="target", _outputs=("positive", "LATENT"),
                       _native_ports={
                           "native_input_names": target_inputs,
-                          "native_input_types": ["CLIP", "VAE", "VAE", "STRING", "INT", "INT", "INT", "COMBO", *["AUDIO" if name in video_audio_inputs else "IMAGE" for name in refs]],
+                          "native_input_types": ["CLIP", "VAE", "VAE", "STRING", "INT", "INT", "INT", "COMBO", *["AUDIO" if name in video_audio_inputs or name.startswith("ref_audios.") else "IMAGE" for name in refs]],
                           "native_output_names": ["positive", "LATENT"],
                           "native_output_types": ["CONDITIONING", "LATENT"],
                       },
                       clip=clip.out("CLIP"), vae=video_vae.out("VAE"), audio_vae=audio.out("audio_vae"),
-                      prompt=prompt, width=1024, height=576, length=frames, ref_image_size="match", **refs)
+                      prompt=prompt, width=inputs.canvas["width"], height=inputs.canvas["height"], length=frames, ref_image_size="match", **refs)
         sampling_model = shifted.out("MODEL")
         sampling_latent = target.out("LATENT")
         if masked_edit:
@@ -361,6 +622,11 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
                               type="CHOICE", default="", required=True, media_semantics="video")
             source_frames = source.out("IMAGE")
             source_audio = source.out(2)
+            if masked_edit.get("audio_source_binding"):
+                ident = masked_edit["audio_source_binding"]
+                prepared_audio = LoadAudio(audio="", _id=ident)
+                wf.register_input(ident, ident, "audio", "", type="CHOICE", default="", required=True, media_semantics="audio")
+                source_audio = prepared_audio.out("audio")
             source_count = int(masked_edit["frame_load_cap"])
             tail_frames = frames - source_count
             if source_count < 1 or tail_frames < 0:
@@ -389,7 +655,7 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
                 mask_frames = mask_loader.out("IMAGE")
                 if tail_frames:
                     # The internal tail grants no additional edit permissions.
-                    preserve = EmptyImage(width=1024, height=576, batch_size=tail_frames, color=0)
+                    preserve = EmptyImage(width=inputs.canvas["width"], height=inputs.canvas["height"], batch_size=tail_frames, color=0)
                     mask_frames = ImageBatch(image1=mask_frames, image2=preserve.out("IMAGE")).out("IMAGE")
                 mask = node("ImageToMask", _outputs=("MASK",), image=mask_frames,
                             channel=masked_edit["mask_channel"])
@@ -418,6 +684,21 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
                        source_mask=mask.out("MASK"))
             sampling_model = v2v.out("MODEL")
             sampling_latent = v2v.out("LATENT")
+            if masked_edit.get("audio_mask_binding"):
+                ident = masked_edit["audio_mask_binding"]
+                audio_mask_loader = VHS_LoadVideoFFmpeg(
+                    custom_height=0, custom_width=0, force_rate=24, format="AnimateDiff",
+                    frame_load_cap=frames, start_time=0.0, video="",
+                    videopreview={"hidden": False, "paused": False, "params": {}, "muted": False}, _id=ident)
+                wf.register_input(ident, ident, "video", "", type="CHOICE", default="", required=True, media_semantics="video")
+                red = node("ImageToMask", _outputs=("MASK",), image=audio_mask_loader.out("IMAGE"), channel="red")
+                scalar = CropMask(mask=red.out("MASK"), x=0, y=0, width=1, height=1)
+                av_mask = node("MiniMaxH3SetAVNoiseMask", _id="audio_time_mask_apply", _outputs=("latent",),
+                               _native_ports={"native_input_names": ["latent", "audio_mask"],
+                                              "native_input_types": ["LATENT", "MASK"],
+                                              "native_output_names": ["latent"], "native_output_types": ["LATENT"]},
+                               latent=v2v.out("LATENT"), audio_mask=scalar.out("MASK"))
+                sampling_latent = av_mask.out("latent")
         schedule = BasicScheduler(model=sampling_model, scheduler=scheduler, steps=steps, denoise=1.0, _id="schedule")
         selected = KSamplerSelect(sampler_name=sampler, _id="sampler")
         noise = RandomNoise(noise_seed=seed, _id="noise")

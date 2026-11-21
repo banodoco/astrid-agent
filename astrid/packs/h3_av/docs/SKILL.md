@@ -5,6 +5,10 @@ description: Request-driven MiniMax H3 audiovisual transformations with explicit
 
 # H3 audiovisual transformations
 
+To plan a whole scene (replacing characters, re-voicing dialogue, choosing a method for each shot), start with [Recast and re-voice a scene](recast-scene/SKILL.md).
+
+An H3 request made for a planned shot records its generation in that shot's `plan.takes` (`timelines shots plan set <shot> --project <project> --timeline <timeline> --add-take '{"generation": "<run id>", "media": "<media id>"}'`; see [shot plans](../../timeline/docs/shots/SKILL.md#shot-plans)).
+
 H3 inference currently runs only on RunPod workers. Select a RunPod worker
 execution request, worker qualification receipt, or prepared worker selection.
 The parent orchestrator runs locally; there is no local H3 inference route on
@@ -89,7 +93,9 @@ that final publication occurred.
 ## Character Swap (opt-in native-v2 candidate)
 
 Set `settings.adapter.id` to `character_swap_v1` to select this route. It requires
-exactly one typed video reference and one typed replacement image. They receive
+at least one typed video reference and one typed replacement image. Additional
+references are accepted by the current lowering but untested; see the
+[`character_swap_references` limit](../shared/generation.py). The first video and image receive
 `<Video 1>` and `<Picture 1>` tags in their modality-local order. Adapter strength
 defaults to `1.0` and must be finite from `0` through `2`.
 
@@ -101,10 +107,14 @@ the Ref2VA base `minimax_h3_ref2va_pruned_int8_convrot.safetensors`. An explicit
 different base is rejected; it is never changed automatically.
 
 The graph applies attention, the selected Character Swap LoRA, optional Turbo,
-then the existing sigma shift and sampler. Turbo defaults to enabled at strength
-`0.95`. `settings.guidance` and `settings.guidance_scale` are legacy Turbo
-strength aliases; do not combine an alias with `settings.turbo.strength`. When
-Turbo is disabled, its loader and model requirement are omitted. Effective
+then sigma shift and sampler. Turbo defaults to `pika_flex_8step` on Ref2VA at
+strength 1.0; its Flex style is baked in. `lightx2v_8step` is the existing FL2VA
+choice and is refused on current Ref2VA routes. Defaults: 8 steps,
+res_multistep/simple, CFG 1, video shift 12 and audio shift 3. Non-1 CFG is
+refused. `settings.guidance` and `settings.guidance_scale` are legacy LoRA
+strength aliases, not CFG; do not combine an alias with `settings.turbo.strength`.
+Turbo can be disabled on supported generation and edit routes, removing its loader
+and requirement; continuation refuses disabled Turbo. Effective
 configuration is recorded in the compilation, which lists only connected model
 assets. The Character Swap LoRA is pinned by immutable revision and checksum;
 the Ref2VA base, text encoder, VAEs, and optional Turbo LoRA use immutable
@@ -126,6 +136,18 @@ compile test does not establish public Runtime CPU acceptance or final managed
 publication.
 
 ## Request shape
+
+The native v2 compiler accepts `output.size: [width, height]` for image-guided
+generation, masked edits, and Character Swap. Each dimension must be an integer
+from 32 through 16384 inclusive and a multiple of 32. Omission selects
+1024×576. Continuation requires the default size.
+
+The [512×288 image-guided speech request](examples/image-guided-speech.json)
+illustrates a smaller picture for a voice-only take where the creator intends
+to keep the generated audio. The [768×448 masked edit](examples/rectangle-edit.json)
+uses a clip already prepared at the requested size. CPU compilation covers these
+two sizes. Other non-default sizes within the rule are uncharacterized. Speech
+quality and timing at the smaller size still need a live evaluation.
 
 Start with `schemas/request.v1.json` or `schemas/request.v2.json` and the
 following compact v1 shape:
@@ -172,11 +194,13 @@ contracts—not creative request fields.
 `changes` list means preserve source material. References are an ordered list
 and may be empty; the selected workflow advertises its actual reference
 capacity in the compiled manifest rather than silently discarding extras.
-The current continuation workflow supports up to two image references; the
-edit workflow has no reference-image input. Ordinary source-free generation
-supports one to nine ordered still-image references. The Character Swap route
-supports exactly one video and one image reference. Unsupported counts fail
-admission or compilation.
+Captured continuation accepts up to two image references. The source-free v1
+generation adapter accepts one to nine ordered still-image references. Native
+v2 conditioning and source-backed masked edits use the shared H3 slot limits:
+up to 9 images, 3 videos and 3 standalone audio references, with 12 inputs total
+(subject to per-modality duration limits below). Character Swap requires at
+least one video and one image; additional references are accepted by the
+lowering but untested. See the [shared limits](../shared/generation.py).
 Do not add request-level reference strategies or fixture-specific production
 workflows to bypass these limits.
 
@@ -203,21 +227,45 @@ overrides: {steps: 8, seed: 42}
 
 The general adapter accepts 1..9 still images (including four), frame-aligned
 durations of 5..362 frames at 24 fps, and the existing model/steps/seed/sampler/
-guidance overrides. Here `guidance` controls the existing turbo LoRA strength;
-it is not classifier-free guidance. Default resolution is 1024×576. A 15-second
+guidance overrides. V1 also accepts `overrides.turbo_lora`, `scheduler`, `cfg`,
+`video_shift` and `audio_shift`; native continuation binds these supported
+overrides into its request-specific graph. `guidance` controls LoRA strength,
+not classifier-free guidance; CFG other than 1 is refused. Default resolution is 1024×576. A 15-second
 request samples 362 native frames and deterministically trims two frames and
 the matching audio tail to deliver 360 frames. Media filenames are managed run
 bindings, never graph defaults or caller/worker filesystem dependencies.
 
-This adapter does not yet support video/audio references, timed keyframes, or
-source-free masks/preservation schedules. Those requests fail before GPU work.
+The v1 example above uses still-image references. Timed keyframes and
+source-free masks/preservation schedules remain unsupported in this adapter.
 Its CPU bundle and transport tests do not establish live GPU acceptance or
 visual quality; target attestation and a live run remain separate gates.
 
+## Speaker references (v2)
+
+The [start-still request](recipes/start-still-speaker.json) uses a speaker video's
+soundtrack. Place a timeline image at frame 0 for an exact first frame. H3
+generates the picture from frame 1 and the entire soundtrack.
+
+The [mouth-mask request](recipes/mouth-mask-speaker.json) uses a standalone
+speaker clip. White in the supplied mask allows the mouth to change during
+the edit window. H3 keeps the source audio outside that window and regenerates
+both speech and room tone inside it.
+
+Conditioning accepts up to 9 images, 3 videos and 3 standalone audio clips,
+with 12 inputs total. Each selected clip spans 2–15 seconds. Video and audio
+each have a 15-second total. Enabled video soundtracks count toward the audio
+total. See the [limits table](../shared/generation.py).
+
+`<Audio 1> is the voice-timbre reference for <Subject 1> (S1)` is an
+unverified prompt convention. Judge voice likeness and lip sync on generated
+output.
+
 ## Worked source-backed edits
 
-Edits can't regenerate audio; use video-only changes (the source audio is kept).
-Ordinary source-backed edits use the native `H3V2VGranularFractionalDenoise`
+The examples below request video-only changes and keep the shot's audio.
+Source-backed edits may supply a replacement audio clip (see "Edit inputs"
+below); `audio_strength` stays 0 either way. Ordinary source-backed edits use
+the native `H3V2VGranularFractionalDenoise`
 spatial/temporal mask route. The LanPaint helper in `shared/compile.py` is not
 on the active edit dispatch. The composer rejects changed outside-mask pixels
 (`shared/compose.py:678–680`); CPU admission alone does not prove output equality.
@@ -247,8 +295,8 @@ First frame via still: keep the first four frames of `bike-still.mp4`, permit
 video changes from frame 4 onward, and keep its source audio. A still-clip edit
 keeps the first N frames of the supplied clip: a lossless clip keeps them exactly
 in the decoded source. A lossy still clip is not bit-identical to the original
-picture. i2v with an image reference supplies a style/subject reference, not an
-exact first frame; exact first-frame conditioning is not yet supported.
+picture. For an exact first frame from an image, use the v2 timeline placement
+in the start-still request above.
 
 Use exact frame-aligned boundaries in v2, such as `"1/6"` seconds for four
 frames at 24 fps. The decimal `0.1667` is not representable on the native clock.
@@ -286,7 +334,125 @@ changes:
 overrides: {steps: 8, seed: 42}
 ```
 
+## Edit inputs: reference images and replacement audio
+
+For generated speech in a v2 edit, put the literal spoken line in the top-level `prompt`.
+
+A v2 source-backed edit takes three independent parts. Each is optional, and
+they combine in one request:
+
+- **Masks** are the `mask` of a video `edit` entry: a mask asset (static image;
+  white is editable), or `{"rectangle": [x, y, width, height]}` in 1024x576 pixel
+  coordinates. An image mask must match the 1024x576 working frame whatever the
+  source fit, and be strictly binary (0 and 255), so build any margin
+  into the shape rather than feathering it. Polygon masks are not supported on the edit route. Several static
+  masks in one request merge into one union mask. Per-frame mask video cannot be
+  merged.
+- **Reference images** are `role: reference`, `modality: image` media, linked
+  with the edit's `guides`. Source-backed masked edits use the shared native H3
+  slot limits above; the continuation route has its own two-image limit.
+- **Replacement audio** is a span: `role: reference`, `modality: audio`, with a
+  `range` in seconds naming a window of the clip (the clip may be a longer voice
+  track), plus one `stream: audio` edit whose `during` has exactly the range's
+  length and whose `guides` names that clip. The window is trimmed in the graph
+  and spliced over `during`; source audio outside it is kept. Admission fails
+  with "replacement audio length must match the edited span" when the lengths
+  differ. The request shape is a list of spans; the compiler accepts one per
+  request today and refuses more. `audio_strength` stays 0.
+
+Guide rules follow the modalities each edit supports: video edits take image
+references today (a video reference would be a capacity change, not a schema
+change), and a replacement audio span takes an audio reference. A guide of any
+other modality fails admission.
+
+Regions in one request share one `during`, one `strength`, one `seed` and one
+reference set, because the graph has one mask input and one reference set. So:
+
+- Regions whose `guides` differ are refused with "regions with different references
+  need two passes; references condition the whole clip in one pass".
+- Regions with different `during` intervals are refused.
+- Lenses and mouth with the same reference can share one pass, but the lens
+  reference then also conditions the mouth region. For lenses plus mouth, prefer
+  two passes: lenses first (reference image, lens mask), then the mouth pass with
+  the replacement audio span last. Mouth masks should cover the lower face (jaw
+  and cheeks), not only the lips.
+
+The compiled manifest reports `reference_capacity`, `replacement_audio` (the
+clip range, the interval, `audio_strength: 0`, and `length_check`: `ffprobe` when
+the clip is verified to cover its range, or `request_range_only` when ffprobe is
+unavailable), `audio_binding` and `mask_binding`. If ffprobe is installed and
+cannot read the clip, compilation refuses it. The 18 November GPU runs used image guides for lens edits and fixed audio for a
+mouth edit. Listen to the selected audio range first. The 02c mouth take played
+the temporary voice-over supplied by the shot plan.
+
+Lens region replace with one reference image:
+
+```json
+{
+  "version": 2,
+  "prompt": "The sunglasses lenses reflect the old man's face; everything else in the frame is unchanged.",
+  "duration": 3,
+  "settings": {},
+  "media": [
+    {"id": "shot", "asset": "shot.mp4", "role": "timeline", "modality": "video",
+     "at": {"frame": 0}, "range": [0, 3],
+     "edit": [{"stream": "video", "during": [1.0, 2.5], "mask": {"asset": "lens-mask.png"}, "guides": ["old-man"]}]},
+    {"id": "old-man", "asset": "old-man.png", "role": "reference", "modality": "image"}
+  ]
+}
+```
+
+Mouth edit with replacement audio (the clip is exactly the 1.5 s span):
+
+```json
+{
+  "version": 2,
+  "prompt": "The speaker says the supplied line; head, hands and background stay as they are.",
+  "duration": 3,
+  "settings": {},
+  "media": [
+    {"id": "shot", "asset": "speaker.mp4", "role": "timeline", "modality": "video",
+     "at": {"frame": 0}, "range": [0, 3],
+     "edit": [
+       {"stream": "video", "during": [1.0, 2.5], "mask": {"asset": "mouth-mask.png"}},
+       {"stream": "audio", "during": [1.0, 2.5], "guides": ["line"]}
+     ]},
+    {"id": "line", "asset": "line.wav", "role": "reference", "modality": "audio", "range": [0, 1.5]}
+  ]
+}
+```
+
+Both in one request (lens region and mouth region, one interval, one reference):
+
+```json
+{
+  "version": 2,
+  "prompt": "The sunglasses reflect the old man's face; the same man speaks the supplied line; everything else is unchanged.",
+  "duration": 3,
+  "settings": {},
+  "media": [
+    {"id": "shot", "asset": "shot.mp4", "role": "timeline", "modality": "video",
+     "at": {"frame": 0}, "range": [0, 3],
+     "edit": [
+       {"stream": "video", "during": [1.0, 2.5], "mask": {"asset": "lens-mask.png"}, "guides": ["old-man"]},
+       {"stream": "video", "during": [1.0, 2.5], "mask": {"asset": "mouth-mask.png"}, "guides": ["old-man"]},
+       {"stream": "audio", "during": [1.0, 2.5], "guides": ["line"]}
+     ]},
+    {"id": "old-man", "asset": "old-man.png", "role": "reference", "modality": "image"},
+    {"id": "line", "asset": "line.wav", "role": "reference", "modality": "audio", "range": [0, 1.5]}
+  ]
+}
+```
+
 ## Mask semantics
+
+For a v2 rectangle, `mask.canvas: [width, height]` gives the dimensions of
+the prepared view in which the rectangle was drawn, including any fit bars.
+The rectangle contains its left edge, top edge, width and height in pixels.
+When the canvas is omitted, coordinates refer to 1024×576. The compiler scales
+the rectangle to the requested output. A still-image mask scales from its own
+pixel dimensions using nearest-neighbour sampling. A moving mask must already
+match the prepared source size and frame clock and use a lossless encoding.
 
 Use a full-frame region, a supplied mask asset, a geometry region, or an
 explicit semantic target. The preparation stage keeps three truths separate:
@@ -307,6 +473,15 @@ For native continuation, the protected prefix is authoritative and the
 generated suffix is explicit. For continuation plus a spatial mask, provide a
 suffix baseline or an explicit policy; the compiler never silently freezes the
 last frame.
+
+**Lead-in.** Run the continuation with the default `output.lead_in` of `"drop"`.
+The full take retains the source frames for verification. Read `range` from the
+take's `h3/take.json` and use its two values as `START,END` in
+`astrid media trim <take media id> --range START,END --project P` to import a
+clip of just the new performance. The same range supplies the clip's `from`/`to`
+when placing the take. Choose `"keep"` to use the whole take through its last
+video frame. If range derivation fails, the report records an `error` and the
+verified take remains available.
 
 ## Workflow choice
 
@@ -355,3 +530,53 @@ must list its exact kind/id, expected postcondition, observed postcondition,
 and verification result. A network volume that must be preserved is recorded
 as a non-owned resource with its preservation postcondition; it is never
 silently treated as part of pod deletion.
+
+## Source range and framing
+
+A source may be a project media handle (`sha256:…`, `ref:…`, or an earlier
+`run:…` output). Give its half-open source `range` and, optionally, `fit`:
+`fill` (default) center-crops to 16:9; `fit` keeps the whole frame with bars.
+Neither stretches the picture. H3 prepares the selected interval as 24 fps,
+1024×576, and the dry-run reports the original and prepared identities,
+range, fit and decoded timing. V1 range durations round to the nearest 24 fps
+frame; V2 ranges must use its exact frame grid. Video must cover the requested
+range. Stream timestamps must be measurable; H3 rebases them to the selected
+video start and records the timing. An audio start offset or coverage shortfall
+of at most one frame can be aligned or padded, with the repair recorded; larger
+offsets, shortfalls and discontinuous decoded audio are refused. Framing uses the source display aspect ratio;
+if pixel aspect metadata is missing, H3 records an assumption of square pixels.
+Continuations require at least 39 prepared frames (1.625 seconds). Preparation
+never invents a missing audio stream, and the current source-backed graph refuses
+one without audio. Plain
+`video_ref` selects the whole video up to its last complete 24-fps frame; the
+selected range is included in the dry-run.
+
+Preparation measures the conformed clip when it is created. Its managed object
+carries that measurement and its source lineage. Later stages verify the object
+descriptor and digest and reuse the recorded measurement.
+
+Masks and pixel-coordinate regions refer to the prepared 1024×576 canvas and
+clip-relative clock, after the specified fit. Supply masks already aligned to
+that canvas and time range; H3 does not transform source-coordinate masks.
+
+The packaged continuation bundles are historical source captures; use the H3
+compiler to emit the selected LoRA and settings into a request-specific bundle.
+V1 edits default to the selected LoRA’s eight steps; explicit steps still win.
+
+### Make a mask
+
+For the Matrix close-up (shot 02c), make a binary 1024×576 lens mask and
+preview it over the shot:
+
+```bash
+astrid media mask --project P --name "02c lenses" \
+  --ellipse 282,121,119,99 --ellipse 622,114,132,96 --grow 8 \
+  --preview-on SHOT_MEDIA_ID --range 81.041667,84.291667
+```
+
+Open the contact sheet printed on the last line. It shows the mask over the
+same center crop H3 uses by default. Put the full mask media ID in
+`edit[].mask.asset`. To read the saved recipe, run
+`astrid media mask --project P --mask MASK_MEDIA_ID`. Add `--preview-on` to
+check that mask again. A moving subject needs a tracked video mask. H3
+accepts one in the same field, and `media mask` currently makes still masks.

@@ -6,6 +6,7 @@ import pickle
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -168,6 +169,108 @@ def test_declared_render_worker_controls_are_refused_before_launch(tmp_path, mon
         host._child_environment(record, tmp_path / "attempt", explicit_env=dict(record.definition.command.env))
 
 
+def test_source_launch_projection_includes_the_selected_runtime_dependency_root(tmp_path, monkeypatch):
+    import json
+
+    from runtime_protocol import __file__ as runtime_protocol_file
+
+    from astrid.core.execution import generic_host
+    from tests.test_generic_host import _write_manifest
+
+    monkeypatch.delenv("ASTRID_HOST_EXECUTION_PROFILE", raising=False)
+    manifest = _write_manifest(tmp_path / "render-worker", capability_id="test.render")
+    data = json.loads(manifest.read_text())
+    data["metadata"]["requires_remotion"] = True
+    manifest.write_text(json.dumps(data))
+
+    candidates = generic_host._launch_worker_probe_environments(
+        (tmp_path,), {"HOME": str(tmp_path), "PATH": os.defpath}, remotion_only=True,
+    )
+    runtime_root = str((Path(runtime_protocol_file).resolve().parent.parent))
+
+    assert any(
+        runtime_root in candidate.get("PYTHONPATH", "").split(os.pathsep)
+        for candidate in candidates
+    )
+
+
+@pytest.mark.parametrize("worker_kind", ["native", "command"])
+def test_source_launch_projection_matches_execution_readiness_context(
+    tmp_path, monkeypatch, worker_kind,
+):
+    """Launch validation and the executing worker must select the same context."""
+    import json
+
+    from astrid.core.execution import generic_host
+    from astrid.core.env_vars import (
+        ASTRID_REMOTION_PROJECT_DIR,
+        ASTRID_REMOTION_VALIDATION_LAUNCH,
+        ASTRID_REMOTION_VALIDATION_PATH,
+        ASTRID_REMOTION_VALIDATION_ROLE,
+        ASTRID_REMOTION_VALIDATION_SHA256,
+    )
+    from tests.test_generic_host import _write_manifest
+
+    monkeypatch.delenv("ASTRID_HOST_EXECUTION_PROFILE", raising=False)
+    monkeypatch.setenv("ASTRID_HOST_EXECUTION_PROFILE", "source")
+    monkeypatch.setattr(generic_host, "dependency_pythonpath", lambda _environment=None: ())
+    monkeypatch.setattr(runtime, "ensure_remotion_validation", lambda: None)
+    monkeypatch.setattr(runtime, "_validate_remotion_worker_environment", lambda _environment: None)
+
+    manifest = _write_manifest(tmp_path / "render-worker", capability_id="test.render")
+    definition_data = json.loads(manifest.read_text())
+    definition_data["metadata"]["requires_remotion"] = True
+    manifest.write_text(json.dumps(definition_data))
+
+    project = tmp_path / "remotion"
+    project.mkdir()
+    environment = {
+        "HOME": str(tmp_path),
+        # The isolated home for both variants added in 33ac96188 on Windows.
+        "USERPROFILE": str(tmp_path),
+        "PATH": os.defpath,
+        "ASTRID_HOST_EXECUTION_PROFILE": "source",
+        ASTRID_REMOTION_PROJECT_DIR: str(project),
+        ASTRID_REMOTION_VALIDATION_PATH: str(tmp_path / "validation.json"),
+        ASTRID_REMOTION_VALIDATION_SHA256: "a" * 64,
+        ASTRID_REMOTION_VALIDATION_LAUNCH: "b" * 32,
+        ASTRID_REMOTION_VALIDATION_ROLE: "host",
+    }
+    monkeypatch.setattr(os, "environ", environment)
+    host = generic_host.GenericPackHost(pack_roots=[tmp_path], credential_source=environment)
+    record = host.discover()[0]
+
+    captured = []
+    monkeypatch.setattr(
+        runtime, "_validated_runtime",
+        lambda _project, *, environment: captured.append(dict(environment)) or {},
+    )
+    host._child_environment(
+        record,
+        tmp_path / "attempt",
+        explicit_env={
+            "PYTHONPATH": os.pathsep.join((
+                str(Path(generic_host.__file__).resolve().parents[3]),
+                *generic_host._dependency_pythonpath(),
+            )),
+        },
+        readiness_worker_kind=worker_kind,
+    )
+    assert len(captured) == 1
+    execution_context = runtime._registry_context(captured[0], generator=False)
+
+    launch_variants = generic_host._launch_worker_probe_environments(
+        (tmp_path,), environment, remotion_only=True,
+    )
+    # The first row is the host baseline; each render-capable record then
+    # contributes its native and command variants in that order.
+    variant_index = 1 if worker_kind == "native" else 2
+    launch_context = runtime._registry_context(
+        launch_variants[variant_index], generator=False,
+    )
+    assert execution_context == launch_context
+
+
 def test_execution_profile_cannot_be_overridden_by_command_environment():
     from astrid.core.subprocess_env import SubprocessEnvPolicyError
 
@@ -304,3 +407,14 @@ def test_native_platform_launch_inherits_source_descriptor():
                     platform.stop_tree(child, grace=0.2)
         assert child.returncode == 0, stderr
         assert stdout.strip() == "captured source bytes"
+
+
+def test_context_difference_reports_field_names_without_values():
+    from astrid.core.rendering.remotion_runtime import _context_differences
+
+    fields = _context_differences(
+        {"registry_context": {"PYTHONPATH": "private-expected"}},
+        {"registry_context": {"PYTHONPATH": "private-actual", "ASTRID_PACKS_PATH": "private-root"}},
+    )
+    assert fields == ["registry_context.ASTRID_PACKS_PATH", "registry_context.PYTHONPATH"]
+    assert "private" not in repr(fields)

@@ -51,6 +51,8 @@ def job_harness(tmp_path, monkeypatch):
             callback = getattr(self, "evidence_start", None)
             if callback is not None:
                 callback()
+            self.checked_classes = ['Loader', 'SaveTranscript']
+            self.engine_restarted = True
             if state.get("prepare_fail"):
                 raise ValueError("preparation failed")
             if hasattr(real_preparation, "_start_engine"):
@@ -112,6 +114,8 @@ def test_consecutive_jobs_have_bounded_slices_and_run_record(tmp_path, job_harne
             stream.write('after both jobs\n')
         first, record = evidence(tmp_path / 'one')
         second, second_record = evidence(tmp_path / 'two')
+    assert second_record['checked_classes'] == ['Loader', 'SaveTranscript']
+    assert second_record['engine_restarted'] is True
     assert second == 'second job\n'
     assert first == 'first job\n'
     assert record['vram_free_before_bytes'] == 20_000_000_000
@@ -407,6 +411,8 @@ def test_failed_jobs_record_reached_phases(tmp_path, monkeypatch, job_harness, f
             run(tmp_path / "out")
         _, record = evidence(tmp_path / "out")
     _assert_phase_record(record)
+    assert record['checked_classes'] == ['Loader', 'SaveTranscript']
+    assert record['engine_restarted'] is True
     assert record["phases"]["collect"] >= 0
     if failure == "prepare":
         assert record["phases"]["engine_start_or_reuse"] == 0

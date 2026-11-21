@@ -648,11 +648,13 @@ def test_projects_help_is_executable(argv: list[str]) -> None:
 def test_timelines_parser_has_visualize_and_no_aliases() -> None:
     from astrid.packs.timeline.cli import COMMANDS, build_parser
 
+    # Plan 59 adds appearance (ee0d08d76).
     assert tuple(spec.name for spec in COMMANDS) == (
         "import",
         "export",
         "checkout",
         "commit",
+        "appearance",
         "edit",
         "assets",
         "find",
@@ -696,6 +698,7 @@ def test_timelines_parser_has_visualize_and_no_aliases() -> None:
         "export",
         "checkout",
         "commit",
+        "appearance",
         "edit",
         "assets",
         "find",
@@ -812,7 +815,8 @@ def test_a_completed_render_prints_its_video_handle(capsys) -> None:
     assert rc == 0
     data = json.loads(capsys.readouterr().out)["data"]
     assert data["video"] == "run:R-1/video#0"
-    assert data["export"] == "media open run:R-1/video#0 --project demo --to FILE.mp4"
+    # Plan 59 emits a shell-quoted materialization command (33ac96188).
+    assert data["export"] == "media open --project demo 'run:R-1/video#0' --materialize --cache-root ./rendered-video"
 
 
 def test_timelines_render_detach_is_explicit_and_truthfully_labeled(capsys) -> None:
@@ -2249,8 +2253,10 @@ def test_dispatch_timelines_has_no_legacy_cli_fallback(monkeypatch) -> None:
 def test_shots_parser_has_exactly_eight_verbs_beneath_timelines() -> None:
     from astrid.core.cli.domain_shots import COMMANDS, build_parser
 
+    # Plan 59 adds plan (c81974e64).
     assert tuple(spec.name for spec in COMMANDS) == (
         "text",
+        "plan",
         "list",
         "show",
         "create",
@@ -2263,6 +2269,7 @@ def test_shots_parser_has_exactly_eight_verbs_beneath_timelines() -> None:
     assert parser.prog == "astrid timelines shots"
     assert _subparser_choices(parser) == {
         "text",
+        "plan",
         "list",
         "show",
         "create",

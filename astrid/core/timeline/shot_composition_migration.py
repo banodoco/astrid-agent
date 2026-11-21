@@ -19,6 +19,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from .asset_dimensions import canonicalize_asset_dimensions
 from .shot_composition import prepare_shot_composition, validate_shot_composition
 
 MIGRATION_SCHEMA_VERSION = 1
@@ -570,13 +571,21 @@ def _internal_payload(config: Mapping[str, Any], registry: Mapping[str, Any]) ->
     ):
         raise ShotCompositionMigrationError("nested legacy shot composition is unsupported")
     payload = _copy(dict(config))
-    payload["registry"] = _copy(registry)
+    canonical_registry = _copy(registry)
+    assets = canonical_registry.get("assets")
+    if isinstance(assets, Mapping):
+        canonical_registry["assets"] = {
+            asset_id: canonicalize_asset_dimensions(asset_id, entry)
+            if isinstance(entry, Mapping) else entry
+            for asset_id, entry in assets.items()
+        }
+    payload["registry"] = canonical_registry
     payload.setdefault("tracks", [])
     payload.setdefault("clips", [])
     payload.setdefault("effects", [])
     payload.setdefault("audio", [])
     payload.setdefault("layout", {})
-    payload.setdefault("assets", _copy(registry.get("assets", {})))
+    payload.setdefault("assets", _copy(canonical_registry.get("assets", {})))
     return payload
 
 
