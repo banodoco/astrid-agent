@@ -699,16 +699,21 @@ def _publication_visits_match(step, draft, previous, candidate):
         return False
     warm, fresh = visits
     reason = candidate["required"]["reason"] if required_release14(candidate) else ""
+    model = step.get("publication_model")
+    if model not in (None, "r13-cached-open-tab"):
+        return False
+    prompt_visits = (fresh,) if model == "r13-cached-open-tab" else visits
     return (warm.get("kind") == "already-open-edited-tab" and warm.get("sameDocument") is True
             and warm.get("initialManifestSha256") == previous
             and isinstance(warm.get("manifestResponseSha256"), list)
             and previous in warm["manifestResponseSha256"] and warm.get("draft") == draft
+            and warm.get("saveAttempts") == []
             and fresh.get("kind") == "fresh-visit" and fresh.get("freshProfile") is True
             and all(visit.get("visible") is True and type(visit.get("saveAttemptsBeforePrompt")) is int
                     and visit["saveAttemptsBeforePrompt"] == 0 and visit.get("saveAttempts") == []
                     and isinstance(visit.get("manifestResponseSha256"), list)
                     and candidate.get("manifest_sha256") in visit["manifestResponseSha256"]
-                    and _required_notice_matches(visit.get("prompt"), reason) for visit in visits))
+                    and _required_notice_matches(visit.get("prompt"), reason) for visit in prompt_visits))
 
 
 def _history_has_bound_head(timeline):

@@ -154,3 +154,24 @@ def test_hosted_intercept_wires_the_second_build_behind_an_activation_file(tmp_p
     finally:
         if intercept.directory is not None:
             shutil.rmtree(intercept.directory, ignore_errors=True)
+
+
+def test_required_prompt_is_proven_by_the_fresh_published_r13_visit():
+    row = row_fixture(prompt=True)
+    receipt = row["prompt"]
+    receipt["publication_model"] = "r13-cached-open-tab"
+    warm, fresh = receipt["visits"]
+    warm.pop("prompt")
+    warm.pop("visible")
+    warm["manifestResponseSha256"] = [row["release13_source"]["manifest_sha256"]]
+    args = (receipt, receipt["draft"], row["release13_source"]["manifest_sha256"], CANDIDATE)
+    assert gate._publication_visits_match(*args)
+
+    warm["saveAttempts"] = [{"method": "POST"}]
+    assert not gate._publication_visits_match(*args)
+    warm["saveAttempts"] = []
+    fresh["visible"] = False
+    assert not gate._publication_visits_match(*args)
+    fresh["visible"] = True
+    warm["draft"] = None
+    assert not gate._publication_visits_match(*args)

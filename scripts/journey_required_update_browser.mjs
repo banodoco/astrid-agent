@@ -63,8 +63,9 @@ async function openEditor(page, config, onPhase = () => {}) {
 }
 
 async function editTrack(track, label) {
-  await track.fill(label);
-  await track.press('Enter');
+  await track.click();
+  await track.press('Control+A');
+  await track.type(label);
   await track.blur();
 }
 
@@ -137,38 +138,83 @@ export async function author(page, config, { onQueuedAttempt, onPhase, newDocume
     }
     return route.abort('internetdisconnected');
   });
-  const track = await openEditor(page, config, onPhase);
-  onPhase?.('accept-r13-edit');
-  check(await track.inputValue() === config.initialLabel, 'R13 did not open the seeded composition');
-  await page.getByTestId('required-update-reason').waitFor({ state: 'hidden', timeout: 5_000 });
-  const first = page.waitForResponse((response) => isCommit(response.request(), config));
-  await editTrack(track, config.savedLabel);
-  const response = await first;
-  const body = await response.json();
-  check(response.ok() && body.data?.status === 'accepted' && body.data.accepted_revision_id
-    && body.receipt?.receipt_id, 'R13 did not accept the saved composition edit');
-  queueing = true;
-  onPhase?.('hold-r13-draft');
-  let attempt;
-  if (onQueuedAttempt) {
-    await editTrack(track, config.draftLabel);
-    const attemptDeadline = Date.now() + PROMPT_TIMEOUT;
-    while (!queuedAttempt && Date.now() < attemptDeadline) await page.waitForTimeout(25);
-    check(queuedAttempt, 'The second scoped R13 save was not captured');
-    attempt = queuedAttempt;
-  } else {
-    [attempt] = await Promise.all([
-      page.waitForEvent('requestfailed', (request) => isCommit(request, config)),
-      editTrack(track, config.draftLabel),
-    ]);
+  const evidence = { outcome: 'starting', request: null, responseStatus: null, requestFailure: null };
+  const onSaveRequest = (request) => {
+    if (!evidence.request && isCommit(request, config)) evidence.request = {
+      method: request.method(), path: runtimePath(new URL(request.url()).pathname),
+      bodySha256: sha256(request.postData() ?? ''),
+      keySha256: sha256(request.headers()['idempotency-key'] ?? ''),
+    };
+  };
+  const onSaveFailure = (request) => {
+    if (!queueing && isCommit(request, config)) evidence.requestFailure = 'scoped-post-request-failed';
+  };
+  page.on('request', onSaveRequest);
+  page.on('requestfailed', onSaveFailure);
+  try {
+    const track = await openEditor(page, config, onPhase);
+    onPhase?.('wait-for-editor-card');
+    // The mounted field is inert while the connection card is leaving. Match the cold-open
+    // contract: wait for that card to detach before clicking and typing into the real field.
+    await page.getByTestId('runtime-not-connected').waitFor({ state: 'detached', timeout: PROMPT_TIMEOUT });
+    onPhase?.('accept-r13-edit');
+    evidence.initialLabelMatches = await track.inputValue() === config.initialLabel;
+    check(evidence.initialLabelMatches, 'R13 did not open the seeded composition');
+    const requiredReason = page.getByTestId('required-update-reason');
+    if (await requiredReason.isVisible().catch(() => false)) {
+      evidence.outcome = 'required-notice';
+      throw new Error('A required update notice blocked R13 authoring');
+    }
+    const first = page.waitForResponse((response) => isCommit(response.request(), config), { timeout: PROMPT_TIMEOUT });
+    const responsePromise = first.catch(() => null);
+    await editTrack(track, config.savedLabel);
+    evidence.editedLabelMatches = await track.inputValue() === config.savedLabel;
+    check(evidence.editedLabelMatches, 'R13 track field did not retain the edited value');
+    const response = await responsePromise;
+    if (!response) {
+      evidence.outcome = evidence.requestFailure ? 'scoped-post-failed' : 'no-http';
+      throw new Error(evidence.requestFailure ? 'R13 scoped commit request failed' : 'R13 edit produced no scoped commit response');
+    }
+    evidence.responseStatus = response.status();
+    evidence.outcome = response.ok() ? 'scoped-post-response' : 'scoped-post-failed';
+    const body = await response.json().catch(() => ({}));
+    if (/^[a-zA-Z0-9_.-]{1,80}$/.test(body.error?.code ?? '')) evidence.responseCode = body.error.code;
+    if (response.ok() && !(body.data?.status === 'accepted' && body.data.accepted_revision_id && body.receipt?.receipt_id)) {
+      evidence.outcome = 'scoped-post-failed';
+    }
+    check(response.ok() && body.data?.status === 'accepted' && body.data.accepted_revision_id
+      && body.receipt?.receipt_id, 'R13 did not accept the saved composition edit');
+    evidence.outcome = 'accepted';
+    queueing = true;
+    onPhase?.('hold-r13-draft');
+    let attempt;
+    if (onQueuedAttempt) {
+      await editTrack(track, config.draftLabel);
+      const attemptDeadline = Date.now() + PROMPT_TIMEOUT;
+      while (!queuedAttempt && Date.now() < attemptDeadline) await page.waitForTimeout(25);
+      check(queuedAttempt, 'The second scoped R13 save was not captured');
+      attempt = queuedAttempt;
+    } else {
+      [attempt] = await Promise.all([
+        page.waitForEvent('requestfailed', (request) => isCommit(request, config)),
+        editTrack(track, config.draftLabel),
+      ]);
+    }
+    const { draft } = await waitForDraft(page, config);
+    check(blockedPosts > 0 && draft.requestSha256 === sha256(attempt.postData() ?? '')
+      && draft.keySha256 === sha256(attempt.headers()['idempotency-key'] ?? ''),
+    'R13 queued request does not match the blocked edit on the network');
+    return { draft, blockedPosts, evidence, accepted: {
+      revision: body.data.accepted_revision_id, publication: body.receipt.receipt_id,
+    } };
+  } catch (error) {
+    if (evidence.outcome === 'starting') evidence.outcome = error?.name === 'TimeoutError' ? 'field-actionability' : 'authoring-failed';
+    if (error instanceof Error) error.authorEvidence = evidence;
+    throw error;
+  } finally {
+    page.off('request', onSaveRequest);
+    page.off('requestfailed', onSaveFailure);
   }
-  const { draft } = await waitForDraft(page, config);
-  check(blockedPosts > 0 && draft.requestSha256 === sha256(attempt.postData() ?? '')
-    && draft.keySha256 === sha256(attempt.headers()['idempotency-key'] ?? ''),
-  'R13 queued request does not match the blocked edit on the network');
-  return { draft, blockedPosts, accepted: {
-    revision: body.data.accepted_revision_id, publication: body.receipt.receipt_id,
-  } };
 }
 
 function observeRequests(page, origin) {
@@ -245,23 +291,29 @@ async function publication(page, context, browser, config, onPhase) {
   const initialAttempt = requests.saveAttempts.length;
   published = true;
   onPhase?.('observe-required-prompt');
-  const [warm, fresh] = await Promise.all([
-    visitReceipt(page, config, 'already-open-edited-tab', requests, initialAttempt),
-    freshContext(browser, config, async (tab) => {
-      const freshRequests = observeRequests(tab, config.origin);
-      await tab.route('**/*', (route) => commitPost(route.request()) ? route.abort('internetdisconnected') : route.continue());
-      await tab.goto(config.origin + '/tools/video-editor', { waitUntil: 'domcontentloaded' });
-      return { ...await visitReceipt(tab, config, 'fresh-visit', freshRequests), freshProfile: true };
-    }),
-  ]);
-  warm.sameDocument = await page.evaluate(() => window.__astridFix17OriginalDocument === true);
-  warm.initialManifestSha256 = sha256(oldManifest);
-  warm.draft = (await findDraft(page, { ...config, expectedDraft: authored.draft }))?.draft ?? null;
-  const complete = warm.sameDocument && warm.draft && [warm, fresh].every((visit) =>
-    visit.visible && visit.saveAttemptsBeforePrompt === 0 && visit.manifestResponseSha256.includes(config.manifestSha256));
+  const fresh = await freshContext(browser, config, async (tab) => {
+    const freshRequests = observeRequests(tab, config.origin);
+    await tab.route('**/*', (route) => commitPost(route.request()) ? route.abort('internetdisconnected') : route.continue());
+    await tab.goto(config.origin + '/tools/video-editor', { waitUntil: 'domcontentloaded' });
+    return { ...await visitReceipt(tab, config, 'fresh-visit', freshRequests), freshProfile: true };
+  });
+  const warm = {
+    kind: 'already-open-edited-tab',
+    sameDocument: await page.evaluate(() => window.__astridFix17OriginalDocument === true),
+    initialManifestSha256: sha256(oldManifest),
+    manifestResponseSha256: (await Promise.all(requests.manifestReads)).filter(Boolean),
+    saveAttempts: requests.saveAttempts.slice(initialAttempt),
+    draft: (await findDraft(page, { ...config, expectedDraft: authored.draft }))?.draft ?? null,
+  };
+  // The published R13 document caches the release status. The unchanged page
+  // proves draft retention while the fresh R13 page proves the required prompt.
+  const complete = warm.sameDocument && warm.draft && warm.saveAttempts.length === 0
+    && warm.manifestResponseSha256.includes(warm.initialManifestSha256)
+    && fresh.visible && fresh.saveAttemptsBeforePrompt === 0 && fresh.manifestResponseSha256.includes(config.manifestSha256);
   return { status: complete ? 'pass' : 'fail', author: { status: 'pass', mode: 'author', ...authored },
+    publication_model: 'r13-cached-open-tab',
     draft: authored.draft, visits: [warm, fresh], browserManifestSha256: fresh.manifestResponseSha256.at(-1) ?? null,
-    prompt: fresh.prompt, ...(complete ? {} : { error: 'R13 publication visits did not both prove a required prompt before save' }) };
+    prompt: fresh.prompt, ...(complete ? {} : { error: 'Required prompt or unchanged R13 draft evidence was incomplete' }) };
 }
 
 async function reopen(page, browser, config, onPhase) {
@@ -364,7 +416,8 @@ async function main() {
     // Playwright errors may contain request data. Retain a bounded safe stage signal.
     const code = error?.name === 'TimeoutError' ? 'browser-timeout' : 'browser-operation-failed';
     const safe = typeof error?.message === 'string' && /^[a-zA-Z0-9 .'-]{1,175}$/.test(error.message);
-    result = { status: 'fail', mode: config.mode, stage, error: safe ? error.message : code };
+    result = { status: 'fail', mode: config.mode, stage, error: safe ? error.message : code,
+      ...(error?.authorEvidence ? { author: { status: 'fail', mode: 'author', ...error.authorEvidence } } : {}) };
   }
   writeFileSync(config.result, JSON.stringify(result, null, 2) + '\n');
 }

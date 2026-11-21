@@ -190,6 +190,7 @@ async function reloadInflight(page, config) {
     const message = error instanceof Error ? error.message : '';
     receipt.error = /^[\w .';-]{1,160}$/.test(message) ? message
       : error?.name === 'TimeoutError' ? 'browser-timeout' : 'browser-operation-failed';
+    if (error?.authorEvidence) receipt.author = { status: 'fail', mode: 'author', ...error.authorEvidence };
   } finally {
     if (heldRoute) await heldRoute.abort('internetdisconnected').catch(() => {});
     page.off('framenavigated', onNavigation);
