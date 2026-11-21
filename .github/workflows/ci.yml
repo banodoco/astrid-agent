@@ -251,6 +251,19 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      # These release-0 rollback and launcher tests archive a pinned historical
+      # Agent source tree; the default shallow checkout does not contain it.
+      - name: Fetch release-0 Agent archive for installer rollback tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          release0_agent=3204bb00135bec8ee2d2d3fb21eed5abfceca649
+          git fetch --no-tags --depth=1 origin "$release0_agent"
+          test "$(git rev-parse "${release0_agent}^{commit}")" = "$release0_agent"
+          git cat-file -e "${release0_agent}:astrid/installer/core.py"
+          git archive --format=tar "$release0_agent" astrid >/dev/null
+          echo "- Release-0 Agent archive: $release0_agent (tree and archive available)" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Read the pinned Runtime commit
         id: runtime-pin
         run: echo "commit=$(python -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')" >> "$GITHUB_OUTPUT"
