@@ -64,7 +64,7 @@ JOURNEY_PACKS = {"chiptune": ("https://github.com/banodoco/poms_packs", "2379ab5
 OWNER_FILE = "tst-b1-owner.json"
 VERSION_JUMP_LEGS = ("update-from-served", "update-from-release:pre-updater",
                      "update-over-old-declaration", "old-runtime-busy",
-                     "release9-then-install", "r0-handoff-then-update", "release11-then-update", "release13-then-update",
+                     "release9-then-install", "r0-handoff-then-update", "release11-then-update", "release13-then-update", "release13-then-killed-update",
                      "fresh-install-autostart-off", "windows-upgrade-refusal")
 RUNNER_FAMILY = {"ubuntu-24.04": "linux", "ubuntu-22.04": "linux",
                  "windows-2022": "win32", "macos-14": "darwin", "macos-15": "darwin"}
@@ -4055,13 +4055,16 @@ def main(argv: list[str] | None = None) -> int:
                          "and admits no release-0 or release-9 source")
     elif args.release11_app_checkout is not None or args.allow_release11_to_candidate:
         parser.error("release-11 admission is only valid for the release11-then-update leg")
-    if args.leg == "release13-then-update":
+    if args.leg in {"release13-then-update", "release13-then-killed-update"}:
         if diagnostic or args.diagnostic_keep_going or args.retain_for_next_leg:
             parser.error("release13-then-update requires a disposable direct qualification job")
         if not (args.job_id and args.mode == "direct" and args.candidate):
             parser.error("release13-then-update requires a frozen direct candidate receipt")
         # Windows is admitted for exactly one job, and that job only on Windows.
-        if (sys.platform == "win32") != (args.job_id == RELEASE13_WINDOWS_JOB_ID):
+        killed = args.leg == "release13-then-killed-update"
+        if killed and (sys.platform != "win32" or args.job_id != "direct-windows-r13-killed-update"):
+            parser.error("interrupted update requires the dedicated Windows R13 killed-update job")
+        if not killed and (sys.platform == "win32") != (args.job_id == RELEASE13_WINDOWS_JOB_ID):
             parser.error(f"release13-then-update on Windows is admitted only for the {RELEASE13_WINDOWS_JOB_ID} "
                          "job on windows-2022; Linux and macOS use their own r13 rows")
         if validate_job(args.job_id, args.mode)["os"] != journey_os_label():
