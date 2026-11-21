@@ -167,7 +167,8 @@ def test_authored_v2_marker_is_refused_without_writes(realm):
     assert _history(service, project) == history
 
 
-def test_guarded_placement_edit_on_legacy_track_requires_version_one(realm, tmp_path):
+@pytest.mark.parametrize("change_fit", [False, True], ids=["marker-only", "fit"])
+def test_guarded_placement_edit_on_legacy_track_requires_version_one(realm, tmp_path, change_fit):
     from runtime_protocol.errors import RuntimeErrorBase
 
     service, _client, project = realm
@@ -176,7 +177,8 @@ def test_guarded_placement_edit_on_legacy_track_requires_version_one(realm, tmp_
     revision = service.get_project_parent_composition_revision(project, "main", "r13-parent")
     tracks = revision["payload"]["config"]["tracks"]
     proposed = copy.deepcopy(tracks)
-    proposed[0]["fit"] = "cover"
+    if change_fit:
+        proposed[0]["fit"] = "cover"
     del proposed[0]["app"][_MARKER]
     change = {"op": "set", "ref": "parent", "path": ["config", "tracks"],
               "before": {"state": "present", "value": tracks}, "value": proposed}
