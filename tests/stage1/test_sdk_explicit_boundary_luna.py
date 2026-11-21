@@ -73,6 +73,22 @@ def test_generated_failure_keeps_request_correlation(monkeypatch):
     assert caught.value.details == {"retryable": False}
 
 
+def test_workspace_client_gives_runtime_calls_a_timeout_long_enough_for_large_realms(monkeypatch):
+    from astrid.sdk import workspace_client
+
+    constructed = {}
+
+    class Generated:
+        def __init__(self, endpoint, token=None, **kwargs):
+            constructed.update(endpoint=endpoint, token=token, kwargs=kwargs)
+
+    monkeypatch.setattr("astrid.sdk.workspace_client.GeneratedWorkspaceClient", Generated)
+    WorkspaceClient("http://127.0.0.1:8443", "token")
+
+    assert constructed["kwargs"] == {"timeout": workspace_client.WORKSPACE_REQUEST_TIMEOUT_SECONDS}
+    assert workspace_client.WORKSPACE_REQUEST_TIMEOUT_SECONDS == 300.0
+
+
 def test_timeline_document_create_is_retired_and_never_reaches_generated_route():
     class Client:
         def create_timeline_document(self, *args, **kwargs):

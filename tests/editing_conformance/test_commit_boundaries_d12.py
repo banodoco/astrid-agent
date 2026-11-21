@@ -156,7 +156,7 @@ def test_new_changed_or_rebound_occurrence_intervals_are_strict(damage):
     elif damage == "bound":
         value["placements"][0]["duration_ms"] = 50
     else:
-        value["source_mapping"]["shots"]["chapter-shot"]["internal_timeline_revision_id"] = "other"
+        value["source_mapping"]["shots"]["chapter-shot"]["internal_timeline_id"] = "other"
     before = encoded(value)
     with pytest.raises(AuthoringBundleError, match="half-open bounds"):
         validate_final_candidate(value, baseline=baseline)
@@ -192,7 +192,7 @@ def test_legacy_map_retention_never_exempts_a_changed_timing_basis(damage):
     elif damage == "new-declaration":
         clip.setdefault("app", {}).setdefault("astrid", {})["on"] = "c999"
     else:
-        value["source_mapping"]["shots"]["chapter-shot"]["internal_timeline_revision_id"] = "other"
+        value["source_mapping"]["shots"]["chapter-shot"]["internal_timeline_id"] = "other"
     with pytest.raises(AuthoringBundleError, match="unsupported explicit map"):
         validate_final_candidate(value, baseline=baseline)
 

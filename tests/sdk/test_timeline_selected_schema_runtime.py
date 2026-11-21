@@ -224,6 +224,80 @@ def retained_pack(configured_project_pack, selected_runtime_env, tmp_path, monke
         case.service.close()
 
 
+def test_document_patch_publishes_selected_params_with_exact_retained_snapshot(retained_pack, monkeypatch):
+    from runtime_protocol.errors import RuntimeErrorBase
+    from runtime_protocol.timeline_commit_port import RequestCommitPort
+    from astrid.sdk.timeline.emitter import emit_document_commands
+
+    case = retained_pack
+    reads = []
+    original_read = RequestCommitPort.document_object
+
+    def read(port, pin, object_id):
+        reads.append((pin, object_id))
+        return original_read(port, pin, object_id)
+
+    monkeypatch.setattr(RequestCommitPort, 'document_object', read)
+    base = case.bundle()
+    changed = copy.deepcopy(base)
+    State(changed).entity(REF)['params']['seed'] = 8
+    if 'clips' in changed['parent']['config']:
+        changed['parent']['config']['clips'] = copy.deepcopy(changed['parent']['clips'])
+    result = case.submit(case.request(emit_document_commands(base, changed)), 'document-params')
+    assert State(commit.bundle_from_document(result['data']['canonical_document'])).entity(REF)['params']['seed'] == 8
+    assert reads == [(case.pin, case.options['schema_inputs'][0][0]['document']['content']
+                      ['admissions'][0]['snapshot_object']['object_id'])]
+
+    base = case.bundle()
+    changed = copy.deepcopy(base)
+    row = State(changed).entity(REF)
+    row['params']['seed'] = 9
+    row['elementRef']['revision'] = 'sha256:' + '0' * 64
+    if 'clips' in changed['parent']['config']:
+        changed['parent']['config']['clips'] = copy.deepcopy(changed['parent']['clips'])
+    with pytest.raises(RuntimeErrorBase, match='selected project element has no unique retained schema'):
+        case.submit(case.request(emit_document_commands(base, changed)), 'document-wrong-revision')
+    assert len(reads) == 1
+
+
+def test_selected_schema_skips_retained_pins_whose_snapshot_cannot_be_loaded(retained_pack):
+    from runtime_protocol.errors import NotFoundError
+    from astrid.sdk.timeline.validation import FinalCandidateError, _schema_for_selected
+
+    case = retained_pack
+    verified, retained_objects = case.options['schema_inputs'][0]
+    inputs = [(verified, {}), (copy.deepcopy(verified), {})]
+    object_id = next(iter(retained_objects))
+    snapshot = retained_objects[object_id]
+    attempts = []
+
+    def load(_verified, _objects, _admission):
+        attempts.append(True)
+        if len(attempts) == 1:
+            raise NotFoundError('retained document was removed')
+        return snapshot
+
+    schema = _schema_for_selected(
+        {'elementRef': case.selected}, schema_inputs=inputs, realm_id='realm',
+        project=case.project, snapshot_loader=load,
+    )
+    assert schema['properties']['seed']['maximum'] == 10
+    assert len(attempts) == 2
+
+    attempts.clear()
+
+    def fail(_verified, _objects, _admission):
+        attempts.append(True)
+        raise NotFoundError('retained document was removed')
+
+    with pytest.raises(FinalCandidateError, match='retained element declaration is unavailable'):
+        _schema_for_selected(
+            {'elementRef': case.selected}, schema_inputs=inputs, realm_id='realm',
+            project=case.project, snapshot_loader=fail,
+        )
+    assert len(attempts) == 2
+
+
 @pytest.fixture
 def http_retained_pack(configured_project_pack, selected_runtime_env, tmp_path, monkeypatch, real_runtime):
     """A retained selected-PARAM case through the real Runtime HTTP door."""

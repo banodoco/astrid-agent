@@ -116,7 +116,10 @@ def test_mixed_admission_retains_old_records_closures_and_pins(configured):
     new_admission = updated['content']['admissions'][-1]
     new_data = configured.media.objects[('project', new_admission['snapshot_object']['object_id'])]
     new_files, new_receipt = packs._snapshot_resources(new_data)
-    assert new_files == {name: (root / name).read_bytes() for name in packs._resources(root)[1]}
+    snapshot_root = Path(current['fade']['snapshot']['root'])
+    entry, resources = packs._resources(snapshot_root, expected_pack_id=current['fade']['descriptor']['packId'])
+    assert new_files == {item['path']: (snapshot_root / item['path']).read_bytes() for item in packs._closure(snapshot_root, entry, resources)}
+    assert {name for name in new_files if name.startswith('compiled/')} == {'compiled/rendering/elements/effects/reveal/component.tsx.mjs', 'compiled/rendering/elements/effects/fade/component.tsx.mjs'}
     assert new_receipt == sources[-1][3]
     assert {e['id'] for e in json.loads(new_receipt)['elements']} == {'reveal', 'fade'}
     assert new_admission['snapshot_object'] != old_row['content']['admissions'][0]['snapshot_object']
@@ -172,14 +175,13 @@ def test_failed_mixed_admission_keeps_old_selection(configured, monkeypatch, fai
     index = Path(first['manifestPath'])
     index_bytes = index.read_bytes()
     component = other / 'component.tsx'
-    component.write_text(component.read_text() + '\n// B only\n')
-    with monkeypatch.context() as build:
-        if failure == 'build':
-            build.setenv(packs.BUILD_ENV, json.dumps([sys.executable, '-c', 'raise SystemExit(1)']))
-        configured.media.reject = failure == 'upload'
-        configured.reject_update = failure == 'document_cas'
-        with pytest.raises(ValueError, match='build verification failed|ingest failed|CAS rejected'):
-            packs.admit_project_pack('realm', 'project')
+    good = component.read_text() + '\n// B only\n'
+    component.write_text('export default function Reveal( {\n' if failure == 'build' else good)
+    configured.media.reject = failure == 'upload'
+    configured.reject_update = failure == 'document_cas'
+    with pytest.raises(ValueError, match='failed to compile|ingest failed|CAS rejected'):
+        packs.admit_project_pack('realm', 'project')
+    component.write_text(good)
     assert configured.rows == before and index.read_bytes() == index_bytes
     assert all(configured.media.objects[key] == raw for key, raw in objects.items())
     configured.media.reject = configured.reject_update = False
@@ -342,3 +344,97 @@ def test_nonascii_resource_paths_keep_original_admission_closure(configured):
     portable = packs._portable_snapshot(files, b'{"original":"receipt"}')
     assert b'caf\\u00e9.png' in portable
     assert packs._snapshot_resources(portable) == (files, b'{"original":"receipt"}')
+
+
+def _closure_files(files):
+    return [{'path': name, 'sha256': hashlib.sha256(raw).hexdigest()} for name, raw in sorted(files.items())]
+
+
+def test_compiled_module_is_in_snapshot_and_closure(admitted):
+    _, record, source, _, data, _, _ = admitted
+    files, _ = packs._snapshot_resources(data)
+    compiled = record['compiled']
+    assert compiled == {'path': 'compiled/rendering/elements/effects/reveal/component.tsx.mjs',
+                        'sha256': hashlib.sha256(files[compiled['path']]).hexdigest()}
+    assert b'export' in files[compiled['path']]
+    # The raw TSX stays in the snapshot for render; the compiled module joins the closure.
+    assert files['rendering/elements/effects/reveal/component.tsx'].startswith(b"import React from 'react';")
+    admission = source[1]['document']['content']['admissions'][0]
+    assert admission['snapshot_digest'] == hashlib.sha256(canonical(_closure_files(files))).hexdigest()
+    assert record['snapshot']['files'] == _closure_files(files) or {f['path'] for f in record['snapshot']['files']} == set(files)
+
+
+def test_admission_record_carries_compiled_descriptor_and_authoring(admitted):
+    _, record, source, _, _, _, _ = admitted
+    admission = source[1]['document']['content']['admissions'][0]
+    assert admission['compiled'] == record['compiled']
+    assert admission['descriptor'] == record['descriptor']
+    assert {k: admission['descriptor'][k] for k in ('packId', 'id', 'kind', 'revision')} == {
+        'packId': record['descriptor']['packId'], 'id': 'reveal', 'kind': 'effect', 'revision': admission['revision']}
+    assert admission['authoring'] == {
+        'packRoot': record['authoring']['packRoot'],
+        'descriptorPath': 'rendering/elements/effects/reveal/element.yaml',
+        'componentPath': 'rendering/elements/effects/reveal/component.tsx',
+        'status': 'admitted'}
+
+
+def test_render_snapshot_checks_accept_compiled_bundle_and_raw_tsx(admitted):
+    """Render's digest and file checks (stage_project_elements) run on the same portable bytes."""
+    _, record, source, snapshot, _, _, _ = admitted
+    reference, verified, _, _ = source
+    descriptor = packs.admitted_element_snapshot_descriptor('realm', 'project', reference, verified, snapshot)
+    assert descriptor == record['descriptor']
+    files, _ = packs._snapshot_object_resources(
+        {key: snapshot[key] for key in ('object_id', 'digest', 'size', 'media_type')},
+        packs._decode_base64(snapshot['bytes_base64']))
+    assert files[record['compiled']['path']] and files[record['snapshot']['componentPath']]
+    assert files[record['snapshot']['componentPath']].startswith(b"import React from 'react';")
+
+
+def test_missing_renderer_esbuild_is_a_plain_error_naming_the_fix(configured, tmp_path, monkeypatch):
+    test_project_packs.seed()
+    before = copy.deepcopy(configured.rows)
+    bare = tmp_path / 'bare-remotion'
+    bare.mkdir()
+    (bare / 'package.json').write_text(json.dumps({'dependencies': {'esbuild': '0.27.7'}}))
+    monkeypatch.setenv('ASTRID_REMOTION_PROJECT_DIR', str(bare))
+    with pytest.raises(ValueError, match=r'Remotion esbuild.*is missing.*Repair the install'):
+        packs.admit_project_pack('realm', 'project')
+    assert configured.rows == before
+
+
+def test_component_compile_failure_names_component_and_never_advances(configured):
+    root, directory, _ = test_project_packs.seed()
+    first = packs.admit_project_pack('realm', 'project')
+    selection = Path(first['manifestPath'])
+    before = selection.read_bytes()
+    (directory / 'component.tsx').write_text('export default function Reveal( {\n')
+    with pytest.raises(ValueError, match='component.tsx.*failed to compile'):
+        packs.admit_project_pack('realm', 'project')
+    assert selection.read_bytes() == before
+
+
+def _stage_selection(source, snapshot):
+    reference, verified, _, _ = source
+    config = {'clips': [{'id': 'c', 'elementRef': reference}],
+              'app': {'astrid_project_element_snapshots': [
+                  {'realm': 'realm', 'project': 'project', 'reference': reference, 'verified': verified, 'snapshot': snapshot}]}}
+    return config
+
+
+def test_render_stages_the_admitted_compiled_module_as_the_component(configured, tmp_path):
+    """Preview and render run the same compiled bytes: staging replaces the component source with them."""
+    from astrid.core.rendering.project_elements import stage_project_elements
+    root, directory, manifest = test_project_packs.seed()
+    record = packs.admit_project_pack('realm', 'project')['elements'][0]
+    source = capture_input(configured, record)
+    admission = source[1]['document']['content']['admissions'][0]
+    snapshot = {**admission['snapshot_object'],
+                'bytes_base64': base64.b64encode(configured.media.objects[('project', admission['snapshot_object']['object_id'])]).decode('ascii')}
+    registry, roots = stage_project_elements(_stage_selection(source, snapshot), tmp_path)
+    staged = Path(roots[0]['root']) / record['snapshot']['componentPath']
+    compiled = (Path(record['snapshot']['root']) / record['compiled']['path']).read_bytes()
+    assert staged.read_bytes() == compiled != (directory / 'component.tsx').read_bytes()
+    assert b'react/jsx-runtime' in compiled  # externals stay for webpack to resolve
+    # The stored closure still holds the original TSX; only the render staging swaps it.
+    assert (Path(record['snapshot']['root']) / record['snapshot']['componentPath']).read_bytes().startswith(b"import React from 'react';")
