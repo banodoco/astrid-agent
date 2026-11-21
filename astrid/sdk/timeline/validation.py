@@ -729,6 +729,42 @@ def _validate_params(
             _fail(f"{path}.params.{key}", "is not declared by the retained element schema")
 
 
+def _validate_legacy_placement_markers(
+    config: Mapping[str, Any], previous: Mapping[str, Any], *, path: str,
+) -> None:
+    from astrid.core.timeline.track_appearance import (
+        CLIP_PLACEMENT_VERSION,
+        CLIP_PLACEMENT_VERSION_CURRENT,
+        SCALE_APPLIES_TO_POSITIONED_CLIPS,
+        is_legacy_clip_placement_version,
+    )
+
+    def rows_by_id(source: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
+        rows = source.get("tracks")
+        if not isinstance(rows, list):
+            return {}
+        return {row["id"]: row for row in rows
+                if isinstance(row, Mapping) and isinstance(row.get("id"), str)}
+
+    def track_app(row: Mapping[str, Any]) -> Mapping[str, Any]:
+        app = row.get("app")
+        return app if isinstance(app, Mapping) else {}
+
+    old_tracks = rows_by_id(previous)
+    for track_id, track in rows_by_id(config).items():
+        old_track = old_tracks.get(track_id, {})
+        app, old_app = track_app(track), track_app(old_track)
+        marker = app.get(CLIP_PLACEMENT_VERSION)
+        legacy_marker = is_legacy_clip_placement_version(marker)
+        inherited = is_legacy_clip_placement_version(old_app.get(CLIP_PLACEMENT_VERSION))
+        if (legacy_marker and inherited and _same_fields(track, old_track, ("fit", "scale"))
+                and _same_fields(app, old_app, (SCALE_APPLIES_TO_POSITIONED_CLIPS,))):
+            continue
+        canonical = type(marker) is int and marker == CLIP_PLACEMENT_VERSION_CURRENT
+        if legacy_marker or (inherited and not canonical):
+            _fail(f"{path}[{track_id!r}].app.{CLIP_PLACEMENT_VERSION}", "is invalid for authored placement")
+
+
 def validate_final_candidate(
     candidate: Mapping[str, Any], *,
     baseline: Mapping[str, Any] | None = None,
@@ -787,6 +823,10 @@ def validate_final_candidate(
     baseline_parent = (baseline or {}).get("parent", {})
     if not _same_fields(candidate, baseline, ("project_id", "timeline_id", "base_parent")):
         baseline_parent = {}
+    # The saved reader skips this exact marker, so compare its raw authored value here.
+    _validate_legacy_placement_markers(
+        config, baseline_parent.get("config", {}), path="candidate.parent.config.tracks",
+    )
     # An explicit null mirror is legacy storage, never a newly authored list.
     for scope, previous, path in (
         (parent, baseline_parent, "candidate.parent.clips"),
@@ -811,6 +851,26 @@ def validate_final_candidate(
     if not isinstance(shots_value, Mapping):
         _fail("candidate.shots", "must be an object")
     shots: Mapping[str, Any] = shots_value
+    # The commit provider opens both images through the same realm-bound Runtime port.
+    marker_baseline = (baseline or {}) if _same_fields(candidate, baseline, ("project_id", "timeline_id")) else {}
+    baseline_shots = marker_baseline.get("shots", {})
+    baseline_sources = marker_baseline.get("source_mapping", {}).get("shots", {})
+    candidate_sources = candidate.get("source_mapping", {}).get("shots", {})
+    source_fields = ("shot_id", "revision_id", "content_digest", "internal_timeline_id",
+                     "internal_timeline_revision_id", "internal_timeline_content_digest")
+    for shot_id, shot in shots.items():
+        internal = shot.get("internal_timeline") if isinstance(shot, Mapping) else None
+        if not isinstance(internal, Mapping):
+            continue
+        source = candidate_sources.get(shot_id)
+        previous_source = baseline_sources.get(shot_id)
+        previous = {}
+        if (isinstance(source, Mapping) and isinstance(previous_source, Mapping)
+                and all(key in previous_source for key in source_fields)
+                and _same_fields(source, previous_source, source_fields)):
+            previous = baseline_shots.get(shot_id, {}).get("internal_timeline", {})
+        path = f"candidate.shots[{shot_id!r}].internal_timeline.tracks"
+        _validate_legacy_placement_markers(internal, previous, path=path)
     for occurrence_id, placement in placements.items():
         shot_id_value = placement.get("shot_id")
         if not isinstance(shot_id_value, str):
