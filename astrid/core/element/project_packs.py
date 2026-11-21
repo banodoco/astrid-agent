@@ -301,7 +301,8 @@ def init_project_pack(realm: str, project: str, *, client=None, collection='defa
         try:
             (temporary/'docs').mkdir()
             (temporary/'docs/SKILL.md').write_text('---\nname: project-drafts\ndescription: Ordinary project-owned draft rendering source.\n---\n\n# Project drafts\n\nEdit declared source files, validate/admit, then update exact timeline refs. Keep files while timelines use them.\n')
-            pack={'schema_version':3,'id':content['pack_id'],'name':'Project drafts','version':'0.1.0','status':'active','domain':'media','stability':'experimental','support':'project','visibility':'visible','description':'Editable project-owned visual elements.','permissions':[{'id':'project_files','reason':'Provides project-owned visual source.'}],'documentation':{'kind':'skill','path':'docs/SKILL.md'},'rendering':{}}
+            from astrid.pack_api import VERSION as PACK_API_VERSION
+            pack={'schema_version':3,'id':content['pack_id'],'name':'Project drafts','version':'0.1.0','pack_api':'%d.%d'%PACK_API_VERSION,'status':'active','domain':'media','stability':'experimental','support':'project','visibility':'visible','description':'Editable project-owned visual elements.','permissions':[{'id':'project_files','reason':'Provides project-owned visual source.'}],'documentation':{'kind':'skill','path':'docs/SKILL.md'},'rendering':{}}
             (temporary/'pack.yaml').write_text(yaml.safe_dump(pack,sort_keys=False))
             validate_canonical_pack(temporary,expected_pack_id=content['pack_id']);temporary.rename(root)
         finally:

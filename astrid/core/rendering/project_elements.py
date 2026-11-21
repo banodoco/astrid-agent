@@ -225,7 +225,7 @@ def stage_project_elements(
             {key: snapshot[key] for key in ("object_id", "digest", "size", "media_type")},
             project_packs._decode_base64(snapshot["bytes_base64"]))
         key = render_key(selected)
-        pack_root = root / key / ref["packId"]
+        pack_root = (root / key / ref["packId"]).resolve()  # discovery reports real paths (macOS /var -> /private/var)
         pack_root.mkdir(parents=True, exist_ok=True, mode=0o700)
         for name, data in files.items():
             path = pack_root / name

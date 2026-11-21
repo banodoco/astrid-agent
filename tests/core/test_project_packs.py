@@ -366,3 +366,17 @@ def test_readmitting_unchanged_legacy_admission_upgrades_it_with_a_compiled_modu
     version = row['version']
     packs.admit_project_pack('realm', 'project')
     assert configured.rows[('project', first['documentId'])]['version'] == version
+
+
+def test_fresh_scaffold_declares_current_pack_api_and_is_not_quarantined(configured):
+    from astrid.pack_api import VERSION
+    root, _, _ = seed()
+    manifest = yaml.safe_load((root / 'pack.yaml').read_text())
+    assert manifest['pack_api'] == '%d.%d' % VERSION
+    result = packs.admit_project_pack('realm', 'project')
+    from astrid.core.element.registry import load_pack_elements
+    # Render stages a snapshot under a folder named for its pack id.
+    staged = (root.parent / 'staged' / manifest['id']).resolve()
+    shutil.copytree(result['elements'][0]['snapshot']['root'], staged)
+    loaded = load_pack_elements(project_root=staged.parent, extra_pack_roots=(str(staged),))
+    assert [e.id for e in loaded if e.root.is_relative_to(staged)] == ['reveal']
