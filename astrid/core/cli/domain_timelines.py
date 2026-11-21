@@ -1048,63 +1048,66 @@ def _verify_add_visualize_labels_flag(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--labels", action="store_true", default=False, help=_verify_VISUALIZE_LABELS_HELP)
 
 
-def _visualize_add_visualize_flags(subparser: argparse.ArgumentParser) -> None:
+def _visualize_add_visualize_flags(subparser: argparse.ArgumentParser, groups: dict[str, Any]) -> None:
     """The flags ``visualize`` had before the combined port (working copy, compare, plan, layers, review)."""
-    subparser.add_argument("--published", action="store_true", default=False,
+    comparison = groups["comparison"]
+    layers = groups["layers"]
+    output = groups["output"]
+    comparison.add_argument("--published", action="store_true", default=False,
                            help="Read published current explicitly (the default).")
-    subparser.add_argument("--draft", default=None, metavar="NAME",
+    comparison.add_argument("--draft", default=None, metavar="NAME",
                            help="Read this named working copy explicitly; output identifies it and its base revision.")
-    subparser.add_argument("--every-cut", dest="all_cuts", action="store_true", default=False,
+    comparison.add_argument("--every-cut", dest="all_cuts", action="store_true", default=False,
                            help="With a working copy and no cut/range selection: every cut, not only the cuts you changed.")
-    subparser.add_argument("--compare", dest="compare_with", choices=("published",), default=None,
+    comparison.add_argument("--compare", dest="compare_with", choices=("published",), default=None,
                            help="With a working copy: the published version and the working copy for the same cuts, labelled.")
-    subparser.add_argument("--highlight", default=None, metavar="ADDRESS",
+    layers.add_argument("--highlight", default=None, metavar="ADDRESS",
                            help="Outline one layer over the frames (c41.tool-16; implies --layer bounds); "
                                 "with no window, the frames are taken inside it.")
-    subparser.add_argument("--overlay", action="append", default=None, metavar="LAYER",
+    layers.add_argument("--overlay", action="append", default=None, metavar="LAYER",
                            help="Alias of --layer for frame overlays (bounds: element bounds, face box, safe areas).")
-    subparser.add_argument("--size", default=None, metavar="WIDTHxHEIGHT",
+    output.add_argument("--size", default=None, metavar="WIDTHxHEIGHT",
                            help="Frame size for the window presets, e.g. 960x540 (alias of --resolution).")
-    subparser.add_argument("--plan", action="store_true",
+    output.add_argument("--plan", action="store_true",
                            help="Resolve the view, window, frame count and page layout without capturing (about a second).")
-    subparser.add_argument("--list-layers", dest="list_layers", action="store_true",
+    layers.add_argument("--list-layers", dest="list_layers", action="store_true",
                            help="List the registered visualize layers (built-in and pack-contributed) and exit.")
-    subparser.add_argument("--shot-plans", dest="shot_plans", action="store_true", default=False,
+    layers.add_argument("--shot-plans", dest="shot_plans", action="store_true", default=False,
                            help="Label each shot with its plan (metadata.plan): method codes, status, takes and "
                                 "line, under the picture's summary (see timelines shots plan).")
-    subparser.add_argument("--region", default=None, metavar="X,Y,W,H",
+    layers.add_argument("--region", default=None, metavar="X,Y,W,H",
                            help="Draw this canvas-px rectangle at source resolution (e.g. the lenses, a mouth): "
                                 "with --at one frame; with --cut/--range/--shot the region at moments across the "
                                 "span and how far it drifts. Names: mask (the mask's area), top, bottom, left, "
                                 "right, centre, top-left, top-right, bottom-left, bottom-right.")
-    subparser.add_argument("--zoom", default=None, metavar="LAYER",
+    layers.add_argument("--zoom", default=None, metavar="LAYER",
                            help="Like --region, around this layer's box at that moment (c08.app).")
-    subparser.add_argument("--mask", default=None, metavar="MEDIA",
+    layers.add_argument("--mask", default=None, metavar="MEDIA",
                            help="An image mask (white = edited; a media id, short id or ref:name): its edge over "
                                 "the pictures and how much of the span's motion falls inside it, so a fixed "
                                 "mask's fit is plain. With --shot, the shot plan's inputs.masks is used when "
                                 "--mask is not given.")
-    subparser.add_argument("--compare-media", dest="compare_media", default=None, metavar="MEDIA",
+    comparison.add_argument("--compare-media", dest="compare_media", default=None, metavar="MEDIA",
                            help="A take (any media item, on the timeline or not) beside its source at the same "
                                 "moments, with where they differ; cropped by --region, judged against --mask. "
                                 "'take' = the --shot plan's latest take.")
-    subparser.add_argument("--against", default=None, metavar="cut|MEDIA",
+    comparison.add_argument("--against", default=None, metavar="cut|MEDIA",
                            help="With --compare-media: what to compare the take with: the composed cut "
                                 "(default) or a source media id (the cut's own picture media is read at the "
                                 "clip's source time).")
-    subparser.add_argument("--no-rules", dest="no_rules", action="store_true",
+    layers.add_argument("--no-rules", dest="no_rules", action="store_true",
                            help="motion view: ignore astrid-lint.toml.")
-    subparser.add_argument("--render-every", dest="render_every", type=float, default=None,
+    output.add_argument("--render-every", dest="render_every", type=float, default=None,
                            help="With --view contact --render-run RUN: sample the rendered file every N seconds "
                                 "(default 5). The review also prints the render's loudness (LUFS, LRA, true peak) and "
                                 "its silences (render-review.json).")
-    subparser.add_argument("--edited", default=None, metavar="N[,M]",
+    comparison.add_argument("--edited", default=None, metavar="N[,M]",
                            help="diff view: the cuts you meant to edit; a change anywhere else is a SCOPE warning.")
-    subparser.add_argument("--no-capture", dest="no_capture", action="store_true",
+    comparison.add_argument("--no-capture", dest="no_capture", action="store_true",
                            help="diff view: compare the documents only (no before/after tiles).")
-    subparser.add_argument("--from", dest="from_revision", default=None,
+    comparison.add_argument("--from", dest="from_revision", default=None,
                            help="diff/compare: the revision before the edit (alias of --before-revision-id).")
-    subparser.add_argument("--to", dest="to_revision", default=None,
+    comparison.add_argument("--to", dest="to_revision", default=None,
                            help="diff/compare: the revision after (default: head; alias of --after-revision-id).")
 
 
@@ -1144,39 +1147,58 @@ def _visualize_format_argument(value: str) -> str:
 
 
 def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
+    subparser.formatter_class = argparse.RawDescriptionHelpFormatter
+    subparser.description = """Common outcomes (replace `main` and `demo` with your timeline and project):
+
+  One clean composed frame:
+    astrid timelines visualize main --project demo --preset frame --at 7.2 --mode composed --show output --format png
+  Review a range or shot:
+    astrid timelines visualize main --project demo --view filmstrip --range 10..20 --show inputs
+  Inspect inputs without rendering:
+    astrid timelines visualize main --project demo --mode inputs --range 10..20 --format md --out artifacts
+  Compare before and after:
+    astrid timelines visualize main --project demo --view diff --before-revision-id OLD --after-revision-id NEW"""
     subparser.epilog = (
         "Next: use `timelines show` for authored rows and timing. For edits, use the "
         "timeline_editing guide. Literal numeric moves/trims use `timelines edit`. "
         "Use this help page for component, sampling, frame, and resolution controls."
     )
-    _add_project_arg(subparser, required=False)
+    groups = {
+        "selection": subparser.add_argument_group("Selection"),
+        "mode": subparser.add_argument_group("Mode and view"),
+        "layers": subparser.add_argument_group("Layers and overlays"),
+        "sampling": subparser.add_argument_group("Sampling"),
+        "comparison": subparser.add_argument_group("Comparison"),
+        "output": subparser.add_argument_group("Output"),
+    }
+    _add_project_arg(groups["selection"], required=False)
     subparser.add_argument(
         "timeline_ref", nargs="?", default=None,
         help="Optional positional timeline slug, UUID, or ULID (prefer --timeline-slug).",
     )
-    subparser.add_argument(
+    groups["selection"].add_argument(
         "--timeline-slug",
         default=None,
         help="Timeline slug, UUID, or ULID; omit to use the project default.",
     )
-    subparser.add_argument(
+    groups["selection"].add_argument(
         "--shot", default=None,
         help=(
             "Focus an authored shot id or exact name; use 'first' or a positive "
             "one-based authored-order ordinal (for example 1) for friendly shot selection."
         ),
     )
-    subparser.add_argument("--range", dest="range", default=None, help="Zoom to a closed-open START..END seconds window.")
-    subparser.add_argument("--at", default=None,
+    groups["selection"].add_argument("--range", dest="range", default=None, help="Zoom to a closed-open START..END seconds window.")
+    groups["selection"].add_argument("--at", default=None,
                            help="Any address: seconds (7.2), a word ('\"Building\" in v27', viral), a cut (c30), a layer "
                                 "(c41.mink). Ambiguous words list their scoped forms. Alone: one frame; with --preset "
                                 "motion: 1 s around it, every frame.")
-    subparser.add_argument("--frame", type=int, default=None, help="Capture one exact rendered frame number.")
-    subparser.add_argument("--revision-id", default=None, help="Capture/inspect an exact immutable timeline revision.")
-    subparser.add_argument("--clip", default=None, help="Focus an authored clip id.")
-    subparser.add_argument("--occurrence", default=None, help="Focus an exact authored shot occurrence id.")
-    subparser.add_argument("--asset", default=None, help="Focus a canonical asset key.")
-    subparser.add_argument(
+    groups["selection"].add_argument("--frame", type=int, default=None, help="Capture one exact rendered frame number.")
+    groups["selection"].add_argument("--revision-id", default=None, help="Capture/inspect an exact immutable timeline revision.")
+    groups["selection"].add_argument("--clip", default=None, help="Focus an authored clip id.")
+    groups["selection"].add_argument("--occurrence", default=None, help="Focus an exact authored shot occurrence id.")
+    groups["selection"].add_argument("--asset", default=None, help="Focus a canonical asset key.")
+    groups["layers"].add_argument(
         "--show", action="append", default=None, metavar="COMPONENT[,COMPONENT...]",
         help=(
             "Add synchronized components: inputs, output, text, or audio "
@@ -1184,27 +1206,27 @@ def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
             "use --hide inputs for output-only)."
         ),
     )
-    subparser.add_argument(
+    groups["layers"].add_argument(
         "--hide", action="append", default=None, metavar="COMPONENT[,COMPONENT...]",
-        help="Hide components from the resolved surface.",
+        help="Hide panels, not page chrome. For a clean frame, use --preset frame --at TIME --show output.",
     )
-    subparser.add_argument(
+    groups["layers"].add_argument(
         "--track", action="append", default=None, metavar="TRACK_ID",
         help="Restrict input lanes; repeat for multiple tracks.",
     )
-    subparser.add_argument(
+    groups["layers"].add_argument(
         "--detail", action="store_true", default=None,
         help="Use enlarged frame, waveform, and text panels; combine with --range/--shot for a focused inspection.",
     )
-    subparser.add_argument("--context", type=float, default=None, help="Context seconds around a focus.")
-    subparser.add_argument("--neighbors", type=int, default=None, help="Neighbor clips retained around a focus.")
-    subparser.add_argument(
+    groups["layers"].add_argument("--context", type=float, default=None, help="Context seconds around a focus.")
+    groups["layers"].add_argument("--neighbors", type=int, default=None, help="Neighbor clips retained around a focus.")
+    groups["output"].add_argument(
         "--format", dest="formats", action="append", default=None,
         metavar="FORMAT[,FORMAT...]",
         type=_visualize_format_argument,
         help="Repeatable/comma-separated png or md (default: png,md).",
     )
-    subparser.add_argument(
+    groups["mode"].add_argument(
         "--mode",
         choices=("auto", "inputs", "composed"),
         default="auto",
@@ -1213,7 +1235,7 @@ def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
             "inputs is render-free; composed always requests composed frames."
         ),
     )
-    subparser.add_argument(
+    groups["mode"].add_argument(
         "--view",
         choices=("filmstrip", "contact", "overview", "motion", "diff"),
         default=None,
@@ -1227,7 +1249,7 @@ def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
             "condition; needs --before-revision-id/--after-revision-id (or --from/--to)."
         ),
     )
-    subparser.add_argument(
+    groups["mode"].add_argument(
         "--preset", choices=PRESET_CHOICES, default=None,
         help=(
             "What you want to see, one page each: overview (whole film, one tile per cut); scan (a --range at "
@@ -1238,50 +1260,50 @@ def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
             "--cut -> cut."
         ),
     )
-    subparser.add_argument(
+    groups["comparison"].add_argument(
         "--before-revision-id", default=None,
         help="Required with --view diff: exact immutable before revision; no current-head fallback.",
     )
-    subparser.add_argument(
+    groups["comparison"].add_argument(
         "--after-revision-id", default=None,
         help="Required with --view diff: exact immutable after revision; no current-head fallback.",
     )
-    subparser.add_argument("--cut", default=None, help="Motion cut number, picture clip id, or @seconds.")
-    subparser.add_argument(
+    groups["selection"].add_argument("--cut", default=None, help="Motion cut number, picture clip id, or @seconds.")
+    groups["layers"].add_argument(
         "--layer", dest="layers", action="append", default=None,
         help="Motion/contact layer name; repeat or comma-separate registered layers.",
     )
 
-    _verify_add_visualize_labels_flag(subparser)
-    subparser.add_argument(
+    _verify_add_visualize_labels_flag(groups["layers"])
+    groups["sampling"].add_argument(
         "--beats", type=_json_object_or_path, default=None, metavar="BEATS_JSON",
         help="A cue's beats.json file (or the JSON object itself) with beats/downbeats/hits in cue seconds; "
              "overrides the beats the music clips carry (app.beats).",
     )
-    subparser.add_argument("--frame-budget", dest="frame_budget", type=int, default=None,
+    groups["sampling"].add_argument("--frame-budget", dest="frame_budget", type=int, default=None,
                            help="Motion frame budget (1–120; default 60).")
-    subparser.add_argument("--window", dest="window_s", type=float, default=None,
+    groups["sampling"].add_argument("--window", dest="window_s", type=float, default=None,
                            help="Motion window width in seconds around --at.")
-    subparser.add_argument(
+    groups["sampling"].add_argument(
         "--rules", type=_json_object_or_path, default=None, metavar="FILE",
         help="motion view: project rules TOML (default: the nearest astrid-lint.toml), or the rules JSON object "
              "(params, severity, disable, path).",
     )
-    subparser.add_argument("--cuts", default=None, help="Contact-only positive cut numbers, comma-separated (max 120).")
-    subparser.add_argument("--preview", action="store_true", default=None,
+    groups["sampling"].add_argument("--cuts", default=None, help="Contact-only positive cut numbers, comma-separated (max 120).")
+    groups["sampling"].add_argument("--preview", action="store_true", default=None,
                            help="Motion-only GIF from the already captured frames.")
-    subparser.add_argument("--sample", choices=("interval", "clips", "cuts", "shots"), default=None,
+    groups["sampling"].add_argument("--sample", choices=("interval", "clips", "cuts", "shots"), default=None,
                            help="Filmstrip sampling: interval (default), picture clips, cut boundaries, or authored story beats.")
-    sampling = subparser.add_mutually_exclusive_group()
+    sampling = groups["sampling"].add_mutually_exclusive_group()
     sampling.add_argument("--every", type=float, default=None,
                           help="Filmstrip interval in seconds (default: 0.5); rerun with --range START..END to zoom.")
     sampling.add_argument("--every-frames", type=int, default=None,
                           help="Filmstrip interval in exact rendered frames; replaces --every (rerun for finer samples).")
-    subparser.add_argument(
+    groups["sampling"].add_argument(
         "--include-cuts", action="store_true", default=None,
         help="With interval sampling, also capture visual cut-neighbor frames.",
     )
-    subparser.add_argument(
+    groups["output"].add_argument(
         "--render-run", default=None,
         help=(
             "Explicit successful render run, or latest (filmstrip default). "
@@ -1289,17 +1311,17 @@ def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
             "Address ranged renders in timeline time."
         ),
     )
-    subparser.add_argument("--columns", type=int, default=None,
+    groups["output"].add_argument("--columns", type=int, default=None,
                            help="Filmstrip contact sheet columns (default: 5; paired pages use one row by default).")
-    subparser.add_argument("--page-size", type=int, default=None,
+    groups["output"].add_argument("--page-size", type=int, default=None,
                            help="Filmstrip cards per static page (default: 50 standalone; paired pages use one row, or explicitly opt into up to two rows / 10 cards).")
-    subparser.add_argument("--resolution", default=None, metavar="WIDTHxHEIGHT",
+    groups["output"].add_argument("--resolution", default=None, metavar="WIDTHxHEIGHT",
                            help="Filmstrip frame resolution, e.g. 960x540; recorded and applied exactly by the executor.")
-    subparser.add_argument(
+    groups["output"].add_argument(
         "--include-media", action="store_true", default=None,
         help="Include a relative, digest-verified rendered video for offline filmstrip playback.",
     )
-    subparser.add_argument(
+    groups["output"].add_argument(
         "--out", default=None, metavar="DIR",
         help=(
             "Also copy the view's page(s), Markdown, and raw frames (frames/, frame-index.json) to DIR "
@@ -1308,9 +1330,9 @@ def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
     )
 
 
-    _visualize_add_visualize_flags(subparser)
+    _visualize_add_visualize_flags(subparser, groups)
     # Human summary by default (page path, counts, timing, next commands), like show/diff; --json opts into the SDK envelope.
-    _add_json_flag(subparser, default=False)
+    _add_json_flag(groups["output"], default=False)
     subparser.set_defaults(handler=_cmd_visualize)
 
 
