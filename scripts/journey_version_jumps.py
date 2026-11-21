@@ -398,10 +398,15 @@ def live_workspace(root: Path, data: Path, evidence: Path, action: str, request:
     if action in {"seed", "snapshot"}:
         diagnostic_path.unlink(missing_ok=True)
     diagnostic_args = ["--diagnostic", diagnostic_path] if action in {"seed", "snapshot"} else []
+    argv = [sys.executable, journey.ROOT / "scripts/journey_live_workspace.py",
+            action, "--data", data, "--root", root, "--selection", selection_path,
+            "--request", request_path, *diagnostic_args]
     try:
-        output = journey.run([sys.executable, journey.ROOT / "scripts/journey_live_workspace.py",
-                              action, "--data", data, "--root", root, "--selection", selection_path,
-                              "--request", request_path, *diagnostic_args], evidence / (action + ".json"), timeout=120)
+        if action in {"seed", "snapshot", "save_timeline_after_update", "reopen_saved_timeline"}:
+            output = journey.run(argv, evidence / (action + ".json"), timeout=120)
+        else:
+            output = _fix17_subprocess(argv, evidence / (action + "-stdout.log"),
+                                       evidence / (action + "-stderr.log"), timeout=120)
     except RuntimeError:
         # Preserve the helper's normal failure while giving turnover a clear error.
         live.check_selection(data, root, selection)
@@ -414,6 +419,46 @@ def live_workspace(root: Path, data: Path, evidence: Path, action: str, request:
     else:
         ownership(root, owner_data)
     return json.loads(output)
+
+
+def _sanitize_child_stderr(stderr: str) -> str:
+    """Bound diagnostics and redact credential-like values before receipt storage."""
+    text = stderr
+    for key, value in os.environ.items():
+        if value and journey.credential_name(key):
+            text = text.replace(value, "[redacted]")
+    text = _safe_runtime_body(text).replace("<redacted>", "[redacted]")
+    raw = text.encode("utf-8", errors="replace")[-4096:]
+    return raw.decode("utf-8", errors="ignore")
+
+
+class _Fix17ChildFailure(RuntimeError):
+    def __init__(self, argv, returncode: int | None, stderr: str):
+        status = "timed out" if returncode is None else f"exited {returncode}"
+        super().__init__(f"{Path(argv[0]).name} {status}")
+        self.child_exit_code = returncode
+        self.child_stderr = _sanitize_child_stderr(stderr)
+
+    def receipt(self) -> dict:
+        return {"child_exit_code": self.child_exit_code, "child_stderr": self.child_stderr}
+
+
+def _fix17_subprocess(argv, stdout_path: Path, stderr_path: Path, *, timeout: int) -> str:
+    """Run a FIX17-only helper with split output and useful bounded failure details."""
+    try:
+        child = subprocess.run(argv, encoding="utf-8", errors="replace", capture_output=True,
+                               timeout=timeout, check=False)
+    except subprocess.TimeoutExpired as exc:
+        error = _Fix17ChildFailure(argv, None, (exc.stderr or b"").decode("utf-8", "replace"))
+        stderr_path.write_text(error.child_stderr, encoding="utf-8")
+        raise error from None
+    if child.returncode:
+        error = _Fix17ChildFailure(argv, child.returncode, child.stderr)
+        stderr_path.write_text(error.child_stderr, encoding="utf-8")
+        stdout_path.write_text(_sanitize_child_stderr(child.stdout), encoding="utf-8")
+        raise error
+    stdout_path.write_text(child.stdout, encoding="utf-8")
+    return child.stdout
 
 
 def selected_data_root(root: Path, data: Path, *, allow_r1: bool = True) -> Path:
@@ -1644,6 +1689,8 @@ def execute_release13_then_update(args, root: Path, data: Path, evidence: Path, 
         result["status"] = "pass"
     except Exception as exc:
         result.update(status="fail", error=f"{type(exc).__name__}: {exc}")
+        if isinstance(exc, _Fix17ChildFailure):
+            result.update(exc.receipt())
         raise
     finally:
         journey.write_json(result_path, result)

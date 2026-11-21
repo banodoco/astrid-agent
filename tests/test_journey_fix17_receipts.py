@@ -1,6 +1,8 @@
 """Release 14 qualification boundary controls."""
 
 from pathlib import Path
+import json
+import sys
 
 import yaml
 
@@ -114,3 +116,26 @@ def test_r14_pinokio_gate_requires_fresh_open_and_stopped_runtime(tmp_path):
     steps["open_app"]["runtimeInstanceId"] = "other-runtime"
     receipt.write_text(json.dumps(row))
     assert any("Open Astrid" in error for error in gate.evaluate_release1_1_pinokio_matrix(candidate, tmp_path, ["pinokio-linux"]))
+
+
+def test_fix17_child_failure_receipt_keeps_exit_and_sanitized_stderr(tmp_path, monkeypatch):
+    from scripts import journey_version_jumps as jumps
+
+    monkeypatch.setenv("FIX17_TEST_TOKEN", "receipt-secret-value")
+    stdout = tmp_path / "child-stdout.log"
+    stderr = tmp_path / "child-stderr.log"
+    receipt = {"stage": "r13_authoring", "state": "running"}
+    try:
+        jumps._fix17_subprocess(
+            [sys.executable, "-c", "import sys; print('out'); print('token=receipt-secret-value', file=sys.stderr); sys.exit(7)"],
+            stdout, stderr, timeout=5)
+    except RuntimeError as error:
+        receipt.update(child_exit_code=error.child_exit_code, child_stderr=error.child_stderr)
+    else:
+        raise AssertionError("failing child unexpectedly succeeded")
+
+    assert stdout.read_text().strip() == "out"
+    assert stderr.read_text().strip() == "token=[redacted]"
+    assert receipt["child_exit_code"] == 7
+    assert "token=[redacted]" in receipt["child_stderr"]
+    assert "receipt-secret-value" not in json.dumps(receipt)
