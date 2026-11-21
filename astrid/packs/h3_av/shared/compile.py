@@ -812,6 +812,13 @@ def _compile_native_masked_edit(
                 raise CompilationError(str(exc)) from exc
             mask_kind = str(mask_info["kind"])
             if mask_kind == "video":
+                from .compose import _probe, _video_dimensions
+                mask_width, mask_height = _video_dimensions(_probe(assets[region.mask_asset]), role="mask")
+                if (mask_width, mask_height) != canvas_size:
+                    raise CompilationError(
+                        f"native masked edit mask video {region.mask_asset!r} is {mask_width}x{mask_height}; "
+                        f"expected {canvas_size[0]}x{canvas_size[1]}"
+                    )
                 if region.threshold is not None:
                     raise CompilationError("thresholded moving masks are not supported by native masked edit")
                 if int(mask_info["frames"]) != frame_load_cap:

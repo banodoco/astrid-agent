@@ -187,8 +187,9 @@ def test_non16x9_scaled_rectangle_preserves_prepared_pixels_on_cpu(tmp_path: Pat
     source = tmp_path / "landmark.mkv"
     _ffmpeg(
         "-f", "lavfi", "-i", "color=c=blue:s=640x480:r=24:d=1",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=1",
         "-vf", "drawbox=x=160:y=180:w=24:h=24:color=white:t=fill",
-        "-c:v", "ffv1", "-pix_fmt", "yuv420p", str(source),
+        "-c:v", "ffv1", "-pix_fmt", "yuv420p", "-c:a", "pcm_s16le", str(source),
     )
     request = normalize_request({
         "version": 2, "duration": 1, "prompt": "Change the rectangle.",
@@ -228,7 +229,8 @@ def test_non16x9_scaled_rectangle_preserves_prepared_pixels_on_cpu(tmp_path: Pat
     def decoded(path: Path) -> np.ndarray:
         raw = subprocess.run(
             ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(path),
-             "-frames:v", str(FRAMES), "-pix_fmt", "rgb24", "-f", "rawvideo", "-"],
+             "-frames:v", str(FRAMES), "-vf", "scale=768:448:flags=lanczos,format=gbrp,format=rgb24",
+             "-pix_fmt", "rgb24", "-f", "rawvideo", "-"],
             check=True, capture_output=True, timeout=60,
         ).stdout
         return np.frombuffer(raw, dtype=np.uint8).reshape(FRAMES, 448, 768, 3)
