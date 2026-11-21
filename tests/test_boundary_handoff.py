@@ -262,8 +262,6 @@ def test_injected_writer_mid_copy_discards_candidate_and_restores_r0(case, monke
     assert not list(c.data.parent.glob('.data-r1.adopt-*'))
     assert_r0(c)
 
-
-
 def test_failed_copy_only_staging_restores_r0_and_retry_preserves_existing_state(case, monkeypatch):
     """A failed fresh handoff restores the sole owner, and the next public install can retry."""
     c = case
