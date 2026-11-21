@@ -1,21 +1,17 @@
 """R14 readers reopen the R13 open track-app extension without changing storage."""
 from __future__ import annotations
 
-import base64
 import copy
 
 import pytest
 
 from tests.editing_conformance.test_commit_runtime_m1 import open_client
 from tests.helpers.trusted_seed import seed_trusted_parent
+from tests.integrations.test_c06_public_timeline_visualizer import _png
 
 pytestmark = pytest.mark.integration
 
 _MARKER = "clipPlacementVersion"
-_PNG = base64.b64decode(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8"
-    "/x8AAwMCAO+aRfsAAAAASUVORK5CYII="
-)
 
 
 @pytest.fixture
@@ -48,8 +44,50 @@ def _patch(service, project, change, key):
     )
 
 
+def seed_r13_timeline(service, project, path):
+    _png(path)
+    object_id = service.ingest(
+        project, path.read_bytes(), original_name="still.png", media_type="image/png", idempotency_key="still",
+    )["data"]["object_id"]
+    track = {"id": "V1", "label": "Picture", "kind": "visual",
+             "app": {_MARKER: 2, "org.example": {"keep": True}}}
+    registry = {"assets": {"still": {"media_id": object_id, "type": "image",
+                                     "content_sha256": object_id.removeprefix("sha256:")}}}
+    # R13's open track app bag accepted these markers in both timeline scopes.
+    # Use Runtime's trusted fixture boundary to reproduce the stored shape.
+    seed_trusted_parent(service, {
+        "project_id": project, "timeline_id": "main", "parent_revision_id": "r13-parent",
+        "parent_composition": {
+            "config": {"output": {"file": "out.mp4", "fps": 30, "resolution": "128x72"},
+                       "tracks": [track]},
+            "registry": registry,
+            "clips": [{"id": "still", "track": "V1", "clipType": "image", "asset": "still",
+                       "at": 0, "hold": 1}],
+            "occurrences": [
+                {"occurrence_id": "first-shot", "shot_id": "shot", "shot_revision_id": "r13-shot",
+                 "placement": {"start_ms": 0, "track": "V1"},
+                 "source_offset": {"start": 0, "end": 1000}, "duration_ms": 1000,
+                 "speed": {"numerator": 1, "denominator": 1}, "track": "V1"},
+            ],
+        },
+        "shot_revisions": [
+            {"shot_id": "shot", "revision_id": "r13-shot", "internal_timeline_revision_id": "r13-child",
+             "payload": {"name": "Shot", "items": [], "text_bindings": []}},
+        ],
+        "internal_timeline_revisions": [
+            {"timeline_id": "main", "revision_id": "r13-child",
+             "payload": {"output": {"file": "child.mp4", "fps": 30, "resolution": "96x54"},
+                         "tracks": [{**track, "id": "picture"}],
+                         "clips": [{"id": "child-still", "track": "picture", "clipType": "image",
+                                    "asset": "still", "at": 0, "hold": 1}],
+                         "registry": registry}},
+        ],
+    }, idempotency_key="r13-seed")
+    return track
+
+
 @pytest.mark.parametrize("reader", ["render", "visualize"])
-def test_saved_r13_marker_is_absent_only_in_reader_projection(realm, reader):
+def test_saved_r13_marker_is_absent_only_in_reader_projection(realm, reader, tmp_path):
     from astrid.core.timeline.reader_projection import check_reader_projection, reader_view
     from astrid.packs.rendering.actions.render.managed_timeline import (
         resolve_managed_render_snapshot,
@@ -60,25 +98,7 @@ def test_saved_r13_marker_is_absent_only_in_reader_projection(realm, reader):
     from runtime_protocol.capture_validation import validate_capture
 
     service, client, project = realm
-    object_id = service.ingest(
-        project, _PNG, original_name="still.png", media_type="image/png", idempotency_key="still",
-    )["data"]["object_id"]
-    track = {"id": "V1", "label": "Picture", "kind": "visual",
-             "app": {_MARKER: 2, "org.example": {"keep": True}}}
-    # The accepted R13 shape used the open track app bag. Reproduce that
-    # stored input through Runtime's trusted fixture boundary.
-    seed_trusted_parent(service, {
-        "project_id": project, "timeline_id": "main", "parent_revision_id": "r13-parent",
-        "parent_composition": {
-            "config": {"output": {"file": "out.mp4", "fps": 30, "resolution": "128x72"},
-                       "tracks": [track]},
-            "registry": {"assets": {"still": {"media_id": object_id, "type": "image",
-                                             "content_sha256": object_id.removeprefix("sha256:")}}},
-            "clips": [{"id": "still", "track": "V1", "clipType": "image", "asset": "still",
-                       "at": 0, "hold": 1}],
-            "occurrences": [],
-        },
-    }, idempotency_key="r13-seed")
+    track = seed_r13_timeline(service, project, tmp_path / "still.png")
     revision = service.get_project_parent_composition_revision(project, "main", "r13-parent")
     history = _history(service, project)
     if reader == "render":
@@ -96,17 +116,22 @@ def test_saved_r13_marker_is_absent_only_in_reader_projection(realm, reader):
             "source_kind": "revision", "project_id": project, "timeline_id": "main",
             "revision_id": "r13-parent", "revision_digest": revision["content_digest"],
         }, {})
-    assert config["clips"][0]["asset"] == "still"
-    assert config["tracks"][0]["app"].get(_MARKER) != 2
-    assert config["tracks"][0]["app"]["org.example"] == {"keep": True}
+    assert {clip["asset"] for clip in config["clips"]} == {"still", "first-shot:still"}
+    assert {row["id"] for row in config["tracks"]} == {"V1", "first-shot~picture"}
+    for row in config["tracks"]:
+        assert row["app"].get(_MARKER) != 2
+        assert row["app"]["org.example"] == {"keep": True}
     assert service.get_project_parent_composition_revision(project, "main", "r13-parent") == revision
     assert _history(service, project) == history
     assert revision["payload"]["config"]["tracks"] == [track]
+    child = service.get_project_timeline_revision(project, "main", "r13-child")
+    assert child["payload"]["tracks"][0]["app"][_MARKER] == 2
     provider = create_runtime_commit_service()
     document = history["items"][-1]["receipt"]["result"]["canonical_document"]
     assert reader_problem(provider, document) is None
 
     updated = copy.deepcopy(track["app"])
+    updated.pop(_MARKER)
     updated["org.example"]["keep"] = False
     change = {"op": "set", "ref": "parent", "path": ["config", "tracks", "id:V1", "app"],
               "before": {"state": "present", "value": track["app"]}, "value": updated}
@@ -116,6 +141,8 @@ def test_saved_r13_marker_is_absent_only_in_reader_projection(realm, reader):
     assert new_parent["config"]["tracks"][0]["app"] == updated
     records = _history(service, project)["items"][-1]["records"]
     assert records["steps"][0]["patch"] == [change]
+    assert service.get_project_parent_composition_revision(project, "main", "r13-parent") == revision
+    assert service.get_project_timeline_revision(project, "main", "r13-child") == child
 
 
 def test_authored_v2_marker_is_refused_without_writes(realm):
