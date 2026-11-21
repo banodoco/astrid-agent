@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
@@ -22,7 +22,7 @@ FILES = {
 }
 
 
-class _Fake(ThreadingHTTPServer):
+class _Fake(HTTPServer):
     """A ComfyUI whose loader choices follow ``installed``, as a real server's follow its folders."""
 
     def __init__(self, folders):
