@@ -55,7 +55,8 @@ def test_windows_step_sequence_keeps_original_assertions_and_adds_save():
         "admission", "r13_bootstrap", "r13_start", "r13_seed",
         "update", "release_check", "doctor", "dry_run", "data_check",
     ]
-    assert names[-2:] == ["save_timeline", "reopen_timeline"]
+    assert names[9:11] == ["save_timeline", "reopen_timeline"]
+    assert names[-2:] == ["interrupted_update", "recover_old"]
     for original in ("release13_install", "update_exit", "release", "one_runtime",
                      "service", "health", "doctor", "dry_run", "data_marker", "unrelated_sentinel"):
         assert original in windows.CHECKS
@@ -118,3 +119,55 @@ def test_release13_source_resolver_uses_pinned_app(monkeypatch, tmp_path):
     assert json.loads(manifest.read_text())["release"] == 13
     assert receipt["app_commit"] == APP
     assert receipt["identity"] == jumps.RELEASE13_IDENTITY
+
+
+
+def test_original_five_direct_rows_are_never_replaced():
+    expected = {"direct-linux", "direct-macos", "direct-windows",
+                "direct-linux-fresh", "direct-macos-fresh"}
+    assert {row["job_id"] for row in matrix.RELEASE1_AUTOMATIC_MATRIX} == expected
+    assert expected <= set(matrix.RELEASE1_JOB_IDS)
+    assert len(matrix.RELEASE1_JOB_IDS) == len(set(matrix.RELEASE1_JOB_IDS))
+    # R9/R11/autostart references must not silently expand this packet's scope.
+    assert not set(matrix.RELEASE9_INSTALL_MATRIX[0]["job_id"] for _ in range(1)) & set(matrix.RELEASE1_JOB_IDS)
+
+
+def test_killed_row_requires_native_windows_and_recovered_original_release():
+    row = matrix.validate_job("direct-windows-r13-killed-update", "direct")
+    assert (row["runner"], row["os"], row["leg"]) == (
+        "windows-2022", "windows", "release13-then-killed-update")
+    assert {"interruption_checkpoint", "process_killed", "recovery_exit",
+            "rollback_release", "timeline_reopened"} <= set(gate.RELEASE13_KILLED_CHECKS)
+    errors = gate._release13_killed_errors(row["job_id"], {})
+    assert any("durable nonterminal checkpoint" in e for e in errors)
+    assert any("recovery-only retry" in e for e in errors)
+    assert any("workspace marker" in e for e in errors)
+
+
+def test_one_row_evidence_scope_still_refuses_missing_and_foreign_receipts(tmp_path, monkeypatch):
+    name = "direct-linux-r13-update"
+    candidate = {"release": 14}
+    seen = []
+    monkeypatch.setattr(gate, "_release1_row_errors",
+                        lambda candidate, contract, row: seen.append(contract["job_id"]) or [])
+    monkeypatch.setattr(gate, "_upgrade_release_errors", lambda *_args: [])
+    missing = gate.evaluate_release1_matrix(candidate, tmp_path, job_id=name)
+    assert missing == [f"{name}: missing receipt"]
+    assert seen == []
+    destination = tmp_path / "only" / "after-cleanup"
+    destination.mkdir(parents=True)
+    (destination / "journey-result.json").write_text(json.dumps({"job_id": name}))
+    assert gate.evaluate_release1_matrix(candidate, tmp_path, job_id=name) == []
+    assert seen == [name]
+    (destination / "journey-result.json").write_text(json.dumps({"job_id": "direct-macos-r13-update"}))
+    errors = gate.evaluate_release1_matrix(candidate, tmp_path, job_id=name)
+    assert any("unknown or absent" in error for error in errors)
+    assert any("missing receipt" in error for error in errors)
+
+
+def test_one_row_scope_does_not_weaken_full_aggregate(tmp_path):
+    with pytest.raises(ValueError, match="unknown or duplicate"):
+        gate.evaluate_release1_matrix({}, tmp_path, job_id="not-a-row")
+    with pytest.raises(ValueError, match="full direct-row scope"):
+        gate.evaluate_release1_matrix({}, tmp_path, scope="five", job_id="direct-linux-r13-update")
+    assert len(gate.evaluate_release1_matrix({}, tmp_path)) == len(matrix.RELEASE1_JOB_IDS)
