@@ -143,9 +143,8 @@ def _clip_element(ctx, command, *, allow_initial=False):
     if retarget and element.get('kind') != 'effect':
         raise CommandError('clip.place-element supports effect elements on built-in effect clips only', ref=ref)
     if not isinstance(before, dict) and not retarget:
-        raise CommandError('clip.set-element requires an existing element ref'
-                           if not allow_initial else
-                           'clip.place-element targets a built-in effect clip or a clip with an element ref', ref=ref)
+        raise CommandError('clip.set-element requires an existing element ref, or a built-in effect clip '
+                           'to point at an admitted effect', ref=ref)
     if isinstance(before, dict) and (any(before.get(key) != element[key] for key in ('id', 'kind'))
             or before.get('packId') is not None and before['packId'] != element.get('packId')):
         raise CommandError('clip.set-element must keep the element id and kind and pack owner', ref=ref)
