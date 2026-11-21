@@ -16,7 +16,7 @@ entries:
       # Either a request document with its asset map, or the kind's plain inputs: a prompt with
       # image_ref (i2v: one reference image) or video_ref (v2v: the whole clip regenerated).
       # build writes the same request.v1 document from the plain inputs (hooks.py:_plain_request).
-      - {name: request, type: file, required: false, description: "H3 request document (request.v1 or request.v2 JSON)."}
+      - {name: request, type: file, required: false, description: "H3 request document (request.v1 or request.v2 JSON). Native v2 supports output.size for generation, masked edit and Character Swap. Continuation uses 1024x576."}
       - {name: asset_map, type: file_map, required: false, description: "Local files for asset names; project media handles in the request resolve automatically."}
       - {name: prompt, type: string, required: false, description: "What to generate, when no request document is given."}
       - {name: image_ref, type: file, required: false, description: "Reference image for i2v (named <Picture 1> in the prompt)."}

@@ -179,7 +179,7 @@ def _mask(value: Any, path: str, modalities: Mapping[str, str] | None) -> dict[s
             raise H3RequestError(f"{path} must reference an image/video mask")
         return {"asset": asset, "polarity": "black_preserve_white_edit"}
     item = _object(value, path) or {}
-    _unknown(item, {"asset", "full_frame", "rectangle", "polygon", "range", "polarity", "shape", "edge", "track"}, path)
+    _unknown(item, {"asset", "full_frame", "rectangle", "polygon", "range", "polarity", "shape", "edge", "track", "threshold", "canvas"}, path)
     geometry = [key for key in ("full_frame", "rectangle", "polygon") if key in item]
     if "asset" in item and geometry:
         raise H3RequestError(f"{path} cannot combine an asset with geometry")
@@ -192,6 +192,11 @@ def _mask(value: Any, path: str, modalities: Mapping[str, str] | None) -> dict[s
             raise H3RequestError(f"{path}.asset must reference an image/video mask")
         result["asset"] = asset
         result["edge"] = _edge(item.get("edge", {}), f"{path}.edge")
+        if "threshold" in item:
+            threshold = item["threshold"]
+            if type(threshold) is not int or not 1 <= threshold <= 254:
+                raise H3RequestError(f"{path}.threshold must be an integer 1..254")
+            result["threshold"] = threshold
     elif item.get("full_frame") is True:
         result["full_frame"] = True
     elif "rectangle" in item:
@@ -204,8 +209,15 @@ def _mask(value: Any, path: str, modalities: Mapping[str, str] | None) -> dict[s
         if not isinstance(points, list) or len(points) < 3:
             raise H3RequestError(f"{path}.polygon must contain at least three points")
         result["polygon"] = [[_number(coord, f"{path}.polygon[{i}][{axis}]") for axis, coord in enumerate(point)] for i, point in enumerate(points)]
+    if "canvas" in item:
+        canvas = item["canvas"]
+        if "rectangle" not in item or not isinstance(canvas, list) or len(canvas) != 2 or any(type(n) is not int or n <= 0 for n in canvas):
+            raise H3RequestError(f"{path}.canvas must be two positive integers on a rectangle mask")
+        result["canvas"] = list(canvas)
     if "edge" in item and "asset" not in item:
         raise H3RequestError(f"{path}.edge is allowed only with an asset mask")
+    if "threshold" in item and "asset" not in item:
+        raise H3RequestError(f"{path}.threshold is allowed only with an asset mask")
     if "track" in item:
         # Reserved for M4: accepted and stored, never acted on here.
         result["track"] = item["track"]
@@ -350,6 +362,11 @@ def _validate_character_swap_media(settings: Mapping[str, Any], media: list[dict
 def _identity_value(value: Mapping[str, Any]) -> dict[str, Any]:
     """Identity covers authored intent, not inspection or clock projections."""
     result = {key: val for key, val in value.items() if key not in {"profile", "output_count"}}
+    # Preserve the pre-canvas v2 identity for requests using the historical
+    # default. Non-default canvases are authored intent and remain digestible.
+    from .generation import DEFAULT_SIZE
+    if result.get("canvas") == {"width": DEFAULT_SIZE[0], "height": DEFAULT_SIZE[1]}:
+        result.pop("canvas")
     media = []
     for item in value["media"]:
         row = {key: val for key, val in item.items()
@@ -378,6 +395,30 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
     if not isinstance(media_raw, list): raise H3RequestError("media must be an array")
     continuation = raw.get("continuation", False)
     if type(continuation) is not bool: raise H3RequestError("continuation must be boolean")
+    from .generation import DEFAULT_SIZE, LIMITS
+    output = _object(raw.get("output", {}), "output") or {}
+    _unknown(output, {"size", "lead_in"}, "output")
+    lead_in = DEFAULT_LEAD_IN
+    if "output" in raw and not continuation and ("size" not in output or "lead_in" in output):
+        raise H3RequestError("output.lead_in is valid only for a continuation; generation output must declare size")
+    if "lead_in" in output:
+        lead_in = lead_in_mode(output["lead_in"], "output.lead_in")
+    size = output.get("size", DEFAULT_SIZE)
+    size_limits = LIMITS["canvas_dimension"]["value"]
+    if (("size" in output and not isinstance(size, list))
+            or not isinstance(size, (list, tuple)) or len(size) != 2
+            or any(type(dimension) is not int for dimension in size)):
+        raise H3RequestError("output.size must be exactly two JSON integers [width, height]")
+    width, height = size
+    if any(dimension < size_limits["min"] or dimension > size_limits["max"]
+           or dimension % size_limits["multiple"] for dimension in (width, height)):
+        raise H3RequestError(
+            "output.size width and height must each be 32–16384 inclusive and divisible by 32"
+        )
+    if continuation and tuple(size) != tuple(LIMITS["continuation_canvas"]["value"]):
+        raise H3RequestError(
+            f"output.size is limited by continuation_canvas: {LIMITS['continuation_canvas']['value']}"
+        )
     duration_fraction = (
         None if raw.get("duration") is None else _fraction(raw["duration"], "duration")
     )
@@ -513,17 +554,10 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
         duration = _time_value(duration_fraction)
     _ticks(duration_fraction, FPS, "duration")
     _validate_character_swap_media(settings, occurrences, continuation)
-    output: dict[str, Any] = {}
-    if "output" in raw:
-        output_raw = _object(raw["output"], "output") or {}
-        _unknown(output_raw, {"lead_in"}, "output")
-        if not continuation: raise H3RequestError("output is valid only for a continuation")
-        if "lead_in" in output_raw:
-            # The default is not digested: an explicit "drop" is the same request as none.
-            if lead_in_mode(output_raw["lead_in"], "output.lead_in") != DEFAULT_LEAD_IN:
-                output["lead_in"] = output_raw["lead_in"]
     value = {"version": 2, "prompt": prompt, "duration": duration, "media": occurrences, "settings": settings, "continuation": continuation, "profile": PROFILE, "output_count": 1}
-    if output: value["output"] = output
+    value["canvas"] = {"width": width, "height": height}
+    if lead_in != DEFAULT_LEAD_IN:
+        value["output"] = {"lead_in": lead_in}
     encoded = json.dumps(json_times(_identity_value(value)), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
     return H3Request(value=value, digest=hashlib.sha256(encoded).hexdigest())
 

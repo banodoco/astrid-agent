@@ -107,6 +107,11 @@ class _RegionsPerPassLimit(TypedDict):
     source: str
 
 
+class _ContinuationCanvasLimit(TypedDict):
+    value: list[int]
+    source: str
+
+
 class _Limits(TypedDict):
     builder_slots: _BuilderSlotsLimit
     clip_seconds: _ClipSecondsLimit
@@ -119,12 +124,15 @@ class _Limits(TypedDict):
     character_swap_references: _CharacterSwapReferencesLimit
     character_swap_mask_rectangle: _LimitSource
     continuation_references: _ContinuationReferencesLimit
+    continuation_canvas: _ContinuationCanvasLimit
     timeline_image_frame: _IntLimit
     regions_per_pass: _RegionsPerPassLimit
 
 
 _BUILDER_SLOT_VALUES: _BuilderSlotValues = {"image": 9, "video": 3, "audio": 3}
 _JOB_LENGTH_FRAME_VALUES: _JobLengthFrameValues = {"min": 5, "max": 3600, "stride": 17}
+
+DEFAULT_SIZE = (1024, 576)
 
 LIMITS: _Limits = {
     # Model facts.
@@ -141,6 +149,7 @@ LIMITS: _Limits = {
     "character_swap_references": {"value": {"video": 1, "image": 1, "additional": "allowed but untested"}, "source": "Astrid lowering"},
     "character_swap_mask_rectangle": {"value": "integer pixel coordinates", "source": "Astrid lowering"},
     "continuation_references": {"value": {"image": 2, "video": 0, "audio": 0}, "source": "Astrid lowering"},
+    "continuation_canvas": {"value": list(DEFAULT_SIZE), "source": "Astrid lowering"},
     "timeline_image_frame": {"value": 0, "source": "Astrid lowering"},
     "regions_per_pass": {"value": {"seeds": 1, "reference_sets": 1}, "source": "Astrid lowering"},
 }
@@ -348,6 +357,7 @@ class GenerationInputs:
 
 def generation_inputs_from_bindings(*, references: list[str], prompt: str, frames: int,
                                     model: str, steps: int, seed: int,
+                                    canvas_size: tuple[int, int] = DEFAULT_SIZE,
                                     sampler: str = "res_multistep", guidance: float = 0.95,
                                     scheduler: str = "simple", video_references: list[dict[str, Any]] | None = None,
                                     audio_references: list[dict[str, Any]] | None = None,
@@ -379,7 +389,7 @@ def generation_inputs_from_bindings(*, references: list[str], prompt: str, frame
         rows.append({"occurrence": input_binding["binding"], "modality": "audio", "trim": input_binding.get("resolved_range"),
                      "input_binding": input_binding, "tag": f"<Audio {audio_index}>"})
     return GenerationInputs(
-        canvas={"width": 1024, "height": 576, "frames": frames},
+        canvas={"width": canvas_size[0], "height": canvas_size[1], "frames": frames},
         placed=({"occurrence": "legacy-source", "input_binding": masked_edit["source_binding"],
                  "start_time": masked_edit["start_time"], "frame_count": masked_edit["frame_load_cap"]},) if masked_edit else (),
         grants=({"stream": "video", "interval": [0, masked_edit["frame_load_cap"]],
@@ -594,7 +604,7 @@ def build_generation_workflow(inputs: GenerationInputs):
                           "native_output_types": ["CONDITIONING", "LATENT"],
                       },
                       clip=clip.out("CLIP"), vae=video_vae.out("VAE"), audio_vae=audio.out("audio_vae"),
-                      prompt=prompt, width=1024, height=576, length=frames, ref_image_size="match", **refs)
+                      prompt=prompt, width=inputs.canvas["width"], height=inputs.canvas["height"], length=frames, ref_image_size="match", **refs)
         sampling_model = shifted.out("MODEL")
         sampling_latent = target.out("LATENT")
         if masked_edit:
@@ -645,7 +655,7 @@ def build_generation_workflow(inputs: GenerationInputs):
                 mask_frames = mask_loader.out("IMAGE")
                 if tail_frames:
                     # The internal tail grants no additional edit permissions.
-                    preserve = EmptyImage(width=1024, height=576, batch_size=tail_frames, color=0)
+                    preserve = EmptyImage(width=inputs.canvas["width"], height=inputs.canvas["height"], batch_size=tail_frames, color=0)
                     mask_frames = ImageBatch(image1=mask_frames, image2=preserve.out("IMAGE")).out("IMAGE")
                 mask = node("ImageToMask", _outputs=("MASK",), image=mask_frames,
                             channel=masked_edit["mask_channel"])

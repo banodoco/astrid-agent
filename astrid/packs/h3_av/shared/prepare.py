@@ -21,6 +21,7 @@ from .masks import (
     merge_intervals,
 )
 from .request import H3Request, H3RequestError, _asset_ids
+from .generation import DEFAULT_SIZE, LIMITS
 from .request_v2 import branch_for, timeline_image_limit_error
 
 
@@ -47,10 +48,12 @@ def _retained_video_frames(loaded: int, target: int) -> int | None:
     return frames - ((frames - 5) % 17) if frames >= 5 else None
 
 
-def _reference_size(modality: str, width: int, height: int) -> dict[str, int]:
-    # MiniMaxH3ReferenceToVideo pinned execute: graph binds 1024x576 and match.
+def _reference_size(
+    modality: str, width: int, height: int, *, canvas: tuple[int, int] = DEFAULT_SIZE,
+) -> dict[str, int]:
+    # MiniMaxH3ReferenceToVideo uses the target canvas area for image size "match".
     if modality == "image":
-        scale = min(1.0, math.sqrt((1024 * 576) / (width * height)))
+        scale = min(1.0, math.sqrt((canvas[0] * canvas[1]) / (width * height)))
         w, h = width * scale, height * scale
     else:
         ratio = width / height
@@ -81,6 +84,8 @@ def _admit_conditioning(request: H3Request, assets: list[dict[str, Any]], warnin
         "audio": _BUILDER_SLOT_VALUES["audio"],
     }
     duration_clock = {"video": 24, "audio": 48000}
+    canvas = request.value.get("canvas")
+    target_size = (canvas["width"], canvas["height"]) if isinstance(canvas, Mapping) else DEFAULT_SIZE
     measurements: list[dict[str, Any]] = []
     for item in refs:
         modality = item.get("modality")
@@ -111,7 +116,7 @@ def _admit_conditioning(request: H3Request, assets: list[dict[str, Any]], warnin
             except Exception as exc:
                 raise PreparationError(f"conditioning image metadata is unreadable: {item['occurrence_id']}") from exc
             measurement["tracks"] = ["video"]
-            measurement["effective_size"] = _reference_size(modality, width, height)
+            measurement["effective_size"] = _reference_size(modality, width, height, canvas=target_size)
             measurement["retained_picture_frames"] = 1
             measurement["resource_estimate"].update({"schema_valid": True, "raw_bytes": measurement["effective_size"]["width"] * measurement["effective_size"]["height"] * 3})
             continue
@@ -407,7 +412,9 @@ def _fps_text(rate: Fraction | None) -> str:
     return f"{float(rate):.3f} fps" if rate is not None else "unknown fps"
 
 
-def _check_source_av_rate(asset_id: str, path: Path) -> None:
+def _check_source_av_rate(
+    asset_id: str, path: Path, *, expected_size: tuple[int, int] = DEFAULT_SIZE,
+) -> None:
     """Reject a source-backed video that is not exactly 24/1 CFR or whose audio and video diverge."""
     ffprobe = shutil.which("ffprobe")
     if ffprobe is None:
@@ -463,8 +470,8 @@ def _check_source_av_rate(asset_id: str, path: Path) -> None:
     problems: list[str] = []
     if r_rate != _SOURCE_AV_RATE or avg_rate != _SOURCE_AV_RATE:
         problems.append("video is not exactly 24/1 CFR")
-    if (video.get("width"), video.get("height")) != (1024, 576):
-        problems.append("video dimensions are not 1024x576")
+    if (video.get("width"), video.get("height")) != expected_size:
+        problems.append(f"video dimensions are not {expected_size[0]}x{expected_size[1]}")
     if video_duration is None or (audio is not None and audio_duration is None):
         problems.append("durations could not be measured")
     elif (
@@ -492,7 +499,7 @@ def _check_source_av_rate(asset_id: str, path: Path) -> None:
     if audio is not None and codec != "aac":
         hint += f" (audio codec is {codec})"
     code = SOURCE_AV_RATE_CODE if r_rate != _SOURCE_AV_RATE or avg_rate != _SOURCE_AV_RATE else (
-        "H3_SOURCE_AV_SIZE" if (video.get("width"), video.get("height")) != (1024, 576)
+        "H3_SOURCE_AV_SIZE" if (video.get("width"), video.get("height")) != expected_size
         else SOURCE_AV_RATE_CODE
     )
     raise _SourceAVError(
@@ -523,11 +530,20 @@ def _check_source_av_rates(request: H3Request, assets: list[dict[str, Any]]) -> 
         for record in assets
         if record.get("status") == "resolved" and isinstance(record.get("path"), str)
     }
+    expected_size = DEFAULT_SIZE
+    if value.get("version") == 2:
+        canvas = value.get("canvas")
+        if isinstance(canvas, Mapping):
+            expected_size = (int(canvas["width"]), int(canvas["height"]))
     for asset_id in dict.fromkeys(targets):
         path = resolved.get(asset_id)
         # An unresolved source is blocked_until_resolution, so no pod can be held for it.
-        if path is not None:
+        if path is None:
+            continue
+        if expected_size == DEFAULT_SIZE:
             _check_source_av_rate(asset_id, path)
+        else:
+            _check_source_av_rate(asset_id, path, expected_size=expected_size)
 
 
 def _v2_mask_schedule(
@@ -705,16 +721,41 @@ def prepare_request(
     *,
     asset_map: Mapping[str, str] | None = None,
     fps: float = 24.0,
-    width: int = 1024,
-    height: int = 576,
+    width: int | None = None,
+    height: int | None = None,
     sample_rate: int = 48000,
     out_dir: str | Path | None = None,
     frozen_source: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create a deterministic preparation manifest without touching a runtime."""
 
+    if (width is None) != (height is None):
+        raise PreparationError("width and height compatibility inputs must be supplied together")
+    resolved_canvas = request.value.get("canvas")
+    has_resolved_canvas = isinstance(resolved_canvas, Mapping)
+    if has_resolved_canvas:
+        effective_width = resolved_canvas.get("width")
+        effective_height = resolved_canvas.get("height")
+    else:
+        effective_width, effective_height = DEFAULT_SIZE
     canvas = LIMITS["canvas_dimension"]["value"]
-    if any(value < canvas["min"] or value > canvas["max"] or value % canvas["multiple"] for value in (width, height)):
+    # Compatibility for existing internal callers. Normalized request records
+    # are authoritative: a compatibility argument may confirm, but cannot
+    # replace, their canvas. Unresolved legacy records have no canvas to conflict.
+    if width is not None and height is not None:
+        if any(type(value) is not int or value < canvas["min"] or value > canvas["max"]
+               or value % canvas["multiple"] for value in (width, height)):
+            raise PreparationError(f"width and height 32–16384, multiples of 32: received {width}x{height}")
+        if has_resolved_canvas and (width, height) != (effective_width, effective_height):
+            raise PreparationError("width and height compatibility inputs cannot override the normalized request canvas")
+        if not has_resolved_canvas:
+            # Persisted normalized v2 requests predate the canvas field; their
+            # identity and compiler both imply the historical default.
+            if request.value.get("version") == 2 and request.value.get("profile") and (width, height) != DEFAULT_SIZE:
+                raise PreparationError("width and height compatibility inputs cannot override the normalized request canvas")
+            effective_width, effective_height = width, height
+    width, height = effective_width, effective_height
+    if any(type(value) is not int or value < canvas["min"] or value > canvas["max"] or value % canvas["multiple"] for value in (width, height)):
         raise PreparationError(f"width and height 32–16384, multiples of 32: received {width}x{height}")
     if fps <= 0 or sample_rate <= 0:
         raise PreparationError("fps and sample_rate must be positive")
@@ -725,8 +766,10 @@ def prepare_request(
         warnings.append({"limit": "job_duration_seconds", "message": duration_limits["warning"]})
     original_request = request
     source_conform = None
-    if out_dir is not None:
-        is_v2 = request.value.get("version") == 2
+    is_v2 = request.value.get("version") == 2
+    # The legacy conform produces a fixed-size derivative. Non-default v2
+    # sources must already match the requested canvas and pass preflight below.
+    if out_dir is not None and (not is_v2 or (width, height) == DEFAULT_SIZE):
         if is_v2:
             candidates = [(i, item) for i, item in enumerate(request.value["media"])
                           if item.get("role") == "timeline" and item.get("modality") == "video"]
@@ -888,11 +931,14 @@ def prepare_request(
             "warnings": warnings,
             "resource_estimate": {
                 "schema_valid": True,
-                "qualified": all(row["resource_estimate"]["qualified"] for row in conditioning_measurements),
+                "qualified": False,  # The target is not yet resource-qualified.
+                "conditioning_qualified": all(row["resource_estimate"]["qualified"] for row in conditioning_measurements),
+                "target_qualified": None,  # Target resource feasibility has not been established.
                 "observed": False,
                 "target_rows": target_timing["raw_frames"],
                 "requested_target_rows": target_timing["requested_frames"],
                 "target_raw_rgb_bytes": (target_timing["raw_frames"] * int(width) * int(height) * 3 if target_timing["raw_frames"] is not None else None),
+                "target_raw_float32_rgb_bytes": (target_timing["raw_frames"] * int(width) * int(height) * 3 * 4 if target_timing["raw_frames"] is not None else None),
                 "reference_rows": len(conditioning_measurements),
                 "reference_raw_rgb_bytes": (sum(row["resource_estimate"]["raw_bytes"] for row in conditioning_measurements if row["modality"] in {"image", "video"}) if all(row["resource_estimate"]["raw_bytes"] is not None for row in conditioning_measurements if row["modality"] in {"image", "video"}) else None),
                 "reference_raw_rgb_bytes_upper_bound": (sum((row["resource_estimate"].get("raw_bytes_upper_bound") if row["modality"] == "video" else row["resource_estimate"]["raw_bytes"]) for row in conditioning_measurements if row["modality"] in {"image", "video"}) if all((row["resource_estimate"].get("raw_bytes_upper_bound") if row["modality"] == "video" else row["resource_estimate"]["raw_bytes"]) is not None for row in conditioning_measurements if row["modality"] in {"image", "video"}) else None),

@@ -176,7 +176,6 @@ def build(inputs, files, out, *, engine=None, check_runtime=False, publish_sourc
     if publish_source is not None:
         options["publish_source"] = publish_source
     paths, preparation, compilation = stages.compile_stages(request, asset_map, work / "plan", **options)
-    _shared("prepare").write_preparation(work / "preparation.json", preparation)
     bindings = compilation["workflow_inputs"]
     facts.assert_no_unresolved_placeholders(bindings)
     plan = {**stages._sealed_plan(compilation, preparation=preparation), "request_digest": request.digest}
@@ -187,7 +186,7 @@ def build(inputs, files, out, *, engine=None, check_runtime=False, publish_sourc
     if any(item.get("role") == "timeline" and item.get("modality") == "image" for item in request.value.get("media", [])):
         source = str(work / "plan" / "compile" / "prepared-still-source.mkv")
     trio = Path(compilation["workflow"]["workflow.py"]["path"]).parent
-    # The media the graph binds, unpacked from compile's managed-assets archive: {binding: path}.
+    # The archive also carries composition permissions, which stay in job custody.
     assets = {}
     reference_assets = {}
     if "managed_assets" in compilation:
@@ -203,9 +202,16 @@ def build(inputs, files, out, *, engine=None, check_runtime=False, publish_sourc
         bound_sha256 = reference_assets["source_video"]["sha256"]
         conformed_binding = isinstance(conform, Mapping) and bound_sha256.removeprefix("sha256:") == conform["output"]["sha256"]
         plan["source_av"] = _source_av_measurement(preparation if conformed_binding else {}, assets["source_video"], facts)
-    stages.save_build_state(work, request=request, document=document, preparation=preparation,
-                            source=source, plan=plan, reference_assets=reference_assets)
-    return {"workflow": _load_graph(trio), "bindings": bindings, "plan": plan, "assets": assets,
+    for record in preparation.get("assets", []):
+        binding = record.get("binding")
+        if isinstance(binding, str) and binding.startswith("permission_mask_"):
+            if binding not in assets:
+                raise ValueError(f"managed permission mask {binding} is missing")
+            record["path"] = str(assets[binding])
+    _shared("prepare").write_preparation(work / "preparation.json", preparation)
+    stages.save_build_state(work, request=request, document=document, preparation=preparation, source=source, plan=plan, reference_assets=reference_assets)
+    runtime_assets = {binding: path for binding, path in assets.items() if binding in bindings}
+    return {"workflow": _load_graph(trio), "bindings": bindings, "plan": plan, "assets": runtime_assets,
             "bundle": str(trio)}
 
 

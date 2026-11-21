@@ -131,17 +131,25 @@ def test_generation_rejects_incomplete_or_unpinned_lock_entry(monkeypatch, inval
         _locked_model_workflow()
 
 
-@pytest.mark.parametrize("index", range(5))
-def test_generation_rejects_missing_required_lock_destination(monkeypatch, index):
+@pytest.mark.parametrize("variant", ["default", "fl2v"])
+def test_generation_rejects_missing_required_lock_destination(monkeypatch, variant):
     from astrid.packs.h3_av.shared import generation
-
     from astrid.core.generation.engine_recipe import load_recipe_model_lock
+
+    # The selected LoRA varies with the active graph (2c58a6b21).
+    kwargs = {} if variant == "default" else {"turbo_filename": generation.TURBO_FILENAME}
     lock = load_recipe_model_lock("comfyui", "linux-x86_64-cu130")
-    missing = lock.models[index]
-    _install_lock(replace(lock, models=tuple(model for model in lock.models if model is not missing)))
-    with pytest.raises(ValueError, match="missing destination") as error:
-        _locked_model_workflow()
-    assert missing.destination in str(error.value)
+    active = {f'{row["subdir"]}/{row["name"]}' for row in _locked_model_workflow(**kwargs).metadata["model_assets"]}
+    required = [model for model in lock.models if model.destination in active]
+    assert {model.destination for model in required} == active
+    assert len(required) == 5
+    for missing in required:
+        _install_lock(replace(lock, models=tuple(model for model in lock.models if model is not missing)))
+        with pytest.raises(ValueError, match="missing destination") as error:
+            _locked_model_workflow(**kwargs)
+        assert missing.destination in str(error.value)
+        _install_lock(lock)
+
 
 
 def _install_lock(lock):
@@ -829,3 +837,68 @@ def test_text_only_warnings_reach_public_plan_and_build(tmp_path, capsys):
     for plan in (public_plan, built["plan"]):
         assert {row.get("limit") for row in plan["warnings"]} >= {"job_duration_seconds", "text_only_documented_use"}
     assert built["assets"] == {}
+@pytest.mark.parametrize("size", [(1024, 576), (512, 288), (768, 448)])
+def test_source_free_canvas_is_emitted(tmp_path, size):
+    from vibecomfy.cli_loader import load_workflow_any
+    image = tmp_path / "image.png"
+    Image.new("RGB", (32, 32)).save(image)
+    request = normalize_request({"version": 2, "prompt": "A scene", "duration": 1,
+        "output": {"size": list(size)}, "media": [{"asset": "image", "role": "reference", "modality": "image"}]})
+    compiled = compile_preparation(prepare_request(request, asset_map={"image": str(image)}), out_dir=tmp_path / "out")
+    api = load_workflow_any(compiled["workflow"]["workflow.py"]["path"]).compile("api", run_inputs=compiled["workflow_inputs"])
+    sized = [(row["class_type"], key, value) for row in api.values() for key, value in row["inputs"].items() if key in ("width", "height")]
+    assert sorted(sized) == sorted([("MiniMaxH3ReferenceToVideo", "width", size[0]), ("MiniMaxH3ReferenceToVideo", "height", size[1])])
+    assert compiled["size"] == {"width": size[0], "height": size[1]}
+
+@pytest.mark.parametrize("size", [(1024, 576), (512, 288), (768, 448)])
+def test_video_mask_tail_canvas_is_emitted(tmp_path, size):
+    from vibecomfy.workflow_bundle import emit_bundle
+    from vibecomfy.cli_loader import load_workflow_any
+    from astrid.packs.h3_av.shared.generation import build_generation_workflow
+    from vibecomfy.security.provenance import Provenance
+    inputs = generation_inputs_from_bindings(references=[], prompt="A scene", frames=25,
+        model="minimax_h3_ref2va_pruned_int8_convrot.safetensors", steps=8, seed=1, canvas_size=size,
+        masked_edit={"source_binding": "source", "mask_binding": "mask", "mask_channel": "red",
+                     "mask_kind": "video", "frame_load_cap": 24, "start_time": 0, "strength": 1})
+    path = tmp_path / "workflow.py"
+    emit_bundle(build_generation_workflow(inputs), path, provenance=Provenance.AGENT_AUTHORED)
+    api = load_workflow_any(path).compile("api", run_inputs={"source": "source.mp4", "mask": "mask.mp4"})
+    sized = [(row["class_type"], key, value) for row in api.values() for key, value in row["inputs"].items() if key in ("width", "height")]
+    assert sorted(sized) == sorted([(kind, key, value) for kind in ("MiniMaxH3ReferenceToVideo", "EmptyImage") for key, value in (("width", size[0]), ("height", size[1]))])
+
+
+def test_large_canvas_resource_estimate_does_not_claim_target_qualification():
+    request = normalize_request({"version": 2, "prompt": "A scene", "duration": 5,
+                                 "output": {"size": [16384, 16384]}, "media": []})
+    estimate = prepare_request(request)["resource_estimate"]
+    assert estimate["schema_valid"] is True
+    assert estimate["conditioning_qualified"] is True
+    assert estimate["qualified"] is False
+    assert estimate["target_qualified"] is None
+    assert estimate["observed"] is False
+    assert estimate["target_raw_rgb_bytes"] == estimate["target_rows"] * 16384 * 16384 * 3
+    assert estimate["target_raw_float32_rgb_bytes"] == estimate["target_raw_rgb_bytes"] * 4
+    assert estimate["unit"] == "bytes"
+
+
+def test_canvas_is_visible_in_dry_run_and_retained_hook_plan(tmp_path):
+    import importlib.util
+    from astrid.core.generation.engine_facts import comfyui_facts
+    from astrid.packs.h3_av.shared.planner import plan_request
+    raw = {"version": 2, "prompt": "A scene", "duration": 6, "media": [], "output": {"size": [512, 288]}}
+    expected = {"width": 512, "height": 288}
+    plan = plan_request(normalize_request(raw), out_dir=tmp_path / "dry")
+    assert plan["compilation"]["size"] == expected
+    path = Path(__file__).parents[3] / "astrid/packs/h3_av/extensions/vibecomfy.workflows/hooks.py"
+    spec = importlib.util.spec_from_file_location("h3_canvas_test_hooks", path)
+    hooks = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hooks)
+    request_file = tmp_path / "request.json"
+    request_file.write_text(json.dumps(raw))
+    result = hooks.build({"request": str(request_file)}, {}, tmp_path / "work", engine=comfyui_facts())
+    assert result["plan"]["size"] == expected
+    state = tmp_path / "work/h3/build-state.json"
+    retained = tmp_path / "retained.json"
+    shutil.copyfile(state, retained)
+    shutil.rmtree(tmp_path / "work")
+    assert json.loads(retained.read_text())["plan"]["size"] == expected

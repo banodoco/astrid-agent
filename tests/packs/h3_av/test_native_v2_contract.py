@@ -668,3 +668,54 @@ def test_timeline_still_public_boundaries_reject_split_and_controls(tmp_path, ca
     assert main(["plan", "--spec", str(request_path), "--out", str(tmp_path / "plan")]) != 0
     captured = capsys.readouterr()
     assert "timeline image frame" in captured.out + captured.err
+
+
+def test_candidate_coverage_helper_accepts_synthetic_preparation_without_media(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(compose_module, "_video_coverage", lambda _: {
+        "fps": 24.0, "frames": 24, "duration": 1.0,
+    })
+    monkeypatch.setattr(compose_module, "_audio_coverage", lambda _: {
+        "duration": 1.0, "sample_rate": 48_000,
+    })
+    coverage = _validate_candidate_coverage(
+        preparation={"request": {"version": 2},
+                     "mask_schedule": {"branch": "source_backed_v2v", "duration": 1.0}},
+        candidate=tmp_path / "synthetic.mkv",
+    )
+    assert coverage["status"] == "covered"
+    assert coverage["requested_duration"] == 1.0
+
+
+@pytest.mark.ffmpeg
+def test_continuation_compose_rejects_missing_generated_dimensions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source.mkv"
+    generated = tmp_path / "generated.mkv"
+    _av(source, frames=48, color="blue", frequency=440)
+    # Plan 59's source guard (c518417a10) requires a valid 39-frame prefix.
+    request = normalize_request({
+        "version": 2, "prompt": "Continue the source.", "duration": 2,
+        "continuation": True,
+        "media": [{"id": "source", "asset": "source.mkv", "role": "timeline",
+                   "modality": "video", "at": {"frame": 0}, "range": [0, 1.625]}],
+    })
+    preparation = prepare_request(request, asset_map={"source.mkv": str(source)})
+    timing = compose_module._continuation_timing(preparation)
+    _av(generated, frames=timing.expected_graph_output_frames, color="red", frequency=880)
+    original_probe = compose_module._probe
+
+    def without_generated_dimensions(path):
+        probe = original_probe(path)
+        if probe and Path(path) == generated:
+            for stream in probe.get("streams", []):
+                stream.pop("width", None)
+                stream.pop("height", None)
+        return probe
+
+    monkeypatch.setattr(compose_module, "_probe", without_generated_dimensions)
+    with pytest.raises(CompositionError, match="generated video has no usable decoded dimensions"):
+        compose_candidate(preparation=preparation, generated=generated, source=source,
+                          out_dir=tmp_path / "composition")

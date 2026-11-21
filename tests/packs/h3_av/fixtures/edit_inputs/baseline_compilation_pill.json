@@ -93,7 +93,7 @@
       "video_tail": "repeat_last_selected_frame"
     }
   },
-  "compilation_digest": "e35d0c75f4bcb968e6bd5a571640a633543eb70e18a2ae8c7603909d30e74d8d",
+  "compilation_digest": "72a0556f4e57e94dea67f7813c9498857596d5bbee1a84f264ace669fa05820d",
   "effective_settings": {
     "audio_shift": 3.0,
     "cfg": 1.0,
@@ -114,13 +114,23 @@
     "native masked edit is CPU-verified only; spatial mode on ref2va plus Turbo is unproven on GPU",
     "static boxes, image masks or per-frame mask video; active regions share one reference set and one seed",
     "polygon masks and per-operation adapters are unsupported",
-    "box-only regions bind in the graph; end-to-end execution still needs resolved mask propagation for composition paste-back",
     "long windows use one pass without automatic chunking",
     "zero-reference requests assume MiniMaxH3ReferenceToVideo accepts no ref images (unverified)"
   ],
   "managed_assets": {
     "manifest": {
       "assets": [
+        {
+          "binding": "permission_mask_0",
+          "lineage": {
+            "filename": "resolved-mask.png",
+            "kind": "source_bytes",
+            "sha256": "sha256:60f587d2d6d543eac9de231150413e55bfafc1ce8362b95325abf3b40f3e7f9f"
+          },
+          "member": "assets/60f587d2d6d543ea-resolved-mask.png",
+          "sha256": "60f587d2d6d543eac9de231150413e55bfafc1ce8362b95325abf3b40f3e7f9f",
+          "size": 1379
+        },
         {
           "binding": "reference_0",
           "lineage": {
@@ -171,11 +181,15 @@
       }
     },
     "path": "<D>/out/managed-assets.zip",
-    "sha256": "a4e340cdc36ff6c87fb3adb44e16a2cfc6a7b849ce8823989a19f3f029ae3c11"
+    "sha256": "2105ac85028c4e69ce1ea023b7861cadf000b5eeb1d9dbd558bba56503443f21"
   },
   "profile": "h3_av.native.v2",
   "request_digest": "275d494eae2b9bc049b149d1c3047ea350c23480df91bd13fcde8d02c054d80d",
   "schema_version": 1,
+  "size": {
+    "height": 576,
+    "width": 1024
+  },
   "status": "compiled",
   "workflow": {
     "source.json": {

@@ -143,13 +143,22 @@ def _video_coverage(path: Path) -> dict[str, Any]:
         frames = round(observed_duration * float(rate))
     if frames <= 0:
         raise CompositionError("video stream contains no frames")
-    return {
+    coverage = {
         "path": str(path),
         "frames": frames,
         "fps": float(rate),
         "duration": frames / float(rate),
         "stream_count": 1,
     }
+    # Synthetic coverage callers may provide only timing fields. Public
+    # composition and verification require usable dimensions separately.
+    try:
+        width, height = _video_dimensions(probe, role="generated/candidate")
+    except CompositionError:
+        pass
+    else:
+        coverage.update(width=width, height=height)
+    return coverage
 
 
 def _audio_coverage(path: Path) -> dict[str, Any]:
@@ -227,6 +236,26 @@ def _generation_duration(preparation: Mapping[str, Any]) -> float:
     return float(request["output"]["duration"])
 
 
+def _require_decoded_video_size(video: Mapping[str, Any], *, role: str) -> None:
+    if any(type(video.get(key)) is not int or video[key] <= 0 for key in ("width", "height")):
+        raise CompositionError(f"{role} video has no usable decoded dimensions")
+
+
+def _validate_video_size(preparation: Mapping[str, Any], video: Mapping[str, Any], *, role: str) -> None:
+    media = preparation.get("media")
+    if not isinstance(media, Mapping) or any(
+        type(media.get(key)) is not int or media[key] <= 0 for key in ("width", "height")
+    ):
+        raise CompositionError("preparation has no usable requested video dimensions")
+    _require_decoded_video_size(video, role=role)
+    actual = (video["width"], video["height"])
+    requested = (media["width"], media["height"])
+    if actual != requested:
+        raise CompositionError(
+            f"{role} video size is {actual[0]}x{actual[1]}, requested {requested[0]}x{requested[1]}"
+        )
+
+
 def _validate_generated_coverage(
     *,
     preparation: Mapping[str, Any],
@@ -239,6 +268,7 @@ def _validate_generated_coverage(
         from .generation import generation_timing
         plan = generation_timing(_generation_duration(preparation))
         video = _video_coverage(generated_video)
+        _validate_video_size(preparation, video, role="generated")
         audio = _audio_coverage(generated_audio or generated_video)
         if video["fps"] != plan["fps"] or video["frames"] != plan["raw_frames"]:
             raise CompositionError("H3 generation frame coverage does not match the compiled plan")
@@ -247,8 +277,14 @@ def _validate_generated_coverage(
         return {"video": video, "audio": audio, "timing": plan}
     timing = _continuation_timing(preparation)
     if timing is None:
+        schedule = preparation.get("mask_schedule")
+        if isinstance(schedule, Mapping) and schedule.get("branch") == "source_backed_v2v":
+            video = _video_coverage(generated_video)
+            _validate_video_size(preparation, video, role="generated")
+            return {"video": video}
         return {}
     video = _video_coverage(generated_video)
+    _require_decoded_video_size(video, role="generated")
     audio = _audio_coverage(generated_audio or generated_video)
     if abs(video["fps"] - timing.fps) > 1e-6:
         raise CompositionError(f"H3 continuation output must be {timing.fps} fps")
@@ -479,6 +515,55 @@ def probe_mask(
     return {"kind": "video", "frames": frames}
 
 
+
+def _guard_unprepared_static_permissions(preparation: Mapping[str, Any]) -> None:
+    """Reject legacy static fallbacks when they would change authored pixels."""
+    from .generation import DEFAULT_SIZE
+
+    media = preparation.get("media")
+    request = preparation.get("request")
+    canvas = request.get("canvas") if isinstance(request, Mapping) else None
+    dimensions = media if isinstance(media, Mapping) else canvas
+    if isinstance(dimensions, Mapping):
+        width, height = dimensions.get("width"), dimensions.get("height")
+        if type(width) is not int or type(height) is not int:
+            if isinstance(media, Mapping):
+                raise CompositionError("preparation has no usable requested video dimensions")
+            raise CompositionError("preparation has invalid canvas dimensions")
+        target = (width, height)
+    else:
+        target = DEFAULT_SIZE  # Historical preparations without dimensions use the default.
+    schedule = preparation.get("mask_schedule")
+    video = schedule.get("video") if isinstance(schedule, Mapping) else None
+    changes = video.get("changes") if isinstance(video, Mapping) else None
+    assets = {row.get("asset"): row.get("path") for row in preparation.get("assets", [])
+              if isinstance(row, Mapping) and row.get("status") == "resolved"}
+    for change in changes if isinstance(changes, list) else []:
+        if not isinstance(change, Mapping) or change.get("action") != "generate" or change.get("prepared_mask_asset"):
+            continue
+        area = change.get("area")
+        if not isinstance(area, Mapping):
+            continue
+        selector = area.get("selector") if isinstance(area.get("selector"), Mapping) else area
+        if "rectangle" in selector:
+            authored = selector.get("canvas", DEFAULT_SIZE)
+            if not isinstance(authored, (list, tuple)) or tuple(authored) != target:
+                raise CompositionError("static permission requires a compiled mask for its authored canvas")
+        mask_id = change.get("mask_asset") or selector.get("mask_asset") or selector.get("asset")
+        if mask_id:
+            path = assets.get(mask_id)
+            if not isinstance(path, str) or not Path(path).is_file():
+                raise CompositionError(f"regional video mask {mask_id!r} is not resolved")
+            if probe_mask(Path(path), mask_id=str(mask_id))["kind"] == "image":
+                if selector.get("threshold") is not None:
+                    raise CompositionError("static permission requires a compiled mask for its threshold")
+                from .request import H3RequestError
+                from .static_regions import _image_pixels
+                try:
+                    _image_pixels(Path(path), str(mask_id), width=target[0], height=target[1], threshold=None)
+                except H3RequestError as exc:
+                    raise CompositionError(f"static permission requires a compiled mask: {exc}") from exc
+
 def _spatial_video_masks(
     preparation: Mapping[str, Any], source: Path | None = None
 ) -> list[dict[str, Any]]:
@@ -516,6 +601,12 @@ def _spatial_video_masks(
         selector = selector if isinstance(selector, Mapping) else area
         mask_id = change.get("mask_asset") or selector.get("mask_asset") or selector.get("asset")
         derived = False
+        prepared_id = change.get("prepared_mask_asset")
+        prepared_path = resolved.get(prepared_id) if isinstance(prepared_id, str) else None
+        if prepared_id is not None:
+            if prepared_path is None:
+                raise CompositionError("prepared static permission mask is missing")
+            mask_id = prepared_id
         if not mask_id and selector.get("full_frame") is True and not has_regional:
             continue
         if not mask_id and ("rectangle" in selector or selector.get("full_frame") is True):
@@ -553,6 +644,11 @@ def _spatial_video_masks(
             source=source,
             duration=schedule_duration,
         )
+        if prepared_path is not None and source is not None:
+            from PIL import Image
+            with Image.open(mask_path) as prepared_image:
+                if prepared_image.size != _video_dimensions(_probe(source), role="source"):
+                    raise CompositionError("prepared static permission dimensions do not match the source")
         during = change.get("during")
         if not isinstance(during, (list, tuple)) or len(during) != 2:
             raise CompositionError("regional video mask has a malformed edit interval")
@@ -562,6 +658,7 @@ def _spatial_video_masks(
         result.append({
             "during": [start, end], "asset": mask_id, "path": mask_path,
             "kind": mask_info["kind"], "frames": mask_info["frames"],
+            **({"prepared": True} if prepared_path is not None else {}),
             **({"derived_box": list(box)} if derived else {}),
         })
     return result
@@ -672,7 +769,8 @@ def _verify_spatial_mask_complement(
                 ))
             else:
                 with Image.open(mask_path) as opened:
-                    static_pixels.append(opened.convert("RGB").getchannel("R").resize((width, height), resampling).tobytes())
+                    channel = opened.convert("RGB").getchannel("R")
+                    static_pixels.append((channel if member.get("prepared") else channel.resize((width, height), resampling)).tobytes())
         protected_pixels = [
             index for index in range(width * height)
             if all(pixels[index] == 0 for pixels in static_pixels)
@@ -995,7 +1093,7 @@ def _compose_media(
                         else:
                             mask_filter = (
                                 f"[{mask_index}:v:0]"
-                                f"scale={output_width}:{output_height}:flags=neighbor,fps={mask_fps},format=gbrp,"
+                                f"{'' if member.get('prepared') else f'scale={output_width}:{output_height}:flags=neighbor,'}fps={mask_fps},format=gbrp,"
                                 f"extractplanes=r,format=gray,format=gbrp,trim=duration={end - start},setpts=PTS-STARTPTS[{member_label}]"
                             )
                         mask_filters.append(mask_filter)
@@ -1602,6 +1700,9 @@ def compose_candidate(
 ) -> dict[str, Any]:
     """Compose one candidate and publish custody plus preservation evidence."""
 
+    if preparation.get("status") == "orchestration_only":
+        raise CompositionError("orchestration-only preparation cannot be composed; use a compiled pass preparation")
+    _guard_unprepared_static_permissions(preparation)
     generated_path = Path(generated).expanduser().resolve()
     if not generated_path.is_file():
         raise CompositionError(f"generated candidate does not exist: {generated_path}")
@@ -1729,6 +1830,7 @@ def compose_candidate(
                 preparation=preparation,
                 candidate=candidate,
             )
+            _validate_video_size(preparation, candidate_coverage["video"], role="candidate")
         elif _continuation_timing(preparation) is not None:
             raise CompositionError("H3 continuation result is not decodable audiovisual media")
 

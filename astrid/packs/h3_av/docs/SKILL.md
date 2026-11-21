@@ -137,6 +137,18 @@ publication.
 
 ## Request shape
 
+The native v2 compiler accepts `output.size: [width, height]` for image-guided
+generation, masked edits, and Character Swap. Each dimension must be an integer
+from 32 through 16384 inclusive and a multiple of 32. Omission selects
+1024×576. Continuation requires the default size.
+
+The [512×288 image-guided speech request](examples/image-guided-speech.json)
+illustrates a smaller picture for a voice-only take where the creator intends
+to keep the generated audio. The [768×448 masked edit](examples/rectangle-edit.json)
+uses a clip already prepared at the requested size. CPU compilation covers these
+two sizes. Other non-default sizes within the rule are uncharacterized. Speech
+quality and timing at the smaller size still need a live evaluation.
+
 Start with `schemas/request.v1.json` or `schemas/request.v2.json` and the
 following compact v1 shape:
 
@@ -433,6 +445,14 @@ Both in one request (lens region and mouth region, one interval, one reference):
 ```
 
 ## Mask semantics
+
+For a v2 rectangle, `mask.canvas: [width, height]` gives the dimensions of
+the prepared view in which the rectangle was drawn, including any fit bars.
+The rectangle contains its left edge, top edge, width and height in pixels.
+When the canvas is omitted, coordinates refer to 1024×576. The compiler scales
+the rectangle to the requested output. A still-image mask scales from its own
+pixel dimensions using nearest-neighbour sampling. A moving mask must already
+match the prepared source size and frame clock and use a lossless encoding.
 
 Use a full-frame region, a supplied mask asset, a geometry region, or an
 explicit semantic target. The preparation stage keeps three truths separate:

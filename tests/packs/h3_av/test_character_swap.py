@@ -144,11 +144,9 @@ def test_adapter_defaults_aliases_and_legacy_replay_are_canonical_without_mutati
     assert effective_settings(sealed)["turbo"] == {"enabled": True, "lora": "pika_flex_8step", "strength": 0.35}
     assert "turbo" not in sealed.value["settings"]
 
-    tampered_replay = copy.deepcopy(normalize_request(raw).value)
-    tampered_replay["continuation"] = True
     # Construct the identity document from this fixture's authored intent and
     # normalized sampling defaults, independently of the identity helper.
-    tampered_identity = {
+    identity = {
         "version": 2, "prompt": raw["prompt"], "duration": 1,
         "media": [
             {"occurrence_id": "occurrence-1", "id": "performance", "asset": "performance.mp4",
@@ -158,11 +156,19 @@ def test_adapter_defaults_aliases_and_legacy_replay_are_canonical_without_mutati
         ],
         "settings": {
             "model": REF2VA_MODEL, "steps": 8, "sampler": "res_multistep", "scheduler": "simple",
-            "seed": 123456789, "turbo": {"enabled": True, "strength": 0.95},
+            "seed": 123456789, "turbo": {"enabled": True, "lora": "pika_flex_8step", "strength": 1.0},
+            "cfg": 1.0, "video_shift": 12.0, "audio_shift": 3.0,
             "adapter": {"id": "character_swap_v1", "strength": 1.0},
         },
-        "continuation": True,
+        "continuation": False,
     }
+    # Plan 59 selects the compatible default LoRA (2c58a6b21).
+    identity_payload = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+    assert hashlib.sha256(identity_payload).hexdigest() == normalized.digest
+    tampered_replay = copy.deepcopy(normalized.value)
+    tampered_replay["continuation"] = True
+    tampered_identity = copy.deepcopy(identity)
+    tampered_identity["continuation"] = True
     tampered_payload = json.dumps(tampered_identity, sort_keys=True, separators=(",", ":")).encode()
     with pytest.raises(H3RequestError, match="digest does not match"):
         read_prepared_request(tampered_replay, "0" * 64, require_normalized_v2=True)
@@ -676,6 +682,18 @@ def test_masked_character_swap_refuses_prompt_tag_for_unselected_video(tmp_path)
         assets[item["asset"]] = path
     with pytest.raises(CompilationError, match="prompt reference tag <Video 1> has no effective binding"):
         _compile_native_v2(request, assets, tmp_path / "out")
+
+@pytest.mark.parametrize("size", [(1024, 576), (512, 288), (768, 448)])
+def test_character_swap_canvas_is_emitted(tmp_path, size):
+    from vibecomfy.cli_loader import load_workflow_any
+    raw = _request()
+    raw["output"] = {"size": list(size)}
+    compiled = compile_preparation(_preparation(raw, _files(tmp_path)), out_dir=tmp_path / "out")
+    api = load_workflow_any(compiled["workflow"]["workflow.py"]["path"]).compile("api", run_inputs=compiled["workflow_inputs"])
+    sized = [(row["class_type"], key, value) for row in api.values() for key, value in row["inputs"].items() if key in ("width", "height")]
+    assert sorted(sized) == sorted([("MiniMaxH3ReferenceToVideo", "width", size[0]), ("MiniMaxH3ReferenceToVideo", "height", size[1])])
+    assert compiled["size"] == {"width": size[0], "height": size[1]}
+
 
 
 def test_source_backed_selected_guide_order_is_provisional_until_compiled(tmp_path):

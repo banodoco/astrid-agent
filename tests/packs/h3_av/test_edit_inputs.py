@@ -18,8 +18,11 @@ from pathlib import Path
 import pytest
 from PIL import Image, ImageDraw
 
+from astrid.packs.h3_av.shared import prepare
 from astrid.packs.h3_av.shared.compile import CompilationError, compile_preparation
+from astrid.packs.h3_av.shared.generation import DEFAULT_SIZE
 from astrid.packs.h3_av.shared.request import H3RequestError, normalize_request
+from astrid.packs.h3_av.shared.request_v2 import H3RequestError as NativeV2Error, normalize_v2
 from tests.packs.h3_av.test_native_masked_edit import PILL, WATERMARK, _prepare
 
 FIXTURES = Path(__file__).parent / "fixtures" / "edit_inputs"
@@ -413,6 +416,7 @@ def test_existing_requests_compile_byte_identically_to_baseline(name, raw, tmp_p
     assert set(actual) == set(expected)
     # Plan 64 a5ab66014d changes intent identity; de6ac9b06 adds reference
     # conditioning metadata, and d0bb3a3a4 records sampler-mask capability.
+    # a31023ac1 binds size; 2152c9168 and 7365f1be5 add permission custody.
     assert actual == expected
     compiled = json.loads((root / "out" / "compilation.json").read_text())
     baseline = json.loads((FIXTURES / f"baseline_compilation_{name}.json").read_text().replace("<D>", str(root)))
@@ -474,3 +478,72 @@ def test_unbound_v2_fields_are_refused(key):
         item["edit"][1][key] = "A literal line."
     with pytest.raises(H3RequestError, match=rf"unsupported field.*{key}"):
         normalize_request(raw)
+
+
+def _size_request(*, output=None, continuation=False):
+    request = {"version": 2, "prompt": "A scene", "duration": 5, "media": [],
+               "settings": {}, "continuation": continuation}
+    if output is not None:
+        request["output"] = output
+    return request
+
+
+@pytest.mark.parametrize("size", [(32, 32), (32, 64), (512, 288), (768, 448),
+                                   (16384, 16384), (16384, 32)])
+def test_native_output_size_accepts_per_dimension_limits(size):
+    request = normalize_v2(_size_request(output={"size": list(size)}))
+    assert request.value["canvas"] == {"width": size[0], "height": size[1]}
+
+
+@pytest.mark.parametrize("size", [
+    [256, 144], [768, 432], [0, 32], [16416, 32], [512.5, 288], ["512", 288],
+    [True, 288], [512], [512, 288, 32], (512, 288),
+])
+def test_native_output_size_rejects_invalid_sizes_with_rule(size):
+    with pytest.raises(NativeV2Error, match="output.size"):
+        normalize_v2(_size_request(output={"size": size}))
+
+
+def test_native_output_size_default_identity_and_readback():
+    from astrid.packs.h3_av.shared.request_v2 import read_prepared_request
+    from astrid.packs.h3_av.shared.generation import generation_inputs_from_bindings
+
+    implicit = normalize_v2(_size_request())
+    explicit = normalize_v2(_size_request(output={"size": list(DEFAULT_SIZE)}))
+    smaller = normalize_v2(_size_request(output={"size": [512, 288]}))
+    assert implicit.value["canvas"] == {"width": 1024, "height": 576}
+    assert implicit.value == explicit.value
+    assert implicit.digest == explicit.digest
+    assert implicit.digest != smaller.digest
+    restored = read_prepared_request(smaller.value, smaller.digest, require_normalized_v2=True)
+    assert restored.value["canvas"] == {"width": 512, "height": 288}
+    prepared = prepare.prepare_request(smaller)
+    assert (prepared["media"]["width"], prepared["media"]["height"]) == (512, 288)
+    with pytest.raises(prepare.PreparationError, match="cannot override the normalized request canvas"):
+        prepare.prepare_request(smaller, width=768, height=448)
+    confirmed = prepare.prepare_request(smaller, width=512, height=288)
+    assert (confirmed["media"]["width"], confirmed["media"]["height"]) == (512, 288)
+    inputs = generation_inputs_from_bindings(
+        references=[], prompt="A scene", frames=124, model="model", steps=8, seed=1,
+        canvas_size=(restored.value["canvas"]["width"], restored.value["canvas"]["height"]),
+    )
+    assert inputs.canvas == {"width": 512, "height": 288, "frames": 124}
+
+
+def test_native_continuation_refuses_nondefault_size_from_lowering_limit():
+    with pytest.raises(NativeV2Error, match="continuation_canvas"):
+        normalize_v2(_size_request(output={"size": [512, 288]}, continuation=True))
+
+
+def test_legacy_persisted_canvas_override_cannot_change_request_identity():
+    from astrid.packs.h3_av.shared.request_v2 import read_prepared_request
+
+    normalized = normalize_v2(_size_request())
+    legacy = dict(normalized.value)
+    del legacy["canvas"]
+    restored = read_prepared_request(legacy, normalized.digest, require_normalized_v2=True)
+    with pytest.raises(prepare.PreparationError, match="cannot override the normalized request canvas"):
+        prepare.prepare_request(restored, width=512, height=288)
+    prepared = prepare.prepare_request(restored, width=DEFAULT_SIZE[0], height=DEFAULT_SIZE[1])
+    assert prepared["request_digest"] == normalized.digest
+    assert (prepared["media"]["width"], prepared["media"]["height"]) == DEFAULT_SIZE

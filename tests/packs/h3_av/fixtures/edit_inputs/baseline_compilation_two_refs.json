@@ -106,7 +106,7 @@
       "video_tail": "repeat_last_selected_frame"
     }
   },
-  "compilation_digest": "22b550bf229a80e3eeabac0e8133e2d591330f4dd26c271a51a727ae01d50fb3",
+  "compilation_digest": "0960cf648f9c951cbd5a06c3a215164bab1371f1765b4074c80c7228f2292d27",
   "effective_settings": {
     "audio_shift": 3.0,
     "cfg": 1.0,
@@ -127,13 +127,23 @@
     "native masked edit is CPU-verified only; spatial mode on ref2va plus Turbo is unproven on GPU",
     "static boxes, image masks or per-frame mask video; active regions share one reference set and one seed",
     "polygon masks and per-operation adapters are unsupported",
-    "box-only regions bind in the graph; end-to-end execution still needs resolved mask propagation for composition paste-back",
     "long windows use one pass without automatic chunking",
     "zero-reference requests assume MiniMaxH3ReferenceToVideo accepts no ref images (unverified)"
   ],
   "managed_assets": {
     "manifest": {
       "assets": [
+        {
+          "binding": "permission_mask_0",
+          "lineage": {
+            "filename": "resolved-mask.png",
+            "kind": "source_bytes",
+            "sha256": "sha256:60f587d2d6d543eac9de231150413e55bfafc1ce8362b95325abf3b40f3e7f9f"
+          },
+          "member": "assets/60f587d2d6d543ea-resolved-mask.png",
+          "sha256": "60f587d2d6d543eac9de231150413e55bfafc1ce8362b95325abf3b40f3e7f9f",
+          "size": 1379
+        },
         {
           "binding": "reference_0",
           "lineage": {
@@ -196,11 +206,15 @@
       }
     },
     "path": "<D>/out/managed-assets.zip",
-    "sha256": "03fd786d91d1745e4f99b408ca96cdfc88417f99e12096727e455b6008988d0d"
+    "sha256": "e5a49fd4b639aedcac7f3e8e54b1b77989aeac7827806c8a06ea60338b7be90b"
   },
   "profile": "h3_av.native.v2",
   "request_digest": "62c475aed4fb717d649daa02873ba2bef227780c2696a443ef8104e2ae7ba417",
   "schema_version": 1,
+  "size": {
+    "height": 576,
+    "width": 1024
+  },
   "status": "compiled",
   "workflow": {
     "source.json": {

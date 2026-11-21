@@ -112,6 +112,33 @@ def test_skill_edit_audio_generation_is_rejected(examples, assets, tmp_path):
     assert public_error.value.code == "input_rejected"
 
 
+@pytest.mark.parametrize(("filename", "size", "asset"), [
+    ("image-guided-speech.json", (512, 288), "speaker.png"),
+    ("rectangle-edit.json", (768, 448), "sign.mp4"),
+])
+def test_dynamic_size_request_file_compiles(filename, size, asset, tmp_path):
+    import json
+
+    from PIL import Image
+    from astrid.packs.h3_av.shared.compile import compile_preparation
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+
+    document = json.loads((SKILL.parent / "examples" / filename).read_text())
+    source = tmp_path / asset
+    if source.suffix == ".png":
+        Image.new("RGB", (64, 64)).save(source)
+    else:
+        _ffmpeg("-f", "lavfi", "-i", "color=s=768x448:r=24:d=3", "-f", "lavfi",
+                "-i", "sine=duration=3", "-c:v", "libx264", "-preset", "ultrafast",
+                "-c:a", "aac", "-shortest", source)
+
+    prepared = prepare_request(normalize_request(document), asset_map={asset: str(source)})
+    compiled = compile_preparation(prepared, out_dir=tmp_path / "compiled")
+    assert compiled["size"] == {"width": size[0], "height": size[1]}
+    if asset == "sign.mp4":
+        assert "mask_0" in compiled["workflow_inputs"]
+
+
 @pytest.mark.parametrize("name", ["start-still-speaker", "mouth-mask-speaker"])
 def test_speaker_request_file_is_admitted(name, tmp_path, monkeypatch, capsys):
     request = SKILL.parent / "recipes" / f"{name}.json"

@@ -100,6 +100,8 @@ def _sealed_plan(compilation: Mapping[str, Any], *, preparation: Mapping[str, An
     plan = {"compilation_digest": digest, "output_contract": contract, "intent": intent,
             "workflow_members": {name: row["sha256"] for name, row in compilation["workflow"].items()},
             "workflow_inputs_sha256": stable_digest(compilation["workflow_inputs"])}
+    if "size" in compilation:
+        plan["size"] = dict(compilation["size"])
     if isinstance(preparation, Mapping):
         plan["warnings"] = [dict(row) for row in preparation.get("warnings", []) if isinstance(row, Mapping)]
         if isinstance(preparation.get("resource_estimate"), Mapping):

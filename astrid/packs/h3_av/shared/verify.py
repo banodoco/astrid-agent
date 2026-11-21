@@ -12,11 +12,13 @@ from typing import Any, Mapping
 from .compose import (
     CompositionError,
     _audio_witness,
+    _guard_unprepared_static_permissions,
     _mask_segment_evidence,
     _sample_digest,
     _segments_with_spatial_masks,
     _spatial_video_masks,
     _validate_candidate_coverage,
+    _validate_video_size,
     _verify_spatial_mask_complement,
 )
 
@@ -270,8 +272,14 @@ def verify_candidate(
 ) -> dict[str, Any]:
     """Verify artifact custody and concrete preservation evidence."""
 
+    if preparation.get("status") == "orchestration_only":
+        raise VerificationError("orchestration-only preparation cannot be verified; use a compiled pass preparation")
     if preparation.get("status") != "prepared":
         raise VerificationError("preparation is not ready")
+    try:
+        _guard_unprepared_static_permissions(preparation)
+    except CompositionError as exc:
+        raise VerificationError(str(exc)) from exc
     if composition.get("status") != "composed":
         raise VerificationError("composition is not settled")
     _verify_provenance(preparation, composition)
@@ -293,6 +301,7 @@ def verify_candidate(
             preparation=preparation,
             candidate=candidate_path,
         )
+        _validate_video_size(preparation, actual_coverage["video"], role="candidate")
     except CompositionError as exc:
         raise VerificationError(str(exc)) from exc
     declared_coverage = composition.get("coverage")
@@ -312,7 +321,15 @@ def verify_candidate(
             for key, entry in value.items()
         }
 
-    if portable_coverage(declared_candidate) != portable_coverage(actual_coverage):
+    declared_portable = portable_coverage(declared_candidate)
+    actual_portable = portable_coverage(actual_coverage)
+    # Older settled records predate dimension evidence. The candidate was just
+    # measured and validated above; compare dimensions whenever recorded.
+    if isinstance(declared_portable, Mapping) and isinstance(declared_portable.get("video"), Mapping):
+        for field in ("width", "height"):
+            if field not in declared_portable["video"]:
+                actual_portable["video"].pop(field, None)
+    if declared_portable != actual_portable:
         raise VerificationError("candidate coverage does not match composition evidence")
 
     schedule = preparation["mask_schedule"]
@@ -424,7 +441,7 @@ def verify_candidate(
             "spatial_complement": spatial_evidence,
         },
         "provenance": composition.get("provenance", {}),
-        "coverage": composition.get("coverage", {}).get("candidate", {}),
+        "coverage": actual_coverage,
         "lifecycle": {"prepared": True, "composed": True, "verified": True},
         "status": "verified",
     }

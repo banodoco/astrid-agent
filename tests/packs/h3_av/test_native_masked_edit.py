@@ -448,6 +448,18 @@ def test_public_preparation_validates_only_red_mask_channel(tmp_path, red_outsid
         prepared = prepare_request(request, asset_map={"source": str(source), "mask": str(mask)})
         assert prepared["mask_schedule"]["video"]["generated_intervals"] == [[0.25, 0.75]]
 
+@pytest.mark.parametrize("size", [(1024, 576), (512, 288), (768, 448)])
+def test_masked_canvas_is_emitted(tmp_path, size):
+    from vibecomfy.cli_loader import load_workflow_any
+    raw = json.loads(json.dumps(WATERMARK))
+    raw["output"] = {"size": list(size)}
+    compiled = compile_preparation(_prepare(raw, tmp_path), out_dir=tmp_path / "out")
+    api = load_workflow_any(compiled["workflow"]["workflow.py"]["path"]).compile("api", run_inputs=compiled["workflow_inputs"])
+    sized = [(row["class_type"], key, value) for row in api.values() for key, value in row["inputs"].items() if key in ("width", "height")]
+    assert sorted(sized) == sorted([("MiniMaxH3ReferenceToVideo", "width", size[0]), ("MiniMaxH3ReferenceToVideo", "height", size[1])])
+    assert compiled["size"] == {"width": size[0], "height": size[1]}
+
+
 
 def test_mixed_audio_composition_is_sample_exact_per_stereo_channel(tmp_path):
     import struct
@@ -1114,6 +1126,7 @@ def test_timeline_still_uses_source_backed_generation_and_exact_first_frame(tmp_
     assert decoded_mask[:mask_size] == bytes(mask_size)
     assert decoded_mask[mask_size:] == bytes([255]) * mask_size
     assert any(row["class_type"] == "MiniMaxH3SetAVNoiseMask" for row in api.values())
+
     result = compose_candidate(preparation=preparation, generated=generated, source=source, out_dir=tmp_path / "composed")
     def frames(path):
         return subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-vf", "scale=1024:576:flags=lanczos,format=gbrp,format=rgb24", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], check=True, capture_output=True).stdout
@@ -1134,6 +1147,36 @@ def test_timeline_still_uses_source_backed_generation_and_exact_first_frame(tmp_
     raw["media"][0]["at"] = {"frame": 1}
     with pytest.raises(PreparationError, match="timeline image frame"):
         prepare_request(normalize_request(raw), asset_map={"still": str(still)})
+
+
+@pytest.mark.ffmpeg
+def test_timeline_still_preparation_uses_requested_canvas_dimensions(tmp_path):
+    import json
+    import subprocess
+    from PIL import Image
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+
+    still = tmp_path / "still-small.png"
+    Image.new("RGB", (320, 180), (38, 126, 211)).save(still)
+    raw = {"version": 2, "duration": 1, "prompt": "Animate", "output": {"size": [512, 288]},
+           "media": [{"asset": "still", "role": "timeline", "modality": "image", "at": {"frame": 0}}]}
+    preparation = prepare_request(normalize_request(raw), asset_map={"still": str(still)})
+    out_dir = tmp_path / "compiled-nondefault-canvas"
+    manifest = compile_preparation(preparation, out_dir=out_dir)
+    assert manifest["size"] == {"width": 512, "height": 288}
+    prepared = out_dir / "prepared-still-source.mkv"
+    probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                            "stream=width,height,codec_name,pix_fmt", "-of", "json", str(prepared)],
+                           check=True, capture_output=True, text=True)
+    stream = json.loads(probe.stdout)["streams"][0]
+    assert (stream["width"], stream["height"]) == (512, 288)
+    assert stream["codec_name"] == "ffv1"
+    frame = subprocess.run(["ffmpeg", "-v", "error", "-i", str(prepared), "-frames:v", "1",
+                            "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                           check=True, capture_output=True).stdout
+    assert len(frame) == 512 * 288 * 3
+    center = (144 * 512 + 256) * 3
+    assert tuple(frame[center:center + 3]) == (38, 126, 211)
 
 
 def test_timeline_still_rejects_latent_pin():
