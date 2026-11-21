@@ -127,7 +127,7 @@ def authoring_commit_request(candidate: Mapping[str, Any], writer: Any, *,
     # List guards use published physical edges, not local independent-shot IDs.
     placement_commands = physical_occurrence_commands(base, placements)
     work['placements'] = copy.deepcopy(base['placements'])
-    payload_commands = emit_document_commands(base, work)
+    payload_commands = emit_document_commands(base, work, label_new_tracks=True)
     commands.extend(placement_commands)
     commands.extend(payload_commands)
     if not commands:

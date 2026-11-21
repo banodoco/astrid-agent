@@ -111,7 +111,7 @@ def emit_document_publish_commands(base, candidate, media_selections, verified_m
                 f"{owner}/asset:{alias} native same-alias media rebind is held: {exc}"
             ) from exc
         commands.append(command)
-    commands.extend(emit_document_commands(working, candidate))
+    commands.extend(emit_document_commands(working, candidate, label_new_tracks=True))
     return commands
 
 

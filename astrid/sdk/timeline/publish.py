@@ -288,7 +288,7 @@ class _PublishMixin:
         for identity, shot in stored["shots"].items():
             for field in ("payload", "internal_timeline"):
                 candidate["shots"][identity][field] = copy.deepcopy(shot[field])
-        commands = emit_document_commands(base, candidate)
+        commands = emit_document_commands(base, candidate, label_new_tracks=True)
         captured_helpers = _journal.helper_batch(self, base, candidate)
         if captured_helpers is not None:
             commands = captured_helpers[0]
@@ -443,7 +443,7 @@ class _PublishMixin:
             checked._sync_film_length()
             if local["placements"] != checked.bundle["placements"]:
                 raise TimelineEditError("restructure placement edits require a semantic command")
-            commands = emit_document_commands(base, candidate)
+            commands = emit_document_commands(base, candidate, label_new_tracks=True)
             commands.append({"schema_version": 1, "op": "timeline.restructure", "version": "1",
                              "select": "parent", "args": {}})
             from astrid.sdk.timeline.commands import execute

@@ -57,7 +57,7 @@ def emit_document_commands(before, after):
         if exc.name != "astrid.sdk.timeline.emitter":
             raise
         raise TimelineEditError("free edits require the G3 document emitter; use command() until it is available") from exc
-    return emit(before, after)
+    return emit(before, after, label_new_tracks=True)
 
 
 def _imports_in_commands(commands):

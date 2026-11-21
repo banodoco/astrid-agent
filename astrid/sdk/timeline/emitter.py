@@ -242,32 +242,46 @@ def _created(changes: list[dict[str, Any]], before: Mapping[str, Any]) -> list[s
     return created
 
 
-def _with_track_labels(bundle: Mapping[str, Any]) -> Mapping[str, Any]:
-    """Copy of ``bundle`` in which every parent and shot track has a label.
-
-    A whole-document candidate may omit track labels; the timeline schema (and
-    render) require one, so a missing label becomes the track id, as everywhere
-    else a track is introduced.
-    """
+def _with_new_track_labels(before: Mapping[str, Any], after: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Apply the track creation default while preserving existing rows exactly."""
     from astrid.core.timeline.track_appearance import label_track_with_id
 
-    bundle = copy.deepcopy(dict(bundle))
-    containers = [bundle["parent"].get("config")]
-    containers += [shot["internal_timeline"] for shot in bundle["shots"].values()]
-    for container in containers:
+    bundle = copy.deepcopy(dict(after))
+    containers = [(before["parent"].get("config"), bundle["parent"].get("config"))]
+    containers.extend(
+        (before["shots"][local]["internal_timeline"], shot["internal_timeline"])
+        for local, shot in bundle["shots"].items()
+    )
+    for previous, container in containers:
         tracks = container.get("tracks") if isinstance(container, Mapping) else None
-        for track in tracks if isinstance(tracks, list) else ():
-            if isinstance(track, dict):
+        if not isinstance(tracks, list):
+            continue
+        previous_tracks = previous.get("tracks") if isinstance(previous, Mapping) else None
+        previous_ids = set()
+        if isinstance(previous_tracks, list):
+            previous_ids = {
+                track["id"] for track in previous_tracks
+                if isinstance(track, Mapping) and isinstance(track.get("id"), str)
+            }
+        for track in tracks:
+            track_id = track.get("id") if isinstance(track, dict) else None
+            if isinstance(track_id, str) and track_id not in previous_ids:
                 label_track_with_id(track)
     return bundle
 
 
-def emit_document_commands(before_bundle: Mapping[str, Any], after_bundle: Mapping[str, Any]) -> list[dict[str, Any]]:
+def emit_document_commands(
+    before_bundle: Mapping[str, Any],
+    after_bundle: Mapping[str, Any],
+    *,
+    label_new_tracks: bool = False,
+) -> list[dict[str, Any]]:
     """Emit guarded payload changes, bound to the verified input closure.
 
     R1 owns physical resolution, schema identities, managed edges and allocation
     rules. Unknown arrays remain whole values; unknown object keys stay literal.
     This adapter never infers what a free transform read.
+    Authoring callers can request the default label for newly introduced tracks.
     """
     from ._command_state import CommandError
     from ._doc_patch import managed_edges
@@ -286,7 +300,8 @@ def emit_document_commands(before_bundle: Mapping[str, Any], after_bundle: Mappi
     if not _same(_outside(before_bundle), _outside(after_bundle)):
         raise DocumentPatchError("closure membership or provenance changed; use a semantic command")
 
-    after_bundle = _with_track_labels(after_bundle)
+    if label_new_tracks:
+        after_bundle = _with_new_track_labels(before_bundle, after_bundle)
     changes: list[dict[str, Any]] = []
     try:
         for ref, old, new in _root_pairs(before_bundle, after_bundle):
