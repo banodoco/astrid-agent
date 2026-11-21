@@ -15,8 +15,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
-from astrid._tls_policy import os_trust_ssl_context, request_error_host
 from astrid.core.contracts.errors import AstridError
+from astrid.installer._tls_policy import os_trust_ssl_context, request_error_host
 
 if TYPE_CHECKING:
     import httpx

@@ -32,7 +32,7 @@ IDENTITY_MARK = "pod_watchdog: identity="
 
 # Filled by the host in the standalone program; the pod imports no package.
 if globals().get("__package__"):
-    from astrid import _tls_policy
+    from astrid.installer import _tls_policy
     from astrid.packs.runpod.provider_urls import POD_TERMINATE_METHOD, POD_URL_TEMPLATE
 
     os_trust_ssl_context = _tls_policy.os_trust_ssl_context

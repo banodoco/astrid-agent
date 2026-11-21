@@ -22,10 +22,10 @@ from pathlib import Path
 
 from runtime_protocol import platform
 
-from astrid._tls_policy import os_trust_ssl_context
 from astrid.core.generation._engine_python_bootstrap import engine_process_env
 from astrid.core.generation.engine_contracts import ModelSpec
 from astrid.core.generation.model_downloader import _download_model
+from astrid.installer._tls_policy import os_trust_ssl_context
 
 
 def digest(path):

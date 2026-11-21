@@ -92,7 +92,7 @@ POLICY_OPENINGS = {
     ),
     ("astrid/core/generation/model_downloader.py", "_download_model", "urllib.request.urlopen"): (
         1,
-        "726ad853348539298d77d330f0ff33ebf1749cc05f962687cc855cfd6d0b16a1",
+        "82f434a72ba6056f740d1ee34a8219805e8450bb6722902477a5cd19367cf7ea",
     ),
     ("astrid/core/hivemind/executors/_common.py", "_http_get", "urllib.request.urlopen"): (
         1,
@@ -123,15 +123,15 @@ POLICY_OPENINGS = {
     ),
     ("astrid/core/util/http.py", "_real_transport", "urllib.request.urlopen"): (
         1,
-        "71b705aee3e4a566600d1ac80b3a8555008dd70c01bb2f627f6d314b4c44d77d",
+        "5cd6b587a0a4d6e43a0ea41f2995d4af61e6393c73d72bd16b95fad4c326a797",
     ),
     ("astrid/core/util/http.py", "trusted_async_httpx_client", "httpx.AsyncClient"): (
         2,
-        "93a1a408219f67ac466f1d6e1c284d2ad06773a695364d1f260925406c98a346",
+        "86e141ba3e37a7f1d376fd2e6a8edca498837093009f4c2e49e304c8188b7e0a",
     ),
     ("astrid/core/util/http.py", "trusted_httpx_client", "httpx.Client"): (
         2,
-        "55f625b2848e5cdf97b2448211a6cdd1fcf9bcdad9e4ba96f6cb2a926c8deb02",
+        "845d3b87551a1dc651c52355301c313ee215ecc5d9198624504c8b7c55566c16",
     ),
     ("astrid/installer/tls_fallback.py", "open_with_tls_fallback", "urllib.request.HTTPSHandler"): (
         1,
@@ -156,11 +156,11 @@ POLICY_OPENINGS = {
     ): (1, "a99df1072704d9ab87a647d24bd08c23c7c17dc85e8ec196aad8e09144a71712"),
     ("astrid/packs/runpod/h3_release_remote.py", "download_model", "urllib.request.urlopen"): (
         1,
-        "0b6042a2480dcef14af2efbbcdace14623f4907497d476a43a538e568d4dea49",
+        "5f9bec95f544aecbe7dca1cab570ca8cba95df5be7b350c3cce923f3aaf0aada",
     ),
     ("astrid/packs/runpod/pod_watchdog.py", "urlopen", "urllib.request.urlopen"): (
         1,
-        "82aa6940a05b00ff4500a5fc49ecd3e89225075ecc68324ddf4958c0ff45e798",
+        "9bc5ba745a40792205b80bd10cde4c122eae7263fbb8801d9794d3d5c3db1576",
     ),
     ("astrid/packs/runpod/provider.py", "RunPodMachineProvider.find.fetch", "httpx.get"): (
         1,
