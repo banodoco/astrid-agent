@@ -78,17 +78,27 @@ def _bounded_probe(args: list[str]) -> dict:
         except (OSError, ValueError) as exc:
             read_errors.append(exc)
 
-    reader = threading.Thread(target=read_output, daemon=True)
-    deadline = time.monotonic() + _PROBE_TIMEOUT_SECONDS
-    reader.start()
+    reader = None
+    started = False
     try:
+        reader = threading.Thread(target=read_output, daemon=True)
+        deadline = time.monotonic() + _PROBE_TIMEOUT_SECONDS
+        reader.start()
+        started = True
         process.wait(timeout=max(0, deadline - time.monotonic()))
         reader.join(timeout=max(0, deadline - time.monotonic()))
         if reader.is_alive():
             raise subprocess.TimeoutExpired(command, _PROBE_TIMEOUT_SECONDS)
-    except subprocess.TimeoutExpired:
-        kill_if_running()
-        process.wait()
+    except BaseException:
+        try:
+            kill_if_running()
+        finally:
+            process.wait()
+            if started:
+                # A descendant can inherit stdout; do not wait indefinitely for it.
+                reader.join(timeout=1)
+            elif process.stdout is not None:
+                process.stdout.close()
         raise
     if overflow.is_set():
         raise ValueError('probe output exceeded size limit')

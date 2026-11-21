@@ -3,6 +3,7 @@ import builtins
 import importlib.util
 import subprocess
 import sys
+import threading
 from fractions import Fraction
 from pathlib import Path
 
@@ -57,3 +58,52 @@ def test_probe_times_out_and_reaps_child(monkeypatch):
     with pytest.raises(subprocess.TimeoutExpired):
         conform._bounded_probe([])
     assert processes[0].poll() is not None
+
+
+@pytest.mark.parametrize("interrupt_at", ["wait", "join"])
+def test_probe_interruption_reaps_child_and_reader(monkeypatch, interrupt_at):
+    real_popen = subprocess.Popen
+    real_thread = threading.Thread
+    processes = []
+    readers = []
+
+    def start(_args, **kwargs):
+        process = real_popen([sys.executable, "-c", "import time; time.sleep(10)"], **kwargs)
+        processes.append(process)
+        if interrupt_at == "wait":
+            real_wait = process.wait
+            def interrupt_wait(*args, **kwargs):
+                process.wait = real_wait
+                raise KeyboardInterrupt
+            process.wait = interrupt_wait
+        return process
+
+    def make_reader(*args, **kwargs):
+        reader = real_thread(*args, **kwargs)
+        readers.append(reader)
+        if interrupt_at == "join":
+            real_join = reader.join
+            def interrupt_join(*args, **kwargs):
+                reader.join = real_join
+                raise KeyboardInterrupt
+            reader.join = interrupt_join
+        return reader
+
+    if interrupt_at == "join":
+        # Make the first wait return while the child is alive, to reach join.
+        def start_for_join(_args, **kwargs):
+            process = start(_args, **kwargs)
+            real_wait = process.wait
+            def first_wait(*args, **kwargs):
+                process.wait = real_wait
+            process.wait = first_wait
+            return process
+        monkeypatch.setattr(conform.subprocess, "Popen", start_for_join)
+    else:
+        monkeypatch.setattr(conform.subprocess, "Popen", start)
+    monkeypatch.setattr(conform.threading, "Thread", make_reader)
+
+    with pytest.raises(KeyboardInterrupt):
+        conform._bounded_probe([])
+    assert processes[0].poll() is not None
+    assert not readers[0].is_alive()
