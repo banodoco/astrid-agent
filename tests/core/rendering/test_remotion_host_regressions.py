@@ -226,6 +226,8 @@ def test_source_launch_projection_matches_execution_readiness_context(
     project.mkdir()
     environment = {
         "HOME": str(tmp_path),
+        # The isolated home for both variants added in 33ac96188 on Windows.
+        "USERPROFILE": str(tmp_path),
         "PATH": os.defpath,
         "ASTRID_HOST_EXECUTION_PROFILE": "source",
         ASTRID_REMOTION_PROJECT_DIR: str(project),
