@@ -1,0 +1,15 @@
+api: 1
+# Historical run verification only. Keep this outside extensions discovery.
+effects: none
+ready_root: ..
+entries:
+  - id: transcription
+    kind: audio
+    modes: [transcribe]
+    bundle: transcription
+    needs: []
+    inputs:
+      - {name: audio_ref, type: file, required: true, description: "Whole audio or video file to transcribe."}
+    binds:
+      audio_ref: audio_ref
+    defaults: {}

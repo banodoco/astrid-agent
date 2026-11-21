@@ -109,12 +109,11 @@ _working_cmd_rename = _provided('_working_cmd_rename')
 _working_cmd_restructure = _provided('_working_cmd_restructure')
 _working_cmd_transcripts_import = _provided('_working_cmd_transcripts_import')
 _working_cmd_transcripts_refresh = _provided('_working_cmd_transcripts_refresh')
-_working_cmd_transcripts_run = _provided('_working_cmd_transcripts_run')
 _working_cmd_transcripts_show = _provided('_working_cmd_transcripts_show')
 _working_cmd_transcripts_sync = _provided('_working_cmd_transcripts_sync')
 _working_cmd_words = _provided('_working_cmd_words')
 
-_HANDLER_NAMES = frozenset({'_as_timeline_verb', '_cmd_apply', '_cmd_archive', '_cmd_assets', '_cmd_check', '_cmd_checkout', '_cmd_commit', '_cmd_create', '_cmd_diff', '_cmd_edit', '_cmd_elements', '_cmd_export', '_cmd_history', '_cmd_import', '_cmd_inspect', '_cmd_list', '_cmd_place_element', '_cmd_recover', '_cmd_redo', '_cmd_render', '_cmd_replace_parent_media', '_cmd_script', '_cmd_show', '_cmd_status', '_cmd_undo', '_cmd_update_element', '_cmd_visualize', '_find_run_find', '_guarded', '_log_run_log', '_pending_cmd_drop', '_pending_cmd_list', '_pending_cmd_retry', '_pending_cmd_show', '_pending_run', '_with_steps', '_working_cmd_discard', '_working_cmd_duplicate', '_working_cmd_lines', '_working_cmd_lint', '_working_cmd_rename', '_working_cmd_restructure', '_working_cmd_transcripts_import', '_working_cmd_transcripts_refresh', '_working_cmd_transcripts_run', '_working_cmd_transcripts_show', '_working_cmd_transcripts_sync', '_working_cmd_words'})
+_HANDLER_NAMES = frozenset({'_as_timeline_verb', '_cmd_apply', '_cmd_archive', '_cmd_assets', '_cmd_check', '_cmd_checkout', '_cmd_commit', '_cmd_create', '_cmd_diff', '_cmd_edit', '_cmd_elements', '_cmd_export', '_cmd_history', '_cmd_import', '_cmd_inspect', '_cmd_list', '_cmd_place_element', '_cmd_recover', '_cmd_redo', '_cmd_render', '_cmd_replace_parent_media', '_cmd_script', '_cmd_show', '_cmd_status', '_cmd_undo', '_cmd_update_element', '_cmd_visualize', '_find_run_find', '_guarded', '_log_run_log', '_pending_cmd_drop', '_pending_cmd_list', '_pending_cmd_retry', '_pending_cmd_show', '_pending_run', '_with_steps', '_working_cmd_discard', '_working_cmd_duplicate', '_working_cmd_lines', '_working_cmd_lint', '_working_cmd_rename', '_working_cmd_restructure', '_working_cmd_transcripts_import', '_working_cmd_transcripts_refresh', '_working_cmd_transcripts_show', '_working_cmd_transcripts_sync', '_working_cmd_words'})
 
 
 def _add_idempotency_key(subparser: argparse.ArgumentParser) -> None:
@@ -1446,7 +1445,11 @@ class _parser_TimelinesParser(argparse.ArgumentParser):
 
     def parse_args(self, args: Any = None, namespace: Any = None) -> argparse.Namespace:
         args = list(sys.argv[1:] if args is None else args)
+        if args[:2] == ["transcripts", "run"]:
+            self.error("audio transcription is unavailable in this release")
         parsed, extras = self.parse_known_args(args, namespace)
+        if getattr(parsed, "transcript_command", None) == "refresh" and "--run-missing" in extras:
+            self.error("audio transcription is unavailable in this release")
         loose = [e for e in extras if not e.startswith("-")]
         if extras and len(loose) == len(extras):
             for dest in ("address", "word", "query", "sheet", "sheet_file", "key", "steps"):
@@ -1485,16 +1488,13 @@ def _working_configure_transcripts_refresh(subparser: argparse.ArgumentParser) -
     subparser.add_argument("ref", help="Timeline UUID, ULID, or slug.")
     _add_project_arg(subparser, required=True)
     subparser.add_argument("--shot", default=None, help="Only this shot's child timeline (its shot id).")
-    subparser.add_argument("--run-missing", action="store_true",
-                           help="Transcribe each missing media, one at a time, with the same path as transcripts run (GPU work).")
-    subparser.add_argument("--placement", default=None, help="Where --run-missing runs (required with it, e.g. runpod).")
     subparser.add_argument("--use-source", default=None, metavar="S",
                            help="Record S as the chosen transcript source of each audio media that has one "
                                 "(pins it in transcriptReferences). Without this or --use-document nothing is recorded.")
     subparser.add_argument("--use-document", default=None, metavar="D",
                            help="Record the stored document D as a media's chosen transcript (pins it).")
     subparser.add_argument("--dry-run", action="store_true",
-                           help="Print the report and what would run or be recorded; write nothing. "
+                           help="Print the report and what would be recorded; write nothing. "
                                 "Without --dry-run a recorded choice writes the working copy (created if none).")
     subparser.set_defaults(handler=_working_cmd_transcripts_refresh)
 
@@ -1515,7 +1515,7 @@ def _working_configure_transcripts_show(subparser: argparse.ArgumentParser) -> N
 def _working_configure_transcripts_import(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("media_id", help="Project-managed sha256 media id.")
     subparser.add_argument("file", nargs="?", type=Path, help="Complete JSON words file in source-media seconds.")
-    subparser.add_argument("--from-run", help="Import the output of a completed transcription run.")
+    subparser.add_argument("--from-run", help="Import the output of a completed historical transcription run.")
     _add_project_arg(subparser, required=True)
     subparser.add_argument("--source", default="astrid.import",
                            help="Imported transcript source id, separate from narration backfill.")
@@ -1526,22 +1526,6 @@ def _working_configure_transcripts_import(subparser: argparse.ArgumentParser) ->
     subparser.add_argument("--expected-version", type=int, default=None,
                            help="Required current document version with --replace.")
     subparser.set_defaults(handler=_working_cmd_transcripts_import)
-
-
-def _working_configure_transcripts_run(subparser: argparse.ArgumentParser) -> None:
-    subparser.add_argument("media_id", help="Project-managed sha256 media id.")
-    _add_project_arg(subparser, required=True)
-    subparser.add_argument("--placement", default="auto")
-    subparser.add_argument("--engine")
-    subparser.add_argument("--execution")
-    subparser.add_argument("--align", choices=("align", "check", "trust"))
-    subparser.add_argument("--consent", action="append", choices=("user_env",), default=[])
-    subparser.add_argument("--recovery-path")
-    subparser.add_argument("--replace", action="store_true")
-    subparser.add_argument("--expected-version", type=int)
-    subparser.add_argument("--dry-run", action="store_true",
-                           help="Stage input, compile and run the invocation preflight, then stop before admission.")
-    subparser.set_defaults(handler=_working_cmd_transcripts_run)
 
 
 def _configure_appearance(subparser: argparse.ArgumentParser) -> None:
@@ -1688,9 +1672,7 @@ def build_parser(client: Any) -> argparse.ArgumentParser:
         register_product_commands(nested, (
             CommandSpec("show", help="Read a media transcript and map words through timeline clip occurrences.",
                         configure=_working_configure_transcripts_show),
-            CommandSpec("run", help="Transcribe a whole project media file and store its words.",
-                        configure=_working_configure_transcripts_run),
-            CommandSpec("refresh", help="Status of each media's transcript; run the missing ones (--run-missing --placement P); "
+            CommandSpec("refresh", help="Status of each media's transcript; "
                                         "record the chosen documents; report stale anchors and split words.",
                         configure=_working_configure_transcripts_refresh),
             CommandSpec("sync", help="Backfill narration transcript documents from published VO clips (refresh replaces it).",

@@ -3476,7 +3476,6 @@ _core_timelines.provide_handlers({
     '_working_cmd_rename': _cli_working._cmd_rename,
     '_working_cmd_restructure': _cli_working._cmd_restructure,
     '_working_cmd_transcripts_import': _cli_working._cmd_transcripts_import,
-    '_working_cmd_transcripts_run': _cli_working._cmd_transcripts_run,
     '_working_cmd_transcripts_show': _cli_working._cmd_transcripts_show,
     '_working_cmd_transcripts_refresh': _cli_working._cmd_transcripts_refresh,
     '_working_cmd_transcripts_sync': _cli_working._cmd_transcripts_sync,

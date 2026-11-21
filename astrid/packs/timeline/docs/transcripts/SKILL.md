@@ -1,40 +1,26 @@
 ---
 name: timeline-transcripts
-description: Transcribe source media and read timed words to choose or review timeline cuts.
+description: Import source-media transcripts and read timed words to choose or review timeline cuts.
 ---
-# Transcribe media
+# Source-media transcripts
 
 Astrid commands here run through the launcher; its path on each OS is in the
 [astrid-setup skill's Launcher paths](../../../setup/docs/SKILL.md#launcher-paths).
 The examples show the Linux launcher.
 
-Transcribe the source before choosing a cut point, and transcribe every
-generated take before judging it. A transcript records what the media contains;
-a script, prompt, or guide is not evidence of what was actually spoken. One
-transcript covers the whole managed media file and stores word times in seconds
-from the start of that media.
+A transcript covers a whole managed media file and stores word times in seconds
+from the start of that media. Use those times to choose or review timeline cuts.
 
-## Transcribe and read
+## Import and read
 
-Run transcription for a managed media item in a project. Astrid uses its
-transcription workflow and stores the timed words against that media:
+Import a complete JSON words file for a managed media item in a project. If you
+already have a completed Astrid transcription run for that media, import its
+output with `--from-run`.
 
 ```sh
-"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" timelines transcripts run <media-id> --project <project>
-```
-
-The same transcription can be run directly with the generation command. It uses
-the `transcription` entry, which is the default for audio transcribe, so
-`--entry` is optional. Its result is a Runtime run that imports exactly as
-`transcripts run` does:
-
-```sh
-"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate audio --mode transcribe --audio-ref <media-id> --project <project>
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" timelines transcripts import <media-id> <words-file> --project <project>
 "${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" timelines transcripts import <media-id> --project <project> --from-run <run-id>
 ```
-
-`--audio-ref` takes a project media id (or digest), as above, or a local file
-without `--project`. The printed import line names the media id.
 
 Importing the same media again from the same source compares the content. An
 identical result reports `unchanged`. A different result is refused, and the
@@ -68,11 +54,7 @@ command:
 "${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" timelines transcripts refresh <timeline> --project <project> [--shot <shot-id>] --dry-run
 ```
 
-Each media is listed as `whisper`, `other source only (<source>)`, or `missing`. Without
-`--run-missing` nothing is transcribed. With `--run-missing --placement <where>` (for example
-`runpod`), each missing media is transcribed one at a time through the same path as `transcripts run`.
-Transcription is GPU work, so `--run-missing` refuses without `--placement`. Run it with
-`--dry-run` first to see the exact commands.
+Each media is listed as `whisper`, `other source only (<source>)`, or `missing`.
 
 Refresh never pins a default pick. A timeline records a transcript choice only when you name one:
 `--use-source <source>` (the stored transcript of that source for each media that has one) or

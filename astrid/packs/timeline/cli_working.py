@@ -447,49 +447,8 @@ def _cmd_transcripts_import(parsed: argparse.Namespace) -> int:
 
 
 @guard(2)
-def _cmd_transcripts_run(parsed: argparse.Namespace) -> int:
-    import hashlib
-    import tempfile
-
-    from astrid.sdk.generation import generate
-    from astrid.sdk.media_handles import resolve_media_handle
-    from astrid.sdk.transcript_run import import_transcription_run
-
-    project = need_project(parsed)
-    descriptor, _ = resolve_media_handle(parsed.client, project, parsed.media_id)
-    digest = descriptor["digest"]
-    raw = parsed.client.media.read_bytes(digest)
-    if "sha256:" + hashlib.sha256(raw).hexdigest() != digest:
-        raise ValueError("media bytes do not match their digest")
-    with tempfile.TemporaryDirectory(prefix="astrid-transcription-") as tmp:
-        path = Path(tmp) / descriptor["filename"]
-        path.write_bytes(raw)
-        options = {name: getattr(parsed, name) for name in ("placement", "engine", "execution", "align", "recovery_path")
-                   if getattr(parsed, name, None) is not None}
-        dry_run = bool(getattr(parsed, "dry_run", False))
-        result = generate.audio(entry="transcription", mode="transcribe", audio_ref=str(path),
-                                project=project, client=parsed.client, consent=tuple(parsed.consent),
-                                dry_run=dry_run, **options)
-    if getattr(result, "ok", True) is False:
-        raise ValueError(f"transcription failed: {getattr(result, 'error', None)}")
-    from astrid.sdk.transcript_run import transcription_run_id
-
-    value = result.to_dict() if hasattr(result, "to_dict") else result
-    if dry_run:
-        # Staged input, compile and the invocation preflight ran; nothing was admitted or imported.
-        print(json.dumps(value, indent=2, sort_keys=True, default=str))
-        return 0
-    run_id = transcription_run_id(parsed.client, value)
-    status = import_transcription_run(parsed.client, project, digest, run_id,
-                                      replace=parsed.replace, expected_version=parsed.expected_version)
-    print(f"{status} transcript for {digest} from run {run_id}")
-    return 0
-
-
-@guard(2)
 def _cmd_transcripts_refresh(parsed: argparse.Namespace) -> int:
-    """Status of every audio media (parent and child timelines), missing transcripts run on request,
-    an explicit transcript choice recorded in transcriptReferences, and what a refresh cannot fix."""
+    """Report stored transcripts and optionally record an explicit transcript choice."""
     from astrid.sdk.media_ids import media_id_text
     from astrid.sdk.timeline import words as W
     from astrid.sdk.timeline_checkout import Checkout
@@ -504,12 +463,8 @@ def _cmd_transcripts_refresh(parsed: argparse.Namespace) -> int:
     )
 
     project = need_project(parsed)
-    if parsed.run_missing and not parsed.placement:
-        raise VerbError("--run-missing runs transcription on a GPU: name where with --placement (e.g. --placement runpod)", 2)
     if parsed.use_source and parsed.use_document:
         raise VerbError("choose one of --use-source and --use-document", 2)
-    if parsed.placement and not parsed.run_missing:
-        print("note: --placement applies only with --run-missing")
     draft, _existed = working_copy(parsed, create=False)
     tl = draft if draft is not None else Checkout.open(project, parsed.ref, client=parsed.client)
     if parsed.shot is not None and str(parsed.shot) not in (tl.bundle.get("shots") or {}):
@@ -525,26 +480,6 @@ def _cmd_transcripts_refresh(parsed: argparse.Namespace) -> int:
         detail = f"document v{row['version']}" if row["version"] is not None else "no document"
         print(f"  {media_id_text(row['media_id'])}  {row['status']:<28}  {detail}  "
               f"[{', '.join(row['clips'])}]  in {where}" + ("  (pinned)" if row["pinned"] else ""))
-    missing = [row for row in rows if row["status"] == "missing"]
-    if parsed.run_missing:
-        for row in missing:
-            command = ["timelines", "transcripts", "run", row["media_id"], "--project", project,
-                       "--placement", parsed.placement]
-            if parsed.dry_run:
-                print(f"  would run: astrid {' '.join(command)}")
-                continue
-            ns = argparse.Namespace(client=parsed.client, project=project, media_id=row["media_id"],
-                                    placement=parsed.placement, engine=None, execution=None, align=None,
-                                    consent=[], recovery_path=None, replace=False, expected_version=None)
-            status = _cmd_transcripts_run(ns)
-            print(f"  ran {media_id_text(row['media_id'])}: {'ok' if status == 0 else f'failed (exit {status})'}")
-        if not parsed.dry_run and missing:
-            issues = []
-            transcripts = W.load_timeline_transcripts(parsed.client, project, tl.bundle,
-                                                      sources=load_sources, issues=issues)
-            rows = inventory(tl.bundle, transcripts, shot=parsed.shot)
-    elif missing:
-        print(f"  {len(missing)} missing: --run-missing --placement P runs them (GPU work)")
     for note in W.pin_notes(tl.bundle, transcripts):
         print(f"pin: {note}")
     for issue in issues:

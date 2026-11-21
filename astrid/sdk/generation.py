@@ -2552,6 +2552,10 @@ class GenerationFacade:
         align: str | None = None,
         **inputs: Any,
     ) -> Any:
+        from astrid.core.generation.entries import HELD_TRANSCRIPTION_ENTRIES
+
+        if mode == 'transcribe' or (entry or model) in HELD_TRANSCRIPTION_ENTRIES:
+            raise GenerationInputError('audio transcription is unavailable in this release')
         arguments = {key: value for key, value in locals().items() if key not in {"self", "inputs"}}
         return self._media_request("audio", **arguments, **inputs)
 

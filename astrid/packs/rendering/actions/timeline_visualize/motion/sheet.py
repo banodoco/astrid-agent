@@ -235,7 +235,7 @@ def _summary_lines(ctx: LayerContext) -> list[str]:
               and e.end > lo + 1e-6 and e.start < max(hi, lo + 1 / ctx.fps) - 1e-6]
     if voices:
         names = ", ".join(dict.fromkeys(e.short_id for e in voices))
-        silent = f"VO: {names} plays in {where}; no words stored (timelines transcripts run)"
+        silent = f"VO: {names} plays in {where}; no words stored"
     else:
         silent = f"VO: no voice clip in {where}"
     picture = next((e.label for e in ctx.elements if e.id == cut.get("clip_id")), cut.get("clip_id") or "(no picture clip)")

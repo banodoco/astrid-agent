@@ -41,7 +41,7 @@ Output: an **approved low-fidelity cut** (a timeline revision) and the **final s
 With `astrid timelines visualize` on that timeline, not on an exported file:
 - `--preset overview`: one tile per cut. Name each: who is on screen, real footage or still, whose mouth is visible.
 - `--cut N` and `--range` around each speaking shot: does the mouth move? What is in reflections, backgrounds, hands?
-- Words under the picture: refresh the transcripts of the temporary voice (`astrid timelines transcripts refresh <timeline> --project P --dry-run`, then `--run-missing --placement runpod`), then look with the word tiles, so each line has a time.
+- Words under the picture: check stored transcripts with `astrid timelines transcripts refresh <timeline> --project P --dry-run`. Use the word tiles where timings are available.
 - Region zoom on details that will change (lenses, mouth). If the tool cannot show what you need, that is a tool gap: fix it or file it. Do not fall back to outside tools.
 
 Output: the **sequence map**, a table with one row per cut: time, picture, who is visible, line and words with times, source (footage, still, generated).
@@ -76,7 +76,7 @@ Plan: for every shot, write `method`, `intent`, `check`, the fixed `inputs.refer
 
 - Reference: the speaker's real voice, a clean clip of their real lines with its transcript.
 - Use an approved continuous performance if available. To make a missing line in the speaker’s voice, use a continuation below.
-- Refresh the transcripts (`astrid timelines transcripts refresh <timeline> --project P --run-missing --placement runpod`, after a `--dry-run`), so the new voice has timed words; replace the temporary voice on the timeline, and re-time the cuts to the words (the refresh report lists any cut that splits a word). Look again (Stage 1 views).
+- Replace the temporary voice on the timeline. Use any stored or imported word timings to adjust the cuts. The refresh report lists cuts that split a word. Look again (Stage 1 views).
 - Owner listens. This is the gate before any picture generation.
 - Plan: once the voice track is approved, write each speaking shot's slice of it: `timelines shots plan set <shot> --project P --timeline T --set inputs.voice.media=<voice track media id> --set inputs.voice.range=START,END`. The range is seconds into that voice track media (from its timed words), not timeline time, and needs the media.
 
@@ -97,7 +97,7 @@ Plan: for every shot, write `method`, `intent`, `check`, the fixed `inputs.refer
 
 **Output size and masks.** For image-guided generation and masked edits, `output.size: [width, height]` accepts integer dimensions from 32 through 16384 inclusive, each a multiple of 32. Omit it for the 1024×576 default; continuation is limited to that size. The [512×288 image-guided speech example](../examples/image-guided-speech.json) and [768×448 masked-edit example](../examples/rectangle-edit.json) are covered by CPU compile admission; other accepted sizes are uncharacterized. For rectangle masks, `mask.canvas` gives the authored coordinate dimensions; if omitted, coordinates use the legacy 1024×576 canvas. Still-image masks use their own decoded pixel dimensions.
 
-**Check every voiced take with its transcript:** `astrid timelines transcripts run TAKE --project P --placement runpod`, then `timelines transcripts show TAKE`. The word timings show filler, a missing last word or a wrong line, and give the exact cut points (on 01 the take opens with the film's "your last chance." and the new line starts at 2.6 s).
+**Listen to every voiced take.** Where a transcript is available, use `astrid timelines transcripts show TAKE --project P` to check the words and find cut points. On 01 the take opens with the film's "your last chance." and the new line starts at 2.6 s.
 
 ## Stage 5 - Picture passes, shot by shot
 

@@ -3420,14 +3420,8 @@
                 "--dry-run": {
                   "required": false
                 },
-                "--placement": {
-                  "required": false
-                },
                 "--project": {
                   "required": true
-                },
-                "--run-missing": {
-                  "required": false
                 },
                 "--shot": {
                   "required": false
@@ -3441,52 +3435,6 @@
               },
               "positionals": [
                 "ref"
-              ],
-              "verbs": {}
-            },
-            "run": {
-              "flags": {
-                "--align": {
-                  "choices": [
-                    "align",
-                    "check",
-                    "trust"
-                  ],
-                  "required": false
-                },
-                "--consent": {
-                  "choices": [
-                    "user_env"
-                  ],
-                  "required": false
-                },
-                "--dry-run": {
-                  "required": false
-                },
-                "--engine": {
-                  "required": false
-                },
-                "--execution": {
-                  "required": false
-                },
-                "--expected-version": {
-                  "required": false
-                },
-                "--placement": {
-                  "required": false
-                },
-                "--project": {
-                  "required": true
-                },
-                "--recovery-path": {
-                  "required": false
-                },
-                "--replace": {
-                  "required": false
-                }
-              },
-              "positionals": [
-                "media_id"
               ],
               "verbs": {}
             },

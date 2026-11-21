@@ -25,6 +25,10 @@ class MissingRequiredEntryInputsError(ValueError):
     """Entry validation failed because one or more required inputs are absent."""
 
 
+# The ready template can still be present in an existing VibeComfy installation.
+HELD_TRANSCRIPTION_ENTRIES = frozenset({'transcription', 'audio/transcribe'})
+
+
 def user_entries() -> list[dict[str, Any]]:
     """Saved entries (``VIBECOMFY_ENTRIES_DIR``), then entries contributed through ``vibecomfy.workflows``."""
     try:
@@ -133,7 +137,7 @@ def _ready_entries_for(entry_id: str | None = None) -> list[dict[str, Any]]:
             by_template.setdefault(template, []).append(item)
     rows = []
     for item in index:
-        if entry_id is not None and item['id'] != entry_id:
+        if item['id'] in HELD_TRANSCRIPTION_ENTRIES or (entry_id is not None and item['id'] != entry_id):
             continue
         candidates = by_template.get(item['id'], [])
         kinds = {row.get('media') for row in candidates if row.get('media') in {'image', 'video', 'audio'}}
@@ -321,7 +325,7 @@ def _catalog_inputs(kind: str, spec: Any, mode: str | None = None) -> list[dict[
 def _ready_ids() -> set[str]:
     """Read identities without building unrelated workflows."""
     from vibecomfy import resources
-    return {item['id'] for item in resources.template_index()['templates']}
+    return {item['id'] for item in resources.template_index()['templates']} - HELD_TRANSCRIPTION_ENTRIES
 
 
 def _load_entry_workflow(entry: dict[str, Any]) -> Any:

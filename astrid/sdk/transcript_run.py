@@ -36,9 +36,9 @@ def _expected_workflow_digest(source: Path) -> str:
     from astrid.core.generation import entries
     from astrid.packs.vibecomfy.production_engine import _workflow_content_digest
 
-    # Do not let a user entry with the same name define the verifier's authority.
+    # Use the frozen historical entry independently of generation discovery.
     pack = Path(__file__).resolve().parents[1] / 'packs' / 'generation'
-    manifest = pack / 'extensions' / 'vibecomfy.workflows' / 'transcription.yaml'
+    manifest = pack / 'workflows' / 'transcription' / 'entry.yaml'
     declaration = yaml.safe_load(manifest.read_text(encoding='utf-8'))
     candidates = [row for row in declaration.get('entries', []) if row.get('id') == 'transcription']
     if len(candidates) != 1:

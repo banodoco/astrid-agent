@@ -113,7 +113,7 @@ def _tile_caption(card: Mapping[str, Any], *, voice: bool | None = None) -> str:
     if voice is False:
         return 'no voice under this cut'
     if voice is True:
-        return 'voice here; no words stored (timelines transcripts run)'
+        return 'voice here; no words stored'
     return 'no words stored'
 
 
