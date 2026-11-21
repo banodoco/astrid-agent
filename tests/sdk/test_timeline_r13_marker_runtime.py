@@ -44,13 +44,16 @@ def _patch(service, project, change, key, *, reads=()):
     )
 
 
-def seed_r13_timeline(service, project, path, *, shot_id="shot", source_offset=None):
+def seed_r13_timeline(service, project, path, *, shot_id="shot", source_offset=None, parent_marked=True):
     _png(path)
     object_id = service.ingest(
         project, path.read_bytes(), original_name="still.png", media_type="image/png", idempotency_key="still",
     )["data"]["object_id"]
     track = {"id": "V1", "label": "Picture", "kind": "visual",
              "app": {_MARKER: 2, "org.example": {"keep": True}}}
+    parent_track = copy.deepcopy(track)
+    if not parent_marked:
+        del parent_track["app"][_MARKER]
     registry = {"assets": {"still": {"media_id": object_id, "type": "image", "resolution": "96x54",
                                      "content_sha256": object_id.removeprefix("sha256:")}}}
     # R13's open track app bag accepted these markers in both timeline scopes.
@@ -59,7 +62,7 @@ def seed_r13_timeline(service, project, path, *, shot_id="shot", source_offset=N
         "project_id": project, "timeline_id": "main", "parent_revision_id": "r13-parent",
         "parent_composition": {
             "config": {"output": {"file": "out.mp4", "fps": 30, "resolution": "128x72"},
-                       "tracks": [track]},
+                       "tracks": [parent_track]},
             "registry": registry,
             "clips": [{"id": "still", "track": "V1", "clipType": "image", "asset": "still",
                        "at": 0, "hold": 1}],
@@ -84,7 +87,7 @@ def seed_r13_timeline(service, project, path, *, shot_id="shot", source_offset=N
                          "registry": registry}},
         ],
     }, idempotency_key="r13-seed")
-    return track
+    return parent_track
 
 
 @pytest.mark.parametrize("reader", ["render", "visualize"])
@@ -236,7 +239,8 @@ def share_r13_child(service, client, project, outbox):
     return timeline, before, result
 
 
-def test_shared_r13_child_aliases_reopen_without_changing_the_physical_source(realm, tmp_path):
+@pytest.mark.parametrize("parent_marked", [False, True], ids=["child-only", "parent-and-child"])
+def test_shared_r13_child_aliases_reopen_without_changing_the_physical_source(realm, tmp_path, parent_marked):
     from astrid.core.timeline.reader_projection import check_reader_projection, reader_view
     from astrid.packs.rendering.actions.render.managed_timeline import (
         resolve_managed_render_snapshot,
@@ -247,7 +251,8 @@ def test_shared_r13_child_aliases_reopen_without_changing_the_physical_source(re
     from runtime_protocol.errors import RuntimeErrorBase
 
     service, client, project = realm
-    seed_r13_timeline(service, project, tmp_path / "still.png", shot_id="chapter-shot", source_offset=0)
+    seed_r13_timeline(service, project, tmp_path / "still.png", shot_id="chapter-shot",
+                      source_offset=0, parent_marked=parent_marked)
     timeline, before, result = share_r13_child(service, client, project, tmp_path / "outbox.json")
     after = result["data"]["canonical_document"]
     parent = after["parent_revision"]
