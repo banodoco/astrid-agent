@@ -13,6 +13,7 @@ import hashlib
 import json
 from pathlib import Path
 import platform
+import shutil
 import sys
 
 if __package__:
@@ -88,7 +89,8 @@ def _dist(checkout: Path, supplied: Path) -> Path:
 
 
 def _browser(config: dict, *, app: Path, dist: Path, version: dict,
-             evidence: Path, step_name: str, expected_sha: str) -> dict:
+             evidence: Path, step_name: str, expected_sha: str,
+             browser_driver: Path | None = None) -> dict:
     """A new Chromium instance reads the real App build from a pinned HTTPS host."""
     evidence.mkdir(parents=True, exist_ok=True)
     manifest = (app / "public" / "install-manifest.json").read_bytes()
@@ -102,7 +104,8 @@ def _browser(config: dict, *, app: Path, dist: Path, version: dict,
     # No tokens, private credential paths or owner secrets are in the browser config.
     config = {**config, "app": str(app), "result": str(result_path),
               "origin": hosted.ORIGIN, "door": DOOR_BASE,
-              "browserAppSha": app_identity["sha"]}
+              "browserAppSha": app_identity["sha"],
+              "browserDriverApp": str(browser_driver or app)}
     with hosted.Intercept(page, python=version["python"], types=types) as intercept:
         config["spki"] = intercept.leaf_spki
         journey.write_json(config_path, config)
@@ -163,6 +166,9 @@ def _installed(root: Path, data: Path, manifest: dict, *, release: int) -> tuple
 def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) -> dict:
     evidence.mkdir(parents=True, exist_ok=True)
     mode = args.leg
+    # One profile spans both R14 authoring and historical R13 reading. Recreating
+    # a browser context would erase IndexedDB and defeat the save-queue test.
+    browser_profile = evidence / "_same-user-browser-profile" if mode == OLD_APP_NEW_RUNTIME else None
     result = {
         "schema_version": 1, "receipt_kind": mode, "job_id": args.job_id,
         "mode": args.mode, "scenario": mode, "status": "not-run",
@@ -285,20 +291,30 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) 
                 result["checks"]["rejected_outbox_retained"] = "pass"
                 result["browser_app_sha"] = candidate["app"]
         else:
+            if browser_profile is None:
+                raise RuntimeError("R14-to-R13 compatibility needs a shared browser profile")
+            browser_profile.mkdir(mode=0o700)
             with stage(result, path, "r14_creative_authoring"):
                 authored = _browser({
                     "mode": "r14-author-r14-installed",
                     "projectId": seed["project"], "projectName": seed["project_name"],
                     "timelineId": seed["timeline"], "initialLabel": seed["initial_label"],
-                    "savedLabel": AUTHOR_LABEL,
+                    "savedLabel": AUTHOR_LABEL, "profileDir": str(browser_profile),
                 }, app=app, dist=new_dist, version=version,
-                   evidence=evidence / "r14-author", step_name="r14-author", expected_sha=candidate["app"])
+                   evidence=evidence / "r14-author", step_name="r14-author", expected_sha=candidate["app"],
+                   browser_driver=app)
                 result["browser_steps"].append(authored)
                 if (not authored["result"].get("realRuntime")
                         or not authored["result"].get("realInstalledEdit")):
                     raise RuntimeError("Candidate R14 App did not create an accepted R14-authored edit")
                 if authored["result"].get("reopened") is not True:
                     raise RuntimeError("Candidate R14 creative edit was not reopened")
+                owners = authored["result"].get("outboxAfter")
+                original_owner_ids = sorted({record.get("ownerId") for record in (owners or [])
+                                             if isinstance(record, dict) and isinstance(record.get("ownerId"), str)
+                                             and record["ownerId"]})
+                if not original_owner_ids:
+                    raise RuntimeError("R14 App did not persist a durable owner for the R13 App to read")
                 result["checks"]["r14_authored"] = "pass"
                 result["checks"]["r14_save_reopen"] = "pass"
             with stage(result, path, "r13_app_reads_r14_realm"):
@@ -306,10 +322,11 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) 
                     "mode": "r13-app-r14-installed",
                     "projectId": seed["project"], "projectName": seed["project_name"],
                     "timelineId": seed["timeline"], "initialLabel": seed["initial_label"],
-                    "savedLabel": AUTHOR_LABEL,
+                    "savedLabel": AUTHOR_LABEL, "profileDir": str(browser_profile),
+                    "expectedOwnerIds": original_owner_ids,
                 }, app=old_checkout, dist=old_dist, version=version,
                    evidence=evidence / "r13-app-on-r14", step_name="r13-legacy-read",
-                   expected_sha=jumps.RELEASE13_APP_COMMIT)
+                   expected_sha=jumps.RELEASE13_APP_COMMIT, browser_driver=app)
                 result["browser_steps"].append(older)
                 observed = older["result"]
                 if not (observed.get("legacyAppOpened") is True
@@ -339,5 +356,16 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) 
         result.update(status="fail", error=f"{type(error).__name__}: {error}")
         raise
     finally:
+        # Chromium's persistent user data contains actual App IndexedDB and is
+        # never an artifact. It must be gone even on a red qualifier.
+        if browser_profile is not None and browser_profile.exists():
+            try:
+                shutil.rmtree(browser_profile)
+            except OSError as exc:
+                result.update(status="fail", profile_cleanup_error=f"{type(exc).__name__}: {exc}")
+                journey.write_json(path, result)
+                raise RuntimeError("Mixed-version browser profile could not be cleaned") from exc
+        if browser_profile is not None:
+            result["browser_profile_removed"] = not browser_profile.exists()
         journey.write_json(path, result)
     return result

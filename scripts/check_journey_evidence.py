@@ -724,15 +724,30 @@ def _mixed_row_errors(job_id, contract, row, candidate):
                 errors.append(f"{job_id}: FIX-16 rejected-save card or durable unsaved edit is missing")
         elif len(runs) == 2:
             legacy = runs[1].get("result") or {}
-            if (legacy.get("legacyAppOpened") is not True
+            author_queue = authored.get("outboxAfter")
+            prior = {entry.get("ownerId") for entry in (author_queue or [])
+                     if isinstance(entry, dict) and isinstance(entry.get("ownerId"), str)
+                     and entry["ownerId"]}
+            before = legacy.get("outboxBefore")
+            after = legacy.get("outboxAfter")
+            original_queue_survives = (bool(prior) and isinstance(before, list)
+                                       and isinstance(after, list)
+                                       and bool(prior.intersection(
+                                           entry.get("ownerId") for entry in before
+                                           if isinstance(entry, dict)))
+                                       and bool(prior.intersection(
+                                           entry.get("ownerId") for entry in after
+                                           if isinstance(entry, dict))))
+            if (authored.get("persistentProfile") is not True
+                    or legacy.get("persistentProfile") is not True
+                    or row.get("browser_profile_removed") is not True
+                    or legacy.get("legacyAppOpened") is not True
                     or legacy.get("legacyQueueRead") is not True
                     or legacy.get("reopened") is not True
                     or legacy.get("editorPosts") != 0
                     or legacy.get("savedLabel") != authored.get("savedLabel")
-                    or not isinstance(legacy.get("outboxBefore"), list)
-                    or not isinstance(legacy.get("outboxAfter"), list)
-                    or not legacy["outboxBefore"] or not legacy["outboxAfter"]):
-                errors.append(f"{job_id}: published R13 App did not read the R14-authored save queue and reopen")
+                    or not original_queue_survives):
+                errors.append(f"{job_id}: published R13 App did not read the original R14-authored browser save queue and reopen")
 
     expected_steps = (["candidate_and_pinned_source", "native_r13_install",
                        "authored_workspace_seed"]
