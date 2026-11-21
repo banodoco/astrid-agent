@@ -16,6 +16,7 @@ from astrid.sdk.timeline._command_state import CommandError, State
 from astrid.sdk.timeline.commands import execute
 from astrid.sdk.timeline.commit import bundle_from_document, document_from_bundle
 from astrid.sdk.timeline_elements import place_element
+from astrid.sdk.workspace_client import WorkspaceClientError
 from tests.core import test_project_packs
 from tests.sdk.test_timeline_commit_provider_document import document_fixture
 
@@ -252,3 +253,56 @@ def test_builtin_effect_parent_clip_is_pointed_at_the_admitted_effect(monkeypatc
         k: v for k, v in before.items() if k != 'clipType'}
     validate_final_candidate(owner.last_plan.bundle, baseline=baseline,
                              schema_inputs=owner.schema_inputs, realm_id='realm')
+
+
+def _lose_first_ack(owner):
+    """The Runtime accepts the first commit, but its acknowledgement never reaches the client."""
+    accept = owner.commit.side_effect
+    accepted = []
+
+    def commit(project, timeline, body, **kwargs):
+        if not accepted:
+            accepted.append(accept(project, timeline, body, **kwargs))
+            raise WorkspaceClientError(503, 'unavailable', 'acknowledgement lost')
+        return accepted[0]  # replaying the same key returns the original receipt
+
+    owner.commit.side_effect = commit
+    return accepted
+
+
+def test_lost_ack_flight_replays_the_same_request(monkeypatch, tmp_path, configured):
+    owner, ref, _, _ = _setup(monkeypatch, tmp_path, configured)
+    accepted = _lose_first_ack(owner)
+    assert not _place(owner, ref).ok and len(accepted) == 1
+
+    retried = _place(owner, ref)
+    assert retried.ok, retried.error
+    assert retried.data['element'] == ref
+    assert owner.commit.call_count == 2
+    assert owner.commit.call_args.kwargs['idempotency_key'] == 'place-key'
+
+
+def test_lost_ack_flight_settles_before_a_fresh_edit_on_the_runtime_head(monkeypatch, tmp_path, configured):
+    owner, ref, _, _ = _setup(monkeypatch, tmp_path, configured)
+    accepted = _lose_first_ack(owner)
+    assert not _place(owner, ref).ok and len(accepted) == 1
+
+    # The caller reads the Runtime head ('committed') after the lost ack; the outbox base is still 'head'.
+    fresh = _place(owner, ref, expected_head='committed', key='next-place')
+    assert fresh.ok, fresh.error
+    assert fresh.data['element'] == ref
+    assert owner.commit.call_count == 2 + 1
+    assert owner.commit.call_args.kwargs['idempotency_key'] == 'next-place'
+
+    stale = _place(owner, ref, expected_head='stale', key='stale-place')
+    assert not stale.ok and stale.error.code == 'conflict'
+    assert stale.error.details == {'expected_head': 'stale', 'actual_head': 'committed',
+                                   'outbox_base': 'committed'}
+    assert owner.commit.call_count == 3
+
+def test_stale_expected_head_reports_runtime_and_outbox_heads(monkeypatch, tmp_path, configured):
+    owner, ref, _, _ = _setup(monkeypatch, tmp_path, configured)
+    result = _place(owner, ref, expected_head='stale')
+    assert not result.ok and result.error.code == 'conflict'
+    assert result.error.details == {'expected_head': 'stale', 'actual_head': 'head', 'outbox_base': 'head'}
+    owner.commit.assert_not_called()
