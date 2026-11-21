@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 from dataclasses import FrozenInstanceError
 
@@ -68,6 +69,16 @@ def test_windows_comfy_resolve_once_pins_whisper_as_a_constraint():
     requirements = recipe.environments[0].requirements
     assert requirements.mode == "resolve-once"
     assert "openai-whisper==20250625" in requirements.constraints
+
+
+def test_windows_whisper_soundfile_dependency_is_in_the_real_recipe():
+    recipe = recipes.load_recipe("comfyui", "windows-x86_64-cu130")
+    requirements = recipe.environments[0].requirements
+    assert "soundfile==0.14.0" in requirements.constraints
+
+    whisper_patch = next(patch for patch in recipe.source_patches if patch.source == "comfyui-whisper")
+    replacement = (recipes._ROOT / whisper_patch.replacement).read_text(encoding="utf-8")
+    assert re.search(r"^import soundfile\b|^from soundfile\b", replacement, re.MULTILINE)
 
 
 def test_the_linux_base_engine_is_one_package_owned_row_with_the_merged_locks():

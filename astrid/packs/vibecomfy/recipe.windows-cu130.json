@@ -4,7 +4,7 @@
   "platform": "windows-x86_64-cu130",
   "pins": {
     "path": "packs/runpod/pins.json",
-    "sha256": "869e2304c444b968827fbb21862cb0de96c8d9c6f6c9faa5f84b752011c49f93"
+    "sha256": "6c62f1c3ace42d4beeeb11d2f3c888689d11e26c31971ce969d03e89fba124eb"
   },
   "source_bindings": [
     {
@@ -62,7 +62,8 @@
           "opencv-python-headless==5.0.0.93",
           "setuptools==80.9.0",
           "wheel==0.46.3",
-          "openai-whisper==20250625"
+          "openai-whisper==20250625",
+          "soundfile==0.14.0"
         ],
         "exclude_newer": "2026-10-31T00:00:00Z"
       },
