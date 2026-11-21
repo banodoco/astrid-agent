@@ -205,6 +205,7 @@ def test_no_other_tracked_file_copies_the_pin() -> None:
         "astrid/core/generation/vibecomfy_dependency.py",
         "astrid/packs/runpod/pins.json",
         "astrid/packs/vibecomfy/pins.json",
+        "tests/test_windows_path_budget.py",
         "tests/upgrade/releases.json",
     }
     assert set(tracked) <= allowed, f"derive these from vibecomfy_dependency.py instead: {sorted(set(tracked) - allowed)}"

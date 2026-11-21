@@ -1,0 +1,104 @@
+{
+  "packet": "R14-FIX-13",
+  "issue": "banodoco/astrid-dev#964",
+  "session": "r14-FIX-13-1",
+  "state": "checkpoint; awaiting Lead decision on six source-fingerprint literals",
+  "pull_request": "https://github.com/banodoco/astrid-agent/pull/441",
+  "base_commit": "aa988878b383fb965b5fc05601baa15a93849d42",
+  "candidate_commit": "3edc9ca04755fe60d1fdb1dca7b4bb7f70685488",
+  "candidate_tree": "a34c90b0cb186eccdfc546a6d57d33f65fafc022",
+  "policy_module_sha256": "a7544f124981170d39ef72b93177bf4f1f9982b199b8c9cb2eb8d79ef5b579dc",
+  "before": {
+    "tls_policy": {
+      "passed": 157,
+      "failed": 0,
+      "deselected_but_run_separately": 1,
+      "exit_code": 0
+    },
+    "independent_error_contract": {
+      "failed": 1,
+      "exit_code": 1
+    },
+    "transport": {
+      "passed": 15,
+      "exit_code": 0
+    },
+    "structure_current": 103,
+    "structure_ceiling_errors": 1
+  },
+  "after": {
+    "tls_policy": {
+      "passed": 156,
+      "failed": 1,
+      "deselected_but_run_separately": 1,
+      "exit_code": 1
+    },
+    "independent_error_contract": {
+      "failed": 1,
+      "exit_code": 1
+    },
+    "transport": {
+      "passed": 15,
+      "exit_code": 0
+    },
+    "structure_current": 102,
+    "structure_ceiling_errors": 0
+  },
+  "by_id_comparison": {
+    "distinct_before": 173,
+    "distinct_after": 173,
+    "regression": 1,
+    "preexisting_failure": 1,
+    "missing": 0,
+    "no_baseline": 0
+  },
+  "static_analysis": {
+    "ruff": {
+      "before": 4,
+      "after": 4,
+      "new_identities": 0
+    },
+    "mypy": {
+      "before": 11,
+      "after": 11,
+      "new_identities": 0
+    },
+    "guard_file_ruff_and_mypy": {
+      "baseline_exit_codes": [
+        0,
+        0
+      ]
+    }
+  },
+  "assertions_in_three_mechanically_updated_tests": {
+    "before": 218,
+    "after": 218,
+    "ASTs_identical": true
+  },
+  "gate_replay": {
+    "source_commit": "68e7aa8593d13eaeb6a55da1d97bed8b494df15b",
+    "source_tree": "fce66a787d8af8be073f3d6c9fd6c948363e73ee",
+    "overlay": [
+      "scripts/reshape/compare_structure_baseline.py",
+      "scripts/reshape/structure_ceiling.json"
+    ],
+    "unchanged_trusted_ceiling": 102,
+    "after_make_structure_exit_code": 0,
+    "after_trusted_ceiling_exit_code": 0,
+    "limitation": "Local isolated replay. These Plan 39 gate files are absent from release/14/main; this is not a hosted fast-check pass on the issue branch."
+  },
+  "known_limits": [
+    "Six import-dependent TLS audit fingerprints require Lead approval: mailbox comment 7000651839. Guard remains unchanged at this checkpoint.",
+    "Known error-contract omission failure remains executed and fails on both sides.",
+    "Initial ambient SSL_CERT_FILE caused one extra baseline guidance failure; its original log is retained, and controlled paired proof clears only SSL_CERT_FILE and SSL_CERT_DIR without changing TLS verification.",
+    "Local platform Linux, Python 3.13.5; no new native Windows or macOS execution claim.",
+    "Queued checkpoint CI runs are not qualifying proof; no whole-suite or release-green claim."
+  ],
+  "archive": {
+    "path": "checkpoint-3edc9ca.tar.gz",
+    "sha256": "5486ae2c9a2e172aa950dcba50318625417627e0676b6a5b3df2834bd4bf920a",
+    "size": 42669,
+    "files": 57
+  },
+  "routes_used": "Unknown \u2014 the host does not expose authenticated route execution provenance; one read-only helper recovered historical FIX-03 test selection. No independent review commissioned."
+}
