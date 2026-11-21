@@ -26,7 +26,9 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image, ImageChops, ImageStat
 
-pytest_plugins = ("tests.core.test_project_packs",)
+# Export only the configured fixture to this consumer; loading the source test
+# module as a plugin would leak its autouse patches into unrelated tests.
+from tests.core.test_project_packs import configured  # noqa: F401, E402
 pytestmark = pytest.mark.integration
 
 from astrid.core.element import project_packs  # noqa: E402
