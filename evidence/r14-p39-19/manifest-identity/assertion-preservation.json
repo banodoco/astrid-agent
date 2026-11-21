@@ -1,0 +1,127 @@
+{
+  "authority": "https://github.com/banodoco/astrid-agent/pull/442#issuecomment-7018486500",
+  "source_sha": "305943c7c5d835d78e0bb46335710656a9d8f76f",
+  "approved_substitution": {
+    "old": "service.get_project_parent_composition_revision(project, 'film', 'popup-baseline') == manifest_media.legacy",
+    "new": "service.get_project_parent_composition_revision(project, 'film', manifest_media.legacy_revision_id) == manifest_media.legacy"
+  },
+  "rows": [
+    {
+      "path": "tests/editing_conformance/test_commit_runtime_media_manifest_inverse.py",
+      "base_sha256": "e57cda182041106e32c4007cca08320966d86d73dd23311ad515e5b2dfc3dd73",
+      "candidate_sha256": "1887463790feb7d1f3c6f800d4b42d053879c1594bb6aa157ae3c88082922f8d",
+      "original_assertions": 23,
+      "candidate_assertions": 26,
+      "strictly_unchanged_original_assertions": 22,
+      "approved_identity_substitutions": 1,
+      "added_assertions": 3,
+      "original_test_functions": 1,
+      "test_bodies_equal_after_only_approved_identity_substitution": true,
+      "byte_identical": false
+    },
+    {
+      "path": "tests/editing_conformance/test_commit_runtime_occurrence_media.py",
+      "base_sha256": "cf73444ebe59c7a5e62f29cff072d3c3dea87ead85043d92ef632d433cb110a1",
+      "candidate_sha256": "a27ce832fc4aef4ebb4cc143ac349088f9a3b2bb70d05c54a245c556a79028f1",
+      "original_assertions": 28,
+      "candidate_assertions": 28,
+      "strictly_unchanged_original_assertions": 28,
+      "approved_identity_substitutions": 0,
+      "added_assertions": 0,
+      "original_test_functions": 4,
+      "test_bodies_equal_after_only_approved_identity_substitution": true,
+      "byte_identical": false
+    },
+    {
+      "path": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py",
+      "base_sha256": "e733226964bb5df253d3a3b4bb887e6fe573eda9090623c91725aa3f2c6f1ec9",
+      "candidate_sha256": "e733226964bb5df253d3a3b4bb887e6fe573eda9090623c91725aa3f2c6f1ec9",
+      "original_assertions": 62,
+      "candidate_assertions": 62,
+      "strictly_unchanged_original_assertions": 62,
+      "approved_identity_substitutions": 0,
+      "added_assertions": 0,
+      "original_test_functions": 6,
+      "test_bodies_equal_after_only_approved_identity_substitution": true,
+      "byte_identical": true
+    },
+    {
+      "path": "tests/editing_conformance/test_commit_runtime_video_unplace.py",
+      "base_sha256": "fe54a4f5d41677d95f4d7c4fa9edde56028333250be405080b41ad2101429cd2",
+      "candidate_sha256": "351326fea37e1dfe3dd18f200de2dfe0865acc301c3ee044989bf6320a675189",
+      "original_assertions": 23,
+      "candidate_assertions": 23,
+      "strictly_unchanged_original_assertions": 23,
+      "approved_identity_substitutions": 0,
+      "added_assertions": 0,
+      "original_test_functions": 1,
+      "test_bodies_equal_after_only_approved_identity_substitution": true,
+      "byte_identical": false
+    },
+    {
+      "path": "tests/editing_conformance/test_recipe_m2_auto_placement.py",
+      "base_sha256": "5146188c84a4911ff42ff5c39be5b9da650f8cc5ebdf80bb4900903dad90f861",
+      "candidate_sha256": "5146188c84a4911ff42ff5c39be5b9da650f8cc5ebdf80bb4900903dad90f861",
+      "original_assertions": 46,
+      "candidate_assertions": 46,
+      "strictly_unchanged_original_assertions": 46,
+      "approved_identity_substitutions": 0,
+      "added_assertions": 0,
+      "original_test_functions": 19,
+      "test_bodies_equal_after_only_approved_identity_substitution": true,
+      "byte_identical": true
+    },
+    {
+      "path": "tests/editing_conformance/test_recipe_m2_placement_create_unplace.py",
+      "base_sha256": "51c047472cf0677baf5ce9d0c252afa00b28ccda09b1b2cb60f7ed674e7e8af9",
+      "candidate_sha256": "51c047472cf0677baf5ce9d0c252afa00b28ccda09b1b2cb60f7ed674e7e8af9",
+      "original_assertions": 36,
+      "candidate_assertions": 36,
+      "strictly_unchanged_original_assertions": 36,
+      "approved_identity_substitutions": 0,
+      "added_assertions": 0,
+      "original_test_functions": 16,
+      "test_bodies_equal_after_only_approved_identity_substitution": true,
+      "byte_identical": true
+    },
+    {
+      "path": "tests/editing_conformance/test_recipe_m2_shared_auto_placement.py",
+      "base_sha256": "033deddcf43a49967c92a0a8fe827d96c0ea758bf071026f5629ec3606e728a6",
+      "candidate_sha256": "033deddcf43a49967c92a0a8fe827d96c0ea758bf071026f5629ec3606e728a6",
+      "original_assertions": 71,
+      "candidate_assertions": 71,
+      "strictly_unchanged_original_assertions": 71,
+      "approved_identity_substitutions": 0,
+      "added_assertions": 0,
+      "original_test_functions": 25,
+      "test_bodies_equal_after_only_approved_identity_substitution": true,
+      "byte_identical": true
+    },
+    {
+      "path": "tests/editing_conformance/test_recipe_m2_shot_pool.py",
+      "base_sha256": "7fbdd2f08dc1c772ce57500705a46a8b4a012d50ccd76918c50f1d45ae020b7e",
+      "candidate_sha256": "7fbdd2f08dc1c772ce57500705a46a8b4a012d50ccd76918c50f1d45ae020b7e",
+      "original_assertions": 59,
+      "candidate_assertions": 59,
+      "strictly_unchanged_original_assertions": 59,
+      "approved_identity_substitutions": 0,
+      "added_assertions": 0,
+      "original_test_functions": 17,
+      "test_bodies_equal_after_only_approved_identity_substitution": true,
+      "byte_identical": true
+    },
+    {
+      "path": "tests/editing_conformance/test_recipe_occurrence_media.py",
+      "base_sha256": "6c34ea9aadad53265d3f19b2737e54f3e0d74d45fc8855c0ae22ce88c3e355ec",
+      "candidate_sha256": "6c34ea9aadad53265d3f19b2737e54f3e0d74d45fc8855c0ae22ce88c3e355ec",
+      "original_assertions": 44,
+      "candidate_assertions": 44,
+      "strictly_unchanged_original_assertions": 44,
+      "approved_identity_substitutions": 0,
+      "added_assertions": 0,
+      "original_test_functions": 15,
+      "test_bodies_equal_after_only_approved_identity_substitution": true,
+      "byte_identical": true
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "counts": {
+    "call:failed": 54,
+    "call:passed": 48,
+    "setup:failed": 2,
+    "setup:passed": 102,
+    "teardown:passed": 104
+  },
+  "failure_boundaries": {
+    "canonical_document_scope": 23,
+    "command_claim_call": 25,
+    "inverse_internal_clip_order_1002": 4,
+    "missing_persisted_text_binding": 2,
+    "pass": 48,
+    "runtime_module_import": 2
+  },
+  "finish": {
+    "exitstatus": 1,
+    "summary": "54 failed, 48 passed, 2 errors",
+    "type": "finish"
+  },
+  "phase_changes_from_42be": []
+}

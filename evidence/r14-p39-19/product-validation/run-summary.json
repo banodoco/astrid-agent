@@ -1,0 +1,589 @@
+{
+  "diagnostic-claims": {
+    "finish": {
+      "exitstatus": 1,
+      "summary": "1 error",
+      "type": "finish"
+    },
+    "invocation": {
+      "argv": [
+        "/workspace/scratch/ed89673be2cd/proof-env/bin/python",
+        "-P",
+        "-m",
+        "ci.run_pytest",
+        "-v",
+        "-rA",
+        "-m",
+        "integration",
+        "--junitxml=/workspace/scratch/7b8a4aa9f9f5/evidence/diagnostic-claims/results.xml",
+        "-p",
+        "s01_claim_observer",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_exact_capture_acceptance_inverse_redo_restart_and_retry[image-add]"
+      ],
+      "cwd": "/workspace/scratch/7b8a4aa9f9f5/astrid-agent",
+      "dirty": "",
+      "environment_overrides": {
+        "ASTRID_CI_JOB": "lanes-integration",
+        "ASTRID_RUNTIME_CHECKOUT": "/workspace/scratch/ed89673be2cd/runtime-sync",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPATH": "/workspace/scratch/7b8a4aa9f9f5/astrid-agent/scripts:/workspace/scratch/ed89673be2cd/runtime-sync:/workspace/scratch/7b8a4aa9f9f5",
+        "S01_OBSERVER_OUTPUT": "/workspace/scratch/7b8a4aa9f9f5/evidence/claim-observer.jsonl"
+      },
+      "finished_utc": "2026-11-19T17:59:26.303310+00:00",
+      "kind": "local focused proof; not hosted qualification",
+      "patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "raw_returncode": 1,
+      "runtime_dirty": "",
+      "runtime_sha": "2537fed24385ec1c24f48a812e09af4bb63fb794",
+      "selectors": [
+        "-p",
+        "s01_claim_observer",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_exact_capture_acceptance_inverse_redo_restart_and_retry[image-add]"
+      ],
+      "source_sha": "c1130e03b234763fb6c6d9e6fd4b29c275f80d42",
+      "source_tree": "9144ce956f5268c3c57322d1c526b8023b6ebe06",
+      "started_utc": "2026-11-19T17:59:09.345621+00:00",
+      "tracked_worktree_tree": "9144ce956f5268c3c57322d1c526b8023b6ebe06"
+    },
+    "phases": {
+      "call": {
+        "failed": 0,
+        "passed": 0,
+        "skipped": 0
+      },
+      "setup": {
+        "failed": 1,
+        "passed": 0,
+        "skipped": 0
+      },
+      "teardown": {
+        "failed": 0,
+        "passed": 1,
+        "skipped": 0
+      }
+    }
+  },
+  "pin-guard-before-product": {
+    "finish": {
+      "exitstatus": 0,
+      "summary": "1 passed",
+      "type": "finish"
+    },
+    "invocation": {
+      "argv": [
+        "/workspace/scratch/ed89673be2cd/proof-env/bin/python",
+        "-P",
+        "-m",
+        "ci.run_pytest",
+        "-v",
+        "-rA",
+        "-m",
+        "not integration",
+        "--junitxml=/workspace/scratch/7b8a4aa9f9f5/evidence/pin-guard-before-product/results.xml",
+        "tests/test_vibecomfy_pin.py::test_no_other_tracked_file_copies_the_pin"
+      ],
+      "cwd": "/workspace/scratch/7b8a4aa9f9f5/astrid-agent",
+      "dirty": "A  evidence/r14-p39-19/README.md\nA  evidence/r14-p39-19/after-three-candidate.patch\nA  evidence/r14-p39-19/after-three-invocation.json\nA  evidence/r14-p39-19/after-three-results.collection.json.gz\nA  evidence/r14-p39-19/after-three-results.jsonl.gz\nA  evidence/r14-p39-19/after-three-results.log.gz\nA  evidence/r14-p39-19/after-three-results.reference.json.gz\nA  evidence/r14-p39-19/after-three-results.xml.gz\nA  evidence/r14-p39-19/after-three-shot-helper.py\nA  evidence/r14-p39-19/assertion-preservation.json\nA  evidence/r14-p39-19/baseline-diff.json\nA  evidence/r14-p39-19/before-three-invocation.json\nA  evidence/r14-p39-19/before-three-results.collection.json.gz\nA  evidence/r14-p39-19/before-three-results.jsonl.gz\nA  evidence/r14-p39-19/before-three-results.log.gz\nA  evidence/r14-p39-19/before-three-results.reference.json.gz\nA  evidence/r14-p39-19/before-three-results.xml.gz\nA  evidence/r14-p39-19/candidate-104-invocation.json\nA  evidence/r14-p39-19/candidate-104-results.collection.json.gz\nA  evidence/r14-p39-19/candidate-104-results.jsonl.gz\nA  evidence/r14-p39-19/candidate-104-results.log.gz\nA  evidence/r14-p39-19/candidate-104-results.reference.json.gz\nA  evidence/r14-p39-19/candidate-104-results.xml.gz\nA  evidence/r14-p39-19/destination-provenance.json\nA  evidence/r14-p39-19/diagnostic-fps-invocation.json\nA  evidence/r14-p39-19/diagnostic-fps-results.collection.json.gz\nA  evidence/r14-p39-19/diagnostic-fps-results.jsonl.gz\nA  evidence/r14-p39-19/diagnostic-fps-results.log.gz\nA  evidence/r14-p39-19/diagnostic-fps-results.reference.json.gz\nA  evidence/r14-p39-19/diagnostic-fps-results.xml.gz\nA  evidence/r14-p39-19/fps-observer.jsonl\nA  evidence/r14-p39-19/historical-native-s01.json.gz\nA  evidence/r14-p39-19/historical-provenance.json\nA  evidence/r14-p39-19/manifest.json\nA  evidence/r14-p39-19/native-files.json\nA  evidence/r14-p39-19/nodeids.txt\nA  evidence/r14-p39-19/outcomes-by-id.json\nA  evidence/r14-p39-19/s01_observer.py",
+      "environment_overrides": {
+        "ASTRID_CI_JOB": "lanes-integration",
+        "ASTRID_RUNTIME_CHECKOUT": "/workspace/scratch/ed89673be2cd/runtime-sync",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPATH": "/workspace/scratch/7b8a4aa9f9f5/astrid-agent/scripts:/workspace/scratch/ed89673be2cd/runtime-sync"
+      },
+      "finished_utc": "2026-11-19T17:53:15.001308+00:00",
+      "kind": "local focused proof; not hosted qualification",
+      "patch_sha256": "cd22749822d74f3c831b718f591674b41da7508d027bf13d7c537e00eb2bbd31",
+      "raw_returncode": 0,
+      "runtime_dirty": "",
+      "runtime_sha": "2537fed24385ec1c24f48a812e09af4bb63fb794",
+      "selectors": [
+        "tests/test_vibecomfy_pin.py::test_no_other_tracked_file_copies_the_pin"
+      ],
+      "source_sha": "de81bcd7e0518a8fc30b9d5ff17882240b6cb367",
+      "source_tree": "c344245f6d93dcab8cb3b5bd334111921c2dd2f6",
+      "started_utc": "2026-11-19T17:53:12.293975+00:00",
+      "tracked_worktree_tree": "7e75039754f9d503a7136ecd5950250824e7271b"
+    },
+    "phases": {
+      "call": {
+        "failed": 0,
+        "passed": 1,
+        "skipped": 0
+      },
+      "setup": {
+        "failed": 0,
+        "passed": 1,
+        "skipped": 0
+      },
+      "teardown": {
+        "failed": 0,
+        "passed": 1,
+        "skipped": 0
+      }
+    }
+  },
+  "pin-guard-final-proof": {
+    "finish": {
+      "exitstatus": 0,
+      "summary": "1 passed",
+      "type": "finish"
+    },
+    "invocation": {
+      "argv": [
+        "/workspace/scratch/ed89673be2cd/proof-env/bin/python",
+        "-P",
+        "-m",
+        "ci.run_pytest",
+        "-v",
+        "-rA",
+        "-m",
+        "not integration",
+        "--junitxml=/workspace/scratch/7b8a4aa9f9f5/evidence/pin-guard-final-proof/results.xml",
+        "tests/test_vibecomfy_pin.py::test_no_other_tracked_file_copies_the_pin"
+      ],
+      "cwd": "/workspace/scratch/7b8a4aa9f9f5/astrid-agent",
+      "dirty": "A  evidence/r14-p39-19/product-validation/README.md\nA  evidence/r14-p39-19/product-validation/claim-observer.jsonl\nA  evidence/r14-p39-19/product-validation/diagnostic-claims-invocation.json\nA  evidence/r14-p39-19/product-validation/diagnostic-claims-results.collection.json.gz\nA  evidence/r14-p39-19/product-validation/diagnostic-claims-results.jsonl.gz\nA  evidence/r14-p39-19/product-validation/diagnostic-claims-results.log.gz\nA  evidence/r14-p39-19/product-validation/diagnostic-claims-results.reference.json.gz\nA  evidence/r14-p39-19/product-validation/diagnostic-claims-results.xml.gz\nA  evidence/r14-p39-19/product-validation/manifest.json\nA  evidence/r14-p39-19/product-validation/native-files.json\nA  evidence/r14-p39-19/product-validation/original-104-preservation.json\nA  evidence/r14-p39-19/product-validation/outcomes-by-id.json\nA  evidence/r14-p39-19/product-validation/pin-guard-before-product-invocation.json\nA  evidence/r14-p39-19/product-validation/pin-guard-before-product-results.collection.json.gz\nA  evidence/r14-p39-19/product-validation/pin-guard-before-product-results.jsonl.gz\nA  evidence/r14-p39-19/product-validation/pin-guard-before-product-results.log.gz\nA  evidence/r14-p39-19/product-validation/pin-guard-before-product-results.reference.json.gz\nA  evidence/r14-p39-19/product-validation/pin-guard-before-product-results.xml.gz\nA  evidence/r14-p39-19/product-validation/product-104-invocation.json\nA  evidence/r14-p39-19/product-validation/product-104-results.collection.json.gz\nA  evidence/r14-p39-19/product-validation/product-104-results.jsonl.gz\nA  evidence/r14-p39-19/product-validation/product-104-results.log.gz\nA  evidence/r14-p39-19/product-validation/product-104-results.reference.json.gz\nA  evidence/r14-p39-19/product-validation/product-104-results.xml.gz\nA  evidence/r14-p39-19/product-validation/run-summary.json\nA  evidence/r14-p39-19/product-validation/s01_claim_observer.py\nA  evidence/r14-p39-19/product-validation/s01_observer.py\nA  evidence/r14-p39-19/product-validation/shared-fps-after-invocation.json\nA  evidence/r14-p39-19/product-validation/shared-fps-after-results.collection.json.gz\nA  evidence/r14-p39-19/product-validation/shared-fps-after-results.jsonl.gz\nA  evidence/r14-p39-19/product-validation/shared-fps-after-results.log.gz\nA  evidence/r14-p39-19/product-validation/shared-fps-after-results.reference.json.gz\nA  evidence/r14-p39-19/product-validation/shared-fps-after-results.xml.gz\nA  evidence/r14-p39-19/product-validation/shared-fps-after-source.patch.gz\nA  evidence/r14-p39-19/product-validation/shared-fps-before-invocation.json\nA  evidence/r14-p39-19/product-validation/shared-fps-before-results.collection.json.gz\nA  evidence/r14-p39-19/product-validation/shared-fps-before-results.jsonl.gz\nA  evidence/r14-p39-19/product-validation/shared-fps-before-results.log.gz\nA  evidence/r14-p39-19/product-validation/shared-fps-before-results.reference.json.gz\nA  evidence/r14-p39-19/product-validation/shared-fps-before-results.xml.gz\nA  evidence/r14-p39-19/product-validation/shared-fps-before-source.patch.gz",
+      "environment_overrides": {
+        "ASTRID_CI_JOB": "lanes-integration",
+        "ASTRID_RUNTIME_CHECKOUT": "/workspace/scratch/ed89673be2cd/runtime-sync",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPATH": "/workspace/scratch/7b8a4aa9f9f5/astrid-agent/scripts:/workspace/scratch/ed89673be2cd/runtime-sync"
+      },
+      "finished_utc": "2026-11-19T18:05:11.921474+00:00",
+      "kind": "local focused proof; not hosted qualification",
+      "patch_sha256": "0a83e29dc76253b3c2361d80a7592575b642f9c57f1b10b1d2979cb0fdac4e6d",
+      "raw_returncode": 0,
+      "runtime_dirty": "",
+      "runtime_sha": "2537fed24385ec1c24f48a812e09af4bb63fb794",
+      "selectors": [
+        "tests/test_vibecomfy_pin.py::test_no_other_tracked_file_copies_the_pin"
+      ],
+      "source_sha": "c1130e03b234763fb6c6d9e6fd4b29c275f80d42",
+      "source_tree": "9144ce956f5268c3c57322d1c526b8023b6ebe06",
+      "started_utc": "2026-11-19T18:05:09.340234+00:00",
+      "tracked_worktree_tree": "2229e6f17b0ea499c1ca3d87ea19202b5e18ade0"
+    },
+    "phases": {
+      "call": {
+        "failed": 0,
+        "passed": 1,
+        "skipped": 0
+      },
+      "setup": {
+        "failed": 0,
+        "passed": 1,
+        "skipped": 0
+      },
+      "teardown": {
+        "failed": 0,
+        "passed": 1,
+        "skipped": 0
+      }
+    }
+  },
+  "product-104": {
+    "finish": {
+      "exitstatus": 1,
+      "summary": "4 failed, 100 errors",
+      "type": "finish"
+    },
+    "invocation": {
+      "argv": [
+        "/workspace/scratch/ed89673be2cd/proof-env/bin/python",
+        "-P",
+        "-m",
+        "ci.run_pytest",
+        "-v",
+        "-rA",
+        "-m",
+        "integration",
+        "--junitxml=/workspace/scratch/7b8a4aa9f9f5/evidence/product-104/results.xml",
+        "tests/editing_conformance/test_commit_runtime_media_manifest_inverse.py::test_real_media_manifest_inverse_retry_restart_and_history[add]",
+        "tests/editing_conformance/test_commit_runtime_media_manifest_inverse.py::test_real_media_manifest_inverse_retry_restart_and_history[swap]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-add-lifecycle-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-add-lifecycle-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-add-revocation-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-add-revocation-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-swap-lifecycle-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-swap-lifecycle-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-swap-revocation-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-swap-revocation-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-add-lifecycle-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-add-lifecycle-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-add-revocation-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-add-revocation-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-swap-lifecycle-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-swap-lifecycle-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-swap-revocation-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-swap-revocation-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_exact_capture_acceptance_inverse_redo_restart_and_retry[image-add]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_exact_capture_acceptance_inverse_redo_restart_and_retry[image-swap]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_exact_capture_acceptance_inverse_redo_restart_and_retry[video-add]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_exact_capture_acceptance_inverse_redo_restart_and_retry[video-swap]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-add-fingerprint-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-add-fingerprint-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-add-foreign-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-add-foreign-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-add-stale-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-add-stale-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-swap-fingerprint-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-swap-fingerprint-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-swap-foreign-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-swap-foreign-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-swap-stale-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-swap-stale-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-add-fingerprint-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-add-fingerprint-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-add-foreign-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-add-foreign-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-add-stale-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-add-stale-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-swap-fingerprint-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-swap-fingerprint-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-swap-foreign-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-swap-foreign-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-swap-stale-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-swap-stale-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_source_metadata_is_part_of_the_exact_selection_fingerprint[image-add]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_source_metadata_is_part_of_the_exact_selection_fingerprint[image-swap]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_source_metadata_is_part_of_the_exact_selection_fingerprint[video-add]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_source_metadata_is_part_of_the_exact_selection_fingerprint[video-swap]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_accepted_history_rebase_and_guarded_aba_undo[image-aba]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_accepted_history_rebase_and_guarded_aba_undo[image-disjoint]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_accepted_history_rebase_and_guarded_aba_undo[video-aba]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_accepted_history_rebase_and_guarded_aba_undo[video-disjoint]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[image-fingerprint-media]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[image-fingerprint-old_media]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[image-foreign-media]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[image-foreign-old_media]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[image-stale-media]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[image-stale-old_media]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[video-fingerprint-media]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[video-fingerprint-old_media]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[video-foreign-media]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[video-foreign-old_media]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[video-stale-media]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[video-stale-old_media]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_lifecycle_race_refuses_at_acceptance[image-media]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_lifecycle_race_refuses_at_acceptance[image-old_media]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_lifecycle_race_refuses_at_acceptance[video-media]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_lifecycle_race_refuses_at_acceptance[video-old_media]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_selected_swap_capture_accepted_reload_restart_retry_undo_and_redo[image]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_selected_swap_capture_accepted_reload_restart_retry_undo_and_redo[video]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_selected_swap_over_authenticated_http_preserves_flight_and_guarded_undo[occurrence:occ-a]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_selected_swap_over_authenticated_http_preserves_flight_and_guarded_undo[parent]",
+        "tests/editing_conformance/test_commit_runtime_video_unplace.py::test_capture_commit_reload_undo_redo_and_restart_safe_retry[image-False]",
+        "tests/editing_conformance/test_commit_runtime_video_unplace.py::test_capture_commit_reload_undo_redo_and_restart_safe_retry[image-True]",
+        "tests/editing_conformance/test_commit_runtime_video_unplace.py::test_capture_commit_reload_undo_redo_and_restart_safe_retry[video-False]",
+        "tests/editing_conformance/test_commit_runtime_video_unplace.py::test_capture_commit_reload_undo_redo_and_restart_safe_retry[video-True]",
+        "tests/editing_conformance/test_recipe_m2_auto_placement.py::test_exact_capture_replay_inverse_and_redo[image-absent]",
+        "tests/editing_conformance/test_recipe_m2_auto_placement.py::test_exact_capture_replay_inverse_and_redo[image-anchor]",
+        "tests/editing_conformance/test_recipe_m2_auto_placement.py::test_exact_capture_replay_inverse_and_redo[video-absent]",
+        "tests/editing_conformance/test_recipe_m2_auto_placement.py::test_exact_capture_replay_inverse_and_redo[video-anchor]",
+        "tests/editing_conformance/test_recipe_m2_auto_placement.py::test_provider_accepts_completion_placement_with_exact_undo_and_redo[image]",
+        "tests/editing_conformance/test_recipe_m2_auto_placement.py::test_provider_accepts_completion_placement_with_exact_undo_and_redo[video]",
+        "tests/editing_conformance/test_recipe_m2_placement_create_unplace.py::test_exact_capture_replay_inverse_and_redo[create]",
+        "tests/editing_conformance/test_recipe_m2_placement_create_unplace.py::test_exact_capture_replay_inverse_and_redo[unplace]",
+        "tests/editing_conformance/test_recipe_m2_placement_create_unplace.py::test_provider_accepts_create_with_exact_undo_and_redo",
+        "tests/editing_conformance/test_recipe_m2_placement_create_unplace.py::test_provider_accepts_unplace_with_exact_undo_and_redo",
+        "tests/editing_conformance/test_recipe_m2_shared_auto_placement.py::test_exact_capture_replay_inverse_and_redo[image-append]",
+        "tests/editing_conformance/test_recipe_m2_shared_auto_placement.py::test_exact_capture_replay_inverse_and_redo[image-shift]",
+        "tests/editing_conformance/test_recipe_m2_shared_auto_placement.py::test_exact_capture_replay_inverse_and_redo[video-append]",
+        "tests/editing_conformance/test_recipe_m2_shared_auto_placement.py::test_exact_capture_replay_inverse_and_redo[video-overlay-anchor]",
+        "tests/editing_conformance/test_recipe_m2_shared_auto_placement.py::test_provider_accepts_shared_placement_with_exact_undo_and_redo[image]",
+        "tests/editing_conformance/test_recipe_m2_shared_auto_placement.py::test_provider_accepts_shared_placement_with_exact_undo_and_redo[video]",
+        "tests/editing_conformance/test_recipe_m2_shot_pool.py::test_exact_capture_replay_inverse_and_redo[add-first]",
+        "tests/editing_conformance/test_recipe_m2_shot_pool.py::test_exact_capture_replay_inverse_and_redo[add-second]",
+        "tests/editing_conformance/test_recipe_m2_shot_pool.py::test_exact_capture_replay_inverse_and_redo[remove-middle]",
+        "tests/editing_conformance/test_recipe_m2_shot_pool.py::test_placing_pooled_media_promotes_it_in_one_batch_that_undoes_as_one[image]",
+        "tests/editing_conformance/test_recipe_m2_shot_pool.py::test_placing_pooled_media_promotes_it_in_one_batch_that_undoes_as_one[video]",
+        "tests/editing_conformance/test_recipe_m2_shot_pool.py::test_promotion_and_keep_as_pooled_round_trip_through_the_provider",
+        "tests/editing_conformance/test_recipe_m2_shot_pool.py::test_provider_accepts_add_and_remove_with_exact_undo_and_redo",
+        "tests/editing_conformance/test_recipe_occurrence_media.py::test_provider_exact_reload_inverse_redo_and_retired_asset_reservation[add]",
+        "tests/editing_conformance/test_recipe_occurrence_media.py::test_provider_exact_reload_inverse_redo_and_retired_asset_reservation[swap]",
+        "tests/editing_conformance/test_recipe_occurrence_media.py::test_same_alias_materialized_whole_payload_read_allows_exact_undo_redo"
+      ],
+      "cwd": "/workspace/scratch/7b8a4aa9f9f5/astrid-agent",
+      "dirty": "",
+      "environment_overrides": {
+        "ASTRID_CI_JOB": "lanes-integration",
+        "ASTRID_RUNTIME_CHECKOUT": "/workspace/scratch/ed89673be2cd/runtime-sync",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPATH": "/workspace/scratch/7b8a4aa9f9f5/astrid-agent/scripts:/workspace/scratch/ed89673be2cd/runtime-sync"
+      },
+      "finished_utc": "2026-11-19T18:04:09.397460+00:00",
+      "kind": "local focused proof; not hosted qualification",
+      "patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "raw_returncode": 1,
+      "runtime_dirty": "",
+      "runtime_sha": "2537fed24385ec1c24f48a812e09af4bb63fb794",
+      "selectors": [
+        "tests/editing_conformance/test_commit_runtime_media_manifest_inverse.py::test_real_media_manifest_inverse_retry_restart_and_history[add]",
+        "tests/editing_conformance/test_commit_runtime_media_manifest_inverse.py::test_real_media_manifest_inverse_retry_restart_and_history[swap]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-add-lifecycle-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-add-lifecycle-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-add-revocation-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-add-revocation-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-swap-lifecycle-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-swap-lifecycle-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-swap-revocation-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-swap-revocation-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-add-lifecycle-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-add-lifecycle-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-add-revocation-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-add-revocation-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-swap-lifecycle-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-swap-lifecycle-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-swap-revocation-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-swap-revocation-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_exact_capture_acceptance_inverse_redo_restart_and_retry[image-add]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_exact_capture_acceptance_inverse_redo_restart_and_retry[image-swap]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_exact_capture_acceptance_inverse_redo_restart_and_retry[video-add]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_exact_capture_acceptance_inverse_redo_restart_and_retry[video-swap]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-add-fingerprint-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-add-fingerprint-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-add-foreign-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-add-foreign-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-add-stale-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-add-stale-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-swap-fingerprint-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-swap-fingerprint-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-swap-foreign-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-swap-foreign-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-swap-stale-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-swap-stale-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-add-fingerprint-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-add-fingerprint-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-add-foreign-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-add-foreign-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-add-stale-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-add-stale-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-swap-fingerprint-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-swap-fingerprint-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-swap-foreign-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-swap-foreign-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-swap-stale-media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-swap-stale-old_media]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_source_metadata_is_part_of_the_exact_selection_fingerprint[image-add]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_source_metadata_is_part_of_the_exact_selection_fingerprint[image-swap]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_source_metadata_is_part_of_the_exact_selection_fingerprint[video-add]",
+        "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_source_metadata_is_part_of_the_exact_selection_fingerprint[video-swap]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_accepted_history_rebase_and_guarded_aba_undo[image-aba]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_accepted_history_rebase_and_guarded_aba_undo[image-disjoint]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_accepted_history_rebase_and_guarded_aba_undo[video-aba]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_accepted_history_rebase_and_guarded_aba_undo[video-disjoint]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[image-fingerprint-media]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[image-fingerprint-old_media]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[image-foreign-media]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[image-foreign-old_media]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[image-stale-media]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[image-stale-old_media]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[video-fingerprint-media]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[video-fingerprint-old_media]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[video-foreign-media]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[video-foreign-old_media]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[video-stale-media]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[video-stale-old_media]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_lifecycle_race_refuses_at_acceptance[image-media]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_lifecycle_race_refuses_at_acceptance[image-old_media]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_lifecycle_race_refuses_at_acceptance[video-media]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_lifecycle_race_refuses_at_acceptance[video-old_media]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_selected_swap_capture_accepted_reload_restart_retry_undo_and_redo[image]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_selected_swap_capture_accepted_reload_restart_retry_undo_and_redo[video]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_selected_swap_over_authenticated_http_preserves_flight_and_guarded_undo[occurrence:occ-a]",
+        "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_selected_swap_over_authenticated_http_preserves_flight_and_guarded_undo[parent]",
+        "tests/editing_conformance/test_commit_runtime_video_unplace.py::test_capture_commit_reload_undo_redo_and_restart_safe_retry[image-False]",
+        "tests/editing_conformance/test_commit_runtime_video_unplace.py::test_capture_commit_reload_undo_redo_and_restart_safe_retry[image-True]",
+        "tests/editing_conformance/test_commit_runtime_video_unplace.py::test_capture_commit_reload_undo_redo_and_restart_safe_retry[video-False]",
+        "tests/editing_conformance/test_commit_runtime_video_unplace.py::test_capture_commit_reload_undo_redo_and_restart_safe_retry[video-True]",
+        "tests/editing_conformance/test_recipe_m2_auto_placement.py::test_exact_capture_replay_inverse_and_redo[image-absent]",
+        "tests/editing_conformance/test_recipe_m2_auto_placement.py::test_exact_capture_replay_inverse_and_redo[image-anchor]",
+        "tests/editing_conformance/test_recipe_m2_auto_placement.py::test_exact_capture_replay_inverse_and_redo[video-absent]",
+        "tests/editing_conformance/test_recipe_m2_auto_placement.py::test_exact_capture_replay_inverse_and_redo[video-anchor]",
+        "tests/editing_conformance/test_recipe_m2_auto_placement.py::test_provider_accepts_completion_placement_with_exact_undo_and_redo[image]",
+        "tests/editing_conformance/test_recipe_m2_auto_placement.py::test_provider_accepts_completion_placement_with_exact_undo_and_redo[video]",
+        "tests/editing_conformance/test_recipe_m2_placement_create_unplace.py::test_exact_capture_replay_inverse_and_redo[create]",
+        "tests/editing_conformance/test_recipe_m2_placement_create_unplace.py::test_exact_capture_replay_inverse_and_redo[unplace]",
+        "tests/editing_conformance/test_recipe_m2_placement_create_unplace.py::test_provider_accepts_create_with_exact_undo_and_redo",
+        "tests/editing_conformance/test_recipe_m2_placement_create_unplace.py::test_provider_accepts_unplace_with_exact_undo_and_redo",
+        "tests/editing_conformance/test_recipe_m2_shared_auto_placement.py::test_exact_capture_replay_inverse_and_redo[image-append]",
+        "tests/editing_conformance/test_recipe_m2_shared_auto_placement.py::test_exact_capture_replay_inverse_and_redo[image-shift]",
+        "tests/editing_conformance/test_recipe_m2_shared_auto_placement.py::test_exact_capture_replay_inverse_and_redo[video-append]",
+        "tests/editing_conformance/test_recipe_m2_shared_auto_placement.py::test_exact_capture_replay_inverse_and_redo[video-overlay-anchor]",
+        "tests/editing_conformance/test_recipe_m2_shared_auto_placement.py::test_provider_accepts_shared_placement_with_exact_undo_and_redo[image]",
+        "tests/editing_conformance/test_recipe_m2_shared_auto_placement.py::test_provider_accepts_shared_placement_with_exact_undo_and_redo[video]",
+        "tests/editing_conformance/test_recipe_m2_shot_pool.py::test_exact_capture_replay_inverse_and_redo[add-first]",
+        "tests/editing_conformance/test_recipe_m2_shot_pool.py::test_exact_capture_replay_inverse_and_redo[add-second]",
+        "tests/editing_conformance/test_recipe_m2_shot_pool.py::test_exact_capture_replay_inverse_and_redo[remove-middle]",
+        "tests/editing_conformance/test_recipe_m2_shot_pool.py::test_placing_pooled_media_promotes_it_in_one_batch_that_undoes_as_one[image]",
+        "tests/editing_conformance/test_recipe_m2_shot_pool.py::test_placing_pooled_media_promotes_it_in_one_batch_that_undoes_as_one[video]",
+        "tests/editing_conformance/test_recipe_m2_shot_pool.py::test_promotion_and_keep_as_pooled_round_trip_through_the_provider",
+        "tests/editing_conformance/test_recipe_m2_shot_pool.py::test_provider_accepts_add_and_remove_with_exact_undo_and_redo",
+        "tests/editing_conformance/test_recipe_occurrence_media.py::test_provider_exact_reload_inverse_redo_and_retired_asset_reservation[add]",
+        "tests/editing_conformance/test_recipe_occurrence_media.py::test_provider_exact_reload_inverse_redo_and_retired_asset_reservation[swap]",
+        "tests/editing_conformance/test_recipe_occurrence_media.py::test_same_alias_materialized_whole_payload_read_allows_exact_undo_redo"
+      ],
+      "source_sha": "c1130e03b234763fb6c6d9e6fd4b29c275f80d42",
+      "source_tree": "9144ce956f5268c3c57322d1c526b8023b6ebe06",
+      "started_utc": "2026-11-19T17:57:55.183960+00:00",
+      "tracked_worktree_tree": "9144ce956f5268c3c57322d1c526b8023b6ebe06"
+    },
+    "phases": {
+      "call": {
+        "failed": 4,
+        "passed": 0,
+        "skipped": 0
+      },
+      "setup": {
+        "failed": 100,
+        "passed": 4,
+        "skipped": 0
+      },
+      "teardown": {
+        "failed": 0,
+        "passed": 104,
+        "skipped": 0
+      }
+    }
+  },
+  "shared-fps-after": {
+    "finish": {
+      "exitstatus": 0,
+      "summary": "62 passed",
+      "type": "finish"
+    },
+    "invocation": {
+      "argv": [
+        "/workspace/scratch/ed89673be2cd/proof-env/bin/python",
+        "-P",
+        "-m",
+        "ci.run_pytest",
+        "-v",
+        "-rA",
+        "-m",
+        "not integration",
+        "--junitxml=/workspace/scratch/7b8a4aa9f9f5/evidence/shared-fps-after/results.xml",
+        "tests/sdk/test_shared_placement_fps.py",
+        "tests/editing_conformance/test_commit_fps_d12.py",
+        "tests/sdk/test_d136_fps_upstream_compat.py::test_existing_typed_fps_cannot_be_removed_moved_or_changed",
+        "tests/sdk/test_d136_fps_upstream_compat.py::test_production_caller_keeps_invalid_typed_fps_refused",
+        "tests/sdk/test_d136_fps_upstream_compat.py::test_fps_removal_requires_selected_authenticated_initialization_inverse",
+        "tests/sdk/test_d136_fps_upstream_compat.py::test_inverse_cannot_remove_fps_from_an_existing_shot",
+        "tests/sdk/test_timeline_initialize_inverse_auth.py::test_arbitrary_patch_cannot_remove_introduced_fps"
+      ],
+      "cwd": "/workspace/scratch/7b8a4aa9f9f5/astrid-agent",
+      "dirty": "M  astrid/sdk/timeline/validation.py\nA  evidence/r14-p39-19/README.md\nA  evidence/r14-p39-19/after-three-candidate.patch\nA  evidence/r14-p39-19/after-three-invocation.json\nA  evidence/r14-p39-19/after-three-results.collection.json.gz\nA  evidence/r14-p39-19/after-three-results.jsonl.gz\nA  evidence/r14-p39-19/after-three-results.log.gz\nA  evidence/r14-p39-19/after-three-results.reference.json.gz\nA  evidence/r14-p39-19/after-three-results.xml.gz\nA  evidence/r14-p39-19/after-three-shot-helper.py\nA  evidence/r14-p39-19/assertion-preservation.json\nA  evidence/r14-p39-19/baseline-diff.json\nA  evidence/r14-p39-19/before-three-invocation.json\nA  evidence/r14-p39-19/before-three-results.collection.json.gz\nA  evidence/r14-p39-19/before-three-results.jsonl.gz\nA  evidence/r14-p39-19/before-three-results.log.gz\nA  evidence/r14-p39-19/before-three-results.reference.json.gz\nA  evidence/r14-p39-19/before-three-results.xml.gz\nA  evidence/r14-p39-19/candidate-104-invocation.json\nA  evidence/r14-p39-19/candidate-104-results.collection.json.gz\nA  evidence/r14-p39-19/candidate-104-results.jsonl.gz\nA  evidence/r14-p39-19/candidate-104-results.log.gz\nA  evidence/r14-p39-19/candidate-104-results.reference.json.gz\nA  evidence/r14-p39-19/candidate-104-results.xml.gz\nA  evidence/r14-p39-19/destination-provenance.json\nA  evidence/r14-p39-19/diagnostic-fps-invocation.json\nA  evidence/r14-p39-19/diagnostic-fps-results.collection.json.gz\nA  evidence/r14-p39-19/diagnostic-fps-results.jsonl.gz\nA  evidence/r14-p39-19/diagnostic-fps-results.log.gz\nA  evidence/r14-p39-19/diagnostic-fps-results.reference.json.gz\nA  evidence/r14-p39-19/diagnostic-fps-results.xml.gz\nA  evidence/r14-p39-19/fps-observer.jsonl\nA  evidence/r14-p39-19/historical-native-s01.json.gz\nA  evidence/r14-p39-19/historical-provenance.json\nA  evidence/r14-p39-19/manifest.json\nA  evidence/r14-p39-19/native-files.json\nA  evidence/r14-p39-19/nodeids.txt\nA  evidence/r14-p39-19/outcomes-by-id.json\nA  evidence/r14-p39-19/s01_observer.py\nA  tests/sdk/test_shared_placement_fps.py",
+      "environment_overrides": {
+        "ASTRID_CI_JOB": "lanes-integration",
+        "ASTRID_RUNTIME_CHECKOUT": "/workspace/scratch/ed89673be2cd/runtime-sync",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPATH": "/workspace/scratch/7b8a4aa9f9f5/astrid-agent/scripts:/workspace/scratch/ed89673be2cd/runtime-sync"
+      },
+      "finished_utc": "2026-11-19T17:55:46.391582+00:00",
+      "kind": "local focused proof; not hosted qualification",
+      "patch_sha256": "ac6e3177ac0861ad37baace77ef6bd566270e10a2b82ca5d072395469544b4e5",
+      "raw_returncode": 0,
+      "runtime_dirty": "",
+      "runtime_sha": "2537fed24385ec1c24f48a812e09af4bb63fb794",
+      "selectors": [
+        "tests/sdk/test_shared_placement_fps.py",
+        "tests/editing_conformance/test_commit_fps_d12.py",
+        "tests/sdk/test_d136_fps_upstream_compat.py::test_existing_typed_fps_cannot_be_removed_moved_or_changed",
+        "tests/sdk/test_d136_fps_upstream_compat.py::test_production_caller_keeps_invalid_typed_fps_refused",
+        "tests/sdk/test_d136_fps_upstream_compat.py::test_fps_removal_requires_selected_authenticated_initialization_inverse",
+        "tests/sdk/test_d136_fps_upstream_compat.py::test_inverse_cannot_remove_fps_from_an_existing_shot",
+        "tests/sdk/test_timeline_initialize_inverse_auth.py::test_arbitrary_patch_cannot_remove_introduced_fps"
+      ],
+      "source_sha": "de81bcd7e0518a8fc30b9d5ff17882240b6cb367",
+      "source_tree": "c344245f6d93dcab8cb3b5bd334111921c2dd2f6",
+      "started_utc": "2026-11-19T17:54:28.547150+00:00",
+      "tracked_worktree_tree": "29c9c7e1a299cbe09014fff0954aca1002a6fa49"
+    },
+    "phases": {
+      "call": {
+        "failed": 0,
+        "passed": 62,
+        "skipped": 0
+      },
+      "setup": {
+        "failed": 0,
+        "passed": 62,
+        "skipped": 0
+      },
+      "teardown": {
+        "failed": 0,
+        "passed": 62,
+        "skipped": 0
+      }
+    },
+    "source_patch": {
+      "kind": "source-only sections of original complete candidate.patch; evidence-only changes excluded",
+      "original_complete_patch_sha256": "ac6e3177ac0861ad37baace77ef6bd566270e10a2b82ca5d072395469544b4e5",
+      "source_sections_sha256": "b8647108967223159c87db0abe167135b1e72c9480d9b91e4733eae0f2d28e75"
+    }
+  },
+  "shared-fps-before": {
+    "finish": {
+      "exitstatus": 1,
+      "summary": "4 failed, 14 passed",
+      "type": "finish"
+    },
+    "invocation": {
+      "argv": [
+        "/workspace/scratch/ed89673be2cd/proof-env/bin/python",
+        "-P",
+        "-m",
+        "ci.run_pytest",
+        "-v",
+        "-rA",
+        "-m",
+        "not integration",
+        "--junitxml=/workspace/scratch/7b8a4aa9f9f5/evidence/shared-fps-before/results.xml",
+        "tests/sdk/test_shared_placement_fps.py"
+      ],
+      "cwd": "/workspace/scratch/7b8a4aa9f9f5/astrid-agent",
+      "dirty": "A  evidence/r14-p39-19/README.md\nA  evidence/r14-p39-19/after-three-candidate.patch\nA  evidence/r14-p39-19/after-three-invocation.json\nA  evidence/r14-p39-19/after-three-results.collection.json.gz\nA  evidence/r14-p39-19/after-three-results.jsonl.gz\nA  evidence/r14-p39-19/after-three-results.log.gz\nA  evidence/r14-p39-19/after-three-results.reference.json.gz\nA  evidence/r14-p39-19/after-three-results.xml.gz\nA  evidence/r14-p39-19/after-three-shot-helper.py\nA  evidence/r14-p39-19/assertion-preservation.json\nA  evidence/r14-p39-19/baseline-diff.json\nA  evidence/r14-p39-19/before-three-invocation.json\nA  evidence/r14-p39-19/before-three-results.collection.json.gz\nA  evidence/r14-p39-19/before-three-results.jsonl.gz\nA  evidence/r14-p39-19/before-three-results.log.gz\nA  evidence/r14-p39-19/before-three-results.reference.json.gz\nA  evidence/r14-p39-19/before-three-results.xml.gz\nA  evidence/r14-p39-19/candidate-104-invocation.json\nA  evidence/r14-p39-19/candidate-104-results.collection.json.gz\nA  evidence/r14-p39-19/candidate-104-results.jsonl.gz\nA  evidence/r14-p39-19/candidate-104-results.log.gz\nA  evidence/r14-p39-19/candidate-104-results.reference.json.gz\nA  evidence/r14-p39-19/candidate-104-results.xml.gz\nA  evidence/r14-p39-19/destination-provenance.json\nA  evidence/r14-p39-19/diagnostic-fps-invocation.json\nA  evidence/r14-p39-19/diagnostic-fps-results.collection.json.gz\nA  evidence/r14-p39-19/diagnostic-fps-results.jsonl.gz\nA  evidence/r14-p39-19/diagnostic-fps-results.log.gz\nA  evidence/r14-p39-19/diagnostic-fps-results.reference.json.gz\nA  evidence/r14-p39-19/diagnostic-fps-results.xml.gz\nA  evidence/r14-p39-19/fps-observer.jsonl\nA  evidence/r14-p39-19/historical-native-s01.json.gz\nA  evidence/r14-p39-19/historical-provenance.json\nA  evidence/r14-p39-19/manifest.json\nA  evidence/r14-p39-19/native-files.json\nA  evidence/r14-p39-19/nodeids.txt\nA  evidence/r14-p39-19/outcomes-by-id.json\nA  evidence/r14-p39-19/s01_observer.py\nA  tests/sdk/test_shared_placement_fps.py",
+      "environment_overrides": {
+        "ASTRID_CI_JOB": "lanes-integration",
+        "ASTRID_RUNTIME_CHECKOUT": "/workspace/scratch/ed89673be2cd/runtime-sync",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPATH": "/workspace/scratch/7b8a4aa9f9f5/astrid-agent/scripts:/workspace/scratch/ed89673be2cd/runtime-sync"
+      },
+      "finished_utc": "2026-11-19T17:53:55.413032+00:00",
+      "kind": "local focused proof; not hosted qualification",
+      "patch_sha256": "feb090626228790a1a8931f2b8c61a965916ded82153ecc8310986994089b5ca",
+      "raw_returncode": 1,
+      "runtime_dirty": "",
+      "runtime_sha": "2537fed24385ec1c24f48a812e09af4bb63fb794",
+      "selectors": [
+        "tests/sdk/test_shared_placement_fps.py"
+      ],
+      "source_sha": "de81bcd7e0518a8fc30b9d5ff17882240b6cb367",
+      "source_tree": "c344245f6d93dcab8cb3b5bd334111921c2dd2f6",
+      "started_utc": "2026-11-19T17:53:31.386152+00:00",
+      "tracked_worktree_tree": "4f3c5f2cd96e11de41de50f926dedc2596619c35"
+    },
+    "phases": {
+      "call": {
+        "failed": 4,
+        "passed": 14,
+        "skipped": 0
+      },
+      "setup": {
+        "failed": 0,
+        "passed": 18,
+        "skipped": 0
+      },
+      "teardown": {
+        "failed": 0,
+        "passed": 18,
+        "skipped": 0
+      }
+    },
+    "source_patch": {
+      "kind": "source-only sections of original complete candidate.patch; evidence-only changes excluded",
+      "original_complete_patch_sha256": "feb090626228790a1a8931f2b8c61a965916ded82153ecc8310986994089b5ca",
+      "source_sections_sha256": "3be8c02e9e709f4d7b4ce89c1ee63610d6ad91ca13ae29e27ff82364e70c5b60"
+    }
+  }
+}

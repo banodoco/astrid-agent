@@ -82,6 +82,7 @@ jobs:
           git fetch --no-tags --depth=1 origin
           a53ef0c257e4b0bbc2a65959b9119e2cb4cff453
           0e1543e0da2215db9cb3320cfd1083174c3c62a9
+          ba21beffd177e7d80a5b839bde5a9e25b97235c2
 
       - name: Fetch historical Runtime archive objects
         shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-06 --shell bash "{0}"
@@ -97,6 +98,8 @@ jobs:
           f103bb46866999c961a8865636f2e66d544e0c9b
           9ef808711a5207f5be74dc5f267af6fdd7bc9550
           6d53a19070faf63fc15ae1f81417722edc2c8a5f
+          b2a1d9fd82121a5509769531a2e91aece97d78b9
+          b92d3e7a05eec65c142294ef4873edd059e9b31d
 
       - name: Verify Runtime sources before tests
         shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-07 --shell bash "{0}"
@@ -121,6 +124,23 @@ jobs:
           git cat-file -e "${historical_r12_agent}^{tree}"
           git -C "$ASTRID_RUNTIME_CHECKOUT" archive --format=tar "$historical_busy_runtime" >/dev/null
           git archive --format=tar "$historical_r12_agent" >/dev/null
+          # The retained media-manifest realm needs its matching H31 sources.
+          historical_manifest_agent=ba21beffd177e7d80a5b839bde5a9e25b97235c2
+          historical_manifest_runtime=b2a1d9fd82121a5509769531a2e91aece97d78b9
+          test "$(git rev-parse "${historical_manifest_agent}^{commit}")" = "$historical_manifest_agent"
+          test "$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse "${historical_manifest_runtime}^{commit}")" = "$historical_manifest_runtime"
+          test "$(git cat-file -t "$historical_manifest_agent")" = commit
+          test "$(git -C "$ASTRID_RUNTIME_CHECKOUT" cat-file -t "$historical_manifest_runtime")" = commit
+          git cat-file -e "${historical_manifest_agent}^{tree}"
+          git -C "$ASTRID_RUNTIME_CHECKOUT" cat-file -e "${historical_manifest_runtime}^{tree}"
+          git archive --format=tar "$historical_manifest_agent" >/dev/null
+          git -C "$ASTRID_RUNTIME_CHECKOUT" archive --format=tar "$historical_manifest_runtime" >/dev/null
+          # The authenticated media HTTP cases retain this historical Runtime.
+          historical_media_http_runtime=b92d3e7a05eec65c142294ef4873edd059e9b31d
+          test "$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse "${historical_media_http_runtime}^{commit}")" = "$historical_media_http_runtime"
+          test "$(git -C "$ASTRID_RUNTIME_CHECKOUT" cat-file -t "$historical_media_http_runtime")" = commit
+          git -C "$ASTRID_RUNTIME_CHECKOUT" cat-file -e "${historical_media_http_runtime}^{tree}"
+          git -C "$ASTRID_RUNTIME_CHECKOUT" archive --format=tar "$historical_media_http_runtime" >/dev/null
           {
             echo "## Effective Runtime sources"
             echo "- Runtime checkout: $ASTRID_RUNTIME_CHECKOUT"
@@ -128,6 +148,9 @@ jobs:
             echo "- Runtime historical source: $HISTORICAL_RUNTIME_SHA (resolved: $historical_runtime; object: $historical_type)"
             echo "- Busy-upgrade historical Runtime tree: $historical_busy_runtime (commit, tree and archive available)"
             echo "- R12 historical Agent tree: $historical_r12_agent (commit, tree and archive available)"
+            echo "- Media-manifest historical Agent tree: $historical_manifest_agent (commit, tree and archive available)"
+            echo "- Media-manifest historical Runtime tree: $historical_manifest_runtime (commit, tree and archive available)"
+            echo "- Authenticated media HTTP historical Runtime tree: $historical_media_http_runtime (commit, tree and archive available)"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Record checked-out refs

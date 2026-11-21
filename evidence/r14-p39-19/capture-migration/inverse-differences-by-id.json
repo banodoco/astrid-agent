@@ -1,0 +1,1388 @@
+[
+  {
+    "all_leaf_differences": [
+      {
+        "path": [
+          "clips",
+          1,
+          "app"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": {
+            "org.example": {
+              "clear": null,
+              "literal": "clip-a"
+            }
+          }
+        },
+        "stored": {
+          "present": false,
+          "value": null
+        }
+      },
+      {
+        "path": [
+          "clips",
+          1,
+          "asset"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": "picture"
+        },
+        "stored": {
+          "present": true,
+          "value": "variant-f173b4751934c9bdcd376d51cfb55c53d53acc701b09a3e0490a0a4af2837903"
+        }
+      },
+      {
+        "path": [
+          "clips",
+          1,
+          "at"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": 5
+        },
+        "stored": {
+          "present": true,
+          "value": 1
+        }
+      },
+      {
+        "path": [
+          "clips",
+          1,
+          "clipType"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": "media"
+        },
+        "stored": {
+          "present": true,
+          "value": "image"
+        }
+      },
+      {
+        "path": [
+          "clips",
+          1,
+          "hold"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": 2
+        },
+        "stored": {
+          "present": true,
+          "value": 4
+        }
+      },
+      {
+        "path": [
+          "clips",
+          1,
+          "id"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": "clip-b"
+        },
+        "stored": {
+          "present": true,
+          "value": "placed"
+        }
+      },
+      {
+        "path": [
+          "clips",
+          1,
+          "opaque"
+        ],
+        "reconstructed": {
+          "present": false,
+          "value": null
+        },
+        "stored": {
+          "present": true,
+          "value": {
+            "clear": null
+          }
+        }
+      },
+      {
+        "path": [
+          "clips",
+          2,
+          "app"
+        ],
+        "reconstructed": {
+          "present": false,
+          "value": null
+        },
+        "stored": {
+          "present": true,
+          "value": {
+            "org.example": {
+              "clear": null,
+              "literal": "clip-a"
+            }
+          }
+        }
+      },
+      {
+        "path": [
+          "clips",
+          2,
+          "asset"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": "variant-f173b4751934c9bdcd376d51cfb55c53d53acc701b09a3e0490a0a4af2837903"
+        },
+        "stored": {
+          "present": true,
+          "value": "picture"
+        }
+      },
+      {
+        "path": [
+          "clips",
+          2,
+          "at"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": 1
+        },
+        "stored": {
+          "present": true,
+          "value": 5
+        }
+      },
+      {
+        "path": [
+          "clips",
+          2,
+          "clipType"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": "image"
+        },
+        "stored": {
+          "present": true,
+          "value": "media"
+        }
+      },
+      {
+        "path": [
+          "clips",
+          2,
+          "hold"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": 4
+        },
+        "stored": {
+          "present": true,
+          "value": 2
+        }
+      },
+      {
+        "path": [
+          "clips",
+          2,
+          "id"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": "placed"
+        },
+        "stored": {
+          "present": true,
+          "value": "clip-b"
+        }
+      },
+      {
+        "path": [
+          "clips",
+          2,
+          "opaque"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": {
+            "clear": null
+          }
+        },
+        "stored": {
+          "present": false,
+          "value": null
+        }
+      }
+    ],
+    "all_other_payload_fields_equal": true,
+    "clip_objects_equal_by_id": true,
+    "first_different_clip_index": 1,
+    "first_restoration_write_index": 0,
+    "nodeid": "tests/editing_conformance/test_commit_runtime_video_unplace.py::test_capture_commit_reload_undo_redo_and_restart_safe_retry[image-False]",
+    "public_digest_readback_equal": true,
+    "public_payload_readback_equal": true,
+    "raw_first_leaf_difference": {
+      "path": [
+        "clips",
+        1,
+        "app"
+      ],
+      "reconstructed": {
+        "present": true,
+        "value": {
+          "org.example": {
+            "clear": null,
+            "literal": "clip-a"
+          }
+        }
+      },
+      "stored": {
+        "present": false,
+        "value": null
+      }
+    },
+    "reconstructed_at_index": "clip-b",
+    "reconstructed_order": [
+      "clip-a",
+      "clip-b",
+      "placed"
+    ],
+    "refusal": {
+      "code": "validation_error",
+      "details": {
+        "base": null,
+        "conflicts": [],
+        "current": null,
+        "reason": "invalid_records",
+        "status": "refused"
+      },
+      "http_status": 422,
+      "message": "inverse stage materialization changes internal payload"
+    },
+    "restoration_write": {
+      "after": {
+        "state": "present",
+        "value": {
+          "asset": "variant-f173b4751934c9bdcd376d51cfb55c53d53acc701b09a3e0490a0a4af2837903",
+          "at": 1,
+          "clipType": "image",
+          "hold": 4,
+          "id": "placed",
+          "opaque": {
+            "clear": null
+          },
+          "track": "picture"
+        }
+      },
+      "before": {
+        "state": "absent"
+      },
+      "path": [],
+      "ref": "occurrence:occ-a/clip:placed"
+    },
+    "stored_at_index": "placed",
+    "stored_order": [
+      "clip-a",
+      "placed",
+      "clip-b"
+    ]
+  },
+  {
+    "all_leaf_differences": [
+      {
+        "path": [
+          "clips",
+          1,
+          "app"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": {
+            "org.example": {
+              "clear": null,
+              "literal": "clip-a"
+            }
+          }
+        },
+        "stored": {
+          "present": false,
+          "value": null
+        }
+      },
+      {
+        "path": [
+          "clips",
+          1,
+          "asset"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": "picture"
+        },
+        "stored": {
+          "present": true,
+          "value": "variant-b0883e80d2e4d94c6141d42b10ae9cb45d348d65e051d01aa176f9c7bcc8f4ae"
+        }
+      },
+      {
+        "path": [
+          "clips",
+          1,
+          "at"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": 5
+        },
+        "stored": {
+          "present": true,
+          "value": 1
+        }
+      },
+      {
+        "path": [
+          "clips",
+          1,
+          "clipType"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": "media"
+        },
+        "stored": {
+          "present": true,
+          "value": "image"
+        }
+      },
+      {
+        "path": [
+          "clips",
+          1,
+          "hold"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": 2
+        },
+        "stored": {
+          "present": true,
+          "value": 4
+        }
+      },
+      {
+        "path": [
+          "clips",
+          1,
+          "id"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": "clip-b"
+        },
+        "stored": {
+          "present": true,
+          "value": "placed"
+        }
+      },
+      {
+        "path": [
+          "clips",
+          1,
+          "opaque"
+        ],
+        "reconstructed": {
+          "present": false,
+          "value": null
+        },
+        "stored": {
+          "present": true,
+          "value": {
+            "clear": null
+          }
+        }
+      },
+      {
+        "path": [
+          "clips",
+          2,
+          "app"
+        ],
+        "reconstructed": {
+          "present": false,
+          "value": null
+        },
+        "stored": {
+          "present": true,
+          "value": {
+            "org.example": {
+              "clear": null,
+              "literal": "clip-a"
+            }
+          }
+        }
+      },
+      {
+        "path": [
+          "clips",
+          2,
+          "asset"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": "variant-b0883e80d2e4d94c6141d42b10ae9cb45d348d65e051d01aa176f9c7bcc8f4ae"
+        },
+        "stored": {
+          "present": true,
+          "value": "picture"
+        }
+      },
+      {
+        "path": [
+          "clips",
+          2,
+          "at"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": 1
+        },
+        "stored": {
+          "present": true,
+          "value": 5
+        }
+      },
+      {
+        "path": [
+          "clips",
+          2,
+          "clipType"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": "image"
+        },
+        "stored": {
+          "present": true,
+          "value": "media"
+        }
+      },
+      {
+        "path": [
+          "clips",
+          2,
+          "hold"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": 4
+        },
+        "stored": {
+          "present": true,
+          "value": 2
+        }
+      },
+      {
+        "path": [
+          "clips",
+          2,
+          "id"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": "placed"
+        },
+        "stored": {
+          "present": true,
+          "value": "clip-b"
+        }
+      },
+      {
+        "path": [
+          "clips",
+          2,
+          "opaque"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": {
+            "clear": null
+          }
+        },
+        "stored": {
+          "present": false,
+          "value": null
+        }
+      }
+    ],
+    "all_other_payload_fields_equal": true,
+    "clip_objects_equal_by_id": true,
+    "first_different_clip_index": 1,
+    "first_restoration_write_index": 3,
+    "nodeid": "tests/editing_conformance/test_commit_runtime_video_unplace.py::test_capture_commit_reload_undo_redo_and_restart_safe_retry[image-True]",
+    "public_digest_readback_equal": true,
+    "public_payload_readback_equal": true,
+    "raw_first_leaf_difference": {
+      "path": [
+        "clips",
+        1,
+        "app"
+      ],
+      "reconstructed": {
+        "present": true,
+        "value": {
+          "org.example": {
+            "clear": null,
+            "literal": "clip-a"
+          }
+        }
+      },
+      "stored": {
+        "present": false,
+        "value": null
+      }
+    },
+    "reconstructed_at_index": "clip-b",
+    "reconstructed_order": [
+      "clip-a",
+      "clip-b",
+      "placed"
+    ],
+    "refusal": {
+      "code": "validation_error",
+      "details": {
+        "base": null,
+        "conflicts": [],
+        "current": null,
+        "reason": "invalid_records",
+        "status": "refused"
+      },
+      "http_status": 422,
+      "message": "inverse stage materialization changes internal payload"
+    },
+    "restoration_write": {
+      "after": {
+        "state": "present",
+        "value": {
+          "asset": "variant-b0883e80d2e4d94c6141d42b10ae9cb45d348d65e051d01aa176f9c7bcc8f4ae",
+          "at": 1,
+          "clipType": "image",
+          "hold": 4,
+          "id": "placed",
+          "opaque": {
+            "clear": null
+          },
+          "track": "picture"
+        }
+      },
+      "before": {
+        "state": "absent"
+      },
+      "path": [],
+      "ref": "occurrence:occ-a/clip:placed"
+    },
+    "stored_at_index": "placed",
+    "stored_order": [
+      "clip-a",
+      "placed",
+      "clip-b"
+    ]
+  },
+  {
+    "all_leaf_differences": [
+      {
+        "path": [
+          "clips",
+          1,
+          "app"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": {
+            "org.example": {
+              "clear": null,
+              "literal": "clip-a"
+            }
+          }
+        },
+        "stored": {
+          "present": false,
+          "value": null
+        }
+      },
+      {
+        "path": [
+          "clips",
+          1,
+          "asset"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": "picture"
+        },
+        "stored": {
+          "present": true,
+          "value": "variant-97a5b0de08401344f78f6b8208bd54415d66b13db8edc2a8fb0f96e78b2b65aa"
+        }
+      },
+      {
+        "path": [
+          "clips",
+          1,
+          "at"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": 5
+        },
+        "stored": {
+          "present": true,
+          "value": 1
+        }
+      },
+      {
+        "path": [
+          "clips",
+          1,
+          "clipType"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": "media"
+        },
+        "stored": {
+          "present": true,
+          "value": "video"
+        }
+      },
+      {
+        "path": [
+          "clips",
+          1,
+          "from"
+        ],
+        "reconstructed": {
+          "present": false,
+          "value": null
+        },
+        "stored": {
+          "present": true,
+          "value": 0
+        }
+      },
+      {
+        "path": [
+          "clips",
+          1,
+          "hold"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": 2
+        },
+        "stored": {
+          "present": true,
+          "value": 4
+        }
+      },
+      {
+        "path": [
+          "clips",
+          1,
+          "id"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": "clip-b"
+        },
+        "stored": {
+          "present": true,
+          "value": "placed"
+        }
+      },
+      {
+        "path": [
+          "clips",
+          1,
+          "opaque"
+        ],
+        "reconstructed": {
+          "present": false,
+          "value": null
+        },
+        "stored": {
+          "present": true,
+          "value": {
+            "clear": null
+          }
+        }
+      },
+      {
+        "path": [
+          "clips",
+          1,
+          "speed"
+        ],
+        "reconstructed": {
+          "present": false,
+          "value": null
+        },
+        "stored": {
+          "present": true,
+          "value": 1
+        }
+      },
+      {
+        "path": [
+          "clips",
+          1,
+          "to"
+        ],
+        "reconstructed": {
+          "present": false,
+          "value": null
+        },
+        "stored": {
+          "present": true,
+          "value": 4
+        }
+      },
+      {
+        "path": [
+          "clips",
+          2,
+          "app"
+        ],
+        "reconstructed": {
+          "present": false,
+          "value": null
+        },
+        "stored": {
+          "present": true,
+          "value": {
+            "org.example": {
+              "clear": null,
+              "literal": "clip-a"
+            }
+          }
+        }
+      },
+      {
+        "path": [
+          "clips",
+          2,
+          "asset"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": "variant-97a5b0de08401344f78f6b8208bd54415d66b13db8edc2a8fb0f96e78b2b65aa"
+        },
+        "stored": {
+          "present": true,
+          "value": "picture"
+        }
+      },
+      {
+        "path": [
+          "clips",
+          2,
+          "at"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": 1
+        },
+        "stored": {
+          "present": true,
+          "value": 5
+        }
+      },
+      {
+        "path": [
+          "clips",
+          2,
+          "clipType"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": "video"
+        },
+        "stored": {
+          "present": true,
+          "value": "media"
+        }
+      },
+      {
+        "path": [
+          "clips",
+          2,
+          "from"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": 0
+        },
+        "stored": {
+          "present": false,
+          "value": null
+        }
+      },
+      {
+        "path": [
+          "clips",
+          2,
+          "hold"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": 4
+        },
+        "stored": {
+          "present": true,
+          "value": 2
+        }
+      },
+      {
+        "path": [
+          "clips",
+          2,
+          "id"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": "placed"
+        },
+        "stored": {
+          "present": true,
+          "value": "clip-b"
+        }
+      },
+      {
+        "path": [
+          "clips",
+          2,
+          "opaque"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": {
+            "clear": null
+          }
+        },
+        "stored": {
+          "present": false,
+          "value": null
+        }
+      },
+      {
+        "path": [
+          "clips",
+          2,
+          "speed"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": 1
+        },
+        "stored": {
+          "present": false,
+          "value": null
+        }
+      },
+      {
+        "path": [
+          "clips",
+          2,
+          "to"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": 4
+        },
+        "stored": {
+          "present": false,
+          "value": null
+        }
+      }
+    ],
+    "all_other_payload_fields_equal": true,
+    "clip_objects_equal_by_id": true,
+    "first_different_clip_index": 1,
+    "first_restoration_write_index": 0,
+    "nodeid": "tests/editing_conformance/test_commit_runtime_video_unplace.py::test_capture_commit_reload_undo_redo_and_restart_safe_retry[video-False]",
+    "public_digest_readback_equal": true,
+    "public_payload_readback_equal": true,
+    "raw_first_leaf_difference": {
+      "path": [
+        "clips",
+        1,
+        "app"
+      ],
+      "reconstructed": {
+        "present": true,
+        "value": {
+          "org.example": {
+            "clear": null,
+            "literal": "clip-a"
+          }
+        }
+      },
+      "stored": {
+        "present": false,
+        "value": null
+      }
+    },
+    "reconstructed_at_index": "clip-b",
+    "reconstructed_order": [
+      "clip-a",
+      "clip-b",
+      "placed"
+    ],
+    "refusal": {
+      "code": "validation_error",
+      "details": {
+        "base": null,
+        "conflicts": [],
+        "current": null,
+        "reason": "invalid_records",
+        "status": "refused"
+      },
+      "http_status": 422,
+      "message": "inverse stage materialization changes internal payload"
+    },
+    "restoration_write": {
+      "after": {
+        "state": "present",
+        "value": {
+          "asset": "variant-97a5b0de08401344f78f6b8208bd54415d66b13db8edc2a8fb0f96e78b2b65aa",
+          "at": 1,
+          "clipType": "video",
+          "from": 0,
+          "hold": 4,
+          "id": "placed",
+          "opaque": {
+            "clear": null
+          },
+          "speed": 1,
+          "to": 4,
+          "track": "picture"
+        }
+      },
+      "before": {
+        "state": "absent"
+      },
+      "path": [],
+      "ref": "occurrence:occ-a/clip:placed"
+    },
+    "stored_at_index": "placed",
+    "stored_order": [
+      "clip-a",
+      "placed",
+      "clip-b"
+    ]
+  },
+  {
+    "all_leaf_differences": [
+      {
+        "path": [
+          "clips",
+          1,
+          "app"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": {
+            "org.example": {
+              "clear": null,
+              "literal": "clip-a"
+            }
+          }
+        },
+        "stored": {
+          "present": false,
+          "value": null
+        }
+      },
+      {
+        "path": [
+          "clips",
+          1,
+          "asset"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": "picture"
+        },
+        "stored": {
+          "present": true,
+          "value": "variant-833c7dd3ccf1792bdc2244d11115c194fa2df47f9d8d920aa34497b6ef33dd39"
+        }
+      },
+      {
+        "path": [
+          "clips",
+          1,
+          "at"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": 5
+        },
+        "stored": {
+          "present": true,
+          "value": 1
+        }
+      },
+      {
+        "path": [
+          "clips",
+          1,
+          "clipType"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": "media"
+        },
+        "stored": {
+          "present": true,
+          "value": "video"
+        }
+      },
+      {
+        "path": [
+          "clips",
+          1,
+          "from"
+        ],
+        "reconstructed": {
+          "present": false,
+          "value": null
+        },
+        "stored": {
+          "present": true,
+          "value": 0
+        }
+      },
+      {
+        "path": [
+          "clips",
+          1,
+          "hold"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": 2
+        },
+        "stored": {
+          "present": true,
+          "value": 4
+        }
+      },
+      {
+        "path": [
+          "clips",
+          1,
+          "id"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": "clip-b"
+        },
+        "stored": {
+          "present": true,
+          "value": "placed"
+        }
+      },
+      {
+        "path": [
+          "clips",
+          1,
+          "opaque"
+        ],
+        "reconstructed": {
+          "present": false,
+          "value": null
+        },
+        "stored": {
+          "present": true,
+          "value": {
+            "clear": null
+          }
+        }
+      },
+      {
+        "path": [
+          "clips",
+          1,
+          "speed"
+        ],
+        "reconstructed": {
+          "present": false,
+          "value": null
+        },
+        "stored": {
+          "present": true,
+          "value": 1
+        }
+      },
+      {
+        "path": [
+          "clips",
+          1,
+          "to"
+        ],
+        "reconstructed": {
+          "present": false,
+          "value": null
+        },
+        "stored": {
+          "present": true,
+          "value": 4
+        }
+      },
+      {
+        "path": [
+          "clips",
+          2,
+          "app"
+        ],
+        "reconstructed": {
+          "present": false,
+          "value": null
+        },
+        "stored": {
+          "present": true,
+          "value": {
+            "org.example": {
+              "clear": null,
+              "literal": "clip-a"
+            }
+          }
+        }
+      },
+      {
+        "path": [
+          "clips",
+          2,
+          "asset"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": "variant-833c7dd3ccf1792bdc2244d11115c194fa2df47f9d8d920aa34497b6ef33dd39"
+        },
+        "stored": {
+          "present": true,
+          "value": "picture"
+        }
+      },
+      {
+        "path": [
+          "clips",
+          2,
+          "at"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": 1
+        },
+        "stored": {
+          "present": true,
+          "value": 5
+        }
+      },
+      {
+        "path": [
+          "clips",
+          2,
+          "clipType"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": "video"
+        },
+        "stored": {
+          "present": true,
+          "value": "media"
+        }
+      },
+      {
+        "path": [
+          "clips",
+          2,
+          "from"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": 0
+        },
+        "stored": {
+          "present": false,
+          "value": null
+        }
+      },
+      {
+        "path": [
+          "clips",
+          2,
+          "hold"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": 4
+        },
+        "stored": {
+          "present": true,
+          "value": 2
+        }
+      },
+      {
+        "path": [
+          "clips",
+          2,
+          "id"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": "placed"
+        },
+        "stored": {
+          "present": true,
+          "value": "clip-b"
+        }
+      },
+      {
+        "path": [
+          "clips",
+          2,
+          "opaque"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": {
+            "clear": null
+          }
+        },
+        "stored": {
+          "present": false,
+          "value": null
+        }
+      },
+      {
+        "path": [
+          "clips",
+          2,
+          "speed"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": 1
+        },
+        "stored": {
+          "present": false,
+          "value": null
+        }
+      },
+      {
+        "path": [
+          "clips",
+          2,
+          "to"
+        ],
+        "reconstructed": {
+          "present": true,
+          "value": 4
+        },
+        "stored": {
+          "present": false,
+          "value": null
+        }
+      }
+    ],
+    "all_other_payload_fields_equal": true,
+    "clip_objects_equal_by_id": true,
+    "first_different_clip_index": 1,
+    "first_restoration_write_index": 3,
+    "nodeid": "tests/editing_conformance/test_commit_runtime_video_unplace.py::test_capture_commit_reload_undo_redo_and_restart_safe_retry[video-True]",
+    "public_digest_readback_equal": true,
+    "public_payload_readback_equal": true,
+    "raw_first_leaf_difference": {
+      "path": [
+        "clips",
+        1,
+        "app"
+      ],
+      "reconstructed": {
+        "present": true,
+        "value": {
+          "org.example": {
+            "clear": null,
+            "literal": "clip-a"
+          }
+        }
+      },
+      "stored": {
+        "present": false,
+        "value": null
+      }
+    },
+    "reconstructed_at_index": "clip-b",
+    "reconstructed_order": [
+      "clip-a",
+      "clip-b",
+      "placed"
+    ],
+    "refusal": {
+      "code": "validation_error",
+      "details": {
+        "base": null,
+        "conflicts": [],
+        "current": null,
+        "reason": "invalid_records",
+        "status": "refused"
+      },
+      "http_status": 422,
+      "message": "inverse stage materialization changes internal payload"
+    },
+    "restoration_write": {
+      "after": {
+        "state": "present",
+        "value": {
+          "asset": "variant-833c7dd3ccf1792bdc2244d11115c194fa2df47f9d8d920aa34497b6ef33dd39",
+          "at": 1,
+          "clipType": "video",
+          "from": 0,
+          "hold": 4,
+          "id": "placed",
+          "opaque": {
+            "clear": null
+          },
+          "speed": 1,
+          "to": 4,
+          "track": "picture"
+        }
+      },
+      "before": {
+        "state": "absent"
+      },
+      "path": [],
+      "ref": "occurrence:occ-a/clip:placed"
+    },
+    "stored_at_index": "placed",
+    "stored_order": [
+      "clip-a",
+      "placed",
+      "clip-b"
+    ]
+  }
+]

@@ -7,10 +7,10 @@ The historical fixture keeps numeric 24 fps and its original window scope.
 from __future__ import annotations
 
 import copy
-from types import SimpleNamespace
 
 import pytest
 
+from tests.helpers.media_manifest_compatibility import historical_manifest_case
 from tests.helpers.runtime import use_runtime
 from tests.helpers.trusted_seed import seed_trusted_parent
 
@@ -22,25 +22,23 @@ def manifest_media(tmp_path, monkeypatch):
     use_runtime()
     from runtime_protocol.service import RuntimeService
 
-    from tests.editing_conformance.test_commit_runtime_parent_media_swap import (
-        editing as native_parent_media_fixture,
-    )
-    from tests.editing_conformance.test_commit_runtime_parent_media_swap import source_bytes
-
-    # This helper builds the film with historical public APIs in a separate
-    # interpreter, settles decodable PNGs, then opens it with current Runtime.
-    fixture = native_parent_media_fixture.__wrapped__(
-        SimpleNamespace(param='image'), tmp_path, monkeypatch, 'swap', 'parent',
-        source_bytes.__wrapped__(tmp_path),
-    )
+    # Feasibility only: preserve genuine historical first-placement provenance,
+    # then use ordinary current admission and captured shared placement.
+    fixture = historical_manifest_case(tmp_path)
     case = next(fixture)
     try:
         service, project = case.service, case.project
         service.list_timeline_commits(project, 'film', authorize=case.authorize)
-        case.legacy = service.get_project_parent_composition_revision(project, 'film', 'popup-baseline')
+        case.legacy_revision_id = service.get_project_timeline(project, 'film')['head_revision_id']
+        case.legacy = service.get_project_parent_composition_revision(project, 'film', case.legacy_revision_id)
         commits, _ = service._timeline_commits()
-        document = commits.revision_closure(project, 'film', 'popup-baseline')
+        document = commits.revision_closure(project, 'film', case.legacy_revision_id)
+        assert document['parent_revision']['revision_id'] == case.legacy_revision_id
+        assert service.get_project_timeline(project, 'film')['head_revision_id'] == case.legacy_revision_id
         shot = copy.deepcopy(document['shot_revisions'][0])
+        assert {row['occurrence_id']: row['shot_revision_id']
+                for row in document['parent_revision']['payload']['occurrences']} == {
+                    'occ-a': shot['revision_id'], 'occ-b': shot['revision_id']}
         binding = service.get_project_shot_text_binding(
             project, shot['payload']['text_bindings'][0]['binding_id'])
         descriptor = {key: binding[key] for key in (
@@ -58,7 +56,7 @@ def manifest_media(tmp_path, monkeypatch):
         # to real retained legacy text, never inline text authority. No Agent
         # command is credited with creating this authored baseline.
         seed_trusted_parent(service, {
-            'project_id': project, 'timeline_id': 'film', 'expected_head': 'popup-baseline',
+            'project_id': project, 'timeline_id': 'film', 'expected_head': case.legacy_revision_id,
             'parent_revision_id': 'media-baseline', 'parent_composition': parent,
             'shot_revisions': [shot],
         }, idempotency_key='media-baseline')
@@ -184,7 +182,7 @@ def test_real_media_manifest_inverse_retry_restart_and_history(monkeypatch, oper
         stored = service.get_project_parent_composition_revision(project, 'film', created['data']['accepted_revision_id'])
         assert stored['dependency_manifest'] == created['data']['canonical_document']['dependency_manifest']
         assert service.get_project_shot_text_binding(project, manifest_media.binding['binding_id']) == manifest_media.binding
-        assert service.get_project_parent_composition_revision(project, 'film', 'popup-baseline') == manifest_media.legacy
+        assert service.get_project_parent_composition_revision(project, 'film', manifest_media.legacy_revision_id) == manifest_media.legacy
         assert service.store.integrity_report()['ok']
     finally:
         service.close()

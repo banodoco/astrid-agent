@@ -1,10 +1,12 @@
 """Read native reporter streams without dropping parameters, subtests or retries."""
 from __future__ import annotations
 from collections import Counter, defaultdict
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
 import re
+import shlex
 from xml.etree import ElementTree as ET
 
 spec = importlib.util.spec_from_file_location("ceiling_core", Path(__file__).with_name("failure_ceiling.py"))
@@ -97,27 +99,50 @@ def native_stream(path, lane, name):
             "raw_exit": events[-1]["exitstatus"], "summary_count": len(ids), "collected": ids, "tests": tests}
 
 
-def bun_junit(path, log_path, lane, name, raw_exit):
+def bun_junit(path, log_path, lane, name, raw_exit, trusted_command=None):
     """Bun native file/title identities; duplicate identities stay unqualified."""
+    pattern = None
+    if trusted_command is not None:
+        arguments = shlex.split(trusted_command)
+        selectors = [i for i, arg in enumerate(arguments) if arg in {"-t", "--test-name-pattern"}]
+        require(len(selectors) <= 1, "ambiguous trusted Bun selection")
+        if selectors:
+            index = selectors[0]
+            require(index + 1 < len(arguments), "missing trusted Bun selection")
+            pattern = arguments[index + 1]
+            # The existing Windows command uses a literal substring. Do not
+            # approximate JavaScript regex semantics with Python's regex engine.
+            require(re.fullmatch(r"[A-Za-z0-9 _-]+", pattern), "unsupported trusted Bun selection")
     root = ET.parse(path).getroot()
     suites = list(root.iter("testsuite"))
     log = core.ANSI.sub("", Path(log_path).read_text(encoding="utf-8", errors="replace"))
+    def file_key(file):
+        # Bun's Windows JUnit doubles backslashes; keep the original native ID.
+        return re.sub(r"\\+", "/", file)
     # Bun 1.3 emits empty <failure type=.../> elements. Bind the full preceding
     # terminal error to the exact file + nested title, never to a failure count.
     error_blocks = defaultdict(list)
+    terminal_results = Counter()
     current_file, pending = None, []
     for line in log.splitlines():
-        if re.fullmatch(r".+\.[cm]?[jt]sx?:", line):
-            current_file, pending = line[:-1], []
+        header = line.removeprefix("::group::")
+        if re.fullmatch(r".+\.[cm]?[jt]sx?:", header):
+            current_file, pending = file_key(header[:-1]), []
+            continue
+        if line == "::endgroup::" or re.fullmatch(r"\d+ tests? (?:skipped|failed|todo):", line):
+            # Bun repeats skips/failures after file groups; they are not reruns.
+            current_file, pending = None, []
             continue
         terminal = re.fullmatch(r"\((pass|fail|skip|todo)\) (.*?)(?: \[[^\]]+\])?", line)
-        if terminal:
+        if terminal and current_file is not None:
+            terminal_results[(current_file, terminal[2], terminal[1])] += 1
             if terminal[1] == "fail":
                 error_blocks[(current_file, terminal[2])].append("\n".join(pending).strip())
             pending = []
         else:
             pending.append(line)
-    tests = []
+    tests, selected, executed, declared_skips, unselected = [], [], [], [], []
+    expected_results = Counter()
     for suite in suites:
         cases = list(suite.findall("testcase"))
         require(int(suite.attrib["tests"]) == len(list(suite.iter("testcase"))), "Bun JUnit truncated count")
@@ -127,16 +152,45 @@ def bun_junit(path, log_path, lane, name, raw_exit):
             native = core.canonical([file, case.get("line"), case.get("classname"), case.get("name")])
             failures = list(case.findall("failure")) + list(case.findall("error"))
             skips = list(case.findall("skipped"))
+            require(not (failures and skips), "Bun case has conflicting outcomes")
+            chosen = pattern is None or pattern in " ".join(filter(None, (case.get("classname"), case.get("name"))))
+            if not chosen:
+                require(skips and not failures, "unselected Bun case has an executed outcome")
+                unselected.append(native)
+            else:
+                selected.append(native)
+                status = "fail" if failures else "skip" if skips else "pass"
+                if status == "skip" and terminal_results[(file_key(file), title, "todo")]:
+                    status = "todo"
+                expected_results[(file_key(file), title, status)] += 1
+                (declared_skips if skips else executed).append(native)
             message = "\n".join((e.get("type") or "") + ": " + (e.get("message") or "") + (e.text or "") for e in failures + skips)
             if failures:
-                blocks = error_blocks[(file, title)]
+                blocks = error_blocks[(file_key(file), title)]
                 require(len(blocks) == 1 and blocks[0], "Bun failure diagnostic cannot be uniquely bound to native identity")
                 message += "\n" + blocks[0]
             tests.append({"lane": lane, "native_id": native, "parameter": None, "subtest": None,
                           "stage": "call", "outcome": "failed" if failures else "skipped" if skips else "passed",
-                          "diagnostic": core.diagnostic(message)})
-    match = re.search(r"Ran (\d+) tests? across .*files?", log)
-    require(match and int(match[1]) == len(tests), "Bun terminal summary missing/truncated")
-    require(tests, "Bun ran no tests")
+                          "diagnostic": core.diagnostic(message),
+                          "selection_status": "selected" if chosen else "deliberately-unselected"})
+    matches = re.findall(r"^Ran (\d+) tests? across (\d+) files?\..*$", log, re.MULTILINE)
+    require(len(matches) == 1 and int(matches[0][0]) == len(selected), "Bun terminal summary missing/truncated")
+    require(selected, "Bun ran no selected tests")
+    require(int(root.attrib["tests"]) == len(tests), "Bun JUnit truncated total")
+    counts = re.findall(r"^\s*(\d+) (pass|fail|skip|todo|filtered out)\s*$", log, re.MULTILINE)
+    require(len({label for _, label in counts}) == len(counts), "ambiguous Bun terminal counts")
+    counts = {label: int(count) for count, label in counts}
+    require("pass" in counts and "fail" in counts, "missing Bun terminal outcome counts")
+    require(counts.get("filtered out", 0) == len(unselected), "Bun filtered count mismatch")
+    require(sum(counts.get(label, 0) for label in ("pass", "fail", "skip", "todo")) == len(selected),
+            "Bun selected outcome count mismatch")
+    require(terminal_results == expected_results, "Bun selected/terminal ID or outcome mismatch")
+    for label in ("pass", "fail", "skip", "todo"):
+        require(counts.get(label, 0) == sum(count for (_, _, status), count in terminal_results.items() if status == label),
+                "Bun terminal outcome count mismatch")
     return {"name": name, "lane": lane, "format": "bun", "complete": True, "raw_exit": raw_exit,
-            "summary_count": len(tests), "collected": [r["native_id"] for r in tests], "tests": tests}
+            "summary_count": len(tests), "collected": [r["native_id"] for r in tests], "tests": tests,
+            "native_summary_count": int(matches[0][0]),
+            "selection": {"command_sha256": hashlib.sha256(trusted_command.encode()).hexdigest() if trusted_command is not None else None,
+                          "literal_pattern": pattern, "selected": selected, "executed": executed,
+                          "declared_skips": declared_skips, "deliberately_unselected": unselected}}

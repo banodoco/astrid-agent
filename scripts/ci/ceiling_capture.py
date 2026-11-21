@@ -100,7 +100,10 @@ def main(argv=None):
     receipt = directory / "command.json"
     receipt.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
     env = dict(os.environ, CEILING_STEP_DIR=str(directory))
-    env["PYTHONPATH"] = str(Path(__file__).resolve().parent) + os.pathsep + env.get("PYTHONPATH", "")
+    inherited_pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parent)
+    if inherited_pythonpath:
+        env["PYTHONPATH"] += os.pathsep + inherited_pythonpath
     with (directory / "command.log").open("wb", buffering=0) as log:
         process = subprocess.Popen([*commands[args.shell], str(executed_script)], env=env,
                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT)

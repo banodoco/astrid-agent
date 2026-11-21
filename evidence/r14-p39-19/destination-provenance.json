@@ -1,0 +1,1403 @@
+{
+  "run_id": 44462370783,
+  "destination_sha": "68e7aa8593d13eaeb6a55da1d97bed8b494df15b",
+  "counts": {
+    "full_reference_selected_union": 2067,
+    "s01_roster": 104,
+    "s01_reference_selected_union": 104,
+    "s01_missing_from_reference_selection": 0,
+    "s01_native_setup_reports": 0,
+    "s01_native_call_reports": 0,
+    "s01_native_teardown_reports": 0,
+    "s01_no_result_ids": 104
+  },
+  "full_selected_union_sha256": "1c0102f572497adaaf76a8375212200b6ac0a30b85682b7d9aed9edebffe3e13",
+  "full_union_vs_historical": {
+    "missing_ids": [],
+    "added_ids": []
+  },
+  "limits": [
+    "All four destination executions aborted collection before producing any per-ID primary reports. Reference selection does not establish setup or call execution.",
+    "The 104 original S01 setup failures came from a different historical source (086845de); they are not substituted for missing destination results.",
+    "The JUnit 75 errors per shard are collection errors, not per-ID S01 setup errors.",
+    "No PASS/FAIL product-outcome comparison is possible against this exact destination hosted run."
+  ],
+  "shards": [
+    {
+      "shard": 1,
+      "job": {
+        "id": 135351981076,
+        "name": "integration shard 1 / 4",
+        "status": "completed",
+        "conclusion": "failure",
+        "run_id": 44462370783,
+        "logs_url": null,
+        "steps": [
+          {
+            "name": "Set up job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 1
+          },
+          {
+            "name": "Check out repository",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 2
+          },
+          {
+            "name": "Resolve launcher ref",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 3
+          },
+          {
+            "name": "Read the pinned Runtime commit",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 4
+          },
+          {
+            "name": "Check out the Runtime (astrid-runtime)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 5
+          },
+          {
+            "name": "Check out Pinokio (astrid-pinokio)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 6
+          },
+          {
+            "name": "Fetch historical Agent archive objects",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 7
+          },
+          {
+            "name": "Fetch historical Runtime archive objects",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 8
+          },
+          {
+            "name": "Verify Runtime sources before tests",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 9
+          },
+          {
+            "name": "Record checked-out refs",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 10
+          },
+          {
+            "name": "Restore pip cache (C-08)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 11
+          },
+          {
+            "name": "Set up Python",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 12
+          },
+          {
+            "name": "Set up pinned uv",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 13
+          },
+          {
+            "name": "Set up Node.js 22 (HyperFrames CLI)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 14
+          },
+          {
+            "name": "Set up Node.js from .node-version",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 15
+          },
+          {
+            "name": "Install system media tools and a system font",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 16
+          },
+          {
+            "name": "Install package with dev extras",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 17
+          },
+          {
+            "name": "Install the Runtime and client from the checkout",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 18
+          },
+          {
+            "name": "Read the pinned VibeComfy revision",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 19
+          },
+          {
+            "name": "Check out VibeComfy at the pinned engine revision",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 20
+          },
+          {
+            "name": "Record VibeComfy checkout",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 21
+          },
+          {
+            "name": "Install VibeComfy",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 22
+          },
+          {
+            "name": "Install the Remotion dependencies",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 23
+          },
+          {
+            "name": "Provision the Remotion browser",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 24
+          },
+          {
+            "name": "Read the pinned RunPod lifecycle revision",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 25
+          },
+          {
+            "name": "Check out the pinned RunPod lifecycle (test fixtures)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 26
+          },
+          {
+            "name": "Record RunPod lifecycle checkout",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 27
+          },
+          {
+            "name": "Read the pinned ComfyUI revision",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 28
+          },
+          {
+            "name": "Check out the pinned ComfyUI (test fixtures)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 29
+          },
+          {
+            "name": "Record ComfyUI checkout",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 30
+          },
+          {
+            "name": "Integration tests (shard)",
+            "status": "completed",
+            "conclusion": "failure",
+            "number": 31
+          },
+          {
+            "name": "Summarize test result XML",
+            "status": "completed",
+            "conclusion": "failure",
+            "number": 32
+          },
+          {
+            "name": "Upload test results",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 33
+          },
+          {
+            "name": "Save pip cache on main or int branches (C-08)",
+            "status": "completed",
+            "conclusion": "skipped",
+            "number": 34
+          },
+          {
+            "name": "Retain actual Plan39 command and native result evidence",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 35
+          },
+          {
+            "name": "Post Check out the pinned ComfyUI (test fixtures)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 61
+          },
+          {
+            "name": "Post Check out the pinned RunPod lifecycle (test fixtures)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 62
+          },
+          {
+            "name": "Post Check out VibeComfy at the pinned engine revision",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 63
+          },
+          {
+            "name": "Post Set up Node.js from .node-version",
+            "status": "completed",
+            "conclusion": "skipped",
+            "number": 64
+          },
+          {
+            "name": "Post Set up Node.js 22 (HyperFrames CLI)",
+            "status": "completed",
+            "conclusion": "skipped",
+            "number": 65
+          },
+          {
+            "name": "Post Set up pinned uv",
+            "status": "completed",
+            "conclusion": "skipped",
+            "number": 66
+          },
+          {
+            "name": "Post Set up Python",
+            "status": "completed",
+            "conclusion": "skipped",
+            "number": 67
+          },
+          {
+            "name": "Post Check out Pinokio (astrid-pinokio)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 68
+          },
+          {
+            "name": "Post Check out the Runtime (astrid-runtime)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 69
+          },
+          {
+            "name": "Post Check out repository",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 70
+          },
+          {
+            "name": "Complete job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 71
+          }
+        ]
+      },
+      "artifact": {
+        "id": 14506903664,
+        "name": "test-results-integration-1-Linux",
+        "size_in_bytes": 1023825,
+        "url": "https://api.github.com/repos/banodoco/astrid-agent/actions/artifacts/14506903664",
+        "archive_download_url": "https://api.github.com/repos/banodoco/astrid-agent/actions/artifacts/14506903664/zip",
+        "expired": false,
+        "created_at": "2026-11-19T07:15:39Z",
+        "expires_at": "2027-02-17T05:02:23Z",
+        "updated_at": "2026-11-19T07:15:39Z",
+        "digest": "sha256:2bd61f43a951792f986cf045a92478647e8d49b8e30e6290dcff8a2553dfb069",
+        "workflow_run": {
+          "id": 44462370783,
+          "repository_id": 1223136945,
+          "head_repository_id": 1223136945,
+          "head_branch": "release/14/plan-39",
+          "head_sha": "68e7aa8593d13eaeb6a55da1d97bed8b494df15b"
+        }
+      },
+      "local_zip_sha256": "2bd61f43a951792f986cf045a92478647e8d49b8e30e6290dcff8a2553dfb069",
+      "artifact_metadata_size_digest_match": true,
+      "reference_selected_count": 517,
+      "reference_selected_s01_count": 0,
+      "reference_selected_ids_sha256": "45d95bbe3dab50f4c89f05428e51ddeadcf40f8809676f47c9ed34ad3c071f33",
+      "execution_manifest_present": false,
+      "native_report_count": 0,
+      "native_events": [
+        {
+          "type": "start",
+          "args": [
+            "-p",
+            "ceiling_pytest",
+            "-v",
+            "-rA",
+            "--durations=40",
+            "-m",
+            "integration and not opt_in and not app_checkout",
+            "--splits",
+            "4",
+            "--group",
+            "1"
+          ]
+        },
+        {
+          "type": "finish",
+          "exitstatus": 4,
+          "summary": "32676 deselected, 33 warnings, 75 errors"
+        }
+      ],
+      "junit_collection_error_count": 75,
+      "execution_rootdir": "rootdir: /home/runner/work",
+      "native_child_exit": 4,
+      "integration_outer_step_exit": 4,
+      "xml_summary_step_exit": 1,
+      "job_log_sha256": "61ac1660ac14436206441699ebee5649a615b15d48688cca5593b6fee3789530"
+    },
+    {
+      "shard": 2,
+      "job": {
+        "id": 135351981224,
+        "name": "integration shard 2 / 4",
+        "status": "completed",
+        "conclusion": "failure",
+        "run_id": 44462370783,
+        "logs_url": null,
+        "steps": [
+          {
+            "name": "Set up job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 1
+          },
+          {
+            "name": "Check out repository",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 2
+          },
+          {
+            "name": "Resolve launcher ref",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 3
+          },
+          {
+            "name": "Read the pinned Runtime commit",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 4
+          },
+          {
+            "name": "Check out the Runtime (astrid-runtime)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 5
+          },
+          {
+            "name": "Check out Pinokio (astrid-pinokio)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 6
+          },
+          {
+            "name": "Fetch historical Agent archive objects",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 7
+          },
+          {
+            "name": "Fetch historical Runtime archive objects",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 8
+          },
+          {
+            "name": "Verify Runtime sources before tests",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 9
+          },
+          {
+            "name": "Record checked-out refs",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 10
+          },
+          {
+            "name": "Restore pip cache (C-08)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 11
+          },
+          {
+            "name": "Set up Python",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 12
+          },
+          {
+            "name": "Set up pinned uv",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 13
+          },
+          {
+            "name": "Set up Node.js 22 (HyperFrames CLI)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 14
+          },
+          {
+            "name": "Set up Node.js from .node-version",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 15
+          },
+          {
+            "name": "Install system media tools and a system font",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 16
+          },
+          {
+            "name": "Install package with dev extras",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 17
+          },
+          {
+            "name": "Install the Runtime and client from the checkout",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 18
+          },
+          {
+            "name": "Read the pinned VibeComfy revision",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 19
+          },
+          {
+            "name": "Check out VibeComfy at the pinned engine revision",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 20
+          },
+          {
+            "name": "Record VibeComfy checkout",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 21
+          },
+          {
+            "name": "Install VibeComfy",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 22
+          },
+          {
+            "name": "Install the Remotion dependencies",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 23
+          },
+          {
+            "name": "Provision the Remotion browser",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 24
+          },
+          {
+            "name": "Read the pinned RunPod lifecycle revision",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 25
+          },
+          {
+            "name": "Check out the pinned RunPod lifecycle (test fixtures)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 26
+          },
+          {
+            "name": "Record RunPod lifecycle checkout",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 27
+          },
+          {
+            "name": "Read the pinned ComfyUI revision",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 28
+          },
+          {
+            "name": "Check out the pinned ComfyUI (test fixtures)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 29
+          },
+          {
+            "name": "Record ComfyUI checkout",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 30
+          },
+          {
+            "name": "Integration tests (shard)",
+            "status": "completed",
+            "conclusion": "failure",
+            "number": 31
+          },
+          {
+            "name": "Summarize test result XML",
+            "status": "completed",
+            "conclusion": "failure",
+            "number": 32
+          },
+          {
+            "name": "Upload test results",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 33
+          },
+          {
+            "name": "Save pip cache on main or int branches (C-08)",
+            "status": "completed",
+            "conclusion": "skipped",
+            "number": 34
+          },
+          {
+            "name": "Retain actual Plan39 command and native result evidence",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 35
+          },
+          {
+            "name": "Post Check out the pinned ComfyUI (test fixtures)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 61
+          },
+          {
+            "name": "Post Check out the pinned RunPod lifecycle (test fixtures)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 62
+          },
+          {
+            "name": "Post Check out VibeComfy at the pinned engine revision",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 63
+          },
+          {
+            "name": "Post Set up Node.js from .node-version",
+            "status": "completed",
+            "conclusion": "skipped",
+            "number": 64
+          },
+          {
+            "name": "Post Set up Node.js 22 (HyperFrames CLI)",
+            "status": "completed",
+            "conclusion": "skipped",
+            "number": 65
+          },
+          {
+            "name": "Post Set up pinned uv",
+            "status": "completed",
+            "conclusion": "skipped",
+            "number": 66
+          },
+          {
+            "name": "Post Set up Python",
+            "status": "completed",
+            "conclusion": "skipped",
+            "number": 67
+          },
+          {
+            "name": "Post Check out Pinokio (astrid-pinokio)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 68
+          },
+          {
+            "name": "Post Check out the Runtime (astrid-runtime)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 69
+          },
+          {
+            "name": "Post Check out repository",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 70
+          },
+          {
+            "name": "Complete job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 71
+          }
+        ]
+      },
+      "artifact": {
+        "id": 14507955719,
+        "name": "test-results-integration-2-Linux",
+        "size_in_bytes": 1026653,
+        "url": "https://api.github.com/repos/banodoco/astrid-agent/actions/artifacts/14507955719",
+        "archive_download_url": "https://api.github.com/repos/banodoco/astrid-agent/actions/artifacts/14507955719/zip",
+        "expired": false,
+        "created_at": "2026-11-19T07:20:30Z",
+        "expires_at": "2027-02-17T05:02:23Z",
+        "updated_at": "2026-11-19T07:20:30Z",
+        "digest": "sha256:aa1fc3a333b5d73e0a43a12431cf4c2de9b4f6caa484ec600ec6ed2dc35a8c00",
+        "workflow_run": {
+          "id": 44462370783,
+          "repository_id": 1223136945,
+          "head_repository_id": 1223136945,
+          "head_branch": "release/14/plan-39",
+          "head_sha": "68e7aa8593d13eaeb6a55da1d97bed8b494df15b"
+        }
+      },
+      "local_zip_sha256": "aa1fc3a333b5d73e0a43a12431cf4c2de9b4f6caa484ec600ec6ed2dc35a8c00",
+      "artifact_metadata_size_digest_match": true,
+      "reference_selected_count": 517,
+      "reference_selected_s01_count": 78,
+      "reference_selected_ids_sha256": "3d7bb8544e58f5ce57d390277e4fac0e7075d37ac8d6249279809a58479890c2",
+      "execution_manifest_present": false,
+      "native_report_count": 0,
+      "native_events": [
+        {
+          "type": "start",
+          "args": [
+            "-p",
+            "ceiling_pytest",
+            "-v",
+            "-rA",
+            "--durations=40",
+            "-m",
+            "integration and not opt_in and not app_checkout",
+            "--splits",
+            "4",
+            "--group",
+            "2"
+          ]
+        },
+        {
+          "type": "finish",
+          "exitstatus": 4,
+          "summary": "32676 deselected, 33 warnings, 75 errors"
+        }
+      ],
+      "junit_collection_error_count": 75,
+      "execution_rootdir": "rootdir: /home/runner/work",
+      "native_child_exit": 4,
+      "integration_outer_step_exit": 4,
+      "xml_summary_step_exit": 1,
+      "job_log_sha256": "402d685417059736df1ff85c4bb322b5d10e8621bae121f80d2226465d034744"
+    },
+    {
+      "shard": 3,
+      "job": {
+        "id": 135351981038,
+        "name": "integration shard 3 / 4",
+        "status": "completed",
+        "conclusion": "failure",
+        "run_id": 44462370783,
+        "logs_url": null,
+        "steps": [
+          {
+            "name": "Set up job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 1
+          },
+          {
+            "name": "Check out repository",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 2
+          },
+          {
+            "name": "Resolve launcher ref",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 3
+          },
+          {
+            "name": "Read the pinned Runtime commit",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 4
+          },
+          {
+            "name": "Check out the Runtime (astrid-runtime)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 5
+          },
+          {
+            "name": "Check out Pinokio (astrid-pinokio)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 6
+          },
+          {
+            "name": "Fetch historical Agent archive objects",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 7
+          },
+          {
+            "name": "Fetch historical Runtime archive objects",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 8
+          },
+          {
+            "name": "Verify Runtime sources before tests",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 9
+          },
+          {
+            "name": "Record checked-out refs",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 10
+          },
+          {
+            "name": "Restore pip cache (C-08)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 11
+          },
+          {
+            "name": "Set up Python",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 12
+          },
+          {
+            "name": "Set up pinned uv",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 13
+          },
+          {
+            "name": "Set up Node.js 22 (HyperFrames CLI)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 14
+          },
+          {
+            "name": "Set up Node.js from .node-version",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 15
+          },
+          {
+            "name": "Install system media tools and a system font",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 16
+          },
+          {
+            "name": "Install package with dev extras",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 17
+          },
+          {
+            "name": "Install the Runtime and client from the checkout",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 18
+          },
+          {
+            "name": "Read the pinned VibeComfy revision",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 19
+          },
+          {
+            "name": "Check out VibeComfy at the pinned engine revision",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 20
+          },
+          {
+            "name": "Record VibeComfy checkout",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 21
+          },
+          {
+            "name": "Install VibeComfy",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 22
+          },
+          {
+            "name": "Install the Remotion dependencies",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 23
+          },
+          {
+            "name": "Provision the Remotion browser",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 24
+          },
+          {
+            "name": "Read the pinned RunPod lifecycle revision",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 25
+          },
+          {
+            "name": "Check out the pinned RunPod lifecycle (test fixtures)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 26
+          },
+          {
+            "name": "Record RunPod lifecycle checkout",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 27
+          },
+          {
+            "name": "Read the pinned ComfyUI revision",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 28
+          },
+          {
+            "name": "Check out the pinned ComfyUI (test fixtures)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 29
+          },
+          {
+            "name": "Record ComfyUI checkout",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 30
+          },
+          {
+            "name": "Integration tests (shard)",
+            "status": "completed",
+            "conclusion": "failure",
+            "number": 31
+          },
+          {
+            "name": "Summarize test result XML",
+            "status": "completed",
+            "conclusion": "failure",
+            "number": 32
+          },
+          {
+            "name": "Upload test results",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 33
+          },
+          {
+            "name": "Save pip cache on main or int branches (C-08)",
+            "status": "completed",
+            "conclusion": "skipped",
+            "number": 34
+          },
+          {
+            "name": "Retain actual Plan39 command and native result evidence",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 35
+          },
+          {
+            "name": "Post Check out the pinned ComfyUI (test fixtures)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 61
+          },
+          {
+            "name": "Post Check out the pinned RunPod lifecycle (test fixtures)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 62
+          },
+          {
+            "name": "Post Check out VibeComfy at the pinned engine revision",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 63
+          },
+          {
+            "name": "Post Set up Node.js from .node-version",
+            "status": "completed",
+            "conclusion": "skipped",
+            "number": 64
+          },
+          {
+            "name": "Post Set up Node.js 22 (HyperFrames CLI)",
+            "status": "completed",
+            "conclusion": "skipped",
+            "number": 65
+          },
+          {
+            "name": "Post Set up pinned uv",
+            "status": "completed",
+            "conclusion": "skipped",
+            "number": 66
+          },
+          {
+            "name": "Post Set up Python",
+            "status": "completed",
+            "conclusion": "skipped",
+            "number": 67
+          },
+          {
+            "name": "Post Check out Pinokio (astrid-pinokio)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 68
+          },
+          {
+            "name": "Post Check out the Runtime (astrid-runtime)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 69
+          },
+          {
+            "name": "Post Check out repository",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 70
+          },
+          {
+            "name": "Complete job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 71
+          }
+        ]
+      },
+      "artifact": {
+        "id": 14504833903,
+        "name": "test-results-integration-3-Linux",
+        "size_in_bytes": 1033935,
+        "url": "https://api.github.com/repos/banodoco/astrid-agent/actions/artifacts/14504833903",
+        "archive_download_url": "https://api.github.com/repos/banodoco/astrid-agent/actions/artifacts/14504833903/zip",
+        "expired": false,
+        "created_at": "2026-11-19T06:37:28Z",
+        "expires_at": "2027-02-17T05:02:23Z",
+        "updated_at": "2026-11-19T06:37:28Z",
+        "digest": "sha256:1193de4d56e62eb90d02dc8b0157d63b1d14e897cc0d6d5e6bd1747f2442a4ec",
+        "workflow_run": {
+          "id": 44462370783,
+          "repository_id": 1223136945,
+          "head_repository_id": 1223136945,
+          "head_branch": "release/14/plan-39",
+          "head_sha": "68e7aa8593d13eaeb6a55da1d97bed8b494df15b"
+        }
+      },
+      "local_zip_sha256": "1193de4d56e62eb90d02dc8b0157d63b1d14e897cc0d6d5e6bd1747f2442a4ec",
+      "artifact_metadata_size_digest_match": true,
+      "reference_selected_count": 517,
+      "reference_selected_s01_count": 26,
+      "reference_selected_ids_sha256": "0a3bbee0a4d998c0b1f92551aff22a06fb1c99833cb5918d94f2e316412bb342",
+      "execution_manifest_present": false,
+      "native_report_count": 0,
+      "native_events": [
+        {
+          "type": "start",
+          "args": [
+            "-p",
+            "ceiling_pytest",
+            "-v",
+            "-rA",
+            "--durations=40",
+            "-m",
+            "integration and not opt_in and not app_checkout",
+            "--splits",
+            "4",
+            "--group",
+            "3"
+          ]
+        },
+        {
+          "type": "finish",
+          "exitstatus": 4,
+          "summary": "32676 deselected, 33 warnings, 75 errors"
+        }
+      ],
+      "junit_collection_error_count": 75,
+      "execution_rootdir": "rootdir: /home/runner/work",
+      "native_child_exit": 4,
+      "integration_outer_step_exit": 4,
+      "xml_summary_step_exit": 1,
+      "job_log_sha256": "f970904459fa50b778b5dfea44bd4aa6a170338a179edf8dd3f7b48df4edef49"
+    },
+    {
+      "shard": 4,
+      "job": {
+        "id": 135351981070,
+        "name": "integration shard 4 / 4",
+        "status": "completed",
+        "conclusion": "failure",
+        "run_id": 44462370783,
+        "logs_url": null,
+        "steps": [
+          {
+            "name": "Set up job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 1
+          },
+          {
+            "name": "Check out repository",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 2
+          },
+          {
+            "name": "Resolve launcher ref",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 3
+          },
+          {
+            "name": "Read the pinned Runtime commit",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 4
+          },
+          {
+            "name": "Check out the Runtime (astrid-runtime)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 5
+          },
+          {
+            "name": "Check out Pinokio (astrid-pinokio)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 6
+          },
+          {
+            "name": "Fetch historical Agent archive objects",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 7
+          },
+          {
+            "name": "Fetch historical Runtime archive objects",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 8
+          },
+          {
+            "name": "Verify Runtime sources before tests",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 9
+          },
+          {
+            "name": "Record checked-out refs",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 10
+          },
+          {
+            "name": "Restore pip cache (C-08)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 11
+          },
+          {
+            "name": "Set up Python",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 12
+          },
+          {
+            "name": "Set up pinned uv",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 13
+          },
+          {
+            "name": "Set up Node.js 22 (HyperFrames CLI)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 14
+          },
+          {
+            "name": "Set up Node.js from .node-version",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 15
+          },
+          {
+            "name": "Install system media tools and a system font",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 16
+          },
+          {
+            "name": "Install package with dev extras",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 17
+          },
+          {
+            "name": "Install the Runtime and client from the checkout",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 18
+          },
+          {
+            "name": "Read the pinned VibeComfy revision",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 19
+          },
+          {
+            "name": "Check out VibeComfy at the pinned engine revision",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 20
+          },
+          {
+            "name": "Record VibeComfy checkout",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 21
+          },
+          {
+            "name": "Install VibeComfy",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 22
+          },
+          {
+            "name": "Install the Remotion dependencies",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 23
+          },
+          {
+            "name": "Provision the Remotion browser",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 24
+          },
+          {
+            "name": "Read the pinned RunPod lifecycle revision",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 25
+          },
+          {
+            "name": "Check out the pinned RunPod lifecycle (test fixtures)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 26
+          },
+          {
+            "name": "Record RunPod lifecycle checkout",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 27
+          },
+          {
+            "name": "Read the pinned ComfyUI revision",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 28
+          },
+          {
+            "name": "Check out the pinned ComfyUI (test fixtures)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 29
+          },
+          {
+            "name": "Record ComfyUI checkout",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 30
+          },
+          {
+            "name": "Integration tests (shard)",
+            "status": "completed",
+            "conclusion": "failure",
+            "number": 31
+          },
+          {
+            "name": "Summarize test result XML",
+            "status": "completed",
+            "conclusion": "failure",
+            "number": 32
+          },
+          {
+            "name": "Upload test results",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 33
+          },
+          {
+            "name": "Save pip cache on main or int branches (C-08)",
+            "status": "completed",
+            "conclusion": "skipped",
+            "number": 34
+          },
+          {
+            "name": "Retain actual Plan39 command and native result evidence",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 35
+          },
+          {
+            "name": "Post Check out the pinned ComfyUI (test fixtures)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 61
+          },
+          {
+            "name": "Post Check out the pinned RunPod lifecycle (test fixtures)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 62
+          },
+          {
+            "name": "Post Check out VibeComfy at the pinned engine revision",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 63
+          },
+          {
+            "name": "Post Set up Node.js from .node-version",
+            "status": "completed",
+            "conclusion": "skipped",
+            "number": 64
+          },
+          {
+            "name": "Post Set up Node.js 22 (HyperFrames CLI)",
+            "status": "completed",
+            "conclusion": "skipped",
+            "number": 65
+          },
+          {
+            "name": "Post Set up pinned uv",
+            "status": "completed",
+            "conclusion": "skipped",
+            "number": 66
+          },
+          {
+            "name": "Post Set up Python",
+            "status": "completed",
+            "conclusion": "skipped",
+            "number": 67
+          },
+          {
+            "name": "Post Check out Pinokio (astrid-pinokio)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 68
+          },
+          {
+            "name": "Post Check out the Runtime (astrid-runtime)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 69
+          },
+          {
+            "name": "Post Check out repository",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 70
+          },
+          {
+            "name": "Complete job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 71
+          }
+        ]
+      },
+      "artifact": {
+        "id": 14507063705,
+        "name": "test-results-integration-4-Linux",
+        "size_in_bytes": 1029987,
+        "url": "https://api.github.com/repos/banodoco/astrid-agent/actions/artifacts/14507063705",
+        "archive_download_url": "https://api.github.com/repos/banodoco/astrid-agent/actions/artifacts/14507063705/zip",
+        "expired": false,
+        "created_at": "2026-11-19T07:26:02Z",
+        "expires_at": "2027-02-17T05:02:23Z",
+        "updated_at": "2026-11-19T07:26:02Z",
+        "digest": "sha256:61258afc9bab5aae11998653194fe27f39967e7e5ec3a2f239500ce2cf744207",
+        "workflow_run": {
+          "id": 44462370783,
+          "repository_id": 1223136945,
+          "head_repository_id": 1223136945,
+          "head_branch": "release/14/plan-39",
+          "head_sha": "68e7aa8593d13eaeb6a55da1d97bed8b494df15b"
+        }
+      },
+      "local_zip_sha256": "61258afc9bab5aae11998653194fe27f39967e7e5ec3a2f239500ce2cf744207",
+      "artifact_metadata_size_digest_match": true,
+      "reference_selected_count": 516,
+      "reference_selected_s01_count": 0,
+      "reference_selected_ids_sha256": "6f9171953ef249d80f087db5d33e02ed6d8b4cdd1d1f29e759a3b966db00fc1f",
+      "execution_manifest_present": false,
+      "native_report_count": 0,
+      "native_events": [
+        {
+          "type": "start",
+          "args": [
+            "-p",
+            "ceiling_pytest",
+            "-v",
+            "-rA",
+            "--durations=40",
+            "-m",
+            "integration and not opt_in and not app_checkout",
+            "--splits",
+            "4",
+            "--group",
+            "4"
+          ]
+        },
+        {
+          "type": "finish",
+          "exitstatus": 4,
+          "summary": "32677 deselected, 33 warnings, 75 errors"
+        }
+      ],
+      "junit_collection_error_count": 75,
+      "execution_rootdir": "rootdir: /home/runner/work",
+      "native_child_exit": 4,
+      "integration_outer_step_exit": 4,
+      "xml_summary_step_exit": 1,
+      "job_log_sha256": "ded625527152abe2c5a9b90ffdc341cd6948b2a03d5107c0acf0595d314a8f8e"
+    }
+  ]
+}

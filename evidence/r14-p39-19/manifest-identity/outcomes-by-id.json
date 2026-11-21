@@ -1,0 +1,1318 @@
+{
+  "roster_sha256": "dfc20d160c80a4d370f9a24e9be5ae0f8e0728112217ea8d1e7b260fc0c379d7",
+  "rows": [
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "82a589e54626be2636a695f5a202e3b6920d116ac1d2f3c9eda65aac8d314eee",
+      "failure_boundary": "missing_persisted_text_binding",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_media_manifest_inverse.py::test_real_media_manifest_inverse_retry_restart_and_history[add]",
+      "previous_42be": {
+        "call": "NO-RESULT",
+        "setup": "ERROR",
+        "teardown": "PASSED"
+      },
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "f587dad593046bb89608b1bc61672e7e45df4cde3110b653f15a64560d0e1961",
+      "failure_boundary": "missing_persisted_text_binding",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_media_manifest_inverse.py::test_real_media_manifest_inverse_retry_restart_and_history[swap]",
+      "previous_42be": {
+        "call": "NO-RESULT",
+        "setup": "ERROR",
+        "teardown": "PASSED"
+      },
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "3bc8bfcb0161287c51c4228dbf3440881c436787c2aeca6a6587aa6976e10502",
+      "failure_boundary": "command_claim_call",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-add-lifecycle-media]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "dcf9927d125b936ba3d1e50af9088bf820b3f6413326697ace6bd89a02dfe909",
+      "failure_boundary": "command_claim_call",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-add-lifecycle-old_media]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-add-revocation-media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-add-revocation-old_media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "a8f982343a153fd9a81a0e7a2f972e99ee2161f78276134e7d34b6f9a3199198",
+      "failure_boundary": "command_claim_call",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-swap-lifecycle-media]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "45f04407cc7ffd0fa99d9f75e23fae809ab9b977c1a7941501bff920a80d9178",
+      "failure_boundary": "command_claim_call",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-swap-lifecycle-old_media]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-swap-revocation-media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-swap-revocation-old_media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "4aa7db239bbeda85c33324249b5c09d6bcf90324222f9a88ae004399c44b7494",
+      "failure_boundary": "command_claim_call",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-add-lifecycle-media]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "f0e745771195945a7e9acd66c60b96fd6c81ce9b680427ac70448e912415e2b6",
+      "failure_boundary": "command_claim_call",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-add-lifecycle-old_media]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-add-revocation-media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-add-revocation-old_media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "99c5b735e0ecc420b4bd5ff9bdb54b735bf606aa2cf0e8f87bebebd4b77a34dc",
+      "failure_boundary": "command_claim_call",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-swap-lifecycle-media]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "7256369ed2fdb214267e8bdde5e3249e340f40ec24382a0232df219278490912",
+      "failure_boundary": "command_claim_call",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-swap-lifecycle-old_media]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-swap-revocation-media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-swap-revocation-old_media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "d510e426db04b58c04724cf787a7ed12ff745bd8eb06a87c02307eaf237e0552",
+      "failure_boundary": "command_claim_call",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_exact_capture_acceptance_inverse_redo_restart_and_retry[image-add]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "d73ef4df62202bc88502bb2a1d58c7235198e40b6da8650040c832763c869a96",
+      "failure_boundary": "command_claim_call",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_exact_capture_acceptance_inverse_redo_restart_and_retry[image-swap]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "1ed49f15cf1620bb5d181368a4ad7f784b14814fcd86b637918c538201206cc2",
+      "failure_boundary": "command_claim_call",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_exact_capture_acceptance_inverse_redo_restart_and_retry[video-add]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "11bfbc423f484529407c6f41b0ffbe676faf22d7ef2ad75079f7908b790d02c4",
+      "failure_boundary": "command_claim_call",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_exact_capture_acceptance_inverse_redo_restart_and_retry[video-swap]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-add-fingerprint-media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-add-fingerprint-old_media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-add-foreign-media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-add-foreign-old_media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-add-stale-media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-add-stale-old_media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-swap-fingerprint-media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-swap-fingerprint-old_media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-swap-foreign-media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-swap-foreign-old_media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-swap-stale-media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-swap-stale-old_media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-add-fingerprint-media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-add-fingerprint-old_media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-add-foreign-media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-add-foreign-old_media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-add-stale-media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-add-stale-old_media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-swap-fingerprint-media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-swap-fingerprint-old_media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-swap-foreign-media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-swap-foreign-old_media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-swap-stale-media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-swap-stale-old_media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_source_metadata_is_part_of_the_exact_selection_fingerprint[image-add]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_source_metadata_is_part_of_the_exact_selection_fingerprint[image-swap]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_source_metadata_is_part_of_the_exact_selection_fingerprint[video-add]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_source_metadata_is_part_of_the_exact_selection_fingerprint[video-swap]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "5b495c7633b4ccb24535c9c8c9f52a21095e9fd60e7ae2ce0f2c8ec0c78fb49d",
+      "failure_boundary": "command_claim_call",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_accepted_history_rebase_and_guarded_aba_undo[image-aba]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "caad1d47f6d7773f323facfc2686aa9b532248ad621de769eb3e6ee3286b0753",
+      "failure_boundary": "command_claim_call",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_accepted_history_rebase_and_guarded_aba_undo[image-disjoint]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "9cc8089b2aa444972fee6e0328e6e8fcb7d9975fc4664f616639cc0d41f1b565",
+      "failure_boundary": "command_claim_call",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_accepted_history_rebase_and_guarded_aba_undo[video-aba]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "701b4c163f6982ac1a494cd16f904cb903ad018fb539f76425510cecef268f91",
+      "failure_boundary": "command_claim_call",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_accepted_history_rebase_and_guarded_aba_undo[video-disjoint]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[image-fingerprint-media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[image-fingerprint-old_media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[image-foreign-media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[image-foreign-old_media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[image-stale-media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[image-stale-old_media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[video-fingerprint-media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[video-fingerprint-old_media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[video-foreign-media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[video-foreign-old_media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[video-stale-media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "PASSED",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[video-stale-old_media]",
+      "previous_42be": {
+        "call": "PASSED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "b6459a724bae5f676792d8a06e3e782be3f0737d7c132507c958740a9e3f028f",
+      "failure_boundary": "command_claim_call",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_lifecycle_race_refuses_at_acceptance[image-media]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "2b3e229e6cd0fdfa40adf780690f519bf025c433acfa860a664a5b36fbbe4359",
+      "failure_boundary": "command_claim_call",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_lifecycle_race_refuses_at_acceptance[image-old_media]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "f16a27c1448b174eaad16bd80bdd49e9bdc3e05869ed6e27cfa8c6e2802cb92f",
+      "failure_boundary": "command_claim_call",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_lifecycle_race_refuses_at_acceptance[video-media]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "f677133f227d84ef43a22f8fa05216845ce0e96cd23c4f36daa550c92fb3ef64",
+      "failure_boundary": "command_claim_call",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_lifecycle_race_refuses_at_acceptance[video-old_media]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "f617ae8e8bc3b876ba92482d52eaafc1c5b374e289b8b208f8ba32f8f2e4bf65",
+      "failure_boundary": "command_claim_call",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_selected_swap_capture_accepted_reload_restart_retry_undo_and_redo[image]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "e9d9055c813cca9bfc31b2feb8c8aa3aca5bd7c1e52fae27b495758ebb9aa51a",
+      "failure_boundary": "command_claim_call",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_selected_swap_capture_accepted_reload_restart_retry_undo_and_redo[video]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "a01021d9f8a0b0563641f4269af5996f0e81c20bb34ab2b3663f7b1ddc299fd8",
+      "failure_boundary": "runtime_module_import",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_selected_swap_over_authenticated_http_preserves_flight_and_guarded_undo[occurrence:occ-a]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "b7ede6edfb37de36331d0517836f8bd1d055a1d6a05053815be3d8abaef35f36",
+      "failure_boundary": "runtime_module_import",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_selected_swap_over_authenticated_http_preserves_flight_and_guarded_undo[parent]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "e44cfdf44b6b26371a0a1ce98bd4f431dc8585bed01f19ffe90d58afaf4cdabe",
+      "failure_boundary": "inverse_internal_clip_order_1002",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_video_unplace.py::test_capture_commit_reload_undo_redo_and_restart_safe_retry[image-False]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "b389b933514b545d6339fb16751dc9f7e5db060c076678ba6dba2daaa2e1c48d",
+      "failure_boundary": "inverse_internal_clip_order_1002",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_video_unplace.py::test_capture_commit_reload_undo_redo_and_restart_safe_retry[image-True]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "bb25e0eff597c261ee4252bb74636e320035f32764857b6339bef6ef761054c1",
+      "failure_boundary": "inverse_internal_clip_order_1002",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_video_unplace.py::test_capture_commit_reload_undo_redo_and_restart_safe_retry[video-False]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "ae3912ae423ebefa8947f091acd2773072ccb46fc34a135318cb3c6d1529ccc0",
+      "failure_boundary": "inverse_internal_clip_order_1002",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_video_unplace.py::test_capture_commit_reload_undo_redo_and_restart_safe_retry[video-True]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "81e1f7a88c94e01aceea5ece934ed6663d664474fa2ae6266620777c65f8ba5e",
+      "failure_boundary": "canonical_document_scope",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_auto_placement.py::test_exact_capture_replay_inverse_and_redo[image-absent]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "80f4b4afa1dd794f0d7895bfe5a8505385a15df2301a4b8447cf81fd36b0885b",
+      "failure_boundary": "canonical_document_scope",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_auto_placement.py::test_exact_capture_replay_inverse_and_redo[image-anchor]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "8cf659b39ffe21165dc0edcb14a04b75093d9213a68ea0c4871af5eb08cd1bb2",
+      "failure_boundary": "canonical_document_scope",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_auto_placement.py::test_exact_capture_replay_inverse_and_redo[video-absent]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "a73a3cbc9e132cf7c67721a080ca0fae5fad59deb4cb3a7593549aec0f5ae9a9",
+      "failure_boundary": "canonical_document_scope",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_auto_placement.py::test_exact_capture_replay_inverse_and_redo[video-anchor]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "c9ba8f29f3836bc514a4eaa88c1e6c1a66ec295946972be70c2db9bc235ca1cb",
+      "failure_boundary": "canonical_document_scope",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_auto_placement.py::test_provider_accepts_completion_placement_with_exact_undo_and_redo[image]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "5febd5247c0fadcdfd736fb7998dcd79ff8413ba8541cbc48ce4d97afc797719",
+      "failure_boundary": "canonical_document_scope",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_auto_placement.py::test_provider_accepts_completion_placement_with_exact_undo_and_redo[video]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "56fbe75b11e2cac0523812cfce3d0b5e556d77c9b09f5b6527b9a4ac139418ff",
+      "failure_boundary": "canonical_document_scope",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_placement_create_unplace.py::test_exact_capture_replay_inverse_and_redo[create]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "80f011b8bf98a77d2d5aae6a84998ff6ded0c6df18e827ba6ca7f516b6a71fb0",
+      "failure_boundary": "canonical_document_scope",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_placement_create_unplace.py::test_exact_capture_replay_inverse_and_redo[unplace]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "4e49f4e8fc4b7979b5975227db17b87c7c11c3996dd00ad388792de981fdd5d3",
+      "failure_boundary": "canonical_document_scope",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_placement_create_unplace.py::test_provider_accepts_create_with_exact_undo_and_redo",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "e16ad304501698a057e3178cd78845b59ffbc396063a488420383a96d1ffad19",
+      "failure_boundary": "canonical_document_scope",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_placement_create_unplace.py::test_provider_accepts_unplace_with_exact_undo_and_redo",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "e38f6609f32df7f03bbe76aecb1b76c329d5dbb70cdb486f56a08d57c9783161",
+      "failure_boundary": "canonical_document_scope",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shared_auto_placement.py::test_exact_capture_replay_inverse_and_redo[image-append]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "eef68e3ba33da0585eb7e964844f9f1ea0d14ef2ff94c96d40bc9939e8b8f7c6",
+      "failure_boundary": "canonical_document_scope",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shared_auto_placement.py::test_exact_capture_replay_inverse_and_redo[image-shift]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "5eda4a8c690dff788cb9f9bd2efd7077ed29f5735e349580a054aee4ab6d7f8e",
+      "failure_boundary": "canonical_document_scope",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shared_auto_placement.py::test_exact_capture_replay_inverse_and_redo[video-append]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "f44c812c39ac1988acc6f1e87c5bb71cec721b8b2186d50d707dc1cead1f9fa3",
+      "failure_boundary": "canonical_document_scope",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shared_auto_placement.py::test_exact_capture_replay_inverse_and_redo[video-overlay-anchor]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "361c8200d124e79f588c993c13a2f83403a7d59f794585c5fc08f227123fc411",
+      "failure_boundary": "canonical_document_scope",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shared_auto_placement.py::test_provider_accepts_shared_placement_with_exact_undo_and_redo[image]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "d177f5faf3411f04db254e3f3dca1ec0bb1682b884de4402464f146a954ebb44",
+      "failure_boundary": "canonical_document_scope",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shared_auto_placement.py::test_provider_accepts_shared_placement_with_exact_undo_and_redo[video]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "7e9ab12ac9507005a4a54d71bb9753411056408d840df3529c7be534d834be5d",
+      "failure_boundary": "canonical_document_scope",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shot_pool.py::test_exact_capture_replay_inverse_and_redo[add-first]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "213a5718abb002a3070318085a87089b0fbdf4bb209c1c0e7421f155c1f94b7a",
+      "failure_boundary": "canonical_document_scope",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shot_pool.py::test_exact_capture_replay_inverse_and_redo[add-second]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "24be2a6e337ac920843b691eae7e2c8cf9ce581f9bb3df57438fb7daae7fe822",
+      "failure_boundary": "canonical_document_scope",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shot_pool.py::test_exact_capture_replay_inverse_and_redo[remove-middle]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "d1ae0b5291d6e3e8b6bc832e307fe38c53b611020ed48cbcc18223a4c7855608",
+      "failure_boundary": "canonical_document_scope",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shot_pool.py::test_placing_pooled_media_promotes_it_in_one_batch_that_undoes_as_one[image]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "515b79327d4d09d9f8a6a2f27bff1fff4f770f3767960160b3c08c44f6daac22",
+      "failure_boundary": "canonical_document_scope",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shot_pool.py::test_placing_pooled_media_promotes_it_in_one_batch_that_undoes_as_one[video]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "0d69b00370f5b68c4b7ad8a91cb96be98c89564ec68b99a9b7f003fcf02372cd",
+      "failure_boundary": "canonical_document_scope",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shot_pool.py::test_promotion_and_keep_as_pooled_round_trip_through_the_provider",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "54f3d4d64a7840c5d07ad7a339fbd13f336d5370ba95964d6623d5c86329a58c",
+      "failure_boundary": "canonical_document_scope",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shot_pool.py::test_provider_accepts_add_and_remove_with_exact_undo_and_redo",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "121fb7f3346859d86c351785f9a04312b4229c08626d8cff3511171a2d55cb07",
+      "failure_boundary": "command_claim_call",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_recipe_occurrence_media.py::test_provider_exact_reload_inverse_redo_and_retired_asset_reservation[add]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "68c43c65d27dfe63a55436315a3bf7a2179fce221ea924403631c9c4a60353a6",
+      "failure_boundary": "command_claim_call",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_recipe_occurrence_media.py::test_provider_exact_reload_inverse_redo_and_retired_asset_reservation[swap]",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "f438ed9174da01efcb6e5962e365b07ff6e0e9c297bbaa38a1cd0aa0b95609af",
+      "failure_boundary": "command_claim_call",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_recipe_occurrence_media.py::test_same_alias_materialized_whole_payload_read_allows_exact_undo_redo",
+      "previous_42be": {
+        "call": "FAILED",
+        "setup": "PASSED",
+        "teardown": "PASSED"
+      },
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    }
+  ],
+  "source_sha": "305943c7c5d835d78e0bb46335710656a9d8f76f"
+}

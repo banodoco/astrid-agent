@@ -98,13 +98,16 @@ def native_runtime(tmp_path):
             commits._validate_closure(document)
             commits._persist_closure(document)
         assert commits.head(project, "main") == initial
+        # Restore the certified R1 before the adapter reads the current head.
+        accepted = restore(service, project, commits, document["parent_revision"], "restore-r1")
+        assert commits.head(project, "main")["revision_id"] == accepted["data"]["accepted_revision_id"]
         runtime = CaptureRuntime(service, project)
         runtime.authoring_preview = None
         runtime.document = document
         runtime.commits = commits
-        runtime.restore = lambda revision, key: restore(runtime, revision, key)
-        accepted = runtime.restore(document["parent_revision"], "restore-r1")
+        runtime.restore = lambda revision, key: restore(service, project, commits, revision, key)
         runtime.r1 = accepted["data"]["accepted_revision_id"]
+        assert runtime.parent_revision_id == runtime.r1
         assert canonical(accepted["data"]["canonical_document"]) == canonical(document)
         service.register_capability({"capability_id": CAPABILITY, "definition_digest": CAPABILITY_DIGEST})
         service.register_executor({"executor_id": "probe", "capabilities": [CAPABILITY]})
@@ -113,16 +116,16 @@ def native_runtime(tmp_path):
         service.close()
 
 
-def restore(runtime, revision, key):
-    head = runtime.commits.head(runtime.project_id, "main")
-    return runtime.service.commit_timeline(runtime.project_id, "main", {
-        "api_version": 1, "project_id": runtime.project_id, "timeline_id": "main",
+def restore(service, project, commits, revision, key):
+    head = commits.head(project, "main")
+    return service.commit_timeline(project, "main", {
+        "api_version": 1, "project_id": project, "timeline_id": "main",
         "base_revision_id": head["revision_id"], "base_publication_id": head["publication_id"],
         "commands": [{"schema_version": 1, "op": "timeline.restore", "version": "1", "select": None,
                       "args": {"revision_id": revision["revision_id"], "content_digest": revision["content_digest"]}}],
     }, idempotency_key=key, publisher="fixture-owner-test",
-        invocation_path=f"/v1/projects/{runtime.project_id}/timelines/main/commit",
-        authorize=runtime.service._assert_mutation_admitted)
+        invocation_path=f"/v1/projects/{project}/timelines/main/commit",
+        authorize=service._assert_mutation_admitted)
 
 
 def snapshot(runtime, *, candidate=False):

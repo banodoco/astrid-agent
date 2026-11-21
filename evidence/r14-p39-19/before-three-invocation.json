@@ -1,0 +1,38 @@
+{
+  "kind": "local focused proof; not hosted qualification",
+  "cwd": "/workspace/scratch/7b8a4aa9f9f5/astrid-agent",
+  "argv": [
+    "/workspace/scratch/ed89673be2cd/proof-env/bin/python",
+    "-P",
+    "-m",
+    "ci.run_pytest",
+    "-v",
+    "-rA",
+    "-m",
+    "integration",
+    "--junitxml=/workspace/scratch/7b8a4aa9f9f5/evidence/before-three/results.xml",
+    "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_exact_capture_acceptance_inverse_redo_restart_and_retry[image-add]",
+    "tests/editing_conformance/test_commit_runtime_video_unplace.py::test_capture_commit_reload_undo_redo_and_restart_safe_retry[image-False]",
+    "tests/editing_conformance/test_commit_runtime_media_manifest_inverse.py::test_real_media_manifest_inverse_retry_restart_and_history[add]"
+  ],
+  "environment_overrides": {
+    "PYTHONPATH": "/workspace/scratch/7b8a4aa9f9f5/astrid-agent/scripts:/workspace/scratch/ed89673be2cd/runtime-sync",
+    "ASTRID_RUNTIME_CHECKOUT": "/workspace/scratch/ed89673be2cd/runtime-sync",
+    "ASTRID_CI_JOB": "lanes-integration",
+    "PYTHONDONTWRITEBYTECODE": "1"
+  },
+  "source_sha": "68e7aa8593d13eaeb6a55da1d97bed8b494df15b",
+  "source_tree": "fce66a787d8af8be073f3d6c9fd6c948363e73ee",
+  "dirty": "",
+  "runtime_sha": "2537fed24385ec1c24f48a812e09af4bb63fb794",
+  "runtime_dirty": "",
+  "started_utc": "2026-11-19T17:35:01.349058+00:00",
+  "selectors": [
+    "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_exact_capture_acceptance_inverse_redo_restart_and_retry[image-add]",
+    "tests/editing_conformance/test_commit_runtime_video_unplace.py::test_capture_commit_reload_undo_redo_and_restart_safe_retry[image-False]",
+    "tests/editing_conformance/test_commit_runtime_media_manifest_inverse.py::test_real_media_manifest_inverse_retry_restart_and_history[add]"
+  ],
+  "patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "raw_returncode": 1,
+  "finished_utc": "2026-11-19T17:35:10.918148+00:00"
+}

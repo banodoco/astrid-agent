@@ -1,0 +1,110 @@
+{
+  "before-three": {
+    "results.jsonl": {
+      "file": "before-three-results.jsonl.gz",
+      "uncompressed_sha256": "49ab724773455da5146bf1fb51f88d640138b10dfdf0a19b58bba961a93584ab",
+      "uncompressed_bytes": 27503
+    },
+    "results.xml": {
+      "file": "before-three-results.xml.gz",
+      "uncompressed_sha256": "9738d00a5b079bc0168aafe1c8f82f9881e48e24dadfb8feaa5d968762ddc1ec",
+      "uncompressed_bytes": 23660
+    },
+    "results.log": {
+      "file": "before-three-results.log.gz",
+      "uncompressed_sha256": "0aa68ef75bb4e109fd2f5bfe1a8f0298fb98dc99531d75f2f9ac38e8f7393a44",
+      "uncompressed_bytes": 24435
+    },
+    "results.reference.json": {
+      "file": "before-three-results.reference.json.gz",
+      "uncompressed_sha256": "e1756e9153a69f37945fc4107207fe886717f171b4c50ea14f491ff085936def",
+      "uncompressed_bytes": 1668
+    },
+    "results.collection.json": {
+      "file": "before-three-results.collection.json.gz",
+      "uncompressed_sha256": "e1756e9153a69f37945fc4107207fe886717f171b4c50ea14f491ff085936def",
+      "uncompressed_bytes": 1668
+    }
+  },
+  "after-three": {
+    "results.jsonl": {
+      "file": "after-three-results.jsonl.gz",
+      "uncompressed_sha256": "a976ca45b4c331e7853377a4aaf196fa9b77c3f1f44194e03f13e0d83675c0a7",
+      "uncompressed_bytes": 185297
+    },
+    "results.xml": {
+      "file": "after-three-results.xml.gz",
+      "uncompressed_sha256": "d38bdbb075105fa20f7e96dcef081763668d45a506f0529dc7ceddb9f34bbb19",
+      "uncompressed_bytes": 178373
+    },
+    "results.log": {
+      "file": "after-three-results.log.gz",
+      "uncompressed_sha256": "849feb53e4e6a0e69b67c821afe040d000d0929455d970b96bcaa2e2fa984d27",
+      "uncompressed_bytes": 178918
+    },
+    "results.reference.json": {
+      "file": "after-three-results.reference.json.gz",
+      "uncompressed_sha256": "e1756e9153a69f37945fc4107207fe886717f171b4c50ea14f491ff085936def",
+      "uncompressed_bytes": 1668
+    },
+    "results.collection.json": {
+      "file": "after-three-results.collection.json.gz",
+      "uncompressed_sha256": "e1756e9153a69f37945fc4107207fe886717f171b4c50ea14f491ff085936def",
+      "uncompressed_bytes": 1668
+    }
+  },
+  "candidate-104": {
+    "results.jsonl": {
+      "file": "candidate-104-results.jsonl.gz",
+      "uncompressed_sha256": "7092d9441f366f94d3eb25e91cd39914d4f05fa5193d881982cfb1bcfbede195",
+      "uncompressed_bytes": 6261905
+    },
+    "results.xml": {
+      "file": "candidate-104-results.xml.gz",
+      "uncompressed_sha256": "11a5cc882e8ab62c3f84a0c4073af445e05600cf0cfbc1f63f53bdfcec51f346",
+      "uncompressed_bytes": 6029745
+    },
+    "results.log": {
+      "file": "candidate-104-results.log.gz",
+      "uncompressed_sha256": "ada26d3ac8820e6de70cedfbccd6063d8c09ae38a3d7c71554b0f65f6be36e01",
+      "uncompressed_bytes": 6024143
+    },
+    "results.reference.json": {
+      "file": "candidate-104-results.reference.json.gz",
+      "uncompressed_sha256": "cc02330d26cdb4f670e3682ea1be7059b1fc5eae500d620d6251ef9f9fae7482",
+      "uncompressed_bytes": 46161
+    },
+    "results.collection.json": {
+      "file": "candidate-104-results.collection.json.gz",
+      "uncompressed_sha256": "cc02330d26cdb4f670e3682ea1be7059b1fc5eae500d620d6251ef9f9fae7482",
+      "uncompressed_bytes": 46161
+    }
+  },
+  "diagnostic-fps": {
+    "results.jsonl": {
+      "file": "diagnostic-fps-results.jsonl.gz",
+      "uncompressed_sha256": "9fe47dc770f59be8b329bc0e78f9f96fe2d45d04a2d66f0cade1efa02c367da6",
+      "uncompressed_bytes": 63339
+    },
+    "results.xml": {
+      "file": "diagnostic-fps-results.xml.gz",
+      "uncompressed_sha256": "cad52c2c1ce71404191d9dc255461a057d11036d8a6358d8a37c6eb14c3848b4",
+      "uncompressed_bytes": 60857
+    },
+    "results.log": {
+      "file": "diagnostic-fps-results.log.gz",
+      "uncompressed_sha256": "a9fbe0d3b019842ee2c0086a51a90002c4303c191575011c46a298b782c44b33",
+      "uncompressed_bytes": 61505
+    },
+    "results.reference.json": {
+      "file": "diagnostic-fps-results.reference.json.gz",
+      "uncompressed_sha256": "be6026efd61c2962fa9c380165bd58417111673f2621a04d976e49545fdc5cae",
+      "uncompressed_bytes": 834
+    },
+    "results.collection.json": {
+      "file": "diagnostic-fps-results.collection.json.gz",
+      "uncompressed_sha256": "be6026efd61c2962fa9c380165bd58417111673f2621a04d976e49545fdc5cae",
+      "uncompressed_bytes": 834
+    }
+  }
+}

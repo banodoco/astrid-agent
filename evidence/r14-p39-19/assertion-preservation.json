@@ -1,0 +1,20 @@
+[
+  {
+    "path": "tests/editing_conformance/test_commit_runtime_occurrence_media.py",
+    "original_assert_count": 28,
+    "assertions_unchanged": true,
+    "test_bodies_unchanged": true,
+    "pytest_fail_calls_unchanged": true,
+    "base_sha256": "cf73444ebe59c7a5e62f29cff072d3c3dea87ead85043d92ef632d433cb110a1",
+    "candidate_sha256": "926166d19a53126cb71715d9bad94d9c2cd2b2b7408d630b1d7bcf74b81b5ae8"
+  },
+  {
+    "path": "tests/editing_conformance/test_commit_runtime_video_unplace.py",
+    "original_assert_count": 23,
+    "assertions_unchanged": true,
+    "test_bodies_unchanged": true,
+    "pytest_fail_calls_unchanged": true,
+    "base_sha256": "fe54a4f5d41677d95f4d7c4fa9edde56028333250be405080b41ad2101429cd2",
+    "candidate_sha256": "351326fea37e1dfe3dd18f200de2dfe0865acc301c3ee044989bf6320a675189"
+  }
+]

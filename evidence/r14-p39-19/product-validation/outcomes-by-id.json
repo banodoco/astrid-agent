@@ -1,0 +1,942 @@
+{
+  "roster_sha256": "dfc20d160c80a4d370f9a24e9be5ae0f8e0728112217ea8d1e7b260fc0c379d7",
+  "rows": [
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "777b84705797a4f7d4b3b240a2e91a580ec29d70dae1232e09caf375a3f124a4",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_media_manifest_inverse.py::test_real_media_manifest_inverse_retry_restart_and_history[add]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "3e54b0de0842152c075854a5918d440e1a8c3b2794802deb00a198bbcb3d5209",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_media_manifest_inverse.py::test_real_media_manifest_inverse_retry_restart_and_history[swap]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "827fa1d490329d4b787007e88ab089f87f55b54f39bda36bf330195cf6331c1d",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-add-lifecycle-media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "ca40ed2c6e667700758ff94563e6c26f212d83ff8e0ed506fdf66b22ed072d92",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-add-lifecycle-old_media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "af409d87a49999c5bb5306a70ab76afa2e67691ef27fbeb3b8e157203387d41e",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-add-revocation-media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "6d72d2a52ef50247cc357fa61730f7e629124805d0eaf6c9549b2d63968bbf17",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-add-revocation-old_media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "048c23290def87a897841b0896c9dedc1596f518054d2caf91e291bb265927d5",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-swap-lifecycle-media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "91c8f11a0d8f4977a7541d9d4b7048ac5d72958cc95d62b420fe71cd917ce7a8",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-swap-lifecycle-old_media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "765ba2fa0e7de0b51774998d5270f4127cbe4d682624757ec7dd5e2da35d3b3f",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-swap-revocation-media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "a68022271e628254d44a1dc71227ba3d5809ae8ae7051e49dd7be7bd61eaa448",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-swap-revocation-old_media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "3a4f089bd8e1f269a19eba4d5a573890e2c5d20a13d15a53f0fa3224159980c9",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-add-lifecycle-media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "9ab3d56a9bf1f90394eac642cd07dbdef17a1fcfb16ffec20727ef0f94c8107a",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-add-lifecycle-old_media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "8f223cc7771eb93dd89a64f0e7c91e0b165e8bea5c81c8c36aa7cb6906d16354",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-add-revocation-media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "028fa2da592dfdd9f29288a99e20722bc2fa933503f45c21775967d9c9b38542",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-add-revocation-old_media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "cf3a32769d22dbb76e9501047b9e54e28897eb8d511304ba38ab33a87f38aa37",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-swap-lifecycle-media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "1e3e3ce2b4d0f6a9e823ac7268cff8653f9dfa90dc52988b4ba0c18efa1fa8e4",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-swap-lifecycle-old_media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "d14a554e3c61d8fe346c4451677b0d74ffb8ae89855493832470d0a5dcc267c2",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-swap-revocation-media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "ee3c4a438eaf9857aeec9e1a82bd972473c1580af534c27ab8abb303cc91d750",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-swap-revocation-old_media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "cfc26bfa7c26532f9aff736a963ba69d25ff93de42ec44c93d13028ec3504b80",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_exact_capture_acceptance_inverse_redo_restart_and_retry[image-add]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "ed8d79bd9e53d7aa58fd66ed8a72b4dd1591e97cf1a603e50f9244e88e05d609",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_exact_capture_acceptance_inverse_redo_restart_and_retry[image-swap]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "656f0af270f94a84383d0517fac05867633d678e30a4d4582fac645ddeade1a8",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_exact_capture_acceptance_inverse_redo_restart_and_retry[video-add]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "4638081eea501ceb076539d76fefb46639e1b87b07c6ea25e659407b6cf949ae",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_exact_capture_acceptance_inverse_redo_restart_and_retry[video-swap]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "408e70f1ce5be9b574456d2dcd4dcf4ea1b8a745964eb74507c18126929bd3ed",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-add-fingerprint-media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "9fb024515a1ca930d4655aadb00f9b50e8dfc59807bb2435a8cbb2e60f342430",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-add-fingerprint-old_media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "751e7696c69db6219a6028ed193424f7379d129e08db4347faca031ff095f545",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-add-foreign-media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "ec3f5b933d786f9dfe8ea44075e2d632e931034354587defb13e4b2aac3a0391",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-add-foreign-old_media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "09fc28ec5ff20ecc3fbf7c3e915a538d7df43c7924302a84313bae6a5e5ef249",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-add-stale-media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "6bbeddc221eaed2aea212e7809cc6c097710fdf020dc5eaf6bf0d4abc6cfe497",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-add-stale-old_media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "1558b4d31228c79aa78dec1bb740da74f9a29e968b81f599e416aebdadd56ab7",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-swap-fingerprint-media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "3da984bd091eab9ecbdee4be95f41ada32b32c03432afec21c17594352593a95",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-swap-fingerprint-old_media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "ba63deb1083e789a0edf2686e2c13b077706d51b09693ee442862078d18a3dea",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-swap-foreign-media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "5cb850e9098d85b8d713939c43beb35525254fb980d9e43a8a9d5a79fabd2f46",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-swap-foreign-old_media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "14110d344e3470c402554f4729cca7010a93258beb3ec3418ae2ecb94b8a5f94",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-swap-stale-media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "4832975ec438b0eb57e921293e22f34909946cb6651819f9ed901ccc5e379f74",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-swap-stale-old_media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "a10bfeccbc137bb4c1415bc7e028d389fbd4b0742c1565845e0bfd6645f21a35",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-add-fingerprint-media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "3b43341c4b667120ca36fc19ae8ffdb52aa5644253a3197d21130307f072789d",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-add-fingerprint-old_media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "bf1d6b11cf3820a9860562490a20aad31b978c708d69b087abb5fb185dff3552",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-add-foreign-media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "730f74e08823800806a5a49b4da1e03dc3acb8a8b2ca4b3a4babed16a8d5bbd1",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-add-foreign-old_media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "7c028db69ff41f2e3159df79bfa310db71b198b4f92273c5a1c8db66bd9b52c1",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-add-stale-media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "f11499735a48daeb2fa4e493985726d7a41794ba437e5d04ccebb08393395a0c",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-add-stale-old_media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "b54e65b11d4b6ac1fe06c2ad43c885835ab73034c6f621a4aa6c2560e3901a7a",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-swap-fingerprint-media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "41ce544776bbf49e7790acdcfcba125bb1882d6482d4e82e40ad8623a93e0153",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-swap-fingerprint-old_media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "06360d2d249d9c8a1b3a2b627e298a2bbb25d8786a112bd7d6d25a327d3a4dfc",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-swap-foreign-media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "ab56e20dc22a281655a316f89dd8ba182811657a4f73d077fbd7f96d52f6ce25",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-swap-foreign-old_media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "67afcde84ee258abc6222f02c21add339d6ea03955e9e305d9467c5f441ed0ec",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-swap-stale-media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "066a31c1d1d719217f897e26be2813c894618cc7b3f7e0b183fe9fbe1deaac1f",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-swap-stale-old_media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "a06fdfb53e96bdca21ad95a4797637073e004317ac24b6b1a616f568cb19f63c",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_source_metadata_is_part_of_the_exact_selection_fingerprint[image-add]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "da21b13a053fe2e41e999f29a2912a87ca3b35dd3fb31b4f7bee060c9ac9c27e",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_source_metadata_is_part_of_the_exact_selection_fingerprint[image-swap]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "68ed4a7063b7b44628b27e4eaa8c805ff28ce90c2c673b207d2f30fccb9417c3",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_source_metadata_is_part_of_the_exact_selection_fingerprint[video-add]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "40678624090b2166afd54d401b364dc6b298b10086d13be7a867ad844ef5ed08",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_source_metadata_is_part_of_the_exact_selection_fingerprint[video-swap]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "1806762235b02ecc6807ffeaacc4a6fbcb5e106ceb88e3b635138eb2eb3d93d5",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_accepted_history_rebase_and_guarded_aba_undo[image-aba]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "14e55dcdaa65cff2b26cf7389c161d2171b66cb4ac77b20ab2714e0d6b2578bd",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_accepted_history_rebase_and_guarded_aba_undo[image-disjoint]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "3efcc300f4613ea18df7cfaef87fb0fb22e7f7fc9fab18c344754770dffa7277",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_accepted_history_rebase_and_guarded_aba_undo[video-aba]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "298f207869248ecbe7cd68409a19e22ebcbe6844508530c8bd9259b28bf52996",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_accepted_history_rebase_and_guarded_aba_undo[video-disjoint]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "70967c363ed73dadd971a4e3a6086e05bd10f7814d5344d1a0a008592f31d7ec",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[image-fingerprint-media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "a2c016345155c082d3f2a7732155baf2bbf324565007ab73f6429ca3afb64eef",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[image-fingerprint-old_media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "4bbc32063477a8005ab9d9a8d402f6d15138bbd454638079f9e4b1ffe4d3315b",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[image-foreign-media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "7b4d2053c6f76e473f1bebfd287946789b96c5d23e9f8ad5114352aacad0afd3",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[image-foreign-old_media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "37dc474ab6bedfed4dd6c5bd1e22370d3143c9ac9acc7ec02b0f62e82708fb0e",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[image-stale-media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "a0a757458209f2b262f52cac6416ff7ed2d4cdf1d546fce0d6e79b39911e00d1",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[image-stale-old_media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "5d32effc7a400726fa9f64aa68b706a366f893c319a59d94afa6b6281686727a",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[video-fingerprint-media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "a51a9e7e36607537799a3be04fe8eaec286e324f07faf7120d58a9485188dc4c",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[video-fingerprint-old_media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "0b5c5afff7e2b04f9d87d331afb9c9032c390e1df9a79252d23f63a727ec08ef",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[video-foreign-media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "f900a20c89b585e15961ef34d2e67d567b1c804eb08cd3eee8a83eb358685554",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[video-foreign-old_media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "c8db61c880dc47d7daedb43a1939e3886baabc7cf93b868a734d63995898407f",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[video-stale-media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "c8d24f16d4954c143e9b91827e1cb0c8740004dd605ee1cc348ea88e8ba9e2b5",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[video-stale-old_media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "bec82cbc88f624aa9c702ef105ce798842ca58f26f41d4db522939fd131449ed",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_lifecycle_race_refuses_at_acceptance[image-media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "2bbb065cd1011916e5bf4db9de72217fac753722ae60bf13b668fa5da4f02ff9",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_lifecycle_race_refuses_at_acceptance[image-old_media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "a2bac548a04f4279ffa17eb243d052c65a76820ca394c18a8aa78039198dd87d",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_lifecycle_race_refuses_at_acceptance[video-media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "0b34137d0a1f39c4033c4813c218d55cd6479230bb31afdfb046d4b4f38b9970",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_lifecycle_race_refuses_at_acceptance[video-old_media]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "a5a80e68fed79c78658fc2828416cbb4729d8e51b158aa8ab9e0ab43a21f0548",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_selected_swap_capture_accepted_reload_restart_retry_undo_and_redo[image]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "318c4eedeb8ba26e8627fd35571bd675e5ab4139d67061521351dfccaa8bab2c",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_selected_swap_capture_accepted_reload_restart_retry_undo_and_redo[video]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "c060809ef96877bf80cfb9844da778287e3668a8d1b580cba94ea9d37bd7c1d6",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_selected_swap_over_authenticated_http_preserves_flight_and_guarded_undo[occurrence:occ-a]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "94edd7961acc8aae9c15d7e34307ff7557c6545ad561be0ff3576a0347157a61",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_selected_swap_over_authenticated_http_preserves_flight_and_guarded_undo[parent]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "9f59826113788cf64fe50e9ec9017625bbcb25261f38b62097f6c57748efffb2",
+      "failure_boundary": "Runtime inverse stage internal payload",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_video_unplace.py::test_capture_commit_reload_undo_redo_and_restart_safe_retry[image-False]",
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "7d500ad2c9f94e748f2ddfbcb521836118817b974c85eae701c7b716e96ecbec",
+      "failure_boundary": "Runtime inverse stage internal payload",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_video_unplace.py::test_capture_commit_reload_undo_redo_and_restart_safe_retry[image-True]",
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "de847fe62d7d6d60558bf65e2a2bc03fbea7eb6a21bcbf3cef74e2964c4d42d6",
+      "failure_boundary": "Runtime inverse stage internal payload",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_video_unplace.py::test_capture_commit_reload_undo_redo_and_restart_safe_retry[video-False]",
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "FAILED",
+      "detail_sha256": "2338b5a1598efc4d987500d82e8e4e74c20b5f7d443cf5eda91a7e9149133b71",
+      "failure_boundary": "Runtime inverse stage internal payload",
+      "failure_phase": "call",
+      "nodeid": "tests/editing_conformance/test_commit_runtime_video_unplace.py::test_capture_commit_reload_undo_redo_and_restart_safe_retry[video-True]",
+      "setup": "PASSED",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "9ff6e1b72738cd1ac1d67471a970ca8fe450bbc99406f897c4fbab69edb502c9",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_auto_placement.py::test_exact_capture_replay_inverse_and_redo[image-absent]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "e260fd6a80c42a318922c6b3f29178e29479c5695a3abb6bc913bea391f39215",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_auto_placement.py::test_exact_capture_replay_inverse_and_redo[image-anchor]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "4a1583c9ac637e7c38483af6fcd2e0332d8806b09730a3b5dedebf308df7163d",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_auto_placement.py::test_exact_capture_replay_inverse_and_redo[video-absent]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "7fd3021d515813eea05cc86d003eb9e5728751c84c8d5e5a073ff907fec95733",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_auto_placement.py::test_exact_capture_replay_inverse_and_redo[video-anchor]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "32fc5e201cd767e18ede91dab3252c7137a8b05e962be010a5b0e2fa51cd9920",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_auto_placement.py::test_provider_accepts_completion_placement_with_exact_undo_and_redo[image]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "cc248bff29b35e93a78efb5670a3a00bf7cdd9386431059709b16fd2d9b94535",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_auto_placement.py::test_provider_accepts_completion_placement_with_exact_undo_and_redo[video]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "45fb985eec146d829b347f3683fb0e9a273e583fa1cd9da2af728597496c975b",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_placement_create_unplace.py::test_exact_capture_replay_inverse_and_redo[create]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "759f43a8d78bae9addcdf5b4f759e2166debf9d9ad4b48258733dc5775385317",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_placement_create_unplace.py::test_exact_capture_replay_inverse_and_redo[unplace]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "dbfd33864485a00f0326c813cb820fc94eddff6946bcdca2cbae44a3e5b6d7b2",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_placement_create_unplace.py::test_provider_accepts_create_with_exact_undo_and_redo",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "73a64cba5b751ff4f921b63e7498801606693f8b4af47e5c6aabb33559e63be6",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_placement_create_unplace.py::test_provider_accepts_unplace_with_exact_undo_and_redo",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "fe7a11cb51a34e3063cacef764cf805a53f88469d8a67fc62319453ae53dd400",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shared_auto_placement.py::test_exact_capture_replay_inverse_and_redo[image-append]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "09fa8a2bf44213799fcf82adcabb6165e002f345bad9d2ccaed94a86af4065ee",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shared_auto_placement.py::test_exact_capture_replay_inverse_and_redo[image-shift]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "08fccb4d4fdc3212dd926507392d1a964815c43a80431bc834c649849722df3a",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shared_auto_placement.py::test_exact_capture_replay_inverse_and_redo[video-append]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "4e89fa6734d6f4ffb9a067ed236ff5865b5cea9372bb37d9084456fab10509f7",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shared_auto_placement.py::test_exact_capture_replay_inverse_and_redo[video-overlay-anchor]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "eac978fa0e442ce648cec95025c2767e9664e88b1366204695b2fbafdc6c1ded",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shared_auto_placement.py::test_provider_accepts_shared_placement_with_exact_undo_and_redo[image]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "88db985617b48cc49098e5732b03c3b4894762bdd0434a8ae9261e0cee79f294",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shared_auto_placement.py::test_provider_accepts_shared_placement_with_exact_undo_and_redo[video]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "bc881d9403ce8b2eb85fa9bba559067d77cd251f4d8e4d9937a0409fd9f36ba3",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shot_pool.py::test_exact_capture_replay_inverse_and_redo[add-first]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "09033abd26e7292266d50c87431e4b0631153b956c8157fe810bb5f9da7c4643",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shot_pool.py::test_exact_capture_replay_inverse_and_redo[add-second]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "2ee70eee7a0b77ae75ac463c5b9aefe9731e6bf74c86933a6a84d9d90050130d",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shot_pool.py::test_exact_capture_replay_inverse_and_redo[remove-middle]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "d57cc764e707be50133d9dadcf60729e42c5eece7e22dc58284e5a8174eca872",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shot_pool.py::test_placing_pooled_media_promotes_it_in_one_batch_that_undoes_as_one[image]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "61979878bbad9ecece9586836cf7cab27e1d3347fd8653d40ada798d1ae1bb04",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shot_pool.py::test_placing_pooled_media_promotes_it_in_one_batch_that_undoes_as_one[video]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "2e33457b233797c61262300debfd13f2c0f1c4de80a20e80c3188008723d36d3",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shot_pool.py::test_promotion_and_keep_as_pooled_round_trip_through_the_provider",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "bb3d8fe0fc204e400f6adb25367ddd9792f1a6420bba730bf59e4b80edf98b8b",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shot_pool.py::test_provider_accepts_add_and_remove_with_exact_undo_and_redo",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "e384b825405182f10b10da701e84c7d5b88c4fca249be3fc453aec43f1c4a6ea",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_recipe_occurrence_media.py::test_provider_exact_reload_inverse_redo_and_retired_asset_reservation[add]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "a53b0603ee511ee6e8b8de36c6a79f54ac14f9fdb1b8fe0fd02e4d8c76643827",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_recipe_occurrence_media.py::test_provider_exact_reload_inverse_redo_and_retired_asset_reservation[swap]",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    },
+    {
+      "call": "NO-RESULT",
+      "detail_sha256": "e91fc8c3a0fa6ce09f30977ea59bc5ac4c524197778e50907cad292286561095",
+      "failure_boundary": "Runtime command creation claim",
+      "failure_phase": "setup",
+      "nodeid": "tests/editing_conformance/test_recipe_occurrence_media.py::test_same_alias_materialized_whole_payload_read_allows_exact_undo_redo",
+      "setup": "ERROR",
+      "teardown": "PASSED"
+    }
+  ],
+  "source_sha": "c1130e03b234763fb6c6d9e6fd4b29c275f80d42"
+}

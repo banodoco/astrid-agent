@@ -1,0 +1,42 @@
+{
+  "pin-guard-results.collection.json": {
+    "bytes": 600,
+    "sha256": "aa92005a48bd2d4369b227e5d6411b6ca12ea7c6abdd1d308cfc2d7d53af4a46"
+  },
+  "pin-guard-results.jsonl": {
+    "bytes": 1685,
+    "sha256": "71cc188cf3e83d17e8650af487713cf099dec25305160f38519a11e6b97f000a"
+  },
+  "pin-guard-results.log": {
+    "bytes": 1142,
+    "sha256": "c75f49d496f78cab197be748aa4c0b30f7f10eb52824e345c31904e30cd61560"
+  },
+  "pin-guard-results.reference.json": {
+    "bytes": 600,
+    "sha256": "aa92005a48bd2d4369b227e5d6411b6ca12ea7c6abdd1d308cfc2d7d53af4a46"
+  },
+  "pin-guard-results.xml": {
+    "bytes": 359,
+    "sha256": "c448e27aa53d89d0c0850a9cb787876a733a28225b151cee3d6b74efaed2a052"
+  },
+  "results.collection.json": {
+    "bytes": 46161,
+    "sha256": "cc02330d26cdb4f670e3682ea1be7059b1fc5eae500d620d6251ef9f9fae7482"
+  },
+  "results.jsonl": {
+    "bytes": 629733,
+    "sha256": "533881e7daf3f325d901b947d0b2c5da61dd50aa1036ab706c655a73987d1e34"
+  },
+  "results.log": {
+    "bytes": 646997,
+    "sha256": "3ebbb3d8b175fd3eb4f6ca017b195829614bbec1986c11ce319f834b3fe61db9"
+  },
+  "results.reference.json": {
+    "bytes": 46161,
+    "sha256": "cc02330d26cdb4f670e3682ea1be7059b1fc5eae500d620d6251ef9f9fae7482"
+  },
+  "results.xml": {
+    "bytes": 447183,
+    "sha256": "882a33db36a82016fe2842b38caa6efbbfd93aa69981c6e6d25bbec089a10f06"
+  }
+}
