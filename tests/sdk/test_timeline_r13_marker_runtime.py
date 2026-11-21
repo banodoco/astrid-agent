@@ -44,7 +44,7 @@ def _patch(service, project, change, key, *, reads=()):
     )
 
 
-def seed_r13_timeline(service, project, path):
+def seed_r13_timeline(service, project, path, *, shot_id="shot"):
     _png(path)
     object_id = service.ingest(
         project, path.read_bytes(), original_name="still.png", media_type="image/png", idempotency_key="still",
@@ -64,14 +64,14 @@ def seed_r13_timeline(service, project, path):
             "clips": [{"id": "still", "track": "V1", "clipType": "image", "asset": "still",
                        "at": 0, "hold": 1}],
             "occurrences": [
-                {"occurrence_id": "first-shot", "shot_id": "shot", "shot_revision_id": "r13-shot",
+                {"occurrence_id": "first-shot", "shot_id": shot_id, "shot_revision_id": "r13-shot",
                  "placement": {"start_ms": 0, "track": "V1"},
                  "source_offset": {"start": 0, "end": 1000}, "duration_ms": 1000,
                  "speed": {"numerator": 1, "denominator": 1}, "track": "V1"},
             ],
         },
         "shot_revisions": [
-            {"shot_id": "shot", "revision_id": "r13-shot", "internal_timeline_revision_id": "r13-child",
+            {"shot_id": shot_id, "revision_id": "r13-shot", "internal_timeline_revision_id": "r13-child",
              "payload": {"name": "Shot", "items": [], "text_bindings": []}},
         ],
         "internal_timeline_revisions": [
@@ -192,3 +192,89 @@ def test_guarded_placement_edit_on_legacy_track_requires_version_one(realm, tmp_
     parent = accepted["data"]["canonical_document"]["parent_revision"]["payload"]
     assert parent["config"]["tracks"] == proposed
     assert service.get_project_parent_composition_revision(project, "main", "r13-parent") == revision
+
+
+def share_r13_child(service, client, project, outbox):
+    from astrid.sdk.timeline import Timeline
+    from astrid.sdk.timeline.commit import bundle_from_document
+    from astrid.sdk.timeline.native_occurrence_shared import capture_occurrence_place_shared
+    from runtime_protocol.util import canonical_json
+
+    history = _history(service, project)
+    before = history["items"][-1]["receipt"]["result"]["canonical_document"]
+    timeline = Timeline.open(project, "main", client=client, outbox_path=outbox)
+    command = capture_occurrence_place_shared(
+        bundle_from_document(before), "occurrence:first-shot", "second-shot", on=1,
+    )
+    preview = timeline.commit([command], label="Share R13 child", dry_run=True)
+    assert preview["data"]["would_status"] == "accepted" and preview["receipt"] is None
+    assert _history(service, project) == history
+
+    result = timeline.commit([command], label="Share R13 child", key="share-r13-child")
+    after = result["data"]["canonical_document"]
+    assert result["data"]["status"] == "accepted"
+    assert preview["data"]["canonical_document"] == after
+    for family in ("shot_revisions", "internal_timeline_revisions", "dependency_manifest"):
+        assert canonical_json(after[family]) == canonical_json(before[family])
+    parent_before = before["parent_revision"]["payload"]
+    parent_after = after["parent_revision"]["payload"]
+    assert canonical_json(parent_after["config"]["tracks"]) == canonical_json(parent_before["config"]["tracks"])
+    assert [row["occurrence_id"] for row in parent_after["occurrences"]] == ["first-shot", "second-shot"]
+    assert {row["shot_id"] for row in parent_after["occurrences"]} == {"chapter-shot"}
+    assert {row["shot_revision_id"] for row in parent_after["occurrences"]} == {"r13-shot"}
+    reopened = bundle_from_document(after)
+    assert len(reopened["shots"]) == 2
+    assert "chapter-shot" not in reopened["shots"]
+    assert all(item["internal_timeline"]["tracks"][0]["app"][_MARKER] == 2
+               for item in reopened["shots"].values())
+    return timeline, before, result
+
+
+def test_shared_r13_child_aliases_reopen_without_changing_the_physical_source(realm, tmp_path):
+    from astrid.core.timeline.reader_projection import check_reader_projection, reader_view
+    from astrid.packs.rendering.actions.render.managed_timeline import (
+        resolve_managed_render_snapshot,
+        validate_managed_render_snapshot,
+    )
+    from astrid.sdk.timeline_filmstrip import prepare_filmstrip
+    from runtime_protocol.capture_validation import validate_capture
+    from runtime_protocol.errors import RuntimeErrorBase
+
+    service, client, project = realm
+    seed_r13_timeline(service, project, tmp_path / "still.png", shot_id="chapter-shot")
+    timeline, before, result = share_r13_child(service, client, project, tmp_path / "outbox.json")
+    after = result["data"]["canonical_document"]
+    parent = after["parent_revision"]
+    history = _history(service, project)
+    child = service.get_project_timeline_revision(project, "main", "r13-child")
+
+    render = resolve_managed_render_snapshot(project_ref=project, timeline_ref="main", client=client)
+    validate_managed_render_snapshot(render)
+    assert render.head_event_id == parent["revision_id"]
+    visualize = prepare_filmstrip(
+        {"timeline_ref": "main", "composed_capture": True}, project=project, client=client,
+    )["capture_snapshot"]
+    check_reader_projection(*reader_view(visualize["config"], visualize["registry"]))
+    assert validate_capture(service, visualize, {
+        "source_kind": "revision", "project_id": project, "timeline_id": "main",
+        "revision_id": parent["revision_id"], "revision_digest": parent["content_digest"],
+    }, {})
+    for config in (render.config, visualize["config"]):
+        assert {row["id"] for row in config["tracks"]} == {"V1", "first-shot~picture", "second-shot~picture"}
+        assert {row["id"] for row in config["clips"]} == {"still", "first-shot:child-still", "second-shot:child-still"}
+        assert all(row["app"].get(_MARKER) != 2 for row in config["tracks"])
+
+    tracks = child["payload"]["tracks"]
+    updated = copy.deepcopy(tracks)
+    updated[0]["scale"] = 2
+    with pytest.raises(RuntimeErrorBase, match=r"app\.clipPlacementVersion"):
+        _patch(service, project, {
+            "op": "set", "ref": "internal-revision:r13-child", "path": ["tracks"],
+            "before": {"state": "present", "value": tracks}, "value": updated,
+        }, "changed-legacy-placement")
+    assert _history(service, project) == history
+    assert service.get_project_timeline_revision(project, "main", "r13-child") == child
+
+    restored = timeline.undo(publications=[result["receipt"]["receipt_id"]], idempotency_key="undo-r13-share")
+    assert restored["data"]["status"] == "accepted"
+    assert restored["data"]["canonical_document"] == before
