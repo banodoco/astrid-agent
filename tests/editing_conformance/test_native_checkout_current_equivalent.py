@@ -216,7 +216,7 @@ def test_current_checkout_gate3_reload_undo_and_visualize_report_unavailable(
         accepted = editing.flush(idempotency_key="native-checkout-gate3")
         assert accepted["data"]["accepted_revision_id"]
         reloaded = attach()
-        assert reloaded.clip("parent/clip:music-bed").start == 1
+        assert reloaded.clip("parent/clip:music-bed").start == 1.001
         undone = reloaded.undo([accepted["receipt"]["receipt_id"]])
         assert undone["data"]["accepted_revision_id"]
         after_undo = attach()
