@@ -533,12 +533,22 @@ def admit_project_pack(realm: str, project: str, *, client=None, collection='def
         previous=_selected_index(realm,project,document_id,row)
         admissions=[dict(a) for a in content['admissions']]
         build_records=list(records)
-        selected_keys=set()
+        selected_keys=set();upgraded=set()
         for index,record in enumerate(records):
             descriptor=record['descriptor'];admission={k:descriptor[k] for k in ('id','kind','revision')};admission['snapshot_digest']=closure_hash
             matching=[a for a in admissions if all(a[k]==admission[k] for k in ('id','kind','revision'))]
             if len(matching)>1:
                 raise ValueError('Ambiguous selected pack admission')
+            if matching and 'compiled' not in matching[0]:
+                # A pre-compiled-module admission: same revision (source is unchanged), upgraded in place to the new
+                # closure and compiled file. Its snapshot object is republished under the new digest.
+                new=dict(admission,descriptor=descriptor,compiled=record['compiled'],
+                    authoring={'packRoot':str(root),'descriptorPath':Path(record['authoring']['descriptorPath']).relative_to(root).as_posix(),
+                               'componentPath':record['snapshot']['componentPath'],'status':'admitted'})
+                admissions[admissions.index(matching[0])]=new
+                upgraded.add((admission['id'],admission['kind'],admission['revision']))
+                selected_keys.add((admission['id'],admission['kind'],admission['revision']))
+                continue
             if matching:
                 if 'snapshot_object' not in matching[0] and matching[0]['snapshot_digest']!=closure_hash:
                     raise ValueError('Selected pack admission closure changed; cannot replace immutable snapshot')
@@ -594,9 +604,10 @@ def admit_project_pack(realm: str, project: str, *, client=None, collection='def
                 if (admission['id'],admission['kind'],admission['revision']) in selected_keys and 'snapshot_object' not in admission:
                     admission['snapshot_object']=snapshot_object
         committed=_publish_document(client,project,document_id,row,next_content) if next_content!=content else row
-        retained_keys={(e['descriptor']['id'],e['descriptor']['kind'],e['descriptor']['revision']) for e in previous['elements']}
+        previous_elements=[e for e in previous['elements'] if (e['descriptor']['id'],e['descriptor']['kind'],e['descriptor']['revision']) not in upgraded]
+        retained_keys={(e['descriptor']['id'],e['descriptor']['kind'],e['descriptor']['revision']) for e in previous_elements}
         added=[e for e in records if (e['descriptor']['id'],e['descriptor']['kind'],e['descriptor']['revision']) not in retained_keys]
-        selected=_index(realm,project,document_id,committed['version'],next_content,[*previous['elements'],*added])
+        selected=_index(realm,project,document_id,committed['version'],next_content,[*previous_elements,*added])
         _atomic_json(path,selected)
         return {'ok':True,'manifestPath':str(path),'documentId':document_id,'documentVersion':committed['version'],'project':{**location,'status':'admitted'},'elements':records,'instruction':'Pack files compiled and selected by Runtime document CAS. Publish the exact same timeline placement at its captured head, then refresh the editor. Admission alone did not edit a timeline.'}
     finally:

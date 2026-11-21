@@ -319,3 +319,50 @@ def test_missing_esbuild_api_and_wrong_version_have_plain_fixes(monkeypatch, tmp
     with pytest.raises(ValueError, match=r'reports 0\.27\.7, but .* pins 0\.0\.1.*Repair the install'):packs._renderer_compiler()
     (project / 'node_modules' / 'esbuild' / 'lib' / 'main.js').unlink()
     with pytest.raises(ValueError, match=r'main\.js is missing.*Repair the install'):packs._renderer_compiler()
+
+
+def _make_legacy(configured, first):
+    """Rewrite an admission to the pre-compiled-module shape: source-only closure digest, no `compiled`, stale index."""
+    key = ('project', first['documentId'])
+    row = configured.rows[key]
+    admission = row['content']['admissions'][0]
+    record = first['elements'][0]
+    source = [f for f in record['snapshot']['files'] if not f['path'].startswith('compiled/')]
+    admission['snapshot_digest'] = packs._closure_digest(source)
+    del admission['compiled']
+    legacy = copy.deepcopy(record)
+    legacy['snapshot']['files'] = source
+    del legacy['compiled']
+    packs._atomic_json(Path(first['manifestPath']), packs._index('realm', 'project', first['documentId'], row['version'], row['content'], [legacy]))
+    return admission
+
+
+def test_readmitting_unchanged_legacy_admission_upgrades_it_with_a_compiled_module(configured):
+    seed()
+    first = packs.admit_project_pack('realm', 'project')
+    legacy = _make_legacy(configured, first)
+    old_digest = legacy['snapshot_digest']
+    with pytest.raises(ValueError, match='predates compiled modules'):
+        packs.materialize_project_pack('realm', 'project')
+    again = packs.admit_project_pack('realm', 'project')
+    row = configured.rows[('project', first['documentId'])]
+    admissions = row['content']['admissions']
+    assert len(admissions) == 1
+    upgraded = admissions[0]
+    assert upgraded['revision'] == first['elements'][0]['descriptor']['revision']
+    assert upgraded['snapshot_digest'] not in (old_digest, None) and upgraded['compiled']['path'].startswith('compiled/')
+    assert upgraded['compiled'] == again['elements'][0]['compiled']
+    snapshot = Path(again['elements'][0]['snapshot']['root'])
+    assert hashlib.sha256((snapshot / upgraded['compiled']['path']).read_bytes()).hexdigest() == upgraded['compiled']['sha256']
+    # The repair no longer loops: the index rebuilds from the document and the element resolves with its compiled file.
+    selected = json.loads(Path(again['manifestPath']).read_text())['elements']
+    assert [e['compiled'] for e in selected] == [upgraded['compiled']]
+    Path(again['manifestPath']).unlink()
+    rebuilt = packs.materialize_project_pack('realm', 'project')
+    assert rebuilt['elements'][0]['compiled'] == upgraded['compiled']
+    ref = {k: again['elements'][0]['descriptor'][k] for k in ('id', 'kind', 'packId', 'revision')}
+    assert packs.resolve_admitted_element('realm', 'project', ref)['compiled'] == upgraded['compiled']
+    # A second admit is a no-op on the document.
+    version = row['version']
+    packs.admit_project_pack('realm', 'project')
+    assert configured.rows[('project', first['documentId'])]['version'] == version
