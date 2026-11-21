@@ -1,0 +1,263 @@
+name: FIX-18 R13 R14 focused reproductions
+
+on:
+  push:
+    branches: [release/14/fix18-r13-differences]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reproduce:
+    name: "${{ matrix.release }} / ${{ matrix.lane }} / original IDs"
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {release: R13, lane: unit, sha: 959da7326c982a9197b5d6e2a4489f45e1deef0e}
+          - {release: R14, lane: unit, sha: 0020c2e8d7f5d6051db2964a235b97f4ba002a72}
+          - {release: R13, lane: rendering, sha: 959da7326c982a9197b5d6e2a4489f45e1deef0e}
+          - {release: R14, lane: rendering, sha: 0020c2e8d7f5d6051db2964a235b97f4ba002a72}
+    env:
+      ASTRID_RUNTIME_CHECKOUT: "${{ github.workspace }}/astrid-runtime"
+      ASTRID_VIBECOMFY_CHECKOUT: "${{ github.workspace }}/vibecomfy-checkout"
+      ASTRID_TEST_LIFECYCLE_CHECKOUT: "${{ github.workspace }}/runpod-lifecycle-checkout"
+      ASTRID_TEST_COMFY_SOURCE: "${{ github.workspace }}/comfyui-checkout"
+      ASTRID_PINOKIO_CHECKOUT: "${{ github.workspace }}/astrid-pinokio"
+      PYTEST_ADDOPTS: "-rA"
+      FROZEN_AGENT_SHA: "${{ matrix.sha }}"
+
+    steps:
+      - name: Checkout exact historical Agent SHA
+        uses: actions/checkout@v4
+        with:
+          ref: "${{ matrix.sha }}"
+          persist-credentials: false
+
+      - name: Verify Agent and discover its own Runtime pin
+        id: runtime-pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$FROZEN_AGENT_SHA"
+          echo "commit=$(python3 -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact pinned Runtime
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-runtime
+          ref: "${{ steps.runtime-pin.outputs.commit }}"
+          path: astrid-runtime
+          persist-credentials: false
+
+      - name: Discover own pinned lifecycle source
+        id: lifecycle-pin
+        shell: bash
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          s=json.load(open("astrid/packs/runpod/pins.json"))["sources"]["lifecycle"]
+          print("repository="+s["repository"].removeprefix("https://github.com/").removesuffix(".git"))
+          print("revision="+s["revision"])
+          PY
+
+      - name: Checkout pinned RunPod lifecycle
+        uses: actions/checkout@v4
+        with:
+          repository: "${{ steps.lifecycle-pin.outputs.repository }}"
+          ref: "${{ steps.lifecycle-pin.outputs.revision }}"
+          path: runpod-lifecycle-checkout
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node 22 (HyperFrames CLI)
+        if: matrix.lane == 'rendering'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up own pinned Node version
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+
+      - name: Install media tools and font
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
+
+      - name: Install this Agent revision's dev dependencies
+        run: python -m pip install -e '.[dev]'
+
+      - name: Install pinned Runtime and client as in original lane
+        shell: bash
+        run: |
+          if [[ "${{ matrix.lane }}" == "rendering" ]]; then
+            python -m pip install --no-deps -e ./astrid-runtime -e ./astrid-runtime/packages/python
+          else
+            python scripts/ci_install_runtime.py
+          fi
+
+      - name: Read exact pinned VibeComfy revision
+        id: vibe-pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          rev="$(python3 scripts/vibecomfy_pin.py)"
+          [[ "$rev" =~ ^[0-9a-f]{40}$ ]]
+          echo "revision=$rev" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout own pinned VibeComfy
+        uses: actions/checkout@v4
+        with:
+          repository: peteromallet/VibeComfy
+          ref: "${{ steps.vibe-pin.outputs.revision }}"
+          path: vibecomfy-checkout
+          persist-credentials: false
+
+      - name: Install own pinned VibeComfy
+        run: python -m pip install -e ./vibecomfy-checkout
+
+      - name: Read own pinned ComfyUI source
+        if: matrix.lane == 'rendering'
+        id: comfy-pin
+        shell: bash
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          s=json.load(open("astrid/packs/runpod/pins.json"))["sources"]["comfyui"]
+          print("repository="+s["repository"].removeprefix("https://github.com/").removesuffix(".git"))
+          print("revision="+s["revision"])
+          PY
+
+      - name: Checkout pinned ComfyUI
+        if: matrix.lane == 'rendering'
+        uses: actions/checkout@v4
+        with:
+          repository: "${{ steps.comfy-pin.outputs.repository }}"
+          ref: "${{ steps.comfy-pin.outputs.revision }}"
+          path: comfyui-checkout
+          persist-credentials: false
+
+      - name: Install Remotion dependencies and Chromium
+        if: matrix.lane == 'rendering'
+        shell: bash
+        run: |
+          sudo apt-get install -y libnss3 libdbus-1-3 libatk1.0-0 libatk-bridge2.0-0 libgbm1 libasound2t64 libxrandr2 libxkbcommon0 libxfixes3 libxcomposite1 libxdamage1 libpango-1.0-0 libcairo2 libcups2
+          npm ci --prefix remotion
+          (cd remotion && npx remotion browser ensure)
+
+      - name: Record exact runner and lock identities
+        shell: bash
+        run: |
+          mkdir -p results
+          {
+            echo "case=${{ matrix.release }}/${{ matrix.lane }}"
+            echo "Agent=$(git rev-parse HEAD)"
+            echo "Runtime=$(git -C astrid-runtime rev-parse HEAD)"
+            echo "VibeComfy=$(git -C vibecomfy-checkout rev-parse HEAD)"
+            echo "Lifecycle=$(git -C runpod-lifecycle-checkout rev-parse HEAD)"
+            echo "ComfyUI requested=$(python3 -c 'import json; print(json.load(open("astrid/packs/runpod/pins.json"))["sources"]["comfyui"]["revision"])')"
+            python --version
+            node --version
+            ffmpeg -version | head -1
+            uname -a
+          } | tee results/identity.txt
+          test "$(git rev-parse HEAD)" = "$FROZEN_AGENT_SHA"
+          test "$(git -C astrid-runtime rev-parse HEAD)" = "${{ steps.runtime-pin.outputs.commit }}"
+          test "$(git -C vibecomfy-checkout rev-parse HEAD)" = "${{ steps.vibe-pin.outputs.revision }}"
+
+      - name: Original media public-service test (UNCHANGED)
+        id: media
+        if: matrix.lane == 'rendering'
+        continue-on-error: true
+        env:
+          ASTRID_CI_JOB: lanes-integration
+        run: python -m pytest -vv -rA -s --tb=long tests/packs/rendering/test_hyperframes_backend.py::test_hyperframes_real_media_render_through_public_service --junitxml=results/media.xml
+
+      - name: Original text public-service test (UNCHANGED)
+        id: text
+        if: matrix.lane == 'rendering'
+        continue-on-error: true
+        env:
+          ASTRID_CI_JOB: lanes-integration
+        run: python -m pytest -vv -rA -s --tb=long tests/packs/rendering/test_hyperframes_backend.py::test_hyperframes_real_render_through_public_service --junitxml=results/text.xml
+
+      - name: Original middle-shot overrun test (UNCHANGED)
+        id: length
+        if: matrix.lane == 'unit'
+        continue-on-error: true
+        run: python -m pytest -vv -rA -s --tb=long tests/sdk/test_timeline_film_length.py::test_a_layer_longer_than_its_middle_shot_blocks_check --junitxml=results/length.xml
+
+      - name: Original external process adoption test (UNCHANGED)
+        id: pid
+        if: matrix.lane == 'unit'
+        continue-on-error: true
+        run: python -m pytest -vv -rA -s --tb=long tests/test_pinokio_platform_adapter.py::test_real_external_process_can_be_adopted_without_substitute_launch --junitxml=results/pid.xml
+
+      - name: Observe middle-shot diagnostic without altering original test
+        if: always() && matrix.lane == 'unit'
+        continue-on-error: true
+        shell: bash
+        run: |
+          python - <<'PY' | tee results/length-diagnostic.txt
+          from tests.sdk.test_timeline_film_length import tiny, placement
+          from astrid.sdk.timeline_checkout import Checkout
+          d=tiny()
+          d["shots"]["A"]["internal_timeline"]["clips"].append({"id":"a-card","clipType":"am-type","track":"type","at":0.0,"hold":6.0,"params":{"text":"Long."},"app":{"cut":"c1","layer":"card","for":6.0}})
+          tl=Checkout(d)
+          report=tl.check()
+          print("valid:",report.valid)
+          print("blocking:",repr(report.blocking))
+          print("problems:",repr(report.problems))
+          print("placement A:",placement(tl,"A"))
+          PY
+
+      - name: Collect HyperFrames environment and child file hints
+        if: always() && matrix.lane == 'rendering'
+        continue-on-error: true
+        shell: bash
+        run: |
+          {
+            echo "Node 22 from PATH / tool cache:"
+            node --version
+            echo "npm version:"
+            npm --version
+            echo "npx:"
+            command -v npx
+            echo "Synthetic test leftovers:"
+            find /tmp/pytest-of-runner -maxdepth 6 -type f \( -name '*.log' -o -name '*.json' -o -name '*.html' \) -print 2>/dev/null | head -80 || true
+            echo "npm log tail:"
+            find "$HOME/.npm/_logs" -maxdepth 1 -name '*.log' -type f -print 2>/dev/null | tail -8 || true
+          } | tee results/hyper-environment.txt
+
+      - name: Retain individual original IDs and environment evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: "fix18-${{ matrix.release }}-${{ matrix.lane }}-${{ github.run_id }}"
+          path: results/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Preserve original result as job conclusion
+        if: always()
+        shell: bash
+        run: |
+          if [[ "${{ matrix.lane }}" == "rendering" ]]; then
+            echo "media outcome: ${{ steps.media.outcome }}"
+            echo "text outcome: ${{ steps.text.outcome }}"
+            [[ "${{ steps.media.outcome }}" == "success" && "${{ steps.text.outcome }}" == "success" ]]
+          else
+            echo "length outcome: ${{ steps.length.outcome }}"
+            echo "PID outcome: ${{ steps.pid.outcome }}"
+            [[ "${{ steps.length.outcome }}" == "success" && "${{ steps.pid.outcome }}" == "success" ]]
+          fi
