@@ -131,7 +131,7 @@ def test_saved_r13_marker_is_absent_only_in_reader_projection(realm, reader, tmp
     document = history["items"][-1]["receipt"]["result"]["canonical_document"]
     assert reader_problem(provider, document) is None
 
-    guard = {"ref": "parent", "path": ["config", "tracks", "id:V1", "app", _MARKER],
+    guard = {"kind": "field", "ref": "parent", "path": ["config", "tracks", "id:V1", "app", _MARKER],
              "state": {"state": "present", "value": 2}}
     change = {"op": "set", "ref": "parent", "path": ["meta"],
               "before": {"state": "absent"}, "value": {"org.example.timeline": {"note": "Keep"}}}
