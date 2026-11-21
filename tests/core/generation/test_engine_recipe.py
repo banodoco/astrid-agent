@@ -9,6 +9,7 @@ import pytest
 
 from astrid.core.generation import engine_recipe as recipes
 from astrid.core.generation.engine_contracts import DataRef, ModelLockValidationError, RecipeValidationError, UnknownEngine, UnsupportedPlatform, UnsafePathError
+from astrid.core.generation.engine_runner_target import _health_facts
 from astrid.core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISION
 
 
@@ -60,6 +61,13 @@ def test_unknown_fields_are_rejected_in_a_declared_recipe_row(monkeypatch, tmp_p
     monkeypatch.setattr(recipes, "_ROOT", tmp_path)
     with pytest.raises(RecipeValidationError, match="unknown surprise"):
         recipes.load_recipe_index()
+
+
+def test_windows_comfy_resolve_once_pins_whisper_as_a_constraint():
+    recipe = recipes.load_recipe("comfyui", "windows-x86_64-cu130")
+    requirements = recipe.environments[0].requirements
+    assert requirements.mode == "resolve-once"
+    assert "openai-whisper==20250625" in requirements.constraints
 
 
 def test_the_linux_base_engine_is_one_package_owned_row_with_the_merged_locks():
@@ -279,3 +287,14 @@ def test_packaged_pin_refresh_composes_all_indexed_engines():
     assert recipes.load_pin_set(DataRef(**environment["pins"]))["vibecomfy"] == (
         recipes.load_pin_set(windows.pins)["vibecomfy"]
     )
+
+
+@pytest.mark.parametrize("platform", ["linux-x86_64-cu130", "windows-x86_64-cu130"])
+def test_whisper_node_is_required_by_recipe_health(platform):
+    recipe = recipes.load_recipe("comfyui", platform)
+    object_info = {node: {} for node in recipe.health.required_nodes if node != "Apply Whisper"}
+
+    facts = _health_facts({"system": {}}, object_info, recipe.health.required_nodes)
+
+    assert facts["healthy"] is True
+    assert facts["required_nodes_present"] is False

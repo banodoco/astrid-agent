@@ -667,6 +667,9 @@ class _Runner:
                 inputs.append(self.path(".astrid-engine/environments", name, "requirements.in"))
                 self.run((uv, "--no-config", "pip", "compile", "--python", python,
                           "--no-sources", "--generate-hashes", "--only-binary", ":all:",
+                          *(("--no-binary", "openai-whisper")
+                            if (self.recipe.engine == "comfyui"
+                                and self.recipe.platform == "windows-x86_64-cu130") else ()),
                           "--exclude-newer", environment.requirements.exclude_newer,
                           "--index-url", "https://pypi.org/simple", "-o", lock_path + ".tmp", *inputs))
             self.helper("commit-lock", environment=name)
@@ -687,6 +690,9 @@ class _Runner:
             sync += ("--only-binary", ":all:", "--no-binary", "openai-whisper",
                      "--no-binary", "argbind", "--no-binary", "randomname",
                      "--build-constraints", support)
+        elif (self.recipe.engine == "comfyui" and self.recipe.platform == "windows-x86_64-cu130"
+              and environment.requirements.mode == "resolve-once"):
+            sync += ("--only-binary", ":all:", "--no-binary", "openai-whisper")
         self.run((*sync, support))
         for install in environment.source_installs:
             cwd = self.path(next(s.relative_path for s in self.recipe.sources if s.name == install.source))

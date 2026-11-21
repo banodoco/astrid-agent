@@ -137,7 +137,8 @@
       "MiniMaxH3ReferenceToVideo",
       "UNETLoader",
       "VAELoader",
-      "VHS_VideoCombine"
+      "VHS_VideoCombine",
+      "Apply Whisper"
     ],
     "timeout_seconds": 180,
     "poll_interval_seconds": 2

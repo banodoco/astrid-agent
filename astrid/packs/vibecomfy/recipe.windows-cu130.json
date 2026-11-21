@@ -52,10 +52,6 @@
             "path": "pyproject.toml"
           },
           {
-            "source": "h3-motion-context",
-            "path": "requirements.txt"
-          },
-          {
             "source": "videohelpersuite",
             "path": "requirements.txt"
           }
@@ -65,7 +61,8 @@
           "comfy-aimdo==0.5.5",
           "opencv-python-headless==5.0.0.93",
           "setuptools==80.9.0",
-          "wheel==0.46.3"
+          "wheel==0.46.3",
+          "openai-whisper==20250625"
         ],
         "exclude_newer": "2026-10-31T00:00:00Z"
       },
@@ -121,7 +118,8 @@
     "object_info_path": "/object_info",
     "required_nodes": [
       "MiniMaxH3ReferenceToVideo",
-      "VHS_VideoCombine"
+      "VHS_VideoCombine",
+      "Apply Whisper"
     ],
     "timeout_seconds": 120,
     "poll_interval_seconds": 2

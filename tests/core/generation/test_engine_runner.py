@@ -1323,6 +1323,47 @@ def test_linux_lock_inputs_do_not_require_nonexistent_h3_requirements(resolve_on
         target.dispatch("lock-inputs", payload)
 
 
+def test_windows_lock_inputs_do_not_require_nonexistent_h3_requirements(tmp_path):
+    recipe = recipes.load_recipe("comfyui", "windows-x86_64-cu130")
+    h3 = next(source for source in recipe.sources if source.name == "h3-motion-context")
+    h3_requirements = tmp_path / h3.relative_path / "requirements.txt"
+    assert not h3_requirements.exists()
+    assert [(path.source, path.path) for path in recipe.environments[0].requirements.input_paths] == [
+        ("comfyui", "requirements.txt"),
+        ("vibecomfy", "pyproject.toml"),
+        ("videohelpersuite", "requirements.txt"),
+    ]
+    plan = runner.plan_install(recipe, root=r"C:\target", placement="local")
+    adapter = FakeAdapter()
+    adapter.key = recipe.platform
+    adapter.venv_python = lambda root: posixpath.join(root, "python.exe")
+    context = FakeContext()
+    context.recipe, context.adapter, context.platform = recipe, adapter, recipe.platform
+    context.ensure_dir = lambda *args, **kwargs: None
+    active = object.__new__(runner._Runner)
+    active.recipe, active.plan, active.context, active.adapter = recipe, plan, context, adapter
+    active.deadline, active.step_id, active.env, active.locks = time.monotonic() + 45, None, {}, {}
+    commands = []
+    lock_hash = "a" * 64
+    active.environment_state = lambda env: (None, FileFact(False, False, False, None, None))
+    active.verify_uv = lambda *args: None
+    active.helper = lambda operation, **kwargs: {"lock_exists": False} if operation == "lock-inputs" else {}
+    facts = iter((FileFact(False, False, False, None, None), FileFact(True, True, False, 1, lock_hash)))
+    active.fact = lambda *args, **kwargs: next(facts)
+    active.write = lambda *args, **kwargs: None
+    active.run = lambda argv, **kwargs: commands.append(tuple(argv))
+    active.write_install_receipts = lambda *args, **kwargs: None
+    active.environment_probe = lambda *args, **kwargs: True
+    active.environment(recipe.environments[0])
+    compile_command = next(command for command in commands if "compile" in command)
+    for source_name, relative_path in (("comfyui", "requirements.txt"),
+                                       ("vibecomfy", "pyproject.toml"),
+                                       ("videohelpersuite", "requirements.txt")):
+        source = next(source for source in recipe.sources if source.name == source_name)
+        assert plan.root + "/" + source.relative_path + "/" + relative_path in compile_command
+    assert not any("h3-motion-context" in argument for argument in compile_command)
+
+
 @pytest.mark.parametrize("declared", [False, True])
 def test_target_helper_persists_and_reuses_bound_hash_lock_before_install(resolve_once, tmp_path, monkeypatch, declared):
     recipe = recipes.load_recipe("comfyui", PLATFORM)
@@ -1979,6 +2020,41 @@ def test_runner_installs_packaged_linux_lock_with_no_compile_step(setup):
     assert not any("compile" in command for command in commands)
     assert any("commit-lock" in command for command in commands)
     assert result.requirements_locks == {"comfy": "b" * 64}
+
+
+def test_windows_resolve_once_compile_and_sync_only_allow_whisper_source_builds(monkeypatch):
+    recipe = recipes.load_recipe("comfyui", "windows-x86_64-cu130")
+    plan = runner.plan_install(recipe, root=r"C:\target", placement="local")
+    adapter = FakeAdapter()
+    adapter.key = "windows-x86_64-cu130"
+    adapter.venv_python = lambda root: posixpath.join(root, "python.exe")
+    context = FakeContext()
+    context.recipe = recipe
+    context.adapter = adapter
+    context.platform = adapter.key
+    context.ensure_dir = lambda *args, **kwargs: None
+    active = object.__new__(runner._Runner)
+    active.recipe, active.plan, active.context, active.adapter = recipe, plan, context, adapter
+    active.deadline, active.step_id, active.env = time.monotonic() + 45, None, {}
+    active.locks = {}
+    commands = []
+    lock_hash = "a" * 64
+    monkeypatch.setattr(active, "environment_state", lambda env: (None, FileFact(False, False, False, None, None)))
+    monkeypatch.setattr(active, "verify_uv", lambda *args: None)
+    monkeypatch.setattr(active, "helper", lambda operation, **kwargs: {"lock_exists": False} if operation == "lock-inputs" else {})
+    facts = iter((FileFact(False, False, False, None, None), FileFact(True, True, False, 1, lock_hash)))
+    monkeypatch.setattr(active, "fact", lambda *args, **kwargs: next(facts))
+    monkeypatch.setattr(active, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(active, "run", lambda argv, **kwargs: commands.append(tuple(argv)))
+    monkeypatch.setattr(active, "write_install_receipts", lambda *args, **kwargs: None)
+    monkeypatch.setattr(active, "environment_probe", lambda *args, **kwargs: True)
+    active.environment(recipe.environments[0])
+    compile_command = next(command for command in commands if "compile" in command)
+    sync_command = next(command for command in commands if "sync" in command)
+    for command in (compile_command, sync_command):
+        assert command[command.index("--only-binary") + 1] == ":all:"
+        assert command[command.index("--no-binary") + 1] == "openai-whisper"
+        assert command.count("--no-binary") == 1
 
 
 def test_h3_packaged_sync_allows_only_three_source_builds_and_uses_support_lock(setup, tmp_path):
