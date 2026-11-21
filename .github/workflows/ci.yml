@@ -186,10 +186,10 @@ jobs:
           --deselect=tests/test_astrid_error_contract.py::test_to_envelope_omits_code_and_source_type_when_none
           --junitxml=tls-policy-regressions.xml
 
-      # The unchanged contract contradiction also fails on the release base.
+      # The corrected error-envelope contract runs independently of the TLS suite.
       # Execute it separately, even after an earlier failure, with its normal
-      # failing exit. Together these two steps still run every original case.
-      - name: Check independently failing error contract
+      # exit. Together these two steps still run every original case.
+      - name: Check independent error-envelope code-null contract
         if: ${{ always() }}
         run: >-
           python -m pytest -q -rA
