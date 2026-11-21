@@ -619,6 +619,55 @@ def test_media_list_forwards_all_exact_filters(capsys) -> None:
     ]
 
 
+def test_media_list_cursor_and_all_pagination(capsys) -> None:
+    client = _FakeClient()
+    pages = [([{"id": "M-1"}], "next"), ([{"id": "M-2"}], None)]
+    def page_list(project, **kwargs):
+        client.calls.append(("media.list", {"project": project, **kwargs}))
+        return DomainResult.success(pages.pop(0))
+    client.media.list = page_list
+    rc = _run("media", ["list", "--project", "demo", "--all", "--json"], client=client)
+    assert rc == 0
+    assert client.calls == [
+        ("media.list", {"project": "demo"}),
+        ("media.list", {"project": "demo", "cursor": "next"}),
+    ]
+    assert json.loads(capsys.readouterr().out)["data"] == [[{"id": "M-1"}, {"id": "M-2"}], None]
+
+
+def test_media_list_cursor_forwarded(capsys) -> None:
+    client = _FakeClient()
+    client.media.list = lambda project, **kwargs: (
+        client.calls.append(("media.list", {"project": project, **kwargs}))
+        or DomainResult.success([[{"id": "M-2"}], None])
+    )
+    assert _run("media", ["list", "--project", "demo", "--cursor", "abc", "--json"], client=client) == 0
+    assert client.calls == [("media.list", {"project": "demo", "cursor": "abc"})]
+
+
+def test_media_list_cursor_and_all_rejected() -> None:
+    client = _FakeClient()
+    with pytest.raises(SystemExit) as excinfo:
+        _run("media", ["list", "--project", "demo", "--cursor", "abc", "--all"], client=client)
+    assert excinfo.value.code == 2
+    assert client.calls == []
+
+
+def test_media_list_all_stops_on_failure_and_repeated_cursor(capsys) -> None:
+    client = _FakeClient()
+    pages = [DomainResult.success(([{"id": "M-1"}], "same")), DomainResult.failure(ErrorObject("unavailable", "page failed", {}))]
+    client.media.list = lambda project, **kwargs: (client.calls.append(("media.list", {"project": project, **kwargs})) or pages.pop(0))
+    assert _run("media", ["list", "--project", "demo", "--all", "--json"], client=client) == 1
+    assert len(client.calls) == 2
+    assert json.loads(capsys.readouterr().out)["error"]["message"] == "page failed"
+
+    client = _FakeClient()
+    client.media.list = lambda project, **kwargs: (client.calls.append(("media.list", {"project": project, **kwargs})) or DomainResult.success(([{"id": "M-1"}], "same")))
+    assert _run("media", ["list", "--project", "demo", "--all", "--json"], client=client) == 1
+    assert len(client.calls) == 2
+    assert json.loads(capsys.readouterr().out)["ok"] is False
+
+
 def test_media_list_rejects_target() -> None:
     client = _FakeClient()
     with pytest.raises(SystemExit) as excinfo:
