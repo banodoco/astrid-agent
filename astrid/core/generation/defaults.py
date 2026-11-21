@@ -16,6 +16,9 @@ from typing import Any, Iterable, Mapping
 from astrid.core.generation import settings
 
 DEFAULTS_POINT = "generation.defaults"
+_HELD_MODE = ("audio", "transcribe")
+_HELD_SLOT = ".".join(_HELD_MODE)
+_HELD_MESSAGE = "audio transcription is unavailable in this release"
 _logger = logging.getLogger(__name__)
 
 
@@ -59,7 +62,8 @@ def pack_candidates(registry: Any = None) -> list[Candidate]:
     for contribution in registry.contributions(DEFAULTS_POINT):
         for raw in contribution.fields.get("defaults", []):
             rows.append(Candidate(contribution.pack, raw["entry"], raw["kind"], raw["mode"], raw["priority"]))
-    return [row for row in rows if row.entry not in HELD_TRANSCRIPTION_ENTRIES]
+    return [row for row in rows if row.entry not in HELD_TRANSCRIPTION_ENTRIES
+            and (row.kind, row.mode) != _HELD_MODE]
 
 
 def known_entries(registry: Any = None) -> list[dict[str, Any]]:
@@ -106,11 +110,14 @@ def slots(candidates: Iterable[Candidate], pins: Mapping[str, Any]) -> list[tupl
     for slot in pins:
         kind, mode = slot.split(".", 1)
         found.add((kind, mode))
+    found.discard(_HELD_MODE)
     return sorted(found)
 
 
 def check_pin(slot: str, pin: Any, entries: Iterable[Mapping[str, Any]]) -> dict[str, str]:
     """Refuse a malformed pin, an entry that does not exist, or one lacking that kind and mode."""
+    if slot == _HELD_SLOT:
+        raise settings.refuse(_HELD_MESSAGE, key=f"defaults.{slot}")
     pin = settings.validate_pin(slot, pin)
     kind, mode = slot.split(".", 1)
     matches = [row for row in entries if row["entry"] == pin["entry"] and row["pack"] == pin["pack"]]
@@ -127,6 +134,8 @@ def check_pin(slot: str, pin: Any, entries: Iterable[Mapping[str, Any]]) -> dict
 
 def resolve(kind: str, mode: str, *, pins: Mapping[str, Any], candidates: Iterable[Candidate],
             entries: Iterable[Mapping[str, Any]] | None = None, origin: str = "") -> Resolved:
+    if (kind, mode) == _HELD_MODE:
+        return Resolved(kind, mode, None, None, "none", None, _HELD_MESSAGE)
     slot = f"{kind}.{mode}"
     offered = sorted((c for c in candidates if (c.kind, c.mode) == (kind, mode)),
                      key=lambda c: (-c.priority, c.pack, c.entry))
@@ -144,6 +153,8 @@ def resolve(kind: str, mode: str, *, pins: Mapping[str, Any], candidates: Iterab
 def ordered_ids(kind: str, mode: str, snapshot: settings.Snapshot | None = None, registry: Any = None,
                 client: Any = None) -> tuple[str, ...]:
     """The preference order of entry ids for a slot: the pin, then pack defaults by priority."""
+    if (kind, mode) == _HELD_MODE:
+        return ()
     snapshot = snapshot or settings.read(client)
     pins = snapshot.content.get("defaults", {})
     candidates = pack_candidates(registry)
@@ -157,6 +168,8 @@ def ordered_ids(kind: str, mode: str, snapshot: settings.Snapshot | None = None,
 
 
 def pinned_entry(kind: str, mode: str, snapshot: settings.Snapshot) -> str | None:
+    if (kind, mode) == _HELD_MODE:
+        return None
     pin = snapshot.content.get("defaults", {}).get(f"{kind}.{mode}")
     if pin is None:
         return None
@@ -244,6 +257,8 @@ def restore_command(kind: str, mode: str, previous: Mapping[str, Any] | None, en
 def set_default_reporting(kind: str, mode: str, entry: str, *, pack: str | None = None, client: Any = None,
                           registry: Any = None) -> tuple[settings.Snapshot, dict[str, Any] | None]:
     """``set_default``, also returning the user pin it replaced (``None`` when there was none)."""
+    if (kind, mode) == _HELD_MODE:
+        raise settings.refuse(_HELD_MESSAGE, key=f"defaults.{_HELD_SLOT}")
     entries = known_entries(registry)
     packs = sorted({row["pack"] for row in entries if row["entry"] == entry
                     and row["kind"] == kind and mode in row["modes"]})
@@ -270,10 +285,13 @@ def unset_default(kind: str, mode: str, *, client: Any = None) -> settings.Snaps
     return settings.update(lambda document: document["defaults"].pop(f"{kind}.{mode}", None), client)
 
 
-def check_pins(document: Mapping[str, Any], registry: Any = None) -> None:
-    """Refuse every pin of a whole document that names no real entry for its slot."""
+def check_pins(document: Mapping[str, Any], registry: Any = None, *,
+               previous_defaults: Mapping[str, Any] | None = None) -> None:
+    """Validate active pins and allow an unchanged held pin to be carried forward."""
     pins = document.get("defaults", {})
     if pins:
         entries = known_entries(registry)
         for slot, pin in pins.items():
+            if slot == _HELD_SLOT and previous_defaults is not None and pin == previous_defaults.get(slot):
+                continue
             check_pin(slot, pin, entries)

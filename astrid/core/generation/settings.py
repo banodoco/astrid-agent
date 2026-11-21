@@ -328,7 +328,6 @@ def checkin(file: str | Path, client: Any = None) -> dict[str, Any]:
     document = validate_document(mine)
     from astrid.core.generation import defaults
 
-    defaults.check_pins(document)
     snapshot = read(client)
     if snapshot.source != "runtime":
         raise refuse("the Runtime is not reachable", key="$", code="generation_settings_unavailable")
@@ -339,6 +338,7 @@ def checkin(file: str | Path, client: Any = None) -> dict[str, Any]:
                        state={"yours": {"version": meta["base_version"], "content": document},
                               "current": {"version": snapshot.version, "content": snapshot.content}})
         raise error
+    defaults.check_pins(document, previous_defaults=snapshot.content.get("defaults", {}))
     digest = _digest(document)
     written = _write(current_store(client), document, snapshot.version, f"generation-checkin-{snapshot.version}-{digest[:24]}")
     return {"version": written.version, "changed": written.content != snapshot.content}

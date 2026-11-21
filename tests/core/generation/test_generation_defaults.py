@@ -248,3 +248,61 @@ def test_model_verification_counter_defaults_to_trusting_unchanged_files():
     assert ModelVerification().report() == {'trust_unchanged': True, 'hashed': 0, 'skipped': 0}
     for enabled in (True, False):
         assert ModelVerification(enabled).report() == {'trust_unchanged': enabled, 'hashed': 0, 'skipped': 0}
+
+
+def test_legacy_transcription_pin_is_hidden_and_can_be_removed(monkeypatch):
+    from astrid.core.generation import listing as inventory
+    from astrid.sdk.generation import GenerationFacade
+
+    pin = {"pack": "generation", "entry": "transcription"}
+    legacy = settings.update(lambda document: document["defaults"].update({"audio.transcribe": pin}))
+    monkeypatch.setattr(inventory, "generation_rows", lambda: [])
+    monkeypatch.setattr(inventory, "target_selection", lambda _client: None)
+    monkeypatch.setattr(inventory, "placement_block", lambda _selection: {"resolved": None})
+    facade = GenerationFacade()
+
+    assert "audio.transcribe" not in {row["slot"] for row in facade.defaults()["slots"]}
+    assert defaults.pinned_entry("audio", "transcribe", legacy) is None
+    assert defaults.ordered_ids("audio", "transcribe", legacy) == ()
+    held = defaults.resolve("audio", "transcribe", pins=legacy.content["defaults"], candidates=[])
+    assert (held.entry, held.source) == (None, "none")
+    with pytest.raises(AstridError, match="audio transcription is unavailable"):
+        defaults.set_default("audio", "transcribe", "transcription")
+    assert settings.read() == legacy
+
+    changed = facade.set_default("image", "t2i", "z-image")
+    rows = {row["slot"]: row for row in changed["slots"]}
+    assert rows["image.t2i"]["entry"] == "z-image" and "audio.transcribe" not in rows
+    assert settings.read().content["defaults"]["audio.transcribe"] == pin
+
+    facade.unset_default("audio", "transcribe")
+    assert settings.read().content["defaults"] == {"image.t2i": {"pack": "generation", "entry": "z-image"}}
+
+
+def test_checkin_preserves_legacy_transcription_pin_and_refuses_changes(tmp_path):
+    pin = {"pack": "generation", "entry": "transcription"}
+    legacy = settings.update(lambda document: document["defaults"].update({"audio.transcribe": pin}))
+    checkout = tmp_path / "settings.json"
+    settings.checkout(checkout)
+    document = json.loads(checkout.read_text(encoding="utf-8"))
+    document["models"]["trust_unchanged"] = False
+    checkout.write_text(json.dumps(document), encoding="utf-8")
+
+    assert settings.checkin(checkout)["version"] == legacy.version + 1
+    saved = settings.read()
+    assert saved.content["defaults"]["audio.transcribe"] == pin
+    assert saved.content["models"]["trust_unchanged"] is False
+
+    for previous in (pin, None):
+        if previous is None:
+            defaults.unset_default("audio", "transcribe")
+        before = settings.read()
+        checkout = tmp_path / f"settings-{before.version}.json"
+        settings.checkout(checkout)
+        document = json.loads(checkout.read_text(encoding="utf-8"))
+        document["defaults"]["audio.transcribe"] = {"pack": "generation", "entry": "audio/transcribe"}
+        document["models"]["trust_unchanged"] = True
+        checkout.write_text(json.dumps(document), encoding="utf-8")
+        with pytest.raises(AstridError, match="audio transcription is unavailable"):
+            settings.checkin(checkout)
+        assert settings.read() == before
