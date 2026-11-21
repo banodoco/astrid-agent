@@ -1,118 +1,67 @@
-"""`astrid generate audio --mode transcribe`: the audio input, the default entry and the run it reports."""
+"""The Agent audio CLI refuses transcription requests for this release."""
 from __future__ import annotations
 
 import json
-from contextlib import nullcontext
-from types import SimpleNamespace
 
 import pytest
 
 from astrid.core.generation import cli, defaults
 
 
-def _facade(calls, payload):
-    def audio(**kwargs):
-        calls.append(kwargs)
-        return SimpleNamespace(ok=True, to_dict=lambda: dict(payload))
-    return SimpleNamespace(audio=audio)
+def _assert_refusal(capsys, request):
+    assert cli.main(["audio", *request, "--json"]) == 2
+    envelope = json.loads(capsys.readouterr().out)
+    assert envelope["status"] == "blocked"
+    assert envelope["task_id"] is None
+    assert envelope["issues"][0]["code"] == "input_rejected"
+    assert "audio transcription is unavailable in this release" in envelope["issues"][0]["message"]
 
 
-def test_transcribe_mode_and_audio_ref_are_accepted_without_an_entry(monkeypatch, capsys, tmp_path):
+@pytest.fixture(autouse=True)
+def _forbid_dispatch(monkeypatch):
+    def unexpected(*args, **kwargs):
+        pytest.fail("transcription refusal must precede generation and Runtime access")
+
+    monkeypatch.setattr(cli, "_generate_facade", unexpected)
+    monkeypatch.setattr(cli, "_open_client", unexpected)
+
+
+def test_transcribe_mode_and_audio_ref_are_refused_without_an_entry(capsys, tmp_path):
     clip = tmp_path / "clip.wav"
     clip.write_bytes(b"RIFF")
-    calls = []
-    monkeypatch.setattr(cli, "_generate_facade", lambda: _facade(calls, {"status": "preview"}))
-    monkeypatch.setattr(cli, "_open_client", lambda: pytest.fail("dry run connected to Runtime"))
-
-    assert cli.main(["audio", "--mode", "transcribe", "--audio-ref", str(clip), "--dry-run", "--json"]) == 0
-
-    assert calls == [{"model": None, "mode": "transcribe", "placement": "auto", "dry_run": True,
-                      "audio_ref": str(clip)}]
-    assert json.loads(capsys.readouterr().out) == {"status": "preview"}
+    _assert_refusal(capsys, ["--mode", "transcribe", "--audio-ref", str(clip), "--dry-run"])
 
 
-def test_transcribe_is_listed_and_audio_ref_is_audio_only():
-    parser = cli._parser()
-    audio = parser._subparsers._group_actions[0].choices["audio"]
-    image = parser._subparsers._group_actions[0].choices["image"]
-    mode = next(action for action in audio._actions if action.dest == "mode")
-    assert "transcribe" in mode.choices and "music" in mode.choices
-    assert any(action.dest == "audio_ref" for action in audio._actions)
-    assert not any(action.dest == "audio_ref" for action in image._actions)
+def test_audio_help_lists_only_sound_generation_modes(capsys):
+    with pytest.raises(SystemExit) as caught:
+        cli.main(["audio", "--help"])
+
+    assert caught.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "--mode {music,tts,sfx}" in help_text
+    assert "transcribe" not in help_text
+    assert "--audio-ref" not in help_text
 
 
-def test_transcribe_run_id_is_reported_for_import(monkeypatch, capsys, tmp_path):
-    from astrid.core.generation import delivery
-
-    clip = tmp_path / "clip.wav"
-    clip.write_bytes(b"RIFF")
-
-    calls = []
-    monkeypatch.setattr(cli, "_generate_facade", lambda: _facade(calls, {"kernel_run_id": "run-7"}))
-    monkeypatch.setattr(cli, "_open_client", lambda: nullcontext("runtime-client"))
-    monkeypatch.setattr(delivery, "deliver_generation", lambda result, **kwargs: result)
-
-    assert cli.main(["audio", "--mode", "transcribe", "--audio-ref", str(clip), "--json"]) == 0
-
-    assert calls[0]["mode"] == "transcribe" and calls[0]["audio_ref"] == str(clip)
-    assert json.loads(capsys.readouterr().out)["run_id"] == "run-7"
+def test_transcription_entry_is_refused_before_admission(capsys):
+    _assert_refusal(capsys, ["--mode", "tts", "--entry", "transcription"])
 
 
-def test_transcribe_run_id_is_found_through_the_task_like_transcripts_run(monkeypatch, capsys, tmp_path):
-    from astrid.core.generation import delivery
-    from astrid.sdk.contracts import DomainResult
-
-    clip = tmp_path / "clip.wav"
-    clip.write_bytes(b"RIFF")
-
-    client = SimpleNamespace(tasks=SimpleNamespace(
-        show=lambda task_id: DomainResult.success({"run_id": "run-from-task"})))
-    monkeypatch.setattr(cli, "_generate_facade", lambda: _facade([], {"kernel_task_id": "task-1"}))
-    monkeypatch.setattr(cli, "_open_client", lambda: nullcontext(client))
-    monkeypatch.setattr(delivery, "deliver_generation", lambda result, **kwargs: result)
-
-    assert cli.main(["audio", "--mode", "transcribe", "--audio-ref", str(clip), "--json"]) == 0
-    assert json.loads(capsys.readouterr().out)["run_id"] == "run-from-task"
+def test_transcription_template_is_refused_as_a_legacy_model(capsys):
+    _assert_refusal(capsys, ["--mode", "tts", "--model", "audio/transcribe"])
 
 
-def test_audio_transcribe_default_resolves_to_the_transcription_entry():
+def test_audio_transcribe_default_is_absent():
     resolved = defaults.resolve("audio", "transcribe", pins={}, candidates=defaults.pack_candidates())
 
-    assert resolved.entry == "transcription"
-    assert resolved.source == "pack default"
+    assert resolved.entry is None
+    assert resolved.source == "none"
 
 
-def test_transcribe_audio_ref_accepts_a_project_media_id(monkeypatch, capsys):
-    import hashlib
-    from pathlib import Path
-
-    from astrid.core.generation import delivery
-    from astrid.sdk import media_handles
-
-    raw = b"RIFF-media"
-    digest = "sha256:" + hashlib.sha256(raw).hexdigest()
-    seen = {}
-
-    def invoke(**kwargs):
-        seen.update(kwargs)
-        assert Path(kwargs["audio_ref"]).read_bytes() == raw  # materialized for the whole generation
-        return SimpleNamespace(ok=True, to_dict=lambda: {"kernel_run_id": "run-m"})
-
-    client = SimpleNamespace(media=SimpleNamespace(read_bytes=lambda value: raw))
-    monkeypatch.setattr(media_handles, "resolve_media_handle",
-                        lambda client, project, ref: ({"digest": digest, "filename": "clip.wav"}, {}))
-    monkeypatch.setattr(cli, "_generate_facade", lambda: SimpleNamespace(audio=invoke))
-    monkeypatch.setattr(cli, "_open_client", lambda: nullcontext(client))
-    monkeypatch.setattr(delivery, "deliver_generation", lambda result, **kwargs: result)
-
-    assert cli.main(["audio", "--mode", "transcribe", "--audio-ref", digest, "--project", "minkhole", "--json"]) == 0
-
-    out = json.loads(capsys.readouterr().out)
-    assert out["media_id"] == digest and out["run_id"] == "run-m"
-    assert not Path(seen["audio_ref"]).exists()  # the temporary copy is removed afterwards
+def test_transcribe_audio_ref_refuses_without_reading_project_media(capsys):
+    _assert_refusal(capsys, ["--mode", "transcribe", "--audio-ref", "sha256:" + "c" * 64,
+                            "--project", "minkhole"])
 
 
-def test_transcribe_audio_ref_media_id_needs_a_project(monkeypatch, capsys):
-    monkeypatch.setattr(cli, "_open_client", lambda: pytest.fail("no project, so no Runtime connection"))
-    assert cli.main(["audio", "--mode", "transcribe", "--audio-ref", "sha256:" + "c" * 64, "--json"]) != 0
-    assert "needs --project" in capsys.readouterr().out
+def test_transcribe_audio_ref_without_project_reports_the_holdout(capsys):
+    _assert_refusal(capsys, ["--mode", "transcribe", "--audio-ref", "sha256:" + "c" * 64])

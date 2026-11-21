@@ -109,20 +109,19 @@ def test_recorded_choice_replaces_only_this_media_association():
     assert rows[-1] == {"documentId": new_doc, "mediaId": MEDIA_A, "sourceId": W.default_source_order()[0]}
 
 
-def test_run_missing_without_placement_is_refused(monkeypatch, capsys):
-    from astrid.packs.timeline import cli_working
-    from astrid.sdk.timeline_checkout import Checkout
+def test_run_missing_without_placement_is_refused(capsys):
+    import pytest
 
-    timeline = Checkout(_bundle({"s1": (MEDIA_A, [_clip("c1", to=4.0)])}))
-    monkeypatch.setattr(Checkout, "open", classmethod(lambda cls, project, ref, client: timeline))
-    args = Namespace(client=object(), project="p", ref="cut", shot=None, run_missing=True, placement=None,
-                     dry_run=True, draft=None, use_source=None, use_document=None)
+    from astrid.core.cli.domain_timelines import build_parser
 
-    assert cli_working._cmd_transcripts_refresh(args) == 2
-    assert "--placement" in capsys.readouterr().err
+    with pytest.raises(SystemExit) as caught:
+        build_parser(None).parse_args(["transcripts", "refresh", "cut", "--project", "p", "--run-missing"])
+
+    assert caught.value.code == 2
+    assert "audio transcription is unavailable in this release" in capsys.readouterr().err
 
 
-def test_dry_run_prints_what_it_would_run_and_writes_nothing(monkeypatch, capsys):
+def test_dry_run_prints_missing_media_and_writes_nothing(monkeypatch, capsys):
     from astrid.packs.timeline import cli_working
     from astrid.sdk.timeline_checkout import Checkout
 
@@ -130,12 +129,13 @@ def test_dry_run_prints_what_it_would_run_and_writes_nothing(monkeypatch, capsys
     monkeypatch.setattr(Checkout, "open", classmethod(lambda cls, project, ref, client: timeline))
     monkeypatch.setattr(cli_working, "working_copy", lambda parsed, create: (None, False))
     monkeypatch.setattr(W, "load_timeline_transcripts", lambda client, project, bundle, **kw: {})
-    args = Namespace(client=object(), project="p", ref="cut", shot=None, run_missing=True, placement="runpod",
-                     dry_run=True, draft=None, use_source=None, use_document=None)
+    args = Namespace(client=object(), project="p", ref="cut", shot=None, dry_run=True,
+                     draft=None, use_source=None, use_document=None)
 
     assert cli_working._cmd_transcripts_refresh(args) == 0
     out = capsys.readouterr().out
-    assert f"would run: astrid timelines transcripts run {MEDIA_A} --project p --placement runpod" in out
+    assert f"{MEDIA_A}  missing" in out
+    assert "would run:" not in out
     assert "no transcript choice recorded" in out
 
 
