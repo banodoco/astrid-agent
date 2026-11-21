@@ -1468,7 +1468,7 @@ def verified_release13_source(app: Path, output: Path) -> tuple[Path, Path, dict
     manifest_path = output / "install-manifest.json"
     manifest = journey.read_json(manifest_path)
     if manifest.get("release") != RELEASE13_RELEASE:
-        raise RuntimeError("Pinned Release 13 manifest does not declare release 12")
+        raise RuntimeError("Pinned Release 13 manifest does not declare release 13")
     receipt = {
         "app_commit": resolved["app_manifest_commit"],
         "manifest_sha256": resolved["manifest_sha256"],
