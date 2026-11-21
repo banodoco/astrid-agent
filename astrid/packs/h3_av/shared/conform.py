@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import resource
 import subprocess
 import tempfile
 from fractions import Fraction
@@ -40,27 +41,80 @@ def _stream_time(stream: dict, ticks_field: str, seconds_field: str) -> Fraction
     return Fraction(str(stream[seconds_field]))
 
 
-def _decoded_audio_coverage(path: Path, stream: dict, start: Fraction, end: Fraction) -> tuple[Fraction, Fraction]:
+# Bound probe output even for malformed or unusually large inputs. Exceeding the
+# limit or timeout refuses the conform rather than accepting incomplete coverage.
+_MAX_PROBE_BYTES = 16 * 1024 * 1024
+
+
+def _bounded_probe(args: list[str]) -> dict:
+    def limit_output():
+        resource.setrlimit(resource.RLIMIT_FSIZE, (_MAX_PROBE_BYTES, _MAX_PROBE_BYTES))
+
+    with tempfile.TemporaryFile() as output:
+        subprocess.run(['ffprobe', '-v', 'error', *args], stdout=output,
+                       stderr=subprocess.DEVNULL, check=True, timeout=120,
+                       preexec_fn=limit_output)
+        output.seek(0)
+        return json.load(output)
+
+
+def _video_packet_end(path: Path, stream: dict, start: Fraction, end: Fraction) -> Fraction:
+    """Measure packet coverage, rejecting gaps larger than one timestamp tick."""
+    try:
+        data = _bounded_probe([
+            '-select_streams', 'v:0', '-read_intervals',
+            f'{float(start):.9f}%{float(end):.9f}', '-show_packets',
+            '-show_entries', 'packet=pts,duration', '-of', 'json', str(path),
+        ])
+        base = Fraction(str(stream['time_base']))
+        if base <= 0:
+            raise ValueError('invalid video clock')
+        packets = sorted((int(p['pts']) * base, int(p['duration']) * base)
+                         for p in data['packets'])
+        if not packets or any(duration <= 0 for _, duration in packets):
+            raise ValueError('incomplete video packet timing')
+        coverage_end = previous_start = None
+        for packet_start, duration in packets:
+            packet_end = packet_start + duration
+            if packet_end <= start or packet_start >= end:
+                continue
+            if coverage_end is None:
+                if packet_start > start + base:
+                    raise PreparationError('source video has a timestamp gap in the requested range')
+            elif packet_start > coverage_end + base:
+                raise PreparationError('source video has a timestamp gap in the requested range')
+            elif packet_start == previous_start or packet_start < coverage_end - base:
+                raise PreparationError('source video has overlapping timestamps in the requested range')
+            previous_start = packet_start
+            coverage_end = max(coverage_end, packet_end) if coverage_end is not None else packet_end
+        if coverage_end is None:
+            raise ValueError('no video packets in the requested range')
+        return coverage_end
+    except (OSError, subprocess.SubprocessError, KeyError, TypeError, ValueError, ZeroDivisionError) as exc:
+        raise PreparationError(f'cannot verify source video coverage: {exc}') from exc
+
+
+def _decoded_audio_coverage(path: Path, stream: dict, start: Fraction, end: Fraction) -> tuple[Fraction, Fraction, Fraction]:
     """Measure decoded frame support and reject discontinuities in the selected span."""
     try:
-        proc = subprocess.run(
-            ['ffprobe', '-v', 'error', '-select_streams', 'a:0', '-show_frames',
-             '-show_entries', 'frame=best_effort_timestamp,nb_samples', '-of', 'json', str(path)],
-            capture_output=True, text=True, check=True, timeout=120,
-        )
-        frames = json.loads(proc.stdout)['frames']
+        data = _bounded_probe([
+            '-select_streams', 'a:0', '-show_frames',
+            '-show_entries', 'frame=best_effort_timestamp,nb_samples', '-of', 'json', str(path),
+        ])
+        frames = data['frames']
         base = Fraction(str(stream['time_base']))
         rate = int(stream['sample_rate'])
         if base <= 0 or rate <= 0:
             raise ValueError('invalid audio clock')
         tolerance = max(base, Fraction(1, rate))
-        coverage_start = coverage_end = None
+        coverage_start = coverage_end = stream_end = None
         for frame in frames:
             frame_start = int(frame['best_effort_timestamp']) * base
             samples = int(frame['nb_samples'])
             if samples <= 0:
                 raise ValueError('invalid decoded audio frame length')
             frame_end = frame_start + Fraction(samples, rate)
+            stream_end = frame_end if stream_end is None else max(stream_end, frame_end)
             if frame_end <= start or frame_start >= end:
                 continue
             if coverage_end is not None and abs(frame_start - coverage_end) > tolerance:
@@ -70,7 +124,7 @@ def _decoded_audio_coverage(path: Path, stream: dict, start: Fraction, end: Frac
             coverage_end = frame_end
         if coverage_start is None or coverage_end is None:
             raise ValueError('no decoded audio frames in the requested range')
-        return coverage_start, coverage_end
+        return coverage_start, coverage_end, stream_end
     except (OSError, subprocess.SubprocessError, KeyError, TypeError, ValueError, ZeroDivisionError) as exc:
         raise PreparationError(f'cannot verify decoded source audio coverage: {exc}') from exc
 
@@ -107,6 +161,7 @@ def conform_source(source: Path, destination: Path, *, start: str, end: str, fit
         raise PreparationError('source must be an existing file')
     if destination.exists():
         raise PreparationError('output directory already exists')
+    source_hash = _digest(source)
     info = _probe(source)
     streams = info.get('streams', [])
     selected = [next((s for s in streams if s.get('codec_type') == kind), None) for kind in ('video', 'audio')]
@@ -132,16 +187,32 @@ def conform_source(source: Path, destination: Path, *, start: str, end: str, fit
         except KeyError:
             # A video-only container can report duration exclusively at the
             # container level, as Matroska commonly does.
-            if len(streams) != 1:
-                raise
-            video_duration = Fraction(str(info['format']['duration']))
+            if len(streams) == 1:
+                video_duration = Fraction(str(info['format']['duration']))
+            else:
+                video_duration = _video_packet_end(source, video_stream, video_start + first, video_start + last) - video_start
             # The muxer can quantize the final packet duration. The output
             # frame count is validated independently after conforming.
             duration_tolerance = Fraction(str(video_stream['time_base']))
         audio_start = _stream_time(selected[1], 'start_pts', 'start_time') if has_audio else None
-        audio_duration = _stream_time(selected[1], 'duration_ts', 'duration') if has_audio else None
+        audio_duration = None
+        if has_audio:
+            try:
+                audio_duration = _stream_time(selected[1], 'duration_ts', 'duration')
+            except KeyError:
+                pass
+    except PreparationError:
+        raise
     except (KeyError, ValueError, TypeError, ZeroDivisionError) as exc:
         raise PreparationError('source stream start times and durations must be measurable') from exc
+    decoded_coverage = None
+    if has_audio:
+        selected_end = video_start + min(last, first + Fraction(frames, 24))
+        decoded_coverage = _decoded_audio_coverage(source, selected[1], video_start + first, selected_end)
+        if audio_duration is None:
+            audio_duration = decoded_coverage[2] - audio_start
+    if _digest(source) != source_hash:
+        raise PreparationError('source changed while inspecting coverage')
     requested = f"[{float(first):.6f}, {float(last):.6f})"
     available = f"video [0.000000, {float(video_duration):.6f})"
     if has_audio:
@@ -178,7 +249,7 @@ def conform_source(source: Path, destination: Path, *, start: str, end: str, fit
                 f'requested {requested}; available {available}'
             )
         selected_end = min(requested_end, target_end)
-        decoded_start, decoded_end = _decoded_audio_coverage(source, selected[1], anchor, selected_end)
+        decoded_start, decoded_end, _ = decoded_coverage
         audio_start = max(audio_start, decoded_start)
         audio_end = min(audio_end, decoded_end)
         if min(audio_end, selected_end) <= max(audio_start, anchor):
@@ -195,7 +266,6 @@ def conform_source(source: Path, destination: Path, *, start: str, end: str, fit
             )
         trimmed_head = max(0, round((anchor - original_audio_start) * 48000))
         trimmed_tail = max(0, round((original_audio_end - selected_end) * 48000))
-    source_hash = _digest(source)
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.h3-conform-', dir=destination.parent) as temporary:
         work = Path(temporary)
