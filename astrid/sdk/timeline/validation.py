@@ -669,27 +669,31 @@ def _validate_legacy_placement_markers(
 ) -> None:
     from astrid.core.timeline.track_appearance import (
         CLIP_PLACEMENT_VERSION,
+        SCALE_APPLIES_TO_POSITIONED_CLIPS,
         is_legacy_clip_placement_version,
     )
 
-    def marked_tracks(source: Mapping[str, Any]) -> set[str]:
+    def marked_tracks(source: Mapping[str, Any]) -> dict[str, str]:
         rows = source.get("tracks")
         if not isinstance(rows, list):
-            return set()
-        result = set()
+            return {}
+        result = {}
         for row in rows:
             if not isinstance(row, Mapping):
                 continue
             track_id, app = row.get("id"), row.get("app")
             if (isinstance(track_id, str) and isinstance(app, Mapping)
                     and is_legacy_clip_placement_version(app.get(CLIP_PLACEMENT_VERSION))):
-                result.add(track_id)
+                placement = {key: row[key] for key in ("fit", "scale") if key in row}
+                if SCALE_APPLIES_TO_POSITIONED_CLIPS in app:
+                    placement[SCALE_APPLIES_TO_POSITIONED_CLIPS] = app[SCALE_APPLIES_TO_POSITIONED_CLIPS]
+                result[track_id] = json.dumps(placement, sort_keys=True)
         return result
 
-    introduced = marked_tracks(config) - marked_tracks(previous)
-    if introduced:
-        track_id = min(introduced)
-        _fail(f"{path}[{track_id!r}].app.{CLIP_PLACEMENT_VERSION}", "is invalid")
+    old_tracks = marked_tracks(previous)
+    for track_id, placement in marked_tracks(config).items():
+        if old_tracks.get(track_id) != placement:
+            _fail(f"{path}[{track_id!r}].app.{CLIP_PLACEMENT_VERSION}", "is invalid for authored placement")
 
 
 def validate_final_candidate(
