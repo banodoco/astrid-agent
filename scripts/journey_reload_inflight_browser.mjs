@@ -124,6 +124,10 @@ async function reloadInflight(page, config) {
     check(existsSync(config.publishedPath), 'Timed out waiting for verified native R14 publication');
 
     switched = true;
+    // The old Runtime's connection is gone after the native update. Model
+    // that disconnect without forwarding the held R13 POST to its replacement.
+    await heldRoute.abort('connectionclosed');
+    receipt.original_request_disposition = 'connection-closed-after-native-update';
     record('native-r14-published');
     const [buildResponse] = await Promise.all([
       page.waitForResponse((response) => response.ok() && response.url() === buildUrl, { timeout: UI_TIMEOUT }),
@@ -192,7 +196,7 @@ async function reloadInflight(page, config) {
       : error?.name === 'TimeoutError' ? 'browser-timeout' : 'browser-operation-failed';
     if (error?.authorEvidence) receipt.author = { status: 'fail', mode: 'author', ...error.authorEvidence };
   } finally {
-    if (heldRoute) await heldRoute.abort('internetdisconnected').catch(() => {});
+    if (heldRoute && !receipt.original_request_disposition) await heldRoute.abort('internetdisconnected').catch(() => {});
     page.off('framenavigated', onNavigation);
     page.off('request', onRequest);
   }

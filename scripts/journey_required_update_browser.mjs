@@ -62,17 +62,25 @@ async function openEditor(page, config, onPhase = () => {}) {
   return track;
 }
 
-async function editTrack(track, label) {
+async function editTrack(page, track, label) {
   await track.click();
   await track.press('Control+A');
-  await track.type(label);
+  await page.keyboard.insertText(label);
   await track.blur();
 }
 
-async function queueRows(page) {
-  return page.evaluate(async () => {
+// Parse the pinned App support/app.ts JSON string bridge. JSON.parse preserves
+// own keys such as "__proto__" which Playwright's by-value decoder drops.
+export function parseCommandOutboxes(encoded, timelineId) {
+  const rows = JSON.parse(encoded);
+  check(Array.isArray(rows), 'The command outbox bridge did not return an array');
+  return timelineId === undefined ? rows : rows.filter((row) => row?.scope?.timelineId === timelineId);
+}
+
+async function queueRows(page, config) {
+  const encoded = await page.evaluate(async (timelineId) => {
     const database = 'astrid.command-outbox';
-    if (!(await indexedDB.databases()).some((entry) => entry.name === database)) return [];
+    if (!(await indexedDB.databases()).some((entry) => entry.name === database)) return '[]';
     return new Promise((resolve, reject) => {
       const open = indexedDB.open(database);
       open.onerror = () => reject(open.error);
@@ -80,37 +88,68 @@ async function queueRows(page) {
         const db = open.result;
         const tx = db.transaction('owners', 'readonly');
         const read = tx.objectStore('owners').getAll();
-        tx.oncomplete = () => { db.close(); resolve(read.result); };
+        tx.oncomplete = () => { db.close(); resolve(JSON.stringify(read.result.filter((row) => row.scope?.timelineId === timelineId))); };
         tx.onabort = () => { db.close(); reject(tx.error); };
       };
     });
-  });
+  }, config.timelineId);
+  return parseCommandOutboxes(encoded, config.timelineId);
+}
+
+function trackLabelFromWire(raw) {
+  try {
+    const { commands } = JSON.parse(raw);
+    if (!Array.isArray(commands) || commands.length !== 1) return undefined;
+    const [command] = commands;
+    if (command?.op !== 'track.set' || command.select !== 'parent/track:V1'
+      || command.args?.clear?.length !== 0) return undefined;
+    return command.args.values?.label;
+  } catch {
+    return undefined;
+  }
+}
+
+function sameScope(row, config) {
+  return row.scope?.projectId === config.projectId && row.scope?.timelineId === config.timelineId;
 }
 
 // Keep the raw persisted request in memory. Only scoped IDs and digests leave the browser runner.
 export async function findDraft(page, config) {
   const matches = [];
-  for (const row of await queueRows(page)) {
-    if (row.scope?.projectId !== config.projectId || row.scope?.timelineId !== config.timelineId) continue;
-    for (const intent of row.intents ?? []) {
-      const payload = JSON.stringify(intent.payload);
-      if (!payload.includes(JSON.stringify(config.draftLabel))) continue;
-      const pending = row.pending?.intentId === intent.id ? row.pending.request : null;
-      if (!pending || pending.method !== 'POST' || typeof pending.path !== 'string'
-        || runtimePath(pending.path) !== selectedPath(config)
-        || typeof pending.body !== 'string' || typeof pending.key !== 'string' || !pending.key) continue;
-      const draft = {
-        realmId: row.scope.realmId, actorId: row.scope.actorId, projectId: row.scope.projectId,
-        timelineId: row.scope.timelineId, ownerId: row.ownerId, intentId: intent.id,
-        payloadSha256: sha256(payload), requestSha256: sha256(pending.body), keySha256: sha256(pending.key),
-      };
-      if (!config.expectedDraft || Object.keys(draft).every((key) => draft[key] === config.expectedDraft[key])) {
-        matches.push({ draft, pending });
-      }
+  for (const row of await queueRows(page, config)) {
+    if (!sameScope(row, config)) continue;
+    const pending = row.pending?.request;
+    if (!pending || pending.method !== 'POST' || typeof pending.path !== 'string'
+      || runtimePath(pending.path) !== selectedPath(config)
+      || typeof pending.body !== 'string' || typeof pending.key !== 'string' || !pending.key
+      || trackLabelFromWire(pending.body) !== config.draftLabel) continue;
+    const intent = row.intents?.find((entry) => entry.id === row.pending.intentId);
+    if (!intent || intent.payload === undefined) continue;
+    const draft = {
+      realmId: row.scope.realmId, actorId: row.scope.actorId, projectId: row.scope.projectId,
+      timelineId: row.scope.timelineId, ownerId: row.ownerId, intentId: intent.id,
+      payloadSha256: sha256(JSON.stringify(intent.payload)), requestSha256: sha256(pending.body), keySha256: sha256(pending.key),
+    };
+    if (!config.expectedDraft || Object.keys(draft).every((key) => draft[key] === config.expectedDraft[key])) {
+      matches.push({ draft, pending });
     }
   }
   check(matches.length <= 1, 'More than one queued request matches the original draft');
   return matches[0];
+}
+
+async function waitForSettledAccepted(page, config, accepted) {
+  const deadline = Date.now() + PROMPT_TIMEOUT;
+  do {
+    const rows = (await queueRows(page, config)).filter((row) => sameScope(row, config)
+      && row.accepted?.head?.revisionId === accepted.revision
+      && row.accepted.head.publicationId === accepted.publication
+      && !row.pending && row.intents.length === 0);
+    check(rows.length <= 1, 'Accepted edit matched multiple durable queue owners');
+    if (rows.length === 1) return rows[0].ownerId;
+    await page.waitForTimeout(150);
+  } while (Date.now() < deadline);
+  throw new Error('Accepted R13 revision and publication did not settle in the durable queue owner');
 }
 
 async function waitForDraft(page, config) {
@@ -126,24 +165,25 @@ async function waitForDraft(page, config) {
 export async function author(page, config, { onQueuedAttempt, onPhase, newDocument } = {}) {
   let queueing = false;
   let blockedPosts = 0;
-  let queuedAttempt = null;
+  let queued = null;
+  let aborted = false;
+  const evidence = { outcome: 'starting', request: null, responseStatus: null, requestFailure: null };
   await page.route('**/*', (route) => {
     const request = route.request();
     if (!commitPost(request)) return route.fallback();
     if (newDocument?.()) return route.continue();
-    if (!queueing && isCommit(request, config)) return route.continue();
-    if (isCommit(request, config)) {
-      blockedPosts++;
-      if (queueing && onQueuedAttempt) { queuedAttempt ??= request; return onQueuedAttempt(route, request); }
-    }
-    return route.abort('internetdisconnected');
+    if (!isCommit(request, config)) return route.abort('internetdisconnected');
+    if (!queueing) return route.continue();
+    blockedPosts++;
+    if (queued) return route.abort('internetdisconnected');
+    queued = { route, request };
+    return onQueuedAttempt?.(route, request);
   });
-  const evidence = { outcome: 'starting', request: null, responseStatus: null, requestFailure: null };
   const onSaveRequest = (request) => {
     if (!evidence.request && isCommit(request, config)) evidence.request = {
       method: request.method(), path: runtimePath(new URL(request.url()).pathname),
-      bodySha256: sha256(request.postData() ?? ''),
-      keySha256: sha256(request.headers()['idempotency-key'] ?? ''),
+      bodySha256: sha256(request.postData() ?? ''), keySha256: sha256(request.headers()['idempotency-key'] ?? ''),
+      completeLabel: trackLabelFromWire(request.postData() ?? '') === config.savedLabel,
     };
   };
   const onSaveFailure = (request) => {
@@ -154,8 +194,7 @@ export async function author(page, config, { onQueuedAttempt, onPhase, newDocume
   try {
     const track = await openEditor(page, config, onPhase);
     onPhase?.('wait-for-editor-card');
-    // The mounted field is inert while the connection card is leaving. Match the cold-open
-    // contract: wait for that card to detach before clicking and typing into the real field.
+    // The mounted field remains inert until the connection card has left.
     await page.getByTestId('runtime-not-connected').waitFor({ state: 'detached', timeout: PROMPT_TIMEOUT });
     onPhase?.('accept-r13-edit');
     evidence.initialLabelMatches = await track.inputValue() === config.initialLabel;
@@ -165,53 +204,63 @@ export async function author(page, config, { onQueuedAttempt, onPhase, newDocume
       evidence.outcome = 'required-notice';
       throw new Error('A required update notice blocked R13 authoring');
     }
-    const first = page.waitForResponse((response) => isCommit(response.request(), config), { timeout: PROMPT_TIMEOUT });
-    const responsePromise = first.catch(() => null);
-    await editTrack(track, config.savedLabel);
+
+    const first = page.waitForResponse((response) => isCommit(response.request(), config)
+      && trackLabelFromWire(response.request().postData() ?? '') === config.savedLabel, { timeout: PROMPT_TIMEOUT })
+      .catch(() => null);
+    await editTrack(page, track, config.savedLabel);
     evidence.editedLabelMatches = await track.inputValue() === config.savedLabel;
     check(evidence.editedLabelMatches, 'R13 track field did not retain the edited value');
-    const response = await responsePromise;
+    const response = await first;
     if (!response) {
-      evidence.outcome = evidence.requestFailure ? 'scoped-post-failed' : 'no-http';
-      throw new Error(evidence.requestFailure ? 'R13 scoped commit request failed' : 'R13 edit produced no scoped commit response');
+      evidence.outcome = evidence.requestFailure ? 'scoped-post-failed' : 'no-matching-http';
+      throw new Error(evidence.requestFailure ? 'R13 scoped commit request failed' : 'No scoped response carried the complete saved label');
     }
+
     evidence.responseStatus = response.status();
-    evidence.outcome = response.ok() ? 'scoped-post-response' : 'scoped-post-failed';
     const body = await response.json().catch(() => ({}));
     if (/^[a-zA-Z0-9_.-]{1,80}$/.test(body.error?.code ?? '')) evidence.responseCode = body.error.code;
-    if (response.ok() && !(body.data?.status === 'accepted' && body.data.accepted_revision_id && body.receipt?.receipt_id)) {
-      evidence.outcome = 'scoped-post-failed';
-    }
+    evidence.outcome = 'scoped-post-failed';
     check(response.ok() && body.data?.status === 'accepted' && body.data.accepted_revision_id
       && body.receipt?.receipt_id, 'R13 did not accept the saved composition edit');
+    const accepted = { revision: body.data.accepted_revision_id, publication: body.receipt.receipt_id };
     evidence.outcome = 'accepted';
+    onPhase?.('settle-r13-edit');
+    const ownerId = await waitForSettledAccepted(page, config, accepted);
+    evidence.acceptedOwnerSettled = true;
+
     queueing = true;
     onPhase?.('hold-r13-draft');
-    let attempt;
-    if (onQueuedAttempt) {
-      await editTrack(track, config.draftLabel);
-      const attemptDeadline = Date.now() + PROMPT_TIMEOUT;
-      while (!queuedAttempt && Date.now() < attemptDeadline) await page.waitForTimeout(25);
-      check(queuedAttempt, 'The second scoped R13 save was not captured');
-      attempt = queuedAttempt;
-    } else {
-      [attempt] = await Promise.all([
-        page.waitForEvent('requestfailed', (request) => isCommit(request, config)),
-        editTrack(track, config.draftLabel),
-      ]);
-    }
-    const { draft } = await waitForDraft(page, config);
-    check(blockedPosts > 0 && draft.requestSha256 === sha256(attempt.postData() ?? '')
-      && draft.keySha256 === sha256(attempt.headers()['idempotency-key'] ?? ''),
+    await editTrack(page, track, config.draftLabel);
+    evidence.draftLabelMatches = await track.inputValue() === config.draftLabel;
+    check(evidence.draftLabelMatches, 'R13 track field did not retain the complete draft label');
+    const deadline = Date.now() + PROMPT_TIMEOUT;
+    while (!queued && Date.now() < deadline) await page.waitForTimeout(50);
+    check(queued, 'The scoped R13 draft request was not captured');
+    const { request } = queued;
+    const requestBody = request.postData() ?? '';
+    evidence.heldTrackSetMatches = trackLabelFromWire(requestBody) === config.draftLabel;
+    check(evidence.heldTrackSetMatches, 'The held request did not carry the complete draft label');
+    const { draft, pending } = await waitForDraft(page, config);
+    check(draft.ownerId === ownerId && blockedPosts > 0 && pending.body === requestBody
+      && pending.key === request.headers()['idempotency-key'],
     'R13 queued request does not match the blocked edit on the network');
-    return { draft, blockedPosts, evidence, accepted: {
-      revision: body.data.accepted_revision_id, publication: body.receipt.receipt_id,
-    } };
+    evidence.draftPersistedWhileHeld = true;
+    if (!onQueuedAttempt) {
+      await queued.route.abort('internetdisconnected');
+      aborted = true;
+      await waitForDraft(page, { ...config, expectedDraft: draft });
+      evidence.draftPersistedAfterAbort = true;
+    }
+    return { draft, blockedPosts, evidence, accepted };
   } catch (error) {
     if (evidence.outcome === 'starting') evidence.outcome = error?.name === 'TimeoutError' ? 'field-actionability' : 'authoring-failed';
     if (error instanceof Error) error.authorEvidence = evidence;
     throw error;
   } finally {
+    if (queued && !onQueuedAttempt && !aborted) {
+      await queued.route.abort('internetdisconnected').catch(() => {});
+    }
     page.off('request', onSaveRequest);
     page.off('requestfailed', onSaveFailure);
   }
@@ -359,7 +408,7 @@ async function reopen(page, browser, config, onPhase) {
       draft: original.draft, retry: { clicked, responseStatus: response.status(), errorCode: code }, saveAttempts: attempts };
   }
   const deadline = Date.now() + 10_000;
-  while ((await queueRows(page)).some((row) => row.ownerId === original.draft.ownerId
+  while ((await queueRows(page, config)).some((row) => row.ownerId === original.draft.ownerId
     && (row.pending?.intentId === original.draft.intentId
       || row.intents?.some((intent) => intent.id === original.draft.intentId)))) {
     check(Date.now() < deadline, 'Accepted request remained in the save queue');
