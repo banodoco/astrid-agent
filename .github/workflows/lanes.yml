@@ -1,909 +1,1152 @@
-# The heavy lanes the per-push run (ci.yml) deselects: integration (real Runtime daemons, subprocesses, the network)
-# and opt_in. Nightly, on request, and on pushes to main/release-1, release/*/main and Release 14's plan branch.
-# Lanes with no job (workstation, omp, gpu, app_checkout: a GPU, the owner's workstation files or another repo's checkout) are listed by name in every run (tests/lanes.py).
-name: Lanes
-
-on:
-  schedule:
-    - cron: "17 3 * * *"
-  workflow_dispatch:
-    inputs:
-      launcher_ref:
-        description: Optional full 40-character astrid-pinokio commit SHA; defaults to main
-        required: false
-        type: string
-  push:
-    branches: [main, release-1, "int/**", "release/*/main", "release/*/plan-*"]
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ !(startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main')) }}
-
+name: D18 paired original shard diagnostic
+'on': workflow_dispatch
+permissions:
+  contents: read
 jobs:
   integration:
-    name: integration shard ${{ matrix.group }} / 4
+    name: Sequential control and integrated original group 1
     runs-on: ubuntu-latest
     timeout-minutes: 240
-    env:
-      # tests/lanes.py: a lane this job provides fails, not skips, when its dependency is missing.
-      ASTRID_CI_JOB: lanes-integration
-      ASTRID_CI_MATRIX: ${{ strategy.job-index || 0 }}
-      ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/astrid-runtime
-      ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/vibecomfy-checkout
-      ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/runpod-lifecycle-checkout
-      ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/comfyui-checkout
-      ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/astrid-pinokio
-    strategy:
-      fail-fast: false
-      matrix:
-        group: [1, 2, 3, 4]
-
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Resolve launcher ref
-        id: launcher-ref
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-01 --shell bash "{0}"
-        env:
-          INPUT_LAUNCHER_REF: ${{ inputs.launcher_ref }}
-        run: |
-          ref="${INPUT_LAUNCHER_REF:-main}"
-          if [[ -n "$INPUT_LAUNCHER_REF" && ! "$ref" =~ ^[0-9a-fA-F]{40}$ ]]; then
-            echo "launcher_ref must be a full 40-character commit SHA (or empty for main)" >&2
-            exit 1
-          fi
-          echo "ref=$ref" >> "$GITHUB_OUTPUT"
-
-      - name: Read the pinned Runtime commit
-        id: runtime-pin
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-02 --shell bash "{0}"
-        run: echo "commit=$(python3 -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')" >> "$GITHUB_OUTPUT"
-
-      # The Runtime sibling the integration tests start daemons from (tests/helpers/runtime.py), at the pinned commit.
-      - name: Check out the Runtime (astrid-runtime)
-        uses: actions/checkout@v4
-        with:
-          repository: banodoco/astrid-runtime
-          ref: ${{ steps.runtime-pin.outputs.commit }}
-          path: astrid-runtime
-
-      # The canonical Pinokio checkout the Pinokio integration tests read (ASTRID_PINOKIO_CHECKOUT).
-      - name: Check out Pinokio (astrid-pinokio)
-        uses: actions/checkout@v4
-        with:
-          repository: banodoco/astrid-pinokio
-          ref: ${{ steps.launcher-ref.outputs.ref }}
-          path: astrid-pinokio
-
-      - name: Fetch historical Agent archive objects
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-05 --shell bash "{0}"
-        run: >-
-          git fetch --no-tags --depth=1 origin
-          a53ef0c257e4b0bbc2a65959b9119e2cb4cff453
-          0e1543e0da2215db9cb3320cfd1083174c3c62a9
-          ba21beffd177e7d80a5b839bde5a9e25b97235c2
-
-      - name: Fetch historical Runtime archive objects
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-06 --shell bash "{0}"
-        run: >-
-          git -C astrid-runtime fetch --no-tags --depth=1 origin
-          11443b0b5b34bd5b36725504fb083146192a759d
-          959ce04fcf91351903c361d03e6b19eb0bbe8587
-          efcb3264e854fc312faa0bc6e702a9034edc2e06
-          d9e2a71e87c827290a3ff58a94f6fb8b4bc11e0b
-          1e6d899efa77a2d6ec247c38250f9748330bb587
-          becfe6db88b2cc034dba3fafa6c050117cdf2b06
-          6634a17f3ffd885567ba3c91b6c7a560df7375a4
-          f103bb46866999c961a8865636f2e66d544e0c9b
-          9ef808711a5207f5be74dc5f267af6fdd7bc9550
-          6d53a19070faf63fc15ae1f81417722edc2c8a5f
-          b2a1d9fd82121a5509769531a2e91aece97d78b9
-          b92d3e7a05eec65c142294ef4873edd059e9b31d
-
-      - name: Verify Runtime sources before tests
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-07 --shell bash "{0}"
-        env:
-          RUNTIME_LOCK_SHA: ${{ steps.runtime-pin.outputs.commit }}
-          HISTORICAL_RUNTIME_SHA: efcb3264e854fc312faa0bc6e702a9034edc2e06
-        run: |
-          set -euo pipefail
-          locked_runtime="$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse HEAD)"
-          test "$locked_runtime" = "$RUNTIME_LOCK_SHA"
-          historical_runtime="$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse "${HISTORICAL_RUNTIME_SHA}^{commit}")"
-          test "$historical_runtime" = "$HISTORICAL_RUNTIME_SHA"
-          historical_type="$(git -C "$ASTRID_RUNTIME_CHECKOUT" cat-file -t "$HISTORICAL_RUNTIME_SHA")"
-          test "$historical_type" = commit
-          # Both source trees are used by real Lanes tests via git archive.
-          # A shallow checkout does not otherwise guarantee their availability.
-          historical_busy_runtime=6d53a19070faf63fc15ae1f81417722edc2c8a5f
-          historical_r12_agent=0e1543e0da2215db9cb3320cfd1083174c3c62a9
-          test "$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse "${historical_busy_runtime}^{commit}")" = "$historical_busy_runtime"
-          test "$(git rev-parse "${historical_r12_agent}^{commit}")" = "$historical_r12_agent"
-          git -C "$ASTRID_RUNTIME_CHECKOUT" cat-file -e "${historical_busy_runtime}^{tree}"
-          git cat-file -e "${historical_r12_agent}^{tree}"
-          git -C "$ASTRID_RUNTIME_CHECKOUT" archive --format=tar "$historical_busy_runtime" >/dev/null
-          git archive --format=tar "$historical_r12_agent" >/dev/null
-          # The retained media-manifest realm needs its matching H31 sources.
-          historical_manifest_agent=ba21beffd177e7d80a5b839bde5a9e25b97235c2
-          historical_manifest_runtime=b2a1d9fd82121a5509769531a2e91aece97d78b9
-          test "$(git rev-parse "${historical_manifest_agent}^{commit}")" = "$historical_manifest_agent"
-          test "$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse "${historical_manifest_runtime}^{commit}")" = "$historical_manifest_runtime"
-          test "$(git cat-file -t "$historical_manifest_agent")" = commit
-          test "$(git -C "$ASTRID_RUNTIME_CHECKOUT" cat-file -t "$historical_manifest_runtime")" = commit
-          git cat-file -e "${historical_manifest_agent}^{tree}"
-          git -C "$ASTRID_RUNTIME_CHECKOUT" cat-file -e "${historical_manifest_runtime}^{tree}"
-          git archive --format=tar "$historical_manifest_agent" >/dev/null
-          git -C "$ASTRID_RUNTIME_CHECKOUT" archive --format=tar "$historical_manifest_runtime" >/dev/null
-          # The authenticated media HTTP cases retain this historical Runtime.
-          historical_media_http_runtime=b92d3e7a05eec65c142294ef4873edd059e9b31d
-          test "$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse "${historical_media_http_runtime}^{commit}")" = "$historical_media_http_runtime"
-          test "$(git -C "$ASTRID_RUNTIME_CHECKOUT" cat-file -t "$historical_media_http_runtime")" = commit
-          git -C "$ASTRID_RUNTIME_CHECKOUT" cat-file -e "${historical_media_http_runtime}^{tree}"
-          git -C "$ASTRID_RUNTIME_CHECKOUT" archive --format=tar "$historical_media_http_runtime" >/dev/null
-          {
-            echo "## Effective Runtime sources"
-            echo "- Runtime checkout: $ASTRID_RUNTIME_CHECKOUT"
-            echo "- Runtime lock source: $RUNTIME_LOCK_SHA (checkout HEAD: $locked_runtime)"
-            echo "- Runtime historical source: $HISTORICAL_RUNTIME_SHA (resolved: $historical_runtime; object: $historical_type)"
-            echo "- Busy-upgrade historical Runtime tree: $historical_busy_runtime (commit, tree and archive available)"
-            echo "- R12 historical Agent tree: $historical_r12_agent (commit, tree and archive available)"
-            echo "- Media-manifest historical Agent tree: $historical_manifest_agent (commit, tree and archive available)"
-            echo "- Media-manifest historical Runtime tree: $historical_manifest_runtime (commit, tree and archive available)"
-            echo "- Authenticated media HTTP historical Runtime tree: $historical_media_http_runtime (commit, tree and archive available)"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Record checked-out refs
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-08 --shell bash "{0}"
-        run: |
-          {
-            echo "## Effective checked-out refs"
-            echo "- Agent: $(git rev-parse HEAD)"
-            echo "- Runtime: $(git -C astrid-runtime rev-parse HEAD)"
-            echo "- Pinokio: $(git -C astrid-pinokio rev-parse HEAD)"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Restore pip cache (C-08)
-        id: c08-agent-lanes-2
-        uses: actions/cache/restore@v4
-        with:
-          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
-          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Set up pinned uv
-        uses: astral-sh/setup-uv@v6
-        with:
-          version: "0.11.32"
-
-      # The HyperFrames CLI needs Node 22 (tests/fixtures/renderer_packs/hyperframes/render.py finds it in the tool cache);
-      # the step after this one puts the product's pinned Node first on PATH again.
-      - name: Set up Node.js 22 (HyperFrames CLI)
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Set up Node.js from .node-version
-        uses: actions/setup-node@v4
-        with:
-          node-version-file: .node-version
-
-      - name: Install system media tools and a system font
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-14 --shell bash "{0}"
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-dejavu-core
-
-      - name: Install package with dev extras
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-15 --shell bash "{0}"
-        run: python -m pip install -e '.[dev]'
-
-      # The tests put the Runtime checkout on sys.path (tests/helpers/runtime.py), so the Runtime and its client are
-      # installed from that same checkout, not from the archive scripts/ci_install_runtime.py installs.
-      - name: Install the Runtime and client from the checkout
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-16 --shell bash "{0}"
-        run: python -m pip install --no-deps -e ./astrid-runtime -e ./astrid-runtime/packages/python
-
-      - name: Read the pinned VibeComfy revision
-        id: vibecomfy-pin
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-17 --shell bash "{0}"
-        run: |
-          rev="$(python3 scripts/vibecomfy_pin.py)"
-          if [[ ! "$rev" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "VibeComfy engine recipe must resolve to a full lowercase 40-hex revision" >&2
-            exit 1
-          fi
-          echo "revision=$rev" >> "$GITHUB_OUTPUT"
-
-      - name: Check out VibeComfy at the pinned engine revision
-        uses: actions/checkout@v4
-        with:
-          repository: banodoco/VibeComfy
-          ref: ${{ steps.vibecomfy-pin.outputs.revision }}
-          path: vibecomfy-checkout
-
-      - name: Record VibeComfy checkout
-        env:
-          VIBECOMFY_REVISION: ${{ steps.vibecomfy-pin.outputs.revision }}
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-19 --shell bash "{0}"
-        run: |
-          checked_out="$(git -C vibecomfy-checkout rev-parse HEAD)"
-          test "$checked_out" = "$VIBECOMFY_REVISION"
-          echo "- VibeComfy: banodoco/VibeComfy at $checked_out (engine revision verified)" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Install VibeComfy
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-20 --shell bash "{0}"
-        run: python -m pip install -e ./vibecomfy-checkout
-
-      - name: Install the Remotion dependencies
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-21 --shell bash "{0}"
-        run: |
-          sudo apt-get install -y libnss3 libdbus-1-3 libatk1.0-0 libatk-bridge2.0-0 libgbm1 libasound2t64 libxrandr2 libxkbcommon0 libxfixes3 libxcomposite1 libxdamage1 libpango-1.0-0 libcairo2 libcups2
-          npm ci --prefix remotion
-
-      - name: Provision the Remotion browser
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-22 --shell bash "{0}"
-        run: npx remotion browser ensure
-        working-directory: remotion
-
-      # The RunPod CPU-path integration tests' tuple_sources fixture reads the pinned
-      # runpod-lifecycle checkout (ASTRID_TEST_LIFECYCLE_CHECKOUT), as the unit shards do in ci.yml.
-      - name: Read the pinned RunPod lifecycle revision
-        id: lifecycle-pin
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-23 --shell bash "{0}"
-        run: |
-          python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import json
-          from pathlib import Path
-          source = json.loads(Path("astrid/packs/runpod/pins.json").read_text())["sources"]["lifecycle"]
-          print(f"repository={source['repository'].removeprefix('https://github.com/').removesuffix('.git')}")
-          print(f"revision={source['revision']}")
-          PY
-
-      - name: Check out the pinned RunPod lifecycle (test fixtures)
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ steps.lifecycle-pin.outputs.repository }}
-          ref: ${{ steps.lifecycle-pin.outputs.revision }}
-          path: runpod-lifecycle-checkout
-
-      - name: Record RunPod lifecycle checkout
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-25 --shell bash "{0}"
-        env:
-          LIFECYCLE_REVISION: ${{ steps.lifecycle-pin.outputs.revision }}
-        run: |
-          set -euo pipefail
-          checked_out="$(git -C "$ASTRID_TEST_LIFECYCLE_CHECKOUT" rev-parse HEAD)"
-          test "$checked_out" = "$LIFECYCLE_REVISION"
-          echo "- RunPod lifecycle: $checked_out" >> "$GITHUB_STEP_SUMMARY"
-
-      # The pinned-source fixture (tests/integrations/_pinned_source.py) needs a real ComfyUI checkout at the engine pin,
-      # because the integrity check verifies the genuine commit; it reads ASTRID_TEST_COMFY_SOURCE, so no test needs network.
-      - name: Read the pinned ComfyUI revision
-        id: comfyui-pin
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-26 --shell bash "{0}"
-        run: |
-          python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import json
-          from pathlib import Path
-          source = json.loads(Path("astrid/packs/runpod/pins.json").read_text())["sources"]["comfyui"]
-          print(f"repository={source['repository'].removeprefix('https://github.com/').removesuffix('.git')}")
-          print(f"revision={source['revision']}")
-          PY
-
-      - name: Check out the pinned ComfyUI (test fixtures)
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ steps.comfyui-pin.outputs.repository }}
-          ref: ${{ steps.comfyui-pin.outputs.revision }}
-          path: comfyui-checkout
-
-      - name: Record ComfyUI checkout
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-28 --shell bash "{0}"
-        env:
-          COMFYUI_REVISION: ${{ steps.comfyui-pin.outputs.revision }}
-        run: |
-          set -euo pipefail
-          checked_out="$(git -C "$ASTRID_TEST_COMFY_SOURCE" rev-parse HEAD)"
-          test "$checked_out" = "$COMFYUI_REVISION"
-          echo "- ComfyUI: $checked_out" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Integration tests (shard)
-        run: mkdir -p "$TEST_RESULTS_DIR" && python -P -m ci.run_pytest -p ceiling_pytest -v -rA --junitxml="$TEST_RESULTS_DIR/integration.xml" --durations=40 -m "integration and not opt_in and not app_checkout" --splits 4 --group ${{ matrix.group }}
-        if: ${{ !cancelled() }}
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-29 --shell bash "{0}"
-        env:
-          PYTHONPATH: ${{ github.workspace }}/scripts
-          TEST_RESULTS_DIR: ${{ runner.temp }}/test-results-integration-${{ matrix.group }}-${{ runner.os }}
-      - name: Summarize test result XML
-        if: always()
-        env:
-          PYTHONPATH: ${{ github.workspace }}/scripts
-          TEST_RESULTS_DIR: ${{ runner.temp }}/test-results-integration-${{ matrix.group }}-${{ runner.os }}
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-30 --shell bash "{0}"
-        run: python -P -m ci.check_results "${{ env.TEST_RESULTS_DIR }}" --expected 1
-
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-results-integration-${{ matrix.group }}-${{ runner.os }}
-          path: |
-            ${{ runner.temp }}/test-results-integration-${{ matrix.group }}-${{ runner.os }}/*.xml
-            ${{ runner.temp }}/test-results-integration-${{ matrix.group }}-${{ runner.os }}/*.jsonl
-            ${{ runner.temp }}/test-results-integration-${{ matrix.group }}-${{ runner.os }}/*.log
-            ${{ runner.temp }}/test-results-integration-${{ matrix.group }}-${{ runner.os }}/*.json
-          retention-days: 90
-          if-no-files-found: warn
-
-      - name: Save pip cache on main or int branches (C-08)
-        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/') || (startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main'))) && steps.c08-agent-lanes-2.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
-        with:
-          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
-          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
-      - name: Retain actual Plan39 command and native result evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: failure-ceiling-${{ github.job }}-${{ strategy.job-index || '0' }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/failure-ceiling/${{ github.job }}/
-          retention-days: 90
-          if-no-files-found: error
-
-  opt-in:
-    name: opt-in
-    runs-on: ubuntu-latest
-    timeout-minutes: 180
-    env:
-      ASTRID_CI_JOB: lanes-opt-in
-      ASTRID_CI_MATRIX: ${{ strategy.job-index || 0 }}
-      ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/astrid-runtime
-      ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/vibecomfy-checkout
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Read the pinned Runtime commit
-        id: runtime-pin
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-01 --shell bash "{0}"
-        run: echo "commit=$(python3 -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')" >> "$GITHUB_OUTPUT"
-
-      - name: Check out the Runtime (astrid-runtime)
-        uses: actions/checkout@v4
-        with:
-          repository: banodoco/astrid-runtime
-          ref: ${{ steps.runtime-pin.outputs.commit }}
-          path: astrid-runtime
-
-      - name: Record checked-out refs
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-03 --shell bash "{0}"
-        run: |
-          {
-            echo "## Effective checked-out refs"
-            echo "- Agent: $(git rev-parse HEAD)"
-            echo "- Runtime: $(git -C astrid-runtime rev-parse HEAD)"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Restore pip cache (C-08)
-        id: c08-agent-lanes-1
-        uses: actions/cache/restore@v4
-        with:
-          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
-          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      # The HyperFrames CLI needs Node 22 (tests/fixtures/renderer_packs/hyperframes/render.py finds it in the tool cache);
-      # the step after this one puts the product's pinned Node first on PATH again.
-      - name: Set up Node.js 22 (HyperFrames CLI)
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Set up Node.js from .node-version
-        uses: actions/setup-node@v4
-        with:
-          node-version-file: .node-version
-
-      - name: Install system media tools and a system font
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-08 --shell bash "{0}"
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-dejavu-core
-
-      - name: Install package with dev extras
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-09 --shell bash "{0}"
-        run: python -m pip install -e '.[dev]'
-
-      # The tests put the Runtime checkout on sys.path (tests/helpers/runtime.py), so the Runtime and its client are
-      # installed from that same checkout, not from the archive scripts/ci_install_runtime.py installs.
-      - name: Install the Runtime and client from the checkout
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-10 --shell bash "{0}"
-        run: python -m pip install --no-deps -e ./astrid-runtime -e ./astrid-runtime/packages/python
-
-      - name: Read the pinned VibeComfy revision
-        id: vibecomfy-pin
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-11 --shell bash "{0}"
-        run: |
-          rev="$(python3 scripts/vibecomfy_pin.py)"
-          if [[ ! "$rev" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "VibeComfy engine recipe must resolve to a full lowercase 40-hex revision" >&2
-            exit 1
-          fi
-          echo "revision=$rev" >> "$GITHUB_OUTPUT"
-
-      - name: Check out VibeComfy at the pinned engine revision
-        uses: actions/checkout@v4
-        with:
-          repository: banodoco/VibeComfy
-          ref: ${{ steps.vibecomfy-pin.outputs.revision }}
-          path: vibecomfy-checkout
-
-      - name: Record VibeComfy checkout
-        env:
-          VIBECOMFY_REVISION: ${{ steps.vibecomfy-pin.outputs.revision }}
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-13 --shell bash "{0}"
-        run: |
-          checked_out="$(git -C vibecomfy-checkout rev-parse HEAD)"
-          test "$checked_out" = "$VIBECOMFY_REVISION"
-          echo "- VibeComfy: banodoco/VibeComfy at $checked_out (engine revision verified)" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Install VibeComfy
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-14 --shell bash "{0}"
-        run: python -m pip install -e ./vibecomfy-checkout
-
-      - name: Install the Remotion dependencies
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-15 --shell bash "{0}"
-        run: |
-          sudo apt-get install -y libnss3 libdbus-1-3 libatk1.0-0 libatk-bridge2.0-0 libgbm1 libasound2t64 libxrandr2 libxkbcommon0 libxfixes3 libxcomposite1 libxdamage1 libpango-1.0-0 libcairo2 libcups2
-          npm ci --prefix remotion
-
-      - name: Provision the Remotion browser
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-16 --shell bash "{0}"
-        run: npx remotion browser ensure
-        working-directory: remotion
-
-      - name: Opt-in tests
-        if: ${{ !cancelled() }}
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-17 --shell bash "{0}"
-        run: python -m pytest -p ceiling_pytest -q -rA -m opt_in
-
-  # The tests that need Astrid installed as a wheel (not editable, not the checkout): the wheel the release job builds,
-  # installed into its own venv, with the Runtime and the Remotion project provisioned. pytest runs from that venv with
-  # --import-mode=importlib so the checkout is not put on sys.path ahead of site-packages.
-      - name: Save pip cache on main or int branches (C-08)
-        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/') || (startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main'))) && steps.c08-agent-lanes-1.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
-        with:
-          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
-          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
-      - name: Retain actual Plan39 command and native result evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: failure-ceiling-${{ github.job }}-${{ strategy.job-index || '0' }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/failure-ceiling/${{ github.job }}/
-          retention-days: 90
-          if-no-files-found: error
-
-  installed:
-    name: installed wheel
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    env:
-      ASTRID_CI_JOB: lanes-installed
-      ASTRID_CI_MATRIX: ${{ strategy.job-index || 0 }}
-      ASTRID_APP_IDENTITY: 933c53a6fb1a11e5f8a01335d6252016d703beec
-      ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/astrid-runtime
-      ASTRID_HOST_EXECUTION_PROFILE: installed
-      ASTRID_REMOTION_PROJECT_DIR: ${{ github.workspace }}/remotion
-      ASTRID_INSTALLED_RECEIPT_DIR: ${{ github.workspace }}/installed-wheel-receipt
-    steps:
-      - name: Check out repository
-        id: checkout
-        uses: actions/checkout@v4
-
-      - name: Prepare installed-wheel receipt
-        id: receipt_init
-        if: ${{ always() }}
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-01 --shell bash "{0}"
-        run: |
-          set -euo pipefail
-          mkdir -p "$ASTRID_INSTALLED_RECEIPT_DIR"
-          : > "$ASTRID_INSTALLED_RECEIPT_DIR/inner-exits.txt"
-
-      - name: Read the pinned Runtime commit
-        id: runtime_pin
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-02 --shell bash "{0}"
-        run: |
-          set -euo pipefail
-          exec > >(tee -a "$ASTRID_INSTALLED_RECEIPT_DIR/runtime-pin.log") 2>&1
-          trap 'rc=$?; printf "%s\n" "$rc" > "$ASTRID_INSTALLED_RECEIPT_DIR/runtime_pin.exit"; exit "$rc"' EXIT
-          echo "commit=$(python3 -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')" >> "$GITHUB_OUTPUT"
-
-      - name: Check out the Runtime (astrid-runtime)
-        id: runtime_checkout
-        uses: actions/checkout@v4
-        with:
-          repository: banodoco/astrid-runtime
-          ref: ${{ steps.runtime_pin.outputs.commit }}
-          path: astrid-runtime
-
-      - name: Record checked-out refs
-        id: refs
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-04 --shell bash "{0}"
-        run: |
-          set -euo pipefail
-          exec > >(tee -a "$ASTRID_INSTALLED_RECEIPT_DIR/refs.log") 2>&1
-          trap 'rc=$?; printf "%s\n" "$rc" > "$ASTRID_INSTALLED_RECEIPT_DIR/refs.exit"; exit "$rc"' EXIT
-          {
-            echo "## Effective checked-out refs"
-            echo "- Agent: $(git rev-parse HEAD)"
-            echo "- Runtime: $(git -C astrid-runtime rev-parse HEAD)"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Set up Python
-        id: python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Set up Node.js from .node-version
-        id: node
-        uses: actions/setup-node@v4
-        with:
-          node-version-file: .node-version
-
-      - name: Install system media tools
-        id: media
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-07 --shell bash "{0}"
-        run: |
-          set -euo pipefail
-          exec > >(tee -a "$ASTRID_INSTALLED_RECEIPT_DIR/media.log") 2>&1
-          trap 'rc=$?; printf "%s\n" "$rc" > "$ASTRID_INSTALLED_RECEIPT_DIR/media.exit"; exit "$rc"' EXIT
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
-
-      - name: Build exactly one wheel
-        id: wheel
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-08 --shell bash "{0}"
-        run: |
-          set -euo pipefail
-          exec > >(tee -a "$ASTRID_INSTALLED_RECEIPT_DIR/wheel.log") 2>&1
-          trap 'rc=$?; printf "%s\n" "$rc" > "$ASTRID_INSTALLED_RECEIPT_DIR/wheel.exit"; exit "$rc"' EXIT
-          python -m pip install --disable-pip-version-check --no-input --require-hashes -r requirements/build.lock
-          python -m build --wheel --no-isolation --outdir dist
-          test "$(ls dist/*.whl | wc -l)" -eq 1
-
-      # Not editable: astrid, the Runtime and its client are copied into the venv's site-packages.
-      - name: Install the wheel and the Runtime into a venv
-        id: install
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-09 --shell bash "{0}"
-        run: |
-          set -euo pipefail
-          exec > >(tee -a "$ASTRID_INSTALLED_RECEIPT_DIR/install.log") 2>&1
-          trap 'rc=$?; printf "%s\n" "$rc" > "$ASTRID_INSTALLED_RECEIPT_DIR/install.exit"; exit "$rc"' EXIT
-          python -m venv "$RUNNER_TEMP/installed-venv"
-          "$RUNNER_TEMP/installed-venv/bin/python" -m pip install "$(ls dist/*.whl)[dev]"
-          "$RUNNER_TEMP/installed-venv/bin/python" -m pip install --no-deps ./astrid-runtime ./astrid-runtime/packages/python
-
-      - name: Install the Remotion dependencies
-        id: npm
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-10 --shell bash "{0}"
-        run: |
-          set -euo pipefail
-          exec > >(tee -a "$ASTRID_INSTALLED_RECEIPT_DIR/npm.log") 2>&1
-          trap 'rc=$?; printf "%s\n" "$rc" > "$ASTRID_INSTALLED_RECEIPT_DIR/npm.exit"; exit "$rc"' EXIT
-          npm ci --prefix remotion
-
-      # The installed selector verifies the wheel-owned registry carrier and
-      # its host-owned state.  Produce that state through the installed
-      # interpreter, just as an installed renderer does; the Composition
-      # package is a built artifact and supplies no TypeScript source tree.
-      - name: Generate the installed Remotion registry
-        id: registry
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-11 --shell bash "{0}"
-        run: |
-          set -euo pipefail
-          exec > >(tee -a "$ASTRID_INSTALLED_RECEIPT_DIR/registry.log") 2>&1
-          trap 'rc=$?; printf "%s\n" "$rc" > "$ASTRID_INSTALLED_RECEIPT_DIR/registry.exit"; exit "$rc"' EXIT
-          "$RUNNER_TEMP/installed-venv/bin/python" -I - <<'PY'
-          import os
-          from pathlib import Path
-
-          from astrid.packs.rendering.rendering.renderers.remotion import run
-
-          project = Path(os.environ["ASTRID_REMOTION_PROJECT_DIR"])
-          run._regenerate_element_registries(project, None)
-          state = run._read_registry_state(project)
-          if state != run.gen_effect_registry.compute_generated_registry_state():
-              raise SystemExit("installed Remotion registry state does not match its generator")
-          if not run._registry_outputs_match_state(project, state):
-              raise SystemExit("installed Remotion registry outputs do not match their state")
-          PY
-
-      - name: Installed tests
-        id: selector
-        if: ${{ !cancelled() }}
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-12 --shell bash "{0}"
-        run: >-
-          set -o pipefail; set +e;
-          "$RUNNER_TEMP/installed-venv/bin/pytest" -p ceiling_pytest -q -m installed --import-mode=importlib
-          --junitxml="$ASTRID_INSTALLED_RECEIPT_DIR/selector.junit.xml"
-          tests/packs/h3_av/test_character_swap_cpu_boundary.py 2>&1 |
-          tee "$ASTRID_INSTALLED_RECEIPT_DIR/selector.log";
-          rc=${PIPESTATUS[0]}; printf '%s\n' "$rc" > "$ASTRID_INSTALLED_RECEIPT_DIR/selector.exit"; exit "$rc"
-
-      - name: Collect installed-wheel receipt
-        id: receipt
-        if: ${{ always() }}
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-13 --shell bash "{0}"
-        env:
-          OUTCOME_CHECKOUT: ${{ steps.checkout.outcome }}
-          OUTCOME_RECEIPT_INIT: ${{ steps.receipt_init.outcome }}
-          OUTCOME_RUNTIME_PIN: ${{ steps.runtime_pin.outcome }}
-          OUTCOME_RUNTIME_CHECKOUT: ${{ steps.runtime_checkout.outcome }}
-          OUTCOME_REFS: ${{ steps.refs.outcome }}
-          OUTCOME_PYTHON: ${{ steps.python.outcome }}
-          OUTCOME_NODE: ${{ steps.node.outcome }}
-          OUTCOME_MEDIA: ${{ steps.media.outcome }}
-          OUTCOME_WHEEL: ${{ steps.wheel.outcome }}
-          OUTCOME_INSTALL: ${{ steps.install.outcome }}
-          OUTCOME_NPM: ${{ steps.npm.outcome }}
-          OUTCOME_REGISTRY: ${{ steps.registry.outcome }}
-          OUTCOME_SELECTOR: ${{ steps.selector.outcome }}
-        run: |
-          set -euo pipefail
-          mkdir -p "$ASTRID_INSTALLED_RECEIPT_DIR"
-          python3 - <<'PY'
-          import hashlib
-          import json
-          import os
-          import shutil
-          import subprocess
-          import xml.etree.ElementTree as ET
-          from pathlib import Path
-
-          root = Path.cwd()
-          receipt_dir = Path(os.environ["ASTRID_INSTALLED_RECEIPT_DIR"])
-          receipt_dir.mkdir(parents=True, exist_ok=True)
-
-          def sha256(path):
-              digest = hashlib.sha256()
-              with path.open("rb") as handle:
-                  for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                      digest.update(chunk)
-              return digest.hexdigest()
-
-          def command_output(*args, cwd=root):
-              try:
-                  return subprocess.run(args, cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
-              except (OSError, subprocess.CalledProcessError):
-                  return "unavailable"
-
-          def read_int(path, fallback):
-              try:
-                  return int(path.read_text(encoding="utf-8").strip())
-              except (OSError, ValueError):
-                  return fallback
-
-          def outcome_exit(outcome):
-              return 0 if outcome == "success" else 1
-
-          outcomes = {
-              name.removeprefix("OUTCOME_").lower(): value
-              for name, value in os.environ.items()
-              if name.startswith("OUTCOME_")
-          }
-          step_names = (
-              "checkout", "receipt_init", "runtime_pin", "runtime_checkout", "refs", "python", "node",
-              "media", "wheel", "install", "npm", "registry", "selector",
-          )
-          inner_exits = {
-              name: read_int(receipt_dir / f"{name}.exit", outcome_exit(outcomes.get(name, "unknown")))
-              for name in step_names
-          }
-          (receipt_dir / "inner-exits.txt").write_text(
-              "".join(f"{name}={value}\n" for name, value in inner_exits.items()), encoding="utf-8"
-          )
-
-          runtime_lock = root / "runtime.lock.json"
-          runtime_input = "unavailable"
-          if runtime_lock.is_file():
-              try:
-                  runtime_input = json.loads(runtime_lock.read_text(encoding="utf-8"))["source_commit"]
-              except (KeyError, json.JSONDecodeError):
-                  pass
-
-          composition_package = root / "remotion" / "package.json"
-          composition_lock = root / "remotion" / "package-lock.json"
-          composition = "unavailable"
-          composition_version = "unavailable"
-          composition_artifact = None
-          composition_sidecar = None
-          try:
-              package = json.loads(composition_package.read_text(encoding="utf-8"))
-              dependency = package["dependencies"]["@banodoco/timeline-composition"]
-              composition_artifact = root / "remotion" / dependency.removeprefix("file:")
-              composition_sidecar = Path(f"{composition_artifact}.sha256")
-              composition_version = dependency.rsplit("-", 1)[-1].removesuffix(".tgz")
-              composition = dependency
-          except (KeyError, OSError, json.JSONDecodeError):
-              pass
-
-          junit = receipt_dir / "selector.junit.xml"
-          junit_counts = {"tests": 0, "failures": 0, "errors": 0, "skipped": 0}
-          if junit.is_file():
-              try:
-                  suite = ET.parse(junit).getroot()
-                  if suite.tag == "testsuites":
-                      for key in junit_counts:
-                          junit_counts[key] = int(float(suite.attrib.get(key, "0")))
-                      if not any(suite.attrib.get(key) for key in junit_counts):
-                          for child in suite.iter("testsuite"):
-                              for key in junit_counts:
-                                  junit_counts[key] += int(float(child.attrib.get(key, "0")))
-                  else:
-                      for key in junit_counts:
-                          junit_counts[key] = int(float(suite.attrib.get(key, "0")))
-              except (ET.ParseError, ValueError):
-                  pass
-          selector_exit = read_int(receipt_dir / "selector.exit", inner_exits["selector"])
-
-          generated = {}
-          bundle_dir = receipt_dir / "artifacts"
-          bundle_dir.mkdir(parents=True, exist_ok=True)
-          bundled_artifacts = {}
-
-          def bundle(path, name):
-              if not path.is_file():
-                  return None
-              destination = bundle_dir / name
-              shutil.copy2(path, destination)
-              return destination
-
-          generated_paths = (
-              root / "remotion" / "src" / "effects.generated.ts",
-              root / "remotion" / "src" / "animations.generated.ts",
-              root / "remotion" / "src" / "transitions.generated.ts",
-              root / "remotion" / ".astrid-registry-state.json",
-          )
-          for path in generated_paths:
-              generated[str(path.relative_to(root))] = sha256(path) if path.is_file() else None
-              bundled = bundle(path, path.name)
-              if bundled is not None:
-                  bundled_artifacts[str(path.relative_to(root))] = {
-                      "path": str(bundled.relative_to(receipt_dir)),
-                      "sha256": sha256(bundled),
-                  }
-
-          artifact_hashes = {}
-          evidence_names = {
-              "runtime.lock.json": "runtime.lock.json",
-              "remotion/package.json": "remotion-package.json",
-              "remotion/package-lock.json": "remotion-package-lock.json",
-              "remotion/artifacts/banodoco-timeline-composition-0.0.17.tgz.sha256": "timeline-composition.tgz.sha256",
-          }
-          for path in (root / "runtime.lock.json", composition_package, composition_lock, composition_artifact, composition_sidecar):
-              if path is not None and path.is_file():
-                  source = str(path.relative_to(root))
-                  artifact_hashes[source] = sha256(path)
-                  bundled = bundle(path, evidence_names.get(source, "timeline-composition.tgz"))
-                  bundled_artifacts[source] = {
-                      "path": str(bundled.relative_to(receipt_dir)),
-                      "sha256": sha256(bundled),
-                  }
-          for path in sorted((root / "dist").glob("*.whl")) if (root / "dist").is_dir() else ():
-              source = str(path.relative_to(root))
-              artifact_hashes[source] = sha256(path)
-              bundled = bundle(path, "astrid-wheel.whl")
-              bundled_artifacts[source] = {
-                  "path": str(bundled.relative_to(receipt_dir)),
-                  "sha256": sha256(bundled),
-              }
-
-          selector_command = (
-              "ASTRID_HOST_EXECUTION_PROFILE=installed "
-              "ASTRID_RUNTIME_CHECKOUT=$GITHUB_WORKSPACE/astrid-runtime "
-              "ASTRID_REMOTION_PROJECT_DIR=$GITHUB_WORKSPACE/remotion "
-              "$RUNNER_TEMP/installed-venv/bin/pytest -q -rA -m installed --import-mode=importlib "
-              "--junitxml=$GITHUB_WORKSPACE/installed-wheel-receipt/selector.junit.xml "
-              "tests/packs/h3_av/test_character_swap_cpu_boundary.py"
-          )
-          receipt = {
-              "schema": "ag-ci-h3-wheel-r8/v1",
-              "status": "green" if all(value == 0 for value in inner_exits.values()) else "failed",
-              "repository": "banodoco/astrid-agent",
-              "workflow": {
-                  "name": os.environ.get("GITHUB_WORKFLOW", "unavailable"),
-                  "identity": os.environ.get("GITHUB_WORKFLOW", "unavailable"),
-                  "file": ".github/workflows/lanes.yml",
-                  "workflow_ref": os.environ.get("GITHUB_WORKFLOW_REF", "unavailable"),
-                  "run_id": os.environ.get("GITHUB_RUN_ID", "unavailable"),
-                  "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", "unavailable"),
-                  "job": os.environ.get("GITHUB_JOB", "unavailable"),
-                  "run_ref": os.environ.get("GITHUB_REF", "unavailable"),
-                  "requested_agent": os.environ.get("GITHUB_SHA", "unavailable"),
-              },
-              "tuple": {
-                  "agent_requested": os.environ.get("GITHUB_SHA", "unavailable"),
-                  "agent_effective": command_output("git", "rev-parse", "HEAD"),
-                  "runtime_requested": runtime_input,
-                  "runtime_effective": command_output("git", "-C", "astrid-runtime", "rev-parse", "HEAD"),
-                  "app_identity": os.environ.get("ASTRID_APP_IDENTITY", "unavailable"),
-                  "composition": {
-                      "name": "@banodoco/timeline-composition",
-                      "version": composition_version,
-                      "spec": composition,
-                      "artifact_sha256": artifact_hashes.get(str(composition_artifact.relative_to(root))) if composition_artifact and composition_artifact.is_file() else None,
-                  },
-              },
-              "installed_selector": {
-                  "command": selector_command,
-                  "exit": selector_exit,
-                  "result": "passed" if selector_exit == 0 else "failed",
-                  "junit": {"path": "selector.junit.xml", **junit_counts},
-              },
-              "inner_exits": inner_exits,
-              "generated_registry_hashes": generated,
-              "artifacts": artifact_hashes,
-              "bundled_artifacts": bundled_artifacts,
-              "coverage": {
-                  "selector": "tests/packs/h3_av/test_character_swap_cpu_boundary.py",
-                  "profile": "installed",
-                  "prohibited_options_absent": ["--maxfail", "-x"],
-              },
-              "logs": [path.name for path in sorted(receipt_dir.glob("*.log"))],
-          }
-
-          receipt_path = receipt_dir / "RECEIPT.json"
-          receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-
-          manifest_paths = [
-              path for path in sorted(receipt_dir.rglob("*"))
-              if path.is_file() and path.name not in {"SHA256SUMS", "RECEIPT.json"}
-          ]
-          manifest_lines = []
-          seen = set()
-          for path in manifest_paths:
-              if path in seen:
-                  continue
-              seen.add(path)
-              relative = path.relative_to(receipt_dir) if path.is_relative_to(receipt_dir) else path.relative_to(root)
-              manifest_lines.append(f"{sha256(path)}  {relative}")
-          manifest = receipt_dir / "SHA256SUMS"
-          manifest.write_text("".join(line + "\n" for line in manifest_lines), encoding="utf-8")
-          receipt["artifact_manifest"] = {"path": "SHA256SUMS", "sha256": sha256(manifest)}
-          receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-          PY
-
-      # Everything SHA256SUMS lists must be in the directory and must survive the upload. upload-artifact v4.4+
-      # skips hidden files (artifacts/.astrid-registry-state.json is one), hence include-hidden-files below and
-      # this guard, which takes the same setting.
-      - name: Check the receipt manifest against what will be uploaded
-        if: ${{ always() }}
-        shell: python -I -c "import os,runpy,sys; sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-14 --shell bash "{0}"
-        run: python3 scripts/check_receipt_upload.py "$GITHUB_WORKSPACE/installed-wheel-receipt" --include-hidden-files
-
-      - name: Upload installed-wheel receipt
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: installed-wheel-receipt-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ github.workspace }}/installed-wheel-receipt
-          include-hidden-files: true
-          if-no-files-found: warn
-      - name: Retain actual Plan39 command and native result evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: failure-ceiling-${{ github.job }}-${{ strategy.job-index || '0' }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/failure-ceiling/${{ github.job }}/
-          retention-days: 90
-          if-no-files-found: error
+    - name: Prepare diagnostic sidecar outside product trees
+      run: |-
+        set -euo pipefail
+        . /etc/os-release
+        test "$ID" = ubuntu && test "$VERSION_ID" = 26.04
+        mkdir -p "$RUNNER_TEMP/d18-tools" "$RUNNER_TEMP/d18-proof"
+        printf %s IiIiT3V0LW9mLXRyZWUgZGlhZ25vc3RpYzsgb25seSB0aGUgb3JpZ2luYWwgRDE4IGNhbGwgaXMgb2JzZXJ2ZWQuIiIiCmltcG9ydCBjb25jdXJyZW50LmZ1dHVyZXMgYXMgZnV0dXJlcwppbXBvcnQgY29udGV4dGxpYgppbXBvcnQganNvbgppbXBvcnQgb3MKZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCmltcG9ydCBzeXMKaW1wb3J0IHRocmVhZGluZwppbXBvcnQgdGltZQpmcm9tIHVuaXR0ZXN0Lm1vY2sgaW1wb3J0IHBhdGNoCgppbXBvcnQgcHl0ZXN0CgpUQVJHRVQgPSAidGVzdHMvY29yZS9leGVjdXRpb24vdGVzdF9nZW5lcmljX2hvc3RfY2hpbGRfYnJpZGdlX2QxOC5weTo6dGVzdF9yZWFsX3Nka19wYXJlbnRfcm91dGVzX2FuZF9pbmRlcGVuZGVudF9jaGlsZF9wcm9ncmVzc1tUcnVlLS1jXSIKCgpUUkFDRV9QQVRIID0gTm9uZQoKCmRlZiBweXRlc3RfY29uZmlndXJlKGNvbmZpZyk6CiAgICAjIFRoZSBwYXJlbnQgc3RhcnRzIHRoZSBjZW5zdXMgYW5kIGV4ZWN1dGlvbiBpbmRlcGVuZGVudGx5LiBOZXN0ZWQgcHl0ZXN0CiAgICAjIHByb2Nlc3NlcyBsYXVuY2hlZCBieSB0aGUgdGVzdHMgbXVzdCBub3QgaW5oZXJpdCB0aGUgb2JzZXJ2ZXIgcmVxdWVzdC4KICAgIGdsb2JhbCBUUkFDRV9QQVRICiAgICBUUkFDRV9QQVRIID0gUGF0aChvcy5lbnZpcm9uLnBvcCgiRDE4X1RSQUNFIikpCiAgICAjIEl0cyBwYXRoIG5lZWQgbm90IHByb3BhZ2F0ZSB0byBzdWJwcm9jZXNzZXMgZWl0aGVyLgogICAgb3duX2RpciA9IHN0cihQYXRoKF9fZmlsZV9fKS5yZXNvbHZlKCkucGFyZW50KQogICAgaWYgIlBZVEhPTlBBVEgiIGluIG9zLmVudmlyb246CiAgICAgICAgb3MuZW52aXJvblsiUFlUSE9OUEFUSCJdID0gb3MucGF0aHNlcC5qb2luKHAgZm9yIHAgaW4gb3MuZW52aXJvblsiUFlUSE9OUEFUSCJdLnNwbGl0KG9zLnBhdGhzZXApIGlmIHAgIT0gb3duX2RpcikKICAgIGtlZXAgPSBbcCBmb3IgcCBpbiBvcy5lbnZpcm9uLmdldCgiUFlURVNUX1BMVUdJTlMiLCAiIikuc3BsaXQoIiwiKSBpZiBwIGFuZCBwICE9ICJkMThfb2JzZXJ2ZXIiXQogICAgaWYga2VlcDoKICAgICAgICBvcy5lbnZpcm9uWyJQWVRFU1RfUExVR0lOUyJdID0gIiwiLmpvaW4oa2VlcCkKICAgIGVsc2U6CiAgICAgICAgb3MuZW52aXJvbi5wb3AoIlBZVEVTVF9QTFVHSU5TIiwgTm9uZSkKCgpkZWYgc25hcHNob3Rfc3RhY2soZnJhbWUpOgogICAgcm93cyA9IFtdCiAgICB3aGlsZSBmcmFtZSBpcyBub3QgTm9uZSBhbmQgbGVuKHJvd3MpIDwgNDA6CiAgICAgICAgcm93cy5hcHBlbmQoKG9zLnBhdGguYmFzZW5hbWUoZnJhbWUuZl9jb2RlLmNvX2ZpbGVuYW1lKSwgZnJhbWUuZl9jb2RlLmNvX25hbWUsIGZyYW1lLmZfbGluZW5vKSkKICAgICAgICBmcmFtZSA9IGZyYW1lLmZfYmFjawogICAgcmV0dXJuIHJvd3MKCgpkZWYgc2NoZWR1bGVyKHdvcmtlcik6CiAgICB2YWx1ZXMgPSB7fQogICAgaWYgd29ya2VyIGlzIG5vdCBOb25lOgogICAgICAgIGZvciBuYW1lIGluICgic3RhdCIsICJzY2hlZHN0YXQiLCAid2NoYW4iKToKICAgICAgICAgICAgdHJ5OgogICAgICAgICAgICAgICAgdmFsdWVzW25hbWVdID0gUGF0aChmIi9wcm9jL3NlbGYvdGFzay97d29ya2VyfS97bmFtZX0iKS5yZWFkX3RleHQoKS5zdHJpcCgpCiAgICAgICAgICAgIGV4Y2VwdCBPU0Vycm9yOgogICAgICAgICAgICAgICAgcGFzcwogICAgcmV0dXJuIHZhbHVlcwoKCkBweXRlc3QuaG9va2ltcGwoaG9va3dyYXBwZXI9VHJ1ZSkKZGVmIHB5dGVzdF9ydW50ZXN0X2NhbGwoaXRlbSk6CiAgICBpZiBpdGVtLm5vZGVpZCAhPSBUQVJHRVQ6CiAgICAgICAgeWllbGQKICAgICAgICByZXR1cm4KICAgIHJlY29yZHMgPSBbXQogICAgc3RhdGUgPSB7fQogICAgbW9kdWxlID0gaXRlbS5tb2R1bGUKICAgIHN1Ym1pdCA9IGZ1dHVyZXMuVGhyZWFkUG9vbEV4ZWN1dG9yLnN1Ym1pdAoKICAgIGRlZiBtYXJrKGtpbmQsICoqaW5mbyk6CiAgICAgICAgcmVjb3Jkcy5hcHBlbmQoZGljdChtb25vdG9uaWNfbnM9dGltZS5tb25vdG9uaWNfbnMoKSwgZXZlbnQ9a2luZCwKICAgICAgICAgICAgICAgICAgICAgICAgICAgIG5hdGl2ZV90aWQ9dGhyZWFkaW5nLmdldF9uYXRpdmVfaWQoKSwgKippbmZvKSkKCiAgICBkZWYgdGVybWluYWwoZnV0dXJlKToKICAgICAgICBpZiBmdXR1cmUuY2FuY2VsbGVkKCk6CiAgICAgICAgICAgIG1hcmsoImZ1dHVyZV9jYW5jZWxsZWQiKQogICAgICAgIGVsaWYgZnV0dXJlLmRvbmUoKToKICAgICAgICAgICAgZXJyb3IgPSBmdXR1cmUuZXhjZXB0aW9uKHRpbWVvdXQ9MCkKICAgICAgICAgICAgaWYgZXJyb3IgaXMgbm90IE5vbmU6CiAgICAgICAgICAgICAgICBtYXJrKCJmdXR1cmVfZXhjZXB0aW9uIiwgdHlwZT10eXBlKGVycm9yKS5fX3F1YWxuYW1lX18pCiAgICAgICAgICAgIGVsc2U6CiAgICAgICAgICAgICAgICB2YWx1ZSA9IGZ1dHVyZS5yZXN1bHQodGltZW91dD0wKQogICAgICAgICAgICAgICAgbWFyaygiZnV0dXJlX3Jlc3VsdCIsIHR5cGU9dHlwZSh2YWx1ZSkuX19xdWFsbmFtZV9fKQoKICAgIHdpdGggY29udGV4dGxpYi5FeGl0U3RhY2soKSBhcyBwYXRjaGVzOgogICAgICAgIGRlZiBvYnNlcnZlX3N1Ym1pdChwb29sLCBmdW5jdGlvbiwgKmFyZ3MsICoqa3dhcmdzKToKICAgICAgICAgICAgaWYgZnVuY3Rpb24gaXMgbm90IG1vZHVsZS5zZXJ2ZV9vbmU6CiAgICAgICAgICAgICAgICByZXR1cm4gc3VibWl0KHBvb2wsIGZ1bmN0aW9uLCAqYXJncywgKiprd2FyZ3MpCiAgICAgICAgICAgIHJlYWR5ID0ga3dhcmdzWyJyZWFkeSJdCiAgICAgICAgICAgIG9yaWdpbmFsX3NldCwgb3JpZ2luYWxfd2FpdCA9IHJlYWR5LnNldCwgcmVhZHkud2FpdAoKICAgICAgICAgICAgZGVmIG9ic2VydmVkX3NldCgpOgogICAgICAgICAgICAgICAgbWFyaygic2V0X2VudGVyIikKICAgICAgICAgICAgICAgIHJlc3VsdCA9IG9yaWdpbmFsX3NldCgpCiAgICAgICAgICAgICAgICBtYXJrKCJzZXRfcmV0dXJuIikKICAgICAgICAgICAgICAgIHJldHVybiByZXN1bHQKCiAgICAgICAgICAgIGRlZiBvYnNlcnZlZF93YWl0KCp3YWl0X2FyZ3MsICoqd2FpdF9rd2FyZ3MpOgogICAgICAgICAgICAgICAgbWFyaygid2FpdF9lbnRlciIsIHRpbWVvdXQ9d2FpdF9hcmdzWzBdIGlmIHdhaXRfYXJncyBlbHNlIHdhaXRfa3dhcmdzLmdldCgidGltZW91dCIpKQogICAgICAgICAgICAgICAgdmFsdWUgPSBvcmlnaW5hbF93YWl0KCp3YWl0X2FyZ3MsICoqd2FpdF9rd2FyZ3MpCiAgICAgICAgICAgICAgICByZXR1cm5lZF9hdCA9IHRpbWUubW9ub3RvbmljX25zKCkKICAgICAgICAgICAgICAgIGlmIG5vdCB2YWx1ZToKICAgICAgICAgICAgICAgICAgICBpZGVudCA9IHN0YXRlLmdldCgid29ya2VyX2lkZW50IikKICAgICAgICAgICAgICAgICAgICAjIFNhbXBsZSBmcmFtZXMgYmVmb3JlIGxvY2tzLCBkaXNrIHJlYWRzLCBvciBzb3VyY2UtbGluZSBmb3JtYXR0aW5nLgogICAgICAgICAgICAgICAgICAgIGZyYW1lID0gc3lzLl9jdXJyZW50X2ZyYW1lcygpLmdldChpZGVudCkKICAgICAgICAgICAgICAgICAgICBzdGFjayA9IHNuYXBzaG90X3N0YWNrKGZyYW1lKQogICAgICAgICAgICAgICAgICAgIGRlbCBmcmFtZQogICAgICAgICAgICAgICAgICAgIGZ1dHVyZSA9IHN0YXRlWyJmdXR1cmUiXQogICAgICAgICAgICAgICAgICAgIG1hcmsoImZhbHNlX3dhaXRfc25hcHNob3QiLCByZXR1cm5lZF9hdD1yZXR1cm5lZF9hdCwgc3RhY2s9c3RhY2ssCiAgICAgICAgICAgICAgICAgICAgICAgICBmdXR1cmVfc3RhdGU9ZnV0dXJlLl9zdGF0ZSwKICAgICAgICAgICAgICAgICAgICAgICAgIGV2ZW50X3NldD1yZWFkeS5pc19zZXQoKSwgd29ya2VyX25hdGl2ZV90aWQ9c3RhdGUuZ2V0KCJ3b3JrZXJfdGlkIikpCiAgICAgICAgICAgICAgICBtYXJrKCJ3YWl0X3JldHVybiIsIHJldHVybmVkX2F0PXJldHVybmVkX2F0LCB2YWx1ZT12YWx1ZSkKICAgICAgICAgICAgICAgIHJldHVybiB2YWx1ZQoKICAgICAgICAgICAgZGVmIHdvcmtlcigqYSwgKiprdyk6CiAgICAgICAgICAgICAgICBzdGF0ZS51cGRhdGUod29ya2VyX2lkZW50PXRocmVhZGluZy5nZXRfaWRlbnQoKSwgd29ya2VyX3RpZD10aHJlYWRpbmcuZ2V0X25hdGl2ZV9pZCgpKQogICAgICAgICAgICAgICAgbWFyaygid29ya2VyX2VudGVyIikKICAgICAgICAgICAgICAgIHRyeToKICAgICAgICAgICAgICAgICAgICByZXN1bHQgPSBmdW5jdGlvbigqYSwgKiprdykKICAgICAgICAgICAgICAgIGV4Y2VwdCBCYXNlRXhjZXB0aW9uIGFzIGV4YzoKICAgICAgICAgICAgICAgICAgICBtYXJrKCJ3b3JrZXJfcmFpc2UiLCB0eXBlPXR5cGUoZXhjKS5fX3F1YWxuYW1lX18sIHNjaGVkPXNjaGVkdWxlcih0aHJlYWRpbmcuZ2V0X25hdGl2ZV9pZCgpKSkKICAgICAgICAgICAgICAgICAgICByYWlzZQogICAgICAgICAgICAgICAgbWFyaygid29ya2VyX3JldHVybiIsIHR5cGU9dHlwZShyZXN1bHQpLl9fcXVhbG5hbWVfXywgc2NoZWQ9c2NoZWR1bGVyKHRocmVhZGluZy5nZXRfbmF0aXZlX2lkKCkpKQogICAgICAgICAgICAgICAgcmV0dXJuIHJlc3VsdAoKICAgICAgICAgICAgcGF0Y2hlcy5lbnRlcl9jb250ZXh0KHBhdGNoLm9iamVjdChyZWFkeSwgInNldCIsIG9ic2VydmVkX3NldCkpCiAgICAgICAgICAgIHBhdGNoZXMuZW50ZXJfY29udGV4dChwYXRjaC5vYmplY3QocmVhZHksICJ3YWl0Iiwgb2JzZXJ2ZWRfd2FpdCkpCiAgICAgICAgICAgIG1hcmsoInN1Ym1pdF9lbnRlciIpCiAgICAgICAgICAgIGZ1dHVyZSA9IHN1Ym1pdChwb29sLCB3b3JrZXIsICphcmdzLCAqKmt3YXJncykKICAgICAgICAgICAgc3RhdGVbImZ1dHVyZSJdID0gZnV0dXJlCiAgICAgICAgICAgIG1hcmsoInN1Ym1pdF9yZXR1cm4iKQogICAgICAgICAgICBmdXR1cmUuYWRkX2RvbmVfY2FsbGJhY2sodGVybWluYWwpCiAgICAgICAgICAgIHJldHVybiBmdXR1cmUKCiAgICAgICAgZGVmIHdhdGNoZWQob3JpZ2luYWwsIG5hbWUpOgogICAgICAgICAgICBkZWYgaW52b2tlKCphcmdzLCAqKmt3YXJncyk6CiAgICAgICAgICAgICAgICBpZiB0aHJlYWRpbmcuZ2V0X2lkZW50KCkgIT0gc3RhdGUuZ2V0KCJ3b3JrZXJfaWRlbnQiKToKICAgICAgICAgICAgICAgICAgICByZXR1cm4gb3JpZ2luYWwoKmFyZ3MsICoqa3dhcmdzKQogICAgICAgICAgICAgICAgbWFyayhuYW1lICsgIl9lbnRlciIpCiAgICAgICAgICAgICAgICB0cnk6CiAgICAgICAgICAgICAgICAgICAgcmVzdWx0ID0gb3JpZ2luYWwoKmFyZ3MsICoqa3dhcmdzKQogICAgICAgICAgICAgICAgZXhjZXB0IEJhc2VFeGNlcHRpb24gYXMgZXhjOgogICAgICAgICAgICAgICAgICAgIG1hcmsobmFtZSArICJfcmFpc2UiLCB0eXBlPXR5cGUoZXhjKS5fX3F1YWxuYW1lX18pCiAgICAgICAgICAgICAgICAgICAgcmFpc2UKICAgICAgICAgICAgICAgIG1hcmsobmFtZSArICJfcmV0dXJuIikKICAgICAgICAgICAgICAgIHJldHVybiByZXN1bHQKICAgICAgICAgICAgcmV0dXJuIGludm9rZQoKICAgICAgICBwYXRjaGVzLmVudGVyX2NvbnRleHQocGF0Y2gub2JqZWN0KGZ1dHVyZXMuVGhyZWFkUG9vbEV4ZWN1dG9yLCAic3VibWl0Iiwgb2JzZXJ2ZV9zdWJtaXQpKQogICAgICAgIGZvciBhdHRyLCBuYW1lIGluICgoIl9faW5pdF9fIiwgImNvbnN0cnVjdG9yIiksICgiZGlzY292ZXIiLCAiZGlzY292ZXIiKSk6CiAgICAgICAgICAgIG9yaWdpbmFsID0gZ2V0YXR0cihtb2R1bGUuR2VuZXJpY1BhY2tIb3N0LCBhdHRyKQogICAgICAgICAgICBwYXRjaGVzLmVudGVyX2NvbnRleHQocGF0Y2gub2JqZWN0KG1vZHVsZS5HZW5lcmljUGFja0hvc3QsIGF0dHIsIHdhdGNoZWQob3JpZ2luYWwsIG5hbWUpKSkKICAgICAgICBtYXJrKCJjYWxsX2VudGVyIiwgdXRjX25zPXRpbWUudGltZV9ucygpLCBsb2FkPW9zLmdldGxvYWRhdmcoKSkKICAgICAgICB0cnk6CiAgICAgICAgICAgIHlpZWxkCiAgICAgICAgZmluYWxseToKICAgICAgICAgICAgbWFyaygiY2FsbF9leGl0IiwgdXRjX25zPXRpbWUudGltZV9ucygpLCBsb2FkPW9zLmdldGxvYWRhdmcoKSkKICAgICAgICAgICAgIyBBZnRlciBweXRlc3QgcmV0dXJucyB0aHJvdWdoIHRoZSB0ZXN0J3MgZXhlY3V0b3IgY29udGV4dCwgdGhlIGNhbGxiYWNrIGhhcyBjb21wbGV0ZWQuCiAgICAgICAgICAgIHRyeToKICAgICAgICAgICAgICAgIHdpdGggVFJBQ0VfUEFUSC5vcGVuKCJ4IiwgZW5jb2Rpbmc9InV0Zi04IikgYXMgc3RyZWFtOgogICAgICAgICAgICAgICAgICAgIGpzb24uZHVtcChkaWN0KG5vZGVpZD1pdGVtLm5vZGVpZCwgZXZlbnRzPXJlY29yZHMpLCBzdHJlYW0sIHNlcGFyYXRvcnM9KCIsIiwgIjoiKSkKICAgICAgICAgICAgZXhjZXB0IE9TRXJyb3IgYXMgZXhjOgogICAgICAgICAgICAgICAgcHJpbnQoZiJEMTggb2JzZXJ2ZXIgb3V0cHV0IHVuYXZhaWxhYmxlOiB7dHlwZShleGMpLl9fbmFtZV9ffSIsIGZpbGU9c3lzLnN0ZGVycikK | base64 -d > "$RUNNER_TEMP/d18-tools/d18_observer.py"
+        printf %s aW1wb3J0IGhhc2hsaWIKaW1wb3J0IGpzb24KaW1wb3J0IG9zCmZyb20gcGF0aGxpYiBpbXBvcnQgUGF0aAppbXBvcnQgc3lzCmltcG9ydCB4bWwuZXRyZWUuRWxlbWVudFRyZWUgYXMgRVQKCmFybSwgaGVhZCA9IHN5cy5hcmd2WzE6XQpyb290ID0gUGF0aChvcy5lbnZpcm9uWydSVU5ORVJfVEVNUCddKQpvdXQgPSByb290IC8gImQxOC1wcm9vZiIgLyBhcm0KbmF0aXZlID0gb3V0IC8gIm5hdGl2ZSIgLyAic3RlcC0yOSIKY21kID0ganNvbi5sb2FkcygobmF0aXZlIC8gImNvbW1hbmQuanNvbiIpLnJlYWRfdGV4dCgpKQpldmVudHMgPSBbanNvbi5sb2FkcyhsaW5lKSBmb3IgbGluZSBpbiAob3V0IC8gInJlc3VsdHMvaW50ZWdyYXRpb24uanNvbmwiKS5yZWFkX3RleHQoKS5zcGxpdGxpbmVzKCldCnRyYWNlID0ganNvbi5sb2Fkcygob3V0IC8gInRyYWNlLmpzb24iKS5yZWFkX3RleHQoKSkKb3JpZ2luYWwgPSBqc29uLmxvYWRzKChyb290IC8gImQxOC10b29scy9mcm96ZW4uanNvbiIpLnJlYWRfdGV4dCgpKVthcm1dCnRhcmdldCA9IHRyYWNlWyJub2RlaWQiXQpyb3dzID0gW3IgZm9yIHIgaW4gZXZlbnRzIGlmIHJbInR5cGUiXSA9PSAicmVwb3J0IiBhbmQgbm90IHIuZ2V0KCJzdWJ0ZXN0IildCm9yZGVyID0gW3JbIm5vZGVpZCJdIGZvciByIGluIHJvd3MgaWYgclsid2hlbiJdID09ICJzZXR1cCJdCmRlZiBkaWdlc3QodmFsdWUpOgogICAgcmV0dXJuIGhhc2hsaWIuc2hhMjU2KGpzb24uZHVtcHModmFsdWUsIHNlcGFyYXRvcnM9KCIsIiwgIjoiKSkuZW5jb2RlKCkpLmhleGRpZ2VzdCgpCnByZWZpeCA9IFsoclsibm9kZWlkIl0sclsid2hlbiJdLHJbIm91dGNvbWUiXSkgZm9yIHIgaW4gcm93c1s6bmV4dChpIGZvciBpLHIgaW4gZW51bWVyYXRlKHJvd3MpIGlmIHJbIm5vZGVpZCJdPT10YXJnZXQpXV0KZWlnaHQgPSB7clsibm9kZWlkIl06clsib3V0Y29tZSJdIGZvciByIGluIHJvd3MgaWYgclsid2hlbiJdPT0iY2FsbCIgYW5kIHJbIm5vZGVpZCJdLnNwbGl0KCJbIilbMF09PXRhcmdldC5zcGxpdCgiWyIpWzBdfQpFVC5wYXJzZShvdXQgLyAicmVzdWx0cy9pbnRlZ3JhdGlvbi54bWwiKQpuYW1lcyA9IFtlWydldmVudCddIGZvciBlIGluIHRyYWNlWydldmVudHMnXV0KY2hlY2tzID0gZGljdChoZWFkPWNtZFsnaGVhZCddPT1oZWFkLCBydW50aW1lPWNtZFsndHVwbGUnXS5nZXQoJ2Jhbm9kb2NvL2FzdHJpZC1ydW50aW1lJyk9PScyNTM3ZmVkMjQzODVlYzFjMjRmNDhhODEyZTA5YWY0YmI2M2ZiNzk0JywKICAgICAgICAgICAgICBvcmlnaW5hbF9jb21tYW5kPWNtZFsnY29tbWFuZF9zaGEyNTYnXT09b3JpZ2luYWxbJ2NvbW1hbmRfc2hhMjU2J10sIGZpbmlzaGVkPWNtZFsnY29tcGxldGUnXSBhbmQgZXZlbnRzWy0xXVsndHlwZSddPT0nZmluaXNoJyBhbmQgZXZlbnRzWy0xXVsnZXhpdHN0YXR1cyddPT1jbWRbJ3Jhd19leGl0J10sCiAgICAgICAgICAgICAgcm9zdGVyX2FuZF9vcmRlcj1kaWdlc3Qob3JkZXIpPT1vcmlnaW5hbFsnb3JkZXInXSwgcHJlZml4PWRpZ2VzdChwcmVmaXgpPT1vcmlnaW5hbFsncHJlZml4J10sCiAgICAgICAgICAgICAgZWlnaHQ9bGVuKGVpZ2h0KT09OCwgdHJhY2U9bmFtZXMuY291bnQoJ3N1Ym1pdF9lbnRlcicpPT0xIGFuZCBuYW1lcy5jb3VudCgnd2FpdF9yZXR1cm4nKT09MSBhbmQgJ2NhbGxfZXhpdCcgaW4gbmFtZXMgYW5kCiAgICAgICAgICAgICAgYW55KGV2WydldmVudCddPT0nd2FpdF9lbnRlcicgYW5kIGV2Wyd0aW1lb3V0J109PTUgZm9yIGV2IGluIHRyYWNlWydldmVudHMnXSkgYW5kCiAgICAgICAgICAgICAgYW55KG4gaW4gbmFtZXMgZm9yIG4gaW4gKCdmdXR1cmVfcmVzdWx0JywnZnV0dXJlX2V4Y2VwdGlvbicsJ2Z1dHVyZV9jYW5jZWxsZWQnKSkpCndhaXQgPSBuZXh0KChlIGZvciBlIGluIHRyYWNlWydldmVudHMnXSBpZiBlWydldmVudCddPT0nd2FpdF9yZXR1cm4nKSx7fSkKY2hlY2tzWyd0YXJnZXRfaWRlbnRpdHknXT10YXJnZXQ9PSJ0ZXN0cy9jb3JlL2V4ZWN1dGlvbi90ZXN0X2dlbmVyaWNfaG9zdF9jaGlsZF9icmlkZ2VfZDE4LnB5Ojp0ZXN0X3JlYWxfc2RrX3BhcmVudF9yb3V0ZXNfYW5kX2luZGVwZW5kZW50X2NoaWxkX3Byb2dyZXNzW1RydWUtLWNdIgpjaGVja3NbJ2RlYWRsaW5lX3NhbXBsZSddPXdhaXQuZ2V0KCd2YWx1ZScpIGlzIFRydWUgb3IgKHdhaXQuZ2V0KCd2YWx1ZScpIGlzIEZhbHNlIGFuZCAnZmFsc2Vfd2FpdF9zbmFwc2hvdCcgaW4gbmFtZXMpCmNoZWNrc1snd29ya2VyX2V2aWRlbmNlJ109J3dvcmtlcl9lbnRlcicgaW4gbmFtZXMgYW5kICdjb25zdHJ1Y3Rvcl9lbnRlcicgaW4gbmFtZXMgYW5kICgnY29uc3RydWN0b3JfcmFpc2UnIGluIG5hbWVzIG9yICdjb25zdHJ1Y3Rvcl9yZXR1cm4nIGluIG5hbWVzKQpjaGVja3NbJ25hdGl2ZV90ZXJtaW5hbCddPWFueShuIGZvciBuIGluIG5hdGl2ZS5nbG9iKCdweXRlc3QtKi5qc29ubCcpIGlmICciZmluaXNoIicgaW4gbi5yZWFkX3RleHQoKS5zcGxpdGxpbmVzKClbLTFdIGFuZCAnImNvbGxlY3Rfb25seSI6IHRydWUnIG5vdCBpbiBuLnJlYWRfdGV4dCgpLnNwbGl0bGluZXMoKVswXSkKY2hlY2tzWydzb3VyY2VfYmluZGluZ3MnXT1ub3QgY21kLmdldCgndHVwbGVfY29uZmxpY3RzJykgYW5kIGNtZFsnaW5zdGFsbGVkX3NvdXJjZXMnXS5nZXQoJ2Jhbm9kb2NvLXRpbWVsaW5lLXNjaGVtYScse30pLmdldCgndmNzX2luZm8nLHt9KS5nZXQoJ2NvbW1pdF9pZCcpPT0nMjQyZjljNDMwNmJmM2I1MDEyMjJjYjA0MWE5ZWIyNDZlZjQ3YmM4NScKY2hlY2tzWydpbnN0YWxsYXRpb24nXT1hbGwoY21kWydpbnN0YWxsZWRfc291cmNlcyddLmdldChuYW1lLHt9KS5nZXQoJ2Rpcl9pbmZvJyx7fSkuZ2V0KCdlZGl0YWJsZScpIGZvciBuYW1lIGluICgnYXN0cmlkJywnYXN0cmlkLXJ1bnRpbWUnKSkKZXhpdF9ldmVudCA9IG5leHQoKGUgZm9yIGUgaW4gdHJhY2VbJ2V2ZW50cyddIGlmIGVbJ2V2ZW50J109PSd3YWl0X3JldHVybicpLHt9KQplbnRlcl9ldmVudCA9IG5leHQoKGUgZm9yIGUgaW4gdHJhY2VbJ2V2ZW50cyddIGlmIGVbJ2V2ZW50J109PSd3YWl0X2VudGVyJykse30pCndhaXRfc2Vjb25kcz0oZXhpdF9ldmVudFsncmV0dXJuZWRfYXQnXS1lbnRlcl9ldmVudFsnbW9ub3RvbmljX25zJ10pKjFlLTkgaWYgZXhpdF9ldmVudCBhbmQgZW50ZXJfZXZlbnQgZWxzZSBOb25lCnN1bW1hcnkgPSBkaWN0KHdhaXRfc2Vjb25kcz13YWl0X3NlY29uZHMsYXJtPWFybSwgY2hlY2tzPWNoZWNrcywgcmF3X2V4aXQ9Y21kWydyYXdfZXhpdCddLCBvcmlnaW5hbF9yYXc9b3JpZ2luYWxbJ3Jhd19leGl0J10sIGNhc2VzPWxlbihvcmRlciksCiAgICAgICAgICAgICAgIGVpZ2h0PWVpZ2h0LCBvcmlnaW5hbF9laWdodD1vcmlnaW5hbFsnZWlnaHQnXSwgcmVzdWx0X2NoYW5nZWQ9ZWlnaHQhPW9yaWdpbmFsWydlaWdodCddKQoob3V0Lydjb21wYXJpc29uLmpzb24nKS53cml0ZV90ZXh0KGpzb24uZHVtcHMoc3VtbWFyeSxpbmRlbnQ9MikrJ1xuJykKcHJpbnQoanNvbi5kdW1wcyhzdW1tYXJ5KSkKaWYgbm90IGFsbChjaGVja3MudmFsdWVzKCkpOgogICAgcmFpc2UgU3lzdGVtRXhpdCgxKQo= | base64 -d > "$RUNNER_TEMP/d18-tools/verify_arm.py"
+        printf %s ewogICJjb250cm9sIjogewogICAgIm9yZGVyIjogIjRlZDU0NDIyOGFhY2RmNzZmNzNhY2IyZjU2ZDBjOGU3M2U5MzM5NWZjNDlhMzc3OTUzZWIxYjRhY2I5NTQwYTYiLAogICAgInByZWZpeCI6ICIwMmE3MjlmNzBkMWZkM2Y1Y2ZkOTMzNjRmZDMwMjNjODdlMzY4MDI5Yjg5NjUwYzhkZjY3MjgxNWMwNGY3ZjNkIiwKICAgICJyYXdfZXhpdCI6IDEsCiAgICAiY29tbWFuZF9zaGEyNTYiOiAiN2U2MWJhMzVmNWVlOTk5MjlhZTIzODg3YmZkNzRiMzQ3NThjYWY5NjJmM2I4MDAxNzczYWY2MTc0NjhiNzFhZiIsCiAgICAiZWlnaHQiOiB7CiAgICAgICJ0ZXN0cy9jb3JlL2V4ZWN1dGlvbi90ZXN0X2dlbmVyaWNfaG9zdF9jaGlsZF9icmlkZ2VfZDE4LnB5Ojp0ZXN0X3JlYWxfc2RrX3BhcmVudF9yb3V0ZXNfYW5kX2luZGVwZW5kZW50X2NoaWxkX3Byb2dyZXNzW0ZhbHNlLXB5dGhvbl0iOiAicGFzc2VkIiwKICAgICAgInRlc3RzL2NvcmUvZXhlY3V0aW9uL3Rlc3RfZ2VuZXJpY19ob3N0X2NoaWxkX2JyaWRnZV9kMTgucHk6OnRlc3RfcmVhbF9zZGtfcGFyZW50X3JvdXRlc19hbmRfaW5kZXBlbmRlbnRfY2hpbGRfcHJvZ3Jlc3NbRmFsc2UtLW1dIjogInBhc3NlZCIsCiAgICAgICJ0ZXN0cy9jb3JlL2V4ZWN1dGlvbi90ZXN0X2dlbmVyaWNfaG9zdF9jaGlsZF9icmlkZ2VfZDE4LnB5Ojp0ZXN0X3JlYWxfc2RrX3BhcmVudF9yb3V0ZXNfYW5kX2luZGVwZW5kZW50X2NoaWxkX3Byb2dyZXNzW0ZhbHNlLXNjcmlwdF0iOiAicGFzc2VkIiwKICAgICAgInRlc3RzL2NvcmUvZXhlY3V0aW9uL3Rlc3RfZ2VuZXJpY19ob3N0X2NoaWxkX2JyaWRnZV9kMTgucHk6OnRlc3RfcmVhbF9zZGtfcGFyZW50X3JvdXRlc19hbmRfaW5kZXBlbmRlbnRfY2hpbGRfcHJvZ3Jlc3NbRmFsc2UtLWNdIjogInBhc3NlZCIsCiAgICAgICJ0ZXN0cy9jb3JlL2V4ZWN1dGlvbi90ZXN0X2dlbmVyaWNfaG9zdF9jaGlsZF9icmlkZ2VfZDE4LnB5Ojp0ZXN0X3JlYWxfc2RrX3BhcmVudF9yb3V0ZXNfYW5kX2luZGVwZW5kZW50X2NoaWxkX3Byb2dyZXNzW1RydWUtcHl0aG9uXSI6ICJwYXNzZWQiLAogICAgICAidGVzdHMvY29yZS9leGVjdXRpb24vdGVzdF9nZW5lcmljX2hvc3RfY2hpbGRfYnJpZGdlX2QxOC5weTo6dGVzdF9yZWFsX3Nka19wYXJlbnRfcm91dGVzX2FuZF9pbmRlcGVuZGVudF9jaGlsZF9wcm9ncmVzc1tUcnVlLS1tXSI6ICJwYXNzZWQiLAogICAgICAidGVzdHMvY29yZS9leGVjdXRpb24vdGVzdF9nZW5lcmljX2hvc3RfY2hpbGRfYnJpZGdlX2QxOC5weTo6dGVzdF9yZWFsX3Nka19wYXJlbnRfcm91dGVzX2FuZF9pbmRlcGVuZGVudF9jaGlsZF9wcm9ncmVzc1tUcnVlLXNjcmlwdF0iOiAicGFzc2VkIiwKICAgICAgInRlc3RzL2NvcmUvZXhlY3V0aW9uL3Rlc3RfZ2VuZXJpY19ob3N0X2NoaWxkX2JyaWRnZV9kMTgucHk6OnRlc3RfcmVhbF9zZGtfcGFyZW50X3JvdXRlc19hbmRfaW5kZXBlbmRlbnRfY2hpbGRfcHJvZ3Jlc3NbVHJ1ZS0tY10iOiAicGFzc2VkIgogICAgfQogIH0sCiAgImludGVncmF0ZWQiOiB7CiAgICAib3JkZXIiOiAiNGVkNTQ0MjI4YWFjZGY3NmY3M2FjYjJmNTZkMGM4ZTczZTkzMzk1ZmM0OWEzNzc5NTNlYjFiNGFjYjk1NDBhNiIsCiAgICAicHJlZml4IjogIjAyYTcyOWY3MGQxZmQzZjVjZmQ5MzM2NGZkMzAyM2M4N2UzNjgwMjliODk2NTBjOGRmNjcyODE1YzA0ZjdmM2QiLAogICAgInJhd19leGl0IjogMSwKICAgICJjb21tYW5kX3NoYTI1NiI6ICI3ZTYxYmEzNWY1ZWU5OTkyOWFlMjM4ODdiZmQ3NGIzNDc1OGNhZjk2MmYzYjgwMDE3NzNhZjYxNzQ2OGI3MWFmIiwKICAgICJlaWdodCI6IHsKICAgICAgInRlc3RzL2NvcmUvZXhlY3V0aW9uL3Rlc3RfZ2VuZXJpY19ob3N0X2NoaWxkX2JyaWRnZV9kMTgucHk6OnRlc3RfcmVhbF9zZGtfcGFyZW50X3JvdXRlc19hbmRfaW5kZXBlbmRlbnRfY2hpbGRfcHJvZ3Jlc3NbRmFsc2UtcHl0aG9uXSI6ICJwYXNzZWQiLAogICAgICAidGVzdHMvY29yZS9leGVjdXRpb24vdGVzdF9nZW5lcmljX2hvc3RfY2hpbGRfYnJpZGdlX2QxOC5weTo6dGVzdF9yZWFsX3Nka19wYXJlbnRfcm91dGVzX2FuZF9pbmRlcGVuZGVudF9jaGlsZF9wcm9ncmVzc1tGYWxzZS0tbV0iOiAicGFzc2VkIiwKICAgICAgInRlc3RzL2NvcmUvZXhlY3V0aW9uL3Rlc3RfZ2VuZXJpY19ob3N0X2NoaWxkX2JyaWRnZV9kMTgucHk6OnRlc3RfcmVhbF9zZGtfcGFyZW50X3JvdXRlc19hbmRfaW5kZXBlbmRlbnRfY2hpbGRfcHJvZ3Jlc3NbRmFsc2Utc2NyaXB0XSI6ICJwYXNzZWQiLAogICAgICAidGVzdHMvY29yZS9leGVjdXRpb24vdGVzdF9nZW5lcmljX2hvc3RfY2hpbGRfYnJpZGdlX2QxOC5weTo6dGVzdF9yZWFsX3Nka19wYXJlbnRfcm91dGVzX2FuZF9pbmRlcGVuZGVudF9jaGlsZF9wcm9ncmVzc1tGYWxzZS0tY10iOiAicGFzc2VkIiwKICAgICAgInRlc3RzL2NvcmUvZXhlY3V0aW9uL3Rlc3RfZ2VuZXJpY19ob3N0X2NoaWxkX2JyaWRnZV9kMTgucHk6OnRlc3RfcmVhbF9zZGtfcGFyZW50X3JvdXRlc19hbmRfaW5kZXBlbmRlbnRfY2hpbGRfcHJvZ3Jlc3NbVHJ1ZS1weXRob25dIjogInBhc3NlZCIsCiAgICAgICJ0ZXN0cy9jb3JlL2V4ZWN1dGlvbi90ZXN0X2dlbmVyaWNfaG9zdF9jaGlsZF9icmlkZ2VfZDE4LnB5Ojp0ZXN0X3JlYWxfc2RrX3BhcmVudF9yb3V0ZXNfYW5kX2luZGVwZW5kZW50X2NoaWxkX3Byb2dyZXNzW1RydWUtLW1dIjogInBhc3NlZCIsCiAgICAgICJ0ZXN0cy9jb3JlL2V4ZWN1dGlvbi90ZXN0X2dlbmVyaWNfaG9zdF9jaGlsZF9icmlkZ2VfZDE4LnB5Ojp0ZXN0X3JlYWxfc2RrX3BhcmVudF9yb3V0ZXNfYW5kX2luZGVwZW5kZW50X2NoaWxkX3Byb2dyZXNzW1RydWUtc2NyaXB0XSI6ICJwYXNzZWQiLAogICAgICAidGVzdHMvY29yZS9leGVjdXRpb24vdGVzdF9nZW5lcmljX2hvc3RfY2hpbGRfYnJpZGdlX2QxOC5weTo6dGVzdF9yZWFsX3Nka19wYXJlbnRfcm91dGVzX2FuZF9pbmRlcGVuZGVudF9jaGlsZF9wcm9ncmVzc1tUcnVlLS1jXSI6ICJmYWlsZWQiCiAgICB9CiAgfQp9Cg== | base64 -d > "$RUNNER_TEMP/d18-tools/frozen.json"
+        cp "$RUNNER_TEMP"/d18-tools/* "$RUNNER_TEMP/d18-proof/"
+      shell: bash
+    - name: Prepare control scratch
+      run: mkdir -p "$RUNNER_TEMP/control-user"/{home,cache,config,data,state} "$RUNNER_TEMP/d18-proof/control/results" "$RUNNER_TEMP/control-temp" "$RUNNER_TEMP/control-tmp"
+      shell: bash
+    - name: control / Check out repository
+      uses: actions/checkout@v4
+      with:
+        path: control
+        persist-credentials: false
+        ref: c6e7ba9152b1beda575ae3b07f914338a62d075f
+    - name: control / Resolve launcher ref
+      id: control-launcher-ref
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'control'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'control-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-01 --shell bash "{0}"
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/control/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/control/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/control/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/control/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/control/astrid-pinokio
+        HOME: ${{ runner.temp }}/control-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/control-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/control-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/control-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/control-user/state
+        INPUT_LAUNCHER_REF: d15c58b5cd1f7e24c1e699340b33961027f7c573
+      run: |
+        ref="${INPUT_LAUNCHER_REF:-main}"
+        if [[ -n "$INPUT_LAUNCHER_REF" && ! "$ref" =~ ^[0-9a-fA-F]{40}$ ]]; then
+          echo "launcher_ref must be a full 40-character commit SHA (or empty for main)" >&2
+          exit 1
+        fi
+        echo "ref=$ref" >> "$GITHUB_OUTPUT"
+      working-directory: control
+    - name: control / Read the pinned Runtime commit
+      id: control-runtime-pin
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'control'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'control-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-02 --shell bash "{0}"
+      run: echo "commit=$(python3 -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')" >> "$GITHUB_OUTPUT"
+      working-directory: control
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/control/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/control/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/control/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/control/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/control/astrid-pinokio
+        HOME: ${{ runner.temp }}/control-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/control-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/control-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/control-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/control-user/state
+    - name: control / Check out the Runtime (astrid-runtime)
+      uses: actions/checkout@v4
+      with:
+        repository: banodoco/astrid-runtime
+        ref: ${{ steps.control-runtime-pin.outputs.commit }}
+        path: control/astrid-runtime
+        persist-credentials: false
+    - name: control / Check out Pinokio (astrid-pinokio)
+      uses: actions/checkout@v4
+      with:
+        repository: banodoco/astrid-pinokio
+        ref: ${{ steps.control-launcher-ref.outputs.ref }}
+        path: control/astrid-pinokio
+        persist-credentials: false
+    - name: control / Fetch historical Agent archive objects
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'control'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'control-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-05 --shell bash "{0}"
+      run: git fetch --no-tags --depth=1 origin a53ef0c257e4b0bbc2a65959b9119e2cb4cff453 0e1543e0da2215db9cb3320cfd1083174c3c62a9 ba21beffd177e7d80a5b839bde5a9e25b97235c2
+      working-directory: control
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/control/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/control/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/control/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/control/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/control/astrid-pinokio
+        HOME: ${{ runner.temp }}/control-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/control-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/control-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/control-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/control-user/state
+    - name: control / Fetch historical Runtime archive objects
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'control'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'control-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-06 --shell bash "{0}"
+      run: git -C astrid-runtime fetch --no-tags --depth=1 origin 11443b0b5b34bd5b36725504fb083146192a759d 959ce04fcf91351903c361d03e6b19eb0bbe8587 efcb3264e854fc312faa0bc6e702a9034edc2e06 d9e2a71e87c827290a3ff58a94f6fb8b4bc11e0b 1e6d899efa77a2d6ec247c38250f9748330bb587 becfe6db88b2cc034dba3fafa6c050117cdf2b06 6634a17f3ffd885567ba3c91b6c7a560df7375a4 f103bb46866999c961a8865636f2e66d544e0c9b 9ef808711a5207f5be74dc5f267af6fdd7bc9550 6d53a19070faf63fc15ae1f81417722edc2c8a5f b2a1d9fd82121a5509769531a2e91aece97d78b9 b92d3e7a05eec65c142294ef4873edd059e9b31d
+      working-directory: control
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/control/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/control/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/control/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/control/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/control/astrid-pinokio
+        HOME: ${{ runner.temp }}/control-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/control-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/control-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/control-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/control-user/state
+    - name: control / Verify Runtime sources before tests
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'control'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'control-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-07 --shell bash "{0}"
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/control/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/control/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/control/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/control/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/control/astrid-pinokio
+        HOME: ${{ runner.temp }}/control-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/control-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/control-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/control-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/control-user/state
+        RUNTIME_LOCK_SHA: ${{ steps.control-runtime-pin.outputs.commit }}
+        HISTORICAL_RUNTIME_SHA: efcb3264e854fc312faa0bc6e702a9034edc2e06
+      run: |
+        set -euo pipefail
+        locked_runtime="$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse HEAD)"
+        test "$locked_runtime" = "$RUNTIME_LOCK_SHA"
+        historical_runtime="$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse "${HISTORICAL_RUNTIME_SHA}^{commit}")"
+        test "$historical_runtime" = "$HISTORICAL_RUNTIME_SHA"
+        historical_type="$(git -C "$ASTRID_RUNTIME_CHECKOUT" cat-file -t "$HISTORICAL_RUNTIME_SHA")"
+        test "$historical_type" = commit
+        # Both source trees are used by real Lanes tests via git archive.
+        # A shallow checkout does not otherwise guarantee their availability.
+        historical_busy_runtime=6d53a19070faf63fc15ae1f81417722edc2c8a5f
+        historical_r12_agent=0e1543e0da2215db9cb3320cfd1083174c3c62a9
+        test "$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse "${historical_busy_runtime}^{commit}")" = "$historical_busy_runtime"
+        test "$(git rev-parse "${historical_r12_agent}^{commit}")" = "$historical_r12_agent"
+        git -C "$ASTRID_RUNTIME_CHECKOUT" cat-file -e "${historical_busy_runtime}^{tree}"
+        git cat-file -e "${historical_r12_agent}^{tree}"
+        git -C "$ASTRID_RUNTIME_CHECKOUT" archive --format=tar "$historical_busy_runtime" >/dev/null
+        git archive --format=tar "$historical_r12_agent" >/dev/null
+        # The retained media-manifest realm needs its matching H31 sources.
+        historical_manifest_agent=ba21beffd177e7d80a5b839bde5a9e25b97235c2
+        historical_manifest_runtime=b2a1d9fd82121a5509769531a2e91aece97d78b9
+        test "$(git rev-parse "${historical_manifest_agent}^{commit}")" = "$historical_manifest_agent"
+        test "$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse "${historical_manifest_runtime}^{commit}")" = "$historical_manifest_runtime"
+        test "$(git cat-file -t "$historical_manifest_agent")" = commit
+        test "$(git -C "$ASTRID_RUNTIME_CHECKOUT" cat-file -t "$historical_manifest_runtime")" = commit
+        git cat-file -e "${historical_manifest_agent}^{tree}"
+        git -C "$ASTRID_RUNTIME_CHECKOUT" cat-file -e "${historical_manifest_runtime}^{tree}"
+        git archive --format=tar "$historical_manifest_agent" >/dev/null
+        git -C "$ASTRID_RUNTIME_CHECKOUT" archive --format=tar "$historical_manifest_runtime" >/dev/null
+        # The authenticated media HTTP cases retain this historical Runtime.
+        historical_media_http_runtime=b92d3e7a05eec65c142294ef4873edd059e9b31d
+        test "$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse "${historical_media_http_runtime}^{commit}")" = "$historical_media_http_runtime"
+        test "$(git -C "$ASTRID_RUNTIME_CHECKOUT" cat-file -t "$historical_media_http_runtime")" = commit
+        git -C "$ASTRID_RUNTIME_CHECKOUT" cat-file -e "${historical_media_http_runtime}^{tree}"
+        git -C "$ASTRID_RUNTIME_CHECKOUT" archive --format=tar "$historical_media_http_runtime" >/dev/null
+        {
+          echo "## Effective Runtime sources"
+          echo "- Runtime checkout: $ASTRID_RUNTIME_CHECKOUT"
+          echo "- Runtime lock source: $RUNTIME_LOCK_SHA (checkout HEAD: $locked_runtime)"
+          echo "- Runtime historical source: $HISTORICAL_RUNTIME_SHA (resolved: $historical_runtime; object: $historical_type)"
+          echo "- Busy-upgrade historical Runtime tree: $historical_busy_runtime (commit, tree and archive available)"
+          echo "- R12 historical Agent tree: $historical_r12_agent (commit, tree and archive available)"
+          echo "- Media-manifest historical Agent tree: $historical_manifest_agent (commit, tree and archive available)"
+          echo "- Media-manifest historical Runtime tree: $historical_manifest_runtime (commit, tree and archive available)"
+          echo "- Authenticated media HTTP historical Runtime tree: $historical_media_http_runtime (commit, tree and archive available)"
+        } >> "$GITHUB_STEP_SUMMARY"
+      working-directory: control
+    - name: control / Record checked-out refs
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'control'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'control-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-08 --shell bash "{0}"
+      run: |
+        {
+          echo "## Effective checked-out refs"
+          echo "- Agent: $(git rev-parse HEAD)"
+          echo "- Runtime: $(git -C astrid-runtime rev-parse HEAD)"
+          echo "- Pinokio: $(git -C astrid-pinokio rev-parse HEAD)"
+        } >> "$GITHUB_STEP_SUMMARY"
+      working-directory: control
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/control/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/control/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/control/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/control/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/control/astrid-pinokio
+        HOME: ${{ runner.temp }}/control-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/control-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/control-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/control-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/control-user/state
+    - name: control / Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: 3.11.18
+      id: control-python
+    - name: Isolate control Python environment
+      run: |-
+        set -euo pipefail
+        "${{ steps.control-python.outputs.python-path }}" -m venv "$RUNNER_TEMP/control-venv"
+        echo "$RUNNER_TEMP/control-venv/bin" >> "$GITHUB_PATH"
+      shell: bash
+    - name: control / Set up pinned uv
+      uses: astral-sh/setup-uv@v6
+      with:
+        version: 0.11.32
+        enable-cache: false
+    - name: control / Set up Node.js 22 (HyperFrames CLI)
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+    - name: control / Set up Node.js from .node-version
+      uses: actions/setup-node@v4
+      with:
+        node-version-file: control/.node-version
+    - name: control / Install system media tools and a system font
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'control'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'control-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-14 --shell bash "{0}"
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ffmpeg fonts-dejavu-core
+      working-directory: control
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/control/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/control/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/control/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/control/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/control/astrid-pinokio
+        HOME: ${{ runner.temp }}/control-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/control-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/control-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/control-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/control-user/state
+    - name: control / Install package with dev extras
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'control'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'control-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-15 --shell bash "{0}"
+      run: python -m pip install -e '.[dev]'
+      working-directory: control
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/control/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/control/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/control/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/control/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/control/astrid-pinokio
+        HOME: ${{ runner.temp }}/control-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/control-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/control-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/control-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/control-user/state
+    - name: control / Install the Runtime and client from the checkout
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'control'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'control-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-16 --shell bash "{0}"
+      run: python -m pip install --no-deps -e ./astrid-runtime -e ./astrid-runtime/packages/python
+      working-directory: control
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/control/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/control/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/control/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/control/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/control/astrid-pinokio
+        HOME: ${{ runner.temp }}/control-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/control-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/control-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/control-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/control-user/state
+    - name: control / Read the pinned VibeComfy revision
+      id: control-vibecomfy-pin
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'control'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'control-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-17 --shell bash "{0}"
+      run: |
+        rev="$(python3 scripts/vibecomfy_pin.py)"
+        if [[ ! "$rev" =~ ^[0-9a-f]{40}$ ]]; then
+          echo "VibeComfy engine recipe must resolve to a full lowercase 40-hex revision" >&2
+          exit 1
+        fi
+        echo "revision=$rev" >> "$GITHUB_OUTPUT"
+      working-directory: control
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/control/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/control/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/control/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/control/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/control/astrid-pinokio
+        HOME: ${{ runner.temp }}/control-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/control-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/control-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/control-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/control-user/state
+    - name: control / Check out VibeComfy at the pinned engine revision
+      uses: actions/checkout@v4
+      with:
+        repository: banodoco/VibeComfy
+        ref: ${{ steps.control-vibecomfy-pin.outputs.revision }}
+        path: control/vibecomfy-checkout
+        persist-credentials: false
+    - name: control / Record VibeComfy checkout
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/control/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/control/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/control/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/control/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/control/astrid-pinokio
+        HOME: ${{ runner.temp }}/control-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/control-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/control-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/control-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/control-user/state
+        VIBECOMFY_REVISION: ${{ steps.control-vibecomfy-pin.outputs.revision }}
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'control'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'control-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-19 --shell bash "{0}"
+      run: |
+        checked_out="$(git -C vibecomfy-checkout rev-parse HEAD)"
+        test "$checked_out" = "$VIBECOMFY_REVISION"
+        echo "- VibeComfy: banodoco/VibeComfy at $checked_out (engine revision verified)" >> "$GITHUB_STEP_SUMMARY"
+      working-directory: control
+    - name: control / Install VibeComfy
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'control'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'control-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-20 --shell bash "{0}"
+      run: python -m pip install -e ./vibecomfy-checkout
+      working-directory: control
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/control/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/control/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/control/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/control/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/control/astrid-pinokio
+        HOME: ${{ runner.temp }}/control-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/control-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/control-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/control-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/control-user/state
+    - name: control / Install the Remotion dependencies
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'control'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'control-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-21 --shell bash "{0}"
+      run: |
+        sudo apt-get install -y libnss3 libdbus-1-3 libatk1.0-0 libatk-bridge2.0-0 libgbm1 libasound2t64 libxrandr2 libxkbcommon0 libxfixes3 libxcomposite1 libxdamage1 libpango-1.0-0 libcairo2 libcups2
+        npm ci --prefix remotion
+      working-directory: control
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/control/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/control/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/control/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/control/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/control/astrid-pinokio
+        HOME: ${{ runner.temp }}/control-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/control-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/control-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/control-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/control-user/state
+    - name: control / Provision the Remotion browser
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'control'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'control-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-22 --shell bash "{0}"
+      run: npx remotion browser ensure
+      working-directory: control/remotion
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/control/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/control/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/control/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/control/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/control/astrid-pinokio
+        HOME: ${{ runner.temp }}/control-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/control-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/control-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/control-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/control-user/state
+    - name: control / Read the pinned RunPod lifecycle revision
+      id: control-lifecycle-pin
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'control'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'control-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-23 --shell bash "{0}"
+      run: |
+        python3 - <<'PY' >> "$GITHUB_OUTPUT"
+        import json
+        from pathlib import Path
+        source = json.loads(Path("astrid/packs/runpod/pins.json").read_text())["sources"]["lifecycle"]
+        print(f"repository={source['repository'].removeprefix('https://github.com/').removesuffix('.git')}")
+        print(f"revision={source['revision']}")
+        PY
+      working-directory: control
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/control/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/control/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/control/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/control/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/control/astrid-pinokio
+        HOME: ${{ runner.temp }}/control-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/control-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/control-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/control-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/control-user/state
+    - name: control / Check out the pinned RunPod lifecycle (test fixtures)
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ steps.control-lifecycle-pin.outputs.repository }}
+        ref: ${{ steps.control-lifecycle-pin.outputs.revision }}
+        path: control/runpod-lifecycle-checkout
+        persist-credentials: false
+    - name: control / Record RunPod lifecycle checkout
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'control'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'control-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-25 --shell bash "{0}"
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/control/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/control/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/control/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/control/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/control/astrid-pinokio
+        HOME: ${{ runner.temp }}/control-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/control-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/control-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/control-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/control-user/state
+        LIFECYCLE_REVISION: ${{ steps.control-lifecycle-pin.outputs.revision }}
+      run: |
+        set -euo pipefail
+        checked_out="$(git -C "$ASTRID_TEST_LIFECYCLE_CHECKOUT" rev-parse HEAD)"
+        test "$checked_out" = "$LIFECYCLE_REVISION"
+        echo "- RunPod lifecycle: $checked_out" >> "$GITHUB_STEP_SUMMARY"
+      working-directory: control
+    - name: control / Read the pinned ComfyUI revision
+      id: control-comfyui-pin
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'control'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'control-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-26 --shell bash "{0}"
+      run: |
+        python3 - <<'PY' >> "$GITHUB_OUTPUT"
+        import json
+        from pathlib import Path
+        source = json.loads(Path("astrid/packs/runpod/pins.json").read_text())["sources"]["comfyui"]
+        print(f"repository={source['repository'].removeprefix('https://github.com/').removesuffix('.git')}")
+        print(f"revision={source['revision']}")
+        PY
+      working-directory: control
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/control/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/control/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/control/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/control/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/control/astrid-pinokio
+        HOME: ${{ runner.temp }}/control-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/control-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/control-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/control-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/control-user/state
+    - name: control / Check out the pinned ComfyUI (test fixtures)
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ steps.control-comfyui-pin.outputs.repository }}
+        ref: ${{ steps.control-comfyui-pin.outputs.revision }}
+        path: control/comfyui-checkout
+        persist-credentials: false
+    - name: control / Record ComfyUI checkout
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'control'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'control-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-28 --shell bash "{0}"
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/control/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/control/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/control/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/control/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/control/astrid-pinokio
+        HOME: ${{ runner.temp }}/control-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/control-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/control-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/control-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/control-user/state
+        COMFYUI_REVISION: ${{ steps.control-comfyui-pin.outputs.revision }}
+      run: |
+        set -euo pipefail
+        checked_out="$(git -C "$ASTRID_TEST_COMFY_SOURCE" rev-parse HEAD)"
+        test "$checked_out" = "$COMFYUI_REVISION"
+        echo "- ComfyUI: $checked_out" >> "$GITHUB_STEP_SUMMARY"
+      working-directory: control
+    - name: control / verify source and record comparison inputs
+      run: |-
+        set -euo pipefail
+        test "$(git rev-parse HEAD)" = "c6e7ba9152b1beda575ae3b07f914338a62d075f"
+        test "$(python -c 'import sys; print(sys.prefix)')" = "$RUNNER_TEMP/control-venv"
+        test "$(command -v python)" = "$RUNNER_TEMP/control-venv/bin/python"
+        python -I -c 'import astrid,runtime_protocol; from pathlib import Path; root=Path.cwd().resolve(); assert Path(astrid.__file__).resolve().is_relative_to(root) and Path(runtime_protocol.__file__).resolve().is_relative_to(root/"astrid-runtime")'
+        test "$(git -C astrid-runtime rev-parse HEAD)" = 2537fed24385ec1c24f48a812e09af4bb63fb794
+        test "$(git rev-parse HEAD:tests/core/execution/test_generic_host_child_bridge_d18.py)" = 63ffa0dc38d46dc3b884d3755d92035d2b2dbabb
+        test "$(git rev-parse HEAD:astrid/core/execution/generic_host.py)" = 6df8e4ef3d5e1254ae650ea9093f4fbbd736564e
+        test "$(git rev-parse HEAD:runtime.lock.json)" = 32e4608197f606f131c2eb263e5b7d748bcc0ffd
+        test "$(git status --porcelain --untracked-files=no)" = ""
+        out="$RUNNER_TEMP/d18-proof/control"
+        python -m pip list --format=json > "$out/packages.json"
+        python -c 'import sys,pytest; assert sys.version_info[:3]==(3,11,18) and pytest.__version__=="9.0.2"'
+        for repo in . astrid-runtime vibecomfy-checkout comfyui-checkout astrid-pinokio runpod-lifecycle-checkout; do echo "$repo $(git -C "$repo" rev-parse HEAD)"; done > "$out/pins.txt"
+        uname -a > "$out/host.txt"
+        echo "image=$ImageOS build=$ImageVersion" >> "$out/host.txt"
+        cat /proc/loadavg >> "$out/host.txt"
+        cat /proc/pressure/cpu >> "$out/host.txt"
+      shell: bash
+      working-directory: control
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/control/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/control/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/control/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/control/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/control/astrid-pinokio
+        HOME: ${{ runner.temp }}/control-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/control-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/control-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/control-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/control-user/state
+    - name: control / Integration tests (shard)
+      run: mkdir -p "$TEST_RESULTS_DIR" && python -P -m ci.run_pytest -p ceiling_pytest -v -rA --junitxml="$TEST_RESULTS_DIR/integration.xml" --durations=40 -m "integration and not opt_in and not app_checkout" --splits 4 --group 1
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'control'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'control-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-29 --shell bash "{0}"
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/control/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/control/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/control/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/control/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/control/astrid-pinokio
+        HOME: ${{ runner.temp }}/control-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/control-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/control-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/control-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/control-user/state
+        PYTHONPATH: ${{ github.workspace }}/control/scripts:${{ runner.temp }}/d18-tools
+        TEST_RESULTS_DIR: ${{ runner.temp }}/d18-proof/control/results
+        PYTEST_PLUGINS: d18_observer
+        D18_TRACE: ${{ runner.temp }}/d18-proof/control/trace.json
+        TMPDIR: ${{ runner.temp }}/control-tmp
+      working-directory: control
+      id: control-test
+      continue-on-error: true
+    - name: control / collect and compare native evidence
+      run: |-
+        set -euo pipefail
+        out="$RUNNER_TEMP/d18-proof/control"
+        cp -R "$RUNNER_TEMP/control-temp/failure-ceiling/integration/step-29" "$out/step-29"
+        mkdir -p "$out/native"
+        mv "$out/step-29" "$out/native/"
+        python "$RUNNER_TEMP/d18-tools/verify_arm.py" control c6e7ba9152b1beda575ae3b07f914338a62d075f
+      shell: bash
+      if: ${{ !cancelled() && steps.control-test.outcome != 'skipped' }}
+    - name: Prepare integrated scratch
+      run: mkdir -p "$RUNNER_TEMP/integrated-user"/{home,cache,config,data,state} "$RUNNER_TEMP/d18-proof/integrated/results" "$RUNNER_TEMP/integrated-temp" "$RUNNER_TEMP/integrated-tmp"
+      shell: bash
+    - name: integrated / Check out repository
+      uses: actions/checkout@v4
+      with:
+        path: integrated
+        persist-credentials: false
+        ref: 29dc13b40e71296365399b028b28986e92e2384c
+    - name: integrated / Resolve launcher ref
+      id: integrated-launcher-ref
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'integrated'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'integrated-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-01 --shell bash "{0}"
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/integrated/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/integrated/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/integrated/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/integrated/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/integrated/astrid-pinokio
+        HOME: ${{ runner.temp }}/integrated-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/integrated-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/integrated-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/integrated-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/integrated-user/state
+        INPUT_LAUNCHER_REF: d15c58b5cd1f7e24c1e699340b33961027f7c573
+      run: |
+        ref="${INPUT_LAUNCHER_REF:-main}"
+        if [[ -n "$INPUT_LAUNCHER_REF" && ! "$ref" =~ ^[0-9a-fA-F]{40}$ ]]; then
+          echo "launcher_ref must be a full 40-character commit SHA (or empty for main)" >&2
+          exit 1
+        fi
+        echo "ref=$ref" >> "$GITHUB_OUTPUT"
+      working-directory: integrated
+    - name: integrated / Read the pinned Runtime commit
+      id: integrated-runtime-pin
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'integrated'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'integrated-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-02 --shell bash "{0}"
+      run: echo "commit=$(python3 -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')" >> "$GITHUB_OUTPUT"
+      working-directory: integrated
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/integrated/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/integrated/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/integrated/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/integrated/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/integrated/astrid-pinokio
+        HOME: ${{ runner.temp }}/integrated-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/integrated-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/integrated-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/integrated-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/integrated-user/state
+    - name: integrated / Check out the Runtime (astrid-runtime)
+      uses: actions/checkout@v4
+      with:
+        repository: banodoco/astrid-runtime
+        ref: ${{ steps.integrated-runtime-pin.outputs.commit }}
+        path: integrated/astrid-runtime
+        persist-credentials: false
+    - name: integrated / Check out Pinokio (astrid-pinokio)
+      uses: actions/checkout@v4
+      with:
+        repository: banodoco/astrid-pinokio
+        ref: ${{ steps.integrated-launcher-ref.outputs.ref }}
+        path: integrated/astrid-pinokio
+        persist-credentials: false
+    - name: integrated / Fetch historical Agent archive objects
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'integrated'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'integrated-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-05 --shell bash "{0}"
+      run: git fetch --no-tags --depth=1 origin a53ef0c257e4b0bbc2a65959b9119e2cb4cff453 0e1543e0da2215db9cb3320cfd1083174c3c62a9 ba21beffd177e7d80a5b839bde5a9e25b97235c2
+      working-directory: integrated
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/integrated/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/integrated/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/integrated/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/integrated/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/integrated/astrid-pinokio
+        HOME: ${{ runner.temp }}/integrated-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/integrated-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/integrated-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/integrated-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/integrated-user/state
+    - name: integrated / Fetch historical Runtime archive objects
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'integrated'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'integrated-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-06 --shell bash "{0}"
+      run: git -C astrid-runtime fetch --no-tags --depth=1 origin 11443b0b5b34bd5b36725504fb083146192a759d 959ce04fcf91351903c361d03e6b19eb0bbe8587 efcb3264e854fc312faa0bc6e702a9034edc2e06 d9e2a71e87c827290a3ff58a94f6fb8b4bc11e0b 1e6d899efa77a2d6ec247c38250f9748330bb587 becfe6db88b2cc034dba3fafa6c050117cdf2b06 6634a17f3ffd885567ba3c91b6c7a560df7375a4 f103bb46866999c961a8865636f2e66d544e0c9b 9ef808711a5207f5be74dc5f267af6fdd7bc9550 6d53a19070faf63fc15ae1f81417722edc2c8a5f b2a1d9fd82121a5509769531a2e91aece97d78b9 b92d3e7a05eec65c142294ef4873edd059e9b31d
+      working-directory: integrated
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/integrated/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/integrated/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/integrated/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/integrated/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/integrated/astrid-pinokio
+        HOME: ${{ runner.temp }}/integrated-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/integrated-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/integrated-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/integrated-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/integrated-user/state
+    - name: integrated / Verify Runtime sources before tests
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'integrated'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'integrated-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-07 --shell bash "{0}"
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/integrated/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/integrated/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/integrated/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/integrated/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/integrated/astrid-pinokio
+        HOME: ${{ runner.temp }}/integrated-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/integrated-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/integrated-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/integrated-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/integrated-user/state
+        RUNTIME_LOCK_SHA: ${{ steps.integrated-runtime-pin.outputs.commit }}
+        HISTORICAL_RUNTIME_SHA: efcb3264e854fc312faa0bc6e702a9034edc2e06
+      run: |
+        set -euo pipefail
+        locked_runtime="$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse HEAD)"
+        test "$locked_runtime" = "$RUNTIME_LOCK_SHA"
+        historical_runtime="$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse "${HISTORICAL_RUNTIME_SHA}^{commit}")"
+        test "$historical_runtime" = "$HISTORICAL_RUNTIME_SHA"
+        historical_type="$(git -C "$ASTRID_RUNTIME_CHECKOUT" cat-file -t "$HISTORICAL_RUNTIME_SHA")"
+        test "$historical_type" = commit
+        # Both source trees are used by real Lanes tests via git archive.
+        # A shallow checkout does not otherwise guarantee their availability.
+        historical_busy_runtime=6d53a19070faf63fc15ae1f81417722edc2c8a5f
+        historical_r12_agent=0e1543e0da2215db9cb3320cfd1083174c3c62a9
+        test "$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse "${historical_busy_runtime}^{commit}")" = "$historical_busy_runtime"
+        test "$(git rev-parse "${historical_r12_agent}^{commit}")" = "$historical_r12_agent"
+        git -C "$ASTRID_RUNTIME_CHECKOUT" cat-file -e "${historical_busy_runtime}^{tree}"
+        git cat-file -e "${historical_r12_agent}^{tree}"
+        git -C "$ASTRID_RUNTIME_CHECKOUT" archive --format=tar "$historical_busy_runtime" >/dev/null
+        git archive --format=tar "$historical_r12_agent" >/dev/null
+        # The retained media-manifest realm needs its matching H31 sources.
+        historical_manifest_agent=ba21beffd177e7d80a5b839bde5a9e25b97235c2
+        historical_manifest_runtime=b2a1d9fd82121a5509769531a2e91aece97d78b9
+        test "$(git rev-parse "${historical_manifest_agent}^{commit}")" = "$historical_manifest_agent"
+        test "$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse "${historical_manifest_runtime}^{commit}")" = "$historical_manifest_runtime"
+        test "$(git cat-file -t "$historical_manifest_agent")" = commit
+        test "$(git -C "$ASTRID_RUNTIME_CHECKOUT" cat-file -t "$historical_manifest_runtime")" = commit
+        git cat-file -e "${historical_manifest_agent}^{tree}"
+        git -C "$ASTRID_RUNTIME_CHECKOUT" cat-file -e "${historical_manifest_runtime}^{tree}"
+        git archive --format=tar "$historical_manifest_agent" >/dev/null
+        git -C "$ASTRID_RUNTIME_CHECKOUT" archive --format=tar "$historical_manifest_runtime" >/dev/null
+        # The authenticated media HTTP cases retain this historical Runtime.
+        historical_media_http_runtime=b92d3e7a05eec65c142294ef4873edd059e9b31d
+        test "$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse "${historical_media_http_runtime}^{commit}")" = "$historical_media_http_runtime"
+        test "$(git -C "$ASTRID_RUNTIME_CHECKOUT" cat-file -t "$historical_media_http_runtime")" = commit
+        git -C "$ASTRID_RUNTIME_CHECKOUT" cat-file -e "${historical_media_http_runtime}^{tree}"
+        git -C "$ASTRID_RUNTIME_CHECKOUT" archive --format=tar "$historical_media_http_runtime" >/dev/null
+        {
+          echo "## Effective Runtime sources"
+          echo "- Runtime checkout: $ASTRID_RUNTIME_CHECKOUT"
+          echo "- Runtime lock source: $RUNTIME_LOCK_SHA (checkout HEAD: $locked_runtime)"
+          echo "- Runtime historical source: $HISTORICAL_RUNTIME_SHA (resolved: $historical_runtime; object: $historical_type)"
+          echo "- Busy-upgrade historical Runtime tree: $historical_busy_runtime (commit, tree and archive available)"
+          echo "- R12 historical Agent tree: $historical_r12_agent (commit, tree and archive available)"
+          echo "- Media-manifest historical Agent tree: $historical_manifest_agent (commit, tree and archive available)"
+          echo "- Media-manifest historical Runtime tree: $historical_manifest_runtime (commit, tree and archive available)"
+          echo "- Authenticated media HTTP historical Runtime tree: $historical_media_http_runtime (commit, tree and archive available)"
+        } >> "$GITHUB_STEP_SUMMARY"
+      working-directory: integrated
+    - name: integrated / Record checked-out refs
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'integrated'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'integrated-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-08 --shell bash "{0}"
+      run: |
+        {
+          echo "## Effective checked-out refs"
+          echo "- Agent: $(git rev-parse HEAD)"
+          echo "- Runtime: $(git -C astrid-runtime rev-parse HEAD)"
+          echo "- Pinokio: $(git -C astrid-pinokio rev-parse HEAD)"
+        } >> "$GITHUB_STEP_SUMMARY"
+      working-directory: integrated
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/integrated/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/integrated/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/integrated/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/integrated/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/integrated/astrid-pinokio
+        HOME: ${{ runner.temp }}/integrated-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/integrated-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/integrated-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/integrated-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/integrated-user/state
+    - name: integrated / Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: 3.11.18
+      id: integrated-python
+    - name: Isolate integrated Python environment
+      run: |-
+        set -euo pipefail
+        "${{ steps.integrated-python.outputs.python-path }}" -m venv "$RUNNER_TEMP/integrated-venv"
+        echo "$RUNNER_TEMP/integrated-venv/bin" >> "$GITHUB_PATH"
+      shell: bash
+    - name: integrated / Set up pinned uv
+      uses: astral-sh/setup-uv@v6
+      with:
+        version: 0.11.32
+        enable-cache: false
+    - name: integrated / Set up Node.js 22 (HyperFrames CLI)
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+    - name: integrated / Set up Node.js from .node-version
+      uses: actions/setup-node@v4
+      with:
+        node-version-file: integrated/.node-version
+    - name: integrated / Install system media tools and a system font
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'integrated'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'integrated-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-14 --shell bash "{0}"
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ffmpeg fonts-dejavu-core
+      working-directory: integrated
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/integrated/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/integrated/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/integrated/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/integrated/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/integrated/astrid-pinokio
+        HOME: ${{ runner.temp }}/integrated-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/integrated-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/integrated-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/integrated-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/integrated-user/state
+    - name: integrated / Install package with dev extras
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'integrated'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'integrated-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-15 --shell bash "{0}"
+      run: python -m pip install -e '.[dev]'
+      working-directory: integrated
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/integrated/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/integrated/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/integrated/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/integrated/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/integrated/astrid-pinokio
+        HOME: ${{ runner.temp }}/integrated-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/integrated-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/integrated-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/integrated-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/integrated-user/state
+    - name: integrated / Install the Runtime and client from the checkout
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'integrated'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'integrated-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-16 --shell bash "{0}"
+      run: python -m pip install --no-deps -e ./astrid-runtime -e ./astrid-runtime/packages/python
+      working-directory: integrated
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/integrated/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/integrated/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/integrated/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/integrated/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/integrated/astrid-pinokio
+        HOME: ${{ runner.temp }}/integrated-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/integrated-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/integrated-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/integrated-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/integrated-user/state
+    - name: integrated / Read the pinned VibeComfy revision
+      id: integrated-vibecomfy-pin
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'integrated'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'integrated-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-17 --shell bash "{0}"
+      run: |
+        rev="$(python3 scripts/vibecomfy_pin.py)"
+        if [[ ! "$rev" =~ ^[0-9a-f]{40}$ ]]; then
+          echo "VibeComfy engine recipe must resolve to a full lowercase 40-hex revision" >&2
+          exit 1
+        fi
+        echo "revision=$rev" >> "$GITHUB_OUTPUT"
+      working-directory: integrated
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/integrated/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/integrated/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/integrated/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/integrated/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/integrated/astrid-pinokio
+        HOME: ${{ runner.temp }}/integrated-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/integrated-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/integrated-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/integrated-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/integrated-user/state
+    - name: integrated / Check out VibeComfy at the pinned engine revision
+      uses: actions/checkout@v4
+      with:
+        repository: banodoco/VibeComfy
+        ref: ${{ steps.integrated-vibecomfy-pin.outputs.revision }}
+        path: integrated/vibecomfy-checkout
+        persist-credentials: false
+    - name: integrated / Record VibeComfy checkout
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/integrated/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/integrated/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/integrated/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/integrated/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/integrated/astrid-pinokio
+        HOME: ${{ runner.temp }}/integrated-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/integrated-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/integrated-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/integrated-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/integrated-user/state
+        VIBECOMFY_REVISION: ${{ steps.integrated-vibecomfy-pin.outputs.revision }}
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'integrated'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'integrated-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-19 --shell bash "{0}"
+      run: |
+        checked_out="$(git -C vibecomfy-checkout rev-parse HEAD)"
+        test "$checked_out" = "$VIBECOMFY_REVISION"
+        echo "- VibeComfy: banodoco/VibeComfy at $checked_out (engine revision verified)" >> "$GITHUB_STEP_SUMMARY"
+      working-directory: integrated
+    - name: integrated / Install VibeComfy
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'integrated'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'integrated-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-20 --shell bash "{0}"
+      run: python -m pip install -e ./vibecomfy-checkout
+      working-directory: integrated
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/integrated/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/integrated/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/integrated/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/integrated/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/integrated/astrid-pinokio
+        HOME: ${{ runner.temp }}/integrated-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/integrated-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/integrated-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/integrated-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/integrated-user/state
+    - name: integrated / Install the Remotion dependencies
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'integrated'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'integrated-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-21 --shell bash "{0}"
+      run: |
+        sudo apt-get install -y libnss3 libdbus-1-3 libatk1.0-0 libatk-bridge2.0-0 libgbm1 libasound2t64 libxrandr2 libxkbcommon0 libxfixes3 libxcomposite1 libxdamage1 libpango-1.0-0 libcairo2 libcups2
+        npm ci --prefix remotion
+      working-directory: integrated
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/integrated/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/integrated/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/integrated/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/integrated/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/integrated/astrid-pinokio
+        HOME: ${{ runner.temp }}/integrated-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/integrated-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/integrated-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/integrated-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/integrated-user/state
+    - name: integrated / Provision the Remotion browser
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'integrated'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'integrated-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-22 --shell bash "{0}"
+      run: npx remotion browser ensure
+      working-directory: integrated/remotion
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/integrated/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/integrated/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/integrated/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/integrated/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/integrated/astrid-pinokio
+        HOME: ${{ runner.temp }}/integrated-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/integrated-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/integrated-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/integrated-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/integrated-user/state
+    - name: integrated / Read the pinned RunPod lifecycle revision
+      id: integrated-lifecycle-pin
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'integrated'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'integrated-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-23 --shell bash "{0}"
+      run: |
+        python3 - <<'PY' >> "$GITHUB_OUTPUT"
+        import json
+        from pathlib import Path
+        source = json.loads(Path("astrid/packs/runpod/pins.json").read_text())["sources"]["lifecycle"]
+        print(f"repository={source['repository'].removeprefix('https://github.com/').removesuffix('.git')}")
+        print(f"revision={source['revision']}")
+        PY
+      working-directory: integrated
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/integrated/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/integrated/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/integrated/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/integrated/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/integrated/astrid-pinokio
+        HOME: ${{ runner.temp }}/integrated-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/integrated-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/integrated-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/integrated-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/integrated-user/state
+    - name: integrated / Check out the pinned RunPod lifecycle (test fixtures)
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ steps.integrated-lifecycle-pin.outputs.repository }}
+        ref: ${{ steps.integrated-lifecycle-pin.outputs.revision }}
+        path: integrated/runpod-lifecycle-checkout
+        persist-credentials: false
+    - name: integrated / Record RunPod lifecycle checkout
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'integrated'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'integrated-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-25 --shell bash "{0}"
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/integrated/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/integrated/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/integrated/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/integrated/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/integrated/astrid-pinokio
+        HOME: ${{ runner.temp }}/integrated-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/integrated-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/integrated-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/integrated-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/integrated-user/state
+        LIFECYCLE_REVISION: ${{ steps.integrated-lifecycle-pin.outputs.revision }}
+      run: |
+        set -euo pipefail
+        checked_out="$(git -C "$ASTRID_TEST_LIFECYCLE_CHECKOUT" rev-parse HEAD)"
+        test "$checked_out" = "$LIFECYCLE_REVISION"
+        echo "- RunPod lifecycle: $checked_out" >> "$GITHUB_STEP_SUMMARY"
+      working-directory: integrated
+    - name: integrated / Read the pinned ComfyUI revision
+      id: integrated-comfyui-pin
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'integrated'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'integrated-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-26 --shell bash "{0}"
+      run: |
+        python3 - <<'PY' >> "$GITHUB_OUTPUT"
+        import json
+        from pathlib import Path
+        source = json.loads(Path("astrid/packs/runpod/pins.json").read_text())["sources"]["comfyui"]
+        print(f"repository={source['repository'].removeprefix('https://github.com/').removesuffix('.git')}")
+        print(f"revision={source['revision']}")
+        PY
+      working-directory: integrated
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/integrated/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/integrated/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/integrated/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/integrated/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/integrated/astrid-pinokio
+        HOME: ${{ runner.temp }}/integrated-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/integrated-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/integrated-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/integrated-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/integrated-user/state
+    - name: integrated / Check out the pinned ComfyUI (test fixtures)
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ steps.integrated-comfyui-pin.outputs.repository }}
+        ref: ${{ steps.integrated-comfyui-pin.outputs.revision }}
+        path: integrated/comfyui-checkout
+        persist-credentials: false
+    - name: integrated / Record ComfyUI checkout
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'integrated'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'integrated-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-28 --shell bash "{0}"
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/integrated/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/integrated/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/integrated/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/integrated/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/integrated/astrid-pinokio
+        HOME: ${{ runner.temp }}/integrated-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/integrated-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/integrated-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/integrated-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/integrated-user/state
+        COMFYUI_REVISION: ${{ steps.integrated-comfyui-pin.outputs.revision }}
+      run: |
+        set -euo pipefail
+        checked_out="$(git -C "$ASTRID_TEST_COMFY_SOURCE" rev-parse HEAD)"
+        test "$checked_out" = "$COMFYUI_REVISION"
+        echo "- ComfyUI: $checked_out" >> "$GITHUB_STEP_SUMMARY"
+      working-directory: integrated
+    - name: integrated / verify source and record comparison inputs
+      run: |-
+        set -euo pipefail
+        test "$(git rev-parse HEAD)" = "29dc13b40e71296365399b028b28986e92e2384c"
+        test "$(python -c 'import sys; print(sys.prefix)')" = "$RUNNER_TEMP/integrated-venv"
+        test "$(command -v python)" = "$RUNNER_TEMP/integrated-venv/bin/python"
+        python -I -c 'import astrid,runtime_protocol; from pathlib import Path; root=Path.cwd().resolve(); assert Path(astrid.__file__).resolve().is_relative_to(root) and Path(runtime_protocol.__file__).resolve().is_relative_to(root/"astrid-runtime")'
+        test "$(git -C astrid-runtime rev-parse HEAD)" = 2537fed24385ec1c24f48a812e09af4bb63fb794
+        test "$(git rev-parse HEAD:tests/core/execution/test_generic_host_child_bridge_d18.py)" = 63ffa0dc38d46dc3b884d3755d92035d2b2dbabb
+        test "$(git rev-parse HEAD:astrid/core/execution/generic_host.py)" = 6df8e4ef3d5e1254ae650ea9093f4fbbd736564e
+        test "$(git rev-parse HEAD:runtime.lock.json)" = 32e4608197f606f131c2eb263e5b7d748bcc0ffd
+        test "$(git status --porcelain --untracked-files=no)" = ""
+        out="$RUNNER_TEMP/d18-proof/integrated"
+        python -m pip list --format=json > "$out/packages.json"
+        python -c 'import sys,pytest; assert sys.version_info[:3]==(3,11,18) and pytest.__version__=="9.0.2"'
+        for repo in . astrid-runtime vibecomfy-checkout comfyui-checkout astrid-pinokio runpod-lifecycle-checkout; do echo "$repo $(git -C "$repo" rev-parse HEAD)"; done > "$out/pins.txt"
+        uname -a > "$out/host.txt"
+        echo "image=$ImageOS build=$ImageVersion" >> "$out/host.txt"
+        cat /proc/loadavg >> "$out/host.txt"
+        cat /proc/pressure/cpu >> "$out/host.txt"
+      shell: bash
+      working-directory: integrated
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/integrated/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/integrated/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/integrated/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/integrated/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/integrated/astrid-pinokio
+        HOME: ${{ runner.temp }}/integrated-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/integrated-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/integrated-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/integrated-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/integrated-user/state
+    - name: integrated / Integration tests (shard)
+      run: mkdir -p "$TEST_RESULTS_DIR" && python -P -m ci.run_pytest -p ceiling_pytest -v -rA --junitxml="$TEST_RESULTS_DIR/integration.xml" --durations=40 -m "integration and not opt_in and not app_checkout" --splits 4 --group 1
+      shell: python -I -c "import os,runpy,sys; os.environ['GITHUB_WORKSPACE']=os.path.join(os.environ['GITHUB_WORKSPACE'],'integrated'); os.environ['RUNNER_TEMP']=os.path.join(os.environ['RUNNER_TEMP'],'integrated-temp'); sys.argv.extend(['--matrix',os.environ['ASTRID_CI_MATRIX']]); runpy.run_path(os.path.join(os.environ['GITHUB_WORKSPACE'],'scripts/ci/ceiling_capture.py'),run_name='__main__')" --step step-29 --shell bash "{0}"
+      env:
+        ASTRID_CI_JOB: lanes-integration
+        ASTRID_CI_MATRIX: '0'
+        ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/integrated/astrid-runtime
+        ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/integrated/vibecomfy-checkout
+        ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/integrated/runpod-lifecycle-checkout
+        ASTRID_TEST_COMFY_SOURCE: ${{ github.workspace }}/integrated/comfyui-checkout
+        ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/integrated/astrid-pinokio
+        HOME: ${{ runner.temp }}/integrated-user/home
+        XDG_CACHE_HOME: ${{ runner.temp }}/integrated-user/cache
+        XDG_CONFIG_HOME: ${{ runner.temp }}/integrated-user/config
+        XDG_DATA_HOME: ${{ runner.temp }}/integrated-user/data
+        XDG_STATE_HOME: ${{ runner.temp }}/integrated-user/state
+        PYTHONPATH: ${{ github.workspace }}/integrated/scripts:${{ runner.temp }}/d18-tools
+        TEST_RESULTS_DIR: ${{ runner.temp }}/d18-proof/integrated/results
+        PYTEST_PLUGINS: d18_observer
+        D18_TRACE: ${{ runner.temp }}/d18-proof/integrated/trace.json
+        TMPDIR: ${{ runner.temp }}/integrated-tmp
+      working-directory: integrated
+      id: integrated-test
+      continue-on-error: true
+    - name: integrated / collect and compare native evidence
+      run: |-
+        set -euo pipefail
+        out="$RUNNER_TEMP/d18-proof/integrated"
+        cp -R "$RUNNER_TEMP/integrated-temp/failure-ceiling/integration/step-29" "$out/step-29"
+        mkdir -p "$out/native"
+        mv "$out/step-29" "$out/native/"
+        python "$RUNNER_TEMP/d18-tools/verify_arm.py" integrated 29dc13b40e71296365399b028b28986e92e2384c
+      shell: bash
+      if: ${{ !cancelled() && steps.integrated-test.outcome != 'skipped' }}
+    - name: Cross-check both receipts and dependency versions
+      run: |-
+        set -euo pipefail
+        cd "$RUNNER_TEMP/d18-proof"
+        python - <<'PYTHON'
+        import json
+        from pathlib import Path
+        def get(arm,n):return json.loads(Path(arm,n).read_text())
+        for arm in ('control','integrated'):
+            assert all(get(arm,'comparison.json')['checks'].values()),arm
+        def packages(arm):return {p['name'].lower():p['version'] for p in get(arm,'packages.json')}
+        assert packages('control')==packages('integrated'),'dependency versions drifted'
+        PYTHON
+      shell: bash
+    - name: Preserve original shard exit status
+      run: |-
+        python - <<'PYTHON'
+        import json,os
+        from pathlib import Path
+        root=Path(os.environ['RUNNER_TEMP'])/'d18-proof'
+        exits={a:json.loads((root/a/'native/step-29/command.json').read_text())['raw_exit'] for a in ('control','integrated')}
+        print('Original command exits',exits)
+        raise SystemExit(max(exits.values()))
+        PYTHON
+      shell: bash
+    - name: Hash retained evidence
+      run: |-
+        cd "$RUNNER_TEMP/d18-proof"
+        find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+      shell: bash
+      if: always()
+    - name: Retain diagnostic evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: d18-original-pair
+        path: ${{ runner.temp }}/d18-proof
+        retention-days: 90
+        if-no-files-found: error
