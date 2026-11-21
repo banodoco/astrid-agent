@@ -28,7 +28,7 @@ from urllib import request as urllib_request
 
 from astrid.core.generation.engine_contracts import TransportError
 from astrid.core.media import MediaProbeError, ffprobe_metadata_strict
-from astrid.core.path_utils import has_url_scheme, is_native_absolute_path
+from astrid.core.path_utils import has_url_scheme, is_native_absolute_path, is_network_share_path
 from astrid.core.util.http import os_trust_ssl_context, request_error_host
 
 MAX_JSON_BYTES = 32 * 1024 * 1024
@@ -51,6 +51,8 @@ _MANAGED_KIND_RULES: dict[str, dict[str, Any]] = {
 
 def managed_media_type(source: Path, kind: str) -> str:
     """Validate a managed workflow input and retain its upload content type."""
+    if is_network_share_path(source):
+        raise ValueError(f"managed {kind} is not a local regular file: network share")
     source = Path(source)
     if source.is_symlink() or not source.is_file():
         raise ValueError(f"managed {kind} is not a local regular file: {source}")
@@ -349,6 +351,8 @@ class ComfyTargetClient:
         if kind not in _MANAGED_KIND_RULES:
             raise ValueError(f"unsupported local_server managed asset kind: {kind}")
         rule = _MANAGED_KIND_RULES[kind]
+        if is_network_share_path(source):
+            raise ValueError(f"managed {kind} is not a local regular file: network share")
         source = Path(source)
         subfolder = f"astrid/{validate_identity(task_id)}"
         if source.is_symlink() or not source.is_file():

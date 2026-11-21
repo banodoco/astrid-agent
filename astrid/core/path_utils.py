@@ -13,6 +13,12 @@ _WINDOWS_DRIVE_PATH = re.compile(r"^[A-Za-z]:[\\/]")
 _INVALID_PERCENT_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
 
 
+def is_network_share_path(value: str | os.PathLike[str]) -> bool:
+    """Recognize Windows UNC and device namespace paths without accessing them."""
+    # Both separators are accepted by Windows, including mixed and extended UNC.
+    return os.fspath(value).replace("\\", "/").startswith("//")
+
+
 def is_native_absolute_path(
     value: str | os.PathLike[str], *, windows: bool | None = None
 ) -> bool:

@@ -485,3 +485,25 @@ def test_local_playlist_cannot_open_remote_protocol(tmp_path):
         server.shutdown()
         thread.join()
         server.server_close()
+
+
+@pytest.mark.parametrize('remote', [r'\\server\share\clip.mp4', r'\\?\UNC\server\share\clip.mp4'], ids=['unc', 'extended-unc'])
+def test_network_share_refused_before_filesystem_access(remote, monkeypatch):
+    from pathlib import Path
+    from astrid.core.media import MediaProbeError, ffprobe_metadata_strict
+    from astrid.packs.vibecomfy.asset_manifest import AssetManifestError, build_asset_manifest
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('network share reached filesystem or probe')
+    for method in ('is_symlink', 'is_file', 'resolve', 'open', 'stat'):
+        monkeypatch.setattr(Path, method, forbidden)
+    monkeypatch.setattr('astrid.core.media.subprocess.run', forbidden)
+    with pytest.raises(ValueError, match='network share'):
+        comfy_target.managed_media_type(remote, 'audio')
+    with pytest.raises(MediaProbeError, match='network share'):
+        ffprobe_metadata_strict(remote, local_only=True)
+    with pytest.raises(AssetManifestError, match='network share'):
+        build_asset_manifest({'audio': remote})
+    client = ComfyTargetClient(ComfyTarget('http://127.0.0.1:8188', 'attached'))
+    with pytest.raises(ValueError, match='network share'):
+        client.upload_media(remote, task_id='task-1', kind='audio')

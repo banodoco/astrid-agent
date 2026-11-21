@@ -15,7 +15,7 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any, Callable
 
-from astrid.core.path_utils import has_url_scheme
+from astrid.core.path_utils import has_url_scheme, is_network_share_path
 from astrid.core.subprocess_env import build_child_subprocess_env
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
@@ -365,6 +365,8 @@ def ffprobe_metadata_strict(
     """
 
     if local_only:
+        if is_network_share_path(file_path):
+            raise MediaProbeError("media input is not a local regular file: network share")
         path = Path(file_path)
         if path.is_symlink() or not path.is_file():
             raise MediaProbeError(f"media input is not a local regular file: {file_path}")
