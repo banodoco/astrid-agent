@@ -177,3 +177,71 @@ def test_non16x9_mask_edit_rejects_mask_in_original_source_dimensions(
 ) -> None:
     with pytest.raises(CompilationError, match=r"640x480.*1024x576"):
         _prepare_compile(tmp_path, fit, (INPUT_WIDTH, INPUT_HEIGHT), monkeypatch)
+
+
+@pytest.mark.ffmpeg
+@pytest.mark.parametrize("fit", ["fill", "fit"])
+def test_non16x9_scaled_rectangle_preserves_prepared_pixels_on_cpu(tmp_path: Path, monkeypatch, fit: str) -> None:
+    """A default-canvas box scales into a cropped 768x448 prepared view."""
+    monkeypatch.setattr(engine_facts, "_FACTS", comfyui_facts())
+    source = tmp_path / "landmark.mkv"
+    _ffmpeg(
+        "-f", "lavfi", "-i", "color=c=blue:s=640x480:r=24:d=1",
+        "-vf", "drawbox=x=160:y=180:w=24:h=24:color=white:t=fill",
+        "-c:v", "ffv1", "-pix_fmt", "yuv420p", str(source),
+    )
+    request = normalize_request({
+        "version": 2, "duration": 1, "prompt": "Change the rectangle.",
+        "output": {"size": [768, 448]},
+        "media": [{"id": "source", "asset": "source", "role": "timeline",
+                   "modality": "video", "at": {"frame": 0}, "range": [0, 1],
+                   "edit": [{"stream": "video", "during": [0, 1],
+                             "mask": {"rectangle": [256, 144, 256, 144]}}]}],
+    })
+    if fit == "fit":
+        # V2 has no public fit selector. Exercise letterbox at the conform/compose
+        # boundary and submit the resulting view to the normal masked-edit path.
+        from astrid.packs.h3_av.shared.conform import conform_source
+        record = conform_source(source, tmp_path / "letterboxed", start="0", end="1",
+                                fit="fit", validate=comfyui_facts().measure_source_av,
+                                canvas=(768, 448))
+        source = tmp_path / "letterboxed" / "source.mp4"
+        preparation = prepare_request(request, asset_map={"source": str(source)})
+    else:
+        preparation = prepare_request(request, asset_map={"source": str(source)}, out_dir=tmp_path / "prepared")
+        record = preparation["source_conform"]
+    compiled = compile_preparation(preparation, out_dir=tmp_path / "compiled")
+    baseline = Path(next(row["path"] for row in preparation["assets"] if row["asset"] == "source"))
+    assert record["output"]["width"] == 768
+    assert record["output"]["height"] == 448
+    assert record["output"]["fit"] == fit
+
+    generated = tmp_path / "red.mkv"
+    _ffmpeg("-f", "lavfi", "-i", "color=c=red:s=768x448:r=24:d=2",
+            "-frames:v", str(compiled["capabilities"]["generation_timing"]["raw_frames"]),
+            "-c:v", "ffv1", "-pix_fmt", "yuv420p", str(generated))
+    composition = compose_candidate(preparation=preparation, generated=generated, source=baseline,
+                                    out_dir=tmp_path / "composition")
+    verification = verify_candidate(preparation=preparation, composition=composition, source=baseline)
+    assert verification["status"] == "verified"
+
+    def decoded(path: Path) -> np.ndarray:
+        raw = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(path),
+             "-frames:v", str(FRAMES), "-pix_fmt", "rgb24", "-f", "rawvideo", "-"],
+            check=True, capture_output=True, timeout=60,
+        ).stdout
+        return np.frombuffer(raw, dtype=np.uint8).reshape(FRAMES, 448, 768, 3)
+
+    before = decoded(baseline)
+    after = decoded(Path(composition["candidate"]["path"]))
+    # Pixel-edge rounding uses ceil(edge - 0.5), including half ties downward.
+    permission = np.zeros((448, 768), dtype=bool)
+    permission[112:224, 192:384] = True
+    assert np.array_equal(after[:, ~permission], before[:, ~permission])
+    assert np.any(after[:, permission] != before[:, permission])
+    landmark = before[:, 140:210, 180:280]
+    assert np.any(np.all(landmark > 220, axis=-1))  # off-centre landmark survives fit
+    if fit == "fit":
+        assert np.max(before[:, :, :70]) < 20  # letterbox bar
+    assert verification["preservation"]["spatial_complement"][0]["protected_pixel_count_per_frame"] == 768 * 448 - 192 * 112
