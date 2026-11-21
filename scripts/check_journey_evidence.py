@@ -28,6 +28,8 @@ if __package__:
         RELEASE1_JOB_IDS,
         RELEASE1_MATRIX,
         FIX17_MATRIX,
+        FIX17_BROWSER_LEGS,
+        FIX17_PROMPT_LEG,
         RELEASE1_AUTOMATIC_MATRIX,
         RELEASE11_UPDATE_MATRIX,
         RELEASE13_UPDATE_MATRIX,
@@ -53,6 +55,8 @@ else:
             RELEASE1_JOB_IDS,
             RELEASE1_MATRIX,
             FIX17_MATRIX,
+            FIX17_BROWSER_LEGS,
+            FIX17_PROMPT_LEG,
             RELEASE1_AUTOMATIC_MATRIX,
             RELEASE11_UPDATE_MATRIX,
             RELEASE13_UPDATE_MATRIX,
@@ -77,6 +81,8 @@ else:
             RELEASE1_JOB_IDS,
             RELEASE1_MATRIX,
             FIX17_MATRIX,
+            FIX17_BROWSER_LEGS,
+            FIX17_PROMPT_LEG,
             RELEASE1_AUTOMATIC_MATRIX,
             RELEASE11_UPDATE_MATRIX,
             RELEASE13_UPDATE_MATRIX,
@@ -109,9 +115,6 @@ RELEASE11_CHECKS = ("release11_install", "update_exit", "run_receipt", "release"
                     "health", "semantic_data", "task_settled", "unrelated_sentinel")
 RELEASE13_LEG = "release13-then-update"
 RELEASE13_KILLED_LEG = "release13-then-killed-update"
-MIXED_NEW_APP = "mixed-r14-app-r13-installed"
-MIXED_OLD_APP = "mixed-r13-app-r14-installed"
-MIXED_LEGS = frozenset({MIXED_NEW_APP, MIXED_OLD_APP})
 RELEASE13_KILLED_CHECKS = ("release13_install", "interruption_checkpoint", "process_killed",
                            "recovery_exit", "rollback_release", "one_runtime", "service",
                            "health", "data_marker", "timeline_reopened", "unrelated_sentinel")
@@ -372,7 +375,7 @@ def _windows_fresh_update_errors(update, job_id):
 # release11-then-update leg write their own kinds; every other leg writes the shared lifecycle receipt.
 RELEASE1_RECEIPT_KINDS = {"r0-handoff-then-update": "r0-handoff-then-update",
                           RELEASE11_LEG: RELEASE11_LEG, RELEASE13_LEG: RELEASE13_LEG, RELEASE13_KILLED_LEG: RELEASE13_KILLED_LEG,
-                          MIXED_NEW_APP: MIXED_NEW_APP, MIXED_OLD_APP: MIXED_OLD_APP,
+                          **{leg: leg for leg in FIX17_BROWSER_LEGS},
                            AUTOSTART_LEG: AUTOSTART_LEG}
 RELEASE1_DEFAULT_RECEIPT_KIND = "release1-installed-lifecycle"
 
@@ -620,151 +623,119 @@ def _release13_killed_errors(job_id, row):
 
 
 
-MIXED_CHECKS = {
-    MIXED_NEW_APP: (
-        "frozen_candidate", "pinned_r13", "r13_install", "canonical_seed",
-        "native_owner", "real_browser_save", "save_reopen", "fix16_rejected_card",
-        "rejected_outbox_retained", "native_end", "unrelated_sentinel"),
-    MIXED_OLD_APP: (
-        "frozen_candidate", "pinned_r13", "r13_install", "canonical_seed",
-        "r14_update", "r14_installed", "native_owner", "r14_authored",
-        "r14_save_reopen", "r13_legacy_open", "r13_legacy_queue_read",
-        "r13_legacy_reopen", "native_end", "unrelated_sentinel"),
-}
+def required_release14(manifest):
+    required = manifest.get("required")
+    return (type(manifest.get("release")) is int and manifest["release"] == 14
+            and isinstance(required, dict) and type(required.get("release")) is int and required["release"] == 14
+            and isinstance(required.get("reason"), str) and bool(required["reason"].strip()))
 
 
-def _mixed_row_errors(job_id, contract, row, candidate):
-    """The actual App/browser must operate on one owned installed Runtime.
+def _browser_step_matches(step, mode, app, manifest_hash):
+    return (isinstance(step, dict) and step.get("status") == "pass" and step.get("mode") == mode
+            and step.get("app") == app and step.get("manifest_sha256") == manifest_hash
+            and DIGEST.fullmatch(str(step.get("build_sha256", "")))
+            and step.get("intercept_reverted") is True)
 
-    A source checkout or mocked Runtime is never a substitute. A deliberately
-    injected 413 probes the FIX-16 UI only *after* a real accepted save.
-    """
+
+def _fix17_browser_errors(job_id, contract, row, candidate):
     errors = []
-    leg = contract.get("leg")
-    if leg not in MIXED_LEGS:
-        return [f"{job_id}: mixed-version leg is unknown"]
-    if candidate.get("release") != 14:
-        errors.append(f"{job_id}: frozen Release 14 candidate manifest is absent")
-    start = row.get("release13_source")
-    if (not isinstance(start, dict) or start.get("app_commit") != RELEASE13_APP_COMMIT
-            or start.get("identity") != RELEASE13_IDENTITY):
-        errors.append(f"{job_id}: published Release 13 installed source proof is absent")
-    seed = row.get("seed")
-    if (not isinstance(seed, dict) or seed.get("authored") is not True
-            or seed.get("initial_label") != "V1"
-            or not isinstance(seed.get("revision_id"), str)
-            or not isinstance(seed.get("publication_id"), str)
-            or not seed.get("project") or not seed.get("timeline")):
-        errors.append(f"{job_id}: authentic public canonical timeline initializer is absent")
-    original = leg == MIXED_NEW_APP
-    required = {"from": 13, "to": 13 if original else 14,
-                "source": "live-website-with-no-update" if original else "candidate-install-update"}
-    if row.get("release_transition") != required:
-        errors.append(f"{job_id}: release transition is not the required installed state")
-    installed = row.get("installed_tuple") if isinstance(row.get("installed_tuple"), dict) else {}
-    expected = ({"app": RELEASE13_APP_COMMIT,
-                 "agent": RELEASE13_IDENTITY["agent"],
-                 "runtime": RELEASE13_IDENTITY["runtime"]}
-                if original else {name: candidate.get(name) for name in ("app", "agent", "runtime")})
-    if any(installed.get(name) != sha for name, sha in expected.items()):
-        errors.append(f"{job_id}: terminal installed tuple disagrees with actual mixed-version Runtime")
-    expected_schema = (RELEASE13_IDENTITY["schema_digest"] if original
-                       else ((row.get("sources") or {}).get("runtime") or {}).get("schema_digest"))
-    if not isinstance(expected_schema, str) or installed.get("schema_digest") != expected_schema:
-        errors.append(f"{job_id}: installed Runtime schema digest is unverified")
-    if row.get("browser_app_sha") != (candidate.get("app") if original else RELEASE13_APP_COMMIT):
-        errors.append(f"{job_id}: browser App identity is not the required live/historical build")
+    is_prompt = contract["leg"] == FIX17_PROMPT_LEG
+    start = row.get("release13_source") or {}
+    if (start.get("app_commit") != RELEASE13_APP_COMMIT or start.get("identity") != RELEASE13_IDENTITY
+            or not DIGEST.fullmatch(str(start.get("manifest_sha256", "")))
+            or any((row.get("installed_r13") or {}).get(key) != value
+                   for key, value in RELEASE13_IDENTITY.items())):
+        errors.append(f"{job_id}: exact published and installed R13 provenance is absent")
+    if not required_release14(candidate):
+        errors.append(f"{job_id}: frozen candidate manifest does not require Release 14")
+    if row.get("release_transition") != {"from": 13, "to": 14, "source": "candidate-install-update"}:
+        errors.append(f"{job_id}: native 13 to 14 transition is invalid")
+    update = row.get("update") or {}
+    outcome = row.get("update_receipt") or {}
+    if (update.get("command") != "install --update" or update.get("exit_code") != 0
+            or (outcome.get("kind"), outcome.get("exit_code"), outcome.get("still"), outcome.get("target"))
+            != ("updated", 0, 14, 14)):
+        errors.append(f"{job_id}: native R14 installer outcome does not prove success")
+    schema = candidate.get("schema_digest")
+    if (not isinstance(schema, str) or not re.fullmatch(r"sha256:[a-f0-9]{64}", schema)
+            or (row.get("installed_tuple") or {}).get("schema_digest") != schema):
+        errors.append(f"{job_id}: installed R14 schema does not match the candidate")
+    if row.get("browser_profile_removed") is not True:
+        errors.append(f"{job_id}: run-owned browser profile cleanup was not proven")
+    if (row.get("service_manager") or {}).get("manager") != "systemd-user":
+        errors.append(f"{job_id}: native Linux service owner was not proven")
     owners = row.get("live_runtimes")
-    roots = row.get("run_roots") if isinstance(row.get("run_roots"), dict) else {}
-    if (not isinstance(owners, list) or len(owners) != 1
-            or not isinstance(owners[0], dict)
-            or owners[0].get("data_root") not in {roots.get("data"), str(roots.get("data")) + "-r1"}):
-        errors.append(f"{job_id}: one owned live installed Runtime was not demonstrated")
-    manager = row.get("service_manager")
-    if not isinstance(manager, dict) or manager.get("manager") != "systemd-user":
-        errors.append(f"{job_id}: native systemd user service ownership is absent")
+    if (not isinstance(owners, list) or len(owners) != 1 or not isinstance(owners[0], dict)
+            or owners[0].get("data_root") != (row.get("run_roots") or {}).get("data")
+            or not owners[0].get("runtime_instance_id")):
+        errors.append(f"{job_id}: did not settle on exactly one run-owned Runtime")
+    steps = ["pinned_sources", "native_r13_install", "r13_authoring"]
+    if is_prompt:
+        steps.append("required_prompt")
+    steps.extend(("native_r14_update", "r14_reopen", "native_end"))
+    if row.get("steps") != [{"stage": step, "state": "pass"} for step in steps]:
+        errors.append(f"{job_id}: native/browser step trace is incomplete")
+    if (row.get("sentinel") or {}).get("at_settlement", {}).get("alive") is not True:
+        errors.append(f"{job_id}: unrelated sentinel survival is absent")
 
-    runs = row.get("browser_steps")
-    wanted = ["r14-save-refuse"] if original else ["r14-author", "r13-legacy-read"]
-    if not isinstance(runs, list) or len(runs) != len(wanted):
-        errors.append(f"{job_id}: exact browser step set is missing or substituted")
-        runs = []
-    else:
-        for n, item in enumerate(runs):
-            host = item.get("hosted") if isinstance(item, dict) else None
-            probe = item.get("result") if isinstance(item, dict) else None
-            app_sha = candidate.get("app") if n == 0 else RELEASE13_APP_COMMIT
-            if (item.get("step") != wanted[n] or item.get("intercept_reverted") is not True
-                    or not isinstance(host, dict) or host.get("browser_app_sha") != app_sha
-                    or type(host.get("editor_page_requests")) is not int or host["editor_page_requests"] < 1
-                    or not DIGEST.fullmatch(str(host.get("manifest_sha256", "")))
-                    or not DIGEST.fullmatch(str(host.get("build_sha256", "")))
-                    or not isinstance(probe, dict) or probe.get("status") != "pass"
-                    or probe.get("realRuntime") is not True
-                    or probe.get("browserApp") != app_sha):
-                errors.append(f"{job_id}: browser step {wanted[n]} lacks genuine App/Runtime/TLS provenance")
-    if runs:
-        authored = (runs[0].get("result") or {})
-        edit = authored.get("realInstalledEdit") or {}
-        if (type(edit.get("status")) is not int or not 200 <= edit["status"] < 300
-                or not isinstance(edit.get("acceptedRevision"), str) or not edit["acceptedRevision"]
-                or authored.get("reopened") is not True):
-            errors.append(f"{job_id}: real accepted editor commit and fresh reopen are absent")
-        if original:
-            refused = authored.get("rejectedHttp") or {}
-            queue = authored.get("outboxAfter")
-            if (refused != {"status": 413, "injected": True, "count": 1}
-                    or authored.get("fix16Card") is not True
-                    or authored.get("refusedLabelPreserved") is not True
-                    or authored.get("unexpectedRetries") != 0
-                    or not isinstance(queue, list)
-                    or not any(isinstance(item, dict) and (
-                        type(item.get("intents")) is int and item["intents"] > 0 or item.get("pending") is True)
-                        for item in queue)):
-                errors.append(f"{job_id}: FIX-16 rejected-save card or durable unsaved edit is missing")
-        elif len(runs) == 2:
-            legacy = runs[1].get("result") or {}
-            author_queue = authored.get("outboxAfter")
-            prior = {entry.get("ownerId") for entry in (author_queue or [])
-                     if isinstance(entry, dict) and isinstance(entry.get("ownerId"), str)
-                     and entry["ownerId"]}
-            before = legacy.get("outboxBefore")
-            after = legacy.get("outboxAfter")
-            original_queue_survives = (bool(prior) and isinstance(before, list)
-                                       and isinstance(after, list)
-                                       and bool(prior.intersection(
-                                           entry.get("ownerId") for entry in before
-                                           if isinstance(entry, dict)))
-                                       and bool(prior.intersection(
-                                           entry.get("ownerId") for entry in after
-                                           if isinstance(entry, dict))))
-            if (authored.get("persistentProfile") is not True
-                    or legacy.get("persistentProfile") is not True
-                    or row.get("browser_profile_removed") is not True
-                    or legacy.get("legacyAppOpened") is not True
-                    or legacy.get("legacyQueueRead") is not True
-                    or legacy.get("reopened") is not True
-                    or legacy.get("editorPosts") != 0
-                    or legacy.get("savedLabel") != authored.get("savedLabel")
-                    or not original_queue_survives):
-                errors.append(f"{job_id}: published R13 App did not read the original R14-authored browser save queue and reopen")
+    before, after = row.get("realm_before"), row.get("realm_after")
+    if not is_prompt and (not isinstance(before, dict) or not before.get("realm_id")
+                          or before != after or not isinstance(before.get("projects"), dict)):
+        errors.append(f"{job_id}: R13 realm inventory and history were not reopened unchanged")
+    timelines = row.get("timelines")
+    if not isinstance(timelines, list) or len(timelines) != (1 if is_prompt else 2):
+        return [*errors, f"{job_id}: the expected count of R13-authored browser timelines is absent"]
+    project_ids = set()
+    for timeline in timelines:
+        config = timeline.get("config") or {}
+        author = timeline.get("author") or {}
+        reopen = timeline.get("reopen") or {}
+        draft = author.get("draft") or {}
+        if (not _browser_step_matches(author, "author", RELEASE13_APP_COMMIT, start.get("manifest_sha256"))
+                or not _browser_step_matches(reopen, "reopen", candidate.get("app"), candidate.get("manifest_sha256"))
+                or not isinstance(author.get("blockedPosts"), int) or author["blockedPosts"] < 1):
+            errors.append(f"{job_id}: authentic R13 authoring or R14 editor reopen proof is absent")
+        if (not all(isinstance(draft.get(key), str) and draft[key] for key in
+                    ("realmId", "actorId", "projectId", "timelineId", "ownerId", "intentId"))
+                or not DIGEST.fullmatch(str(draft.get("payloadSha256", "")))
+                or any(draft.get(key) != config.get(key) for key in ("projectId", "timelineId"))
+                or reopen.get("draft") != draft
+                or (is_prompt and reopen.get("draftVisible") is not True)
+                or not reopen.get("reopenedLabel")
+                or reopen["reopenedLabel"] not in (config.get("savedLabel"), config.get("draftLabel"))):
+            errors.append(f"{job_id}: original scoped save-queue intent or reopened edit was lost")
+        accepted = author.get("accepted") or {}
+        if not all(isinstance(accepted.get(key), str) and accepted[key] for key in ("revision", "publication")):
+            errors.append(f"{job_id}: real R13 saved revision is absent")
+        project_id, timeline_id = config.get("projectId"), config.get("timelineId")
+        if isinstance(project_id, str):
+            project_ids.add(project_id)
+        if not is_prompt and isinstance(before, dict) and isinstance(before.get("projects"), dict):
+            inventory = (before["projects"].get(project_id) or {}).get("timelines") or {}
+            saved = inventory.get(timeline_id) or {}
+            history = saved.get("history") or []
+            if (draft.get("realmId") != before.get("realm_id") or len(history) < 2
+                    or saved.get("revision_id") != accepted.get("revision")
+                    or saved.get("publication_id") != accepted.get("publication")
+                    or not all(DIGEST.fullmatch(str(entry.get("revision_sha256", ""))) for entry in history)):
+                errors.append(f"{job_id}: R13 saved timeline and published history are absent from the realm")
+    if len(project_ids) != len(timelines):
+        errors.append(f"{job_id}: R13 authoring coverage does not contain distinct projects")
 
-    expected_steps = (["candidate_and_pinned_source", "native_r13_install",
-                       "authored_workspace_seed"]
-                      + ([] if original else ["r14_native_update"])
-                      + ["installed_source_and_owner"]
-                      + (["r14_app_over_live_r13"] if original else
-                         ["r14_creative_authoring", "r13_app_reads_r14_realm"])
-                      + ["native_postcheck_and_sentinel"])
-    steps = row.get("steps")
-    if (not isinstance(steps, list) or len(steps) != len(expected_steps)
-            or [step.get("stage") for step in steps if isinstance(step, dict)] != expected_steps
-            or any(not isinstance(step, dict) or step.get("state") != "pass" for step in steps)):
-        errors.append(f"{job_id}: required mixed-version native/browser step trace is incomplete")
-    checks = row.get("checks") if isinstance(row.get("checks"), dict) else {}
-    for check in MIXED_CHECKS[leg]:
-        if checks.get(check) != "pass":
-            errors.append(f"{job_id}: {check} mixed-version assertion did not pass")
+    if is_prompt:
+        step = row.get("prompt") or {}
+        prompt = step.get("prompt") or {}
+        reason = candidate["required"]["reason"] if required_release14(candidate) else ""
+        if (not _browser_step_matches(step, "prompt", RELEASE13_APP_COMMIT, candidate.get("manifest_sha256"))
+                or step.get("build_sha256") != author.get("build_sha256")
+                or not isinstance(step.get("manifest_reads"), int) or step["manifest_reads"] < 2
+                or step.get("browserManifestSha256") != candidate.get("manifest_sha256")
+                or step.get("draft") != draft
+                or not re.fullmatch(r"(Update Astrid|Release 14 is ready)\s+Required\s+Show how",
+                                    str(prompt.get("title", "")))
+                or not reason or not str(prompt.get("reason", "")).startswith("This update is required: " + reason)
+                or prompt.get("action") not in ("Update now", "Run it yourself")):
+            errors.append(f"{job_id}: R13 did not show the required R14 prompt and original draft")
     return errors
 
 def _release13_row_errors(job_id, row, target_release, os_name="linux"):
@@ -889,10 +860,9 @@ def _release1_row_errors(candidate, contract, row):
     sources = row.get("sources") or {}
     installed = row.get("installed_tuple") or {}
     killed = contract.get("leg") == RELEASE13_KILLED_LEG
-    mixed_unupdated = contract.get("leg") == MIXED_NEW_APP
     expected_terminal = ({"app": RELEASE13_APP_COMMIT, **{
         name: RELEASE13_IDENTITY[name] for name in ("agent", "runtime")}}
-        if killed or mixed_unupdated else candidate)
+        if killed else candidate)
     for name in ("app", "agent", "runtime"):
         source = sources.get(name) or {}
         if installed.get(name) != expected_terminal[name] or source.get("sha") != candidate[name]:
@@ -973,8 +943,8 @@ def _release1_row_errors(candidate, contract, row):
             errors.extend(_release13_row_errors(job_id, row, candidate.get("release"), contract["os"]))
         elif contract.get("leg") == RELEASE13_KILLED_LEG:
             errors.extend(_release13_killed_errors(job_id, row))
-        elif contract.get("leg") in MIXED_LEGS:
-            errors.extend(_mixed_row_errors(job_id, contract, row, candidate))
+        elif contract.get("leg") in FIX17_BROWSER_LEGS:
+            errors.extend(_fix17_browser_errors(job_id, contract, row, candidate))
         elif not fresh:
             if row.get("scenario") != "r0-handoff-then-update":
                 errors.append(f"{job_id}: direct receipt did not run the r0-handoff-then-update leg")
@@ -1847,7 +1817,8 @@ def main():
                 raise ValueError("--candidate and --app-checkout are required for hosted Release-1/M4 aggregates")
             candidate = read(args.candidate)
             manifest = validate_tuple(candidate, args.app_checkout, args.app_checkout / "public/install-manifest.json")
-            candidate = {**candidate, "release": manifest.get("release")}
+            candidate = {**candidate, "release": manifest.get("release"), "required": manifest.get("required"),
+                         "schema_digest": (manifest.get("runtime") or {}).get("schema_digest")}
         if args.aggregate_gpu:
             if args.results is None or args.allow_source_override or args.required or args.prepare_only:
                 raise ValueError("GPU aggregate requires --results and never admits overrides or subsets")

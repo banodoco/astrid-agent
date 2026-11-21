@@ -85,14 +85,17 @@ RELEASE1_AUTOSTART_MATRIX: Final = (
 RELEASE1_MATRIX: Final = (*_RELEASE1_DIRECT_LEGACY, *RELEASE1_DIRECT_FRESH_MATRIX)
 # Windows' existing fresh direct row and two distinct POSIX fresh rows,
 # plus exactly three R13 upgrades and the dedicated killed-update recovery.
-FIX17_MIXED_MATRIX: Final = (
-    {"job_id": "direct-linux-mixed-r14app-r13", "mode": "direct", "runner": "ubuntu-24.04",
-     "shell": "sh", "os": "linux", "leg": "mixed-r14-app-r13-installed"},
-    {"job_id": "direct-linux-mixed-r13app-r14", "mode": "direct", "runner": "ubuntu-24.04",
-     "shell": "sh", "os": "linux", "leg": "mixed-r13-app-r14-installed"},
+FIX17_PROMPT_LEG: Final = "release13-required-update"
+FIX17_REALM_LEG: Final = "release13-realm-reopen"
+FIX17_BROWSER_LEGS: Final = (FIX17_PROMPT_LEG, FIX17_REALM_LEG)
+FIX17_REQUIRED_UPDATE_MATRIX: Final = (
+    {"job_id": "direct-linux-r13-required-update", "mode": "direct", "runner": "ubuntu-24.04",
+     "shell": "sh", "os": "linux", "leg": FIX17_PROMPT_LEG},
+    {"job_id": "direct-linux-r13-realm-reopen", "mode": "direct", "runner": "ubuntu-24.04",
+     "shell": "sh", "os": "linux", "leg": FIX17_REALM_LEG},
 )
 FIX17_MATRIX: Final = (_RELEASE1_DIRECT_LEGACY[2], *RELEASE1_DIRECT_FRESH_MATRIX,
-                       *RELEASE13_UPDATE_MATRIX, *RELEASE13_KILLED_MATRIX, *FIX17_MIXED_MATRIX)
+                       *RELEASE13_UPDATE_MATRIX, *RELEASE13_KILLED_MATRIX, *FIX17_REQUIRED_UPDATE_MATRIX)
 FIX17_JOB_IDS: Final = tuple(row["job_id"] for row in FIX17_MATRIX)
 # An automatic push or schedule (no row input) runs the five rows that existed before the
 # release9 and release11 legs. row=direct runs all of RELEASE1_MATRIX.
