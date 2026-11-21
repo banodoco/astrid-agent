@@ -178,6 +178,8 @@ on:
           - direct-macos-r13-update
           - direct-windows-r13-update
           - direct-windows-r13-killed-update
+          - direct-linux-mixed-r14app-r13
+          - direct-linux-mixed-r13app-r14
           - direct-linux-autostart-off
           - direct-macos-autostart-off
           - direct
@@ -365,7 +367,8 @@ jobs:
           # The release11-then-update rows are a separate direct matrix, selected by name only.
           release11_job_ids = tuple(row["job_id"] for row in journey_matrix.RELEASE11_UPDATE_MATRIX)
           release11_only = journey_row in release11_job_ids
-          release13_job_ids = (*journey_matrix.RELEASE13_UPDATE_JOB_IDS, journey_matrix.RELEASE13_KILLED_JOB_ID)
+          release13_job_ids = (*journey_matrix.RELEASE13_UPDATE_JOB_IDS, journey_matrix.RELEASE13_KILLED_JOB_ID,
+                                   *(row["job_id"] for row in journey_matrix.FIX17_MIXED_MATRIX))
           release13_only = journey_row in release13_job_ids
           valid_rows = {"", *journey_matrix.RELEASE1_JOB_IDS, *journey_matrix.FIX17_JOB_IDS, "direct", "pinokio", *pinokio_job_ids, *release11_job_ids}
           if journey_row not in valid_rows:
@@ -432,7 +435,8 @@ jobs:
           elif release11_only:
               matrix = [dict(row) for row in journey_matrix.RELEASE11_UPDATE_MATRIX]
           elif release13_only:
-              matrix = [dict(row) for row in (*journey_matrix.RELEASE13_UPDATE_MATRIX, *journey_matrix.RELEASE13_KILLED_MATRIX)]
+              matrix = [dict(row) for row in (*journey_matrix.RELEASE13_UPDATE_MATRIX,
+                          *journey_matrix.RELEASE13_KILLED_MATRIX, *journey_matrix.FIX17_MIXED_MATRIX)]
           elif journey_row == "":
               # An automatic push or schedule runs the five rows that existed before the release9 and release11 legs.
               matrix = [dict(row) for row in journey_matrix.RELEASE1_AUTOMATIC_MATRIX]
@@ -553,7 +557,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
       - name: Check out the pinned Release 13 App for the release13-then-update leg
-        if: matrix.leg == 'release13-then-update' || matrix.leg == 'release13-then-killed-update'
+        if: matrix.leg == 'release13-then-update' || matrix.leg == 'release13-then-killed-update' || startsWith(matrix.leg, 'mixed-')
         uses: actions/checkout@v4
         with:
           repository: banodoco/astrid-app
@@ -822,12 +826,12 @@ jobs:
       # The fresh Linux row updates by clicking Update now in the candidate's own hosted App build:
       # the driver serves this build at https://astrid.haus through the update leg's intercept.
       - name: Set up Node for the hosted App build
-        if: matrix.job_id == 'direct-linux-fresh' || matrix.leg == 'fresh-install-autostart-off'
+        if: matrix.job_id == 'direct-linux-fresh' || matrix.leg == 'fresh-install-autostart-off' || startsWith(matrix.leg, 'mixed-')
         uses: actions/setup-node@v4
         with:
           node-version-file: app/.nvmrc
       - name: Build the candidate's hosted App and the browser that clicks it
-        if: matrix.job_id == 'direct-linux-fresh'
+        if: matrix.job_id == 'direct-linux-fresh' || startsWith(matrix.leg, 'mixed-')
         shell: bash
         working-directory: app
         timeout-minutes: 30
@@ -837,6 +841,22 @@ jobs:
           set -euo pipefail
           npm ci --legacy-peer-deps
           # The door port the build compiles in is the installed Runtime's default; nothing may override it.
+          unset ASTRID_APP_DIRECT_DOOR_PORT
+          npm run build:hosted
+          test -f dist/index.html && test -f dist/build.json
+          npx playwright install --with-deps chromium
+          git status --porcelain --untracked-files=no | (! grep .)
+      - name: Build pinned Release 13 App for mixed-version browser
+        if: startsWith(matrix.leg, 'mixed-')
+        shell: bash
+        working-directory: release13-app
+        timeout-minutes: 30
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = de7dd1e668aa6dcf3cbce013c701fa7c76615f99
+          npm ci --legacy-peer-deps
           unset ASTRID_APP_DIRECT_DOOR_PORT
           npm run build:hosted
           test -f dist/index.html && test -f dist/build.json
@@ -866,7 +886,7 @@ jobs:
               '--allow-release11-to-candidate'
             )
           }
-          if ('${{ matrix.leg }}' -in @('release13-then-update', 'release13-then-killed-update')) {
+          if ('${{ matrix.leg }}' -in @('release13-then-update', 'release13-then-killed-update', 'mixed-r14-app-r13-installed', 'mixed-r13-app-r14-installed')) {
             $release0Args = @(
               '--release13-app-checkout', "$pwd/release13-app",
               '--allow-release13-to-candidate'
@@ -896,13 +916,18 @@ jobs:
           }
           $keepGoingArgs = @()
           if ('${{ inputs.diagnostic_keep_going }}' -eq 'true') { $keepGoingArgs = @('--diagnostic-keep-going') }
+          $mixedArgs = @()
+          if ('${{ matrix.leg }}' -in @('mixed-r14-app-r13-installed', 'mixed-r13-app-r14-installed')) {
+            $mixedArgs = @('--mixed-candidate-dist', "$pwd/app/dist",
+                           '--mixed-release13-dist', "$pwd/release13-app/dist")
+          }
           python -u agent/scripts/ci_journey.py `
             --job-id '${{ matrix.job_id }}' --mode '${{ matrix.mode }}' --leg '${{ matrix.leg }}' `
             --candidate "$env:RUNNER_TEMP/candidate.json" `
             --app-checkout "$pwd/app" --candidate-agent-checkout "$pwd/candidate-agent" `
             --candidate-runtime-checkout "$pwd/runtime" --pinokio-checkout "$pwd/pinokio" `
             --run-root $runRoot --root (Join-Path $runRoot program) --data-root (Join-Path $runRoot data) `
-            --shell '${{ matrix.shell }}' @release0Args @oldLauncherArgs @backendConfigArgs @keepGoingArgs
+            --shell '${{ matrix.shell }}' @release0Args @oldLauncherArgs @backendConfigArgs @keepGoingArgs @mixedArgs
           $freshExit = $LASTEXITCODE
           $runWindowsRefusal = '${{ matrix.job_id }}' -eq 'direct-windows' -and (
             ('${{ inputs.diagnostic_keep_going }}' -eq 'true' -and '${{ matrix.leg }}' -eq 'fresh-install') -or
@@ -940,7 +965,7 @@ jobs:
       - name: Make sure the hosted-update intercept left no trace on the runner
         # The update leg maps astrid.haus to a local HTTPS stand-in with a CA only this runner trusts.
         # The driver removes both in a finally block; this repeats the removal if the driver was killed.
-        if: ${{ always() && (matrix.job_id == 'direct-windows' || matrix.job_id == 'direct-linux-fresh' || matrix.job_id == 'direct-macos-fresh') }}
+        if: ${{ always() && (matrix.job_id == 'direct-windows' || matrix.job_id == 'direct-linux-fresh' || matrix.job_id == 'direct-macos-fresh' || startsWith(matrix.leg, 'mixed-')) }}
         timeout-minutes: 5
         run: python agent/scripts/journey_hosted_update.py revert
       - name: Run the Pinokio launcher row driver
