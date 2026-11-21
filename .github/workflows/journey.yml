@@ -1502,9 +1502,17 @@ jobs:
         env:
           CANDIDATE: ${{ needs.config.outputs.candidate }}
           RELEASE1_SCOPE: ${{ needs.config.outputs.release1_scope }}
+          JOURNEY_ROW: ${{ inputs.row || '' }}
         run: |
           printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/candidate.json"
-          python agent/scripts/check_journey_evidence.py --candidate "$RUNNER_TEMP/candidate.json" --app-checkout app --results receipts --aggregate-release1 --release1-scope "$RELEASE1_SCOPE"
+          # Preserve the original exact all-row gate for automatic, 'direct',
+          # and other aggregate dispatches. Narrow only an explicitly named
+          # direct row; a missing, failed, duplicated or foreign receipt still fails.
+          selected=()
+          if [ -n "$JOURNEY_ROW" ] && [ "$JOURNEY_ROW" != direct ]; then
+            selected=(--release1-job-id "$JOURNEY_ROW")
+          fi
+          python agent/scripts/check_journey_evidence.py --candidate "$RUNNER_TEMP/candidate.json" --app-checkout app --results receipts --aggregate-release1 --release1-scope "$RELEASE1_SCOPE" "${selected[@]}"
       - name: Aggregate the exact M4-4a Pinokio backend receipts
         if: needs.config.outputs.m4_5_only != 'true' && needs.config.outputs.m4_4a_backend_only == 'true' && needs.config.outputs.pinokio_only != 'true'
         shell: bash

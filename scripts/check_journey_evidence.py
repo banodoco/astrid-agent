@@ -903,7 +903,7 @@ def fresh_update_errors(job_id, update):
     return errors
 
 
-def evaluate_release1_matrix(candidate, results, scope="nine"):
+def evaluate_release1_matrix(candidate, results, scope="nine", job_id=None):
     """Reject an incomplete, skipped, or ownership-ambiguous receipt set.
 
     The direct rows are the Release-1 matrix: every one is required, and each is validated
@@ -912,6 +912,15 @@ def evaluate_release1_matrix(candidate, results, scope="nine"):
     if scope not in {"five", "nine"}:
         raise ValueError("Release-1 scope must be five or nine")
     contracts = RELEASE1_AUTOMATIC_MATRIX if scope == "five" else RELEASE1_MATRIX
+    if job_id is not None:
+        if not isinstance(job_id, str) or not job_id:
+            raise ValueError("selected Release-1 job id must be nonempty")
+        if scope != "nine":
+            raise ValueError("one named Release-1 row requires the full direct-row scope")
+        matched = tuple(row for row in RELEASE1_MATRIX if row["job_id"] == job_id)
+        if len(matched) != 1:
+            raise ValueError("unknown or duplicate named Release-1 job id: " + job_id)
+        contracts = matched
     errors = []
     expected = {row["job_id"]: row for row in contracts}
     found = {}
@@ -1621,6 +1630,8 @@ def main():
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--release1-scope", choices=("five", "nine"), default="nine",
                         help="five for an automatic run; nine selects all direct rows")
+    parser.add_argument("--release1-job-id", default=None,
+                        help="one explicitly dispatched direct row; without this, the full exact aggregate remains required")
     parser.add_argument("--aggregate-release1", action="store_true",
                         help="require the exact five direct Release-1 job receipts under --results")
     parser.add_argument("--aggregate-release1-1-pinokio", action="store_true",
@@ -1647,6 +1658,8 @@ def main():
                                args.aggregate_m4_4b_local, args.aggregate_m4_6_local, args.aggregate_gpu))
         if aggregate_modes > 1:
             raise ValueError("choose one aggregate mode")
+        if args.release1_job_id is not None and not args.aggregate_release1:
+            raise ValueError("--release1-job-id requires --aggregate-release1")
         if args.report_end_state_obligations and aggregate_modes:
             raise ValueError("end-state obligation reporting cannot be combined with an aggregate mode")
         if args.report_end_state_obligations:
@@ -1688,7 +1701,8 @@ def main():
         elif not args.aggregate_m4_4b_local and not args.aggregate_m4_6_local and args.aggregate_release1:
             if args.results is None:
                 raise ValueError("--results is required with --aggregate-release1")
-            errors.extend(evaluate_release1_matrix(candidate, args.results, args.release1_scope))
+            errors.extend(evaluate_release1_matrix(
+                candidate, args.results, args.release1_scope, args.release1_job_id))
         elif not args.aggregate_m4_4b_local and not args.aggregate_m4_6_local and args.aggregate_m4_4a:
             if args.results is None:
                 raise ValueError("--results is required with --aggregate-m4-4a")
