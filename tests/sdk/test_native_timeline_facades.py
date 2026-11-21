@@ -529,7 +529,8 @@ def test_composed_mode_fails_closed_when_no_exact_render_reader_exists() -> None
     assert result.error.details["next_actions"]
 
 
-def test_explicit_composed_run_bypasses_current_head_discovery() -> None:
+@pytest.mark.parametrize("mode", ["auto", "composed"])
+def test_explicit_run_uses_rendered_video_without_current_head_discovery(mode: str) -> None:
     transport = _NativeTransport()
     calls = []
 
@@ -538,7 +539,7 @@ def test_explicit_composed_run_bypasses_current_head_discovery() -> None:
         return DomainResult.success({"selected": kwargs["inputs"]["render_run"]})
 
     result = RemoteTimelines(transport, invoker=invoke).visualize(
-        "project-1", "main", mode="composed",
+        "project-1", "main", mode=mode,
         options={"render_run": "candidate-render-7"},
     )
 
@@ -546,11 +547,10 @@ def test_explicit_composed_run_bypasses_current_head_discovery() -> None:
     assert result.data == {"selected": "candidate-render-7"}
     assert calls[0][0] == "rendering.timeline_visualize"
     assert calls[0][1]["inputs"]["render_run"] == "candidate-render-7"
-    assert calls[0][1]["inputs"]["composed_capture"] is True
+    assert not calls[0][1]["inputs"].get("composed_capture")
     assert "revision_id" not in calls[0][1]["inputs"]
     # The native transport deliberately has no run-list reader. Explicit
-    # selection is resolved to its saved revision by composed-capture
-    # admission downstream.
+    # selection is passed directly to managed-video admission downstream.
     assert transport.view_calls == []
 
 

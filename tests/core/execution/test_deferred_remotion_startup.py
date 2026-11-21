@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import sys
+from pathlib import Path
 from threading import Event
 
 import pytest
@@ -19,6 +20,8 @@ def test_cli_ready_does_not_wait_for_validation_but_render_does(
     installed_runtime, tmp_path, monkeypatch, outcome,
 ):
     world = installed_runtime
+    extra_pack_root = tmp_path / "extra-packs"
+    extra_pack_root.mkdir()
     monkeypatch.setattr(os, "environ", dict(world.environment))
     monkeypatch.setattr(runtime, "_deferred_validation", None)
     pack_root = tmp_path / "packs"
@@ -35,6 +38,7 @@ def test_cli_ready_does_not_wait_for_validation_but_render_does(
     compose_profile_handoff(boot, support_root=support)
     entered, release, dispatched = Event(), Event(), Event()
     calls = []
+    projected_pack_roots = []
 
     def prepare(**kwargs):
         assert remotion_lock.remotion_render_lock_held()
@@ -51,7 +55,11 @@ def test_cli_ready_does_not_wait_for_validation_but_render_does(
     from astrid.packs.rendering.rendering.renderers.remotion import lock as remotion_lock
     monkeypatch.setattr(runtime, "prepare_remotion_validation", prepare)
     monkeypatch.setattr(host_bootstrap, "_capability_matrix_path", lambda source: tmp_path / "no-matrix")
-    monkeypatch.setattr(generic_host, "_launch_worker_probe_environments", lambda *a, **k: [dict(os.environ)])
+    def capture_launch_roots(pack_roots, *args, **kwargs):
+        projected_pack_roots.append(tuple(pack_roots))
+        return [dict(os.environ)]
+
+    monkeypatch.setattr(generic_host, "_launch_worker_probe_environments", capture_launch_roots)
     monkeypatch.setattr(generic_host, "_startup_identity_attestation", lambda **kwargs: {"source": {}})
     monkeypatch.setattr(generic_host, "source_checkout_digest", lambda root: "fixture-digest")
     client = _IdleReadinessRuntime()
@@ -72,6 +80,14 @@ def test_cli_ready_does_not_wait_for_validation_but_render_does(
         raise ReachedDispatch("validated task reached materialization")
 
     monkeypatch.setattr(generic_host.GenericPackHost, "_materialize_inputs", materialize)
+
+    original_host_init = generic_host.GenericPackHost.__init__
+
+    def host_init_with_extra_root(host, *args, **kwargs):
+        original_host_init(host, *args, **kwargs)
+        host.pack_roots = (*host.pack_roots, extra_pack_root.resolve())
+
+    monkeypatch.setattr(generic_host.GenericPackHost, "__init__", host_init_with_extra_root)
 
     def run(host, **kwargs):
         assert json.loads(ready.read_text())["status"] == "ready"
@@ -118,6 +134,8 @@ def test_cli_ready_does_not_wait_for_validation_but_render_does(
         "--support-root", str(support), "--source-checkout", str(tmp_path),
         "--boot-manifest-path", str(boot), "--defer-remotion-validation"])
     assert generic_host._cli() == 0
+    assert len(projected_pack_roots) == 1
+    assert {pack_root.resolve(), extra_pack_root.resolve()} <= set(projected_pack_roots[0])
 
 
 def test_bootstrap_defers_without_importing_another_launch_proof(monkeypatch):

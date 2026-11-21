@@ -50,6 +50,23 @@ class FakeClient:
     def list_project_objects(self, project, **kwargs): return [[{'object_id': VIDEO}] if self.owned else [], None]
 
 
+class RevisionAuthorityClient(FakeClient):
+    """A latest render and current row with canonical revisions only."""
+
+    def list_timelines(self, project, **kwargs):
+        return [[{'timeline_id': 'tl', 'slug': 'cut', 'head_revision_id': 'R2'}], None]
+
+    def get_timeline(self, ref):
+        return {'head_revision_id': 'R2'}
+
+    def get_task(self, ref):
+        value = envelope()
+        value['authority_context']['parent_revision_id'] = 'R1'
+        return {'state': 'succeeded', 'capability_id': 'rendering.render',
+                'spec': {'spec': value},
+                'result': {'outputs': [{'name': 'video', 'digest': VIDEO}]}}
+
+
 class DirectRenderClient(FakeClient):
     def get_run(self, ref):
         assert ref == DIRECT_RENDER_RUN
@@ -228,6 +245,11 @@ def test_auto_selected_current_render_has_distinct_provenance_label():
         project='p', client=FakeClient(),
     )
     assert result['filmstrip_snapshot']['metadata']['selection'] == 'latest_current_render'
+
+
+def test_latest_render_refuses_known_parent_revision_change_without_config_version():
+    with pytest.raises(CapabilityValidationError, match='stale'):
+        prepare_filmstrip({'render_run': 'latest'}, project='p', client=RevisionAuthorityClient())
 
 
 def test_direct_render_uses_frozen_inputs_authority_and_exact_run():
@@ -748,6 +770,27 @@ def test_latest_render_refuses_canonical_head_change_before_projection():
     client.get_timeline = changed_head
     with pytest.raises(CapabilityValidationError, match='stale'):
         prepare_filmstrip({}, project='p', client=client)
+
+
+def test_public_visualize_facade_preserves_explicit_revision_through_real_preflight():
+    from astrid.sdk.invocation import _validate_timeline_visualize_inputs
+    from astrid.sdk.remote import RemoteTimelines
+
+    class ManagedRenderClient(ComposedCaptureClient):
+        def get_task(self, task_id):
+            task = super().get_task(task_id)
+            task['result']['outputs'][0]['name'] = 'video'
+            return task
+
+    client = ManagedRenderClient(run_revision='R1')
+
+    def invoke(_capability, *, project, inputs, **_kwargs):
+        return _validate_timeline_visualize_inputs(inputs, project=project, _client=client)
+
+    with pytest.raises(CapabilityValidationError, match='conflicts with the saved revision'):
+        RemoteTimelines(client, invoker=invoke).visualize(
+            'p', 'cut', revision_id='R2', options={'render_run': 'run'},
+        )
 
 
 def test_refuses_changed_script_bytes():

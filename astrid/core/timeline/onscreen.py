@@ -48,7 +48,7 @@ class Visible:
 class Span:
     start_frame: int
     end_frame: int  # exclusive
-    cls: str  # "COVERED" | "DIP" | "GAP"
+    cls: str  # "COVERED" | "DIP" | "GAP" | "UNKNOWN"
     content: str | None  # COVERED only: "CONTENT" | "EMPTY"
     clips: tuple[str, ...]
 
@@ -276,6 +276,10 @@ def _build(config: Mapping[str, Any], fps: float, canvas: Mapping[str, Any], ele
                 layer.dips.append((end - width, end))
 
         layer.bounds, layer.bounds_source = layout_bounds(clip, canvas_w, canvas_h)
+        if clip.get('clipType', 'media') in ('media', 'image', 'video'):
+            # Coverage depends on intrinsic size, fit and track placement. This
+            # lightweight model has no package placement answer to establish it.
+            layer.bounds, layer.bounds_source = None, 'unknown'
         layer.static_full = (
             role in ("picture", "background")
             and _covers_canvas(layer.bounds, canvas_w, canvas_h)
@@ -345,6 +349,10 @@ def _classify(items: list[tuple[_Layer, Visible]], frame: int, canvas_w: float, 
             for v in visible
         )
         return "COVERED", ("CONTENT" if has_content else "EMPTY"), addresses
+    if any(v.bounds_source == 'unknown' for v in visible):
+        content = 'CONTENT' if any(v.role in ('picture', 'content') and v.opacity >= CONTENT_OPACITY
+                                   for v in visible) else 'EMPTY'
+        return "UNKNOWN", content, addresses
     if any(_in_any(layer.dips, frame) for layer, _ in items):
         return "DIP", None, addresses
     return "GAP", None, addresses

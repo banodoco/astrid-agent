@@ -4,7 +4,15 @@ description: >-
   Edit and inspect Astrid video timelines: place, trim, move, and remove clips,
   then look at the result and report it.
 ---
-# Timeline editing
+# Timeline
+
+A timeline is the single source of truth for a film: what plays when, on which track, with which words and which plan. Work it with three verbs, in a loop:
+
+- **Show** reads it as structure and text: cuts, clips, words, assets, plans, history. Load `timeline-show`.
+- **Visualize** looks at it as pictures and sound, without rendering. Load `timeline-visualize`; for close study of a shot (frame by frame, words against picture, regions, masks, takes) load `timeline-visualize-advanced`.
+- **Edit** changes it through commits, one undo each. Load `timeline-editing`.
+
+Show to find, visualize to see, edit to change, visualize again to check. The quick start below covers the commonest path.
 
 Astrid commands here run through the launcher; its path on each OS is in the [astrid-setup skill's Launcher paths](../../setup/docs/SKILL.md#launcher-paths), and the blocks show the Linux path.
 

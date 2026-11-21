@@ -360,6 +360,26 @@
       "destination": "text_encoders/qwen_4b_ace15.safetensors",
       "bytes": 8379154232,
       "sha256": "ffe5ffb855086c2ab55e467e9859fb01894781020a0376484dd19de166b79873"
+    },
+    {
+      "name": "h3-pika-flex-turbo-8step-ref2va",
+      "repository": "Pika-Labs/Pika-H3-Flex-Turbo-LoRA",
+      "revision": "dcacd93a50f714ba1cd61c7ca2cc5f65e9a1ec60",
+      "path": "pika_h3_flex_turbo_8step_hd_ref2va.safetensors",
+      "url": null,
+      "destination": "loras/pika_h3_flex_turbo_8step_hd_ref2va.safetensors",
+      "bytes": 3912311400,
+      "sha256": "dfe46d972408d1094053ff1f30c720bf16176ec334962009767ab0fff29e6de2"
+    },
+    {
+      "name": "large-v3-turbo",
+      "repository": null,
+      "revision": null,
+      "path": null,
+      "url": "https://openaipublic.azureedge.net/main/whisper/models/aff26ae408abcba5fbf8813c21e62b0941638c5f6eebfb145be0c9839262a19a/large-v3-turbo.pt",
+      "destination": "stt/whisper/large-v3-turbo.pt",
+      "bytes": 1617941637,
+      "sha256": "aff26ae408abcba5fbf8813c21e62b0941638c5f6eebfb145be0c9839262a19a"
     }
   ]
 }

@@ -165,14 +165,11 @@ def native_preparation_program():
     return _native_program(prepare_native_workflow)
 
 
-def run_native_doctor(argv, endpoint, expected_schema_sha256, request_timeout, *, schema_provider_type, schema_digest):
-    """Run the original doctor against one fresh, owner-bound target schema."""
+def _read_object_info(endpoint, request_timeout):
     import json
     from urllib.parse import urlsplit
 
     import httpx
-    import vibecomfy.commands.doctor as doctor
-    from vibecomfy.cli import main
 
     parsed = urlsplit(endpoint)
     if (parsed.scheme != 'http' or parsed.hostname != '127.0.0.1' or parsed.port is None
@@ -189,7 +186,28 @@ def run_native_doctor(argv, endpoint, expected_schema_sha256, request_timeout, *
             if len(body) > 16 * 1024 * 1024:
                 raise ValueError('managed doctor target schema exceeds its bound')
     object_info = json.loads(body)
-    if not isinstance(object_info, dict) or schema_digest(object_info) != expected_schema_sha256:
+    if not isinstance(object_info, dict):
+        raise ValueError('managed doctor target schema is not an object')
+    return object_info
+
+
+def _missing_classes(endpoint, request_timeout, classes):
+    schema = _read_object_info(endpoint, request_timeout)
+    return [name for name in classes if name not in schema]
+
+
+def native_node_probe_program():
+    import inspect
+    return inspect.getsource(_read_object_info) + "\n" + _native_program(_missing_classes)
+
+
+def run_native_doctor(argv, endpoint, expected_schema_sha256, request_timeout, *, schema_provider_type, schema_digest):
+    """Run the original doctor against one fresh, owner-bound target schema."""
+    import vibecomfy.commands.doctor as doctor
+    from vibecomfy.cli import main
+
+    object_info = _read_object_info(endpoint, request_timeout)
+    if schema_digest(object_info) != expected_schema_sha256:
         raise ValueError('managed doctor target schema differs from owned engine health')
     provider = schema_provider_type.from_object_info(object_info, server_url=endpoint)
     original = doctor.get_schema_provider
@@ -217,6 +235,6 @@ def native_doctor_program():
               "from collections.abc import Mapping\n"
               "from vibecomfy.schema.provider import TargetSchemaProvider as _TargetSchemaProvider\n")
     sources = '\n'.join(inspect.getsource(function) for function in
-                        (_plain, _json, _sha, _object_info_sha256, TargetSchemaProvider, run_native_doctor))
+                        (_plain, _json, _sha, _object_info_sha256, TargetSchemaProvider, _read_object_info, run_native_doctor))
     return (header + sources + "\nimport sys\nraise SystemExit(run_native_doctor(**json.loads(sys.argv[1]), "
             "schema_provider_type=TargetSchemaProvider, schema_digest=_object_info_sha256))\n")

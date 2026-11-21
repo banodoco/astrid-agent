@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import textwrap
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from fractions import Fraction
 from pathlib import Path
@@ -36,13 +36,7 @@ from .inspector_navigation import build_inspector_navigation
 from .provenance import snapshot_label
 
 
-def _q(value):
-    if isinstance(value, (list, tuple)) and len(value) == 2:
-        return Fraction(int(value[0]), int(value[1]))
-    result = Fraction(str(value))
-    # Runtime JSON floats can carry arithmetic noise at exact frame boundaries.
-    # Preserve explicit decimal strings; recover float rationals to nanosecond precision.
-    return result.limit_denominator(1_000_000_000) if isinstance(value, float) else result
+from .render_clock import normalize_time as _q
 
 
 def _frame_span(clip, fps):
@@ -118,7 +112,14 @@ def _word_entry(raw):
     return float(start), float(end), text.strip()
 
 
-def _timed_word_records(clips, time, *, window=WORD_CAPTION_WINDOW_SECONDS):
+def _word_status(records):
+    """Caption status of timed VO: a stored transcript when any record came from one, else clip app.words."""
+    if any(record.get('timing_basis') == 'stored_word' for record in records):
+        return 'word-aligned VO (stored transcript)'
+    return 'word-aligned VO (app.words)'
+
+
+def _timed_word_records(clips, time, *, window=WORD_CAPTION_WINDOW_SECONDS, speech_words=None):
     """Word-aligned VO text near ``time`` from the active clips' ``app.words``.
 
     Only words whose interval overlaps ``[time - window, time + window)`` are
@@ -127,6 +128,18 @@ def _timed_word_records(clips, time, *, window=WORD_CAPTION_WINDOW_SECONDS):
     timeline start in the composed snapshot, so word times are offset by it.
     """
     low, high = float(time) - window, float(time) + window
+    if speech_words is not None:
+        # The frozen speech of the render (stored transcripts first): timeline seconds, already placed.
+        records = []
+        for row in speech_words:
+            start, end = float(row['start']), float(row['end'])
+            if end <= low or start >= high or end <= start:
+                continue
+            records.append({'text': str(row['text']), 'start': start, 'end': end,
+                            'clip_id': row.get('clip_id'),
+                            'timing_basis': 'stored_word' if row.get('word_id') else 'vo_word'})
+        records.sort(key=lambda item: (item['start'], item['end'], str(item['clip_id'])))
+        return records
     records = []
     for clip in clips:
         if not isinstance(clip, Mapping):
@@ -176,7 +189,7 @@ def _project_display_scripts(cards):
         if card.get('captions'):
             card['caption_status'] = 'timed caption'
         elif card.get('timed_words'):
-            card['caption_status'] = 'word-aligned VO (app.words)'
+            card['caption_status'] = _word_status(card['timed_words'])
         elif displayed:
             card['caption_status'] = 'shot script context (not word-aligned)'
         elif card.get('scripts'):
@@ -638,9 +651,9 @@ def _evenly_spaced(total, count):
     return sorted({(i * (total - 1) + count // 2) // count for i in range(1, count + 1)})
 
 
-def _boundary_index(snapshot, clips, spans, total, fps):
+def _boundary_index(snapshot, clips, spans, total, fps, start=0):
     entries = [
-        {'frame': 0, 'time_seconds': 0.0, 'kind': 'rendered_first_frame', 'source': 'decoded_render'},
+        {'frame': start, 'time_seconds': float(Fraction(start, 1) / fps), 'kind': 'rendered_first_frame', 'source': 'decoded_render'},
         {'frame': total - 1, 'time_seconds': float(Fraction(total - 1, 1) / fps),
          'kind': 'rendered_eof', 'source': 'decoded_render'},
     ]
@@ -749,16 +762,17 @@ def _event_coverage(events, reasons, *, first, stop):
             'clipped_event_count': clipped, 'omissions': rows}
 
 
-def _full_overview(snapshot, clips, spans, total, fps, limit, events=()):
+def _full_overview(snapshot, clips, spans, total, fps, limit, events=(), start=0):
     """Plan a bounded full-render overview while retaining boundary evidence."""
-    entries = _boundary_index(snapshot, clips, spans, total, fps)
+    entries = [entry for entry in _boundary_index(snapshot, clips, spans, total, fps, start)
+               if start <= entry['frame'] < total]
     reasons = {}
 
     def add(frame, reason):
-        if 0 <= frame < total:
+        if start <= frame < total:
             reasons.setdefault(frame, set()).add(reason)
 
-    add(0, 'overview_first_frame')
+    add(start, 'overview_first_frame')
     add(total - 1, 'overview_last_frame')
     tail = (snapshot.get('metadata') or {}).get('rendered_tail')
     if not isinstance(tail, dict):
@@ -774,24 +788,24 @@ def _full_overview(snapshot, clips, spans, total, fps, limit, events=()):
         raise ValueError(f'Overview requires {mandatory_count} mandatory frames but max_frames is {limit}.')
 
     event_frames = sorted({moment['frame'] for event in events for moment in event.get('moments', [])
-                           if 0 <= moment['frame'] < total})
+                           if start <= moment['frame'] < total})
     for frame in _spread(event_frames, min(len(event_frames), limit - len(reasons))):
         add(frame, 'event_moment')
 
-    boundary_frames = [entry['frame'] for entry in entries if entry['frame'] not in reasons]
+    boundary_frames = [entry['frame'] for entry in entries if start <= entry['frame'] < total and entry['frame'] not in reasons]
     remaining = limit - len(reasons)
     boundary_budget = min(len(set(boundary_frames)), remaining // 2)
     for frame in _spread(boundary_frames, boundary_budget):
         add(frame, 'overview_boundary')
     interior_budget = limit - len(reasons)
-    for frame in _evenly_spaced(total, interior_budget):
+    for frame in (start + f for f in _evenly_spaced(total - start, interior_budget)):
         if frame not in reasons:
             add(frame, 'overview_interior')
     # Interior points can coincide with mandatory or boundary selections. Use
     # one bounded oversampled candidate set to fill any remaining slots while
     # keeping the overview capped and deterministic.
     if len(reasons) < limit:
-        for frame in _evenly_spaced(total, max(limit * 2, 1)):
+        for frame in (start + f for f in _evenly_spaced(total - start, max(limit * 2, 1))):
             if frame not in reasons:
                 add(frame, 'overview_interior')
                 if len(reasons) >= limit:
@@ -802,9 +816,9 @@ def _full_overview(snapshot, clips, spans, total, fps, limit, events=()):
     coverage = {
         'clock': 'rendered_decoded',
         'full_duration': True,
-        'window_seconds': [0.0, float(Fraction(total, 1) / fps)],
+        'window_seconds': [float(Fraction(start, 1) / fps), float(Fraction(total, 1) / fps)],
         'selected_frame_count': len(reasons),
-        'selected_fraction': len(reasons) / total,
+        'selected_fraction': len(reasons) / (total - start),
         'mandatory_frames': sorted(reasons),
         'boundary_count': len(entries),
         'selected_boundary_count': selected_boundary_count,
@@ -814,7 +828,7 @@ def _full_overview(snapshot, clips, spans, total, fps, limit, events=()):
         'not_promised': ['every fast-cut boundary is sampled', 'overview cards provide exact navigation for every frame'],
     }
     return reasons, {'schema': 'astrid.filmstrip.boundary-index.v1', 'clock': 'rendered_decoded',
-                     'rendered_frame_count': total, 'entries': entries}, coverage
+                     'rendered_frame_count': total - start, 'entries': entries}, coverage
 
 
 def total_frames_of(snapshot: Mapping) -> int:
@@ -826,11 +840,15 @@ def picture_cut_frames(snapshot: Mapping, fps: Fraction, total: int) -> list[dic
     from astrid.pack_api import picture_cuts
     from astrid.core.timeline.cuts import cut_sample_time, occurrences_from_snapshot
 
-    from .motion.model import elements_from_occurrences, words
+    from .motion.model import Word, elements_from_occurrences, words
 
     occurrences = occurrences_from_snapshot(snapshot)
     cuts = picture_cuts(occurrences, fps=float(fps))
-    spoken = words(elements_from_occurrences(occurrences))
+    frozen = snapshot.get('speech_words')
+    if frozen is not None:  # the render's frozen speech (stored transcripts first), already on the timeline clock
+        spoken = [Word(float(row['start']), float(row['end']), str(row['text'])) for row in frozen]
+    else:
+        spoken = words(elements_from_occurrences(occurrences))
     rows = []
     for cut in cuts:
         said = [w.text for w in spoken if cut['start'] <= (w.start + w.end) / 2 < cut['end'] and w.text != '·']
@@ -855,9 +873,11 @@ def plan_filmstrip(
         if resolved_shot != options.get('shot'):
             options = dict(options)
             options['shot'] = resolved_shot
-    fps = Fraction(*snapshot['fps_rational'])
-    total = int(snapshot['duration_frames'])
-    if fps <= 0 or total <= 0:
+    from .render_clock import RenderClock
+    clock = RenderClock(snapshot)
+    fps = clock.fps
+    total = clock.end
+    if fps <= 0 or total <= clock.start:
         raise ValueError('Filmstrip requires a positive frame rate and duration.')
     duration = Fraction(total, 1) / fps
     mode = options.get('sample') or 'interval'
@@ -865,20 +885,28 @@ def plan_filmstrip(
         raise ValueError(f'Unknown sampling mode: {mode}')
     motion_cut = None
     motion_window = None
+    # Explicit addresses must be inside the render before motion derives and
+    # clips its context padding around them.
+    if options.get('at') is not None:
+        clock.validate_timestamp(options['at'])
+    if options.get('range') is not None:
+        clock.validate_range(*options['range'])
     if options.get('view') == 'motion' or mode == 'motion':
         from .motion.window import resolve_window
         motion_window = resolve_window(snapshot, options, float(fps), total_frames_of(snapshot))
         motion_cut = motion_window['cut']
-    lo, hi = Fraction(0), duration
+    lo, hi = Fraction(clock.start, 1) / fps, duration
     requested_frame = options.get('frame')
     if requested_frame is not None:
-        if type(requested_frame) is not int or requested_frame < 0 or requested_frame >= total:
-            raise ValueError(f'Requested frame {requested_frame!r} is outside the rendered extent 0..{total - 1}.')
+        if type(requested_frame) is not int:
+            raise ValueError('Requested frame must be an integer.')
+        clock.validate_frame(requested_frame)
         lo, hi = Fraction(requested_frame, 1) / fps, Fraction(requested_frame + 1, 1) / fps
     if options.get('range') is not None and motion_window is None:
         if requested_frame is not None:
             raise ValueError('Choose frame, range, or at, not more than one.')
         lo, hi = map(_q, options['range'])
+        clock.validate_range(lo, hi)
     if motion_window is not None:
         from .motion.sheet import PAD_SECONDS
         requested_frame = None
@@ -889,11 +917,7 @@ def plan_filmstrip(
         if options.get('range') is not None or requested_frame is not None:
             raise ValueError('Choose frame, range, or at/context, not more than one.')
         at = _q(options['at'])
-        if at < 0 or at >= duration:
-            raise ValueError(
-                f'Requested timestamp {float(at):.6f}s is outside the rendered extent '
-                f'0..{float(duration):.6f}s.'
-            )
+        clock.validate_timestamp(at)
         # A timestamp is an exact visual request, not a context window.  Use
         # the authored frame clock's floor rule so every in-range timestamp
         # resolves to one and only one frame without clamping an out-of-range
@@ -901,7 +925,7 @@ def plan_filmstrip(
         resolved_at_frame = int(at * fps)
         lo = Fraction(resolved_at_frame, 1) / fps
         hi = Fraction(resolved_at_frame + 1, 1) / fps
-    lo, hi = max(lo, Fraction(0)), min(hi, duration)
+    lo, hi = max(lo, Fraction(clock.start, 1) / fps), min(hi, duration)
     if hi <= lo:
         raise ValueError('Requested window contains no rendered frames.')
     clips = snapshot.get('clips', [])
@@ -977,7 +1001,7 @@ def plan_filmstrip(
     elif is_full_overview:
         overview_limit = min(limit, OVERVIEW_MAX_CARDS)
         reasons, boundary_index, coverage = _full_overview(
-            snapshot, clips, spans, total, fps, overview_limit, event_moments)
+            snapshot, clips, spans, total, fps, overview_limit, event_moments, start=clock.start)
     elif mode == 'interval':
         # Jump directly into selected clip windows; never scan an entire movie
         # to discover a short filtered clip near its end.
@@ -1026,7 +1050,11 @@ def plan_filmstrip(
             for cut in picture:
                 if wanted and cut['index'] not in wanted:
                     continue
-                add(cut['tile_frame'], 'cut_tile')
+                start, end = max(first, cut['start_frame']), min(stop, cut['end_frame'])
+                if start >= end:
+                    continue
+                tile = cut['tile_frame']
+                add(tile if start <= tile < end else (start + end) // 2, 'cut_tile')
                 if cut.get('sequence'):
                     # a sequence is one tile; its first and last steps ride along as a mini-strip
                     add(cut['start_frame'], 'sequence_step')
@@ -1048,8 +1076,9 @@ def plan_filmstrip(
                 occurrence_key = clip.get('occurrence_id') or clip.get('shot_id')
                 if not snapshot.get('occurrences') and occurrence_key and occurrence_key not in seen_shots:
                     shot_spans = [spans[id(c)] for c in selected if (c.get('occurrence_id') or c.get('shot_id')) == occurrence_key]
-                    midpoint = (min(a for a, b in shot_spans) + max(b for a, b in shot_spans)) / 2
-                    add(math.floor(midpoint), 'shot_midpoint')
+                    start = max(first, min(a for a, b in shot_spans))
+                    end = min(stop, max(b for a, b in shot_spans))
+                    add((start + end) // 2, 'shot_midpoint')
                     seen_shots.add(occurrence_key)
         if mode == 'shots':
             for occurrence in snapshot.get('occurrences', []):
@@ -1057,7 +1086,7 @@ def plan_filmstrip(
                     continue
                 start, end = occurrence['start_frame'], occurrence['end_frame']
                 if start < stop and end > first:
-                    add((start + end) // 2, 'shot_midpoint')
+                    add((max(start, first) + min(end, stop)) // 2, 'shot_midpoint')
     if not reasons:
         raise ValueError('No rendered frames match the requested sample and filters.')
     contact_info = None
@@ -1083,13 +1112,14 @@ def plan_filmstrip(
                 continue
         relevant_events.append(event)
     if boundary_index is None:
-        boundary_index = _boundary_index(snapshot, clips, spans, total, fps)
+        boundary_index = [entry for entry in _boundary_index(snapshot, clips, spans, total, fps, clock.start)
+                          if clock.start <= entry['frame'] < clock.end]
         selected = set(reasons)
         for entry in boundary_index:
             entry['selected'] = entry['frame'] in selected
         coverage = {
             'clock': 'rendered_decoded',
-            'full_duration': first == 0 and stop == total,
+            'full_duration': first == clock.start and stop == total,
             'window_seconds': [float(lo), float(hi)],
             'selected_frame_count': len(reasons),
             'selected_fraction': len(reasons) / max(1, stop - first),
@@ -1117,8 +1147,8 @@ def plan_filmstrip(
         # contains frozen, timed speech annotations covering this frame.
         scripts = [s for s in snapshot.get('scripts', []) if _q(s['start']) <= time < _q(s['end'])]
         captions = _speech_caption_records(snapshot, time)
-        timed_words = _timed_word_records(active, time)
-        caption_status = ('timed caption' if captions else 'word-aligned VO (app.words)' if timed_words
+        timed_words = _timed_word_records(active, time, speech_words=snapshot.get('speech_words'))
+        caption_status = ('timed caption' if captions else _word_status(timed_words) if timed_words
                           else 'no timed text available')
         target = f"frame-{frame:09d}"
         extension = str(options.get('frame_extension') or 'jpg').lstrip('.')
@@ -1185,7 +1215,7 @@ def _lines(card):
     if card.get('captions'):
         status = 'timed caption'
     elif word_text:
-        status = 'word-aligned VO (app.words)'
+        status = _word_status(card.get('timed_words') or [])
     elif card.get('display_scripts'):
         status = 'shot script context (not word-aligned)'
     elif 'display_scripts' in card:
@@ -1198,10 +1228,10 @@ def _lines(card):
     return [f"{card['time_label']} · frame {card['frame']}", shots or 'No shot label', clips, status] + [str(s.get('canonical_text') or s.get('text', '')) for s in text_items]
 
 
-def _extract(video_path, cards, out_root, resolution=None):
+def _extract(video_path, cards, out_root, resolution=None, *, clock=None):
     frames = out_root / 'frames'
     frames.mkdir(parents=True, exist_ok=True)
-    expression = '+'.join(f'eq(n,{c["frame"]})' for c in cards)
+    expression = '+'.join(f'eq(n,{clock.file_frame(c["frame"]) if clock else c["frame"]})' for c in cards)
     filter_path = out_root / 'frame-selection.txt'
     scale = f'{resolution[0]}:{resolution[1]}' if resolution else '480:-2'
     filter_path.write_text(f"select='{expression}',scale={scale}", encoding='utf-8')
@@ -1773,18 +1803,87 @@ def _static(
     return {'png': png_paths}
 
 
-def _audio_envelope(snapshot: Mapping, asset_files: Mapping[str, str] | None, start: float, end: float, bins: int):
-    """Decimated VO/music/sfx loudness from the timeline's own audio clips, or None without files."""
+def _audio_envelope(snapshot: Mapping, asset_files: Mapping[str, str] | None, start: float, end: float, bins: int,
+                    *, planned: Sequence[Mapping[str, Any]] = ()):
+    """Decimated VO/music/sfx loudness from the timeline's own audio clips, or None without files.
+
+    Lines are expected under every VO clip, every shot script and every shot plan with a line
+    (``planned``: the client's plan rows); silence elsewhere is intended and is not flagged."""
     if not asset_files:
         return None
     from .motion.audio import envelope
     from .motion.sheet import snapshot_elements
 
     _occurrences, elements = snapshot_elements(snapshot)
+    scripted = [(float(s['start']), float(s['end'])) for s in snapshot.get('scripts') or []
+                if isinstance(s, Mapping) and str(s.get('text') or '').strip()
+                and isinstance(s.get('start'), (int, float)) and isinstance(s.get('end'), (int, float))]
+    scripted += [(float(r['start']), float(r['end'])) for r in planned
+                 if isinstance(r, Mapping) and r.get('line') and isinstance(r.get('start'), (int, float))
+                 and isinstance(r.get('end'), (int, float))]
     try:
-        return envelope(elements, asset_files, start, end, bins=bins)
+        return envelope(elements, asset_files, start, end, bins=bins, scripted=scripted)
     except Exception:  # noqa: BLE001 - an unreadable audio file must not lose the page
         return None
+
+
+_REVISION_PREFIXES = ('authoring-parent-revision-', 'astrid.editor.timeline.', 'reigh.editor.timeline.', 'restore-')
+
+
+def short_revision_id(revision_id: Any) -> str | None:
+    """The 8-character handle people read and type (``08dee21c``); the same rule as timelines history."""
+    text = str(revision_id or '')
+    if not text:
+        return None
+    for prefix in _REVISION_PREFIXES:
+        if text.startswith(prefix):
+            return text[len(prefix):][:8] or text
+    return text[:8]
+
+
+def _revision_short(revision_label: Mapping[str, Any] | None, snapshot: Mapping[str, Any]) -> str | None:
+    """The drawn revision's short id: the certified one, else the one the capture was made for."""
+    label = revision_label if isinstance(revision_label, Mapping) else {}
+    metadata = snapshot.get('metadata') if isinstance(snapshot.get('metadata'), Mapping) else {}
+    capture = metadata.get('capture_authority') if isinstance(metadata.get('capture_authority'), Mapping) else {}
+    for value in (label.get('actual_revision_id'), metadata.get('requested_revision_id'),
+                  capture.get('parent_revision_id'), label.get('base_revision_id')):
+        if isinstance(value, str) and value:
+            short = short_revision_id(value)
+            return short if label.get('status') != 'candidate' else f'{short} + unsaved edits'
+    return None
+
+
+def _display_title(snapshot: Mapping[str, Any], options: Mapping[str, Any]) -> str:
+    """The timeline's name as people know it (``Rough cut C2``), never its internal id when a name is known."""
+    title = options.get('title')
+    if isinstance(title, str) and title.strip():
+        return title.strip()
+    return str(snapshot.get('timeline_name') or snapshot.get('timeline_id') or 'timeline')
+
+
+def _picture_cut_count(snapshot: Mapping[str, Any]) -> int | None:
+    try:
+        from astrid.core.timeline.cuts import occurrences_from_snapshot
+        from astrid.pack_api import picture_cuts
+        fps = float(Fraction(*snapshot['fps_rational']))
+        return len(picture_cuts(occurrences_from_snapshot(snapshot), fps=fps)) or None
+    except Exception:  # noqa: BLE001 - the header then counts the tiles
+        return None
+
+
+def provenance_findings(snapshot: Mapping[str, Any], revision_label: Mapping[str, Any] | None,
+                        render_selection: Any) -> list[str]:
+    """What the header leaves out, for the findings and the JSON: the full revision and the render source."""
+    label = revision_label if isinstance(revision_label, Mapping) else {}
+    text = str(label.get('label') or 'revision unavailable')
+    status = label.get('status')
+    if status == 'uncertified':
+        text += ('; uncertified means the frames were captured for this revision but the capture carries '
+                 'no Runtime proof of it (pin it with --revision-id to be sure)')
+    lines = [f'REVISION {text}']
+    lines.append(f"SOURCE  {snapshot.get('render_run_id')} · {render_selection} · timeline {snapshot.get('timeline_id')}")
+    return lines
 
 
 def build_filmstrip_pack(*, out_root: Path, video_path: Path | None = None, snapshot: dict, options: dict, frame_provider=None,
@@ -1844,7 +1943,8 @@ def build_filmstrip_pack(*, out_root: Path, video_path: Path | None = None, snap
     if frame_provider is None:
         if video_path is None:
             raise ValueError('filmstrip requires either an admitted video or a frame provider')
-        _extract(video_path, cards, out_root, options.get('resolution'))
+        from .render_clock import RenderClock
+        _extract(video_path, cards, out_root, options.get('resolution'), clock=RenderClock(snapshot))
     else:
         capture_info = frame_provider.capture(cards, out_root, options.get('resolution'))
         index['frame_capture'] = capture_info
@@ -1855,7 +1955,8 @@ def build_filmstrip_pack(*, out_root: Path, video_path: Path | None = None, snap
         from .render_review import review_render
         density = options.get('density') or {}
         every = options.get('render_every') or (density.get('value') if density.get('mode') == 'every_seconds' else None) or 5.0
-        review = review_render(video_path, out_root, every=float(every))
+        from .render_clock import RenderClock
+        review = review_render(video_path, out_root, every=float(every), clock=RenderClock(snapshot))
         index['render_review'] = review
         index['provenance']['render_review'] = {'contact': review['contact'], 'json': 'render-review.json'}
     media_record = None
@@ -1926,11 +2027,13 @@ def build_filmstrip_pack(*, out_root: Path, video_path: Path | None = None, snap
         context.shared['rules'] = options.get('rules') or {}
         context.shared['highlight'] = options.get('highlight')
         context.shared['config'] = snapshot.get('config') or {}
-        sheet = compose_motion_sheet(context, options.get('layers') or None, out_root, timeline_label=timeline_label)
+        context.shared['revision_short'] = _revision_short(revision_label, snapshot)
+        sheet = compose_motion_sheet(context, options.get('layers') or None, out_root,
+                                     timeline_label=_display_title(snapshot, options))
         paths = {'png': sheet['png']}
         if sheet.get('preview'):
             paths['preview'] = sheet['preview']
-        index['motion_findings'] = sheet['findings']
+        index['motion_findings'] = sheet['findings'] + provenance_findings(snapshot, revision_label, render_selection)
         index['motion_layers'] = sheet['layers']
     elif options.get('view') == 'contact':
         from .contact_sheet import static_contact_png
@@ -1939,18 +2042,31 @@ def build_filmstrip_pack(*, out_root: Path, video_path: Path | None = None, snap
         contact_fps = float(Fraction(*snapshot['fps_rational']))
         overlay = _contact_overlay_for_layers(snapshot, options.get('layers') or (), contact_fps, options.get('highlight'), frame_provider=frame_provider)
         from .contact_sheet import contact_band_width, contact_silence_findings
-        audio = _audio_envelope(snapshot, asset_files, 0.0, duration, contact_band_width(columns))
+        plans = options.get('shot_plans') or {}
+        audio = _audio_envelope(snapshot, asset_files, 0.0, duration, contact_band_width(columns),
+                                planned=plans.get('rows') or ())
+        from .motion.audio import expected_line_spans
+        from .motion.sheet import snapshot_elements
+        try:
+            _occ, contact_elements = snapshot_elements(snapshot)
+            voice_spans = expected_line_spans(contact_elements)
+        except Exception:  # noqa: BLE001 - the words line falls back to "no words stored"
+            voice_spans = None
+        plan_labels = ({str(row['occurrence_id']): str(row['label']) for row in plans.get('rows') or ()
+                        if row.get('occurrence_id') and row.get('label')} if plans.get('labels') else None)
         paths = {'png': static_contact_png(
-            display_cards, out_root, columns=columns, timeline_name=timeline_label,
+            display_cards, out_root, columns=columns, timeline_name=_display_title(snapshot, options),
             render_run_id=snapshot['render_run_id'], render_selection=render_selection,
             occurrences=[o for o in snapshot.get('occurrences') or [] if isinstance(o, Mapping)],
             duration_seconds=duration, show_output='output' in components,
             thinned_from=(index.get('contact') or {}).get('thinned_from'), overlay=overlay, audio=audio,
             revision_label=revision_label,
             event_coverage=(index.get('coverage') or {}).get('event_moments'),
+            revision_short=_revision_short(revision_label, snapshot), cut_count=_picture_cut_count(snapshot),
+            voice_spans=voice_spans, plan_labels=plan_labels,
         )}
-        if audio is not None:
-            index['motion_findings'] = contact_silence_findings(audio)
+        index['motion_findings'] = (contact_silence_findings(audio) if audio is not None else []) + \
+            provenance_findings(snapshot, revision_label, render_selection)
     else:
         paths = _static(
             display_cards, out_root, columns, page_size, timeline_label, snapshot['render_run_id'],

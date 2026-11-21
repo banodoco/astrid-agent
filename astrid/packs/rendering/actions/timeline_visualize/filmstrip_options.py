@@ -142,6 +142,46 @@ def _render_every(value: Any) -> float:
     return float(value)
 
 
+def title_value(value: Any) -> str | None:
+    """The timeline's display name for page headers (the client reads it from the Runtime)."""
+    if value in (None, ''):
+        return None
+    if not isinstance(value, str):
+        raise ValueError('title must be text')
+    text = ' '.join(value.split())
+    return text[:120] or None
+
+
+SHOT_PLAN_ROWS_MAX = 400
+
+
+def shot_plans_value(value: Any) -> dict[str, Any] | None:
+    """Client-resolved shot plan rows: ``{labels: bool, rows: [{occurrence_id, start, end, label, line}]}``.
+
+    ``line`` marks a planned line (silence there is flagged); ``labels`` draws ``label`` on the tiles."""
+    if value in (None, ''):
+        return None
+    if isinstance(value, str):
+        import json
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            raise ValueError('shot_plans must be JSON: {"labels": true, "rows": [...]}') from None
+    if not isinstance(value, Mapping) or not isinstance(value.get('rows', []), list):
+        raise ValueError('shot_plans must be an object with a rows list')
+    rows = []
+    for row in value.get('rows', [])[:SHOT_PLAN_ROWS_MAX]:
+        if not isinstance(row, Mapping):
+            raise ValueError('each shot_plans row must be an object')
+        try:
+            start, end = float(row.get('start')), float(row.get('end'))
+        except (TypeError, ValueError):
+            raise ValueError('each shot_plans row needs numeric start and end seconds') from None
+        rows.append({'occurrence_id': str(row.get('occurrence_id') or ''), 'start': start, 'end': end,
+                     'label': str(row.get('label') or '')[:120], 'line': bool(row.get('line'))})
+    return {'labels': bool(value.get('labels')), 'rows': rows}
+
+
 def filmstrip_options(values: Mapping[str, Any]) -> dict[str, Any]:
     """Normalize only public controls; never accept an unbounded sampling job."""
     # Component/target grammar is shared with SDK admission. Keep the
@@ -298,6 +338,8 @@ def filmstrip_options(values: Mapping[str, Any]) -> dict[str, Any]:
     if result['cuts'] and not contact:
         raise ValueError('--cuts applies to --view contact (tiles for only those cut numbers)')
     result['beats'] = beats_value(values.get('beats'))
+    result['title'] = title_value(values.get('title'))
+    result['shot_plans'] = shot_plans_value(values.get('shot_plans'))
     result['request'] = {
         'range': result['range'],
         'at': result['at'],

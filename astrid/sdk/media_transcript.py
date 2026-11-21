@@ -3,12 +3,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from .media_ids import canonical_digest, resolve_media_id
+
 SCHEMA = "media.transcript/v1"
 NARRATION_SOURCE = "astrid.narration"
+IMPORT_SOURCE = "astrid.import"
 WHISPER_SOURCE = "whisper"
 _DOCUMENT_DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
@@ -40,7 +44,8 @@ def _document_pin(value: Any) -> dict[str, Any] | None:
 
 
 def transcript_document_id(project_id: str, media_id: str, source_id: str) -> str:
-    identity = [SCHEMA, project_id, media_id, source_id]
+    # The identity hashes the canonical media id, so a bare digest and its sha256: form address one transcript.
+    identity = [SCHEMA, project_id, canonical_digest(media_id) or media_id, source_id]
     canonical = json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
     return "transcript:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -81,6 +86,7 @@ def _project_id(client: Any, project: str) -> str:
 
 
 def read_transcript(client: Any, project: str, media_id: str, source: str) -> Mapping[str, Any] | None:
+    media_id = resolve_media_id(client, project, media_id)
     document, _pin = _read_transcript_result(client, project, media_id, source)
     return document
 
@@ -100,7 +106,92 @@ def _read_transcript_result(
 def write_transcript(client: Any, project: str, media_id: str, source: str,
                      content: Mapping[str, Any]) -> str:
     """Return created, updated, or unchanged; update with Runtime version CAS."""
+    media_id = resolve_media_id(client, project, media_id)
     status, _pin = _write_transcript_result(client, project, media_id, source, content)
+    return status
+
+
+def import_transcript_words(
+    client: Any, project: str, media_id: str, words: Sequence[Sequence[Any],], *,
+    segment_id: str, text: str | None = None,
+    source: str = IMPORT_SOURCE, replace: bool = False,
+    expected_version: int | None = None,
+) -> str:
+    """Import a complete words file whose timestamps are source-media seconds.
+
+    Existing content is never silently replaced: a differing document requires
+    ``replace=True`` and its current version, and replacement replaces the
+    entire transcript document (it does not merge a range).
+    """
+    if not isinstance(media_id, str):
+        raise ValueError("media id must be a sha256 digest")
+    media_id = resolve_media_id(client, project, media_id)
+    if _DOCUMENT_DIGEST.fullmatch(media_id) is None:
+        raise ValueError("media id must be a sha256 digest")
+    if not isinstance(source, str) or not source.strip():
+        raise ValueError("source id must be non-empty")
+    if not isinstance(segment_id, str) or not segment_id.strip():
+        raise ValueError("segment id must be non-empty")
+    if not isinstance(words, Sequence) or isinstance(words, (str, bytes)):
+        raise ValueError("words must be a sequence")
+    shifted = []
+    for row in words:
+        if isinstance(row, Mapping):
+            row = (row.get("start_s", row.get("start")), row.get("end_s", row.get("end")),
+                   row.get("word", row.get("text")))
+        if not isinstance(row, Sequence) or isinstance(row, (str, bytes)) or len(row) < 3:
+            raise ValueError("each word must contain start, end, and text")
+        if isinstance(row[0], bool) or isinstance(row[1], bool):
+            raise ValueError("word times must be numeric source seconds, not booleans")
+        if not isinstance(row[2], str) or not row[2].strip():
+            raise ValueError("word text must be a non-empty string")
+        try:
+            start, end = float(row[0]), float(row[1])
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("word times must be finite source seconds") from exc
+        spoken = row[2]
+        if not math.isfinite(start) or not math.isfinite(end) or start < 0 or end < start or not spoken.strip():
+            raise ValueError("word times must be ordered nonnegative source seconds and text must be non-empty")
+        shifted.append([start, end, spoken])
+    transcript = build_transcript(
+        media_id, segment_id, text if text is not None else " ".join(row[2] for row in shifted),
+        shifted, source_id=source,
+    )
+    project_id = _project_id(client, project)
+    document_id = transcript_document_id(project_id, media_id, source)
+    result = client.documents.show(document_id, project=project_id)
+    if result.ok:
+        current = result.data
+        if not isinstance(current, Mapping):
+            raise ValueError("transcript document response is invalid")
+        if current.get("kind") != "media.transcript":
+            raise ValueError(f"{document_id} has a different document kind")
+        existing = current.get("content")
+        if existing == transcript:
+            return "unchanged"
+        if not replace:
+            raise ValueError("transcript exists; use explicit whole-document replacement with expected version")
+        if (isinstance(expected_version, bool) or not isinstance(expected_version, int)
+                or expected_version < 1):
+            raise ValueError("whole-document replacement requires expected version")
+        version = current.get("version")
+        if type(version) is not int or expected_version != version:
+            raise ValueError(f"expected version {expected_version} does not match current version {version}")
+        mutation = client.documents.update(
+            document_id, content=transcript, expected_version=expected_version, project=project_id,
+        )
+        status = "updated"
+    elif result.error and result.error.code == "not_found":
+        if replace:
+            raise ValueError("cannot replace a transcript that does not exist")
+        mutation = client.documents.create(
+            kind="media.transcript", content=transcript, project=project_id, document_id=document_id,
+        )
+        status = "created"
+    else:
+        raise RuntimeError(f"cannot read transcript before import: {result.error}")
+    if not mutation.ok:
+        raise RuntimeError(f"cannot import transcript: {mutation.error}")
     return status
 
 

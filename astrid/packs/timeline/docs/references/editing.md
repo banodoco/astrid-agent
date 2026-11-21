@@ -211,3 +211,25 @@ shows only lint that is new since checkout (`--all` for everything).
 >   edit point. A bed that begins at or inside the edit is unsettled in both modes; do not promise it stays whole.
 > - `check --at` and `--verify` can be slow or fail ("frame owner closed"). Retry once; if it fails again, say so
 >   and do not publish a change you have not seen.
+
+### Appearance
+
+Inspect an exact clip's effective placement and its sources without rendering:
+
+```sh
+astrid timelines appearance TL --project P --clip parent/clip:CLIP --json
+```
+
+Use `occurrence:OCCURRENCE/clip:CLIP` for a shot clip. Edit appearance through
+one guarded commit, optionally previewing it first with `--dry-run`:
+
+```sh
+astrid timelines appearance TL --project P --clip parent/clip:CLIP --set fit=cover --set x=0 --set y=0 --set width=1280 --set height=720
+astrid timelines appearance TL --project P --track parent/track:TRACK --set scale=1 --set opacity=1
+```
+
+Clip fields are `fit`, `x`, `y`, `width`, `height`, `cropTop`, `cropBottom`,
+`cropLeft`, `cropRight`, and `opacity`; track fields are `fit`, `scale`,
+`opacity`, and `blendMode`. Use `--clear FIELD` to remove an authored value.
+Before an appearance edit, legacy placement is normalized in the same guarded
+commit; the package and pinned Node must be installed locally.

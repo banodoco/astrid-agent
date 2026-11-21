@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from collections.abc import Mapping, Sequence
 from fractions import Fraction
 from pathlib import Path
@@ -88,6 +89,16 @@ def _resolve_merged_theme(
     return _deep_merge_theme(builtin_theme(), override_mapping)
 
 
+def explicit_timeline_canvas(timeline: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    output = timeline.get('output')
+    if not isinstance(output, Mapping) or 'resolution' not in output:
+        return None
+    match = re.fullmatch(r'([1-9][0-9]*)[xX]([1-9][0-9]*)', str(output['resolution']))
+    if not match or 'fps' not in output:
+        raise ValueError('timeline output resolution and fps must define a valid canvas')
+    return {'width': int(match[1]), 'height': int(match[2]), 'fps': output['fps']}
+
+
 def _remotion_canvas(
     timeline: Mapping[str, Any], merged_theme: Mapping[str, Any]
 ) -> Mapping[str, Any]:
@@ -99,6 +110,9 @@ def _remotion_canvas(
     important: this profile is the contract for what Remotion actually emits.
     """
 
+    explicit = explicit_timeline_canvas(timeline)
+    if explicit is not None:
+        return explicit
     overrides = timeline.get("theme_overrides")
     if isinstance(overrides, Mapping):
         visual = overrides.get("visual")

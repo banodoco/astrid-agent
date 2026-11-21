@@ -57,6 +57,12 @@ class Word:
     index: int
     clip_id: str
     shot_id: str
+    # Where the word came from (None for a clip-local word without a stored transcript).
+    word_id: str | None = None
+    media_id: str | None = None
+    source: str | None = None
+    version: int | None = None
+    occurrence: int = 0
 
     def __float__(self) -> float:
         return self.start

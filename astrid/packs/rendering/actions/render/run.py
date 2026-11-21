@@ -253,7 +253,7 @@ def _write_empty_asset_registry(path: Path) -> None:
     save_registry({"assets": {}}, path)
 
 
-def _write_render_manifest(output: Path, *, timeline_path: Path, selector: str) -> None:
+def _write_render_manifest(output: Path, *, timeline_path: Path, selector: str, timeline_authority: Mapping[str, Any] | None = None) -> None:
     """Write the universal receipt consumed by the host output harvester.
 
     ``rendering.render`` declares media output ports, so the host requires a
@@ -290,8 +290,13 @@ def _write_render_manifest(output: Path, *, timeline_path: Path, selector: str) 
                 "is_primary": False,
             }
         )
+    expansion = timeline_authority.get('expansion', {}) if isinstance(timeline_authority, Mapping) else {}
+    findings = expansion.get('placement_migrations', []) if isinstance(expansion, Mapping) else []
+    from astrid.sdk.timeline._appearance import in_memory_canvas_warnings
+    warnings = [item['message'] for item in in_memory_canvas_warnings(findings)]
     manifest = build_manifest(
         kind="rendering.render",
+        warnings=warnings,
         inputs={
             "timeline": str(Path(timeline_path).expanduser().resolve()),
             "selector": selector,
@@ -505,7 +510,7 @@ def render(
         render_window=render_window,
     )
     _report_progress("validate_output", 90)
-    _write_render_manifest(Path(output), timeline_path=timeline_path, selector=selector)
+    _write_render_manifest(Path(output), timeline_path=timeline_path, selector=selector, timeline_authority=timeline_authority)
     _report_progress("complete", 100)
     return output
 

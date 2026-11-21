@@ -247,3 +247,38 @@ def test_remote_timelines_commit_rejects_body_scope_mismatch() -> None:
     assert not result.ok
     assert result.error.code == "validation_error"
     assert result.idempotency_key == "retry-1"
+
+
+def test_timed_out_history_read_names_the_request_and_that_nothing_was_written() -> None:
+    class Generated:
+        timeout = 30.0
+
+        def list_timeline_commits(self, project: str, timeline: str, *, cursor=None, limit=50):
+            raise ApiError(0, "transport_timeout", "runtime request timed out", request_id="request-1")
+
+    with pytest.raises(WorkspaceClientError) as failure:
+        _client(Generated()).list_timeline_commits("project-1", "timeline-1", limit=100)
+
+    error = failure.value
+    assert error.code == "transport_timeout"
+    assert error.request_id == "request-1"
+    assert "list_timeline_commits" in error.message and "30 s" in error.message
+    assert "nothing was written or committed" in error.message
+    assert error.details == {"operation": "list_timeline_commits", "read_only": True, "timeout_seconds": 30.0}
+
+
+def test_timed_out_commit_is_reported_as_unknown_not_as_unwritten() -> None:
+    class Generated:
+        timeout = 30.0
+
+        def commit_timeline(self, project: str, timeline: str, body, *, idempotency_key: str):
+            raise ApiError(0, "transport_timeout", "runtime request timed out")
+
+    with pytest.raises(WorkspaceClientError) as failure:
+        _client(Generated()).commit_timeline("project-1", "timeline-1", _request(), idempotency_key="key-1")
+
+    assert failure.value.code == "transport_timeout"
+    assert "commit_timeline" in failure.value.message
+    assert "may or may not have been applied" in failure.value.message
+    assert "nothing was written" not in failure.value.message
+    assert failure.value.details["read_only"] is False

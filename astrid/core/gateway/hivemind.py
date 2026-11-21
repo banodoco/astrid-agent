@@ -24,6 +24,7 @@ class PackCommandSpec:
 
 PACK_COMMANDS = (
     PackCommandSpec("hivemind", "search", "hivemind.search"),
+    PackCommandSpec("hivemind", "item", "hivemind.get_item"),
 )
 
 
@@ -44,6 +45,15 @@ def _error_result(exc: Exception) -> DomainResult[None]:
     code = str(details.get("code") or "runtime_error")
     message = str(exc)
     return DomainResult.failure(ErrorObject(code, message, details))
+
+
+def _decimal_id(flag: str):
+    def validate(value: str) -> str:
+        if not value or any(character < "0" or character > "9" for character in value):
+            raise argparse.ArgumentTypeError(f"{flag} must be a non-empty ASCII decimal string")
+        return value
+
+    return validate
 
 
 def _parser(pack: str = "hivemind") -> argparse.ArgumentParser:
@@ -67,6 +77,14 @@ def _parser(pack: str = "hivemind") -> argparse.ArgumentParser:
     search.add_argument("--detach", action="store_true", help="Return admission without waiting.")
     search.add_argument("--timeout", type=float, default=120.0, dest="timeout_seconds")
     search.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+    item = sub.add_parser("item", help="Fetch a full item and its citation context.")
+    item.add_argument("--kind", required=True, choices=("message", "resource", "revision"))
+    item.add_argument("--id", required=True, type=_decimal_id("--id"), help="Decimal item id.")
+    item.add_argument("--revision-id", dest="revision_id", type=_decimal_id("--revision-id"),
+                      help="Exact resource revision id.")
+    item.add_argument("--detach", action="store_true", help="Return admission without waiting.")
+    item.add_argument("--timeout", type=float, default=120.0, dest="timeout_seconds")
+    item.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     parser.add_argument("--json", action="store_true", default=False)
     return parser
 
@@ -170,6 +188,64 @@ def _search(parsed: argparse.Namespace, spec: PackCommandSpec) -> int:
         return print_result(_error_result(exc), as_json=getattr(parsed, "json", False))
 
 
+def _item(parsed: argparse.Namespace, spec: PackCommandSpec) -> int:
+    from astrid.sdk.client import AstridClient
+
+    inputs: dict[str, Any] = {"kind": parsed.kind, "id": parsed.id}
+    if parsed.revision_id:
+        inputs["revision_id"] = parsed.revision_id
+    try:
+        with AstridClient.open_from_launcher() as client:
+            raw_result = client.invoke_result(
+                spec.capability_id,
+                kind=spec.kind,
+                inputs=inputs,
+                wait=not parsed.detach,
+                timeout_seconds=parsed.timeout_seconds,
+            )
+            raw = raw_result.to_dict() if hasattr(raw_result, "to_dict") else dict(raw_result)
+            if not raw.get("ok"):
+                error = raw.get("error") or {}
+                details = dict(error.get("details") or {}) if isinstance(error, dict) else {}
+                if isinstance(error, dict):
+                    for key in ("type", "sdk_error", "sdk_category", "validation"):
+                        if key in error:
+                            details.setdefault(key, error[key])
+                code = (
+                    error.get("code") or error.get("sdk_error") or error.get("type") or "runtime_error"
+                ) if isinstance(error, dict) else "runtime_error"
+                return print_result(
+                    DomainResult.failure(ErrorObject(
+                        str(code), str(error.get("message") or "Hivemind item fetch failed"), details,
+                    )),
+                    as_json=getattr(parsed, "json", False),
+                )
+            data: dict[str, Any] = {
+                "run_id": raw.get("run_id"),
+                "state": "admitted" if parsed.detach else "completed",
+                "capability_id": raw.get("capability_id"),
+                "outputs": raw.get("outputs") or {},
+                "raw_result": raw.get("raw_result") or {},
+            }
+            artifacts = ((raw.get("outputs") or {}).get("artifacts") or [])
+            if artifacts:
+                primary = next((entry for entry in artifacts if entry.get("name") == "item"), artifacts[0])
+                digest = primary.get("digest")
+                if digest and not parsed.detach:
+                    data["item"] = json.loads(client.media.read_bytes(digest).decode("utf-8"))
+                    data["artifact"] = primary
+            result = DomainResult.success(data)
+            if getattr(parsed, "json", False):
+                return print_result(result, as_json=True)
+            if "item" in data:
+                print(json.dumps(data["item"], ensure_ascii=False, indent=2))
+            else:
+                print(f"run_id: {data.get('run_id', '')}")
+            return 0
+    except Exception as exc:  # noqa: BLE001 - convert to the stable CLI envelope
+        return print_result(_error_result(exc), as_json=getattr(parsed, "json", False))
+
+
 def dispatch(pack: str, args: list[str]) -> int:
     specs = tuple(spec for spec in PACK_COMMANDS if spec.pack == pack)
     if not specs and (not args or any(token in {"-h", "--help"} for token in args)):
@@ -194,10 +270,12 @@ def dispatch(pack: str, args: list[str]) -> int:
     if spec is None:
         print(f"astrid {pack}: operation is not declared", file=sys.stderr)
         return 2
-    if spec.command != "search":
-        print(f"astrid {pack}: command adapter is not implemented", file=sys.stderr)
-        return 2
-    return _search(parsed, spec)
+    if spec.command == "search":
+        return _search(parsed, spec)
+    if spec.command == "item":
+        return _item(parsed, spec)
+    print(f"astrid {pack}: command adapter is not implemented", file=sys.stderr)
+    return 2
 
 
 __all__ = ["PackCommandSpec", "PACK_COMMANDS", "dispatch", "installed_pack_ids"]

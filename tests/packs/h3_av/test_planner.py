@@ -149,8 +149,11 @@ def test_plan_reports_ignored_v1_constant_overrides_and_keeps_supported_controls
     plan = plan_request(request, asset_map=_assets(tmp_path, source=True), out_dir=tmp_path / "plan")
 
     ignored = {row["field"]: row["value"] for row in plan["ignored_fields"]}
-    assert ignored == ({"overrides.sampler": "res_multistep", "overrides.guidance": 0.95}
-                       if operation == "continue" else {})
+    assert ignored == {}
+    if operation == "continue":
+        effective = plan["compilation"]["effective_settings"]
+        assert effective["sampler"] == "res_multistep"
+        assert effective["turbo"]["strength"] == 0.95
     assert plan["compilation"]["workflow_inputs"]["steps"] == expected_steps
     assert plan["compilation"]["workflow_inputs"]["seed"] == expected_seed
 
@@ -236,10 +239,12 @@ def test_v2_ignored_constant_settings_and_disabled_turbo_strength(tmp_path: Path
     })
     plan = plan_request(continuation, asset_map=_assets(tmp_path, source=True), out_dir=tmp_path / "continue")
     ignored = {row["field"]: row["value"] for row in plan["ignored_fields"]}
-    assert ignored == {
-        "settings.sampler": "res_multistep", "settings.scheduler": "simple",
-        "settings.turbo.enabled": True, "settings.turbo.strength": 0.95,
-    }
+    assert ignored == {}
+    effective = plan["compilation"]["effective_settings"]
+    assert effective["sampler"] == "res_multistep"
+    assert effective["scheduler"] == "simple"
+    assert effective["turbo"]["enabled"] is True
+    assert effective["turbo"]["strength"] == 0.95
     assert plan["compilation"]["workflow_inputs"]["steps"] == 9
     assert plan["compilation"]["workflow_inputs"]["seed"] == 123
 
@@ -282,3 +287,30 @@ def test_plan_rejects_a_preserve_only_spec(tmp_path: Path) -> None:
     assert caught.value.code == "h3.plan.single_pass"
 
 
+
+
+def test_v1_named_choice_and_edit_settings_reach_plan_and_graph(tmp_path: Path, valid_h3_av_source: Path) -> None:
+    from vibecomfy.security.provenance import Provenance
+    from vibecomfy.workflow_bundle import load_bundle
+
+    raw = dict(_source_edit().value)
+    raw["overrides"] = {"turbo_lora": "pika_flex_8step", "video_shift": 9}
+    assets = {"source.mp4": str(valid_h3_av_source)}
+    plan = plan_request(normalize_request(raw), asset_map=assets, out_dir=tmp_path / "default")
+    assert plan["compilation"]["effective_settings"]["steps"] == 8
+    assert plan["compilation"]["effective_settings"]["turbo"]["lora"] == "pika_flex_8step"
+    assert not any(row["field"] in {"overrides.turbo_lora", "overrides.video_shift"} for row in plan["ignored_fields"])
+    manifest = json.loads(Path(plan["compilation"]["manifest_path"]).read_text())
+    graph = load_bundle(manifest["workflow"]["workflow.py"]["path"], trust=Provenance.USER_CONFIRMED).workflow
+    api = graph.compile("api", run_inputs=manifest["workflow_inputs"])
+    shift = next(row for row in api.values() if row["class_type"] == "MiniMaxH3SigmaShift")
+    assert shift["inputs"]["shift_video"] == 9
+    assert next(row for row in api.values() if row["class_type"] == "BasicScheduler")["inputs"]["steps"] == 8
+
+    raw["overrides"]["steps"] = 12
+    explicit = plan_request(normalize_request(raw), asset_map=assets, out_dir=tmp_path / "explicit")
+    assert explicit["compilation"]["effective_settings"]["steps"] == 12
+    assert explicit["compilation"]["workflow_inputs"]["steps"] == 12
+    raw["overrides"]["turbo_lora"] = "lightx2v_8step"
+    with pytest.raises(H3RequestError, match="lightx2v_8step.*no matching variant"):
+        plan_request(normalize_request(raw), asset_map=assets, out_dir=tmp_path / "unmatched")

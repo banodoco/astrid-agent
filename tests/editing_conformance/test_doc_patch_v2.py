@@ -805,3 +805,35 @@ def test_semantic_creation_then_patch_rebases_over_unrelated_parent_field():
     document = realm.documents[realm.head['revision_id']]
     assert document['parent_revision']['payload']['name'] == 'Other film title'
     assert any(image['payload']['name'] == 'Edited' for image in document['shot_revisions'])
+
+
+def test_legacy_appearance_patch_preserves_absence_through_provider_undo_redo():
+    from tests.sdk.test_timeline_clip_scalar_provider import app_document
+    document = app_document()
+    parent = document['parent_revision']['payload']
+    parent['config']['output'] = {'resolution': '1280x720', 'fps': 30, 'file': 'output.mp4'}
+    parent['config']['tracks'][0].update(scale=2, fit='contain', app={'scaleAppliesToPositionedClips': True})
+    original_geometry = {'x': 10, 'y': 20, 'width': 100, 'height': 200}
+    parent['clips'][0].update(original_geometry)
+    parent['config']['clips'][0].update(original_geometry)
+    parent['registry']['assets']['f2-app']['resolution'] = '1920x1080'
+    document['parent_revision']['content_digest'] = _digest(parent)
+    realm = DetachedRealm(document)
+    original = copy.deepcopy(realm.documents[realm.head['revision_id']])
+    clip_path = ['clips', 'id:f2-app-clip']
+    track_path = ['config', 'tracks', 'id:V1', 'app']
+    changes = [change(clip_path + [field], present(value), value) for field, value in original_geometry.items()]
+    changes += [change(clip_path + ['fit'], ABSENT, 'cover'), change(clip_path + ['cropLeft'], ABSENT, 0.1),
+                change(track_path, present({'scaleAppliesToPositionedClips': True}),
+                       {'scaleAppliesToPositionedClips': True, 'clipPlacementVersion': 1})]
+    accepted = submit(realm, patch(*changes))
+    updated = realm.documents[realm.head['revision_id']]['parent_revision']['payload']
+    row = updated['clips'][0]
+    assert row['fit'] == 'cover' and row['cropLeft'] == 0.1
+    assert all(row[key] == value for key, value in original_geometry.items())
+    assert updated['config']['tracks'][0]['app'] == {'scaleAppliesToPositionedClips': True, 'clipPlacementVersion': 1}
+    assert updated['config']['output'] == parent['config']['output']
+    undone = realm.call([inverse([accepted['receipt']['receipt_id']])])
+    assert undone['data']['canonical_document']['parent_revision']['payload'] == original['parent_revision']['payload']
+    restored = realm.call([inverse([undone['receipt']['receipt_id']])])
+    assert restored['data']['canonical_document']['parent_revision']['payload'] == updated

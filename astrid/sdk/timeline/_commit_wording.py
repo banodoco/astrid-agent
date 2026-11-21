@@ -20,6 +20,7 @@ _REASONS = {
     "dependency_changed": ("The timeline changed since this list was made; nothing was committed", "Read the current timeline, preview again, review the new list, then commit it."),
     "atomic_scope_changed": ("The timeline changed since this list was made; nothing was committed", "Read the current timeline, preview again, review the new list, then commit it."),
     "binding_changed": ("The timeline changed since this list was made; nothing was committed", "Read the current timeline, preview again, review the new list, then commit it."),
+    "unreadable_result": ("Render and visualize could not open the timeline after this edit; nothing was committed", "Select clip media through a registry asset (clip.asset), then commit again."),
 }
 
 _DETAILS = {

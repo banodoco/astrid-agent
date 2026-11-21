@@ -100,7 +100,19 @@ def test_a_plain_media_clip_is_the_picture_on_whatever_track_it_sits():
     ]
     spans = coverage({"tracks": [{"id": "V2"}], "clips": clips}, FPS, CANVAS, elements, start_frame=0, end_frame=90)
     assert [(span.start_frame, span.end_frame, span.cls, span.content) for span in spans] == [
-        (0, 30, "COVERED", "CONTENT"),  # a picture on a track that is not `plate`
-        (30, 60, "COVERED", "EMPTY"),  # no asset: covered, nothing in it
+        (0, 30, "UNKNOWN", "CONTENT"),  # placement requires intrinsic media facts
+        (30, 60, "UNKNOWN", "EMPTY"),  # no asset: coverage remains unresolved
         (60, 90, "GAP", None),  # and past the last clip nothing covers the canvas
     ]
+
+
+def test_unknown_media_does_not_hide_definite_background_coverage():
+    from astrid.core.timeline.onscreen import coverage, element_coverage
+
+    media = _clip('media', 'media', 'fx', asset='A')
+    background = _plate(asset=None)
+    elements = {**ELEMENTS, **element_coverage(['media'])}
+    alone = coverage(_config([media]), FPS, CANVAS, elements)
+    with_background = coverage(_config([media, background]), FPS, CANVAS, elements)
+    assert alone[0].cls == 'UNKNOWN'
+    assert with_background[0].cls == 'COVERED'

@@ -296,6 +296,16 @@ actions:
       type: string
       required: false
       description: Contact-only positive cut numbers, comma-separated and bounded to 120.
+    - name: title
+      type: string
+      required: false
+      description: The timeline's display name for page headers, resolved by the client.
+    - name: shot_plans
+      type: json
+      required: false
+      description: 'Contact view: client-resolved shot plan rows ({labels, rows: [{occurrence_id,
+        start, end, label, line}]}); labels are drawn on tiles, planned lines mark where
+        silence is flagged.'
     - name: render_every
       type: number
       required: false
@@ -535,6 +545,12 @@ actions:
           optional: true
         - input: cuts
           flag: --cuts
+          optional: true
+        - input: title
+          flag: --title
+          optional: true
+        - input: shot_plans
+          flag: --shot-plans
           optional: true
         - input: render_every
           flag: --render-every

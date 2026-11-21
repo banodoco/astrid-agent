@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from pathlib import Path
 
 import pytest
 
@@ -63,6 +64,206 @@ def test_write_create_unchanged_update_with_expected_version():
     assert write_transcript(client, "slug", media, NARRATION_SOURCE, revised) == "updated"
     assert ("update", 1, "canonical-project") in client.documents.calls
     assert sum(call[0] == "create" for call in client.documents.calls) == 1
+
+
+def test_import_words_uses_source_seconds_and_refuses_unpinned_replacement():
+    from astrid.sdk.media_transcript import import_transcript_words
+
+    client = fake_client()
+    media = "sha256:" + "5" * 64
+    words = [[0.1, 0.3, "hello"], {"start_s": 0.4, "end_s": 0.6, "word": "there"}]
+    assert import_transcript_words(client, "slug", media, words, segment_id="line") == "created"
+    stored = client.documents.row["content"]
+    assert [(word["start"], word["end"]) for word in stored["segments"][0]["words"]] == [
+        (0.1, 0.3), (0.4, 0.6)]
+    assert stored["segments"][0]["start"] == 0.1
+    assert stored["source_id"] == "astrid.import"
+
+    with pytest.raises(ValueError, match="whole-document replacement"):
+        import_transcript_words(client, "slug", media, [[0.0, 0.2, "replacement"]],
+                                segment_id="line")
+    assert client.documents.row["content"] == stored
+
+    assert import_transcript_words(client, "slug", media, words, segment_id="line") == "unchanged"
+    with pytest.raises(ValueError, match="expected version"):
+        import_transcript_words(client, "slug", media, [[0.0, 0.2, "replacement"]],
+                                segment_id="line", replace=True)
+    assert import_transcript_words(client, "slug", media, [[0.0, 0.2, "replacement"]],
+                                   segment_id="line", replace=True,
+                                   expected_version=1) == "updated"
+    assert client.documents.row["content"]["segments"][0]["words"][0]["start"] == 0.0
+
+
+def test_import_replacement_uses_the_version_it_checked_when_a_race_occurs():
+    from astrid.sdk.media_transcript import import_transcript_words
+
+    class RacingDocuments(FakeDocuments):
+        def update(self, document_id, *, content, expected_version, project):
+            self.calls.append(("update", expected_version, project))
+            self.row = {**self.row, "content": {"concurrent": True}, "version": expected_version + 1}
+            return DomainResult.failure(ErrorObject("stale_version", "stale", {}))
+
+    client = fake_client()
+    client.documents = RacingDocuments()
+    media = "sha256:" + "c" * 64
+    original = build_transcript(media, "line", "old", [[0.0, 0.2, "old"]])
+    write_transcript(client, "slug", media, NARRATION_SOURCE, original)
+    with pytest.raises(RuntimeError, match="cannot import transcript"):
+        import_transcript_words(client, "slug", media, [[0.0, 0.2, "new"]], segment_id="line",
+                                replace=True, expected_version=1)
+    assert ("update", 1, "canonical-project") in client.documents.calls
+    assert client.documents.row["content"] == {"concurrent": True}
+
+
+@pytest.mark.parametrize("words", [
+    [[float("nan"), 0.2, "bad"]], [[0.4, 0.2, "bad"]], [[0, 0.1, "  "]], [[-0.1, 0.1, "bad"]],
+])
+def test_import_rejects_invalid_word_rows(words):
+    from astrid.sdk.media_transcript import import_transcript_words
+
+    with pytest.raises(ValueError, match="word"):
+        import_transcript_words(fake_client(), "slug", "sha256:" + "d" * 64, words,
+                                segment_id="line")
+
+
+@pytest.mark.parametrize("words", [
+    [[0.0, 0.1, None]], [[0.0, 0.1, 3]], [[0.0, 0.1, ""]], [[0.0, 0.1, "  "]],
+    [[True, 0.1, "word"]], [[0.0, False, "word"]],
+])
+def test_import_rejects_missing_or_invalid_word_text_and_boolean_times(words):
+    from astrid.sdk.media_transcript import import_transcript_words
+
+    with pytest.raises(ValueError, match="word"):
+        import_transcript_words(fake_client(), "slug", "sha256:" + "e" * 64, words,
+                                segment_id="line")
+
+
+def test_transcripts_import_parser_requires_media_identity_and_file():
+    from astrid.core.cli.domain_timelines import build_parser
+
+    media = "sha256:" + "a" * 64
+    args = build_parser(None).parse_args([
+        "transcripts", "import", media, "words.json", "--project", "demo",
+        "--replace", "--expected-version", "3",
+    ])
+    assert (args.media_id, args.file, args.project,
+            args.replace, args.expected_version) == (media, Path("words.json"), "demo", True, 3)
+    assert args.source == "astrid.import"
+
+
+def test_transcripts_show_parser_accepts_source_range_and_clip_projection():
+    from astrid.core.cli.domain_timelines import build_parser
+
+    media = "sha256:" + "b" * 64
+    args = build_parser(None).parse_args([
+        "transcripts", "show", media, "--project", "demo", "--range", "10..12",
+        "--timeline", "rough-cut", "--clip", "clip-a", "--json",
+    ])
+    assert (args.media_id, args.source, args.source_range, args.timeline, args.clip, args.json) == (
+        media, None, "10..12", "rough-cut", "clip-a", True)
+    clip_args = build_parser(None).parse_args([
+        "transcripts", "show", "--project", "demo", "--timeline", "rough-cut", "--clip", "clip-a",
+    ])
+    assert clip_args.media_id is None
+    assert clip_args.clip == "clip-a"
+
+
+def test_transcript_word_mapping_keeps_source_clock_and_maps_each_overlapping_occurrence():
+    from astrid.sdk.timeline_transcript_show import map_transcript_words
+
+    transcript = {"segments": [{"words": [
+        {"id": "w1", "start": 9.5, "end": 10.5, "text": "hello"},
+        {"id": "w2", "start": 10.5, "end": 11.0, "text": "again"},
+        {"id": "w3", "start": 12.0, "end": 12.5, "text": "outside"},
+    ]}]}
+    clips = [
+        {"clip_id": "fast", "source_start": 10.0, "source_end": 11.0,
+         "timeline_start": 100.0, "speed": 2.0},
+        {"clip_id": "repeat", "source_start": 9.0, "source_end": 11.0,
+         "timeline_start": 200.0, "speed": 0.5},
+    ]
+    rows = map_transcript_words(transcript, source_range=(9.0, 11.0), clips=clips)
+    assert [(row["word_id"], row["clip_id"]) for row in rows] == [
+        ("w1", "fast"), ("w1", "repeat"), ("w2", "fast"), ("w2", "repeat")]
+    assert rows[0] == {"word_id": "w1", "text": "hello", "source_start": 9.5,
+                       "source_end": 10.5, "clip_id": "fast",
+                       "timeline_start": 99.75, "timeline_end": 100.25}
+    assert rows[1]["timeline_start"] == 201.0
+    assert rows[1]["timeline_end"] == 203.0
+
+
+def test_transcript_word_mapping_without_clip_selection_preserves_source_clock_only():
+    from astrid.sdk.timeline_transcript_show import map_transcript_words
+
+    transcript = {"segments": [{"words": [
+        {"id": "w1", "start": 1.25, "end": 1.75, "text": "source"},
+    ]}]}
+    assert map_transcript_words(transcript) == [{
+        "word_id": "w1", "text": "source", "source_start": 1.25, "source_end": 1.75,
+    }]
+
+
+def test_transcripts_show_handler_reads_media_and_filters_source_range(monkeypatch, capsys):
+    from types import SimpleNamespace
+    from astrid.packs.timeline import cli_working
+    from astrid.sdk import media_transcript
+
+    media = "sha256:" + "c" * 64
+    content = build_transcript(media, "line", "one two", [[1.0, 1.3, "one"], [2.0, 2.4, "two"]])
+    seen = []
+    monkeypatch.setattr(media_transcript, "read_transcript",
+                        lambda _client, project, media_id, source: (seen.append((project, media_id, source)) or
+                                                                    {"content": content}))
+    args = SimpleNamespace(client=object(), project="demo", media_id=media, source=None,
+                           source_range="1.5..2.5", clip=None, timeline=None, json=False)
+    assert cli_working._cmd_transcripts_show(args) == 0
+    output = capsys.readouterr().out
+    assert "source 2.000–2.400s  two" in output
+    assert "one" not in output
+    assert seen == [("demo", media, "astrid.transcription/006a709848259ed3d69e2f9fcfd7a75f6c860ddd/large-v3-turbo.pt")]
+
+
+def test_transcripts_show_handler_infers_clip_media_and_maps_repeated_checkout_occurrences(monkeypatch, capsys):
+    from types import SimpleNamespace
+    from astrid.packs.timeline import cli_working
+    from astrid.sdk import media_transcript
+    from astrid.sdk.timeline_checkout import Checkout
+    from astrid.sdk.whisper_transcript import whisper_source_id
+
+    media = "sha256:" + "d" * 64
+    content = build_transcript(media, "line", "spoken", [[10.0, 10.5, "spoken"]],
+                               source_id=whisper_source_id("large-v3-turbo.pt"))
+    rows = []
+    monkeypatch.setattr(media_transcript, "read_transcript",
+                        lambda _client, project, media_id, source: (rows.append((project, media_id, source)) or
+                                                                    {"content": content}))
+    def clip(clip_id, at, source_in, source_out, speed):
+        return SimpleNamespace(id=clip_id, shot_id="shot-1", asset="asset-1", start=at, duration=(source_out-source_in)/speed,
+                               data={"from": source_in, "to": source_out, "speed": speed})
+    timeline = SimpleNamespace(
+        bundle={"shots": {"shot-1": {"internal_timeline": {"registry": {"assets": {
+            "asset-1": {"media_id": media, "type": "audio/wav"},
+        }}}}}},
+        clips=lambda: [clip("fast", 100.0, 10.0, 11.0, 2.0), clip("repeat", 200.0, 9.0, 11.0, 0.5)],
+    )
+    monkeypatch.setattr(Checkout, "open", classmethod(lambda cls, project, ref, client: timeline))
+    args = SimpleNamespace(client=object(), project="demo", media_id=None, source=None,
+                           source_range=None, clip=None, timeline="rough-cut", json=False)
+    assert cli_working._cmd_transcripts_show(args) == 1
+    assert "provide MEDIA_ID or select a timeline --clip" in capsys.readouterr().err
+    args.media_id = media
+    assert cli_working._cmd_transcripts_show(args) == 0
+    output = capsys.readouterr().out
+    assert "source 10.000–10.500s  spoken  timeline 100.000–100.250s [fast]" in output
+    assert "source 10.000–10.500s  spoken  timeline 202.000–203.000s [repeat]" in output
+    assert rows == [("demo", media, whisper_source_id("large-v3-turbo.pt"))]
+
+    args.media_id = None
+    args.clip = "fast"
+    assert cli_working._cmd_transcripts_show(args) == 0
+    selected = capsys.readouterr().out
+    assert "[fast]" in selected
+    assert "[repeat]" not in selected
 
 
 def test_sync_preserves_the_exact_server_pin_from_create_result_without_rereading():
@@ -273,3 +474,93 @@ def test_publish_registers_after_timeline_commit_and_survives_document_failure(m
     assert tl.publish(client=object())["new_head"] == "rev-1"
     assert sequence == ["publish", "transcript"]
     assert "document unavailable" in capsys.readouterr().err
+
+
+def test_transcript_show_handles_parent_and_repeated_shot_occurrences(monkeypatch, capsys):
+    """Use real checkout clip handles, including an assetless effect and a repeated shot."""
+    from astrid.packs.timeline import cli_working
+    from astrid.sdk import media_transcript
+    from astrid.sdk.timeline_checkout import Checkout
+
+    media = 'sha256:' + '9' * 64
+    content = build_transcript(media, 'line', 'hello', [[1.0, 1.5, 'hello']])
+    monkeypatch.setattr(media_transcript, 'read_transcript',
+                        lambda client, project, media_id, source: {'content': content})
+    bundle = {
+        'project_id': 'p', 'timeline_id': 't',
+        'parent': {'config': {'registry': {'assets': {'audio': {'media_id': media}}}},
+                   'clips': [{'id': 'parent-audio', 'clipType': 'media', 'asset': 'audio',
+                              'track': 'music', 'at': 30, 'from': 0, 'to': 2},
+                             {'id': 'text', 'clipType': 'am-type', 'track': 'visual',
+                              'at': 0, 'hold': 2}]},
+        'placements': [{'shot_id': 'shot', 'occurrence_id': 'one', 'placement': {'start_ms': 0}, 'duration_ms': 4000},
+                       {'shot_id': 'shot', 'occurrence_id': 'two', 'placement': {'start_ms': 10000}, 'duration_ms': 4000}],
+        'shots': {'shot': {'internal_timeline': {
+            'tracks': [], 'registry': {'assets': {'audio': {'media_id': media}}},
+            'clips': [{'id': 'shot-audio', 'clipType': 'media', 'track': 'audio', 'asset': 'audio',
+                       'at': 0.5, 'from': 0, 'to': 2, 'speed': 2},
+                      {'id': 'effect', 'clipType': 'am-type', 'track': 'visual', 'at': 0, 'hold': 1}]}}},
+    }
+    timeline = Checkout(bundle)
+    monkeypatch.setattr(Checkout, 'open', classmethod(lambda cls, project, ref, client: timeline))
+    args = SimpleNamespace(client=object(), project='p', media_id=media, source=None,
+                           source_range=None, clip=None, timeline='cut', json=False)
+    assert cli_working._cmd_transcripts_show(args) == 0
+    output = capsys.readouterr().out
+    assert 'timeline 1.000–1.250s [shot-audio]' in output
+    assert 'timeline 11.000–11.250s [shot-audio]' in output
+    assert 'timeline 31.000–31.500s [parent-audio]' in output
+    assert output.count('[shot-audio]') == 2
+    args.media_id, args.clip = None, 'parent-audio'
+    assert cli_working._cmd_transcripts_show(args) == 0
+    assert 'timeline 31.000–31.500s [parent-audio]' in capsys.readouterr().out
+
+
+def test_transcript_show_rejects_ambiguous_clip_media_and_respects_shot_edge(monkeypatch, capsys):
+    from astrid.packs.timeline import cli_working
+    from astrid.sdk import media_transcript
+    from astrid.sdk.timeline_checkout import Checkout
+
+    first, second = 'sha256:' + '1' * 64, 'sha256:' + '2' * 64
+    content = build_transcript(first, 'line', 'in out', [[1, 1.5, 'in'], [3, 3.5, 'out']])
+    monkeypatch.setattr(media_transcript, 'read_transcript',
+                        lambda client, project, media_id, source: {'content': content})
+    def shot(media):
+        return {'internal_timeline': {'tracks': [], 'registry': {'assets': {'audio': {'media_id': media}}},
+            'clips': [{'id': 'shared', 'clipType': 'media', 'track': 'audio', 'asset': 'audio',
+                       'at': 0, 'from': 0, 'to': 4}]}}
+    timeline = Checkout({'project_id': 'p', 'timeline_id': 't', 'parent': {'config': {}, 'clips': []},
+        'placements': [{'shot_id': 'a', 'occurrence_id': 'a1', 'placement': {'start_ms': 0}, 'duration_ms': 2000},
+                       {'shot_id': 'b', 'occurrence_id': 'b1', 'placement': {'start_ms': 10000}, 'duration_ms': 4000}],
+        'shots': {'a': shot(first), 'b': shot(second)}})
+    monkeypatch.setattr(Checkout, 'open', classmethod(lambda cls, project, ref, client: timeline))
+    args = SimpleNamespace(client=object(), project='p', media_id=None, source=None,
+                           source_range=None, clip='shared', timeline='cut', json=False)
+    assert cli_working._cmd_transcripts_show(args) != 0
+    assert 'different media' in capsys.readouterr().err
+    args.media_id = first
+    assert cli_working._cmd_transcripts_show(args) == 0
+    output = capsys.readouterr().out
+    assert 'source 1.000–1.500s  in  timeline 1.000–1.500s' in output
+    assert 'out' not in output
+
+
+def test_transcript_show_respects_parent_clip_hold(monkeypatch, capsys):
+    from astrid.packs.timeline import cli_working
+    from astrid.sdk import media_transcript
+    from astrid.sdk.timeline_checkout import Checkout
+    media = 'sha256:' + '3' * 64
+    content = build_transcript(media, 'line', 'in out', [[1, 1.5, 'in'], [3, 3.5, 'out']])
+    monkeypatch.setattr(media_transcript, 'read_transcript', lambda *args: {'content': content})
+    timeline = Checkout({'project_id': 'p', 'timeline_id': 't',
+        'parent': {'registry': {'assets': {'audio': {'media_id': media}}}, 'config': {},
+                   'clips': [{'id': 'audio', 'clipType': 'media', 'track': 'music', 'asset': 'audio',
+                              'at': 10, 'from': 0, 'to': 4, 'hold': 2}]},
+        'placements': [], 'shots': {}})
+    monkeypatch.setattr(Checkout, 'open', classmethod(lambda cls, project, ref, client: timeline))
+    args = SimpleNamespace(client=object(), project='p', media_id=None, source=None,
+                           source_range=None, clip='audio', timeline='cut', json=False)
+    assert cli_working._cmd_transcripts_show(args) == 0
+    output = capsys.readouterr().out
+    assert 'timeline 11.000–11.500s' in output
+    assert 'out' not in output

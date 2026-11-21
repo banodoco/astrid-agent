@@ -730,7 +730,9 @@ def install_journey_packs():
     except ImportError:  # imported as scripts.ci_windows_journey
         from scripts import ci_journey
 
-    ci_journey.install_journey_packs(lambda argv, name: cli("astrid", argv, name, timeout=600))
+    # Match the installed launcher's pack-management entrypoint.  The
+    # ``astrid`` module is the product gateway and does not expose packs.
+    ci_journey.install_journey_packs(lambda argv, name: cli("astrid.omp_agent", argv, name, timeout=600))
 
 
 def task(project="windows-journey", *, create_project=True):

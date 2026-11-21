@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .duration import clip_timeline_duration
+from .asset_dimensions import canonicalize_asset_dimensions
 from .shot_composition import validate_shot_composition
 from .validators.meta import validate_meta, validate_timeline_meta_locations
 
@@ -120,7 +121,7 @@ def _clip_type(raw: Mapping[str, Any]) -> str:
     if not isinstance(value, str) or not value:
         raise ShotCompositionProjectionError("internal timeline clip type must be a non-empty string")
     if value == "shot":
-        raise ShotCompositionProjectionError("deeper shot nesting is unsupported")
+        raise ShotCompositionProjectionError(f"deeper shot nesting is unsupported: clip {raw.get('id', '?')!r} property clipType")
     return value
 
 
@@ -245,9 +246,15 @@ def _apply_placement_transform(occurrence: Mapping[str, Any], *, path: str) -> N
     )
     has_non_default_scale = isinstance(transform, Mapping) and transform.get("scale", 1) not in (None, 1)
     if has_visual_geometry or has_non_default_opacity or has_non_default_scale:
+        key = ('opacity' if occurrence.get('opacity') not in (None, 1) else
+               next(key for key, value in transform.items()
+                    if (key in ('x', 'y', 'width', 'height') or str(key).startswith('crop')
+                        or key in ('opacity', 'scale') and value not in (None, 1))))
+        property_path = key if key == 'opacity' and occurrence.get('opacity') not in (None, 1) else 'transform.' + key
         raise ShotCompositionProjectionError(
             "Shot opacity and transforms are not supported yet. "
-            "Remove them from the shot placement to render this timeline."
+            "Remove them from the shot placement to render this timeline. "
+            f"Occurrence {occurrence.get('occurrence_id', '?')!r} property {property_path}"
         )
 
 
@@ -297,6 +304,10 @@ def _add_assets(registry: dict[str, Any], revision: Mapping[str, Any]) -> None:
         digest = asset.get("digest")
         object_id = asset.get("object_id")
         entry = copy.deepcopy(dict(asset.get("source", {}))) if isinstance(asset.get("source"), Mapping) else {}
+        try:
+            entry = canonicalize_asset_dimensions(asset_id, entry)
+        except ValueError as exc:
+            raise ShotCompositionProjectionError(str(exc)) from exc
         if isinstance(object_id, str):
             entry.setdefault("media_id", object_id)
         if isinstance(digest, str):
@@ -777,7 +788,10 @@ def project_runtime_parent_composition(
             if not isinstance(asset_id, str) or not isinstance(entry, Mapping):
                 raise ShotCompositionProjectionError("internal registry assets must be named objects")
             projected_id = f"{occurrence_id}:{asset_id}"
-            assets[projected_id] = copy.deepcopy(dict(entry))
+            try:
+                assets[projected_id] = canonicalize_asset_dimensions(projected_id, entry)
+            except ValueError as exc:
+                raise ShotCompositionProjectionError(str(exc)) from exc
             asset_ids[asset_id] = projected_id
 
         speed = _placement_speed(occurrence.get("speed", 1), path=f"occurrences[{index}].speed")
@@ -826,6 +840,13 @@ def project_runtime_parent_composition(
         "occurrences": copy.deepcopy(occurrences),
         "outputs": copy.deepcopy(outputs),
     }
+    # Readers select media only through ``clip.asset``. Translate the other
+    # authoring spellings here, once, so render, visualize and capture
+    # admission all read the same clips. A selector that cannot be resolved
+    # is left as written for the readers' strict check to report.
+    from .reader_projection import translate_media_selectors
+
+    config, registry = translate_media_selectors(config, registry, strict=False)
     closure = {
         "parent_revision": copy.deepcopy(dict(parent)),
         "shot_revisions": [copy.deepcopy(dict(row)) for row in shot_revisions],

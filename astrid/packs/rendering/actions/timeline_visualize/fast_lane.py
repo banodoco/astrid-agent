@@ -120,6 +120,8 @@ def _require_clean_base_render(client: Any, run_id: str, draft: Any) -> dict[str
         raise FastLaneError("verification BASE render input envelope is unavailable")
     if inputs.get("review", False) is not False or inputs.get("profile") is not None:
         raise FastLaneError("verification BASE must be a normal non-review render without a custom profile")
+    if inputs.get("render_window") is not None:
+        raise FastLaneError("verification does not yet support a ranged BASE render")
     snapshot = inputs.get("timeline_snapshot")
     config = snapshot.get("config") if isinstance(snapshot, Mapping) else None
     if not isinstance(config, Mapping):

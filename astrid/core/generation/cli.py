@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import logging
 import sys
@@ -20,7 +21,11 @@ _logger = logging.getLogger(__name__)
 _KIND_SPEC: dict[str, dict[str, Any]] = {
     'image': {'noun': 'an image', 'dimension_key': 'size'},
     'video': {'noun': 'a video', 'dimension_key': 'resolution', 'prompt_only_guard': True},
-    'audio': {'noun': 'audio', 'dimension_key': 'resolution', 'audio_modes': ('music', 'tts', 'sfx')},
+    # audio_modes: the sound-generating modes (music, tts, sfx); the table contract tests pin this tuple.
+    # transcribe_modes: modes that take --audio-ref and yield a transcript, not sound. Kept under its own
+    # key so audio_modes stays unchanged; the --mode choices are audio_modes plus transcribe_modes.
+    'audio': {'noun': 'audio', 'dimension_key': 'resolution', 'audio_modes': ('music', 'tts', 'sfx'),
+              'transcribe_modes': ('transcribe',)},
 }
 
 
@@ -210,8 +215,9 @@ def _parser(contextual: dict[str, Any] | None = None) -> _GenerationParser:
         command.add_argument("--model", action=_Once, help="Generation catalog entry ID (legacy selector).")
         command.add_argument("--entry", action=_Once, help="Generation entry ID; use --help to inspect its declared inputs.")
         command.add_argument("--inputs-json", action=_Once, metavar="FILE", help="Read declared entry inputs from a JSON object.")
-        command.add_argument("--mode", action=_Once, choices=spec.get('audio_modes'),
-                             required='audio_modes' in spec, help=("Audio mode: music, tts, or sfx." if 'audio_modes' in spec
+        command.add_argument("--mode", action=_Once,
+                             choices=(spec.get('audio_modes', ()) + spec.get('transcribe_modes', ())) or None,
+                             required='audio_modes' in spec, help=("Audio mode: music, tts, or sfx. Use transcribe with --audio-ref FILE for word timings." if 'audio_modes' in spec
                              else "Generation mode; inferred from the supplied inputs by default."))
         command.add_argument("--execution", action=_Once, help="Catalog execution backend, when explicitly selected.")
         command.add_argument(
@@ -224,6 +230,9 @@ def _parser(contextual: dict[str, Any] | None = None) -> _GenerationParser:
         command.add_argument("--edit", "--image-ref", dest="image_ref", action=_Once, help="Reference image for an edit or image-to-video request.")
         if modality in {'video', 'audio'}:
             command.add_argument('--video-ref', action=_Once, metavar='FILE', help='Reference video for video generation or Foley sound effects.')
+        if modality == 'audio':
+            command.add_argument('--audio-ref', action=_Once, metavar='FILE_OR_MEDIA',
+                                 help='Audio or video to transcribe (--mode transcribe): a local file, or a project media id or digest (needs --project).')
         command.add_argument("--width", action=_Once, type=int)
         command.add_argument("--height", action=_Once, type=int)
         command.add_argument("--steps", action=_Once, type=int)
@@ -346,7 +355,7 @@ def _parser(contextual: dict[str, Any] | None = None) -> _GenerationParser:
 def _values(parsed):
     from astrid.core.generation.entries import merge_input_values
     common = {name: getattr(parsed, name, None) for name in (
-        'prompt', 'negative_prompt', 'image_ref', 'video_ref', 'width', 'height', 'seed',
+        'prompt', 'negative_prompt', 'image_ref', 'video_ref', 'audio_ref', 'width', 'height', 'seed',
         'frames', 'fps', 'steps', 'guidance_scale')}
     common = {name: value for name, value in common.items() if value is not None}
     named = getattr(parsed, 'named_prompt', None)
@@ -474,6 +483,15 @@ def _workflow_command(parsed: argparse.Namespace) -> int:
                                code='input_rejected', details={'field': 'replace'})
     if parsed.no_run and not parsed.as_entry:
         raise ValueError('--no-run requires --as-entry')
+    from astrid.core.generation.placement import is_runpod_placement
+    if is_runpod_placement(parsed.placement) and not parsed.dry_run and not parsed.no_run:
+        # Same order as entries: the local dry run (with its preflight) before a claimed machine
+        # is required, and before --as-entry writes anything.
+        _generate_facade().workflow(workflow=path, placement=parsed.placement, mode=parsed.mode,
+            inputs=values, dry_run=True, client=None, project=parsed.project, out=parsed.out,
+            **_controls(parsed))
+        from astrid.sdk.generation import _require_claimed_machine
+        _require_claimed_machine(parsed.placement)
     if parsed.as_entry and parsed.dry_run:
         # Preview only: validate the inputs the entry would declare, write nothing, run nothing.
         description, _ = entries.resolve_workflow_inputs(path, values, mode=parsed.mode, **_workflow_comfy_url(parsed))
@@ -565,6 +583,35 @@ def _job_command(argv: list[str]) -> int:
 
 def _main(argv: list[str]) -> int:
     """Parse one request and call its existing public SDK method exactly once."""
+    # A media id given as --audio-ref is written to a file that must outlive generation.
+    with contextlib.ExitStack() as stack:
+        return _main_request(argv, stack)
+
+
+def _media_ref_file(parsed, ref: str, stack) -> tuple[str, str]:
+    """Write a project media id or digest to a file for generation, as timelines transcripts run does.
+
+    Returns ``(path, digest)``. The file lives until ``stack`` closes.
+    """
+    import hashlib
+    import tempfile
+    from astrid.sdk.media_handles import resolve_media_handle
+
+    if not parsed.project:
+        raise ValueError(f"--audio-ref {ref!r} is not a file; a media id needs --project")
+    with _open_client() as client:
+        descriptor, _ = resolve_media_handle(client, parsed.project, ref)
+        digest = descriptor["digest"]
+        raw = client.media.read_bytes(digest)
+    if "sha256:" + hashlib.sha256(raw).hexdigest() != digest:
+        raise ValueError("media bytes do not match their digest")
+    workdir = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="astrid-audio-ref-")))
+    path = workdir / Path(str(descriptor.get("filename") or "media.bin")).name
+    path.write_bytes(raw)
+    return str(path), digest
+
+
+def _main_request(argv: list[str], stack) -> int:
     if '--job' in argv:
         return _job_command(argv)
     parser = _parser(_context_description(argv))
@@ -653,10 +700,6 @@ def _main(argv: list[str]) -> int:
             parser.error(str(exc))
         print(json.dumps(description, indent=2, sort_keys=True) if parsed.json else _entry_help(description))
         return 0
-    if (is_runpod_placement(parsed.placement) and not parsed.dry_run
-            and not getattr(parsed, 'no_run', False)):
-        from astrid.sdk.generation import _require_claimed_machine
-        _require_claimed_machine(parsed.placement)
     if parsed.modality == "workflow":
         return _workflow_command(parsed)
     if parsed.model and parsed.entry and parsed.model != parsed.entry:
@@ -671,6 +714,13 @@ def _main(argv: list[str]) -> int:
         values = _values(parsed)
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
+    media_id = None
+    audio_ref = values.get('audio_ref')
+    if parsed.modality == 'audio' and audio_ref is not None and not Path(str(audio_ref)).expanduser().is_file():
+        try:
+            values['audio_ref'], media_id = _media_ref_file(parsed, str(audio_ref), stack)
+        except Exception as exc:  # noqa: BLE001 - a bad media reference is a usage error, whatever the Runtime said
+            parser.error(f"--audio-ref {audio_ref!r} is neither a file nor a readable project media id: {exc}")
     description = None
     if parsed.inputs_json:
         if not (parsed.entry or parsed.model):
@@ -714,12 +764,26 @@ def _main(argv: list[str]) -> int:
         kwargs.pop("width")
         kwargs.pop("height")
         kwargs[_KIND_SPEC[parsed.modality]['dimension_key']] = f"{parsed.width}x{parsed.height}"
+    if (is_runpod_placement(parsed.placement) and not parsed.dry_run
+            and not getattr(parsed, 'no_run', False)):
+        from astrid.sdk.generation import _require_claimed_machine, offline_request_preflight
+        if parsed.entry or parsed.model:
+            # An explicit entry is refused locally, with the invocation preflight a submission runs,
+            # before a claimed machine is required. No facade or Runtime is touched on the way.
+            offline_request_preflight(parsed.entry or parsed.model, mode=kwargs.get('mode'), inputs=values)
+        _require_claimed_machine(parsed.placement)
     from .delivery import admitted_project, open_url_for
     admitted = None
+    transcription_run = None
+    transcribing = parsed.modality == 'audio' and kwargs.get('mode') == 'transcribe'
     try:
         generate = getattr(_generate_facade(), parsed.modality)
         from astrid.sdk.generation import _prompt_only_video
-        if parsed.dry_run or (_KIND_SPEC[parsed.modality].get('prompt_only_guard') and _prompt_only_video(
+        needs_h3_client = False
+        if parsed.dry_run and (parsed.entry or parsed.model) == "h3" and values.get("request"):
+            from astrid.sdk.generation import GenerationFacade
+            needs_h3_client = bool(GenerationFacade._h3_handle_assets(values))
+        if (parsed.dry_run and not needs_h3_client) or (_KIND_SPEC[parsed.modality].get('prompt_only_guard') and _prompt_only_video(
                 model=parsed.model, entry=parsed.entry, inputs=values)):
             # Let the facade refuse before opening a Runtime connection.
             result = generate(**kwargs)
@@ -741,6 +805,8 @@ def _main(argv: list[str]) -> int:
                 if not parsed.no_wait:
                     from .delivery import deliver_generation
                     result = deliver_generation(result, client=client, out=parsed.out, project=parsed.project)
+                    if transcribing:
+                        transcription_run = _transcription_run_id(client, result)
                 else:
                     admitted = admitted_project(
                         result.to_dict() if hasattr(result, 'to_dict') else result,
@@ -764,6 +830,9 @@ def _main(argv: list[str]) -> int:
     if admitted and isinstance(payload, dict):
         # An admitted generation names its project's link; the App shows the output there once it finishes.
         payload = {**payload, 'open_url': open_url_for(admitted)}
+    if transcription_run and isinstance(payload, dict):
+        # The same run id timelines transcripts import --from-run takes, with the media it transcribed.
+        payload = {**payload, 'run_id': transcription_run, **({'media_id': media_id} if media_id else {})}
     if parsed.json or parsed.dry_run or not isinstance(payload, dict):
         print(json.dumps(payload, indent=2, sort_keys=True))
     elif parsed.no_wait:
@@ -775,7 +844,23 @@ def _main(argv: list[str]) -> int:
             print(path)
         if payload.get("run_dir"):
             print(f"run: {payload['run_dir']}")
+        if payload.get('run_id'):
+            print(f"transcription run: {payload['run_id']}")
+            media = payload.get('media_id') or '<media-id>'
+            print(f"import: astrid timelines transcripts import {media} --project <project> --from-run {payload['run_id']}")
     return 0
+
+
+def _transcription_run_id(client, result):
+    """The Runtime run a transcription names, found by the same helper timelines transcripts run uses."""
+    from astrid.sdk.transcript_run import transcription_run_id
+
+    payload = result.to_dict() if hasattr(result, 'to_dict') else result
+    try:
+        return transcription_run_id(client, payload)
+    except ValueError as exc:
+        print(f'warning: {exc}; import it later with timelines transcripts import --from-run', file=sys.stderr)
+        return None
 
 
 def _failure_command(parsed) -> int:
