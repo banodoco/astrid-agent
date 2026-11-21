@@ -105,6 +105,10 @@ RELEASE11_IDENTITY = {
 RELEASE11_CHECKS = ("release11_install", "update_exit", "run_receipt", "release", "one_runtime", "service",
                     "health", "semantic_data", "task_settled", "unrelated_sentinel")
 RELEASE13_LEG = "release13-then-update"
+RELEASE13_KILLED_LEG = "release13-then-killed-update"
+RELEASE13_KILLED_CHECKS = ("release13_install", "interruption_checkpoint", "process_killed",
+                           "recovery_exit", "rollback_release", "one_runtime", "service",
+                           "health", "data_marker", "timeline_reopened", "unrelated_sentinel")
 RELEASE13_APP_COMMIT = "de7dd1e668aa6dcf3cbce013c701fa7c76615f99"
 RELEASE13_RELEASE = 13
 RELEASE13_IDENTITY = {
@@ -361,7 +365,8 @@ def _windows_fresh_update_errors(update, job_id):
 # The receipt kind each Release-1 matrix leg writes. The R0 handoff leg and the
 # release11-then-update leg write their own kinds; every other leg writes the shared lifecycle receipt.
 RELEASE1_RECEIPT_KINDS = {"r0-handoff-then-update": "r0-handoff-then-update",
-                          RELEASE11_LEG: RELEASE11_LEG, RELEASE13_LEG: RELEASE13_LEG, AUTOSTART_LEG: AUTOSTART_LEG}
+                          RELEASE11_LEG: RELEASE11_LEG, RELEASE13_LEG: RELEASE13_LEG, RELEASE13_KILLED_LEG: RELEASE13_KILLED_LEG,
+                           AUTOSTART_LEG: AUTOSTART_LEG}
 RELEASE1_DEFAULT_RECEIPT_KIND = "release1-installed-lifecycle"
 
 
@@ -538,6 +543,74 @@ def _release13_windows_errors(job_id, row):
     return errors
 
 
+
+
+def _release13_killed_errors(job_id, row):
+    """Fail closed unless an owned mid-update kill restored the published R13.
+
+    The candidate tuple was admitted separately; the terminal *installed* tuple
+    must be R13 instead of the candidate. A fast successful update, a skipped
+    recovery, or one inferred from an unbound process is not a passing row.
+    """
+    errors = []
+    source = row.get("release13_source")
+    if (not isinstance(source, dict) or source.get("app_commit") != RELEASE13_APP_COMMIT
+            or source.get("identity") != RELEASE13_IDENTITY):
+        errors.append(f"{job_id}: pinned R13 starting source identity is absent")
+    interrupted = row.get("interruption")
+    if (not isinstance(interrupted, dict)
+            or interrupted.get("phase") not in {"stopped", "backed_up"}
+            or not isinstance(interrupted.get("operation_id"), str)
+            or not interrupted["operation_id"]
+            or type(interrupted.get("installer_pid")) is not int
+            or interrupted["installer_pid"] <= 0
+            or interrupted.get("taskkill_exit_code") != 0
+            or type(interrupted.get("installer_exit_code")) is not int
+            or interrupted["installer_exit_code"] == 0 or interrupted.get("killed") is not True):
+        errors.append(f"{job_id}: owned updater was not killed at a durable nonterminal checkpoint")
+    recovery = row.get("recovery")
+    if (not isinstance(recovery, dict) or recovery.get("exit_code") != 3
+            or recovery.get("command") != "install --update"
+            or recovery.get("interruption") != interrupted):
+        errors.append(f"{job_id}: recovery-only retry receipt is absent or not exit 3")
+    transition = row.get("release_transition")
+    if transition != {"from": 13, "to": 13, "source": "interrupted-candidate-recovered-previous"}:
+        errors.append(f"{job_id}: recovered installation did not explicitly stay on R13")
+    live = row.get("live_runtimes")
+    roots = row.get("run_roots") if isinstance(row.get("run_roots"), dict) else {}
+    if (not isinstance(live, list) or len(live) != 1 or not isinstance(live[0], dict)
+            or live[0].get("data_root") != roots.get("data")):
+        errors.append(f"{job_id}: exactly one recovered Runtime owner was not proven")
+    manager = row.get("service_manager")
+    if not isinstance(manager, dict) or manager.get("manager") != "task-scheduler":
+        errors.append(f"{job_id}: recovered R13 lacks native Windows Task Scheduler ownership")
+    marker = row.get("data_marker")
+    if (not isinstance(marker, dict) or marker.get("survived") is not True
+            or not DIGEST.fullmatch(str(marker.get("sha256", "")))
+            or not isinstance(marker.get("project"), str) or not marker["project"]):
+        errors.append(f"{job_id}: original R13 workspace marker was not preserved")
+    saved = row.get("timeline_save")
+    reopened = row.get("timeline_reopen")
+    if (not isinstance(saved, dict) or saved.get("saved") is not True
+            or not isinstance(reopened, dict) or reopened.get("reopened") is not True
+            or saved.get("project") != reopened.get("project")
+            or saved.get("timeline") != reopened.get("timeline")
+            or saved.get("saved_name") != reopened.get("saved_name")):
+        errors.append(f"{job_id}: recovered R13 timeline was not saved and freshly reopened")
+    steps = row.get("steps")
+    wanted = ["admission", "r13_bootstrap", "r13_start", "r13_seed",
+              "interrupted_update", "recover_old"]
+    if (not isinstance(steps, list) or [step.get("step") for step in steps
+            if isinstance(step, dict)] != wanted
+            or len(steps) != len(wanted)
+            or any(step.get("status") != "pass" for step in steps)):
+        errors.append(f"{job_id}: killed-update step trace is incomplete or failed")
+    checks = row.get("checks") if isinstance(row.get("checks"), dict) else {}
+    for check in RELEASE13_KILLED_CHECKS:
+        if checks.get(check) != "pass":
+            errors.append(f"{job_id}: killed-update {check} assertion did not pass")
+    return errors
+
 def _release13_row_errors(job_id, row, target_release, os_name="linux"):
     """The release13-then-update row's four assertions, each read from the leg's own receipt fields.
 
@@ -659,10 +732,14 @@ def _release1_row_errors(candidate, contract, row):
                 errors.append(f"{job_id}: {name} checkout differs from frozen candidate")
     sources = row.get("sources") or {}
     installed = row.get("installed_tuple") or {}
+    killed = contract.get("leg") == RELEASE13_KILLED_LEG
+    expected_terminal = ({"app": RELEASE13_APP_COMMIT, **{
+        name: RELEASE13_IDENTITY[name] for name in ("agent", "runtime")}} if killed else candidate)
     for name in ("app", "agent", "runtime"):
         source = sources.get(name) or {}
-        if installed.get(name) != candidate[name] or source.get("sha") != candidate[name]:
-            errors.append(f"{job_id}: {name} installed/source identity differs from frozen candidate")
+        if installed.get(name) != expected_terminal[name] or source.get("sha") != candidate[name]:
+            errors.append(f"{job_id}: {name} installed/source identity differs from the exact "
+                          + ("published R13 recovery and frozen candidate" if killed else "frozen candidate"))
     if not row.get("import_origins"):
         errors.append(f"{job_id}: installed import origins are absent")
     prerequisite = row.get("service_manager_prerequisite")
@@ -736,6 +813,8 @@ def _release1_row_errors(candidate, contract, row):
             errors.extend(_release11_row_errors(job_id, row, candidate.get("release")))
         elif contract.get("leg") == RELEASE13_LEG:
             errors.extend(_release13_row_errors(job_id, row, candidate.get("release"), contract["os"]))
+        elif contract.get("leg") == RELEASE13_KILLED_LEG:
+            errors.extend(_release13_killed_errors(job_id, row))
         elif not fresh:
             if row.get("scenario") != "r0-handoff-then-update":
                 errors.append(f"{job_id}: direct receipt did not run the r0-handoff-then-update leg")
