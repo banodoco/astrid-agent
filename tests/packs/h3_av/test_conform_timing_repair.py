@@ -396,3 +396,25 @@ def test_source_change_during_coverage_inspection_is_rejected(tmp_path: Path, mo
     with pytest.raises(PreparationError, match="source changed while inspecting coverage"):
         _prepare(tmp_path, source, 0, 1)
     assert not (tmp_path / "prepared" / "conformed-source").exists()
+
+
+def test_video_duplicate_packet_timestamps_are_rejected(monkeypatch, tmp_path: Path) -> None:
+    from astrid.packs.h3_av.shared import conform
+
+    monkeypatch.setattr(conform, "_bounded_probe", lambda args: {
+        "packets": [{"pts": 0, "duration": 1000}, {"pts": 0, "duration": 1000}],
+    })
+    with pytest.raises(PreparationError, match="video has overlapping timestamps"):
+        conform._video_packet_end(tmp_path / "source.mkv", {"time_base": "1/1000"}, Fraction(0), Fraction(1))
+
+
+def test_bounded_probe_discards_stderr_and_propagates_failure(monkeypatch, tmp_path: Path) -> None:
+    from astrid.packs.h3_av.shared import conform
+
+    def failed_probe(*args, **kwargs):
+        assert kwargs["stderr"] is subprocess.DEVNULL
+        raise subprocess.CalledProcessError(1, args[0])
+
+    monkeypatch.setattr(conform.subprocess, "run", failed_probe)
+    with pytest.raises(PreparationError, match="cannot verify source video coverage"):
+        conform._video_packet_end(tmp_path / "source.mkv", {"time_base": "1/1000"}, Fraction(0), Fraction(1))

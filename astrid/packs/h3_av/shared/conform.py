@@ -52,7 +52,7 @@ def _bounded_probe(args: list[str]) -> dict:
 
     with tempfile.TemporaryFile() as output:
         subprocess.run(['ffprobe', '-v', 'error', *args], stdout=output,
-                       stderr=subprocess.PIPE, check=True, timeout=120,
+                       stderr=subprocess.DEVNULL, check=True, timeout=120,
                        preexec_fn=limit_output)
         output.seek(0)
         return json.load(output)
@@ -73,7 +73,7 @@ def _video_packet_end(path: Path, stream: dict, start: Fraction, end: Fraction) 
                          for p in data['packets'])
         if not packets or any(duration <= 0 for _, duration in packets):
             raise ValueError('incomplete video packet timing')
-        coverage_end = None
+        coverage_end = previous_start = None
         for packet_start, duration in packets:
             packet_end = packet_start + duration
             if packet_end <= start or packet_start >= end:
@@ -83,6 +83,9 @@ def _video_packet_end(path: Path, stream: dict, start: Fraction, end: Fraction) 
                     raise PreparationError('source video has a timestamp gap in the requested range')
             elif packet_start > coverage_end + base:
                 raise PreparationError('source video has a timestamp gap in the requested range')
+            elif packet_start == previous_start or packet_start < coverage_end - base:
+                raise PreparationError('source video has overlapping timestamps in the requested range')
+            previous_start = packet_start
             coverage_end = max(coverage_end, packet_end) if coverage_end is not None else packet_end
         if coverage_end is None:
             raise ValueError('no video packets in the requested range')
