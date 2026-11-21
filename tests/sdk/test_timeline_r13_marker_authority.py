@@ -27,3 +27,19 @@ def test_child_marker_cannot_borrow_the_legacy_exemption_from_another_source(fie
     source[field] = "changed"
     with pytest.raises(FinalCandidateError, match=r"app\.clipPlacementVersion"):
         validate_final_candidate(candidate, baseline=baseline)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("fit", "cover"), ("scale", 2), ("scaleAppliesToPositionedClips", True),
+])
+def test_legacy_marker_cannot_be_retained_when_placement_changes(field, value):
+    baseline = bundle_from_document(document_fixture(shared=False))
+    baseline["parent"]["config"]["tracks"][0]["app"] = {"clipPlacementVersion": 2}
+    candidate = copy.deepcopy(baseline)
+    track = candidate["parent"]["config"]["tracks"][0]
+    location = track["app"] if field == "scaleAppliesToPositionedClips" else track
+    location[field] = value
+    with pytest.raises(FinalCandidateError, match=r"app\.clipPlacementVersion"):
+        validate_final_candidate(candidate, baseline=baseline)
+    track["app"]["clipPlacementVersion"] = 1
+    validate_final_candidate(candidate, baseline=baseline)
