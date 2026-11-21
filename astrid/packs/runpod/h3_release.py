@@ -73,7 +73,8 @@ def release_inputs():
     model_lock = load_recipe_model_lock("comfyui", "linux-x86_64-cu130")
     repository = model_lock.models[0].repository if model_lock.models else None
     lock = {"schema_version": 1, "repository": repository, "metadata_fetched_at": "2026-10-27",
-            "models": [{"path": row.path, "destination": row.destination, "revision": row.revision,
+            "models": [{"repository": row.repository, "url": row.url,
+                        "path": row.path, "destination": row.destination, "revision": row.revision,
                         "bytes": row.bytes, "sha256": row.sha256} for row in model_lock.models]}
     # Bind the exact delivered helper, downloader, contracts and bootstrap code.
     digest = bootstrap.release_digest(recipe, lock, bootstrap.source_archive())

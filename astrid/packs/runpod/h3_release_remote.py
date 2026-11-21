@@ -65,8 +65,8 @@ def download_model(row, destination, repository, deadline, *, opener=None, chunk
         models_root = destination.parent
         relative_destination = destination.name
     model = ModelSpec(name=str(row.get("path", Path(destination).name)),
-                      repository=repository, revision=row["revision"], path=row["path"],
-                      url=None, destination=relative_destination, bytes=row["bytes"],
+                      repository=row.get("repository") or repository,
+                      revision=row["revision"], path=row["path"], url=row.get("url"), destination=relative_destination, bytes=row["bytes"],
                       sha256=row["sha256"])
     # H3's historical request deadline is wall-clock time. The shared contract
     # uses an absolute monotonic deadline, so preserve its remaining duration.
