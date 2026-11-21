@@ -4,7 +4,7 @@
   "platform": "linux-x86_64-cu130",
   "pins": {
     "path": "packs/runpod/pins.json",
-    "sha256": "5f8fb29040602ab1d4edffb9f2430ffd3261eb7e0025e33d31ac7d716f95dfcf"
+    "sha256": "869e2304c444b968827fbb21862cb0de96c8d9c6f6c9faa5f84b752011c49f93"
   },
   "source_bindings": [
     {
@@ -82,7 +82,7 @@
       "node_lock": {
         "source": "vibecomfy",
         "path": "custom_nodes.lock",
-        "sha256": "ac61213195fec2a9bc465e830c13e7746fd0796c3fc361d8f4e4494d59010606"
+        "sha256": "e823de5bc0173c7f9486336424467f72457519507043a04fba1ad2b44b47df8d"
       },
       "source_installs": [
         {
@@ -169,7 +169,7 @@
       "source": "comfyui-whisper",
       "path": "apply_whisper.py",
       "sha256_before": "89a9b9e522d9d5fa0c8655a370fdc6a88bc8a819f3bbbb17cf880981ad7a4832",
-      "sha256_after": "c3c72c746f81923fb0a1249e67645353010ec205e0f8ef4135533977287c347c",
+      "sha256_after": "459c53daf4217671f2f0bb722e9e22857198ab77314a788b2712572ad16bc4ee",
       "replacement": "packs/runpod/patches/ComfyUI-Whisper-apply_whisper.py"
     }
   ]

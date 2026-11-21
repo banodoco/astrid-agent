@@ -31,7 +31,7 @@ def test_agent_transcription_declares_whisper_requirements_and_pin():
         "commit": "006a709848259ed3d69e2f9fcfd7a75f6c860ddd",
         "url": "https://github.com/yuvraj108c/ComfyUI-Whisper.git",
         "class_set": ["Apply Whisper"],
-        "class_schema_sha256": "f3933350d1e63c45f36fe1dac1d56691b388c2faaee37e65ff458a5cd5200029",
+        "class_schema_sha256": "a035372485b38b70022c249aa4cfb2034a832b27b683069b8de7762597c1115e",
         "pip_packages": ["openai-whisper", "soundfile"],
     }]
 
