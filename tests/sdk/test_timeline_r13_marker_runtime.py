@@ -217,6 +217,10 @@ def share_r13_child(service, client, project, outbox):
         exc.add_note(str(exc.failure))
         raise
     assert preview["data"]["would_status"] == "accepted" and preview["receipt"] is None
+    assert preview["data"]["diff"]["changes"] == [{
+        "op": "occurrence.place-shared", "ref": command["select"],
+        "args": {"occurrence_id": "second-shot", "on": 1},
+    }]
     assert _history(service, project) == history
 
     result = timeline.commit([command], label="Share R13 child", key="share-r13-child")
