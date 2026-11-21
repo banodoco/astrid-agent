@@ -6,6 +6,17 @@ from contextlib import nullcontext
 from astrid.sdk import current_pack_job
 
 
+
+def host_preparation(host, record, task, inputs, *, align, entry):
+    """Pack-owned host cache hook for the declared resident action.
+
+    The core host resolves this callable through the admitted resident
+    invocation instead of importing a concrete pack implementation.
+    """
+    from astrid.packs.vibecomfy.resident import host_cache
+
+    return host_cache(host, record, task, inputs, align=align, entry=entry)
+
 def run(**inputs):
     from astrid.core.generation.managed_preparation import preparation_scope
     from astrid.core.generation.target_inventory import POD_ALIGN

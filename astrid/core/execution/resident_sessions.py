@@ -83,6 +83,38 @@ def resident_invocation(metadata: Mapping[str, Any]) -> Mapping[str, Any] | None
     return None
 
 
+
+def host_preparation_for_record(host: Any, record: Any, task: Mapping[str, Any],
+                                inputs: Mapping[str, Any], *, align: str,
+                                entry: str | None) -> Any:
+    """Resolve a built-in pack's host cache through its admitted resident entry.
+
+    This is not a general permission for a selected pack to run inside the
+    host. The only enabled action is the reviewed built-in VibeComfy resident.
+    Its normal job still executes across the existing child protocol.
+    """
+    metadata = record.definition.metadata
+    if record.id != "vibecomfy.run" or not declared_resident(record):
+        return None
+    if metadata.get("source_pack") != "vibecomfy":
+        return None
+    invocation = resident_invocation(metadata)
+    if (invocation is None or invocation.get("path") != "actions/run/resident.py"
+            or invocation.get("function") != "run"):
+        raise ResidentProtocolError("VibeComfy host preparation requires its declared resident entry")
+    original = getattr(record, "captured_from", None) or record
+    original_root = original.definition.metadata.get("pack_root")
+    built_in = Path(__file__).resolve().parents[2] / "packs" / "vibecomfy"
+    if (not isinstance(original_root, str) or
+            Path(original_root).resolve() != built_in.resolve()):
+        return None  # An arbitrary external pack cannot execute code in the host.
+    from astrid.core.pack.resolver import importlib_resolve
+
+    module = ".".join(("astrid", "packs", metadata["source_pack"],
+                       *Path(invocation["path"]).with_suffix("").parts))
+    prepare = importlib_resolve(module, "host_preparation")
+    return prepare(host, record, task, inputs, align=align, entry=entry)
+
 def resident_capacity(metadata: Mapping[str, Any]) -> int:
     """Only explicit, bounded job-context actions may overlap their dispatches."""
     value = metadata.get("resident_job_context")

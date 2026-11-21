@@ -63,7 +63,8 @@ from runtime_protocol.storage import free_disk_floor_bytes
 from astrid.core.execution.pipe_io import PipeReader, PipeWriter, close_pipe_workers
 from astrid.core.execution.resident_concurrency import ConcurrentResidentAdapter
 from astrid.core.execution.resident_sessions import (
-    ResidentPackAdapter, declared_resident, open_resident_task, retire_changed_session,
+    ResidentPackAdapter, declared_resident, host_preparation_for_record, open_resident_task,
+    retire_changed_session,
 )
 from astrid.core.execution.task_waits import AttemptWait, renewal_delay, renewal_margin, settlement_progress
 from astrid.core.execution.platform_helpers import (
@@ -13345,8 +13346,7 @@ class GenericPackHost:
                 immutable_input_baseline.update(self.execution_policy.immutable_input_baseline(input_root))
             evidence_root = root
             if capability_id == "vibecomfy.run" and machine_policy is None and readiness_profile is None:
-                from astrid.packs.vibecomfy.resident import host_cache
-                resident_preparation = host_cache(self, record, task_data, inputs,
+                resident_preparation = host_preparation_for_record(self, record, task_data, inputs,
                     align=_align_admission(task_data).get("align", "check"),
                     entry=_align_admission(task_data).get("entry"))
                 resident_allowed = resident_preparation is not None
