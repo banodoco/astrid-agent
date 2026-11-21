@@ -657,6 +657,11 @@ def project_runtime_parent_composition(
 
     config = copy.deepcopy(dict(config_value))
     registry = copy.deepcopy(dict(registry_value))
+    # Registry metadata belongs to the authored closure. Strict readers
+    # consume the assets view, which has no registry-level metadata field.
+    if "meta" in registry:
+        validate_meta(registry["meta"], path="parent_revision.payload.registry.meta")
+        del registry["meta"]
     config["clips"] = [
         copy.deepcopy(dict(_mapping(clip, f"parent_revision.payload.clips[{index}]")))
         for index, clip in enumerate(ordinary_clips)
