@@ -51,7 +51,7 @@ def seed_r13_timeline(service, project, path):
     )["data"]["object_id"]
     track = {"id": "V1", "label": "Picture", "kind": "visual",
              "app": {_MARKER: 2, "org.example": {"keep": True}}}
-    registry = {"assets": {"still": {"media_id": object_id, "type": "image",
+    registry = {"assets": {"still": {"media_id": object_id, "type": "image", "resolution": "96x54",
                                      "content_sha256": object_id.removeprefix("sha256:")}}}
     # R13's open track app bag accepted these markers in both timeline scopes.
     # Use Runtime's trusted fixture boundary to reproduce the stored shape.
