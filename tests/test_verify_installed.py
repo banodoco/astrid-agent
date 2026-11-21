@@ -527,6 +527,27 @@ def test_r1_candidate_source_sha_mismatching_installed_version_fails(tmp_path, n
     assert 'installed version id does not match manifest Agent/Runtime pins' in details['problems']
 
 
+@pytest.mark.parametrize(('release', 'marker', 'allowed'), [
+    (14, None, True), (15, 'fresh-install-update-stand-in', True),
+    (15, 'unrecognized', False), (13, None, False),
+])
+def test_opaque_version_directory_requires_r14_or_marked_r15_provenance(
+        tmp_path, release, marker, allowed):
+    from scripts import verify_installed as verifier
+    fixture, version_path, runtime, raw = _identity_aware_fixture(
+        tmp_path, agent=CANDIDATE_AGENT, runtime_sha=CANDIDATE_RUNTIME, digest=CANDIDATE_DIGEST)
+    version = dict(fixture['version'])
+    version['root'] = str(version_path.parent / '012345abcdef')
+    manifest = json.loads(raw)
+    manifest['release'] = release
+    if marker is not None:
+        manifest['qualification_marker'] = marker
+    problems = verifier._candidate_self_consistency_problems(
+        version, manifest, verifier.installer_manifest_bytes(manifest),
+        {'protocol': 'workspace.v1', 'schema_digest': CANDIDATE_DIGEST, 'workspace_schema_version': 33})
+    assert ('installed version id does not match manifest Agent/Runtime pins' not in problems) is allowed
+
+
 @pytest.mark.parametrize(('tamper', 'problem'), [
     ('noncanonical-bytes', 'installed manifest bytes do not match installer writer output'),
     ('schema-digest', 'health/installed Runtime schema digest does not match manifest'),
