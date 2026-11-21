@@ -563,7 +563,8 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) 
             # installed Runtime, before installing the candidate.
             result["timeline_seed"] = jumps.live_workspace(
                 root, data, evidence / "release13-timeline-seed", "seed_authored_timeline",
-                {"project": PROJECT + "-timeline", "generation": "release13-windows"})
+                {"project": PROJECT + "-timeline", "generation": "release13-windows",
+                 "track_label": "Original R13 recovery edit" if killed else None})
 
         if killed:
             return recover_killed_r13_update(

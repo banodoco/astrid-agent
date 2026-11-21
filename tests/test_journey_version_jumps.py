@@ -10,14 +10,14 @@ class CompositionClient:
     def __init__(self):
         self.timeline = {"head_revision_id": "base-r", "head_publication_id": "base-p"}
         self.documents = {"base-r": {"revision_id": "base-r", "project_id": "p1", "timeline_id": "t1",
-                                      "payload": {"config": {"output": {"file": "output.mp4", "fps": 30}}}}}
+                                      "payload": {"config": {"tracks": [{"id": "V1", "label": "V1"}]}}}}
 
     def request(self, method, route, body=None, key=None, **kwargs):
         if route.endswith("/commit"):
             change = body["commands"][0]["args"]["changes"][0]
-            output = change["value"]
+            assert change["path"] == ["config", "tracks", "id:V1", "label"]
             revision = {"revision_id": "accepted-r", "project_id": "p1", "timeline_id": "t1",
-                        "payload": {"config": {"output": output}}}
+                        "payload": {"config": {"tracks": [{"id": "V1", "label": change["value"]}]}}}
             self.documents["accepted-r"] = revision
             self.timeline.update(head_revision_id="accepted-r", head_publication_id="pub-2")
             return {"data": {"status": "accepted", "accepted_revision_id": "accepted-r"},
@@ -32,7 +32,7 @@ class CompositionClient:
 def test_composition_edit_is_accepted_and_freshly_reopened_with_seed_identity():
     client = CompositionClient()
     seed = {"project": "p1", "timeline": "t1", "generation": "r13-seed",
-            "revision_id": "base-r", "publication_id": "base-p"}
+            "revision_id": "base-r", "publication_id": "base-p", "track_id": "V1", "initial_label": "V1"}
     saved = live.save_composition_after_update(client, seed)
     reopened = live.reopen_saved_composition(client, saved)
     assert saved["project_id"] == seed["project"]
@@ -48,7 +48,8 @@ def test_composition_edit_is_accepted_and_freshly_reopened_with_seed_identity():
 def test_reopen_rejects_an_accepted_revision_for_another_seed_timeline():
     client = CompositionClient()
     saved = live.save_composition_after_update(client, {"project": "p1", "timeline": "t1", "generation": "g",
-                                                       "revision_id": "base-r", "publication_id": "base-p"})
+                                                       "revision_id": "base-r", "publication_id": "base-p",
+                                                       "track_id": "V1", "initial_label": "V1"})
     saved["project_id"] = ""
     with pytest.raises((ValueError, RuntimeError, KeyError)):
         live.reopen_saved_composition(client, saved)
