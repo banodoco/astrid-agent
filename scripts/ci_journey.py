@@ -3565,7 +3565,14 @@ def execute(args: argparse.Namespace) -> dict:
             except Exception as diagnostic_error:
                 host_availability_diagnostic = {"capture_error": type(diagnostic_error).__name__}
         if narrow_refusal:
-            prior_run = run_root.with_name("astrid-r1-direct-windows")
+            fix17_windows_refusal = (os.environ.get("ASTRID_FIX17_DIAGNOSTIC") == "1"
+                                     and getattr(args, "job_id", None) == "direct-windows"
+                                     and run_root.name == "f17r")
+            prior_run = run_root.with_name("f17" if fix17_windows_refusal
+                                           else "astrid-r1-direct-windows")
+            if fix17_windows_refusal:
+                print("FIX-17 diagnostic: refusal ownership check uses exact sibling f17 selection",
+                      flush=True)
             related_selection = (prior_run / "program", prior_run / "data")
             assert_host_available(host_leg, root, data, skip_process_check=True,
                                   related_uninstalled_selection=related_selection)
@@ -3578,7 +3585,7 @@ def execute(args: argparse.Namespace) -> dict:
                                      "first_error": f"{type(exc).__name__}: {exc}", "evidence_path": str(evidence)})
             report["stages"].extend({"stage": name, "result": "not-run", "forced_continuation_used": False,
                                      "first_error": "Unsafe or unavailable preflight", "evidence_path": str(evidence)}
-                                    for name in (keepgoing.FRESH_STAGES if args.leg == "fresh-install" else keepgoing.STAGES))
+                                    for name in (keepgoing.fresh_stage_names(args) if args.leg == "fresh-install" else keepgoing.STAGES))
             keepgoing.write(evidence, report)
         failure_path = evidence / "journey-result.json"
         recorded = read_json(failure_path) if failure_path.is_file() else {
@@ -3725,7 +3732,7 @@ def execute(args: argparse.Namespace) -> dict:
             seen = {row["stage"] for row in report["stages"]}
             report["stages"].extend({"stage": name, "result": "not-run", "forced_continuation_used": False,
                                      "first_error": "Unsafe or unavailable harness context", "evidence_path": str(evidence)}
-                                    for name in (keepgoing.FRESH_STAGES if args.leg == "fresh-install" else keepgoing.STAGES)
+                                    for name in (keepgoing.fresh_stage_names(args) if args.leg == "fresh-install" else keepgoing.STAGES)
                                     if name not in seen)
             # Preserve any failure diagnostics already written to the result.
             saved_path = evidence / "journey-result.json"

@@ -23,6 +23,16 @@ STAGES = ("admission", "release0-bootstrap", "release0-start", "release0-selecti
 
 FRESH_STAGES = ("admission", "release1-install", "release1-start", "release1-selection",
                 "release1-verify-install", "release1-task", "release1-content", "sentinel")
+FIX17_WINDOWS_FRESH_STAGES = ("admission", "release1-install", "release1-start", "release1-selection",
+                              "release1-verify-install", "release1-project", "release1-task",
+                              "release1-content", "release1-hosted-update", "sentinel")
+
+
+def fresh_stage_names(args):
+    if (os.environ.get("ASTRID_FIX17_DIAGNOSTIC") == "1"
+            and getattr(args, "job_id", None) == "direct-windows"):
+        return FIX17_WINDOWS_FRESH_STAGES
+    return FRESH_STAGES
 
 
 FAILED_CAPABILITY_ID_LIMIT = 32
@@ -266,7 +276,9 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
         write(evidence, report)
     if args.leg == "fresh-install":
         producers.update(app="admission", updated="release1-install", started1="release1-start",
-                         version="release1-selection", marker="release1-content")
+                         version="release1-selection", project="release1-project", marker="release1-content")
+        fix17_fresh = (os.environ.get("ASTRID_FIX17_DIAGNOSTIC") == "1"
+                       and getattr(args, "job_id", None) == "direct-windows")
         def fresh_admission():
             app = args.app_checkout.resolve(strict=True)
             path, manifest = journey.selected_manifest(app, source_override=False, agent=None, runtime=None, evidence=evidence)
@@ -311,7 +323,11 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
                     journey.windows.wait_for("pack-host is running with its current ready file",
                                              journey.windows.host_ready)
                     journey.windows.snapshot("processes-host-ready.json")
+                    if fix17_fresh:
+                        return journey.windows.task(project, create_project=False)
                     return journey.windows.task(project, create_project=True)
+                if fix17_fresh:
+                    return journey.task(state["version"], task_evidence, project, create_project=False)
                 return journey.task(state["version"], task_evidence, project)
             except Exception:
                 journey.capture_failed_release1_task(evidence, state["version"])
@@ -324,6 +340,20 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
             digest = hashlib.sha256(marker.read_bytes()).hexdigest()
             journey.assert_content(state["version"], evidence, project, marker, digest)
             state.update(marker=marker, marker_digest=digest)
+        def fresh_project():
+            print("FIX-17 diagnostic: creating the fresh journey project before pack setup", flush=True)
+            if sys.platform == "win32":
+                journey.windows.EVIDENCE = evidence / "release1-project"
+                created = json.loads(journey.windows.cli("astrid", ["projects", "create", project,
+                    "--name", "Windows journey", "--json"], "project.json"))
+            else:
+                created = json.loads(journey.installed_cli_with_capture(
+                    state["version"], ["projects", "create", project, "--name", project, "--json"],
+                    evidence / "release1-project", "project.json",
+                    status_name="project-create-capture-status.json"))
+            if created.get("ok") is not True:
+                raise RuntimeError("Diagnostic fresh project creation failed")
+            state["project"] = project
         def fresh_hosted_update():
             result = {"update": {"status": "running", "evidence_class": "NON-PROOF"}}
             try:
@@ -355,9 +385,18 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
         stage("release1-start", ["updated"], fresh_start, evidence / "release1")
         stage("release1-selection", ["started1"], fresh_select, evidence / "release1")
         stage("release1-verify-install", ["version"], lambda: journey.verify("install", state["version_path"], data, evidence), evidence / "verify-install.log")
-        stage("release1-task", ["version"], fresh_task, evidence / "release1-working-task")
-        stage("release1-content", ["version"], fresh_content, evidence / "release1-working-task")
-        if args.job_id in {"direct-linux-fresh", "direct-macos-fresh", "direct-windows"}:
+        if fix17_fresh:
+            print("FIX-17 diagnostic: task will use the independently seeded project", flush=True)
+            stage("release1-project", ["version"], fresh_project, evidence / "release1-project")
+            stage("release1-task", ["version", "project"], fresh_task, evidence / "release1-working-task")
+            stage("release1-content", ["version", "project"], fresh_content, evidence / "release1-working-task")
+        else:
+            stage("release1-task", ["version"], fresh_task, evidence / "release1-working-task")
+            stage("release1-content", ["version"], fresh_content, evidence / "release1-working-task")
+        if fix17_fresh:
+            stage("release1-hosted-update", ["version", "marker"], fresh_hosted_update,
+                  evidence / "fresh-update-standin")
+        elif args.job_id in {"direct-linux-fresh", "direct-macos-fresh", "direct-windows"}:
             stage("release1-hosted-update", ["version", "marker"], fresh_hosted_update,
                   evidence / "fresh-update-standin")
         stage("sentinel", [], fresh_sentinel, evidence)

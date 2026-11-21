@@ -21,6 +21,41 @@ def test_update_only_fails_regressions_and_reports_preexisting():
     assert not evaluate({'observations': {'old': False}}, 'install')['passed']
 
 
+@pytest.mark.parametrize('marker', [
+    'fresh-install-update-stand-in',
+    'M-RT UPDATE TEST STAND-IN',
+])
+def test_r15_standin_opaque_id_diagnostic_is_narrowly_qualified(monkeypatch, marker):
+    from scripts.verify_installed import _r14_diagnostic_version_id
+
+    version = {'root': '/install/versions/012345abcdef'}
+    monkeypatch.setenv('ASTRID_FIX17_DIAGNOSTIC', '1')
+    assert _r14_diagnostic_version_id(
+        version, {'release': 15, 'qualification_marker': marker})
+    assert not _r14_diagnostic_version_id(
+        version, {'release': 15, 'qualification_marker': 'unknown'})
+    assert not _r14_diagnostic_version_id(version, {'release': 15})
+    assert not _r14_diagnostic_version_id(
+        {'root': '/install/versions/not-an-opaque-id'},
+        {'release': 15, 'qualification_marker': marker})
+
+    monkeypatch.delenv('ASTRID_FIX17_DIAGNOSTIC')
+    assert not _r14_diagnostic_version_id(
+        version, {'release': 15, 'qualification_marker': marker})
+
+
+def test_r14_opaque_id_diagnostic_remains_available_only_in_opt_in_mode(monkeypatch):
+    from scripts.verify_installed import _r14_diagnostic_version_id
+
+    version = {'root': '/install/versions/012345abcdef'}
+    monkeypatch.setenv('ASTRID_FIX17_DIAGNOSTIC', '1')
+    assert _r14_diagnostic_version_id(version, {'release': 14})
+    assert not _r14_diagnostic_version_id({'root': '/install/versions/012345ABCDEf'},
+                                          {'release': 14})
+    monkeypatch.delenv('ASTRID_FIX17_DIAGNOSTIC')
+    assert not _r14_diagnostic_version_id(version, {'release': 14})
+
+
 def test_observation_data_root_follows_recorded_r1_copy_and_keeps_fresh_root(tmp_path):
     from scripts.verify_installed import observation_data_root
 

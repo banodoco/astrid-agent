@@ -35,12 +35,20 @@ DOCUMENTED_R1_LAUNCHER = (
 R1_SERVICE_LABELS = frozenset({'astrid-r1.service', 'haus.astrid.runtime.r1'})
 R1_VERSION_RECORD_KEYS = frozenset({'env', 'identity', 'profile', 'python', 'root'})
 R14_DIAGNOSTIC_VERSION_ID = re.compile(r'[0-9a-f]{12}')
+R15_DIAGNOSTIC_STANDIN_MARKERS = frozenset({
+    'fresh-install-update-stand-in',
+    'M-RT UPDATE TEST STAND-IN',
+})
 
 
 def _r14_diagnostic_version_id(version, manifest):
-    """Whether the explicitly enabled R14 opaque-id diagnostic applies."""
+    """Whether the opt-in opaque-id diagnostic applies to R14 or an R15 stand-in."""
+    release = manifest.get('release')
+    qualified_release = (release == 14 or
+                         (release == 15 and manifest.get('qualification_marker')
+                          in R15_DIAGNOSTIC_STANDIN_MARKERS))
     return (os.environ.get('ASTRID_FIX17_DIAGNOSTIC') == '1'
-            and manifest.get('release') == 14
+            and qualified_release
             and isinstance(version.get('root'), str)
             and R14_DIAGNOSTIC_VERSION_ID.fullmatch(Path(version['root']).name) is not None)
 
@@ -477,7 +485,7 @@ def legacy_identity_observation(health, discovery, version, manifest, manifest_b
                            'version_python': version.get('python'),
                            'version_profile': version.get('profile'),
                            'version_env_fields': sorted(version.get('env', {})) if isinstance(version.get('env'), dict) else None,
-                           **({'diagnostic_bypass': 'NON-PROOF: ASTRID_FIX17_DIAGNOSTIC=1 accepted the R14 12-lowercase-hex opaque version id; manifest pin correspondence was not proven by the directory name.'}
+                           **({'diagnostic_bypass': ('NON-PROOF: ASTRID_FIX17_DIAGNOSTIC=1 accepted a 12-lowercase-hex opaque version id for real R14 or a synthetic R15 fresh-update stand-in; manifest pin correspondence was not proven by the directory name.')}
                               if diagnostic_opaque_id and not version_name_matches_pins else {}),
                            'launcher_template_source': launcher_template_source or (
                                'caller' if launcher_template else 'documented-template'),

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from copy import deepcopy
 from pathlib import Path
+import hashlib
+import json
 import platform
 import shutil
 
@@ -70,20 +73,39 @@ def _browser(config, *, app, expected_app, dist, release_app, manifest, python, 
     result_path = evidence / "browser-result.json"
     config_path = evidence / "browser-input.json"
     with hosted.Intercept(routes, python=python, types=types) as server:
-        journey.write_json(config_path, {
+        saved_config = {
             **config, "diagnostic": __import__("os").environ.get("ASTRID_FIX17_DIAGNOSTIC") == "1",
             "origin": hosted.ORIGIN, "result": str(result_path), "spki": server.leaf_spki,
-        })
+        }
+        if config.get("mode") == "publicationProbe":
+            saved_config = {key: value for key, value in saved_config.items()
+                            if key not in {"profileDir", "publicationManifestPath", "r13ManifestPath"}}
+        journey.write_json(config_path, saved_config)
+        runtime_config_path = config_path
+        if config.get("mode") == "publicationProbe":
+            # The probe starts against the actual R13 manifest; Playwright switches only
+            # this response to the candidate's exact staged bytes after the baseline.
+            saved_config["profileDir"] = config["profileDir"]
+            saved_config["publicationManifestPath"] = config["publicationManifestPath"]
+            saved_config["r13ManifestPath"] = config["r13ManifestPath"]
+            runtime_config_path = evidence / "browser-input-runtime.json"
+            journey.write_json(runtime_config_path, saved_config)
         try:
-            journey.run(["node", journey.ROOT / "scripts/journey_required_update_browser.mjs", config_path],
+            journey.run(["node", journey.ROOT / "scripts/journey_required_update_browser.mjs", runtime_config_path],
                         evidence / "browser.log", timeout=420)
         except RuntimeError:
             if result_path.is_file():
                 failure = journey.read_json(result_path)
                 raise RuntimeError(f"{config['mode']} browser: {failure.get('error', 'failed')}") from None
             raise
+        finally:
+            if runtime_config_path != config_path:
+                runtime_config_path.unlink(missing_ok=True)
         observed = journey.read_json(result_path)
-        if observed.get("status") != "pass" or observed.get("mode") != config["mode"]:
+        expected_status = "non-proof" if config.get("mode") in {
+            "publicationProbe", "recoveryProbe",
+        } else "pass"
+        if observed.get("status") != expected_status or observed.get("mode") != config["mode"]:
             raise RuntimeError("Hosted App did not finish " + config["mode"])
         hits = server.hits()
         if not any(hit["path"] == hosted.PAGE_ENTRY_ROUTE and hit["status"] == 200 for hit in hits):
@@ -222,6 +244,24 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) 
                 else:
                     timeline["preservation_unavailable"] = "R13 authoring did not produce a real queued draft"
                 result["timelines"].append(timeline)
+                if diagnostic and mode == FIX17_PROMPT_LEG:
+                    probe_evidence = evidence / (slug + "-publication-probe")
+                    try:
+                        observed = _browser({
+                            **config, "mode": "publicationProbe",
+                            "publicationManifestPath": str(path.resolve(strict=True)),
+                            "r13ManifestPath": str(old_path.resolve(strict=True)),
+                            "expectedAppCommit": jumps.RELEASE13_APP_COMMIT,
+                        }, app=old_app, expected_app=jumps.RELEASE13_APP_COMMIT,
+                            dist=args.release13_browser_dist, release_app=source, manifest=old_path,
+                            python=old_version["python"], evidence=probe_evidence)
+                        result.setdefault("publication_probes", []).append(observed)
+                        record_leg(slug, "publication_probe", "observed",
+                                   evidence_path=slug + "-publication-probe/browser-result.json")
+                    except Exception as exc:
+                        record_leg(slug, "publication_probe", "unavailable",
+                                   error=f"{type(exc).__name__}: sanitized diagnostic failure",
+                                   evidence_path=slug + "-publication-probe/browser-result.json")
                 if mode == FIX17_PROMPT_LEG:
                     try:
                         with stage(result, result_path, "required_prompt"):
@@ -292,6 +332,77 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) 
                     record_leg(config["projectId"], "r14_reopen", "fail", error=f"{type(exc).__name__}: {exc}")
                     if not diagnostic:
                         raise
+
+        if diagnostic and mode == FIX17_PROMPT_LEG:
+            # Run only after the ordinary fresh-document R14 reopen observation.
+            # The browser probe permits the selected exact pending intent only.
+            for number, timeline in enumerate(result["timelines"], start=1):
+                config = timeline["config"]
+                reopen = timeline.get("reopen")
+                if not timeline.get("author") or not reopen:
+                    record_leg(config["projectId"], "exact_draft_recovery", "unavailable",
+                               skip_reason="No completed authentic R14 reopen evidence and scoped R13 intent")
+                    continue
+                probe_evidence = evidence / f"recovery-probe-{number}"
+                realm_before = None
+                realm_before_error = None
+                try:
+                    realm_before = jumps.live_workspace(
+                        root, data, evidence / f"recovery-probe-{number}-realm-before", "realm_inventory", {})
+                except Exception as exc:
+                    realm_before_error = type(exc).__name__
+                try:
+                    observed = _browser({
+                        **config, "mode": "recoveryProbe", "profileDir": str(profile),
+                        "browserDriverApp": str(app), "expectedDraft": timeline["author"]["draft"],
+                    }, app=app, expected_app=candidate["app"], dist=args.candidate_browser_dist,
+                        release_app=app, manifest=path, python=version["python"], evidence=probe_evidence)
+                    realm_after = None
+                    realm_after_error = None
+                    try:
+                        realm_after = jumps.live_workspace(
+                            root, data, evidence / f"recovery-probe-{number}-realm-after", "realm_inventory", {})
+                    except Exception as exc:
+                        realm_after_error = type(exc).__name__
+                    realm_stable = False
+                    if realm_before is not None and realm_after is not None:
+                        before_other = deepcopy(realm_before)
+                        after_other = deepcopy(realm_after)
+                        target_present = True
+                        for inventory in (before_other, after_other):
+                            target_project = inventory.get("projects", {}).get(config["projectId"])
+                            if target_project is None or config["timelineId"] not in target_project.get("timelines", {}):
+                                target_present = False
+                                continue
+                            target_project["timelines"].pop(config["timelineId"])
+                        before_digest = hashlib.sha256(json.dumps(
+                            before_other, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+                        after_digest = hashlib.sha256(json.dumps(
+                            after_other, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+                        realm_stable = target_present and before_digest == after_digest
+                    else:
+                        before_digest = after_digest = None
+                    observed["realm_inventory"] = {
+                        "otherProjectsAndTimelinesStable": realm_stable,
+                        "beforeSha256": before_digest, "afterSha256": after_digest,
+                        "failure": realm_before_error or realm_after_error,
+                    }
+                    if not realm_stable and observed.get("step", {}).get("state") == "pass":
+                        observed["step"].update(state="fail", failure={
+                            "kind": "scope_ambiguity", "code": "realm_inventory_changed_or_unavailable"})
+                    result.setdefault("recovery_probes", []).append(observed)
+                    state = "pass" if observed.get("step", {}).get("state") == "pass" else "fail"
+                    failure = observed.get("step", {}).get("failure") or {}
+                    failure_label = str(failure.get("kind", "recovery_not_proven"))
+                    if failure.get("code"):
+                        failure_label += ":" + str(failure["code"])
+                    record_leg(config["projectId"], "exact_draft_recovery", state,
+                               error=None if state == "pass" else failure_label,
+                               evidence_path=f"recovery-probe-{number}/browser-result.json")
+                except Exception as exc:
+                    record_leg(config["projectId"], "exact_draft_recovery", "fail",
+                               error=f"{type(exc).__name__}: diagnostic probe unavailable",
+                               evidence_path=f"recovery-probe-{number}/browser-result.json")
 
         with stage(result, result_path, "native_end"):
             _installed(root, data, manifest, 14)

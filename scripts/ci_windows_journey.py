@@ -481,10 +481,17 @@ def assert_installed_profile_binding():
         raise RuntimeError("Installed profile does not bind the selected Python product root")
 
 
-def cli(module, argv, name, *, timeout=300):
+def cli(module, argv, name, *, timeout=300, console=False):
     installed = version()
     env = {key: value for key, value in os.environ.items() if key not in {"PYTHONPATH", "PYTHONHOME"}}
     env.update(installed["env"])
+    if console:
+        try:
+            import ci_journey
+        except ImportError:
+            from scripts import ci_journey
+        return run([installed["python"], "-I", "-c", ci_journey.CONSOLE_ENTRY, *argv],
+                   name, env=env, timeout=timeout)
     return run([installed["python"], "-I", "-m", module, *argv], name, env=env, timeout=timeout)
 
 
@@ -730,7 +737,7 @@ def install_journey_packs():
     except ImportError:  # imported as scripts.ci_windows_journey
         from scripts import ci_journey
 
-    ci_journey.install_journey_packs(lambda argv, name: cli("astrid", argv, name, timeout=600))
+    ci_journey.install_journey_packs(lambda argv, name: cli("astrid", argv, name, timeout=600, console=True))
 
 
 def task(project="windows-journey", *, create_project=True):
