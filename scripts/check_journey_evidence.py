@@ -716,6 +716,7 @@ def _mixed_row_errors(job_id, contract, row, candidate):
             if (refused != {"status": 413, "injected": True, "count": 1}
                     or authored.get("fix16Card") is not True
                     or authored.get("refusedLabelPreserved") is not True
+                    or authored.get("unexpectedRetries") != 0
                     or not isinstance(queue, list)
                     or not any(isinstance(item, dict) and (
                         type(item.get("intents")) is int and item["intents"] > 0 or item.get("pending") is True)
