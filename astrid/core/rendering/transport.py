@@ -341,6 +341,7 @@ class CommandTransport:
             payload,
             backend=selected_backend,
             logs=logs,
+            secret_values=secret_values,
         )
 
 
@@ -656,6 +657,7 @@ def _parse_result(
     *,
     backend: str,
     logs: Mapping[str, str],
+    secret_values: Sequence[str] = (),
 ) -> CommandResult:
     if isinstance(payload, Mapping) and "kind" in payload:
         try:
@@ -668,12 +670,16 @@ def _parse_result(
                 message="renderer error result names a different backend",
                 details={"reported_backend": emitted_error.backend, **logs},
             )
-        raise_renderer_error(
-            replace(
-                emitted_error,
-                details={**emitted_error.details, **logs},
-            )
-        )
+        details = {**logs, **emitted_error.details}
+        message = emitted_error.message
+        child_stderr = emitted_error.details.get("stderr")
+        if isinstance(child_stderr, str) and child_stderr:
+            child_stderr = _redact_log(child_stderr[-2000:], secret_values=secret_values)
+            details["stderr"] = child_stderr
+            message = f"{message}; child stderr tail: {child_stderr}"
+            if logs.get("stderr"):
+                details["renderer_stderr"] = logs["stderr"]
+        raise_renderer_error(replace(emitted_error, message=message, details=details))
 
     parser: Any
     if verb in {"render", "finalize"}:

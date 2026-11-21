@@ -473,6 +473,16 @@ def test_missing_binary_is_renderer_qualified(tmp_path: Path) -> None:
     assert caught.value.error.backend == RENDERER_ID
 
 
+def test_nested_child_failure_surfaces_stderr_and_exit_code(tmp_path: Path) -> None:
+    with pytest.raises(RendererInternalError) as caught:
+        _run(tmp_path, {"action": "child-failure"})
+
+    assert "Browser not available" in str(caught.value)
+    assert "exit 23" in str(caught.value)
+    assert "Browser not available" in caught.value.to_dict()["details"]["stderr"]
+    assert "exit 23" in caught.value.to_dict()["message"]
+
+
 def test_nonzero_exit_is_internal_and_captures_both_streams(tmp_path: Path) -> None:
     with pytest.raises(RendererInternalError) as caught:
         _run(

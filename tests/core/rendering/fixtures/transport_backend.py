@@ -50,6 +50,17 @@ def main() -> int:
     if stderr:
         print(stderr, file=sys.stderr, flush=True)
 
+    if action == "child-failure":
+        child = subprocess.run(
+            [sys.executable, "-c", "import sys; print('Browser not available', file=sys.stderr); sys.exit(23)"],
+            capture_output=True, text=True,
+        )
+        Path(args.result).write_text(json.dumps({
+            "schema_version": 1, "kind": "internal", "backend": "acme.visual",
+            "message": f"render failed (exit {child.returncode})", "recovery_command": None,
+            "details": {"stderr": child.stderr},
+        }), encoding="utf-8")
+        return 0
     if action == "nonzero":
         return int(request.get("returncode", 7))
     if action == "absent":
