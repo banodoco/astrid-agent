@@ -1702,6 +1702,10 @@ def compose_candidate(
 
     if preparation.get("status") == "orchestration_only":
         raise CompositionError("orchestration-only preparation cannot be composed; use a compiled pass preparation")
+    if preparation.get("status") == "requires_resolution":
+        raise CompositionError("cannot compose a request whose mask schedule requires resolution")
+    if preparation.get("status") != "prepared":
+        raise CompositionError("preparation is not ready")
     _guard_unprepared_static_permissions(preparation)
     generated_path = Path(generated).expanduser().resolve()
     if not generated_path.is_file():
@@ -1709,8 +1713,6 @@ def compose_candidate(
     schedule = preparation.get("mask_schedule")
     if not isinstance(schedule, Mapping):
         raise CompositionError("preparation is missing mask_schedule")
-    if preparation.get("status") == "requires_resolution":
-        raise CompositionError("cannot compose a request whose mask schedule requires resolution")
     if source is not None and baseline is not None:
         raise CompositionError("source and baseline are mutually exclusive")
     if source is None:

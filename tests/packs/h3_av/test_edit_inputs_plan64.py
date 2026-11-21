@@ -625,6 +625,12 @@ def test_planner_persists_and_reloads_classified_uses_for_each_pass(tmp_path):
     ]}
     result = plan_request(normalize_request(raw), asset_map={"scene": str(source), "voice": str(voice)}, out_dir=tmp_path / "plan")
     assert result["pass_count"] == 3
+    from astrid.packs.h3_av.shared.compose import CompositionError, compose_candidate
+    joint = json.loads(Path(result["preparation_path"]).read_text())
+    assert joint["status"] == "prepared"
+    composed = compose_candidate(preparation=joint, generated=source, source=source, out_dir=tmp_path / "joint-output")
+    assert composed["status"] == "composed"
+    assert Path(composed["candidate"]["path"]).is_file()
     for index in range(1, 4):
         preparation = json.loads((tmp_path / "plan" / "passes" / f"{index:02d}" / "preparation.json").read_text())
         loaded = read_prepared_request(preparation["request"], preparation["request_digest"], require_normalized_v2=True)
@@ -633,6 +639,10 @@ def test_planner_persists_and_reloads_classified_uses_for_each_pass(tmp_path):
         assert preparation["joint_preparation"]["request_digest"] == result["request_digest"]
         assert preparation["joint_preparation"]["path"] == result["preparation_path"]
         assert preparation["runtime_submission"] == "blocked_inspection_only"
+        forbidden = tmp_path / f"forbidden-composition-{index}"
+        with pytest.raises(CompositionError, match="preparation is not ready"):
+            compose_candidate(preparation=preparation, generated=source, source=source, out_dir=forbidden)
+        assert not forbidden.exists()
         with pytest.raises(CompilationError, match="preparation.kind"):
             compile_preparation(preparation, out_dir=tmp_path / f"forbidden-{index}")
 
