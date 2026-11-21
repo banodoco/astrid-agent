@@ -1120,6 +1120,7 @@ class RuntimeCommitService:
         ``normalize_appearance=False`` skips the Node placement package, which
         only resolves canvas geometry; the commit-time reader check uses it.
         """
+        from astrid.core.timeline.reader_projection import normalize_legacy_reader_fields
         from astrid.core.timeline.shot_composition_projection import (
             project_runtime_parent_composition,
         )
@@ -1223,6 +1224,7 @@ class RuntimeCommitService:
             marker['placement_migrations'] = placement_findings
         projected = project_runtime_parent_composition(
             parent, shot_revisions=shots, internal_timeline_revisions=internals)
+        normalize_legacy_reader_fields(projected.config, projected.registry)
         shot_rows = []
         for row in shots:
             payload = row["payload"]

@@ -657,11 +657,6 @@ def project_runtime_parent_composition(
 
     config = copy.deepcopy(dict(config_value))
     registry = copy.deepcopy(dict(registry_value))
-    # Registry metadata belongs to the authored closure. Strict readers
-    # consume the assets view, which has no registry-level metadata field.
-    if "meta" in registry:
-        validate_meta(registry["meta"], path="parent_revision.payload.registry.meta")
-        del registry["meta"]
     config["clips"] = [
         copy.deepcopy(dict(_mapping(clip, f"parent_revision.payload.clips[{index}]")))
         for index, clip in enumerate(ordinary_clips)
@@ -852,12 +847,6 @@ def project_runtime_parent_composition(
     from .reader_projection import translate_media_selectors
 
     config, registry = translate_media_selectors(config, registry, strict=False)
-    # Give legacy tracks a display label on the projection only. Explicit
-    # labels, including invalid values, still go through reader validation.
-    for track in config["tracks"]:
-        track_id = track.get("id") if isinstance(track, dict) else None
-        if isinstance(track_id, str) and track_id:
-            track.setdefault("label", track_id)
     closure = {
         "parent_revision": copy.deepcopy(dict(parent)),
         "shot_revisions": [copy.deepcopy(dict(row)) for row in shot_revisions],
