@@ -1074,15 +1074,17 @@ def candidate_update(app: Path, manifest_path: Path, shell: str, evidence: Path,
     env = dict(os.environ)
     env["BROWSER"] = f'"{sys.executable}" -c "pass" %s'
     log = evidence / "update-bootstrap.log"
+    stderr_log = evidence / "update-bootstrap-stderr.log"
     log.parent.mkdir(parents=True, exist_ok=True)
     argv = [shell, str(app / "public" / "install"), "--manifest", str(manifest_path),
             "--root", str(root), "--data-root", str(data), "--update"]
-    with log.open("w", encoding="utf-8") as stream:
-        process = subprocess.run(argv, env=env, stdout=stream, stderr=subprocess.STDOUT,
-                                 timeout=3600, check=False)
+    with log.open("w", encoding="utf-8") as stream, stderr_log.open("w", encoding="utf-8") as stderr:
+        process = subprocess.run(argv, env=env, stdout=stream, stderr=stderr, timeout=3600, check=False)
     lines = [line for line in log.read_text(encoding="utf-8-sig", errors="replace").splitlines() if line.strip()]
+    errors = [line for line in stderr_log.read_text(encoding="utf-8-sig", errors="replace").splitlines() if line.strip()]
     return {"command": "install --update", "exit_code": process.returncode,
-            "log": str(log), "last_lines": lines[-8:]}
+            "log": str(log), "last_lines": [_safe_runtime_body(line)[:400] for line in lines[-8:]],
+            "stderr_tail": [_safe_runtime_body(line)[:400] for line in errors[-20:]]}
 
 
 def execute_r0_handoff_then_update(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) -> dict:
@@ -1544,8 +1546,9 @@ def execute_release13_then_update(args, root: Path, data: Path, evidence: Path, 
         baseline = evidence / "release13-api-seed"
         journey.verify("observe", old_path, data, baseline)
         project = "tst-release13-update"
-        keys = live_workspace(root, data, baseline, "seed", {
-            "project": project, "generation": "release13", "task_id": None, "create_project": True})
+        keys = live_workspace(root, data, baseline, "seed_authored_timeline", {
+            "project": project, "generation": "release13"})
+        result["timeline_seed"] = dict(keys)
         keys["task_id"] = task_after_update(old, baseline / "release13-task", project)
         before = live_workspace(root, data, baseline, "snapshot", keys)
         old_health = journey.healthy(data)
@@ -1618,16 +1621,19 @@ def execute_release13_then_update(args, root: Path, data: Path, evidence: Path, 
         # Save and reload against the *installed candidate's* selected Runtime.
         # Each helper call launches a fresh process, so reopen cannot observe
         # a retained in-memory editor or source-checkout object.
-        saved = live_workspace(root, active_data, evidence / "candidate-save", 
-                               "save_timeline_after_update", keys)
+        saved = live_workspace(root, active_data, evidence / "candidate-save",
+                               "save_composition_after_update", keys)
         if saved.get("saved") is not True:
             raise RuntimeError("Installed candidate did not acknowledge the timeline edit")
         result["timeline_save"] = saved
         result["checks"]["timeline_saved"] = "pass"
         reopened = live_workspace(root, active_data, evidence / "candidate-reopen",
-                                  "reopen_saved_timeline", saved)
-        if reopened.get("reopened") is not True or reopened.get("saved_name") != saved["saved_name"]:
-            raise RuntimeError("Installed candidate did not durably reopen the saved edit")
+                                  "reopen_saved_composition", saved)
+        if (reopened.get("reopened") is not True
+                or reopened.get("accepted_revision_id") != saved.get("accepted_revision_id")
+                or reopened.get("project_id") != keys.get("project")
+                or reopened.get("timeline_id") != keys.get("timeline")):
+            raise RuntimeError("Installed candidate did not durably reopen the accepted composition revision")
         result["timeline_reopen"] = reopened
         result["checks"]["timeline_reopened"] = "pass"
         settled_sentinel = journey.sentinel_observation(sentinel, birth)

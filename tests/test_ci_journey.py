@@ -70,7 +70,7 @@ def test_direct_windows_failure_snapshot_prints_recursive_logs_and_matching_proc
 def test_task_reports_sdk_error_code_before_empty_task_refs(tmp_path, monkeypatch):
     evidence = tmp_path / "release1-working-task"
     evidence.mkdir()
-    monkeypatch.setattr(journey, "install_journey_packs", lambda run_cli: None)
+    monkeypatch.setattr(journey, "install_journey_packs", lambda run_cli, **kwargs: None)
     monkeypatch.setattr(
         journey, "installed_cli_with_capture",
         lambda *args, **kwargs: json.dumps({"ok": False, "error": {"code": "not_found"}}),
@@ -394,9 +394,16 @@ def test_explicit_pinokio_backend_mode_uses_backend_executor(tmp_path, monkeypat
 
 def test_journey_workflow_uses_astrid_app_for_all_candidate_checkouts():
     workflow = (journey.ROOT / ".github" / "workflows" / "journey.yml").read_text()
-    # Five: the candidate App, the frozen App candidate checkouts, and the pinned Release 9 App.
-    assert workflow.count("repository: banodoco/astrid-app") == 5
+    # Candidate App, frozen App candidate checkouts, and pinned Release 9/11/13 Apps.
+    assert workflow.count("repository: banodoco/astrid-app") == 7
     assert workflow.count("name: Check out frozen App candidate") == 3
+    for release, commit, path in (
+        ("11", "57e200b45615a59181920192697a932400d985fc", "release11-app"),
+        ("13", "de7dd1e668aa6dcf3cbce013c701fa7c76615f99", "release13-app"),
+        ("9", "546c91b7aaf90835445136eb6e93459385ffe21c", "release9-app"),
+    ):
+        checkout = workflow.split(f"name: Check out the pinned Release {release} App", 1)[1].split("      - name:", 1)[0]
+        assert f"ref: {commit}" in checkout and f"path: {path}" in checkout
     assert "repository: banodoco/reigh-app" not in workflow
 
 

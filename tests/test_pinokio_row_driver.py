@@ -154,6 +154,92 @@ def test_job_os_map_matches_the_three_hosted_rows():
     assert driver.SCHEMA == "pinokio-row-v1"
 
 
+def test_fresh_v2_has_only_install_start_open_and_stop_stages():
+    row = FakeRow()
+    stages = driver.run_fresh_row(row)
+    assert [stage["name"] for stage in stages] == ["install", "start", "open_app", "stop"]
+    assert all(stage["status"] == "pass" for stage in stages)
+
+
+def test_fresh_v2_attempts_real_stop_after_failed_open():
+    row = FakeRow(fail_at="open_app")
+    stages = driver.run_fresh_row(row)
+    assert [stage["name"] for stage in stages] == ["install", "start", "open_app", "stop"]
+    assert [stage["status"] for stage in stages] == ["pass", "pass", "fail", "pass"]
+
+
+def test_fresh_v2_install_requires_frozen_manifest_and_app_pins(tmp_path, monkeypatch):
+    import hashlib
+    row = driver.Row(job_id="pinokio-linux", os_name="linux", run_root=tmp_path / "run",
+                     pinokio=tmp_path / "pinokio", agent=tmp_path / "agent", app_checkout=tmp_path / "app",
+                     candidate_sha="a" * 40)
+    manifest = row.manifest
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(json.dumps({"agent": {"sha": "b" * 40}, "runtime": {"sha": "c" * 40}}))
+    candidate = {"app": "d" * 40, "agent": "b" * 40, "runtime": "c" * 40,
+                 "manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest()}
+    row.candidate_path = tmp_path / "candidate.json"
+    row.candidate_path.write_text(json.dumps(candidate))
+    monkeypatch.setattr(driver.subprocess, "check_output", lambda *_a, **_k: "d" * 40)
+    installs = []
+    monkeypatch.setattr(row, "launcher_install_action", lambda app_sha: installs.append(app_sha))
+    row.data = tmp_path / "data"
+    installed_manifest = tmp_path / "version" / "manifest.json"
+    installed_manifest.parent.mkdir(parents=True)
+    installed_manifest.write_bytes(driver.verify_installed.installer_manifest_bytes(json.loads(manifest.read_text())))
+    monkeypatch.setattr(row, "record", lambda: (tmp_path / "data", installed_manifest.parent,
+                                                 {"identity": {"release": 14, "managed_by": "pinokio"}}))
+    monkeypatch.setattr(driver.verify_installed, "_version_provenance_problems", lambda *_a, **_k: [])
+    monkeypatch.setattr(ci_journey, "pack_host_ready_path",
+                        lambda **_kwargs: tmp_path / "data" / "runtime" / ci_journey.PACK_HOST_READY)
+    row.install_fresh()
+    assert installs == [candidate["app"]]
+    candidate["runtime"] = "e" * 40
+    row.candidate_path.write_text(json.dumps(candidate))
+    with pytest.raises(driver.RowError, match="runtime pin"):
+        row.install_fresh()
+
+
+def test_pinokio_pack_host_selection_uses_isolated_owned_roots(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    program = tmp_path / "pinokio-home" / "api" / "astrid-row" / "app" / "astrid"
+    data = home / ".local" / "share" / "astrid"
+    program.mkdir(parents=True)
+    data.mkdir(parents=True)
+    (program / "install.json").write_text(json.dumps({"owner": "haus.astrid.runtime", "managed_by": "pinokio",
+                                                       "data_root": str(data)}), encoding="utf-8")
+    selection = data.parent / "astrid-install.json"
+    selection.parent.mkdir(parents=True, exist_ok=True)
+    selection.write_text(json.dumps({"owner": "haus.astrid.runtime", "program_root": str(program),
+                                     "data_root": str(data)}), encoding="utf-8")
+    monkeypatch.setattr(ci_journey.sys, "platform", "linux")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    selected = ci_journey.pack_host_ready_path(pinokio_row={"home": str(home), "program_root": str(program),
+                                                            "data_root": str(data)})
+    assert selected == data / "runtime" / ci_journey.PACK_HOST_READY
+
+
+def test_pinokio_pack_host_selection_rejects_a_different_selected_program(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    program = home / "pinokio-home" / "api" / "astrid-row" / "app" / "astrid"
+    data = home / ".local" / "share" / "astrid"
+    program.mkdir(parents=True)
+    data.mkdir(parents=True)
+    (program / "install.json").write_text(json.dumps({"owner": "haus.astrid.runtime", "managed_by": "pinokio",
+                                                       "data_root": str(data)}), encoding="utf-8")
+    selection = data.parent / "astrid-install.json"
+    selection.parent.mkdir(parents=True, exist_ok=True)
+    selection.write_text(json.dumps({"owner": "haus.astrid.runtime", "program_root": str(home / "other"),
+                                     "data_root": str(data)}), encoding="utf-8")
+    monkeypatch.setattr(ci_journey.sys, "platform", "linux")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    with pytest.raises(RuntimeError, match="Pinokio selection"):
+        ci_journey.pack_host_ready_path(pinokio_row={"home": str(home), "program_root": str(program),
+                                                     "data_root": str(data)})
+
+
 def test_sdk_result_tolerates_only_leading_diagnostic_lines():
     import pytest
     from scripts import ci_journey

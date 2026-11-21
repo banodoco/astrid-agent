@@ -86,7 +86,8 @@ def row_fixture(prompt):
     for i in range(1 if prompt else 2):
         project, timeline = f"p{i}", f"t{i}"
         draft = {"realmId": "realm", "actorId": "actor", "projectId": project, "timelineId": timeline,
-                 "ownerId": f"owner{i}", "intentId": f"intent{i}", "payloadSha256": "1" * 64}
+                 "ownerId": f"owner{i}", "intentId": f"intent{i}", "payloadSha256": "1" * 64,
+                 "requestSha256": "4" * 64, "keySha256": "5" * 64}
         config = {"projectId": project, "timelineId": timeline, "savedLabel": "Old edit", "draftLabel": "Pending"}
         accepted = {"revision": "rev-1", "publication": "pub-1"}
         row["timelines"].append({
@@ -94,21 +95,37 @@ def row_fixture(prompt):
             "author": browser_step("author", gate.RELEASE13_APP_COMMIT, R13_MANIFEST, draft=draft,
                                    blockedPosts=1, accepted=accepted),
             "reopen": browser_step("reopen", R14_APP, R14_MANIFEST, draft=draft.copy(),
-                                   reopenedLabel="Old edit", draftVisible=True),
+                                   reopenedLabel="Pending", draftVisible=True, freshProfile=True,
+                                   retry={"clicked": True, "name": "Try again", "responseStatus": 200,
+                                          "revision": "rev-2", "publication": "pub-2",
+                                          "removedFromQueue": True, "idempotencyKeyMatches": True},
+                                   saveAttempts=[{"method": "POST", "path": f"/v1/projects/{project}/timelines/{timeline}/commit",
+                                                  "disposition": "allowed", "bodySha256": "4" * 64, "keySha256": "5" * 64}],
+                                   accepted_readback={"reopened": True, "project_id": project, "timeline_id": timeline,
+                                                      "revision_id": "rev-2", "publication_id": "pub-2",
+                                                      "label": "Pending", "document_sha256": "6" * 64}),
         })
         projects[project] = {"timelines": {timeline: {
             "revision_id": "rev-1", "publication_id": "pub-1",
-            "history": [{"revision_sha256": value * 64} for value in ("2", "3")],
+            "history": [{"revision_id": f"rev-{i}", "publication_id": f"pub-{i}", "revision_sha256": value * 64}
+                        for i, value in enumerate(("2", "3"))],
         }}}
     if prompt:
+        notice = {"title": "Update Astrid Required Show how",
+                  "reason": "This update is required: Required test release.", "action": "Update now"}
+        visit = {"visible": True, "prompt": notice, "saveAttempts": [], "saveAttemptsBeforePrompt": 0}
         row["prompt"] = browser_step(
             "prompt", gate.RELEASE13_APP_COMMIT, R14_MANIFEST, draft=draft.copy(),
             manifest_reads=2, browserManifestSha256=R14_MANIFEST,
-            prompt={"title": "Update Astrid Required Show how",
-                    "reason": "This update is required: Required test release.", "action": "Update now"},
+            prompt=notice,
+            visits=[
+                {**visit, "kind": "already-open-edited-tab", "sameDocument": True, "draft": draft.copy(),
+                 "initialManifestSha256": R13_MANIFEST, "manifestResponseSha256": [R13_MANIFEST, R14_MANIFEST]},
+                {**visit, "kind": "fresh-visit", "freshProfile": True, "manifestResponseSha256": [R14_MANIFEST]},
+            ],
         )
     else:
-        row["realm_before"] = {"realm_id": "realm", "projects": projects}
+        row["realm_before"] = {"realm_id": "realm", "realm_ids": ["realm"], "projects": projects}
         row["realm_after"] = deepcopy(row["realm_before"])
     return row
 
@@ -177,3 +194,29 @@ def test_inventory_follows_all_pages_and_reads_each_revision():
     replies[timeline + "/commits?limit=50&cursor=older"]["next_cursor"] = "older"
     with pytest.raises(RuntimeError, match="repeated page cursor"):
         live.realm_inventory(client)
+
+
+def test_gate_refuses_prompt_without_edited_tab_and_fresh_visit_request_evidence():
+    contract = matrix.FIX17_REQUIRED_UPDATE_MATRIX[0]
+    row = row_fixture(True)
+    row["prompt"].pop("visits", None)
+    errors = gate._fix17_browser_errors(contract["job_id"], contract, row, CANDIDATE)
+    assert any("both R13 visits" in error for error in errors)
+
+
+def test_gate_refuses_queue_claim_without_actual_retry_and_accepted_readback():
+    contract = matrix.FIX17_REQUIRED_UPDATE_MATRIX[0]
+    row = row_fixture(True)
+    row["timelines"][0]["reopen"].pop("retry", None)
+    errors = gate._fix17_browser_errors(contract["job_id"], contract, row, CANDIDATE)
+    assert any("accepted Retry" in error for error in errors)
+
+
+def test_gate_refuses_duplicates_in_equal_realm_history():
+    contract = matrix.FIX17_REQUIRED_UPDATE_MATRIX[1]
+    row = row_fixture(False)
+    history = row["realm_before"]["projects"]["p1"]["timelines"]["t1"]["history"]
+    history[1] = deepcopy(history[0])
+    row["realm_after"] = deepcopy(row["realm_before"])
+    errors = gate._fix17_browser_errors(contract["job_id"], contract, row, CANDIDATE)
+    assert any("unique revision and publication IDs" in error for error in errors)

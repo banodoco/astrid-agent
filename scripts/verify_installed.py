@@ -34,6 +34,17 @@ DOCUMENTED_R1_LAUNCHER = (
 # BoundaryHandoff stamps install.json with one of these once R1 owns the install.
 R1_SERVICE_LABELS = frozenset({'astrid-r1.service', 'haus.astrid.runtime.r1'})
 R1_VERSION_RECORD_KEYS = frozenset({'env', 'identity', 'profile', 'python', 'root'})
+OPAQUE_VERSION_ID = re.compile(r'[0-9a-f]{12}')
+R15_STANDIN_MARKERS = frozenset({'fresh-install-update-stand-in', 'M-RT UPDATE TEST STAND-IN'})
+
+
+def _opaque_version_id_allowed(version, manifest):
+    """R14's installer uses an opaque directory; admit it only with pinned provenance."""
+    release = manifest.get('release')
+    if release != 14 and not (release == 15 and manifest.get('qualification_marker') in R15_STANDIN_MARKERS):
+        return False
+    return (isinstance(version.get('root'), str)
+            and OPAQUE_VERSION_ID.fullmatch(Path(version['root']).name) is not None)
 
 
 def read(path):
@@ -387,7 +398,8 @@ def _candidate_self_consistency_problems(version, manifest, manifest_bytes, runt
         if sha is None:
             problems.append(f'installed manifest {name} pin is not a full Git SHA')
     # astrid.installer.core.new_version_id names the version after the pins it installed.
-    if agent and runtime and not Path(version.get('root', '')).name.startswith(f'{agent[:8]}-{runtime[:8]}-'):
+    if (agent and runtime and not Path(version.get('root', '')).name.startswith(f'{agent[:8]}-{runtime[:8]}-')
+            and not _opaque_version_id_allowed(version, manifest)):
         problems.append('installed version id does not match manifest Agent/Runtime pins')
     if manifest_bytes != installer_manifest_bytes(manifest):
         problems.append('installed manifest bytes do not match installer writer output')

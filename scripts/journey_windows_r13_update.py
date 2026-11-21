@@ -86,13 +86,13 @@ STEPS = (
     ("interrupted_update", "kill update at observed durable journal checkpoint"),
     ("recover_old", "recover Release 13 installation and intact workspace"),
 )
-STEP_LABELS = dict(STEPS)
+STEP_LABELS = {**dict(STEPS), "retry_candidate": "retry public update and reopen the recovered composition"}
 # The receipt's assertions; the evidence checker names the same ones.
 CHECKS = ("release13_install", "update_exit", "release", "one_runtime", "service", "health",
           "doctor", "dry_run", "data_marker", "timeline_saved", "timeline_reopened", "unrelated_sentinel")
 KILLED_CHECKS = ("release13_install", "interruption_checkpoint", "process_killed", "recovery_exit",
                  "rollback_release", "one_runtime", "service", "health", "data_marker",
-                 "timeline_reopened", "unrelated_sentinel")
+                 "timeline_reopened", "retry_exit", "retry_live_candidate", "unrelated_sentinel")
 
 
 class WindowsR13StepError(RuntimeError):
@@ -118,7 +118,9 @@ def step(result: dict, result_path: Path, key: str):
     try:
         yield record
     except Exception as exc:
-        record.update(status="fail", ended_at=_now(), error=f"{type(exc).__name__}: {exc}")
+        record.update(status="fail", ended_at=_now(), error=f"{type(exc).__name__}: {exc}",
+                      child_exit_code=getattr(exc, "child_exit_code", None),
+                      child_stderr_tail=output_tail(getattr(exc, "child_stderr", "")))
         journey.write_json(result_path, result)
         print(f"[windows-r13] {label}: FAILED: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
         if isinstance(exc, WindowsR13StepError):
@@ -151,7 +153,8 @@ def run_captured(argv: list, log: Path, *, env: dict, timeout: int) -> tuple[int
 
 
 def output_tail(output: str) -> list[str]:
-    lines = [line[:OUTPUT_LINE_LIMIT] for line in output.splitlines() if line.strip()]
+    lines = [jumps._safe_runtime_body(line)[:OUTPUT_LINE_LIMIT]
+             for line in output.splitlines() if line.strip()]
     return lines[-OUTPUT_TAIL_LINES:]
 
 
@@ -232,6 +235,8 @@ def candidate_update_windows(app: Path, manifest_path: Path, shell: str, evidenc
     The exit code is returned, not raised, so the leg asserts it beside the installed release: an
     update that exits 0 and installs nothing is the failure this leg exists to catch.
     """
+    previous_receipt = windows_run_receipt(root.parent)
+    invocation_started = time.time()
     error = None
     try:
         journey.bootstrap(app, manifest_path, shell, "update", evidence, root, data)
@@ -246,7 +251,16 @@ def candidate_update_windows(app: Path, manifest_path: Path, shell: str, evidenc
     log = evidence / "update-bootstrap.log"
     lines = ([line for line in log.read_text(encoding="utf-8-sig", errors="replace").splitlines() if line.strip()]
              if log.is_file() else [])
-    return {"command": "install --update", "exit_code": code, "log": str(log), "last_lines": lines[-8:]}
+    receipt = windows_run_receipt(root.parent)
+    invocation = {"started_at": int(invocation_started), "finished_at": int(time.time()),
+                  "previous_operation_id": (previous_receipt or {}).get("operation_id")}
+    invocation_tied = evidence_gate._windows_receipt_matches_invocation(receipt, invocation)
+    stderr_log = evidence / "update-bootstrap-stderr.log"
+    stderr = stderr_log.read_text(encoding="utf-8-sig", errors="replace") if stderr_log.is_file() else ""
+    return {"command": "install --update", "exit_code": code, "log": str(log),
+            "last_lines": output_tail("\n".join(lines[-8:])), "stderr_tail": output_tail(stderr),
+            "installer_receipt": receipt, "invocation": invocation,
+            "receipt_invocation_tied": invocation_tied}
 
 
 def check_dry_run(report) -> dict:
@@ -290,16 +304,17 @@ def kill_update_at_owned_checkpoint(app: Path, candidate_manifest: Path, shell: 
     env["BROWSER"] = '"' + sys.executable + '" -c "pass" %s'
     journal_path = root / "update-transaction.json"
     log_path = evidence / "killed-update-bootstrap.log"
+    stderr_path = evidence / "killed-update-bootstrap.stderr.txt"
     evidence.mkdir(parents=True, exist_ok=True)
     caught = None
-    with log_path.open("wb") as log:
+    with log_path.open("wb") as log, stderr_path.open("wb") as stderr:
         process = subprocess.Popen([str(item) for item in argv], env=env,
-                                   stdout=log, stderr=subprocess.STDOUT)
+                                   stdout=log, stderr=stderr)
         try:
             until = time.monotonic() + 180
             while time.monotonic() < until:
                 if process.poll() is not None:
-                    raise RuntimeError("Updater completed before a killable durable checkpoint")
+                    break
                 if journal_path.is_file():
                     try:
                         value = journey.read_json(journal_path)
@@ -312,7 +327,12 @@ def kill_update_at_owned_checkpoint(app: Path, candidate_manifest: Path, shell: 
                         break
                 time.sleep(0.02)
             if caught is None:
-                raise RuntimeError("No durable stopped/backed_up update checkpoint before deadline")
+                code = process.poll()
+                error = RuntimeError("Updater completed before a killable durable checkpoint" if code is not None
+                                     else "No durable stopped/backed_up update checkpoint before deadline")
+                error.child_exit_code = code
+                error.child_stderr = stderr_path.read_text(encoding="utf-8", errors="replace")
+                raise error
             # taskkill /T acts on the just-created process and its children,
             # not on a journal PID or a guessed process name.
             killed = subprocess.run(
@@ -320,7 +340,10 @@ def kill_update_at_owned_checkpoint(app: Path, candidate_manifest: Path, shell: 
                 capture_output=True, timeout=30, check=False)
             exit_code = process.wait(timeout=30)
             if killed.returncode != 0 or exit_code == 0:
-                raise RuntimeError("Owned update process was not demonstrably terminated")
+                error = RuntimeError("Owned update process was not demonstrably terminated")
+                error.child_exit_code = exit_code
+                error.child_stderr = stderr_path.read_text(encoding="utf-8", errors="replace")
+                raise error
             return {**caught, "taskkill_exit_code": killed.returncode,
                     "installer_exit_code": exit_code, "killed": True}
         finally:
@@ -333,7 +356,8 @@ def recover_killed_r13_update(args, result: dict, result_path: Path, *,
                               app: Path, candidate_path: Path, root: Path, data: Path,
                               evidence: Path, original: dict, marker: Path, digest: str,
                               sentinel, birth: str) -> dict:
-    """A recovery-only retry must reselect R13 with the original owned workspace."""
+    """Recover the original R13 on exit 3, then retry successfully on the same roots."""
+    original_composition = result["timeline_seed"]["composition"]
     with step(result, result_path, "interrupted_update"):
         interrupted = kill_update_at_owned_checkpoint(
             app, candidate_path, args.shell, evidence, root, data)
@@ -348,66 +372,111 @@ def recover_killed_r13_update(args, result: dict, result_path: Path, *,
         retry = candidate_update_windows(app, candidate_path, args.shell,
                                          evidence, root, data)
         result["recovery"] = {"exit_code": retry["exit_code"],
-                              "command": retry["command"], "interruption": interrupted}
+                              "command": retry["command"], "interruption": interrupted,
+                              "stderr_tail": retry["stderr_tail"],
+                              "installer_receipt": retry.get("installer_receipt"),
+                              "invocation": retry["invocation"],
+                              "receipt_invocation_tied": retry.get("receipt_invocation_tied")}
         # Recovery-only is *not* a successful update. Exit 3 was introduced
         # specifically so this state is not mistaken for a published candidate.
-        if retry["exit_code"] != 3:
+        recovery_receipt = retry.get("installer_receipt")
+        if (retry["exit_code"] != 3 or retry.get("receipt_invocation_tied") is not True
+                or not isinstance(recovery_receipt, dict) or recovery_receipt.get("exit_code") != 3
+                or recovery_receipt.get("kind") != "not-updated"):
             raise RuntimeError("Interrupted candidate update did not give a recovery-only exit 3")
         result["checks"]["recovery_exit"] = "pass"
 
         version_path, selected_data, version = journey.installation(root, data)
-        if jumps.installed_release(version) != jumps.RELEASE13_RELEASE:
+        if (jumps.installed_release(version) != jumps.RELEASE13_RELEASE
+                or selected_data != data or version["root"] != original["root"]):
             raise RuntimeError("Recovered Windows installation is not published Release 13")
         previous_manifest = journey.read_json(Path(version["root"]) / "manifest.json")
         if (previous_manifest.get("agent", {}).get("sha") != jumps.RELEASE13_IDENTITY["agent"]
                 or previous_manifest.get("runtime", {}).get("sha") != jumps.RELEASE13_IDENTITY["runtime"]):
             raise RuntimeError("Recovered Windows installation does not match published R13 pins")
         result["checks"]["rollback_release"] = "pass"
-        result["release_transition"] = {"from": jumps.RELEASE13_RELEASE,
-                                        "to": jumps.RELEASE13_RELEASE,
-                                        "source": "interrupted-candidate-recovered-previous"}
+        recovery = result["recovery"]
+        recovery["release_transition"] = {"from": jumps.RELEASE13_RELEASE, "to": jumps.RELEASE13_RELEASE,
+                                          "source": "interrupted-candidate-recovered-previous"}
         journey.windows.powershell("Start-ScheduledTask -TaskName 'Astrid Runtime' -TaskPath '\\'", "recovery-start.log")
         journey.wait_ready(data, timeout=wait_timeout())
-        owners = result["live_runtimes"] = windows_live_runtime_owners(data)
+        owners = recovery["live_runtimes"] = windows_live_runtime_owners(data)
         if [item["data_root"] for item in owners] != [str(data)]:
             raise RuntimeError("Recovered R13 must have exactly one live owned Runtime")
         result["checks"]["one_runtime"] = "pass"
-        result["service_manager"] = journey.assert_direct_service_ownership(root, data)
+        recovery["service_manager"] = journey.assert_direct_service_ownership(root, data)
         result["checks"]["service"] = "pass"
         health = journey.healthy(data)
-        if (health.get("identity") or {}).get("release") != jumps.RELEASE13_RELEASE:
+        if ((health.get("identity") or {}).get("release") != jumps.RELEASE13_RELEASE
+                or health.get("schema_digest") != jumps.RELEASE13_IDENTITY["schema_digest"]
+                or owners[0].get("runtime_instance_id") != health.get("runtime_instance_id")):
             raise RuntimeError("Recovered Runtime does not report Release 13")
         result["checks"]["health"] = "pass"
-        result["installed_tuple"] = {"app": jumps.RELEASE13_APP_COMMIT,
-                                     "agent": jumps.RELEASE13_IDENTITY["agent"],
-                                     "runtime": jumps.RELEASE13_IDENTITY["runtime"]}
+        recovery["live_release"] = jumps.RELEASE13_RELEASE
+        recovery["installed_tuple"] = {"app": jumps.RELEASE13_APP_COMMIT, **jumps.RELEASE13_IDENTITY}
         (evidence / "recovery").mkdir(parents=True, exist_ok=True)
         journey.verify("install", version_path, data, evidence / "recovery")
-        result["import_origins"] = (
+        recovery["import_origins"] = (
             journey.read_json(evidence / "recovery" / "verify-install.json").get("details") or {}).get("origin.imports")
         journey.assert_content(version, evidence, PROJECT, marker, digest)
         result["data_marker"]["survived"] = True
+        recovery["data_marker"] = dict(result["data_marker"])
         result["checks"]["data_marker"] = "pass"
-
-        # Reopen the original seeded R13 timeline; the older release remains
-        # able to save it after the failed update, proving usable user data.
-        saved = jumps.live_workspace(root, data, evidence / "recovery-save",
-                                     "save_timeline_after_update", result["timeline_seed"])
-        reopened = jumps.live_workspace(root, data, evidence / "recovery-reopen",
-                                        "reopen_saved_timeline", saved)
-        if reopened.get("reopened") is not True:
-            raise RuntimeError("Recovered R13 lost the seeded timeline")
-        result["timeline_save"] = saved
-        result["timeline_reopen"] = reopened
+        recovery["timeline_reopen"] = jumps.live_workspace(
+            root, data, evidence / "recovery-reopen", "reopen_saved_composition", original_composition)
         result["checks"]["timeline_reopened"] = "pass"
 
+    with step(result, result_path, "retry_candidate"):
+        retry_dir = evidence / "public-retry"
+        retry = candidate_update_windows(app, candidate_path, args.shell, retry_dir, root, data)
+        result["retry"] = retry
+        retry_receipt = retry.get("installer_receipt")
+        if (retry["exit_code"] != 0 or retry.get("receipt_invocation_tied") is not True
+                or not isinstance(retry_receipt, dict) or retry_receipt.get("kind") != "updated"
+                or retry_receipt.get("exit_code") != 0):
+            raise RuntimeError("Public update retry after recovery did not exit 0")
+        manifest = journey.read_json(candidate_path)
+        version_path, selected_data, version = journey.installation(root, data)
+        target_release = manifest.get("release")
+        if (retry_receipt.get("still") != target_release or retry_receipt.get("target") != target_release):
+            raise RuntimeError("Public update retry receipt does not match the candidate manifest release")
+        if jumps.installed_release(version) != target_release or selected_data != data:
+            raise RuntimeError("Public update retry did not select the exact live R14 installation")
+        selected = jumps.selected_candidate(manifest, version, jumps.RELEASE13_IDENTITY)
+        active_data = jumps.selected_data_root(root, data, allow_r1=False)
+        journey.wait_ready(active_data, timeout=wait_timeout())
+        live = journey.healthy(active_data)
+        owners = windows_live_runtime_owners(active_data)
+        if ((live.get("identity") or {}).get("release") != target_release
+                or live.get("schema_digest") != selected["schema_digest"]
+                or not live.get("runtime_instance_id") or len(owners) != 1
+                or owners[0].get("runtime_instance_id") != live.get("runtime_instance_id")
+                or owners[0].get("data_root") != str(data)
+                or live.get("runtime_instance_id") == health.get("runtime_instance_id")):
+            raise RuntimeError("Public update retry left no healthy live candidate Runtime")
+        service = journey.assert_direct_service_ownership(root, active_data)
+        verified = journey.verify("install", version_path, active_data, retry_dir)
+        result["import_origins"] = (journey.read_json(verified).get("details") or {}).get("origin.imports")
+        result["installed_tuple"] = {"app": result["sources"]["app"]["sha"], **selected}
+        result["release_transition"] = {"from": jumps.RELEASE13_RELEASE, "to": target_release,
+                                        "source": "candidate-install-update"}
+        result["live_runtimes"] = owners
+        result["service_manager"] = service
+        retry.update(installed_tuple=result["installed_tuple"], live_release=target_release,
+                     live_runtimes=owners, candidate_manifest_sha256=hashlib.sha256(candidate_path.read_bytes()).hexdigest())
+        journey.assert_content(version, evidence, PROJECT, marker, digest)
+        retry["data_marker"] = dict(result["data_marker"])
+        retry["timeline_reopen"] = jumps.live_workspace(
+            root, active_data, evidence / "retry-composition-reopen", "reopen_saved_composition", original_composition)
+        result["checks"]["retry_exit"] = "pass"
+        result["checks"]["retry_live_candidate"] = "pass"
         settled = journey.sentinel_observation(sentinel, birth)
         result["sentinel"]["at_settlement"] = settled
         if not settled["alive"]:
             raise RuntimeError("Interrupted update disturbed an unrelated process")
         result["checks"]["unrelated_sentinel"] = "pass"
-        result["status"] = "pass"
-        return result
+    result["status"] = "pass"
+    return result
 
 
 def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) -> dict:
@@ -493,9 +562,8 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) 
             # An authentic Release 13 timeline is created in the same selected
             # installed Runtime, before installing the candidate.
             result["timeline_seed"] = jumps.live_workspace(
-                root, data, evidence / "release13-timeline-seed", "seed",
-                {"project": PROJECT + "-timeline", "generation": "release13-windows",
-                 "task_id": None, "create_project": True})
+                root, data, evidence / "release13-timeline-seed", "seed_authored_timeline",
+                {"project": PROJECT + "-timeline", "generation": "release13-windows"})
 
         if killed:
             return recover_killed_r13_update(
@@ -510,10 +578,10 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) 
                 raise RuntimeError(f"Candidate install.ps1 --update exited {update['exit_code']} from the "
                                    f"Release {jumps.RELEASE13_RELEASE} install: {update['last_lines']}")
             result["checks"]["update_exit"] = "pass"
-            receipt = update["receipt"] = windows_run_receipt(root.parent)
-            if receipt is not None and (receipt.get("kind") != "updated" or receipt.get("exit_code") != 0
-                                        or receipt.get("still") != target_release
-                                        or receipt.get("target") != target_release):
+            receipt = update["receipt"] = update.get("installer_receipt")
+            if (not update.get("receipt_invocation_tied") or not isinstance(receipt, dict)
+                    or receipt.get("kind") != "updated" or receipt.get("exit_code") != 0
+                    or receipt.get("still") != target_release or receipt.get("target") != target_release):
                 raise RuntimeError(f"The candidate's run receipt is not updated to release {target_release}: {receipt}")
 
         # 5. The installed and live release are the candidate's.
@@ -574,6 +642,7 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) 
             journey.assert_content(version, evidence, PROJECT, marker, digest)
             result["data_marker"]["survived"] = True
             result["checks"]["data_marker"] = "pass"
+
             settled = journey.sentinel_observation(sentinel, birth)
             result["sentinel"]["at_settlement"] = settled
             if not settled["alive"]:
@@ -583,7 +652,7 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) 
             seed = result["timeline_seed"]
             saved = jumps.live_workspace(
                 root, active_data, evidence / "candidate-save",
-                "save_timeline_after_update", seed)
+                "save_composition_after_update", seed)
             if saved.get("saved") is not True:
                 raise RuntimeError("Installed candidate did not save the timeline edit")
             result["timeline_save"] = saved
@@ -592,9 +661,12 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) 
         with step(result, result_path, "reopen_timeline"):
             reopened = jumps.live_workspace(
                 root, active_data, evidence / "candidate-reopen",
-                "reopen_saved_timeline", saved)
-            if reopened.get("reopened") is not True or reopened.get("saved_name") != saved["saved_name"]:
-                raise RuntimeError("The installed candidate did not reopen the saved timeline edit")
+                "reopen_saved_composition", saved)
+            if (reopened.get("reopened") is not True
+                    or reopened.get("accepted_revision_id") != saved.get("accepted_revision_id")
+                    or reopened.get("project_id") != seed.get("project")
+                    or reopened.get("timeline_id") != seed.get("timeline")):
+                raise RuntimeError("The installed candidate did not reopen the accepted composition revision")
             result["timeline_reopen"] = reopened
             result["checks"]["timeline_reopened"] = "pass"
         result["status"] = "pass"
