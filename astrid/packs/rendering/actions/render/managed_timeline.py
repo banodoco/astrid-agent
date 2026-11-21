@@ -897,7 +897,9 @@ def _project_exact_parent_head(
                         "project_id": project_id, "timeline_id": timeline_id}
         internal_images = [{**{key: row[key] for key in INTERNAL_IMAGE_FIELDS},
                             "project_id": row.get("project_id", project_id)} for row in internals]
-        parent_image, internal_images, placement_findings = normalize_revision_closure(parent_image, internal_images)
+        parent_image, internal_images, placement_findings = normalize_revision_closure(
+            parent_image, internal_images, legacy_reader=True,
+        )
         projected = project_runtime_parent_composition(
             parent_image,
             shot_revisions=[{**{key: row[key] for key in SHOT_IMAGE_FIELDS},

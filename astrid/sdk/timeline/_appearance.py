@@ -10,6 +10,10 @@ import subprocess
 from astrid.core.rendering._remotion_package import composition_package_problem
 from astrid.core.rendering.node_pin import resolve_pinned_node
 from astrid.core.rendering.remotion_runtime import resolve_remotion_project_dir
+from astrid.core.timeline.track_appearance import (
+    CLIP_PLACEMENT_VERSION,
+    is_legacy_clip_placement_version,
+)
 
 from ._command_state import CommandError, equal
 
@@ -180,9 +184,29 @@ def _normalize_one(ctx, owner, ref):
     return alias_findings + result.get('findings', [])
 
 
-def normalize_revision_closure(parent, internals):
+def _omit_legacy_placement_version(config):
+    tracks = config.get('tracks')
+    if isinstance(tracks, list):
+        for track in tracks:
+            app = track.get('app') if isinstance(track, dict) else None
+            if isinstance(app, dict) and is_legacy_clip_placement_version(app.get(CLIP_PLACEMENT_VERSION)):
+                del app[CLIP_PLACEMENT_VERSION]
+
+
+def omit_legacy_placement_markers(parent, internals):
+    """Treat the R13 marker as absent on detached reader copies."""
+    config = parent['payload'].get('config')
+    if isinstance(config, dict):
+        _omit_legacy_placement_version(config)
+    for row in internals:
+        _omit_legacy_placement_version(row['payload'])
+
+
+def normalize_revision_closure(parent, internals, *, legacy_reader=False):
     """Normalize copies while each source still has its own tracks and canvas."""
     parent, internals = copy.deepcopy(parent), copy.deepcopy(internals)
+    if legacy_reader:
+        omit_legacy_placement_markers(parent, internals)
     payload = parent['payload']
     config = payload.get('config')
     if not isinstance(config, dict):

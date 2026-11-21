@@ -664,6 +664,34 @@ def _validate_params(
             _fail(f"{path}.params.{key}", "is not declared by the retained element schema")
 
 
+def _validate_legacy_placement_markers(
+    config: Mapping[str, Any], previous: Mapping[str, Any], *, path: str,
+) -> None:
+    from astrid.core.timeline.track_appearance import (
+        CLIP_PLACEMENT_VERSION,
+        is_legacy_clip_placement_version,
+    )
+
+    def marked_tracks(source: Mapping[str, Any]) -> set[str]:
+        rows = source.get("tracks")
+        if not isinstance(rows, list):
+            return set()
+        result = set()
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            track_id, app = row.get("id"), row.get("app")
+            if (isinstance(track_id, str) and isinstance(app, Mapping)
+                    and is_legacy_clip_placement_version(app.get(CLIP_PLACEMENT_VERSION))):
+                result.add(track_id)
+        return result
+
+    introduced = marked_tracks(config) - marked_tracks(previous)
+    if introduced:
+        track_id = min(introduced)
+        _fail(f"{path}[{track_id!r}].app.{CLIP_PLACEMENT_VERSION}", "is invalid")
+
+
 def validate_final_candidate(
     candidate: Mapping[str, Any], *,
     baseline: Mapping[str, Any] | None = None,
@@ -722,6 +750,10 @@ def validate_final_candidate(
     baseline_parent = (baseline or {}).get("parent", {})
     if not _same_fields(candidate, baseline, ("project_id", "timeline_id", "base_parent")):
         baseline_parent = {}
+    # The saved reader skips this exact marker, so compare its raw authored value here.
+    _validate_legacy_placement_markers(
+        config, baseline_parent.get("config", {}), path="candidate.parent.config.tracks",
+    )
     # An explicit null mirror is legacy storage, never a newly authored list.
     for scope, previous, path in (
         (parent, baseline_parent, "candidate.parent.clips"),
@@ -746,6 +778,14 @@ def validate_final_candidate(
     if not isinstance(shots_value, Mapping):
         _fail("candidate.shots", "must be an object")
     shots: Mapping[str, Any] = shots_value
+    baseline_shots = (baseline or {}).get("shots", {})
+    for shot_id, shot in shots.items():
+        internal = shot.get("internal_timeline") if isinstance(shot, Mapping) else None
+        if not isinstance(internal, Mapping):
+            continue
+        previous = baseline_shots.get(shot_id, {}).get("internal_timeline", {})
+        path = f"candidate.shots[{shot_id!r}].internal_timeline.tracks"
+        _validate_legacy_placement_markers(internal, previous, path=path)
     for occurrence_id, placement in placements.items():
         shot_id_value = placement.get("shot_id")
         if not isinstance(shot_id_value, str):

@@ -1214,10 +1214,14 @@ class RuntimeCommitService:
                               index[row["internal_timeline_revision_id"]] for row in shots}.values())
         # Capture admission and SDK capture must project the same normalized
         # copies of the verified immutable closure.
-        from ._appearance import normalize_revision_closure
+        from ._appearance import normalize_revision_closure, omit_legacy_placement_markers
         if normalize_appearance:
-            parent, internals, placement_findings = normalize_revision_closure(parent, internals)
+            parent, internals, placement_findings = normalize_revision_closure(
+                parent, internals, legacy_reader=authoring_preview is None,
+            )
         else:
+            if authoring_preview is None:
+                omit_legacy_placement_markers(parent, internals)
             placement_findings = []
         if marker is not None:
             marker['placement_migrations'] = placement_findings
