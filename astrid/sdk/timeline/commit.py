@@ -1504,6 +1504,7 @@ class RuntimeCommitService:
                         plan.bundle['source_mapping'].get('pinned_documents', []))
                 validate_final_candidate(
                     validation_bundle,
+                    before_canonical_reopen=plan.bundle if validation_bundle is not plan.bundle else None,
                     # A source copy is Runtime-authenticated content; it is checked for shape only.
                     authenticated_copy=bool(plan.records) and all(
                         record['command']['op'] == 'timeline.duplicate' for record in plan.records),
