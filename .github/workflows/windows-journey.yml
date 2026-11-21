@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       app_ref:
-        description: Optional full 40-character banodoco/astrid-app commit SHA; defaults to main
+        description: Optional full 40-character banodoco/astrid-app commit SHA; defaults to release/14/main
         required: false
         type: string
   push:
@@ -38,9 +38,9 @@ jobs:
         env:
           INPUT_APP_REF: ${{ inputs.app_ref }}
         run: |
-          $appRef = if ([string]::IsNullOrWhiteSpace($env:INPUT_APP_REF)) { "main" } else { $env:INPUT_APP_REF.Trim() }
+          $appRef = if ([string]::IsNullOrWhiteSpace($env:INPUT_APP_REF)) { "release/14/main" } else { $env:INPUT_APP_REF.Trim() }
           if (-not [string]::IsNullOrWhiteSpace($env:INPUT_APP_REF) -and $appRef -notmatch '^[0-9a-fA-F]{40}$') {
-            throw "app_ref must be a full 40-character commit SHA (or empty for main)"
+            throw "app_ref must be a full 40-character commit SHA (or empty for release/14/main)"
           }
           "ref=$appRef" >> $env:GITHUB_OUTPUT
 
