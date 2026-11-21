@@ -127,19 +127,18 @@ class ElementBuildError(ValueError):
     """A project element component did not compile; the message names the cause."""
 
 
-def compile_element_module(node: Path, esbuild: Path, stage_root: Path, entry: str) -> bytes:
+def compile_element_module(node: Path, esbuild_api: Path, stage_root: Path, entry: str, env: Mapping[str, str] | None = None) -> bytes:
     """Bundle one admitted component to a single ESM module with the renderer's Node and esbuild.
 
-    The caller resolves both as the render path does (``project_packs._renderer_compiler``).
+    The caller resolves the Node and esbuild JS API (``node_modules/esbuild/lib/main.js``) as the render path does
+    (``project_packs._renderer_compiler``); esbuild finds its own native binary.
     A compile failure is the component's verification.
     """
-    api = esbuild.parent.parent / "lib" / "main.js"
-    env = {"PATH": "", "LANG": "C.UTF-8", "ESBUILD_BINARY_PATH": str(esbuild)}
-    request = {"stage_root": str(stage_root), "entry": entry, "esbuild_api": str(api)}
+    request = {"stage_root": str(stage_root), "entry": entry, "esbuild_api": str(esbuild_api)}
     try:
         result = subprocess.run([str(node), "-e", ELEMENT_BUILDER_SOURCE],
                                 input=json.dumps(request, allow_nan=False).encode("utf-8"), capture_output=True,
-                                env=env, timeout=120, cwd=stage_root)
+                                env=dict(env) if env is not None else {"PATH": "", "LANG": "C.UTF-8"}, timeout=120, cwd=stage_root)
     except (OSError, subprocess.SubprocessError) as exc:
         raise ElementBuildError(f"The element compiler could not run ({exc}). Check the pinned Node and esbuild install.") from exc
     if result.returncode != 0 or not result.stdout:

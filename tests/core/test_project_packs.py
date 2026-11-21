@@ -272,3 +272,50 @@ def test_undeclared_descriptor_asset_cannot_advance_document(configured):
     (directory/'element.yaml').write_text(yaml.safe_dump(descriptor))
     with pytest.raises(ValueError,match='asset/support closure'):packs.admit_project_pack('realm','project')
     assert configured.rows==before
+
+
+def _remotion_copy(tmp_path, *, bin_esbuild):
+    """A Remotion project dir sharing the install's real esbuild native package, with ``bin/esbuild`` as given."""
+    real = Path(os.environ['ASTRID_REMOTION_PROJECT_DIR'])
+    project = tmp_path / 'remotion-copy'
+    modules = project / 'node_modules'
+    (modules / '@esbuild').mkdir(parents=True)
+    shutil.copy(real / 'package.json', project / 'package.json')
+    shutil.copytree(real / 'node_modules' / 'esbuild', modules / 'esbuild', ignore=shutil.ignore_patterns('bin'))
+    for native in (real / 'node_modules' / '@esbuild').iterdir():
+        (modules / '@esbuild' / native.name).symlink_to(native.resolve())
+    if bin_esbuild is not None:
+        (modules / 'esbuild' / 'bin').mkdir()
+        (modules / 'esbuild' / 'bin' / 'esbuild').write_text(bin_esbuild)
+    return project
+
+
+def test_admission_compiles_when_bin_esbuild_is_a_js_shim(monkeypatch, tmp_path):
+    shim = '#!/usr/bin/env node\nthrow new Error("shim is not a native executable");\n'
+    monkeypatch.setenv('ASTRID_REMOTION_PROJECT_DIR', str(_remotion_copy(tmp_path, bin_esbuild=shim)))
+    seed()
+    result = packs.admit_project_pack('realm', 'project')
+    compiled = result['elements'][0]['compiled']
+    assert compiled['path'].startswith('compiled/')
+    assert b'AbsoluteFill' in (Path(result['elements'][0]['snapshot']['root']) / compiled['path']).read_bytes()
+
+
+def test_compiler_discovery_needs_no_bin_esbuild_and_forwards_windows_env(monkeypatch, tmp_path):
+    # The Windows layout has no bin/esbuild and a native package of its own; discovery goes through the JS API only.
+    monkeypatch.setenv('ASTRID_REMOTION_PROJECT_DIR', str(_remotion_copy(tmp_path, bin_esbuild=None)))
+    monkeypatch.setattr(sys, 'platform', 'win32')
+    monkeypatch.setenv('SYSTEMROOT', 'C:\\Windows')
+    node, api = packs._renderer_compiler()
+    assert api.name == 'main.js' and api.parent.name == 'lib'
+    assert packs._node_env() == {'PATH': '', 'LANG': 'C.UTF-8', 'SYSTEMROOT': 'C:\\Windows'}
+
+
+def test_missing_esbuild_api_and_wrong_version_have_plain_fixes(monkeypatch, tmp_path):
+    project = _remotion_copy(tmp_path, bin_esbuild=None)
+    monkeypatch.setenv('ASTRID_REMOTION_PROJECT_DIR', str(project))
+    package = json.loads((project / 'package.json').read_text())
+    package['dependencies']['esbuild'] = '0.0.1'
+    (project / 'package.json').write_text(json.dumps(package))
+    with pytest.raises(ValueError, match=r'reports 0\.27\.7, but .* pins 0\.0\.1.*Repair the install'):packs._renderer_compiler()
+    (project / 'node_modules' / 'esbuild' / 'lib' / 'main.js').unlink()
+    with pytest.raises(ValueError, match=r'main\.js is missing.*Repair the install'):packs._renderer_compiler()

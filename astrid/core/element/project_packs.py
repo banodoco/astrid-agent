@@ -396,11 +396,16 @@ def _esbuild_pin(project: Path) -> str:
     return pinned
 
 
+_ESBUILD_VERSION_PROBE = "process.stdout.write(require(process.argv[1]).version)"
+
+
 def _renderer_compiler() -> tuple[Path,Path]:
-    """The renderer's own Node and Remotion esbuild, resolved the way the render path resolves them.
+    """The renderer's own Node and the Remotion project's esbuild JS API, on any platform.
 
     Node follows the Remotion project's engines pin (``ASTRID_NODE_EXECUTABLE`` must match it when set).
-    esbuild is the project's own pinned package, checked against its exact version. No separate lock.
+    esbuild is the project's own package, loaded through Node (``node_modules/esbuild/lib/main.js``): the API
+    finds its own native binary, so a JS shim at ``bin/esbuild`` or a Windows ``.exe`` layout both work.
+    Its version is checked against the project's exact pin. No separate lock, no PATH.
     """
     from astrid.core.env_vars import ASTRID_NODE_EXECUTABLE
     from astrid.core.rendering.node_pin import resolve_pinned_node
@@ -410,25 +415,33 @@ def _renderer_compiler() -> tuple[Path,Path]:
     if not node.ok:
         raise ValueError(f'Project element admission needs the renderer Node: {node.problem}')
     pin = _esbuild_pin(project)
-    binary = project/'node_modules'/'esbuild'/'bin'/'esbuild'
-    if not binary.is_file() or not (binary.parent.parent/'lib'/'main.js').is_file():
-        raise ValueError(f'Project element admission needs the Remotion esbuild {pin}, but {binary} is missing. {_REPAIR}')
-    env = {'PATH':'','LANG':'C.UTF-8','ESBUILD_BINARY_PATH':str(binary)}
+    api = project/'node_modules'/'esbuild'/'lib'/'main.js'
+    if not api.is_file():
+        raise ValueError(f'Project element admission needs the Remotion esbuild {pin}, but {api} is missing. {_REPAIR}')
     try:
-        observed = subprocess.run([str(binary),'--version'],capture_output=True,text=True,env=env,timeout=15,check=False).stdout.strip()
+        probe = subprocess.run([str(node.path),'-e',_ESBUILD_VERSION_PROBE,str(api)],capture_output=True,text=True,
+                               env=_node_env(),timeout=15,check=False)
     except (OSError,subprocess.SubprocessError) as exc:
-        raise ValueError(f'The Remotion esbuild {binary} cannot run ({exc}). {_REPAIR}') from exc
+        raise ValueError(f'The Remotion esbuild {api} cannot run ({exc}). {_REPAIR}') from exc
+    observed = probe.stdout.strip() if probe.returncode == 0 else ''
     if observed != pin:
-        raise ValueError(f'The Remotion esbuild {binary} reports {observed or "nothing"}, but {project/"package.json"} pins {pin}. {_REPAIR}')
-    return node.path, binary
+        raise ValueError(f'The Remotion esbuild {api} reports {observed or "nothing"}, but {project/"package.json"} pins {pin}. {_REPAIR}')
+    return node.path, api
+
+
+def _node_env() -> dict[str,str]:
+    """An empty environment for Node, plus the Windows variables it cannot start without."""
+    env = {'PATH':'','LANG':'C.UTF-8'}
+    env.update({k:os.environ[k] for k in ('SYSTEMROOT','SystemRoot') if k in os.environ})
+    return env
 
 
 def _compile_components(staging: Path, components) -> None:
     from astrid.pack_build import compile_element_module
-    node, esbuild = _renderer_compiler()
+    node, api = _renderer_compiler()
     for component in sorted(set(components)):
         target=staging/_compiled_path(component);target.parent.mkdir(parents=True,exist_ok=True)
-        target.write_bytes(compile_element_module(node,esbuild,staging,component))
+        target.write_bytes(compile_element_module(node,api,staging,component,_node_env()))
 
 
 def _selected_index(realm,project,document_id,row):
