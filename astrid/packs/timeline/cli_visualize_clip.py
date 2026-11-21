@@ -18,7 +18,7 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence, TypeVar
 
 STRIP_MOMENTS = 4
 COMPARE_MOMENTS = 4
@@ -266,7 +266,10 @@ def span_of(outputs: Mapping[str, Any], frames: Sequence[tuple[float, Path]]) ->
     return 0.0, 0.0
 
 
-def pick(frames: Sequence[tuple[float, Path]], count: int) -> list[tuple[float, Path]]:
+_Frame = TypeVar("_Frame")
+
+
+def pick(frames: Sequence[_Frame], count: int) -> list[_Frame]:
     """``count`` frames spread evenly (first and last included)."""
     if len(frames) <= count:
         return list(frames)
@@ -296,7 +299,10 @@ def draw(outputs: Mapping[str, Any], request: Mapping[str, Any], *, parsed: argp
     from PIL import Image
 
     from astrid.packs.rendering.actions.timeline_visualize import clip_views as cv
-    from astrid.packs.rendering.actions.timeline_visualize.fast_lane import FastLaneError, parse_region
+    from astrid.packs.rendering.actions.timeline_visualize.fast_lane import (
+        FastLaneError,
+        parse_region,
+    )
 
     root, frames, snapshot = captured(outputs)
     canvas = canvas_of(snapshot)

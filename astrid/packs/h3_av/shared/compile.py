@@ -18,11 +18,11 @@ from .request import H3Request, H3RequestError, normalize_request
 from .request_v2 import (
     CHARACTER_SWAP_ID,
     REF2VA_MODEL,
+    _settings,
     branch_for,
     effective_settings,
     json_times,
     read_prepared_request,
-    _settings,
     v1_native_settings,
 )
 from .timing import ContinuationTimingError, plan_continuation
@@ -1396,8 +1396,10 @@ def _compile_character_swap_v2(
 def _continuation_bundle(source: Path, destination: Path, settings: Mapping[str, Any]) -> Path:
     """Emit a request-specific copy of the captured continuation graph."""
     import shutil
+
     from vibecomfy.security.provenance import Provenance
     from vibecomfy.workflow_bundle import emit_bundle, load_bundle
+
     from .generation import PIKA_REF2VA_FILENAME, _h3_locked_urls, _required_locked_url
 
     if not settings["turbo"]["enabled"]:
@@ -1408,8 +1410,10 @@ def _continuation_bundle(source: Path, destination: Path, settings: Mapping[str,
     old_name = turbo_node.inputs["lora_name"]
     turbo_node.inputs.update(lora_name=PIKA_REF2VA_FILENAME, strength_model=settings["turbo"]["strength"])
     for node in workflow.nodes.values():
-        if node.class_type == "KSamplerSelect": node.inputs["sampler_name"] = settings["sampler"]
-        if node.class_type == "BasicScheduler": node.inputs["scheduler"] = settings["scheduler"]
+        if node.class_type == "KSamplerSelect":
+            node.inputs["sampler_name"] = settings["sampler"]
+        if node.class_type == "BasicScheduler":
+            node.inputs["scheduler"] = settings["scheduler"]
         if node.class_type == "MiniMaxH3SigmaShift":
             node.inputs.update(shift_video=settings["video_shift"], shift_audio=settings["audio_shift"])
     key = "loras/" + PIKA_REF2VA_FILENAME

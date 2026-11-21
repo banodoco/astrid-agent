@@ -59,8 +59,10 @@ def build_mask(
     width, height = size
     image = Image.new("L", size)
     draw = ImageDraw.Draw(image)
+    ellipse_recipe: list[list[float]] = []
+    box_recipe: list[list[int]] = []
     recipe = {"name": name, "size": list(size), "grow": grow, "invert": invert,
-              "ellipses": [], "boxes": []}
+              "ellipses": ellipse_recipe, "boxes": box_recipe}
     for raw in ellipses:
         shape = _numbers(raw, (4, 5), "--ellipse CX,CY,RX,RY[,ROT_DEG]")
         if len(shape) == 4:
@@ -75,7 +77,7 @@ def build_mask(
             raise ValueError("ellipse is outside the working frame")
         # Beyond the frame diagonal, the grown ellipse already covers the canvas.
         draw.polygon(_ellipse_points(shape, min(grow, max(size) * 2)), fill=255)
-        recipe["ellipses"].append(shape)
+        ellipse_recipe.append(shape)
     for raw in boxes:
         try:
             x, y, w, h = (int(part) for part in raw.split(","))
@@ -87,7 +89,7 @@ def build_mask(
             raise ValueError("box is outside the working frame")
         draw.rectangle((max(0, x - grow), max(0, y - grow),
                         min(width - 1, x + w + grow - 1), min(height - 1, y + h + grow - 1)), fill=255)
-        recipe["boxes"].append([x, y, w, h])
+        box_recipe.append([x, y, w, h])
     return (ImageOps.invert(image) if invert else image), recipe
 
 

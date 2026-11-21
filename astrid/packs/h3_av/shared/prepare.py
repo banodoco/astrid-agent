@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .errors import PreparationError
-from .generation import _BUILDER_SLOT_VALUES, LIMITS
+from .generation import _BUILDER_SLOT_VALUES, DEFAULT_SIZE, LIMITS
 from .masks import (
     MaskScheduleError,
     build_mask_schedule,
@@ -21,7 +21,6 @@ from .masks import (
     merge_intervals,
 )
 from .request import H3Request, H3RequestError, _asset_ids
-from .generation import DEFAULT_SIZE, LIMITS
 from .request_v2 import branch_for, timeline_image_limit_error
 
 

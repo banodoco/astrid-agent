@@ -10,7 +10,16 @@ from copy import deepcopy
 from fractions import Fraction
 from typing import Any, Mapping
 
-from .request import H3Request, H3RequestError, _nonblank, _number, _object, _unknown, lead_in_mode, DEFAULT_LEAD_IN
+from .request import (
+    DEFAULT_LEAD_IN,
+    H3Request,
+    H3RequestError,
+    _nonblank,
+    _number,
+    _object,
+    _unknown,
+    lead_in_mode,
+)
 
 FPS = Fraction(24, 1)
 SAMPLE_RATE = 48000

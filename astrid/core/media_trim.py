@@ -16,13 +16,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import tempfile
-from pathlib import Path
-from typing import Any
-
 import shutil
 import subprocess
+import tempfile
 from fractions import Fraction
+from pathlib import Path
+from typing import Any
 
 from astrid.core.media import MediaProbe, MediaProbeError, ffprobe_metadata_strict
 from astrid.core.media_crop import _kind_for
@@ -161,7 +160,6 @@ def trim_media(
             out = workdir / f"{Path(filename).stem}-trim.mp4"
             clip_file(src, out, start=start, end=end, fps=plan["fps"], sample_rate=probe.audio_sample_rate,
                       has_audio=probe.audio_codec is not None)
-            payload = out.read_bytes()
             metadata = {"operation": "trim", "source_object_id": source_object_id, "source_digest": source_digest,
                         "range": {"start": start, "end": end}, "bounds": plan["bounds"]}
             key = idempotency_key or _default_key(project, metadata)

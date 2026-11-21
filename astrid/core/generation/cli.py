@@ -595,6 +595,7 @@ def _media_ref_file(parsed, ref: str, stack) -> tuple[str, str]:
     """
     import hashlib
     import tempfile
+
     from astrid.sdk.media_handles import resolve_media_handle
 
     if not parsed.project:
