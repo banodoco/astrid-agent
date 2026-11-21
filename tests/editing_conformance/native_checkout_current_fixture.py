@@ -74,9 +74,23 @@ def prepare(case, *, gate3: bool = False):
     assert [clip["id"] for clip in parent["clips"][-2:]] == ["music-bed", "music-other"]
 
     if gate3:
+        from astrid.sdk.timeline.native_occurrence_delete import capture_occurrence_delete
+
+        # The parent membership belongs to the semantic occurrence command,
+        # not a raw emitter patch. Reopen each accepted deletion before adding
+        # the Gate 3 title so the emitter sees the current closure.
         authored = current_bundle(case)
+        for occurrence in list(authored["placements"]):
+            occurrence_id = occurrence["occurrence_id"]
+            _current_commit(
+                case,
+                [capture_occurrence_delete(authored, f"occurrence:{occurrence_id}")],
+                f"native-checkout-current-gate3-delete-{occurrence_id}",
+            )
+            authored = current_bundle(case)
+        assert authored["placements"] == []
+        assert authored["parent"]["occurrences"] == []
         desired = copy.deepcopy(authored)
-        desired["parent"]["occurrences"] = []
         desired["parent"]["clips"].append({
             "id": "gate3-title",
             "at": 0,

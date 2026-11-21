@@ -22,6 +22,10 @@ from astrid.sdk.generation import GenerationFacade
 from astrid.sdk.remote import RemoteAstridClient
 from astrid.sdk.workspace_client import WorkspaceClient
 from tests.packs.runpod.test_generation_preparation import retained, small_lease, lease_selection_case, sources
+# This fixture is defined in the sibling package conftest, not in the test module
+# that exports lease_selection_case. Import only the named dependency, not the
+# conftest plugin (which includes unrelated autouse provider replacements).
+from tests.packs.runpod.conftest import pod_watchdog_transport  # noqa: F401
 from tests.packs.vibecomfy.test_local_server_run import comfy
 
 

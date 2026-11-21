@@ -210,8 +210,6 @@ def seed(root, reused, *, duration_ms=10000, source_window=None, opaque_pin_scop
     internal["registry"] = {"assets": {"take": {"media_id": media, "type": "audio"}}}
     if opaque_pin_scope == "parent":
         after["parent"]["opaque"] = copy.deepcopy(opaque)
-    if opaque_pin_scope == "occurrence":
-        after["placements"][0]["opaque"] = copy.deepcopy(opaque)
     changes = emit_document_commands(occurred, after)
     # occurrence.create quantizes its input placement.  The fixture's source
     # contract retains the original literal 2000ms placement, so carry that
@@ -242,8 +240,6 @@ def seed(root, reused, *, duration_ms=10000, source_window=None, opaque_pin_scop
         internal["registry"] = {"assets": {"take": {"media_id": media, "type": "audio"}}}
         if opaque_pin_scope == "parent":
             source_after["parent"]["opaque"] = copy.deepcopy(opaque)
-        if opaque_pin_scope == "occurrence":
-            source_after["placements"][0]["opaque"] = copy.deepcopy(opaque)
         source_changes = emit_document_commands(source_before, source_after)
         placement_start = source_before["placements"][0]["placement"]["start_ms"]
         source_changes[0]["args"]["changes"].insert(0, {
@@ -266,6 +262,31 @@ def seed(root, reused, *, duration_ms=10000, source_window=None, opaque_pin_scop
     else:
         initial = submit([initialize, parent_track, card, *card_declaration, occurrence,
                           media_admission, *changes], "initial-commit")
+
+    if opaque_pin_scope == "occurrence":
+        # The placements projection is provenance, not an editable root.  The
+        # accepted occurrence owns the opaque payload; patch its field only after
+        # the semantic occurrence.create has materialized the canonical closure.
+        accepted_occurrence = next(
+            row for row in initial["parent_revision"]["payload"]["occurrences"]
+            if row["occurrence_id"] == "occ"
+        )
+        assert "opaque_transcript" not in accepted_occurrence
+        patch = {
+            "schema_version": 1, "op": "doc.patch", "version": "1",
+            "select": None, "args": {"changes": [{
+                "op": "set", "ref": "parent",
+                "path": ["occurrences", "occurrence_id:occ", "opaque_transcript"],
+                "before": {"state": "absent"},
+                "value": copy.deepcopy(opaque["opaque_transcript"]),
+            }]},
+        }
+        initial = submit([patch], "initial-opaque-occurrence")
+        accepted_occurrence = next(
+            row for row in initial["parent_revision"]["payload"]["occurrences"]
+            if row["occurrence_id"] == "occ"
+        )
+        assert accepted_occurrence["opaque_transcript"] == opaque["opaque_transcript"]
 
     if current_form:
         # Exercise the supported first-use path through the registered provider:
