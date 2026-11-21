@@ -36,7 +36,47 @@ RELEASE1_DIRECT_FRESH_JOB_IDS: Final = tuple(row["job_id"] for row in RELEASE1_D
 # The one fresh row whose update is the hosted App build's own Update now, clicked in a browser;
 # the other fresh rows send the page's request to the Runtime door themselves.
 HOSTED_BUTTON_JOB_IDS: Final = frozenset({"direct-linux-fresh"})
-RELEASE1_MATRIX: Final = (*_RELEASE1_DIRECT_LEGACY, *RELEASE1_DIRECT_FRESH_MATRIX)
+# The release9-then-install rows are the strict Release-9 leg on Linux and macOS: the pinned,
+# published Release 9 installed plainly, then the candidate from the same seeded workspace.
+# They are not the r0-handoff rows and are not keep-going diagnostics.
+RELEASE9_INSTALL_MATRIX: Final = (
+    {"job_id": "direct-linux-r9-install", "mode": "direct", "runner": "ubuntu-24.04", "shell": "sh", "os": "linux", "leg": "release9-then-install"},
+    {"job_id": "direct-macos-r9-install", "mode": "direct", "runner": "macos-15", "shell": "sh", "os": "macos", "leg": "release9-then-install"},
+)
+# The release11-then-update rows start from the served Release 11, installed plainly from its
+# pinned App commit, and take the candidate's install --update to its manifest release.
+RELEASE11_UPDATE_MATRIX: Final = (
+    {"job_id": "direct-linux-r11-update", "mode": "direct", "runner": "ubuntu-24.04", "shell": "sh", "os": "linux", "leg": "release11-then-update"},
+    {"job_id": "direct-macos-r11-update", "mode": "direct", "runner": "macos-15", "shell": "sh", "os": "macos", "leg": "release11-then-update"},
+)
+RELEASE11_UPDATE_JOB_IDS: Final = tuple(row["job_id"] for row in RELEASE11_UPDATE_MATRIX)
+# The release12-then-update rows start from the served Release 12, installed plainly from its pinned
+# App commit, and take the candidate's install --update to its manifest release. The Windows row is the
+# only Windows row that starts from a published release: it installs Release 12 through install.ps1 and
+# updates through the candidate's install.ps1 --update, then also checks astrid doctor and a dry-run
+# generation (see journey_windows_r12_update.py).
+RELEASE12_WINDOWS_JOB_ID: Final = "direct-windows-r12-update"
+RELEASE12_UPDATE_MATRIX: Final = (
+    {"job_id": "direct-linux-r12-update", "mode": "direct", "runner": "ubuntu-24.04", "shell": "sh", "os": "linux", "leg": "release12-then-update"},
+    {"job_id": "direct-macos-r12-update", "mode": "direct", "runner": "macos-15", "shell": "sh", "os": "macos", "leg": "release12-then-update"},
+    {"job_id": RELEASE12_WINDOWS_JOB_ID, "mode": "direct", "runner": "windows-2022", "shell": "powershell.exe", "os": "windows", "leg": "release12-then-update"},
+)
+RELEASE12_UPDATE_JOB_IDS: Final = tuple(row["job_id"] for row in RELEASE12_UPDATE_MATRIX)
+# The direct matrix includes fresh installs, handoffs, and pinned release update rows.
+# The fresh-install-autostart-off rows are a real fresh install from the candidate tuple with the
+# autostart choice off, on Linux and macOS. They check the selection record, the Runtime's own update
+# status and refusal, and the App's capture of the autostart-off card at deviceScaleFactor 2.
+RELEASE1_AUTOSTART_MATRIX: Final = (
+    {"job_id": "direct-linux-autostart-off", "mode": "direct", "runner": "ubuntu-24.04", "shell": "sh", "os": "linux", "leg": "fresh-install-autostart-off"},
+    {"job_id": "direct-macos-autostart-off", "mode": "direct", "runner": "macos-15", "shell": "sh", "os": "macos", "leg": "fresh-install-autostart-off"},
+)
+RELEASE1_MATRIX: Final = (*_RELEASE1_DIRECT_LEGACY, *RELEASE1_DIRECT_FRESH_MATRIX,
+                          *RELEASE9_INSTALL_MATRIX, *RELEASE11_UPDATE_MATRIX, *RELEASE12_UPDATE_MATRIX, *RELEASE1_AUTOSTART_MATRIX)
+# An automatic push or schedule (no row input) runs the five rows that existed before the
+# release9 and release11 legs. row=direct runs all of RELEASE1_MATRIX.
+RELEASE1_AUTOMATIC_MATRIX: Final = (*_RELEASE1_DIRECT_LEGACY, *RELEASE1_DIRECT_FRESH_MATRIX)
+# The three rows the keep-going diagnostic re-legs (macOS and Linux R0, and Windows fresh).
+RELEASE1_LEGACY_JOB_IDS: Final = tuple(row["job_id"] for row in _RELEASE1_DIRECT_LEGACY)
 
 # The R1.1 Pinokio journey gate is a separate three-OS hosted backend matrix.
 # Keep its stable job IDs distinct from the older M4-4a evidence labels.
@@ -56,7 +96,9 @@ RELEASE1_1_DEFERRED_PINOKIO_MATRIX: Final = (
     {"job_id": "pinokio-fully-local-linux", "mode": "pinokio-fully-local", "runner": "ubuntu-24.04", "shell": "sh", "os": "linux"},
     {"job_id": "pinokio-fully-local-windows", "mode": "pinokio-fully-local", "runner": "windows-2022", "shell": "powershell.exe", "os": "windows"},
 )
-_ADMITTED_JOBS: Final = (*RELEASE1_MATRIX, *RELEASE1_1_DEFERRED_PINOKIO_MATRIX)
+# The end-state inventory is built from the five fresh and legacy rows, so it keeps its fixed
+# obligations. The nine-row Release-1 run is admitted through RELEASE1_MATRIX above.
+_ADMITTED_JOBS: Final = (*_RELEASE1_DIRECT_LEGACY, *RELEASE1_DIRECT_FRESH_MATRIX, *RELEASE1_1_DEFERRED_PINOKIO_MATRIX)
 
 RELEASE1_JOB_IDS: Final = tuple(row["job_id"] for row in RELEASE1_MATRIX)
 RELEASE1_MODES: Final = tuple(sorted({row["mode"] for row in _ADMITTED_JOBS}))
@@ -239,7 +281,7 @@ def release1_job(job_id: str) -> dict:
     Deferred R1.1 Pinokio jobs stay admitted for the driver, but are not part
     of RELEASE1_MATRIX or its aggregate.
     """
-    for row in (*_ADMITTED_JOBS, *RELEASE1_1_PINOKIO_MATRIX):
+    for row in (*_ADMITTED_JOBS, *RELEASE1_MATRIX, *RELEASE1_1_PINOKIO_MATRIX):
         if row["job_id"] == job_id:
             return dict(row)
     raise ValueError(f"Unknown Release-1 journey job: {job_id}")

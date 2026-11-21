@@ -16,11 +16,14 @@ import stat
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 
 if __package__:
     from . import check_journey_evidence as evidence_gate
     from . import ci_journey as journey, upgrade_release, journey_workspace, journey_live_workspace as live
     from . import journey_data_roots
+    from .journey_matrix import RELEASE12_WINDOWS_JOB_ID
 else:
     import check_journey_evidence as evidence_gate
     import ci_journey as journey
@@ -28,6 +31,7 @@ else:
     import journey_workspace
     import journey_live_workspace as live
     import journey_data_roots
+    from journey_matrix import RELEASE12_WINDOWS_JOB_ID
 
 
 RELEASE0_FIXTURE = journey.ROOT / "tests" / "fixtures" / "release0"
@@ -47,6 +51,25 @@ RELEASE9_RELEASE = 9
 RELEASE9_IDENTITY = {
     "agent": "709492fa5f4850b9caf0cea4a4c543023b73fa0a",
     "runtime": "f4c7a4623c84da077daac3e3a9366fc2e6a55051",
+    "schema_digest": "sha256:9628bb5fd6e1dbbec392dd39f2e01031622dcf52d7ccff7cd1f0ad10743dcb1c",
+}
+# The served Release 11 is the starting install of the release11-then-update leg.
+# Its manifest and bootstrap are the git blobs at its pinned App commit, and the
+# candidate's install --update must take that install to the candidate release.
+RELEASE11_LEG = "release11-then-update"
+RELEASE11_APP_COMMIT = "57e200b45615a59181920192697a932400d985fc"
+RELEASE11_RELEASE = 11
+RELEASE11_IDENTITY = {
+    "agent": "a105de3a4852cb61b9647dfe2c920118bd29f272",
+    "runtime": "4f5477cb0f5b03d28bec991a1fe34edcd8fc309f",
+    "schema_digest": "sha256:9628bb5fd6e1dbbec392dd39f2e01031622dcf52d7ccff7cd1f0ad10743dcb1c",
+}
+RELEASE12_LEG = "release12-then-update"
+RELEASE12_APP_COMMIT = "ae4da5d76bfcd9ef87fd117d4cbf02f4fe998bea"
+RELEASE12_RELEASE = 12
+RELEASE12_IDENTITY = {
+    "agent": "0e1543e0da2215db9cb3320cfd1083174c3c62a9",
+    "runtime": "42ae24aff8d2cb854f874ce134161077a3ba3641",
     "schema_digest": "sha256:9628bb5fd6e1dbbec392dd39f2e01031622dcf52d7ccff7cd1f0ad10743dcb1c",
 }
 CHECKSUM = re.compile(r"([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._/-]*)$")
@@ -337,10 +360,17 @@ def workspace(version: dict, data: Path, evidence: Path, action: str, request: d
 
 
 def live_workspace(root: Path, data: Path, evidence: Path, action: str, request: dict,
-                   *, release: int = 0) -> dict:
-    """Observe or seed through the selected live owner without releasing it."""
+                   *, release: int = 0, ownership=None) -> dict:
+    """Observe or seed through the selected live owner without releasing it.
+
+    ``ownership(root, owner_data)`` replaces the direct service-ownership check; only the
+    autostart-off leg passes one (its detached Runtime check).
+    """
     owner_data = selected_data_root(root, data, allow_r1=False)
-    journey.assert_direct_service_ownership(root, owner_data, release=release)
+    if ownership is None:
+        journey.assert_direct_service_ownership(root, owner_data, release=release)
+    else:
+        ownership(root, owner_data)
     discovery = journey.healthy(data)
     selection = live.selection_for(data, root, discovery)
     # The old offline path imposed this gate; also ensure its second discovery
@@ -376,7 +406,12 @@ def live_workspace(root: Path, data: Path, evidence: Path, action: str, request:
         live.check_selection(data, root, selection)
         raise
     live.check_selection(data, root, selection)
-    journey.assert_direct_service_ownership(root, owner_data, release=release)
+    # The post-check uses the same ownership contract as the pre-check (the autostart-off
+    # leg's detached Runtime check; the direct service-manager check everywhere else).
+    if ownership is None:
+        journey.assert_direct_service_ownership(root, owner_data, release=release)
+    else:
+        ownership(root, owner_data)
     return json.loads(output)
 
 
@@ -587,6 +622,126 @@ def direct_workspace(root: Path, version: dict, data: Path, evidence: Path,
         journey.assert_direct_service_ownership(root, owner_data)
 
 
+def wait_r11_baseline_ready(data: Path, evidence: Path, previous: dict, restart_ns: int, *, timeout: int = 180) -> None:
+    """Wait for R11's own post-registration host marker after the service restart."""
+    path = data / "runtime" / "generic-host.ready.json"
+    receipt = {"schema_version": 2, "mode": "existing", "pack_id": "chiptune",
+               "capability_id": "chiptune.sfx", "registered": None,
+               "r11_baseline_ready": {"marker": str(path), "restart_ns": restart_ns,
+                                      "previous_identity": previous, "polls": []}}
+    detail = receipt["r11_baseline_ready"]
+    deadline = time.monotonic() + timeout
+    while True:
+        poll = {}
+        try:
+            # Read bytes and metadata from the same open file, including across atomic replacement.
+            with path.open(encoding="utf-8") as stream:
+                marker = json.load(stream)
+                poll["mtime_ns"] = os.fstat(stream.fileno()).st_mtime_ns
+            if not isinstance(marker, dict):
+                raise ValueError("marker is not an object")
+            for key in ("status", "pid", "process_birth_id", "ready_capabilities", "unready_capabilities"):
+                poll[key] = marker.get(key)
+            pid, birth = marker.get("pid"), marker.get("process_birth_id")
+            ready = (poll["mtime_ns"] >= restart_ns and marker.get("status") == "ready"
+                     and type(pid) is int and pid > 0 and isinstance(birth, str) and bool(birth)
+                     and (not previous.get("pid") or pid != previous["pid"])
+                     and (not previous.get("process_birth_id") or birth != previous["process_birth_id"])
+                     and isinstance(marker.get("ready_capabilities"), list)
+                     and "chiptune.sfx" in marker["ready_capabilities"])
+        except (OSError, ValueError) as exc:
+            poll["error"] = f"{type(exc).__name__}: {exc}"
+            ready = False
+        poll["ready"] = ready
+        detail["polls"].append(poll)
+        receipt["registered"] = ready
+        journey.write_json(evidence / journey.PACK_REGISTRATION_RECEIPT, receipt)
+        if ready:
+            print(f"Journey r11_baseline_ready: ready pid={pid} birth={birth}", file=sys.stderr, flush=True)
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            message = f"timed out after {timeout}s waiting for fresh R11 chiptune.sfx readiness; last poll: {poll}"
+            print(f"Journey r11_baseline_ready: {message}", file=sys.stderr, flush=True)
+            raise RuntimeError(message)
+        time.sleep(min(1, remaining))
+
+
+def capture_r11_home_packs(data: Path, evidence: Path) -> None:
+    """Record only home/XDG paths for the restarted R11 host and packs console."""
+    keys = ("HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME")
+    marker = journey.read_json(data / "runtime" / "generic-host.ready.json")
+    pid = marker.get("pid")
+    if type(pid) is not int or pid <= 0:
+        raise RuntimeError("R11 host readiness marker has no valid pid for environment capture")
+    raw = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+    host_env = {}
+    for item in raw:
+        key, sep, value = item.partition(b"=")
+        if sep and key.decode("ascii", errors="ignore") in keys:
+            host_env[key.decode("ascii")] = value.decode("utf-8", errors="replace")
+    console_env = {key: os.environ[key] for key in keys if key in os.environ}
+
+    def personal_root(values):
+        home = values.get("HOME")
+        if not home:
+            return None
+        return str((Path(home) / "Astrid" / "packs").resolve(strict=False))
+
+    journey.write_json(evidence.parents[1] / "r11-home-packs.json", {
+        "schema_version": 1, "host_pid": pid,
+        "host": {"environment": {key: host_env[key] for key in keys if key in host_env},
+                 "personal_packs_root": personal_root(host_env)},
+        "console": {"environment": console_env, "personal_packs_root": personal_root(console_env)},
+    })
+
+
+def add_journey_pack_and_restart_legacy_host(root: Path, data: Path, version: dict, evidence: Path) -> list[str]:
+    """For a LEGACY baseline (R11) only: add the journey pack, then restart the owned host.
+
+    R11 has no single-worker hot refresh, so a pack added under its running host is not
+    registered until the host's next start. The candidate leg's hot-refresh requirement
+    is unchanged; this applies only to seeding the pre-update baseline.
+    """
+    evidence.mkdir(parents=True, exist_ok=True)
+    added = journey.install_journey_packs(
+        lambda argv, name: journey.installed_cli(version, argv, evidence, name, console=True, timeout=600),
+        routes_packs=lambda: journey.installed_routes_packs(version, evidence))
+    if not added:
+        return added
+    service = journey.assert_direct_service_ownership(root, data)
+    manager = service["manager"]
+    if manager == "systemd-user":
+        stop = ["systemctl", "--user", "stop", "astrid.service"]
+        start = ["systemctl", "--user", "start", "astrid.service"]
+    elif manager == "launchd":
+        domain = f"gui/{os.getuid()}"
+        stop = ["launchctl", "bootout", f"{domain}/haus.astrid.runtime"]
+        start = ["launchctl", "bootstrap", domain, service["service_path"]]
+    else:
+        raise RuntimeError(f"Legacy host restart is not supported for service manager {manager}")
+    marker_path = selected_data_root(root, data) / "runtime" / "generic-host.ready.json"
+    try:
+        marker = journey.read_json(marker_path)
+        previous = {key: marker.get(key) for key in ("pid", "process_birth_id")}
+    except (OSError, ValueError):
+        previous = {}
+    journey.run(stop, evidence / "legacy-pack-stop-service.log", timeout=120)
+    deadline = time.monotonic() + 120
+    while journey.runtime_processes(selected_data_root(root, data)):
+        if time.monotonic() >= deadline:
+            raise RuntimeError("Legacy Runtime did not stop after the journey pack was added")
+        time.sleep(1)
+    restart_ns = time.time_ns()
+    journey.run(start, evidence / "legacy-pack-start-service.log", timeout=120)
+    wait_r11_baseline_ready(selected_data_root(root, data), evidence.parent / "release11-task", previous, restart_ns)
+    if sys.platform.startswith("linux"):
+        capture_r11_home_packs(selected_data_root(root, data), evidence)
+    journey.wait_ready(selected_data_root(root, data))
+    journey.assert_direct_service_ownership(root, data)
+    return added
+
+
 def installed_release(version: dict) -> int:
     release = journey.read_json(Path(version["root"]) / "manifest.json").get("release", 0)
     if type(release) is not int:
@@ -598,13 +753,37 @@ def semantic_digest(value: dict) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def task_after_update(version: dict, evidence: Path, project: str) -> str:
+R11_EXISTING_PACK_GATE_SKIP = "R11 legacy baseline; candidate client APIs absent"
+
+
+def r11_refused_pack_task(version: dict, evidence: Path, project: str) -> str:
+    """Require the precise shipped non-Linux R11 failure, retaining its task history."""
+    evidence.mkdir(parents=True, exist_ok=True)
+    task_id = journey.submit_task(version, evidence, project, create_project=False,
+                                  existing_pack_gate=R11_EXISTING_PACK_GATE_SKIP)
+    try:
+        journey.installed_cli(version, ["tasks", "follow", task_id, "--project", project,
+                                       "--poll-seconds", "2", "--timeout-seconds", "900", "--json"],
+                              evidence, "task-follow.jsonl", timeout=960)
+    except RuntimeError:
+        pass  # The task itself must prove the exact terminal failure below.
+    observed = journey._sdk_result(journey.installed_cli(
+        version, ["tasks", "show", task_id, "--project", project, "--json"],
+        evidence, "task-refusal.json"))
+    row = observed.get("data") or {}
+    if (observed.get("ok") is not True or row.get("task_id") != task_id or row.get("state") != "failed"
+            or journey._task_error(row) != ("executor_failed", live.R11_PACK_REFUSAL)):
+        raise RuntimeError("R11 baseline did not produce the expected selected-pack refusal")
+    return task_id
+
+
+def task_after_update(version: dict, evidence: Path, project: str, *, existing_pack_gate: bool | str = True) -> str:
     if sys.platform == "win32":
         journey.windows.EVIDENCE = evidence
         journey.windows.wait_for("pack-host is running with its current ready file", journey.windows.host_ready)
         journey.windows.snapshot("processes-host-ready.json")
         return journey.windows.task(project, create_project=False)
-    return journey.task(version, evidence, project, create_project=False)
+    return journey.task(version, evidence, project, create_project=False, existing_pack_gate=existing_pack_gate)
 
 
 def release0_admission(args) -> tuple[Path, Path, dict]:
@@ -1061,6 +1240,708 @@ def execute_r0_handoff_then_update(args, root: Path, data: Path, evidence: Path,
     return result
 
 
+def release11_admission(args, output: Path) -> tuple[Path, Path, dict]:
+    """Admit the pinned, served Release 11 as the release11-then-update start."""
+    if (getattr(args, "mode", None) != "direct" or not getattr(args, "job_id", None)
+            or not getattr(args, "candidate", None) or not getattr(args, "allow_release11_to_candidate", False)
+            or getattr(args, "release11_app_checkout", None) is None):
+        raise ValueError(f"{RELEASE11_LEG} requires its scoped pinned Release-11 direct admission")
+    if getattr(args, "source_override", False):
+        raise ValueError(f"{RELEASE11_LEG} never admits a source override")
+    return verified_release11_source(args.release11_app_checkout, output)
+
+
+def verified_release11_source(app: Path, output: Path) -> tuple[Path, Path, dict]:
+    """Export Release 11's manifest and bootstrap from its pinned App commit.
+
+    The bytes are the git blobs at RELEASE11_APP_COMMIT, not whatever the live
+    endpoint serves now. The export is then run by the plain install command.
+    """
+    if app.is_symlink() or not app.is_dir():
+        raise ValueError("Release-11 App checkout must be a non-symlink directory")
+    resolved = upgrade_release.resolve("release11", output, app_repo=app.resolve(strict=True))
+    if resolved.get("status") != "verified" or resolved.get("app_manifest_commit") != RELEASE11_APP_COMMIT:
+        raise RuntimeError("Release 11 could not be resolved from its pinned App commit")
+    if resolved.get("identity") != RELEASE11_IDENTITY:
+        raise RuntimeError("Pinned Release 11 identity differs from the served release")
+    manifest_path = output / "install-manifest.json"
+    manifest = journey.read_json(manifest_path)
+    if manifest.get("release") != RELEASE11_RELEASE:
+        raise RuntimeError("Pinned Release 11 manifest does not declare release 11")
+    receipt = {
+        "app_commit": resolved["app_manifest_commit"],
+        "manifest_sha256": resolved["manifest_sha256"],
+        "bootstrap_sha256": {row["path"]: row["sha256"] for row in resolved["bootstrap"]},
+        "identity": resolved["identity"],
+    }
+    return output, manifest_path, receipt
+
+
+def bootstrap_release11(source: Path, manifest: Path, shell: str, evidence: Path,
+                        root: Path, data: Path, agent: Path | None = None) -> None:
+    """Install the exported Release 11 with the plain install command, never --update."""
+    journey.bootstrap(source, manifest, shell, "install", evidence, root, data, agent=agent)
+
+
+def execute_release11_then_update(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) -> dict:
+    """Pinned Release 11 plain install, API seed, then the candidate's install --update.
+
+    The candidate's update must exit 0 and install its manifest release. Its own run receipt
+    must say updated to that release, exactly one Runtime may be live afterwards, and the
+    seeded user data must survive the update unchanged.
+    """
+    evidence.mkdir(parents=True, exist_ok=True)
+    result = {
+        "schema_version": 1, "receipt_kind": RELEASE11_LEG,
+        "job_id": args.job_id, "mode": args.mode, "scenario": args.leg, "status": "not-run",
+        "os_build": platform.platform(), "shell": args.shell, **journey.runner_identity(),
+        "source_override_test_mode": False, "candidate_checkouts": getattr(args, "candidate_checkouts", None),
+        "service_manager_prerequisite": getattr(args, "service_manager_prerequisite", None),
+        "sources": None, "installed_tuple": None, "import_origins": None,
+        "run_roots": {"program": str(root), "data": str(data)},
+        "sentinel": {"pid": sentinel.pid, "birth": birth},
+        "release11_source": None, "candidate_bootstrap": None, "update": None,
+        "release_transition": None, "live_runtimes": None, "semantic_data": None,
+        "checks": {key: "not-run" for key in (
+            "release11_install", "update_exit", "run_receipt", "release", "one_runtime", "service", "health",
+            "semantic_data", "task_settled", "unrelated_sentinel")},
+    }
+    result_path = evidence / "journey-result.json"
+    journey.write_json(result_path, result)
+    try:
+        source, release11_manifest, source_receipt = release11_admission(args, root.parent / "release11-source")
+        result["release11_source"] = source_receipt
+        app = args.app_checkout.resolve(strict=True)
+        candidate_path, manifest = journey.selected_manifest(
+            app, source_override=False, agent=None, runtime=None, evidence=evidence)
+        candidate = journey.read_json(args.candidate)
+        if evidence_gate.validate_tuple(candidate, app, candidate_path) != manifest:
+            raise RuntimeError(f"{RELEASE11_LEG} requires a frozen candidate manifest")
+        target_release = manifest.get("release")
+        if type(target_release) is not int or target_release <= RELEASE11_RELEASE:
+            raise RuntimeError(f"{RELEASE11_LEG} requires a candidate newer than Release {RELEASE11_RELEASE}")
+        result["candidate_bootstrap"] = {"manifest_sha256": candidate["manifest_sha256"],
+                                         "artifacts": candidate["artifacts"]}
+        result["sources"] = {"app": journey.git_source(app), "agent": manifest["agent"],
+                             "runtime": manifest["runtime"]}
+        before_sentinel = journey.sentinel_observation(sentinel, birth)
+        result["sentinel"]["before_lifecycle"] = before_sentinel
+        if not before_sentinel["alive"]:
+            raise RuntimeError("Unrelated sentinel exited before the release-11 install")
+
+        # 1. The pinned Release 11, installed plainly, then seeded through its live Runtime.
+        bootstrap_release11(source, release11_manifest, args.shell, evidence / "release11", root, data,
+                            agent=release9_consent_agent(args))
+        start_direct_runtime(evidence / "release11")
+        journey.wait_ready(selected_data_root(root, data))
+        old_path, old_data, old = journey.installation(root, data)
+        if old_data != data or installed_release(old) != RELEASE11_RELEASE:
+            raise RuntimeError(f"Pinned Release-11 install did not select release {RELEASE11_RELEASE}")
+        old_tuple = journey.selected_tuple(journey.read_json(release11_manifest), old)
+        old_service = journey.assert_direct_service_ownership(root, data)
+        baseline = evidence / "release11-api-seed"
+        journey.verify("observe", old_path, data, baseline)
+        project = "tst-release11-update"
+        keys = live_workspace(root, data, baseline, "seed", {
+            "project": project, "generation": "release11", "task_id": None, "create_project": True})
+        # R11 has no single-worker hot refresh: add the pack and restart R11's host before its
+        # baseline task, so that task adds nothing (and so has no hot-refresh check).
+        add_journey_pack_and_restart_legacy_host(root, data, old, baseline / "release11-pack")
+        # The existing-pack gate reads the Runtime through the candidate's client APIs; the R11
+        # baseline host was just restarted, and its admission AND completion prove the pack.
+        if sys.platform == "linux":
+            keys["task_id"] = task_after_update(old, baseline / "release11-task", project,
+                                                existing_pack_gate=R11_EXISTING_PACK_GATE_SKIP)
+        else:
+            keys["task_id"] = r11_refused_pack_task(old, baseline / "release11-task", project)
+            keys["r11_selected_pack_refusal"] = True
+            result["r11_baseline_task"] = "expected refusal: " + live.R11_PACK_REFUSAL
+            print("Journey r11_baseline_task: " + result["r11_baseline_task"], file=sys.stderr, flush=True)
+        # Visible in the leg's own receipt too, so the approved skip cannot hide.
+        result["existing_pack_gate"] = journey.existing_pack_gate_skipped(R11_EXISTING_PACK_GATE_SKIP)
+        before = live_workspace(root, data, baseline, "snapshot", keys)
+        old_health = journey.healthy(data)
+        result["checks"]["release11_install"] = "pass"
+
+        # 2. The candidate's public update command, from the Release 11 install.
+        update = result["update"] = candidate_update(app, candidate_path, args.shell, evidence / "update",
+                                                     root, data)
+        receipt = update["receipt"] = run_receipt(data)
+        if update["exit_code"] != 0:
+            raise RuntimeError(f"Candidate install --update exited {update['exit_code']} "
+                               f"from the Release {RELEASE11_RELEASE} install")
+        result["checks"]["update_exit"] = "pass"
+        version_path, selected_data, version = journey.installation(root, data)
+        if installed_release(version) != target_release:
+            raise RuntimeError(
+                f"Candidate install --update exited 0 but installed nothing: the selected release is "
+                f"still {installed_release(version)}, not the candidate release {target_release}")
+        if version_path == old_path:
+            raise RuntimeError("Candidate install --update did not activate a new version")
+        # The candidate's own receipt (UR-15a) must agree: updated, exit 0, the target live.
+        if (not isinstance(receipt, dict) or receipt.get("kind") != "updated" or receipt.get("exit_code") != 0
+                or receipt.get("still") != target_release or receipt.get("target") != target_release):
+            raise RuntimeError(f"The candidate's run receipt is not updated to release {target_release}: {receipt}")
+        result["checks"]["run_receipt"] = "pass"
+        selected = selected_candidate(manifest, version, old_tuple)
+        active_data = selected_data_root(root, data)
+        journey.wait_ready(active_data)
+        new_health = journey.healthy(active_data)
+        live_release = (new_health.get("identity") or {}).get("release")
+        if live_release != target_release:
+            raise RuntimeError(f"The live Runtime reports release {live_release}, not the candidate release {target_release}")
+        if new_health["runtime_instance_id"] == old_health["runtime_instance_id"]:
+            raise RuntimeError(f"Candidate update retained the Release {RELEASE11_RELEASE} Runtime instance")
+        live_owners = live_runtime_owners(data)
+        result["live_runtimes"] = live_owners
+        if [owner["data_root"] for owner in live_owners] != [str(active_data)]:
+            raise RuntimeError(f"Exactly one live Runtime (at {active_data}) is required after the update: {live_owners}")
+        result["checks"]["one_runtime"] = "pass"
+        result["release_transition"] = {"from": RELEASE11_RELEASE, "to": target_release,
+                                        "source": "candidate-install-update"}
+        result["checks"]["release"] = "pass"
+        new_service = journey.assert_direct_service_ownership(root, selected_data)
+        result["service_transition"] = {"release11": old_service, "candidate": new_service}
+        result["service_manager"] = new_service
+        result["health_transition"] = {
+            "release11_runtime_instance_id": old_health["runtime_instance_id"],
+            "candidate_runtime_instance_id": new_health["runtime_instance_id"],
+            "candidate_live_release": live_release,
+        }
+        result["checks"].update(service="pass", health="pass")
+        result["installed_tuple"] = {"app": result["sources"]["app"]["sha"], **selected}
+        journey.verify("update", version_path, active_data, evidence, before=baseline / "verify-observe.json")
+        journey.verify("install", version_path, active_data, evidence)
+        result["import_origins"] = (journey.read_json(evidence / "verify-install.json").get("details") or {}).get("origin.imports")
+
+        # 3. The seeded user data survives the update exactly.
+        after = live_workspace(root, active_data, evidence / "release11-api-observe", "snapshot", keys)
+        assert_preserved(before, after)
+        semantic_keys = ("project", "timeline", "preferences", "task", "cas_sha256")
+        before_sha = semantic_digest({k: before[k] for k in semantic_keys})
+        after_sha = semantic_digest({k: after[k] for k in semantic_keys})
+        if before_sha != after_sha:
+            raise RuntimeError("Semantic snapshot digest differs after the candidate update")
+        result["semantic_data"] = {"identical": True, "before_sha256": before_sha, "after_sha256": after_sha}
+        result["checks"]["semantic_data"] = "pass"
+        task_after_update(version, evidence / "candidate-working-task", project)
+        result["checks"]["task_settled"] = "pass"
+        settled_sentinel = journey.sentinel_observation(sentinel, birth)
+        result["sentinel"]["at_settlement"] = settled_sentinel
+        if not settled_sentinel["alive"]:
+            raise RuntimeError("Unrelated sentinel did not survive the Release 11 install and the update")
+        result["checks"]["unrelated_sentinel"] = "pass"
+        result["status"] = "pass"
+    except Exception as exc:
+        result.update(status="fail", error=f"{type(exc).__name__}: {exc}")
+        raise
+    finally:
+        journey.write_json(result_path, result)
+    return result
+
+
+def release12_admission(args, output: Path) -> tuple[Path, Path, dict]:
+    """Admit the pinned, served Release 12 as the release12-then-update start."""
+    if (getattr(args, "mode", None) != "direct" or not getattr(args, "job_id", None)
+            or not getattr(args, "candidate", None) or not getattr(args, "allow_release12_to_candidate", False)
+            or getattr(args, "release12_app_checkout", None) is None):
+        raise ValueError(f"{RELEASE12_LEG} requires its scoped pinned Release-12 direct admission")
+    if getattr(args, "source_override", False):
+        raise ValueError(f"{RELEASE12_LEG} never admits a source override")
+    return verified_release12_source(args.release12_app_checkout, output)
+
+
+def verified_release12_source(app: Path, output: Path) -> tuple[Path, Path, dict]:
+    """Export Release 12's manifest and bootstrap from its pinned App commit.
+
+    The bytes are the git blobs at RELEASE12_APP_COMMIT, not whatever the live
+    endpoint serves now. The export is then run by the plain install command.
+    """
+    if app.is_symlink() or not app.is_dir():
+        raise ValueError("Release-12 App checkout must be a non-symlink directory")
+    resolved = upgrade_release.resolve("release12", output, app_repo=app.resolve(strict=True))
+    if resolved.get("status") != "verified" or resolved.get("app_manifest_commit") != RELEASE12_APP_COMMIT:
+        raise RuntimeError("Release 12 could not be resolved from its pinned App commit")
+    if resolved.get("identity") != RELEASE12_IDENTITY:
+        raise RuntimeError("Pinned Release 12 identity differs from the served release")
+    manifest_path = output / "install-manifest.json"
+    manifest = journey.read_json(manifest_path)
+    if manifest.get("release") != RELEASE12_RELEASE:
+        raise RuntimeError("Pinned Release 12 manifest does not declare release 12")
+    receipt = {
+        "app_commit": resolved["app_manifest_commit"],
+        "manifest_sha256": resolved["manifest_sha256"],
+        "bootstrap_sha256": {row["path"]: row["sha256"] for row in resolved["bootstrap"]},
+        "identity": resolved["identity"],
+    }
+    return output, manifest_path, receipt
+
+
+def bootstrap_release12(source: Path, manifest: Path, shell: str, evidence: Path,
+                        root: Path, data: Path, agent: Path | None = None) -> None:
+    """Install the exported Release 12 with the plain install command, never --update."""
+    journey.bootstrap(source, manifest, shell, "install", evidence, root, data, agent=agent)
+
+
+def execute_release12_then_update(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) -> dict:
+    """Pinned Release 12 plain install, API seed, then the candidate's install --update.
+
+    The candidate's update must exit 0 and install its manifest release. Its own run receipt
+    must say updated to that release, exactly one Runtime may be live afterwards, and the
+    seeded user data must survive the update unchanged.
+    """
+    evidence.mkdir(parents=True, exist_ok=True)
+    result = {
+        "schema_version": 1, "receipt_kind": RELEASE12_LEG,
+        "job_id": args.job_id, "mode": args.mode, "scenario": args.leg, "status": "not-run",
+        "os_build": platform.platform(), "shell": args.shell, **journey.runner_identity(),
+        "source_override_test_mode": False, "candidate_checkouts": getattr(args, "candidate_checkouts", None),
+        "service_manager_prerequisite": getattr(args, "service_manager_prerequisite", None),
+        "sources": None, "installed_tuple": None, "import_origins": None,
+        "run_roots": {"program": str(root), "data": str(data)},
+        "sentinel": {"pid": sentinel.pid, "birth": birth},
+        "release12_source": None, "candidate_bootstrap": None, "update": None,
+        "release_transition": None, "live_runtimes": None, "semantic_data": None,
+        "checks": {key: "not-run" for key in (
+            "release12_install", "update_exit", "run_receipt", "release", "one_runtime", "service", "health",
+            "semantic_data", "task_settled", "unrelated_sentinel")},
+    }
+    result_path = evidence / "journey-result.json"
+    journey.write_json(result_path, result)
+    try:
+        source, release12_manifest, source_receipt = release12_admission(args, root.parent / "release12-source")
+        result["release12_source"] = source_receipt
+        app = args.app_checkout.resolve(strict=True)
+        candidate_path, manifest = journey.selected_manifest(
+            app, source_override=False, agent=None, runtime=None, evidence=evidence)
+        candidate = journey.read_json(args.candidate)
+        if evidence_gate.validate_tuple(candidate, app, candidate_path) != manifest:
+            raise RuntimeError(f"{RELEASE12_LEG} requires a frozen candidate manifest")
+        target_release = manifest.get("release")
+        if type(target_release) is not int or target_release <= RELEASE12_RELEASE:
+            raise RuntimeError(f"{RELEASE12_LEG} requires a candidate newer than Release {RELEASE12_RELEASE}")
+        result["candidate_bootstrap"] = {"manifest_sha256": candidate["manifest_sha256"],
+                                         "artifacts": candidate["artifacts"]}
+        result["sources"] = {"app": journey.git_source(app), "agent": manifest["agent"],
+                             "runtime": manifest["runtime"]}
+        before_sentinel = journey.sentinel_observation(sentinel, birth)
+        result["sentinel"]["before_lifecycle"] = before_sentinel
+        if not before_sentinel["alive"]:
+            raise RuntimeError("Unrelated sentinel exited before the release-12 install")
+
+        # 1. The pinned Release 12, installed plainly, then seeded through its live Runtime.
+        bootstrap_release12(source, release12_manifest, args.shell, evidence / "release12", root, data,
+                            agent=release9_consent_agent(args))
+        start_direct_runtime(evidence / "release12")
+        journey.wait_ready(selected_data_root(root, data))
+        old_path, old_data, old = journey.installation(root, data)
+        if old_data != data or installed_release(old) != RELEASE12_RELEASE:
+            raise RuntimeError(f"Pinned Release-12 install did not select release {RELEASE12_RELEASE}")
+        old_tuple = journey.selected_tuple(journey.read_json(release12_manifest), old)
+        old_service = journey.assert_direct_service_ownership(root, data)
+        baseline = evidence / "release12-api-seed"
+        journey.verify("observe", old_path, data, baseline)
+        project = "tst-release12-update"
+        keys = live_workspace(root, data, baseline, "seed", {
+            "project": project, "generation": "release12", "task_id": None, "create_project": True})
+        keys["task_id"] = task_after_update(old, baseline / "release12-task", project)
+        before = live_workspace(root, data, baseline, "snapshot", keys)
+        old_health = journey.healthy(data)
+        result["checks"]["release12_install"] = "pass"
+
+        # 2. The candidate's public update command, from the Release 12 install.
+        update = result["update"] = candidate_update(app, candidate_path, args.shell, evidence / "update",
+                                                     root, data)
+        receipt = update["receipt"] = run_receipt(data)
+        if update["exit_code"] != 0:
+            raise RuntimeError(f"Candidate install --update exited {update['exit_code']} "
+                               f"from the Release {RELEASE12_RELEASE} install")
+        result["checks"]["update_exit"] = "pass"
+        version_path, selected_data, version = journey.installation(root, data)
+        if installed_release(version) != target_release:
+            raise RuntimeError(
+                f"Candidate install --update exited 0 but installed nothing: the selected release is "
+                f"still {installed_release(version)}, not the candidate release {target_release}")
+        if version_path == old_path:
+            raise RuntimeError("Candidate install --update did not activate a new version")
+        # The candidate's own receipt (UR-15a) must agree: updated, exit 0, the target live.
+        if (not isinstance(receipt, dict) or receipt.get("kind") != "updated" or receipt.get("exit_code") != 0
+                or receipt.get("still") != target_release or receipt.get("target") != target_release):
+            raise RuntimeError(f"The candidate's run receipt is not updated to release {target_release}: {receipt}")
+        result["checks"]["run_receipt"] = "pass"
+        selected = selected_candidate(manifest, version, old_tuple)
+        active_data = selected_data_root(root, data)
+        journey.wait_ready(active_data)
+        new_health = journey.healthy(active_data)
+        live_release = (new_health.get("identity") or {}).get("release")
+        if live_release != target_release:
+            raise RuntimeError(f"The live Runtime reports release {live_release}, not the candidate release {target_release}")
+        if new_health["runtime_instance_id"] == old_health["runtime_instance_id"]:
+            raise RuntimeError(f"Candidate update retained the Release {RELEASE12_RELEASE} Runtime instance")
+        live_owners = live_runtime_owners(data)
+        result["live_runtimes"] = live_owners
+        if [owner["data_root"] for owner in live_owners] != [str(active_data)]:
+            raise RuntimeError(f"Exactly one live Runtime (at {active_data}) is required after the update: {live_owners}")
+        result["checks"]["one_runtime"] = "pass"
+        result["release_transition"] = {"from": RELEASE12_RELEASE, "to": target_release,
+                                        "source": "candidate-install-update"}
+        result["checks"]["release"] = "pass"
+        new_service = journey.assert_direct_service_ownership(root, selected_data)
+        result["service_transition"] = {"release12": old_service, "candidate": new_service}
+        result["service_manager"] = new_service
+        result["health_transition"] = {
+            "release12_runtime_instance_id": old_health["runtime_instance_id"],
+            "candidate_runtime_instance_id": new_health["runtime_instance_id"],
+            "candidate_live_release": live_release,
+        }
+        result["checks"].update(service="pass", health="pass")
+        result["installed_tuple"] = {"app": result["sources"]["app"]["sha"], **selected}
+        journey.verify("update", version_path, active_data, evidence, before=baseline / "verify-observe.json")
+        journey.verify("install", version_path, active_data, evidence)
+        result["import_origins"] = (journey.read_json(evidence / "verify-install.json").get("details") or {}).get("origin.imports")
+
+        # 3. The seeded user data survives the update exactly.
+        after = live_workspace(root, active_data, evidence / "release12-api-observe", "snapshot", keys)
+        assert_preserved(before, after)
+        semantic_keys = ("project", "timeline", "preferences", "task", "cas_sha256")
+        before_sha = semantic_digest({k: before[k] for k in semantic_keys})
+        after_sha = semantic_digest({k: after[k] for k in semantic_keys})
+        if before_sha != after_sha:
+            raise RuntimeError("Semantic snapshot digest differs after the candidate update")
+        result["semantic_data"] = {"identical": True, "before_sha256": before_sha, "after_sha256": after_sha}
+        result["checks"]["semantic_data"] = "pass"
+        task_after_update(version, evidence / "candidate-working-task", project)
+        result["checks"]["task_settled"] = "pass"
+        settled_sentinel = journey.sentinel_observation(sentinel, birth)
+        result["sentinel"]["at_settlement"] = settled_sentinel
+        if not settled_sentinel["alive"]:
+            raise RuntimeError("Unrelated sentinel did not survive the Release 12 install and the update")
+        result["checks"]["unrelated_sentinel"] = "pass"
+        result["status"] = "pass"
+    except Exception as exc:
+        result.update(status="fail", error=f"{type(exc).__name__}: {exc}")
+        raise
+    finally:
+        journey.write_json(result_path, result)
+    return result
+
+
+AUTOSTART_LEG = "fresh-install-autostart-off"
+AUTOSTART_CHECKS = ("install_exit", "selection_autostart_false", "update_status_autostart_off",
+                    "post_update_refused_unchanged", "autostart_card_capture", "service", "health",
+                    "unrelated_sentinel")
+AUTOSTART_SELECTION_FILE = "astrid-install.json"
+AUTOSTART_DEVICE_SCALE_FACTOR = 2
+# The approved card sentence, the App's own copy (installerUpdateReasons.ts, autostart-off).
+AUTOSTART_CARD_TEXT = ("Start at sign-in is off, so update from a terminal. This command updates Astrid and starts it; "
+                       "your choice stays off.")
+AUTOSTART_ORIGIN = "https://astrid.haus"
+AUTOSTART_ENTRY = "/tools/video-editor"
+AUTOSTART_CAPTURE_SCRIPT = journey.ROOT / "scripts" / "journey_autostart_capture.mjs"
+AUTOSTART_CAPTURE_TIMEOUT_MS = 120000
+UPDATE_STATUS_PATH = "/update/status"
+UPDATE_PATH = "/update"
+DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}")
+
+
+def candidate_install_autostart_off(app: Path, manifest_path: Path, shell: str, evidence: Path,
+                                    root: Path, data: Path) -> dict:
+    """Run the candidate's public install once with ``--autostart off`` and return what it reported.
+
+    This is a real fresh install, not an update: the autostart choice is recorded as off.
+    """
+    if sys.platform == "win32":
+        raise RuntimeError(f"{AUTOSTART_LEG} is not admitted on Windows")
+    env = dict(os.environ)
+    env["BROWSER"] = f'"{sys.executable}" -c "pass" %s'
+    log = evidence / "install-bootstrap.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    argv = [shell, str(app / "public" / "install"), "--manifest", str(manifest_path),
+            "--root", str(root), "--data-root", str(data), "--autostart", "off",
+            # A fresh install asks for setup consent and the journey has no terminal, so it
+            # accepts the recommended choices as a person would (see ci_journey.bootstrap_flags).
+            "--yes"]
+    with log.open("w", encoding="utf-8") as stream:
+        process = subprocess.run(argv, env=env, stdout=stream, stderr=subprocess.STDOUT,
+                                 timeout=3600, check=False)
+    lines = [line for line in log.read_text(encoding="utf-8-sig", errors="replace").splitlines() if line.strip()]
+    return {"command": "install --autostart off", "exit_code": process.returncode,
+            "log": str(log), "last_lines": lines[-8:]}
+
+
+def runtime_request(method: str, path: str) -> tuple[int, dict]:
+    """One request to the live Runtime door, at the harness health prefix. A refusal is returned, not raised."""
+    base = journey.HEALTH_URL.rsplit("/health", 1)[0]
+    request = urllib.request.Request(base + path, method=method, data=b"" if method == "POST" else None,
+                                     headers={"Origin": "https://astrid.haus"})
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(request, timeout=30) as response:
+            return response.status, json.loads(response.read() or b"{}")
+    except urllib.error.HTTPError as exc:
+        try:
+            body = json.loads(exc.read() or b"{}")
+        except ValueError:
+            body = {}
+        return exc.code, body
+
+
+def _safe_runtime_body(value):
+    """Keep refusal diagnostics useful without retaining credential material."""
+    sensitive = re.compile(
+        r"(?i)(bearer\s+|(?:token|authorization|credential|password|secret|cookie|api[_-]?key)[=: ]+)[^\s,;]+"
+        r"|\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,})\b"
+        r"|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"
+    )
+    if isinstance(value, dict):
+        return {str(key): ("<redacted>" if re.search(
+            r"(?i)token|credential|authorization|password|secret|cookie|api[_-]?key|private[_-]?key", str(key))
+                           else _safe_runtime_body(item)) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_safe_runtime_body(item) for item in value]
+    if isinstance(value, str):
+        return sensitive.sub(r"\1<redacted>", value)
+    return value
+
+
+def read_selection() -> tuple[dict, str]:
+    """The installer's selection record and its SHA-256, read beside the lock."""
+    path = journey.selection_path()
+    if path.is_symlink() or not path.is_file():
+        raise RuntimeError("installer selection record is absent")
+    return journey.read_json(path), hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _hosted_update():
+    """The journey's hosted-App intercept module, which the button row also uses."""
+    if __package__:
+        from . import journey_hosted_update as hosted
+    else:
+        import journey_hosted_update as hosted
+    return hosted
+
+
+def build_hosted_app(app: Path, evidence: Path) -> Path:
+    """The candidate's hosted App, built the way the button row builds it: npm ci, then npm run build:hosted."""
+    evidence.mkdir(parents=True, exist_ok=True)
+    env = dict(os.environ, NODE_OPTIONS="--max-old-space-size=4096")
+    env.pop("ASTRID_APP_DIRECT_DOOR_PORT", None)
+    log = evidence / "app-build.log"
+    with log.open("w", encoding="utf-8") as stream:
+        for argv in (["npm", "ci", "--legacy-peer-deps"], ["npm", "run", "build:hosted"]):
+            process = subprocess.run(argv, cwd=app, env=env, stdout=stream, stderr=subprocess.STDOUT,
+                                     timeout=1800, check=False)
+            if process.returncode:
+                raise RuntimeError(f"App build failed: {' '.join(argv)} exited {process.returncode}")
+    dist = app / "dist"
+    if not (dist / "index.html").is_file() or not (dist / "build.json").is_file():
+        raise RuntimeError("App build did not produce index.html and build.json")
+    return dist
+
+
+def install_capture_browser(root: Path) -> Path:
+    """The pinned Playwright and its Chromium, installed beside the run for the autostart capture only."""
+    directory = root.parent / "autostart-capture"
+    directory.mkdir(parents=True, exist_ok=True)
+    steps = (["npm", "install", "--prefix", str(directory), "--no-audit", "--no-fund", "playwright@1.60.0"],
+             [str(directory / "node_modules" / ".bin" / "playwright"), "install", "--with-deps", "chromium"])
+    for argv in steps:
+        process = subprocess.run(argv, env=dict(os.environ), timeout=1800, check=False)
+        if process.returncode:
+            raise RuntimeError(f"capture browser install failed: {argv[0]} exited {process.returncode}")
+    return directory
+
+
+def capture_autostart_card(evidence: Path, app: Path, dist: Path, capture_dir: Path) -> dict:
+    """Serve the candidate's hosted App at astrid.haus through the intercept, then capture the autostart-off card.
+
+    The page is the one the button row serves, with the candidate's own bootstrap and manifest routes. The
+    browser pins the intercept's leaf and waits for the approved card sentence; if the card is not shown the
+    capture fails.
+    """
+    hosted = _hosted_update()
+    evidence.mkdir(parents=True, exist_ok=True)
+    routes, types = hosted.page_routes(dist)
+    # A current release intentionally has no autostart-off update card. Advertise a
+    # hypothetical next release while keeping the candidate build and real Runtime.
+    manifest = json.loads((app / "public" / "install-manifest.json").read_text(encoding="utf-8"))
+    release = manifest.get("release")
+    if type(release) is not int or release < 0:
+        raise ValueError("candidate manifest has no valid release")
+    manifest["release"] = release + 1
+    routes.update(hosted.release_routes(app, json.dumps(manifest).encode("utf-8")))
+    png, meta = evidence / "autostart-off-card.png", evidence / "autostart-off-capture.json"
+    config_path = evidence / "autostart-off-capture-config.json"
+    with hosted.Intercept(routes, types=types) as intercept:
+        playwright = str(capture_dir / "node_modules" / "playwright" / "index.mjs")
+        config = {"playwright": playwright, "origin": AUTOSTART_ORIGIN, "entry": AUTOSTART_ENTRY,
+                  "spki": intercept.leaf_spki, "text": AUTOSTART_CARD_TEXT,
+                  "dpr": AUTOSTART_DEVICE_SCALE_FACTOR, "screenshot": str(png), "result": str(meta),
+                  "timeoutMs": AUTOSTART_CAPTURE_TIMEOUT_MS}
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        process = subprocess.run(["node", str(AUTOSTART_CAPTURE_SCRIPT), str(config_path)], env=dict(os.environ),
+                                 capture_output=True, text=True,
+                                 timeout=AUTOSTART_CAPTURE_TIMEOUT_MS // 1000 + 300, check=False)
+    if (process.returncode != 0 or png.is_symlink() or not png.is_file()
+            or meta.is_symlink() or not meta.is_file()):
+        raise RuntimeError(f"autostart card capture failed: {process.stderr.strip()[-400:]}")
+    info = journey.read_json(meta)
+    return {"path": png.name, "sha256": hashlib.sha256(png.read_bytes()).hexdigest(),
+            "device_scale_factor": info.get("device_scale_factor"), "surface": "autostart-off card",
+            "text": info.get("text"), "url": info.get("url"),
+            "served_release_real": release, "served_release_advertised": manifest["release"]}
+
+
+def execute_fresh_install_autostart_off(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) -> dict:
+    """A real fresh install with --autostart off, checked against the live Runtime and the App capture.
+
+    Four assertions are recorded by name: the selection record says autostart is false; GET update/status
+    reports reason autostart-off; a POST update is refused with autostart-off and changes nothing (the
+    selection, the seeded data and the live Runtime identity); and the autostart-off card is captured at
+    deviceScaleFactor 2.
+    """
+    evidence.mkdir(parents=True, exist_ok=True)
+    result = {
+        "schema_version": 1, "receipt_kind": AUTOSTART_LEG,
+        "job_id": args.job_id, "mode": args.mode, "scenario": args.leg, "status": "not-run",
+        "os_build": platform.platform(), "shell": args.shell, **journey.runner_identity(),
+        "source_override_test_mode": False, "candidate_checkouts": getattr(args, "candidate_checkouts", None),
+        "service_manager_prerequisite": getattr(args, "service_manager_prerequisite", None),
+        "sources": None, "installed_tuple": None, "import_origins": None,
+        "run_roots": {"program": str(root), "data": str(data)},
+        "sentinel": {"pid": sentinel.pid, "birth": birth},
+        "install": None, "installed_release": None, "selection": None, "update_status": None,
+        "post_update": None, "capture": None,
+        "checks": {key: "not-run" for key in AUTOSTART_CHECKS},
+    }
+    result_path = evidence / "journey-result.json"
+    journey.write_json(result_path, result)
+    try:
+        app = args.app_checkout.resolve(strict=True)
+        candidate_path, manifest = journey.selected_manifest(
+            app, source_override=False, agent=None, runtime=None, evidence=evidence)
+        candidate = journey.read_json(args.candidate)
+        if evidence_gate.validate_tuple(candidate, app, candidate_path) != manifest:
+            raise RuntimeError(f"{AUTOSTART_LEG} requires a frozen candidate manifest")
+        result["sources"] = {"app": journey.git_source(app), "agent": manifest["agent"],
+                             "runtime": manifest["runtime"]}
+        before_sentinel = journey.sentinel_observation(sentinel, birth)
+        result["sentinel"]["before_lifecycle"] = before_sentinel
+        if not before_sentinel["alive"]:
+            raise RuntimeError("Unrelated sentinel exited before the autostart-off install")
+
+        # 1. The real fresh install with the autostart choice off.
+        install = result["install"] = candidate_install_autostart_off(
+            app, candidate_path, args.shell, evidence / "install", root, data)
+        if install["exit_code"] != 0:
+            raise RuntimeError(f"install --autostart off exited {install['exit_code']}")
+        result["checks"]["install_exit"] = "pass"
+        start_direct_runtime(evidence / "install")
+        journey.wait_ready(selected_data_root(root, data))
+        version_path, selected_data, version = journey.installation(root, data)
+        result["installed_release"] = installed_release(version)
+        if result["installed_release"] != manifest.get("release"):
+            raise RuntimeError(f"fresh install selected release {result['installed_release']}, "
+                               f"not the candidate release {manifest.get('release')}")
+        # Autostart off deliberately runs a detached Runtime with no sign-in registration, so this
+        # leg alone replaces the direct service-manager check (and its foreground ban).
+        def detached(check_root: Path, owner_data: Path) -> dict:
+            return journey.assert_detached_autostart_off_runtime(check_root, owner_data, evidence)
+
+        result["service_manager"] = detached(root, selected_data)
+        result["checks"]["service"] = "pass"
+        selected = journey.selected_tuple(manifest, version)
+        result["installed_tuple"] = {"app": result["sources"]["app"]["sha"], **selected}
+        journey.verify("install", version_path, selected_data, evidence)
+        result["import_origins"] = (journey.read_json(evidence / "verify-install.json").get("details") or {}).get("origin.imports")
+
+        # 2. The installer's selection record says autostart is off.
+        record, selection_digest = read_selection()
+        choices = record.get("choices") if isinstance(record.get("choices"), dict) else {}
+        result["selection"] = {"file": AUTOSTART_SELECTION_FILE, "choices_autostart": choices.get("autostart"),
+                               "sha256": selection_digest}
+        if choices.get("autostart") is not False:
+            raise RuntimeError("selection record does not have choices.autostart false")
+        result["checks"]["selection_autostart_false"] = "pass"
+
+        # 3. Seed the workspace, so the refusal is checked against real data.
+        project = "tst-autostart-off"
+        baseline = evidence / "autostart-seed"
+        keys = live_workspace(root, selected_data, baseline, "seed", {
+            "project": project, "generation": "autostart-off", "task_id": None, "create_project": True},
+            ownership=detached)
+        keys["task_id"] = task_after_update(version, baseline / "autostart-task", project)
+        before = live_workspace(root, selected_data, baseline, "snapshot", keys, ownership=detached)
+        before_health = journey.healthy(selected_data)
+
+        # 4. The live Runtime reports the autostart-off reason on its update status.
+        status_code, status_body = runtime_request("GET", UPDATE_STATUS_PATH)
+        result["update_status"] = {"method": "GET", "path": UPDATE_STATUS_PATH, "status": status_code,
+                                   "reason": status_body.get("reason")}
+        if status_body.get("reason") != "autostart-off":
+            raise RuntimeError("GET /update/status does not report reason autostart-off")
+        result["checks"]["update_status_autostart_off"] = "pass"
+
+        # 5. A POST update is refused with autostart-off and changes nothing.
+        post_code, post_body = runtime_request("POST", UPDATE_PATH)
+        after_digest = read_selection()[1]
+        after_health = journey.healthy(selected_data)
+        after = live_workspace(root, selected_data, evidence / "autostart-after", "snapshot", keys,
+                               ownership=detached)
+        semantic_keys = ("project", "timeline", "preferences", "task", "cas_sha256")
+        data_same = (semantic_digest({k: before[k] for k in semantic_keys})
+                     == semantic_digest({k: after[k] for k in semantic_keys}))
+        details = post_body.get("details") if isinstance(post_body, dict) else None
+        post_reason = details.get("reason") if isinstance(details, dict) else None
+        refused = type(post_code) is int and post_code >= 400 and post_reason == "autostart-off"
+        unchanged = (after_digest == selection_digest
+                     and after_health["runtime_instance_id"] == before_health["runtime_instance_id"] and data_same)
+        result["post_update"] = {"method": "POST", "path": UPDATE_PATH, "status": post_code,
+                                 "body": _safe_runtime_body(post_body), "reason": post_reason,
+                                 "refused": refused, "unchanged": unchanged}
+        if not (refused and unchanged):
+            raise RuntimeError("POST update was not refused with autostart-off, or it changed the selection, "
+                               "the data or the live Runtime")
+        result["checks"]["post_update_refused_unchanged"] = "pass"
+        result["checks"]["health"] = "pass"
+
+        # The gating assertions are on disk before the App build, so a failing or slow build cannot lose them.
+        journey.write_json(result_path, result)
+
+        # 7. The App is built, served at astrid.haus through the intercept, and the card captured at
+        #    deviceScaleFactor 2. On macOS an unverified build or capture is recorded; the assertions above gate.
+        gated = sys.platform != "darwin"
+        try:
+            dist = build_hosted_app(app, evidence / "app-build")
+            capture_dir = install_capture_browser(root)
+            capture = result["capture"] = capture_autostart_card(evidence / "capture", app, dist, capture_dir)
+        except Exception as exc:
+            if gated:
+                raise
+            result["capture"] = {"status": "unverified", "reason": "macOS App build or capture not verified in CI",
+                                 "error": f"{type(exc).__name__}: {exc}"}
+            result["checks"]["autostart_card_capture"] = "unverified"
+        else:
+            if (capture.get("device_scale_factor") != AUTOSTART_DEVICE_SCALE_FACTOR
+                    or not DIGEST_PATTERN.fullmatch(str(capture.get("sha256", "")))):
+                raise RuntimeError("autostart card capture is absent or not at deviceScaleFactor 2")
+            result["checks"]["autostart_card_capture"] = "pass"
+
+        # 8. The unrelated sentinel survives the whole leg.
+        settled = journey.sentinel_observation(sentinel, birth)
+        result["sentinel"]["at_settlement"] = settled
+        if not settled["alive"]:
+            raise RuntimeError("Unrelated sentinel did not survive the autostart-off install")
+        result["checks"]["unrelated_sentinel"] = "pass"
+        result["status"] = "pass"
+    except Exception as exc:
+        result.update(status="fail", error=f"{type(exc).__name__}: {exc}")
+        raise
+    finally:
+        journey.write_json(result_path, result)
+    return result
+
+
 WINDOWS_REFUSAL = "Upgrading from an earlier Windows version isn't supported yet. Your data was kept; reinstall to get the new version."
 
 
@@ -1156,6 +2037,26 @@ def execute_owned(args, root: Path, data: Path, evidence: Path, sentinel, birth:
         if sys.platform == "win32":
             raise RuntimeError("Windows release-0 upgrade only admits the narrowed refusal leg")
         return execute_release9_then_install(args, root, data, evidence, sentinel, birth)
+    if args.leg == RELEASE11_LEG:
+        if sys.platform == "win32":
+            raise RuntimeError("Windows release-0 upgrade only admits the narrowed refusal leg")
+        return execute_release11_then_update(args, root, data, evidence, sentinel, birth)
+    if args.leg == RELEASE12_LEG:
+        if sys.platform == "win32":
+            # Windows starts from the published Release 12 on its one admitted job only; the
+            # leg itself lives in journey_windows_r12_update (it needs the Windows helpers).
+            if getattr(args, "job_id", None) != RELEASE12_WINDOWS_JOB_ID:
+                raise RuntimeError(f"Release-12 update on Windows is only admitted for {RELEASE12_WINDOWS_JOB_ID}")
+            if __package__:
+                from . import journey_windows_r12_update
+            else:
+                import journey_windows_r12_update
+            return journey_windows_r12_update.execute(args, root, data, evidence, sentinel, birth)
+        return execute_release12_then_update(args, root, data, evidence, sentinel, birth)
+    if args.leg == AUTOSTART_LEG:
+        if sys.platform == "win32":
+            raise RuntimeError("Windows release-0 upgrade only admits the narrowed refusal leg")
+        return execute_fresh_install_autostart_off(args, root, data, evidence, sentinel, birth)
     evidence.mkdir(parents=True, exist_ok=True)
     result = {"schema_version": 1, "scenario": args.leg, "status": "not-run",
               "os_build": platform.platform(), "shell": args.shell, **journey.runner_identity(),
