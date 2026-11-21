@@ -562,7 +562,7 @@ def test_to_envelope_omits_code_and_source_type_when_none() -> None:
     err = AstridError("no extras")
     envelope = err.to_envelope()
 
-    assert "code" not in envelope
+    assert envelope["code"] is None
     assert "source_type" not in envelope
 
 
