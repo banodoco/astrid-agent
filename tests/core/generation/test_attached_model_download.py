@@ -204,8 +204,10 @@ def test_an_interrupted_download_keeps_only_its_resumable_part(comfy, models, fi
     left = _files(root)
     assert "vae/.ae.safetensors.astrid-resume" in left
     assert (root / "vae" / ".ae.safetensors.astrid-resume").read_bytes() == BLOBS["/vae.bin"][:3]
-    assert [n for n in left if not n.endswith(".astrid-resume")] == [
-        "diffusion_models/z_image_turbo_bf16.safetensors", "text_encoders/qwen_3_4b.safetensors"]
+    # exactly these files, and no other resume file or litter
+    assert left == ["diffusion_models/z_image_turbo_bf16.safetensors",
+                    "text_encoders/qwen_3_4b.safetensors",
+                    "vae/.ae.safetensors.astrid-resume"]
     assert not (root / ".vibecomfy").exists()
     for name in left:
         if name.endswith(".astrid-resume"):
