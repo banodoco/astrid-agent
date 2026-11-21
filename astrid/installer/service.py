@@ -1227,7 +1227,7 @@ class Service:
             path_literal = quote(str(payload_path))
             operation = ("$t | Unregister-ScheduledTask -Confirm:$false" if remove else
                 f"$a=New-ScheduledTaskAction -Execute $payload.execute -Argument $payload.arguments " +
-                "-WorkingDirectory $payload.working_directory; $t | Set-ScheduledTask -Action $a | Out-Null")
+                "-WorkingDirectory $payload.working_directory; Set-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath -Action $a | Out-Null")
             self.powershell(TASK_QUERY +
                 "if (-not $t) { throw 'The Astrid Runtime scheduled task disappeared.' }; " +
                 f"$payload=Get-Content -LiteralPath {path_literal} -Raw -Encoding UTF8 | ConvertFrom-Json; " +
