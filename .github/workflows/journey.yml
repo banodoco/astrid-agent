@@ -848,9 +848,14 @@ jobs:
           # The door port the build compiles in is the installed Runtime's default; nothing may override it.
           unset ASTRID_APP_DIRECT_DOOR_PORT
           npm run build:hosted
-          test -f dist/index.html && test -f dist/build.json
+          test -f dist/index.html
+          test -f dist/build.json
           npx playwright install --with-deps chromium
-          git status --porcelain --untracked-files=no | (! grep .)
+          tracked_changes=$(git status --porcelain --untracked-files=no)
+          if [[ -n "$tracked_changes" ]]; then
+            printf 'Pinned App checkout has tracked changes:\n%s\n' "$tracked_changes" >&2
+            exit 1
+          fi
       - name: Build the staged App for Pinokio Open Astrid
         if: startsWith(matrix.job_id, 'pinokio-') && steps.candidate_files.outputs.release == '14'
         shell: bash
@@ -864,13 +869,18 @@ jobs:
           npm ci --legacy-peer-deps
           unset ASTRID_APP_DIRECT_DOOR_PORT
           npm run build:hosted
-          test -f dist/index.html && test -f dist/build.json
+          test -f dist/index.html
+          test -f dist/build.json
           if [[ "$RUNNER_OS" == Linux ]]; then
             npx playwright install --with-deps chromium
           else
             npx playwright install chromium
           fi
-          git status --porcelain --untracked-files=no | (! grep .)
+          tracked_changes=$(git status --porcelain --untracked-files=no)
+          if [[ -n "$tracked_changes" ]]; then
+            printf 'Pinned App checkout has tracked changes:\n%s\n' "$tracked_changes" >&2
+            exit 1
+          fi
       - name: Build staged App for R14 reopen
         if: (matrix.leg == 'release13-required-update' || matrix.leg == 'release13-realm-reopen')
         shell: bash
@@ -883,9 +893,14 @@ jobs:
           npm ci --legacy-peer-deps
           unset ASTRID_APP_DIRECT_DOOR_PORT
           npm run build:hosted
-          test -f dist/index.html && test -f dist/build.json
+          test -f dist/index.html
+          test -f dist/build.json
           npx playwright install --with-deps chromium
-          git status --porcelain --untracked-files=no | (! grep .)
+          tracked_changes=$(git status --porcelain --untracked-files=no)
+          if [[ -n "$tracked_changes" ]]; then
+            printf 'Pinned App checkout has tracked changes:\n%s\n' "$tracked_changes" >&2
+            exit 1
+          fi
       - name: Build pinned Release 13 App for R13 authoring and required-update browser
         if: (matrix.leg == 'release13-required-update' || matrix.leg == 'release13-realm-reopen')
         shell: bash
@@ -899,9 +914,14 @@ jobs:
           npm ci --legacy-peer-deps
           unset ASTRID_APP_DIRECT_DOOR_PORT
           npm run build:hosted
-          test -f dist/index.html && test -f dist/build.json
+          test -f dist/index.html
+          test -f dist/build.json
           npx playwright install --with-deps chromium
-          git status --porcelain --untracked-files=no | (! grep .)
+          tracked_changes=$(git status --porcelain --untracked-files=no)
+          if [[ -n "$tracked_changes" ]]; then
+            printf 'Pinned App checkout has tracked changes:\n%s\n' "$tracked_changes" >&2
+            exit 1
+          fi
       - name: Run the matrix-owned lifecycle driver
         if: ${{ !startsWith(matrix.job_id, 'pinokio-') }}
         env:
