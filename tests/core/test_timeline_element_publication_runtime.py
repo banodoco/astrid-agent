@@ -1083,3 +1083,47 @@ def test_helper_param_cannot_bootstrap_unselected_clip(retained_pack, helper_cli
     assert not result.ok and 'authority is unavailable' in result.error.message
     assert helper_client.calls == [] and case.head() == head and case.bundle() == before
     assert case.service.store.conn.total_changes == changes
+
+@pytest.mark.parametrize('key', ['element-retry', None])
+@pytest.mark.parametrize('race', ['suffix', 'settled', 'new-flight'])
+def test_update_lost_ack_reconciles_captured_flight_without_flushing_suffix(
+        retained_pack, helper_client, monkeypatch, key, race):
+    from astrid.sdk.timeline.sync import TimelineSession
+
+    case, client = retained_pack, helper_client
+    owner = client.connect()
+    expected = case.head()['revision_id']
+    kwargs = dict(realm='realm', clip_id='effect', element=case.selected,
+                  expected_head=expected, duration=3, idempotency_key=key)
+    client.lost_ack[0] = True
+    assert not owner.update_parent_element(case.project, 'film', **kwargs).ok
+    flight = json.loads(client.outbox().read_bytes())['flight']
+    original_flush = TimelineSession._flush
+    suffix = {'op': 'unrelated', 'args': {'value': 1}}
+
+    def racing_flush(session, **options):
+        if options.get('expected_flight') is not None:
+            if race != 'suffix':
+                original_flush(session)
+            with session.outbox.locked():
+                state = session._state()
+                state['pending'].append(copy.deepcopy(suffix))
+                if race == 'new-flight':
+                    state['flight'] = {'key': 'different-flight'}
+                session.outbox.write(state)
+        return original_flush(session, **options)
+
+    monkeypatch.setattr(TimelineSession, '_flush', racing_flush)
+    monkeypatch.setattr('astrid.sdk.timeline_elements.execute',
+                        lambda *args, **kw: pytest.fail('retry recaptured'))
+    result = owner.update_parent_element(case.project, 'film', **kwargs)
+    assert result.ok, result.error
+    assert result.idempotency_key == flight['key']
+    assert client.calls == [(flight['body'].encode(), flight['key'])] * 2
+    state = json.loads(client.outbox().read_bytes())
+    assert state['flight'] == ({'key': 'different-flight'} if race == 'new-flight' else None)
+    assert state['pending'] == [suffix]
+    history = owner.history(case.project, 'film', limit=100)
+    receipts = [item['receipt'] for item in history.data['items']
+                if item['receipt']['idempotency_key'] == flight['key']]
+    assert len(receipts) == 1 and receipts[0]['receipt_id'] == result.receipt.receipt_id
