@@ -1114,9 +1114,11 @@ def test_copy_of_an_unreadable_source_is_not_refused_by_the_reader_gate(saved_so
     from astrid.sdk.timeline.commit import create_runtime_commit_service, reader_problem
     from astrid.sdk.timeline_duplicate import duplicate_timeline
 
-    client, project, document, _bodies = saved_source(flat_film())
+    source = flat_film()
+    source["parent"]["config"]["tracks"][0]["label"] = None
+    client, project, document, _bodies = saved_source(source)
     service = create_runtime_commit_service()
-    # The source's tracks have no label, so render cannot open it ...
+    # The source has an explicitly invalid label, so render cannot open it ...
     assert reader_problem(service, document('t')) is not None
     # ... and a faithful copy is as readable as its source: duplicating to repair it is allowed.
     duplicate_timeline(project, 't', slug='copy', client=client)
