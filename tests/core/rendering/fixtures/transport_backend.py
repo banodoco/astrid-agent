@@ -50,6 +50,13 @@ def main() -> int:
     if stderr:
         print(stderr, file=sys.stderr, flush=True)
 
+    if action == "noisy-child-failure":
+        Path(args.result).write_text(json.dumps({
+            "schema_version": 1, "kind": "internal", "backend": "acme.visual",
+            "message": "render failed", "recovery_command": None,
+            "details": {"stdout": request["stdout_child"], "stderr": request["stderr_child"]},
+        }), encoding="utf-8")
+        return 0
     if action == "child-failure":
         child = subprocess.run(
             [sys.executable, "-c", "import sys; print('Browser not available', file=sys.stderr); sys.exit(23)"],
