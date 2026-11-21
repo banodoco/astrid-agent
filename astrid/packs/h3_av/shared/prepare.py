@@ -349,6 +349,8 @@ def _validate_mask_assets(request: H3Request, assets: list[dict[str, Any]]) -> N
                 info = probe_mask(path, mask_id=mask_id, source=source, duration=duration)
                 if info["kind"] != "video":
                     continue
+                if "threshold" in mask:
+                    raise H3RequestError(f"mask {mask_id!r} has unsupported field: threshold for video mask")
                 width, height = _mask_dimensions(path, mask_id)
                 for index, frame in enumerate(
                     iter_mask_frames(path, start_frame=0, count=total, width=width, height=height)
