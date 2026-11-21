@@ -8,6 +8,8 @@ import tempfile
 from fractions import Fraction
 from pathlib import Path
 
+from astrid.core.media_framing import fill_filter, probe_streams
+
 from .errors import PreparationError
 from .prepare import _check_source_av_rate
 
@@ -22,12 +24,9 @@ def _digest(path: Path) -> str:
 
 def _probe(path: Path) -> dict:
     try:
-        proc = subprocess.run(['ffprobe', '-v', 'error', '-show_entries',
-            'stream=codec_type,start_time,start_pts,duration,duration_ts,time_base,sample_rate,nb_frames,sample_aspect_ratio,avg_frame_rate:format=start_time,duration',
-            '-of', 'json', str(path)], capture_output=True, text=True, check=True, timeout=30)
-        return json.loads(proc.stdout)
-    except (OSError, subprocess.SubprocessError, ValueError) as exc:
-        raise PreparationError(f'cannot inspect source audiovisual streams: {exc}') from exc
+        return probe_streams(path)
+    except ValueError as exc:
+        raise PreparationError(str(exc)) from exc
 
 
 def _stream_time(stream: dict, ticks_field: str, seconds_field: str) -> Fraction:
@@ -72,15 +71,6 @@ def _decoded_audio_coverage(path: Path, stream: dict, start: Fraction, end: Frac
         return coverage_start, coverage_end
     except (OSError, subprocess.SubprocessError, KeyError, TypeError, ValueError, ZeroDivisionError) as exc:
         raise PreparationError(f'cannot verify decoded source audio coverage: {exc}') from exc
-
-
-def fill_filter(width: int, height: int, *, square_default: bool) -> str:
-    """Center crop in source pixels using display aspect, then scale to square pixels."""
-    ratio = Fraction(width, height)
-    w, h = ratio.numerator, ratio.denominator
-    prefix = 'setsar=1,' if square_default else ''
-    return (f"{prefix}crop=w='if(gt(dar,{w}/{h}),ih*{w}/({h}*sar),iw)':"
-            f"h='if(gt(dar,{w}/{h}),ih,iw*sar*{h}/{w})',scale={width}:{height},setsar=1")
 
 
 def conform_source(source: Path, destination: Path, *, start: str, end: str, fit: str, validate) -> dict:

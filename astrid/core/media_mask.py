@@ -1,4 +1,4 @@
-"""Create binary edit masks and preview them in the H3 working frame."""
+"""Create binary edit masks and preview them in the working frame."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from typing import Any
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageOps, PngImagePlugin
 
 from astrid.core.media_crop import _failure, _kind_for
-from astrid.packs.h3_av.shared.conform import _probe, fill_filter
+from astrid.core.media_framing import fill_filter, probe_streams
 from astrid.sdk.contracts import DomainResult
 from astrid.sdk.exceptions import ServiceError
 
@@ -151,7 +151,7 @@ def _fitted_frame(path: Path, seconds: float, size: tuple[int, int], *, square_d
 
 
 def _preview(path: Path, kind: str, mask: Image.Image, span: str | None, samples: int) -> dict:
-    info = _probe(path)
+    info = probe_streams(path)
     stream = next((s for s in info.get("streams", []) if s.get("codec_type") == "video"), None)
     if stream is None:
         raise ValueError("--preview-on requires an image or video")

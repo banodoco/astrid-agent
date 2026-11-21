@@ -154,46 +154,6 @@ def _import_generation_member(path: Path, controls: dict[str, Any]) -> dict[str,
     return {'digest': actual, 'sha256': sha256, 'bytes': len(data), 'filename': path.name}
 
 
-def _h3_remote_handoff(plan: Mapping[str, Any], root: Path) -> dict[str, Any] | None:
-    """Freeze the controller's prepared H3 source for transport to its worker."""
-    from astrid.packs.h3_av.shared.request import normalize_request
-    from astrid.packs.h3_av.shared.stages import _authoritative_source_asset_id
-
-    state_path = Path(plan['job_dir']) / 'h3' / 'build-state.json'
-    state = json.loads(state_path.read_text(encoding='utf-8'))
-    source_id = _authoritative_source_asset_id(normalize_request(state['request']))
-    if source_id is None:
-        return None
-    preparation = state['preparation']
-    conform = preparation.get('source_conform')
-    if not isinstance(conform, Mapping) or not state.get('source'):
-        raise CapabilityInvocationError('H3 remote source requires a frozen prepared-source handoff')
-    prepared = Path(state['source'])
-    descriptor = preparation.get('managed_source')
-    expected = conform['output']['sha256']
-    if (not isinstance(descriptor, Mapping) or descriptor.get('digest') != 'sha256:' + expected
-            or descriptor.get('sha256') != expected):
-        raise CapabilityInvocationError('H3 source was not published as the prepared managed object')
-    import hashlib
-    if not prepared.is_file() or hashlib.sha256(prepared.read_bytes()).hexdigest() != expected:
-        raise CapabilityInvocationError('managed H3 prepared source digest mismatch')
-    lineage = {'digest': descriptor['digest'], 'source_asset': source_id,
-               'source_sha256': conform['source']['sha256'],
-               'source_range': conform['source']['range_seconds'],
-               'fit': conform['output']['fit'], 'request_digest': state['request_digest']}
-    conform = {**conform, 'source': {k: v for k, v in conform['source'].items() if k != 'path'}}
-    envelope = {'version': 1, 'request_digest': state['request_digest'], 'asset': source_id,
-                'managed_source': dict(descriptor), 'conform': conform}
-    handoff = root / 'h3-prepared-source.json'
-    handoff.write_text(json.dumps(envelope, sort_keys=True), encoding='utf-8')
-    request_file = root / 'h3-request.json'
-    request_file.write_text(json.dumps(state['request'], sort_keys=True), encoding='utf-8')
-    source_map = {item['asset']: item['path'] for item in preparation['assets']}
-    source_map['__astrid_h3_prepared__'] = str(handoff)
-    return {'inputs': {'request': str(request_file), 'asset_map': source_map},
-            'descriptor': descriptor, 'lineage': lineage}
-
-
 def _retain_generation_source(path: Path, controls: dict[str, Any]) -> dict[str, Any]:
     from tempfile import TemporaryDirectory
     data = path.read_bytes()
@@ -385,13 +345,14 @@ def offline_request_preflight(entry_id: str, *, mode: str | None, inputs: Mappin
     """Refuse an explicit entry request locally, without a facade, Runtime or machine.
 
     Compiles the named shipped entry for these inputs and runs the invocation preflight a
-    submission would run. Auto-selected requests have no single entry to compile, and H3's
-    prepared source exists only on the live path; neither is checked here.
+    submission would run. Auto-selected requests have no single entry to compile.
+    Entries with a controller inspection hook use the facade for build preflight.
     """
     from astrid.core.generation import entries as workflow_entries
 
     row = workflow_entries.find_entry(entry_id)
-    if row is None or row.get('action') or entry_id == 'h3':
+    if (row is None or row.get('action')
+            or workflow_entries.inspect_entry_inputs(row, inputs) is not None):
         return
     chosen_mode = mode or (row.get('modes') or [None])[0]
     values = dict(inputs or {})
@@ -1548,60 +1509,52 @@ class GenerationFacade:
             python_exec=python_exec, verbose=verbose, argv=argv,
         )
 
-    @staticmethod
-    def _h3_handle_assets(inputs: Mapping[str, Any]) -> list[str]:
-        from astrid.sdk.media_handles import is_media_handle
-        from astrid.packs.h3_av.shared.request import _asset_ids, load_request_document, normalize_request
-        request = inputs.get("request")
-        if not request:
-            return []
-        return [asset for asset in _asset_ids(normalize_request(load_request_document(request)))
-                if is_media_handle(asset)]
-
     def _generate_on_target(self, **kwargs: Any) -> Any:
-        """Run ``_generate_on_target_impl``, then remove any hook job directories it made."""
+        """Run target generation and remove its controller job directories on exit."""
         import shutil
+
+        from astrid.core.generation.entries import inspect_entry_inputs, read_file_map_document
+
         job_dirs: list[Path] = []
         try:
-            if kwargs.get("model") == "h3":
-                inputs = dict(kwargs.get("inputs") or {})
-                from astrid.core.generation.entries import read_file_map_document
+            inputs = kwargs.get("inputs") or {}
+            try:
+                requirements = inspect_entry_inputs(kwargs.get("model"), inputs)
+            except (ValueError, OSError) as exc:
+                raise CapabilityValidationError(str(exc)) from exc
+            if requirements is not None and requirements.handle_ids:
+                from tempfile import mkdtemp
+
+                from astrid.sdk.media_handles import resolve_media_handle
+
+                client = kwargs.get("client")
+                _, project = _resolve_invoke_destination(client=client, out=kwargs.get("out"),
+                    project=kwargs.get("project"), project_root=kwargs.get("project_root"), dry_run=True)
+                if client is None or not project:
+                    raise CapabilityValidationError("media handles require a project and Runtime connection")
+                context = dict(kwargs.get("idempotency_context") or {})
+                if "media_handles" in context:
+                    raise CapabilityValidationError("media_handles is reserved for resolved media lineage")
+                port = requirements.file_map_port
                 supplied_map = read_file_map_document(
-                    inputs.get("asset_map") or {}, allow_output_handles=True, allow_empty=True)
-                if isinstance(supplied_map, Mapping) and "__astrid_h3_prepared__" in supplied_map:
-                    raise CapabilityValidationError("the H3 prepared-source handoff is reserved for the runtime")
-                handles = self._h3_handle_assets(inputs)
-                if handles:
-                    from astrid.sdk.media_handles import resolve_media_handle
-                    from tempfile import mkdtemp
-                    client = kwargs.get("client")
-                    _, project = _resolve_invoke_destination(client=client, out=kwargs.get("out"),
-                        project=kwargs.get("project"), project_root=kwargs.get("project_root"), dry_run=True)
-                    if client is None or not project:
-                        raise CapabilityValidationError("H3 media handles require a project and Runtime connection")
-                    kwargs["project"] = project
-                    root = Path(mkdtemp(prefix="astrid-h3-handles-"))
-                    job_dirs.append(root)
-                    if not isinstance(supplied_map, Mapping):
-                        raise CapabilityValidationError("H3 asset_map must be a readable map of asset IDs to files")
-                    mapping = dict(supplied_map)
-                    lineage = []
-                    for index, handle in enumerate(handles):
-                        descriptor, record = resolve_media_handle(client, project, handle)
-                        lineage.append({"port": "request.asset", **record})
-                        opened = client.media.open(project, descriptor["digest"], materialize=True,
-                            cache_root=root / str(index), preview_bytes=0,
-                            max_bytes=max(descriptor["size_bytes"], 1))
-                        if not opened.ok:
-                            raise CapabilityValidationError(f"cannot open media handle {handle!r}: {opened.error.message}")
-                        mapping[handle] = opened.data["local_path"]
-                    inputs["asset_map"] = mapping
-                    kwargs["inputs"] = inputs
-                    context = dict(kwargs.get("idempotency_context") or {})
-                    if "media_handles" in context:
-                        raise CapabilityValidationError("media_handles is reserved for resolved H3 media lineage")
-                    context["media_handles"] = lineage
-                    kwargs["idempotency_context"] = context
+                    inputs.get(port) or {}, allow_output_handles=True, allow_empty=True)
+                if not isinstance(supplied_map, Mapping):
+                    raise CapabilityValidationError(f"{port} must be a readable map of asset IDs to files")
+                root = Path(mkdtemp(prefix="astrid-media-handles-"))
+                job_dirs.append(root)
+                mapping = dict(supplied_map)
+                lineage = []
+                for index, handle in enumerate(requirements.handle_ids):
+                    descriptor, record = resolve_media_handle(client, project, handle)
+                    lineage.append({"port": requirements.lineage_port, **record})
+                    opened = client.media.open(project, descriptor["digest"], materialize=True,
+                        cache_root=root / str(index), preview_bytes=0,
+                        max_bytes=max(descriptor["size_bytes"], 1))
+                    if not opened.ok:
+                        raise CapabilityValidationError(f"cannot open media handle {handle!r}: {opened.error.message}")
+                    mapping[handle] = opened.data["local_path"]
+                context["media_handles"] = lineage
+                kwargs.update(project=project, inputs={**inputs, port: mapping}, idempotency_context=context)
             if not kwargs.get("dry_run") and kwargs.get("placement") is not None:
                 from astrid.core.generation import placement as placements
                 resolved = placements.validate_placement(placements.resolve_placement(
@@ -1673,6 +1626,7 @@ class GenerationFacade:
         from astrid.core.generation import defaults as generation_defaults
         from astrid.core.generation import entries as workflow_entries
         from astrid.core.generation import settings as generation_settings
+        from astrid.core.generation.workflows import BuildTransport, build_transport
         from astrid.packs.vibecomfy.production_engine import ProductionEngineError
         settings_snapshot = generation_settings.read(controls.get('client'))
         pinned = (generation_defaults.pinned_entry(modality, mode, settings_snapshot)
@@ -1816,6 +1770,7 @@ class GenerationFacade:
                     continue
             try:
                 assets = {}
+                transport = BuildTransport()
                 if is_remote_target:
                     template = (None if source == "workflow" else _local_template(candidate, mode))
                     if source == "workflow" and candidate.get('hooks_declared'):
@@ -1865,24 +1820,25 @@ class GenerationFacade:
                             build_inputs.pop('count')  # single-output admission was checked above
                         build_inputs = workflow_entries.validate_inputs(candidate, build_inputs)
                         build_options: dict[str, Any] = {}
-                        if identifier == 'h3' and not dry_run:
-                            def publish_h3_source(path: Path, expected: str) -> tuple[Path, dict[str, Any]]:
+                        if not dry_run and workflow_entries.publishes_source(candidate):
+                            def publish_source(path: Path, expected: str) -> tuple[Path, dict[str, Any]]:
                                 descriptor = import_member(path)
                                 if descriptor['sha256'] != expected:
-                                    raise CapabilityInvocationError('managed H3 source digest mismatch during publication')
+                                    raise CapabilityInvocationError('managed source digest mismatch during publication')
                                 client = controls.get('client')
                                 project = controls.get('project')
                                 opened = client.media.open(project, descriptor['digest'], materialize=True,
-                                    cache_root=Path(job_dir) / 'h3-published-source', preview_bytes=0,
+                                    cache_root=Path(job_dir) / 'published-source', preview_bytes=0,
                                     max_bytes=max(descriptor['bytes'], 1))
                                 if not opened.ok:
                                     raise CapabilityInvocationError(
-                                        f"could not reopen managed H3 source: {opened.error.message}")
+                                        f"could not reopen managed source: {opened.error.message}")
                                 return Path(opened.data['local_path']), descriptor
-                            build_options['publish_source'] = publish_h3_source
+                            build_options['publish_source'] = publish_source
                         built = workflow_entries.build_entry(
                             candidate, build_inputs, job_dir, check_runtime=not dry_run and not is_remote_target,
                             **build_options)
+                        transport = build_transport(built)
                         workflow, assets = built['workflow'], dict(built.get('assets') or {})
                         plan = {'kind': candidate['kind'], 'unbound': [], 'bindings': dict(built['bindings']),
                                 'build_plan': built.get('plan'), 'job_dir': str(job_dir)}
@@ -2029,16 +1985,10 @@ class GenerationFacade:
                     manifest = {**manifest, 'models_root': configured_models_root()}
                 readiness['entry']['requirements'] = manifest
             # Every dry run runs the invocation preflight that precedes a paid submission.
-            # H3 measures its prepared source on the live path; an offline dry run cannot
-            # reproduce that source, so H3 skips only the source-AV measurement here.
-            h3_lineage = None
-            if entry_id == 'h3' and plan and isinstance(plan.get('build_plan'), Mapping):
-                from astrid.packs.h3_av.shared.stages import source_asset_lineage
-                h3_lineage = source_asset_lineage(plan['build_plan'])
             _offline_invocation_preflight(
                 workflow, plan=plan, assets=assets or {},
                 comfy_url=(target_client.target.url if placement.kind == 'attached' and target_client is not None else None),
-                lineage=h3_lineage, source_video=entry_id != 'h3')
+                lineage=transport.lineage, source_video=transport.preflight_source_video)
             readiness['entry'].update(preview)
             if align == 'trust':
                 readiness['alignment'] = {'mode': 'trust', 'verified': False}
@@ -2060,12 +2010,7 @@ class GenerationFacade:
                 import zipfile
 
                 from astrid.packs.vibecomfy.asset_manifest import build_asset_manifest
-                if entry_id == 'h3' and plan and isinstance(plan.get('build_plan'), Mapping):
-                    from astrid.packs.h3_av.shared.stages import source_asset_lineage
-                    lineage = source_asset_lineage(plan['build_plan'])
-                else:
-                    lineage = None
-                manifest = build_asset_manifest(assets, lineage=lineage)
+                manifest = build_asset_manifest(assets, lineage=transport.lineage)
                 archive = root / "assets.zip"
                 with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zipped:
                     zipped.writestr("manifest.json", json.dumps(manifest))
@@ -2078,20 +2023,21 @@ class GenerationFacade:
                 # (workflow_inputs). The shipped archive carries it only when the entry
                 # declares it as an input; an entry without that port must not refuse it.
                 archive_inputs = {name: value for name, value in inputs.items() if name != 'filename_prefix'}
-                if entry_id == 'h3' and plan and plan.get('job_dir'):
-                    handoff = _h3_remote_handoff(plan, root)
-                    if handoff is not None:
-                        asset_arguments['source_video'] = handoff['descriptor']
-                        authority = dict(controls.get('idempotency_context') or {})
-                        if 'h3_prepared_source' in authority:
-                            raise CapabilityValidationError('h3_prepared_source is reserved for prepared media lineage')
-                        authority['h3_prepared_source'] = handoff['lineage']
-                        controls['idempotency_context'] = authority
-                        archive_inputs = handoff['inputs']
+                remote = transport.remote
+                if remote is not None:
+                    asset_arguments['source_video'] = dict(remote.descriptor)
+                    authority = dict(controls.get('idempotency_context') or {})
+                    collisions = authority.keys() & remote.idempotency.keys()
+                    if collisions:
+                        names = ', '.join(sorted(collisions))
+                        raise CapabilityValidationError(f"reserved generation lineage keys: {names}")
+                    controls['idempotency_context'] = {**authority, **remote.idempotency}
+                    archive_inputs = dict(remote.inputs)
                 public, public_values = workflow_entries.resolve_entry_inputs(entry_id, archive_inputs, mode=mode)
                 if 'filename_prefix' in inputs and any(
                         'filename_prefix' in {port['name'], *port.get('aliases', [])} for port in public['inputs']):
-                    public, public_values = workflow_entries.resolve_entry_inputs(entry_id, inputs, mode=mode)
+                    public, public_values = workflow_entries.resolve_entry_inputs(
+                        entry_id, {**archive_inputs, 'filename_prefix': inputs['filename_prefix']}, mode=mode)
                 if 'seed' in {port['name'] for port in public['inputs']} and 'seed' in (plan or {}).get('bindings', {}):
                     public_values['seed'] = plan['bindings']['seed']
                 archive = write_archive(root / 'entry-inputs.zip', public_values, public['inputs'])
