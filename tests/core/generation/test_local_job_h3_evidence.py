@@ -28,11 +28,43 @@ def test_h3_evidence_survives_cleanup_and_tasks_logs_lists_it(tmp_path, monkeypa
     source = _video(tmp_path / "source.mp4", 3, frames=57)
     generated = _video(tmp_path / "generated.mp4", 4.5)
     request = json.loads(REQUEST.read_text())
+    request["media"][0]["asset"]["id"] = "source"
+    request_path = tmp_path / "request.json"
+    request_path.write_text(json.dumps(request), encoding="utf-8")
+    from astrid.core.generation.engine_facts import comfyui_facts
+    from astrid.packs.h3_av.shared import engine_facts
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+    from astrid.packs.h3_av.shared.request import normalize_request
+
+    engine_facts.install(comfyui_facts())
+    source_id = request["media"][0]["asset"]["id"]
+    normalized_request = normalize_request(request)
+    prepared = prepare_request(
+        normalized_request, asset_map={source_id: str(source)}, out_dir=tmp_path / "controller-build",
+    )
+    prepared_source = Path(prepared["assets"][0]["path"])
+    conform = prepared["source_conform"]
+    digest = conform["output"]["sha256"]
+    envelope = {
+        "version": 1,
+        "request_digest": normalized_request.digest,
+        "asset": source_id,
+        "managed_source": {
+            "digest": "sha256:" + digest,
+            "sha256": digest,
+            "bytes": prepared_source.stat().st_size,
+            "filename": prepared_source.name,
+        },
+        "conform": conform,
+    }
+    envelope_path = tmp_path / "prepared-source.json"
+    envelope_path.write_text(json.dumps(envelope), encoding="utf-8")
     job = tmp_path / "job.json"
     job.write_text(json.dumps({
         "schema": "astrid.machine-job.v1", "entry": "h3", "mode": "v2v", "align": "check",
-        "inputs": {"request": str(REQUEST), "asset_map": {
-            request["media"][0]["asset"]["id"]: str(source), "source": str(source)}},
+        "inputs": {"request": str(request_path), "asset_map": {
+            source_id: str(prepared_source), "__astrid_h3_prepared__": str(envelope_path)},
+            "source_video": str(prepared_source)},
     }))
     monkeypatch.setattr("astrid.core.generation.preflight.require_generation_target_readiness", lambda *a: None)
     monkeypatch.setattr(entries, "target_schema", lambda *a, **k: None)
