@@ -263,6 +263,48 @@ def test_injected_writer_mid_copy_discards_candidate_and_restores_r0(case, monke
     assert_r0(c)
 
 
+
+def test_failed_copy_only_staging_restores_r0_and_retry_preserves_existing_state(case, monkeypatch):
+    """A failed fresh handoff restores the sole owner, and the next public install can retry."""
+    c = case
+    source_before = snapshot(c.data)
+    service_before = c.service.path.read_bytes()
+    stage = c.backend.stage
+    attempts = []
+
+    def fail_first_stage(*args, **kwargs):
+        attempts.append('stage')
+        if len(attempts) == 1:
+            raise RuntimeError('injected staging failure')
+        return stage(*args, **kwargs)
+
+    monkeypatch.setattr(c.backend, 'stage', fail_first_stage)
+    with pytest.raises(RuntimeError, match='injected staging failure'):
+        upgrade(c)
+    assert_r0(c)
+    assert snapshot(c.data) == source_before
+    assert c.service.path.read_bytes() == service_before
+    assert not c.destination.exists()
+    assert read_json(c.tx.journal)['phase'] == 'rolled_back'
+    assert not c.runtime_calls and not c.verified
+
+    # The supported entry clears a rolled-back journal only after checking that
+    # no retained R1 destination would be overwritten; it then redoes the copy.
+    assert handoff.handle(c.root, c.data, c.backend,
+                          manifest_loader=lambda: c.manifest, say=lambda _: None)
+    assert attempts == ['stage', 'stage']
+    assert current(c.root).release == 1
+    assert c.verified == [c.destination]
+    assert c.runtime_calls
+    assert snapshot(c.data) == source_before
+    assert c.service.path.read_bytes() == service_before
+    assert state(c.manager)['r1'] == 'active'
+    assert not state(c.manager)['running'] and not state(c.manager)['enabled']
+    assert read_json(c.destination / adoption_receipt.RECEIPT)['started'] is False
+    assert not handoff.journal_path(c.service).exists()
+    assert read_json(handoff.archive_path(c.service))['phase'] == 'complete'
+
+
 @pytest.mark.parametrize('bad', ['response', 'receipt', 'profile', 'identity', 'inventory', 'boolean', 'catalog'])
 def test_receipt_gate_refuses_before_selection_and_keeps_both_roots(case, monkeypatch, bad):
     c = case

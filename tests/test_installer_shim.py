@@ -245,7 +245,7 @@ def test_verified_lifecycle_records_shim_and_prints_final_hint(tmp_path, monkeyp
         python = old_root / "py/bin/python"
         python.parent.mkdir(parents=True)
         python.touch()
-        backend.old = Version(old_root, python, old_root / "profile.json", {})
+        backend.old = Version(old_root, python, old_root / "profile.json", {}, release=1)
         write_json(old_root / "version.json", backend.old.document())
         if mode == "repair":
             backend.verify = lambda *_args, **_kwargs: None

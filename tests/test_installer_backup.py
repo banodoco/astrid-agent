@@ -293,7 +293,7 @@ def test_windows_failed_update_restores_private_support_and_can_retry(
         python = folder / "py/Scripts/python.exe"
         python.parent.mkdir(parents=True)
         python.touch()
-        value = Version(folder, python, folder / "profile.json", {})
+        value = Version(folder, python, folder / "profile.json", {}, release={"old": 1, "failed": 2, "retry": 3}[name])
         write_json(folder / "version.json", value.document())
         return value
 

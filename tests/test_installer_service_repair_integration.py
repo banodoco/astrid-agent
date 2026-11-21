@@ -77,7 +77,7 @@ def test_repair_restarts_real_runtime_for_failed_service_and_preserves_healthy_p
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
         "ASTRID_RUNTIME_DOOR_PORT": str(port),
         "ASTRID_RUNTIME_DATA_ROOT": str(data),
-    })
+    }, release=1)
     write_json(version_root / "version.json", version.document())
     (root / "current").write_text("v1\n", encoding="utf-8")
 

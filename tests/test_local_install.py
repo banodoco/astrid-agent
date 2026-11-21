@@ -12,7 +12,8 @@ from astrid.installer.core import Installer, Version, current, switch, write_jso
 def make_version(root: Path, name: str) -> Version:
     folder = root / 'versions' / name
     folder.mkdir(parents=True)
-    value = Version(folder, folder / 'py/bin/python', folder / 'profile.json', {'PATH': '/tools/bin:/usr/bin:/bin'})
+    value = Version(folder, folder / 'py/bin/python', folder / 'profile.json',
+                    {'PATH': '/tools/bin:/usr/bin:/bin'}, release={'old': 1, 'new': 2}[name])
     value.python.parent.mkdir(parents=True)
     value.python.write_text('#!/bin/sh\nexit 0\n', encoding='utf-8')
     write_json(folder / 'version.json', value.document())

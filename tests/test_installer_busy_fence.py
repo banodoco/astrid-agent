@@ -51,7 +51,7 @@ def realm_fixture(tmp_path, monkeypatch, *, system='linux', blocker='running'):
     profile = oldroot / 'profile.json'
     write_json(profile, {'profile': 'astrid', 'runtime_checkout': str(tmp_path), 'source_checkout': str(tmp_path)})
     write_json(paths.source_profiles_dir / 'astrid.json', json.loads(profile.read_text(encoding='utf-8')))
-    old = Version(oldroot, Path(sys.executable), profile, {})
+    old = Version(oldroot, Path(sys.executable), profile, {}, release=1)
     write_json(oldroot / 'version.json', old.document())
     switch(root, old)
     (root / 'run').write_bytes(b'unchanged existing launcher')
@@ -92,7 +92,7 @@ def test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup(tmp_path, monkey
         # C2 stages online. Only lifecycle signals and workspace changes are
         # forbidden on a busy refusal; preparing isolated program files is safe.
         candidate = Version(backend.root / 'versions' / 'candidate', old.python,
-                            backend.root / 'versions' / 'candidate' / 'profile.json', {})
+                            backend.root / 'versions' / 'candidate' / 'profile.json', {}, release=2)
         monkeypatch.setattr(backend, 'stage', Mock(return_value=candidate))
         monkeypatch.setattr(backend, 'validate_candidate', Mock())
     if operation == 'recovery':
