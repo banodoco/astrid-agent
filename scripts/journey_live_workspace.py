@@ -207,7 +207,7 @@ def seed_authored_timeline(client, project, generation):
             and isinstance(base_publication, str) and base_publication):
         raise RuntimeError("Installed Runtime did not publish a canonical timeline bootstrap head")
 
-    label = "Initialize mixed-version creative timeline"
+    label = "Initialize Release 13 creative timeline"
     command = {
         "schema_version": 1, "op": "timeline.init", "version": "1", "select": "parent",
         "args": {"name": "Main", "slug": "main",
@@ -224,7 +224,7 @@ def seed_authored_timeline(client, project, generation):
         "merge": "atomic", "reads": reads, "dry_run": False, "source": {"via": "python"},
     }
     accepted = client.request("POST", timeline_path + "/commit", body,
-                              key="fix17-mixed-init-" + generation)
+                              key="fix17-init-" + generation)
     data = accepted.get("data") if isinstance(accepted, dict) else None
     receipt = accepted.get("receipt") if isinstance(accepted, dict) else None
     if (not isinstance(data, dict) or data.get("status") != "accepted"
@@ -253,6 +253,74 @@ def seed_authored_timeline(client, project, generation):
         "revision_id": data["accepted_revision_id"],
         "publication_id": receipt["receipt_id"], "authored": True,
     }
+
+
+def _inventory_pages(client, route):
+    cursor = None
+    seen = set()
+    while True:
+        query = "?limit=50" + ("&cursor=" + quote(cursor, safe="") if cursor else "")
+        page = client.request("GET", route + query)
+        items, next_cursor = page["items"], page["next_cursor"]
+        if not isinstance(items, list) or (next_cursor is not None and (
+                not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen)):
+            raise RuntimeError("Realm inventory has an invalid or repeated page cursor")
+        yield page
+        if next_cursor is None:
+            break
+        seen.add(next_cursor)
+        cursor = next_cursor
+
+
+def realm_inventory(client):
+    """Reopen the installed realm's projects, each timeline and every published revision."""
+    realm_id = client.request("GET", path("realm"))["realm_id"]
+    projects = {}
+    for page in _inventory_pages(client, path("projects")):
+        for project in page["items"]:
+            project_id = project["project_id"]
+            if project["realm_id"] != realm_id or project_id in projects:
+                raise RuntimeError("Realm project inventory contains a foreign or duplicate project")
+            timelines = {}
+            for listing in _inventory_pages(client, path("projects", project_id, "timelines")):
+                for item in listing["items"]:
+                    timeline_id = item["timeline_id"]
+                    if timeline_id in timelines:
+                        raise RuntimeError("Realm timeline inventory contains a duplicate timeline")
+                    timeline_path = path("projects", project_id, "timelines", timeline_id)
+                    timeline = client.request("GET", timeline_path)
+                    revision = timeline["head_revision_id"]
+                    publication = timeline.get("head_publication_id")
+                    history = []
+                    if revision is not None:
+                        for commits in _inventory_pages(client, timeline_path + "/commits"):
+                            if commits["head"] != {"revision_id": revision, "publication_id": publication}:
+                                raise RuntimeError("Timeline head changed while reading its history")
+                            for entry in commits["items"]:
+                                revision_id = entry["revision_id"]
+                                revision_route = timeline_path + "/composition-revisions/" + quote(revision_id, safe="")
+                                doc = client.request("GET", revision_route)
+                                if (not isinstance(doc, dict) or doc.get("revision_id") != revision_id
+                                        or doc.get("project_id") != project_id or doc.get("timeline_id") != timeline_id
+                                        or not isinstance(doc.get("payload"), dict)):
+                                    raise RuntimeError("Could not reopen a published timeline revision")
+                                history.append({
+                                    "revision_id": revision_id, "publication_id": entry["publication_id"],
+                                    "intent": entry["intent"], "label": entry.get("label"),
+                                    "previous": entry["previous"],
+                                    "revision_sha256": hashlib.sha256(
+                                        json.dumps(doc, sort_keys=True, separators=(",", ":")).encode()
+                                    ).hexdigest(),
+                                })
+                        if not any(e["revision_id"] == revision and e["publication_id"] == publication
+                                   for e in history):
+                            raise RuntimeError("Published timeline head is missing from its history")
+                    timelines[timeline_id] = {
+                        "name": timeline["name"], "revision_id": revision,
+                        "publication_id": publication, "history": history,
+                    }
+            projects[project_id] = {"name": project["name"], "timelines": timelines}
+    return {"realm_id": realm_id, "projects": projects}
 
 
 R11_PACK_REFUSAL = "stable selected pack capture requires Linux file lease support"
@@ -394,7 +462,8 @@ def check_selection(data, root, expected):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("seed", "snapshot", "seed_authored_timeline", "save_timeline_after_update", "reopen_saved_timeline"))
+    parser.add_argument("action", choices=("seed", "snapshot", "seed_authored_timeline", "realm_inventory",
+                                           "save_timeline_after_update", "reopen_saved_timeline"))
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--selection", type=Path, required=True)
@@ -438,6 +507,8 @@ def execute(args):
         result = snapshot(client, request)
     elif args.action == "seed_authored_timeline":
         result = seed_authored_timeline(client, **request)
+    elif args.action == "realm_inventory":
+        result = realm_inventory(client)
     elif args.action == "save_timeline_after_update":
         result = save_timeline_after_update(client, request)
     else:

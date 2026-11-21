@@ -23,7 +23,7 @@ if __package__:
     from . import check_journey_evidence as evidence_gate
     from . import ci_journey as journey, upgrade_release, journey_workspace, journey_live_workspace as live
     from . import journey_data_roots
-    from .journey_matrix import RELEASE13_WINDOWS_JOB_ID, RELEASE13_KILLED_JOB_ID
+    from .journey_matrix import FIX17_BROWSER_LEGS, RELEASE13_WINDOWS_JOB_ID, RELEASE13_KILLED_JOB_ID
 else:
     import check_journey_evidence as evidence_gate
     import ci_journey as journey
@@ -31,7 +31,7 @@ else:
     import journey_workspace
     import journey_live_workspace as live
     import journey_data_roots
-    from journey_matrix import RELEASE13_WINDOWS_JOB_ID, RELEASE13_KILLED_JOB_ID
+    from journey_matrix import FIX17_BROWSER_LEGS, RELEASE13_WINDOWS_JOB_ID, RELEASE13_KILLED_JOB_ID
 
 
 RELEASE0_FIXTURE = journey.ROOT / "tests" / "fixtures" / "release0"
@@ -2045,14 +2045,14 @@ def execute_windows_refusal(args, root: Path, data: Path, evidence: Path, sentin
 
 
 def execute_owned(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) -> dict:
-    if args.leg in {"mixed-r14-app-r13-installed", "mixed-r13-app-r14-installed"}:
+    if args.leg in FIX17_BROWSER_LEGS:
         if sys.platform != "linux":
-            raise RuntimeError("Mixed-version browser rows require native Linux installed service ownership")
+            raise RuntimeError("Required-update browser rows require native Linux installed service ownership")
         if __package__:
-            from . import journey_mixed_versions
+            from . import journey_required_update
         else:
-            import journey_mixed_versions
-        return journey_mixed_versions.execute(args, root, data, evidence, sentinel, birth)
+            import journey_required_update
+        return journey_required_update.execute(args, root, data, evidence, sentinel, birth)
     if args.leg == "windows-upgrade-refusal":
         return execute_windows_refusal(args, root, data, evidence, sentinel, birth)
     if args.leg == R0_HANDOFF_LEG:
