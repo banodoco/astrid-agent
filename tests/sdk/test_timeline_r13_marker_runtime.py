@@ -44,7 +44,7 @@ def _patch(service, project, change, key, *, reads=()):
     )
 
 
-def seed_r13_timeline(service, project, path, *, shot_id="shot"):
+def seed_r13_timeline(service, project, path, *, shot_id="shot", source_offset=None):
     _png(path)
     object_id = service.ingest(
         project, path.read_bytes(), original_name="still.png", media_type="image/png", idempotency_key="still",
@@ -66,7 +66,8 @@ def seed_r13_timeline(service, project, path, *, shot_id="shot"):
             "occurrences": [
                 {"occurrence_id": "first-shot", "shot_id": shot_id, "shot_revision_id": "r13-shot",
                  "placement": {"start_ms": 0, "track": "V1"},
-                 "source_offset": {"start": 0, "end": 1000}, "duration_ms": 1000,
+                 "source_offset": {"start": 0, "end": 1000} if source_offset is None else source_offset,
+                 "duration_ms": 1000,
                  "speed": {"numerator": 1, "denominator": 1}, "track": "V1"},
             ],
         },
@@ -246,7 +247,7 @@ def test_shared_r13_child_aliases_reopen_without_changing_the_physical_source(re
     from runtime_protocol.errors import RuntimeErrorBase
 
     service, client, project = realm
-    seed_r13_timeline(service, project, tmp_path / "still.png", shot_id="chapter-shot")
+    seed_r13_timeline(service, project, tmp_path / "still.png", shot_id="chapter-shot", source_offset=0)
     timeline, before, result = share_r13_child(service, client, project, tmp_path / "outbox.json")
     after = result["data"]["canonical_document"]
     parent = after["parent_revision"]
