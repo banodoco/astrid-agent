@@ -342,8 +342,11 @@ def recover_killed_r13_update(args, result: dict, result_path: Path, *,
         result["checks"]["process_killed"] = "pass"
 
     with step(result, result_path, "recover_old"):
+        # Use the same native Windows capture root as the original driver.
+        # A nonexistent nested evidence dir would otherwise hide last-run.json
+        # and make an exit-3 recovery look like a missing process receipt.
         retry = candidate_update_windows(app, candidate_path, args.shell,
-                                         evidence / "recovery", root, data)
+                                         evidence, root, data)
         result["recovery"] = {"exit_code": retry["exit_code"],
                               "command": retry["command"], "interruption": interrupted}
         # Recovery-only is *not* a successful update. Exit 3 was introduced
@@ -378,6 +381,7 @@ def recover_killed_r13_update(args, result: dict, result_path: Path, *,
         result["installed_tuple"] = {"app": jumps.RELEASE13_APP_COMMIT,
                                      "agent": jumps.RELEASE13_IDENTITY["agent"],
                                      "runtime": jumps.RELEASE13_IDENTITY["runtime"]}
+        (evidence / "recovery").mkdir(parents=True, exist_ok=True)
         journey.verify("install", version_path, data, evidence / "recovery")
         result["import_origins"] = (
             journey.read_json(evidence / "recovery" / "verify-install.json").get("details") or {}).get("origin.imports")
