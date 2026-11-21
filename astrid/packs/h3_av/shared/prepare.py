@@ -711,6 +711,21 @@ def _validate_frozen_source(request: H3Request, source: Mapping[str, Any], path:
     if (managed.get("digest") != "sha256:" + digest or managed.get("sha256") != digest
             or not path.is_file() or _file_digest(path) != digest):
         raise PreparationError("prepared source digest mismatch")
+    # A sealed digest binds bytes, but the envelope can still claim the wrong
+    # geometry for those bytes. Probe the managed file before accepting it.
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe is None:
+        raise _missing_ffprobe("prepared source geometry check requires ffprobe")
+    try:
+        probe = subprocess.run(
+            [ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries",
+             "stream=width,height", "-of", "csv=p=0:s=x", str(path)],
+            check=True, capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise PreparationError("cannot probe prepared source geometry") from exc
+    if probe.stdout.strip() != f"{canvas[0]}x{canvas[1]}":
+        raise PreparationError(f"prepared source video dimensions are not {canvas[0]}x{canvas[1]}")
     if not isinstance(record.get("decoded_av"), Mapping):
         raise PreparationError("prepared source decoded AV measurement is missing")
     return dict(record)

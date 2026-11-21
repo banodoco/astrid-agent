@@ -192,3 +192,15 @@ def test_v2_conform_and_frozen_source_follow_requested_canvas(tmp_path: Path) ->
     with pytest.raises(PreparationError, match="provenance does not match"):
         prepare_request(request, asset_map={"source": str(derivative)},
                         out_dir=tmp_path / "bad", frozen_source=envelope)
+
+    # A self-consistent hash and descriptor cannot make differently sized bytes
+    # match the requested canvas, even if the manifest claims that they do.
+    wrong = tmp_path / "wrong-size.mp4"
+    _ffmpeg("-i", str(derivative), "-vf", "scale=640:480", "-c:v", "libx264",
+            "-pix_fmt", "yuv420p", "-c:a", "copy", str(wrong))
+    wrong_digest = hashlib.sha256(wrong.read_bytes()).hexdigest()
+    envelope["conform"] = {**record, "output": {**record["output"], "sha256": wrong_digest}}
+    envelope["managed_source"] = {"digest": "sha256:" + wrong_digest, "sha256": wrong_digest}
+    with pytest.raises(PreparationError, match="video dimensions are not 512x512"):
+        prepare_request(request, asset_map={"source": str(wrong)},
+                        out_dir=tmp_path / "wrong", frozen_source=envelope)
