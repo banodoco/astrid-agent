@@ -293,3 +293,7 @@ def test_shared_r13_child_aliases_reopen_without_changing_the_physical_source(re
     restored = timeline.undo(publications=[result["receipt"]["receipt_id"]], idempotency_key="undo-r13-share")
     assert restored["data"]["status"] == "accepted"
     assert restored["data"]["canonical_document"] == before
+    undone = _history(service, project)
+    assert undone["head"]["revision_id"] == before["parent_revision"]["revision_id"]
+    assert undone["items"][-1]["records"]["undo_of"] == [result["receipt"]["receipt_id"]]
+    assert service.get_project_timeline_revision(project, "main", "r13-child") == child
