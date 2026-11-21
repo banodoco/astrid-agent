@@ -34,6 +34,15 @@ DOCUMENTED_R1_LAUNCHER = (
 # BoundaryHandoff stamps install.json with one of these once R1 owns the install.
 R1_SERVICE_LABELS = frozenset({'astrid-r1.service', 'haus.astrid.runtime.r1'})
 R1_VERSION_RECORD_KEYS = frozenset({'env', 'identity', 'profile', 'python', 'root'})
+R14_DIAGNOSTIC_VERSION_ID = re.compile(r'[0-9a-f]{12}')
+
+
+def _r14_diagnostic_version_id(version, manifest):
+    """Whether the explicitly enabled R14 opaque-id diagnostic applies."""
+    return (os.environ.get('ASTRID_FIX17_DIAGNOSTIC') == '1'
+            and manifest.get('release') == 14
+            and isinstance(version.get('root'), str)
+            and R14_DIAGNOSTIC_VERSION_ID.fullmatch(Path(version['root']).name) is not None)
 
 
 def read(path):
@@ -387,7 +396,10 @@ def _candidate_self_consistency_problems(version, manifest, manifest_bytes, runt
         if sha is None:
             problems.append(f'installed manifest {name} pin is not a full Git SHA')
     # astrid.installer.core.new_version_id names the version after the pins it installed.
-    if agent and runtime and not Path(version.get('root', '')).name.startswith(f'{agent[:8]}-{runtime[:8]}-'):
+    version_name_matches_pins = (agent and runtime and
+                                 Path(version.get('root', '')).name.startswith(f'{agent[:8]}-{runtime[:8]}-'))
+    diagnostic_opaque_id = _r14_diagnostic_version_id(version, manifest)
+    if agent and runtime and not version_name_matches_pins and not diagnostic_opaque_id:
         problems.append('installed version id does not match manifest Agent/Runtime pins')
     if manifest_bytes != installer_manifest_bytes(manifest):
         problems.append('installed manifest bytes do not match installer writer output')
@@ -423,6 +435,11 @@ def legacy_identity_observation(health, discovery, version, manifest, manifest_b
     identity_values = (health.get('identity'), discovery.get('identity'), version.get('identity'))
     identities_absent = all(value is None for value in identity_values)
     health_identity = health.get('identity')
+    agent_pin, runtime_pin = _pin_sha(manifest, 'agent'), _pin_sha(manifest, 'runtime')
+    version_name_matches_pins = bool(agent_pin and runtime_pin and
+        Path(version.get('root', '')).name.startswith(f'{agent_pin[:8]}-{runtime_pin[:8]}-'))
+    diagnostic_opaque_id = (_r14_diagnostic_version_id(version, manifest)
+                            if os.environ.get('ASTRID_FIX17_DIAGNOSTIC') == '1' else False)
     if not identities_absent:
         expected = version.get('identity')
         problems = []
@@ -460,6 +477,8 @@ def legacy_identity_observation(health, discovery, version, manifest, manifest_b
                            'version_python': version.get('python'),
                            'version_profile': version.get('profile'),
                            'version_env_fields': sorted(version.get('env', {})) if isinstance(version.get('env'), dict) else None,
+                           **({'diagnostic_bypass': 'NON-PROOF: ASTRID_FIX17_DIAGNOSTIC=1 accepted the R14 12-lowercase-hex opaque version id; manifest pin correspondence was not proven by the directory name.'}
+                              if diagnostic_opaque_id and not version_name_matches_pins else {}),
                            'launcher_template_source': launcher_template_source or (
                                'caller' if launcher_template else 'documented-template'),
                            'problems': problems}
@@ -684,7 +703,12 @@ def main():
         receipt = {'schema_version': 1, 'mode': args.mode, 'passed': False, 'failures': ['verifier'], 'error': f'{type(exc).__name__}: {exc}'}
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     Path(args.output).write_text(json.dumps(receipt, indent=2) + '\n', encoding='utf-8')
-    print(json.dumps({'passed': receipt['passed'], 'failures': receipt['failures'], 'output': args.output}))
+    summary = {'passed': receipt['passed'], 'failures': receipt['failures'], 'output': args.output}
+    diagnostic = (receipt.get('details', {}).get('runtime.identity', {}).get('diagnostic_bypass')
+                  if isinstance(receipt.get('details'), dict) else None)
+    if diagnostic:
+        summary['diagnostic_bypass'] = diagnostic
+    print(json.dumps(summary))
     return 0 if receipt['passed'] or args.mode == 'observe' and 'observations' in receipt else 1
 
 if __name__ == '__main__':

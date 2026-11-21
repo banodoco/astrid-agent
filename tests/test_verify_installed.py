@@ -354,9 +354,14 @@ def test_supported_legacy_schema_accepts_matching_instance_and_exact_provenance(
     assert json.loads(raw)['vibecomfy']['sha'] == legacy_default
 
 
-def test_source_backed_identity_aware_schema_accepts_synthetic_matching_identity_shape(tmp_path):
+@pytest.mark.parametrize('diagnostic', [False, True])
+def test_source_backed_identity_aware_schema_accepts_synthetic_matching_identity_shape(tmp_path, monkeypatch, diagnostic):
     """Synthetic identity values exercise policy; exact Runtime sources prove the fields exist."""
     from scripts.verify_installed import legacy_identity_observation
+    if diagnostic:
+        monkeypatch.setenv('ASTRID_FIX17_DIAGNOSTIC', '1')
+    else:
+        monkeypatch.delenv('ASTRID_FIX17_DIAGNOSTIC', raising=False)
     fixture, version_path, runtime, raw = _identity_aware_fixture(tmp_path)
     assert fixture['health']['identity'] == fixture['discovery']['identity'] == fixture['version']['identity']
     ok, details = legacy_identity_observation(fixture['health'], fixture['discovery'], fixture['version'],

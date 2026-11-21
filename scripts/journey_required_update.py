@@ -71,7 +71,8 @@ def _browser(config, *, app, expected_app, dist, release_app, manifest, python, 
     config_path = evidence / "browser-input.json"
     with hosted.Intercept(routes, python=python, types=types) as server:
         journey.write_json(config_path, {
-            **config, "origin": hosted.ORIGIN, "result": str(result_path), "spki": server.leaf_spki,
+            **config, "diagnostic": __import__("os").environ.get("ASTRID_FIX17_DIAGNOSTIC") == "1",
+            "origin": hosted.ORIGIN, "result": str(result_path), "spki": server.leaf_spki,
         })
         try:
             journey.run(["node", journey.ROOT / "scripts/journey_required_update_browser.mjs", config_path],
@@ -121,11 +122,32 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) 
     result_path = evidence / "journey-result.json"
     profile = evidence / "_browser-profile"
     profile.mkdir(mode=0o700)
+    diagnostic = __import__("os").environ.get("ASTRID_FIX17_DIAGNOSTIC") == "1"
+    diagnostic_path = evidence / "browser-diagnostic.json"
+    diagnostic_legs = []
+
+    def record_leg(project: str, leg: str, state: str, *, error: str | None = None,
+                   skip_reason: str | None = None, evidence_path: str | None = None):
+        item = {"project": project, "leg": leg, "state": state}
+        if error:
+            item["failure"] = error
+        if skip_reason:
+            item["skip_reason"] = skip_reason
+        if evidence_path:
+            item["evidence"] = evidence_path
+        diagnostic_legs.append(item)
+        journey.write_json(diagnostic_path, {
+            "schema_version": 1, "evidence_class": "NON-PROOF",
+            "source_commit": jumps.RELEASE13_APP_COMMIT, "legs": diagnostic_legs,
+        })
+
     result = {
         "schema_version": 1, "receipt_kind": mode, "job_id": args.job_id,
         "mode": args.mode, "scenario": mode, "status": "not-run",
         "os_build": platform.platform(), "shell": args.shell, **journey.runner_identity(),
         "source_override_test_mode": False,
+        **({"evidence_class": "NON-PROOF"} if diagnostic else {}),
+        **({"diagnostic_legs": diagnostic_legs} if diagnostic else {}),
         "candidate_checkouts": args.candidate_checkouts,
         "service_manager_prerequisite": args.service_manager_prerequisite,
         "run_roots": {"program": str(root), "data": str(data)},
@@ -160,31 +182,66 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) 
             count = 2 if mode == FIX17_REALM_LEG else 1
             for number in range(1, count + 1):
                 slug = f"fix17-project-{number}"
-                seed = jumps.live_workspace(root, data, evidence / slug, "seed_authored_timeline",
-                                            {"project": slug, "generation": slug})
+                try:
+                    seed = jumps.live_workspace(root, data, evidence / slug, "seed_authored_timeline",
+                                                {"project": slug, "generation": slug})
+                except Exception as exc:
+                    record_leg(slug, "seed", "fail", error=f"{type(exc).__name__}: {exc}")
+                    if not diagnostic:
+                        raise
+                    if mode == FIX17_PROMPT_LEG:
+                        record_leg(slug, "required_prompt", "unavailable",
+                                   skip_reason="No real seeded R13 project was available to open")
+                        record_leg(slug, "queued_draft_preservation", "unavailable",
+                                   skip_reason="No real seeded project or authentic queued draft exists")
+                    record_leg(slug, "r14_reopen", "unavailable",
+                               skip_reason="No real seeded project exists to reopen")
+                    continue
                 config = {
                     "profileDir": str(profile), "browserDriverApp": str(app),
                     "projectId": seed["project"], "projectName": seed["project_name"],
                     "timelineId": seed["timeline"], "initialLabel": seed["initial_label"],
                     "savedLabel": f"FIX17 saved edit {number}", "draftLabel": f"FIX17 draft {number}",
                 }
-                author = _browser({**config, "mode": "author"},
-                                  app=old_app, expected_app=jumps.RELEASE13_APP_COMMIT,
-                                  dist=args.release13_browser_dist, release_app=source, manifest=old_path,
-                                  python=old_version["python"], evidence=evidence / (slug + "-r13"))
-                result["timelines"].append({
-                    "config": {key: config[key] for key in
-                               ("projectId", "projectName", "timelineId", "savedLabel", "draftLabel")},
-                    "author": author,
-                })
+                author = None
+                try:
+                    author = _browser({**config, "mode": "author"},
+                                      app=old_app, expected_app=jumps.RELEASE13_APP_COMMIT,
+                                      dist=args.release13_browser_dist, release_app=source, manifest=old_path,
+                                      python=old_version["python"], evidence=evidence / (slug + "-r13"))
+                    record_leg(slug, "r13_authoring", "pass", evidence_path=slug + "-r13/browser-result.json")
+                except Exception as exc:
+                    record_leg(slug, "r13_authoring", "fail", error=f"{type(exc).__name__}: {exc}",
+                               evidence_path=slug + "-r13/browser-result.json")
+                    if not diagnostic:
+                        raise
+                timeline = {"config": {key: config[key] for key in
+                            ("projectId", "projectName", "timelineId", "savedLabel", "draftLabel")}}
+                if author is not None:
+                    timeline["author"] = author
+                else:
+                    timeline["preservation_unavailable"] = "R13 authoring did not produce a real queued draft"
+                result["timelines"].append(timeline)
                 if mode == FIX17_PROMPT_LEG:
-                    with stage(result, result_path, "required_prompt"):
-                        result["prompt"] = _browser({
-                            **config, "mode": "prompt", "expectedDraft": author["draft"],
-                            "requiredReason": manifest["required"]["reason"],
-                        }, app=old_app, expected_app=jumps.RELEASE13_APP_COMMIT,
-                            dist=args.release13_browser_dist, release_app=app, manifest=path,
-                            python=old_version["python"], evidence=evidence / "required-prompt")
+                    try:
+                        with stage(result, result_path, "required_prompt"):
+                            result["prompt"] = _browser({
+                                **config, "mode": "prompt", "diagnostic": diagnostic,
+                                **({"expectedDraft": author["draft"]} if author else {}),
+                                "requiredReason": manifest["required"]["reason"],
+                            }, app=old_app, expected_app=jumps.RELEASE13_APP_COMMIT,
+                                dist=args.release13_browser_dist, release_app=app, manifest=path,
+                                python=old_version["python"], evidence=evidence / (
+                                    (slug + "-required-prompt") if diagnostic else "required-prompt"))
+                        prompt_evidence = (slug + "-required-prompt") if diagnostic else "required-prompt"
+                        record_leg(slug, "required_prompt", "pass", evidence_path=prompt_evidence + "/browser-result.json")
+                        if author is None:
+                            record_leg(slug, "queued_draft_preservation", "unavailable",
+                                       skip_reason="R13 authoring failed; no authentic queued draft exists")
+                    except Exception as exc:
+                        record_leg(slug, "required_prompt", "fail", error=f"{type(exc).__name__}: {exc}")
+                        if not diagnostic:
+                            raise
             if mode == FIX17_REALM_LEG:
                 result["realm_before"] = jumps.live_workspace(
                     root, data, evidence / "before", "realm_inventory", {})
@@ -218,13 +275,23 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) 
                 if result["realm_before"] != result["realm_after"]:
                     raise RuntimeError("An R13 project, timeline or published history changed during the update")
             for number, timeline in enumerate(result["timelines"], start=1):
+                if "author" not in timeline:
+                    record_leg(timeline["config"]["projectId"], "r14_reopen", "unavailable",
+                               skip_reason="No authentic R13 saved edit and queued draft to reopen")
+                    continue
                 config = timeline["config"]
-                timeline["reopen"] = _browser({
-                    **config, "mode": "reopen", "expectedDraft": timeline["author"]["draft"],
-                    "requireDraftUI": mode == FIX17_PROMPT_LEG,
-                    "profileDir": str(profile), "browserDriverApp": str(app),
-                }, app=app, expected_app=candidate["app"], dist=args.candidate_browser_dist,
-                    release_app=app, manifest=path, python=version["python"], evidence=evidence / f"reopen-{number}")
+                try:
+                    timeline["reopen"] = _browser({
+                        **config, "mode": "reopen", "expectedDraft": timeline["author"]["draft"],
+                        "requireDraftUI": mode == FIX17_PROMPT_LEG,
+                        "profileDir": str(profile), "browserDriverApp": str(app),
+                    }, app=app, expected_app=candidate["app"], dist=args.candidate_browser_dist,
+                        release_app=app, manifest=path, python=version["python"], evidence=evidence / f"reopen-{number}")
+                    record_leg(config["projectId"], "r14_reopen", "pass", evidence_path=f"reopen-{number}/browser-result.json")
+                except Exception as exc:
+                    record_leg(config["projectId"], "r14_reopen", "fail", error=f"{type(exc).__name__}: {exc}")
+                    if not diagnostic:
+                        raise
 
         with stage(result, result_path, "native_end"):
             _installed(root, data, manifest, 14)
@@ -235,7 +302,7 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) 
             result["sentinel"]["at_settlement"] = settled
             if not settled["alive"]:
                 raise RuntimeError("The update disturbed the unrelated sentinel")
-        result["status"] = "pass"
+        result["status"] = "non-proof" if diagnostic else "pass"
     except Exception as exc:
         result.update(status="fail", error=f"{type(exc).__name__}: {exc}")
         raise

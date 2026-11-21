@@ -39,6 +39,7 @@ if __package__:
         M4_4A_PROVISIONAL_AGENT_REF,
         M4_4A_REQUIRED_AGENT_ANCESTORS,
         FIX17_BROWSER_LEGS,
+        FIX17_JOB_IDS,
         RELEASE13_WINDOWS_JOB_ID,
         RELEASE1_MODES,
         validate_job,
@@ -52,6 +53,7 @@ else:
         M4_4A_PROVISIONAL_AGENT_REF,
         M4_4A_REQUIRED_AGENT_ANCESTORS,
         FIX17_BROWSER_LEGS,
+        FIX17_JOB_IDS,
         RELEASE13_WINDOWS_JOB_ID,
         RELEASE1_MODES,
         validate_job,
@@ -2278,6 +2280,8 @@ def installation(root: Path, expected_data: Path) -> tuple[Path, Path, dict]:
     version = read_json(version_path)
     if Path(version["root"]).resolve() != version_path.parent.resolve():
         raise RuntimeError("Selected version path disagrees with version.json")
+    if os.environ.get("ASTRID_FIX17_DIAGNOSTIC") == "1" and Path(version["root"]).name != current:
+        raise RuntimeError("R14 version directory name does not match the live version.json root")
     return version_path, data, version
 
 
@@ -3994,8 +3998,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="exact run-owned precondition checkpoint for --diagnostic-start-at")
     args = parser.parse_args(argv)
     diagnostic = args.diagnostic_start_at is not None
+    fix17_diagnostic = (os.environ.get("ASTRID_FIX17_DIAGNOSTIC") == "1"
+                        and args.job_id in FIX17_JOB_IDS)
     if args.diagnostic_keep_going and (diagnostic or args.mode != "direct" or
-            args.leg not in {"release9-then-install", "fresh-install"} or not args.job_id or args.source_override or args.retain_for_next_leg):
+            (args.leg not in {"release9-then-install", "fresh-install"} and not fix17_diagnostic)
+            or not args.job_id or args.source_override or args.retain_for_next_leg):
         parser.error("keep-going requires a disposable direct lifecycle matrix job")
     if (args.leg == "update-over-old-declaration") != (args.old_declaration is not None):
         parser.error("--old-declaration is required only for update-over-old-declaration")
@@ -4064,7 +4071,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("release-11 admission is only valid for the release11-then-update leg")
     if args.leg in {"release13-then-update", "release13-then-killed-update",
                     *FIX17_BROWSER_LEGS}:
-        if diagnostic or args.diagnostic_keep_going or args.retain_for_next_leg:
+        if diagnostic or (args.diagnostic_keep_going and not fix17_diagnostic) or args.retain_for_next_leg:
             parser.error("release13-then-update requires a disposable direct qualification job")
         if not (args.job_id and args.mode == "direct" and args.candidate):
             parser.error("release13-then-update requires a frozen direct candidate receipt")
@@ -4086,7 +4093,7 @@ def main(argv: list[str] | None = None) -> int:
     required_update_browser = args.leg in FIX17_BROWSER_LEGS
     if required_update_browser:
         if (sys.platform != "linux" or args.shell != "sh" or args.mode != "direct"
-                or diagnostic or args.diagnostic_keep_going or args.retain_for_next_leg
+                or diagnostic or (args.diagnostic_keep_going and not fix17_diagnostic) or args.retain_for_next_leg
                 or args.source_override or args.old_launcher_ref or args.stopped_path_agent_ref):
             parser.error("required-update browser rows require isolated native Linux direct qualification")
         if args.candidate_browser_dist is None or args.release13_browser_dist is None:

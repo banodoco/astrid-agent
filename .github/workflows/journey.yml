@@ -311,6 +311,7 @@ jobs:
           STOPPED_PATH_AGENT_REF: ${{ inputs.stopped_path_agent_ref || steps.automatic_candidate.outputs.agent }}
           M4_4A_EXECUTOR_CONFIGS: ${{ inputs.m4_4a_executor_configs || '{"linux":{},"macos":{},"windows":{}}' }}
           DIAGNOSTIC_KEEP_GOING: ${{ inputs.diagnostic_keep_going || false }}
+          FIX17_GH_REF: ${{ github.ref }}
           DIAGNOSTIC_LEG: ${{ inputs.diagnostic_leg || 'release9-then-install' }}
           DIRECT_ONLY: ${{ inputs.direct_only || false }}
           JOURNEY_ROW: ${{ inputs.row || '' }}
@@ -375,7 +376,7 @@ jobs:
               raise SystemExit("row must be one of " + ", ".join(sorted(valid_rows - {""})))
           if journey_row:
               direct_only = True
-          if (release11_only or release13_only) and os.environ["DIAGNOSTIC_KEEP_GOING"].lower() == "true":
+          if release11_only and os.environ["DIAGNOSTIC_KEEP_GOING"].lower() == "true":
               raise SystemExit("release11-then-update rows do not support non-proof keep-going diagnostics")
           diagnostic_leg = os.environ["DIAGNOSTIC_LEG"]
           if diagnostic_leg not in {"release9-then-install", "fresh-install", "both"}:
@@ -387,6 +388,10 @@ jobs:
               raise SystemExit("pinokio rows do not support non-proof keep-going diagnostics")
           if os.environ.get("DIAGNOSTIC_KEEP_GOING", "false").lower() == "true" and not direct_only:
               raise SystemExit("diagnostic_keep_going requires direct_only")
+          fix17_diagnostic = (os.environ.get("DIAGNOSTIC_KEEP_GOING", "false").lower() == "true"
+                              and os.environ.get("FIX17_GH_REF") == "refs/heads/release/14/fix17-diag")
+          if fix17_diagnostic:
+              print("NON-PROOF bypass: FIX-17 named rows accepted for diagnostic-only execution; aggregate qualification remains fail-closed.")
           if direct_only and (backend_only or m4_5_only):
               raise SystemExit("direct_only cannot be combined with m4_4a_backend_only or m4_5_only")
           m4_5_enabled = os.environ["M4_5_ENABLED"].lower() == "true"
@@ -443,11 +448,15 @@ jobs:
           else:
               matrix = [dict(row) for row in journey_matrix.RELEASE1_MATRIX]
           if os.environ["DIAGNOSTIC_KEEP_GOING"].lower() == "true":
-              # Keep-going diagnostics re-leg the original three direct rows.
-              matrix = [row for row in matrix if row["job_id"] in journey_matrix.RELEASE1_LEGACY_JOB_IDS]
+              # FIX-17 diagnostic refs explicitly cover its exact nine rows.
+              # Other refs retain the historical three-row keep-going flow.
+              selected = journey_matrix.FIX17_MATRIX if fix17_diagnostic else journey_matrix.RELEASE1_MATRIX
+              matrix = [dict(row) for row in selected]
+              if not fix17_diagnostic:
+                  matrix = [row for row in matrix if row["job_id"] in journey_matrix.RELEASE1_LEGACY_JOB_IDS]
           if journey_row and journey_row not in {"direct", "pinokio"}:
               matrix = [row for row in matrix if row["job_id"] == journey_row]
-          if os.environ["DIAGNOSTIC_KEEP_GOING"].lower() == "true" and diagnostic_leg in {"release9-then-install", "both"}:
+          if os.environ["DIAGNOSTIC_KEEP_GOING"].lower() == "true" and not fix17_diagnostic and diagnostic_leg in {"release9-then-install", "both"}:
               # Keep-going diagnostics stage only the Release 9 leg; the strict
               # r0-handoff-then-update rows are not staged by keep-going.
               for row in matrix:
@@ -456,10 +465,10 @@ jobs:
                   # separately by the strict Windows lifecycle.
                   if row["job_id"] != "direct-windows":
                       row["leg"] = "release9-then-install"
-          if diagnostic_leg == "fresh-install":
+          if diagnostic_leg == "fresh-install" and not fix17_diagnostic:
               for row in matrix:
                   row["leg"] = diagnostic_leg
-          elif diagnostic_leg == "both":
+          elif diagnostic_leg == "both" and not fix17_diagnostic:
               # Windows' direct row already represents the fresh lifecycle;
               # its required R0 refusal is collected alongside that receipt.
               # Only Linux and macOS have a separate fresh-install matrix row.
@@ -884,8 +893,11 @@ jobs:
           ASTRID_CI_HOSTED_APP_DIST: ${{ matrix.job_id == 'direct-linux-fresh' && format('{0}/app/dist', github.workspace) || '' }}
           ASTRID_CI_WAIT_READY_TIMEOUT: ${{ needs.config.outputs.wait_timeout }}
           M4_4A_EXECUTOR_CONFIGS: ${{ needs.config.outputs.m4_4a_executor_configs }}
+          ASTRID_FIX17_DIAGNOSTIC: ${{ inputs.diagnostic_keep_going == true && github.ref == 'refs/heads/release/14/fix17-diag' && '1' || '' }}
         run: |
-          $runRoot = Join-Path $env:RUNNER_TEMP "astrid-r1-${{ matrix.job_id }}"
+          $runName = if ($env:ASTRID_FIX17_DIAGNOSTIC -eq '1' -and '${{ matrix.os }}' -eq 'windows') { 'f17' } else { "astrid-r1-${{ matrix.job_id }}" }
+          if ($env:ASTRID_FIX17_DIAGNOSTIC -eq '1' -and '${{ matrix.os }}' -eq 'windows') { Write-Host 'NON-PROOF FIX-17 diagnostic: using shortened Windows run path f17 to stay within path limits.' }
+          $runRoot = Join-Path $env:RUNNER_TEMP $runName
           $release0Args = @()
           $oldLauncherArgs = @()
           if ('${{ matrix.mode }}' -eq 'pinokio-backend') {
@@ -949,7 +961,8 @@ jobs:
             '${{ inputs.diagnostic_keep_going }}' -ne 'true'
           )
           if ($runWindowsRefusal) {
-            $refusalRoot = Join-Path $env:RUNNER_TEMP 'astrid-r1-direct-windows-refusal'
+            $refusalName = if ($env:ASTRID_FIX17_DIAGNOSTIC -eq '1') { 'f17r' } else { 'astrid-r1-direct-windows-refusal' }
+            $refusalRoot = Join-Path $env:RUNNER_TEMP $refusalName
             $env:ASTRID_CI_SANDBOX_PROFILE = '1'
             python -u agent/scripts/ci_journey.py `
               --job-id direct-windows --mode direct --leg windows-upgrade-refusal `
@@ -1004,7 +1017,8 @@ jobs:
         if: always() && inputs.diagnostic_keep_going == true
         shell: pwsh
         run: |
-          $dir = Join-Path $env:RUNNER_TEMP "astrid-r1-${{ matrix.job_id }}/evidence-upload/before-cleanup"
+          $runName = if ('${{ inputs.diagnostic_keep_going }}' -eq 'true' -and '${{ github.ref }}' -eq 'refs/heads/release/14/fix17-diag' -and '${{ matrix.os }}' -eq 'windows') { 'f17' } else { "astrid-r1-${{ matrix.job_id }}" }
+          $dir = Join-Path $env:RUNNER_TEMP "$runName/evidence-upload/before-cleanup"
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
           $report = Join-Path $dir 'keepgoing-report.json'
           $table = Join-Path $dir 'keepgoing-report.md'
@@ -1024,7 +1038,8 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          $evidenceRoot = Join-Path $env:RUNNER_TEMP "astrid-r1-${{ matrix.job_id }}/evidence-upload"
+          $runName = if ('${{ inputs.diagnostic_keep_going }}' -eq 'true' -and '${{ github.ref }}' -eq 'refs/heads/release/14/fix17-diag' -and '${{ matrix.os }}' -eq 'windows') { 'f17' } else { "astrid-r1-${{ matrix.job_id }}" }
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP "$runName/evidence-upload"
           $allowedNames = @(
             'journey-result.json', 'keepgoing-report.json', 'keepgoing-report.md', 'project-create-capture-status.json', 'sdk-capture-status.json',
             'release1-task-sdk-invocation.json', 'release1-task-installed-source.json',
@@ -1218,7 +1233,7 @@ jobs:
           name: journey-receipt-${{ matrix.job_id }}${{ inputs.diagnostic_keep_going && format('-{0}', matrix.leg) || '' }}
           # The collector stages only allowlisted names in these two phase folders.
           # Keep the job-id directory in the artifact to avoid receipt collisions.
-          path: ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/evidence-upload
+          path: ${{ runner.temp }}/${{ inputs.diagnostic_keep_going && github.ref == 'refs/heads/release/14/fix17-diag' && matrix.os == 'windows' && 'f17' || format('astrid-r1-{0}', matrix.job_id) }}/evidence-upload
           if-no-files-found: warn
           compression-level: 0
       - name: Upload the Pinokio row's working evidence

@@ -83,6 +83,38 @@ def test_windows_diagnostic_does_not_run_deferred_release0_task(tmp_path):
     }
 
 
+def test_fix17_diagnostic_dispatches_exact_nine_rows_without_releging(tmp_path):
+    result, outputs = config(tmp_path, FIX17_GH_REF='refs/heads/release/14/fix17-diag')
+    assert result.returncode == 0, result.stderr
+    rows = json.loads(outputs['matrix'])['include']
+    assert {(row['job_id'], row['leg']) for row in rows} == {
+        ('direct-windows', 'fresh-install'),
+        ('direct-linux-fresh', 'fresh-install'), ('direct-macos-fresh', 'fresh-install'),
+        ('direct-linux-r13-update', 'release13-then-update'),
+        ('direct-macos-r13-update', 'release13-then-update'),
+        ('direct-windows-r13-update', 'release13-then-update'),
+        ('direct-windows-r13-killed-update', 'release13-then-killed-update'),
+        ('direct-linux-r13-required-update', 'release13-required-update'),
+        ('direct-linux-r13-realm-reopen', 'release13-realm-reopen'),
+    }
+    assert len(rows) == 9
+    for job_id, leg in {
+        ('direct-windows', 'fresh-install'),
+        ('direct-linux-fresh', 'fresh-install'), ('direct-macos-fresh', 'fresh-install'),
+        ('direct-linux-r13-update', 'release13-then-update'),
+        ('direct-macos-r13-update', 'release13-then-update'),
+        ('direct-windows-r13-update', 'release13-then-update'),
+        ('direct-windows-r13-killed-update', 'release13-then-killed-update'),
+        ('direct-linux-r13-required-update', 'release13-required-update'),
+        ('direct-linux-r13-realm-reopen', 'release13-realm-reopen'),
+    }:
+        row_tmp = tmp_path / job_id
+        row_tmp.mkdir()
+        selected, selected_outputs = config(row_tmp, FIX17_GH_REF='refs/heads/release/14/fix17-diag', JOURNEY_ROW=job_id)
+        assert selected.returncode == 0, selected.stderr
+        assert {(item['job_id'], item['leg']) for item in json.loads(selected_outputs['matrix'])['include']} == {(job_id, leg)}
+
+
 @pytest.mark.parametrize('overrides,message', [
     ({'DIAGNOSTIC_KEEP_GOING': 'false'}, 'requires diagnostic_keep_going'),
     ({'DIRECT_ONLY': 'false', 'JOURNEY_ROW': ''}, 'requires direct_only'),
@@ -107,6 +139,37 @@ def test_driver_routes_both_legs_and_never_reports_success(monkeypatch, tmp_path
     with patch.object(journey.sys, 'platform', 'linux'):
         assert journey.main(args) == 1
     assert seen == [(leg, True)]
+
+
+@pytest.mark.parametrize('job_id,leg,platform_name', [
+    ('direct-windows', 'fresh-install', 'win32'),
+    ('direct-linux-fresh', 'fresh-install', 'linux'),
+    ('direct-macos-fresh', 'fresh-install', 'darwin'),
+    ('direct-linux-r13-update', 'release13-then-update', 'linux'),
+    ('direct-macos-r13-update', 'release13-then-update', 'darwin'),
+    ('direct-windows-r13-update', 'release13-then-update', 'win32'),
+    ('direct-windows-r13-killed-update', 'release13-then-killed-update', 'win32'),
+    ('direct-linux-r13-required-update', 'release13-required-update', 'linux'),
+    ('direct-linux-r13-realm-reopen', 'release13-realm-reopen', 'linux'),
+])
+def test_fix17_cli_admission_all_nine_rows(monkeypatch, tmp_path, job_id, leg, platform_name):
+    seen = []
+    monkeypatch.setattr(journey, 'execute', lambda args: seen.append((args.job_id, args.leg, args.diagnostic_keep_going)))
+    monkeypatch.setenv('ASTRID_FIX17_DIAGNOSTIC', '1')
+    app = tmp_path / 'app'; app.mkdir()
+    r13 = tmp_path / 'r13'; r13.mkdir()
+    args = ['--leg', leg, '--app-checkout', str(app), '--run-root', str(tmp_path / 'run'),
+            '--root', str(tmp_path / 'run/program'), '--data-root', str(tmp_path / 'run/data'),
+            '--job-id', job_id, '--candidate', 'candidate.json', '--candidate-agent-checkout', '.',
+            '--candidate-runtime-checkout', '.', '--pinokio-checkout', '.', '--shell',
+            'powershell.exe' if platform_name == 'win32' else 'sh', '--diagnostic-keep-going']
+    if leg.startswith('release13-'):
+        args += ['--release13-app-checkout', str(r13), '--allow-release13-to-candidate']
+    if leg in {'release13-required-update', 'release13-realm-reopen'}:
+        args += ['--candidate-browser-dist', str(app / 'dist'), '--release13-browser-dist', str(r13 / 'dist')]
+    with patch.object(journey.sys, 'platform', platform_name):
+        assert journey.main(args) == 1
+    assert seen == [(job_id, leg, True)]
 
 
 def test_diagnostic_report_is_staged_and_explicitly_ineligible(tmp_path):

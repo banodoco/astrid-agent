@@ -28,7 +28,23 @@ async function openEditor(page, config) {
     .waitFor({ state: 'attached' });
   const project = page.getByRole('combobox', { name: 'Select project' });
   await project.waitFor({ state: 'visible' });
-  if (!(await project.innerText()).includes(config.projectName)) {
+  if (config.projectId && config.projectName) {
+    await project.click();
+    // R13's PickerRow uses the project ID as its cmdk value. Wait for the
+    // real loaded row, select it through the App picker, and verify the UI.
+    const option = page.locator(`[role="option"][data-value=${JSON.stringify(config.projectId)}]`);
+    await option.waitFor({ state: 'visible', timeout: TIMEOUT });
+    check(await option.locator('span[title]').first().getAttribute('title') === config.projectName,
+      `R13 project identity mismatch for ${config.projectId}`);
+    if (await option.getAttribute('aria-current') !== 'true') {
+      await option.click();
+    }
+    await page.waitForFunction(({ name }) => {
+      const trigger = [...document.querySelectorAll('[role="combobox"][aria-label="Select project"]')]
+        .find((element) => element.textContent?.trim() === name);
+      return Boolean(trigger);
+    }, { name: config.projectName }, { timeout: TIMEOUT });
+  } else if (!(await project.innerText()).includes(config.projectName)) {
     await project.click();
     await page.getByRole('option', { name: config.projectName, exact: true }).click();
   }
@@ -152,10 +168,14 @@ async function prompt(page, config) {
   const action = required.getByRole('button', { name: 'Update now', exact: true })
     .or(required.getByText('Run it yourself', { exact: true })).first();
   await action.waitFor({ state: 'visible' });
-  const draft = await waitForDraft(page, config);
+  // An independent prompt probe is useful even when the preceding author
+  // leg failed. It records no preservation result and never invents a draft.
+  const draft = config.expectedDraft ? await waitForDraft(page, config) :
+    (config.diagnostic ? null : await waitForDraft(page, config));
   const response = await published;
   const manifest = await response.body();
   return {
+    ...(config.diagnostic ? { evidence_class: 'NON-PROOF' } : {}),
     draft, browserManifestSha256: createHash('sha256').update(manifest).digest('hex'),
     prompt: { title, reason: await reason.innerText(), action: await action.innerText() },
   };

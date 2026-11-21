@@ -9,6 +9,23 @@ from scripts import ci_journey_keepgoing as keepgoing
 from scripts import journey_version_jumps as jumps
 
 
+def test_fix17_pinned_leg_records_raw_failure_and_runs_independent_sentinel(monkeypatch, tmp_path):
+    args = SimpleNamespace(job_id="direct-windows-r13-update", leg="release13-then-update")
+    calls = []
+    monkeypatch.setattr(journey, "_execute_owned",
+                        lambda *a: (_ for _ in ()).throw(RuntimeError("bootstrap failed")))
+    monkeypatch.setattr(journey, "sentinel_observation",
+                        lambda *a: calls.append("sentinel") or {"alive": True})
+    report = keepgoing.execute(args, tmp_path / "program", tmp_path / "data", tmp_path / "evidence",
+                               SimpleNamespace(pid=1), "birth")
+    assert calls == ["sentinel"]
+    assert [row["stage"] for row in report["stages"]] == [
+        "pinned-leg", "independent-sentinel", "dependent-leg-checks"]
+    assert report["stages"][0]["first_error"] == "RuntimeError: bootstrap failed"
+    assert report["stages"][1]["result"] == "pass"
+    assert report["stages"][2]["result"] == "not-run"
+
+
 @pytest.mark.parametrize("platform,release,fresh_install,expected", [
     ("win32", 1, False, 0),
     ("linux", 1, False, 1),
@@ -58,6 +75,8 @@ def test_fresh_release1_seeds_task_project_on_each_platform(tmp_path, monkeypatc
     monkeypatch.setattr(journey, 'assert_direct_service_ownership',
                         lambda *a, **k: calls.append((a, k)))
     monkeypatch.setattr(journey, 'verify', lambda *a, **k: None)
+    monkeypatch.setattr(journey, 'workspace_root', lambda *_a: tmp_path / 'workspace')
+    monkeypatch.setattr(journey, 'assert_content', lambda *a, **k: None)
     monkeypatch.setattr(journey.windows, 'EVIDENCE', None)
     monkeypatch.setattr(jumps, 'task_after_update',
                         lambda *a: pytest.fail("fresh-install must seed its project"))

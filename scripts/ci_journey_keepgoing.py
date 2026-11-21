@@ -22,7 +22,7 @@ STAGES = ("admission", "release0-bootstrap", "release0-start", "release0-selecti
 
 
 FRESH_STAGES = ("admission", "release1-install", "release1-start", "release1-selection",
-                "release1-verify-install", "release1-task", "sentinel")
+                "release1-verify-install", "release1-task", "release1-content", "sentinel")
 
 
 FAILED_CAPABILITY_ID_LIMIT = 32
@@ -169,6 +169,41 @@ def record_expected_nonzero_exit(evidence: Path, command: list[str]) -> bool:
 
 def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
     report = initial(evidence, args)
+    if args.leg not in {"fresh-install", "release9-then-install"}:
+        # FIX-17's pinned R13 and browser legs already own a detailed set of
+        # assertions in their leg drivers. Run that full leg unchanged, then
+        # preserve its raw failure as an explicit NON-PROOF stage record.
+        # Their internal dependencies are not safely forceable after a failed
+        # bootstrap or browser admission.
+        row = {"stage": "pinned-leg", "result": "not-run", "forced_continuation_used": False,
+               "first_error": None, "evidence_path": str(evidence), "preconditions": [], "postconditions": []}
+        try:
+            journey._execute_owned(args, root, data, evidence, sentinel, birth)
+            row.update(result="pass", continuation="Leg assertions completed; receipt remains NON-PROOF")
+        except Exception as exc:
+            row.update(result="fail", first_error=f"{type(exc).__name__}: {exc}",
+                       failure_class="real", continuation="Leg dependencies are unsafe to force; inspect retained raw failure evidence")
+        report["stages"].append(row)
+        try:
+            observation = journey.sentinel_observation(sentinel, birth)
+            alive = observation.get("alive") is True
+            report["stages"].append({"stage": "independent-sentinel", "result": "pass" if alive else "fail",
+                "forced_continuation_used": False, "first_error": None if alive else "Unrelated sentinel did not survive the pinned leg",
+                "evidence_path": str(evidence), "preconditions": [], "postconditions": [],
+                "observation": observation, "continuation": "Independent process-liveness assertion ran after the pinned leg"})
+        except Exception as exc:
+            report["stages"].append({"stage": "independent-sentinel", "result": "fail",
+                "forced_continuation_used": False, "first_error": f"{type(exc).__name__}: {exc}",
+                "evidence_path": str(evidence), "preconditions": [], "postconditions": []})
+        if row["result"] == "fail":
+            report["stages"].append({"stage": "dependent-leg-checks", "result": "not-run",
+                "forced_continuation_used": False,
+                "first_error": "Skipped because the pinned leg failed; its service, selection, and browser preconditions cannot be forced safely",
+                "evidence_path": str(evidence), "preconditions": [{"name": "pinned-leg", "producer": "pinned-leg", "source": "unavailable"}],
+                "postconditions": [], "failure_class": "diagnostic-tainted:pinned-leg"})
+        report["status"] = "fail"
+        write(evidence, report)
+        return report
     state = {}
     project = "tst-m4-3b-release0"
     producers = {"fixture": "admission", "app": "admission", "bootstrap0": "release0-bootstrap",
@@ -231,7 +266,7 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
         write(evidence, report)
     if args.leg == "fresh-install":
         producers.update(app="admission", updated="release1-install", started1="release1-start",
-                         version="release1-selection")
+                         version="release1-selection", marker="release1-content")
         def fresh_admission():
             app = args.app_checkout.resolve(strict=True)
             path, manifest = journey.selected_manifest(app, source_override=False, agent=None, runtime=None, evidence=evidence)
@@ -281,12 +316,50 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
             except Exception:
                 journey.capture_failed_release1_task(evidence, state["version"])
                 raise
+        def fresh_content():
+            marker = journey.workspace_root(data) / "tst-b1-workspace-marker.txt"
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text("TST-B1 workspace content\n", encoding="utf-8")
+            import hashlib
+            digest = hashlib.sha256(marker.read_bytes()).hexdigest()
+            journey.assert_content(state["version"], evidence, project, marker, digest)
+            state.update(marker=marker, marker_digest=digest)
+        def fresh_hosted_update():
+            result = {"update": {"status": "running", "evidence_class": "NON-PROOF"}}
+            try:
+                if args.job_id in {"direct-linux-fresh", "direct-macos-fresh"}:
+                    if __package__:
+                        from . import journey_fresh_update
+                    else:
+                        import journey_fresh_update
+                    journey_fresh_update.execute(args, root, data, evidence, state["app"], state["manifest"],
+                                                 state["version_path"], state["version"], project,
+                                                 state["marker"], state["marker_digest"], sentinel, birth, result)
+                elif args.job_id == "direct-windows":
+                    if __package__:
+                        from . import windows_update_journey
+                    else:
+                        import windows_update_journey
+                    result["update"] = windows_update_journey.run_update(
+                        journey, args, state["app"], state["manifest"], root, data, evidence,
+                        sentinel, birth, project, state["marker"], state["marker_digest"])
+                result["update"]["evidence_class"] = "NON-PROOF"
+                state["hosted_update"] = result["update"]
+            except Exception as exc:
+                result["update"].update(status="fail", evidence_class="NON-PROOF",
+                                        error=f"{type(exc).__name__}: {exc}")
+                state["hosted_update"] = result["update"]
+                raise
         stage("admission", [], fresh_admission, evidence)
         stage("release1-install", ["app"], fresh_install, evidence / "release1" / "install-bootstrap.log")
         stage("release1-start", ["updated"], fresh_start, evidence / "release1")
         stage("release1-selection", ["started1"], fresh_select, evidence / "release1")
         stage("release1-verify-install", ["version"], lambda: journey.verify("install", state["version_path"], data, evidence), evidence / "verify-install.log")
         stage("release1-task", ["version"], fresh_task, evidence / "release1-working-task")
+        stage("release1-content", ["version"], fresh_content, evidence / "release1-working-task")
+        if args.job_id in {"direct-linux-fresh", "direct-macos-fresh", "direct-windows"}:
+            stage("release1-hosted-update", ["version", "marker"], fresh_hosted_update,
+                  evidence / "fresh-update-standin")
         stage("sentinel", [], fresh_sentinel, evidence)
         return report
     def admission():
