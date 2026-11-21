@@ -26,7 +26,9 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image, ImageChops, ImageStat
 
-pytest_plugins = ("tests.core.test_project_packs",)
+# Export only the configured fixture to this consumer; loading the source test
+# module as a plugin would leak its autouse patches into unrelated tests.
+from tests.core.test_project_packs import configured  # noqa: F401, E402
 pytestmark = pytest.mark.integration
 
 from astrid.core.element import project_packs  # noqa: E402
@@ -224,7 +226,29 @@ def remotion_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     if not node:
         pytest.fail("real pinned-element render requires the provisioned Node executable", pytrace=False)
     monkeypatch.setenv("ASTRID_NODE_EXECUTABLE", str(Path(node).expanduser().resolve(strict=True)))
-    _workspace, remotion, timeline_path, assets_path = _prepare_remotion_fixture(tmp_path, monkeypatch)
+    # One-case diagnostic: the generic host helper returns None for optional
+    # render validation errors. Retain and re-raise the underlying failure
+    # from the unchanged real host/worker preparation before trying new inputs.
+    from astrid.core.rendering import remotion_runtime
+
+    validation_error: list[Exception] = []
+    prepare = remotion_runtime.prepare_remotion_validation
+
+    def capture_validation_error(**kwargs):
+        try:
+            return prepare(**kwargs)
+        except Exception as exc:
+            validation_error.append(exc)
+            raise
+
+    with monkeypatch.context() as capture:
+        capture.setattr(remotion_runtime, "prepare_remotion_validation", capture_validation_error)
+        try:
+            _workspace, remotion, timeline_path, assets_path = _prepare_remotion_fixture(tmp_path, monkeypatch)
+        except AssertionError:
+            if validation_error:
+                raise validation_error[0]
+            raise
     timeline_path.write_text(json.dumps({"tracks": [], "clips": []}), encoding="utf-8")
     assets_path.write_text(json.dumps({"assets": {}}), encoding="utf-8")
     return remotion

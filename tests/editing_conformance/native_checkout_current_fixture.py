@@ -74,9 +74,33 @@ def prepare(case, *, gate3: bool = False):
     assert [clip["id"] for clip in parent["clips"][-2:]] == ["music-bed", "music-other"]
 
     if gate3:
+        from astrid.core.element.catalog import list_element_descriptors
+        from astrid.sdk.timeline.native_occurrence_delete import capture_occurrence_delete
+        from astrid.sdk.timeline.native_word_anchor import capture_anchor
+
+        clear = capture_anchor(current_bundle(case), "parent/clip:card", "on", None, None)
+        _current_commit(case, [clear], "native-checkout-current-gate3-clear-anchor")
+
+        # The parent membership belongs to the semantic occurrence command,
+        # not a raw emitter patch. Reopen each accepted deletion before adding
+        # the Gate 3 title so the emitter sees the current closure.
         authored = current_bundle(case)
+        for occurrence in list(authored["placements"]):
+            occurrence_id = occurrence["occurrence_id"]
+            _current_commit(
+                case,
+                [capture_occurrence_delete(authored, f"occurrence:{occurrence_id}")],
+                f"native-checkout-current-gate3-delete-{occurrence_id}",
+            )
+            authored = current_bundle(case)
+        assert authored["placements"] == []
+        accepted_parent = case.documents[case.head()["revision_id"]]["parent_revision"]["payload"]
+        assert accepted_parent["occurrences"] == []
+        title_descriptor, = [
+            row for row in list_element_descriptors(kind="effects", pack_id="rendering")
+            if row["id"] == "text-card"
+        ]
         desired = copy.deepcopy(authored)
-        desired["parent"]["occurrences"] = []
         desired["parent"]["clips"].append({
             "id": "gate3-title",
             "at": 0,
@@ -84,7 +108,7 @@ def prepare(case, *, gate3: bool = False):
             "clipType": "text-card",
             "hold": 1,
             "params": {"content": "Gate3"},
-            "elementRef": {"packId": "rendering", "kind": "effects", "id": "text-card"},
+            "elementRef": {key: title_descriptor[key] for key in ("packId", "kind", "id", "revision")},
         })
         desired["parent"]["config"]["clips"] = copy.deepcopy(desired["parent"]["clips"])
         topology = _current_commit(
