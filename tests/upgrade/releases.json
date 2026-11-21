@@ -52,6 +52,12 @@
       "reason": "Release 12 manifest and bootstrap for the release12-then-update leg."
     },
     {
+      "id": "release13",
+      "source": "app-commit",
+      "app_commit": "de7dd1e668aa6dcf3cbce013c701fa7c76615f99",
+      "reason": "Published Release 13 (Agent 9814193a, Runtime 6855dfa8): pinned App manifest and installer bootstrap used for Release 14 update qualification."
+    },
+    {
       "id": "pre-updater",
       "source": "app-commit",
       "app_commit": "b96c41fca2da7993b41324aedf61eb297dc34f10",
@@ -78,7 +84,13 @@
         "schema_digest": "sha256:9628bb5fd6e1dbbec392dd39f2e01031622dcf52d7ccff7cd1f0ad10743dcb1c",
         "workspace_schema_version": 33,
         "version_id_prefix": "c6ab0144-9fc53b77-",
-        "version_record_keys": ["env", "identity", "profile", "python", "root"],
+        "version_record_keys": [
+          "env",
+          "identity",
+          "profile",
+          "python",
+          "root"
+        ],
         "health_identity_emitted": true,
         "discovery_identity_emitted": true
       },
@@ -97,7 +109,12 @@
         "protocol": "workspace.v1",
         "schema_digest": "sha256:9061d4982c786e04d99e45470b8ea4f3d9c9ff9855c4a2f83d751a93408c205b",
         "workspace_schema_version": 31,
-        "version_record_keys": ["env", "profile", "python", "root"],
+        "version_record_keys": [
+          "env",
+          "profile",
+          "python",
+          "root"
+        ],
         "version_id_prefix": "3204bb00-6d53a190-"
       }
     ],
