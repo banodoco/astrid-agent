@@ -398,7 +398,7 @@ def _admit_workflow_inputs(
                 values[name] = state.documents[key]
             elif kind == "file_map":
                 if key not in state.documents:
-                    supplied = read_file_map_document(values[name], allow_output_handles=True)
+                    supplied = read_file_map_document(values[name], allow_output_handles=True, allow_empty=True)
                     if not isinstance(supplied, Mapping) or supplied and not file_map_is_valid(
                             supplied, allow_output_handles=True):
                         raise CapabilityValidationError(f"{name} must be a readable map of asset IDs to files")

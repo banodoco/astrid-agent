@@ -360,3 +360,30 @@ def test_selected_video_reuses_admission_for_remote_live_build(selected_video, m
     assert not Path(staged[0]).exists()
     assert len(snapshots) == 2 and snapshots[0] == snapshots[1]
     assert not snapshots[0].exists()
+
+
+def test_selected_video_populates_empty_map_document_with_handles(selected_video, monkeypatch, tmp_path):
+    from astrid.core.generation import entries
+
+    class ObservedBuild(Exception):
+        pass
+
+    source = _digest(b"source")
+    mask = "run:prior-run/primary#0"
+    prior = _digest(b"prior")
+    client = _Client({source: b"source", prior: b"prior"})
+    inputs = _inputs(tmp_path, source, mask)
+    document = tmp_path / "assets.json"
+    document.write_text("{}", encoding="utf-8")
+
+    def build(entry, values, job_dir, **kwargs):
+        assert {asset: Path(path).read_bytes() for asset, path in values["asset_map"].items()} == {
+            source: b"source", mask: b"prior",
+        }
+        raise ObservedBuild
+
+    monkeypatch.setattr(entries, "build_entry", build)
+    with pytest.raises(ObservedBuild):
+        selected_video(placement="local", mode="v2v", dry_run=True, project="selected-project", client=client,
+                       request=inputs["request"], asset_map=str(document))
+    assert client.media.show_calls == [("selected-project", source), ("selected-project", prior)]
