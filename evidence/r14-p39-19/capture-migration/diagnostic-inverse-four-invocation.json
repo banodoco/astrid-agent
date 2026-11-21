@@ -1,0 +1,46 @@
+{
+  "argv": [
+    "/workspace/scratch/ed89673be2cd/proof-env/bin/python",
+    "-P",
+    "-m",
+    "ci.run_pytest",
+    "-v",
+    "-rA",
+    "-m",
+    "integration",
+    "--junitxml=/workspace/scratch/7b8a4aa9f9f5/evidence/diagnostic-inverse-four/results.xml",
+    "-p",
+    "s01_inverse_observer",
+    "tests/editing_conformance/test_commit_runtime_video_unplace.py::test_capture_commit_reload_undo_redo_and_restart_safe_retry[image-False]",
+    "tests/editing_conformance/test_commit_runtime_video_unplace.py::test_capture_commit_reload_undo_redo_and_restart_safe_retry[image-True]",
+    "tests/editing_conformance/test_commit_runtime_video_unplace.py::test_capture_commit_reload_undo_redo_and_restart_safe_retry[video-False]",
+    "tests/editing_conformance/test_commit_runtime_video_unplace.py::test_capture_commit_reload_undo_redo_and_restart_safe_retry[video-True]"
+  ],
+  "cwd": "/workspace/scratch/7b8a4aa9f9f5/astrid-agent",
+  "dirty": "",
+  "environment_overrides": {
+    "ASTRID_CI_JOB": "lanes-integration",
+    "ASTRID_RUNTIME_CHECKOUT": "/workspace/scratch/ed89673be2cd/runtime-sync",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONPATH": "/workspace/scratch/7b8a4aa9f9f5/astrid-agent/scripts:/workspace/scratch/ed89673be2cd/runtime-sync:/workspace/scratch/7b8a4aa9f9f5",
+    "S01_OBSERVER_OUTPUT": "/workspace/scratch/7b8a4aa9f9f5/evidence/inverse-observer.jsonl"
+  },
+  "finished_utc": "2026-11-19T18:38:50.391512+00:00",
+  "kind": "local focused proof; not hosted qualification",
+  "patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "raw_returncode": 1,
+  "runtime_dirty": "",
+  "runtime_sha": "2537fed24385ec1c24f48a812e09af4bb63fb794",
+  "selectors": [
+    "-p",
+    "s01_inverse_observer",
+    "tests/editing_conformance/test_commit_runtime_video_unplace.py::test_capture_commit_reload_undo_redo_and_restart_safe_retry[image-False]",
+    "tests/editing_conformance/test_commit_runtime_video_unplace.py::test_capture_commit_reload_undo_redo_and_restart_safe_retry[image-True]",
+    "tests/editing_conformance/test_commit_runtime_video_unplace.py::test_capture_commit_reload_undo_redo_and_restart_safe_retry[video-False]",
+    "tests/editing_conformance/test_commit_runtime_video_unplace.py::test_capture_commit_reload_undo_redo_and_restart_safe_retry[video-True]"
+  ],
+  "source_sha": "42be807df9053bcff55a0ef82e174b83fd9b6580",
+  "source_tree": "5f1b08b1afc8033a0e60c57ef2b6014f776a8657",
+  "started_utc": "2026-11-19T18:37:18.262435+00:00",
+  "tracked_worktree_tree": "5f1b08b1afc8033a0e60c57ef2b6014f776a8657"
+}

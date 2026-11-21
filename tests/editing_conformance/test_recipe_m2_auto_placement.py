@@ -14,6 +14,7 @@ from astrid.sdk.timeline.native_auto_placement import auto_place_completion
 from astrid.sdk.timeline.rebase import replay
 from tests.editing_conformance.test_recipe_m1_commands import inverse
 from tests.editing_conformance.test_recipe_occurrence_media import inputs
+from tests.helpers.canonical_document import current_canonical_document
 from tests.sdk.test_timeline_commit_provider import (
     inverse as inverse_call,
 )
@@ -115,30 +116,15 @@ class GenuineTimeline:
             service.register_timeline_commit_provider(load_timeline_commit_provider('astrid'))
             service.create_timeline(project, 'film', idempotency_key='placement-bootstrap')
             _create_fixture(service, project, document, old, authorize=authorize)
-            document = cls._document(service, project, 'film')
+            document = cls._document(service, project, 'film', authorize=authorize)
             return cls(service, project, authorize, document, old, new, verified)
         except Exception:
             service.close()
             raise
 
     @staticmethod
-    def _document(service, project, timeline):
-        head = service.get_project_timeline(project, timeline)
-        parent = service.get_project_parent_composition_revision(project, timeline, head['head_revision_id'])
-        occurrences = parent['payload'].get('occurrences', [])
-        shots = {}
-        internals = {}
-        for occurrence in occurrences:
-            shot = service.get_project_shot_revision(project, occurrence['shot_id'],
-                                                     occurrence['shot_revision_id'])
-            shots[(shot['shot_id'], shot['revision_id'])] = shot
-            internal = service.get_project_timeline_revision(
-                project, timeline, shot['internal_timeline_revision_id'])
-            internals[(internal['timeline_id'], internal['revision_id'])] = internal
-        return {'schema_version': 1, 'project_id': project, 'timeline_id': timeline,
-                'parent_revision': parent, 'shot_revisions': list(shots.values()),
-                'internal_timeline_revisions': list(internals.values()),
-                'dependency_manifest': parent['dependency_manifest']}
+    def _document(service, project, timeline, *, authorize):
+        return current_canonical_document(service, project, timeline, authorize=authorize)
 
     def body(self, commands, label):
         head = self.service.get_project_timeline(self.project, 'film')
@@ -178,7 +164,7 @@ class GenuineTimeline:
         commands = emit_document_commands(before, after)
         if commands:
             self.call(commands, label='placement-input')
-            self.document = self._document(self.service, self.project, 'film')
+            self.document = self._document(self.service, self.project, 'film', authorize=self.authorize)
 
     def accepted_boundaries(self, records, before, after, forward_commands):
         from astrid.sdk.timeline._collections import AcceptedRecords

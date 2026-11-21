@@ -1,0 +1,47 @@
+{
+  "argv": [
+    "/workspace/scratch/ed89673be2cd/proof-env/bin/python",
+    "-P",
+    "-m",
+    "ci.run_pytest",
+    "-v",
+    "-rA",
+    "-m",
+    "not integration",
+    "--junitxml=/workspace/scratch/7b8a4aa9f9f5/evidence/shared-fps-after/results.xml",
+    "tests/sdk/test_shared_placement_fps.py",
+    "tests/editing_conformance/test_commit_fps_d12.py",
+    "tests/sdk/test_d136_fps_upstream_compat.py::test_existing_typed_fps_cannot_be_removed_moved_or_changed",
+    "tests/sdk/test_d136_fps_upstream_compat.py::test_production_caller_keeps_invalid_typed_fps_refused",
+    "tests/sdk/test_d136_fps_upstream_compat.py::test_fps_removal_requires_selected_authenticated_initialization_inverse",
+    "tests/sdk/test_d136_fps_upstream_compat.py::test_inverse_cannot_remove_fps_from_an_existing_shot",
+    "tests/sdk/test_timeline_initialize_inverse_auth.py::test_arbitrary_patch_cannot_remove_introduced_fps"
+  ],
+  "cwd": "/workspace/scratch/7b8a4aa9f9f5/astrid-agent",
+  "dirty": "M  astrid/sdk/timeline/validation.py\nA  evidence/r14-p39-19/README.md\nA  evidence/r14-p39-19/after-three-candidate.patch\nA  evidence/r14-p39-19/after-three-invocation.json\nA  evidence/r14-p39-19/after-three-results.collection.json.gz\nA  evidence/r14-p39-19/after-three-results.jsonl.gz\nA  evidence/r14-p39-19/after-three-results.log.gz\nA  evidence/r14-p39-19/after-three-results.reference.json.gz\nA  evidence/r14-p39-19/after-three-results.xml.gz\nA  evidence/r14-p39-19/after-three-shot-helper.py\nA  evidence/r14-p39-19/assertion-preservation.json\nA  evidence/r14-p39-19/baseline-diff.json\nA  evidence/r14-p39-19/before-three-invocation.json\nA  evidence/r14-p39-19/before-three-results.collection.json.gz\nA  evidence/r14-p39-19/before-three-results.jsonl.gz\nA  evidence/r14-p39-19/before-three-results.log.gz\nA  evidence/r14-p39-19/before-three-results.reference.json.gz\nA  evidence/r14-p39-19/before-three-results.xml.gz\nA  evidence/r14-p39-19/candidate-104-invocation.json\nA  evidence/r14-p39-19/candidate-104-results.collection.json.gz\nA  evidence/r14-p39-19/candidate-104-results.jsonl.gz\nA  evidence/r14-p39-19/candidate-104-results.log.gz\nA  evidence/r14-p39-19/candidate-104-results.reference.json.gz\nA  evidence/r14-p39-19/candidate-104-results.xml.gz\nA  evidence/r14-p39-19/destination-provenance.json\nA  evidence/r14-p39-19/diagnostic-fps-invocation.json\nA  evidence/r14-p39-19/diagnostic-fps-results.collection.json.gz\nA  evidence/r14-p39-19/diagnostic-fps-results.jsonl.gz\nA  evidence/r14-p39-19/diagnostic-fps-results.log.gz\nA  evidence/r14-p39-19/diagnostic-fps-results.reference.json.gz\nA  evidence/r14-p39-19/diagnostic-fps-results.xml.gz\nA  evidence/r14-p39-19/fps-observer.jsonl\nA  evidence/r14-p39-19/historical-native-s01.json.gz\nA  evidence/r14-p39-19/historical-provenance.json\nA  evidence/r14-p39-19/manifest.json\nA  evidence/r14-p39-19/native-files.json\nA  evidence/r14-p39-19/nodeids.txt\nA  evidence/r14-p39-19/outcomes-by-id.json\nA  evidence/r14-p39-19/s01_observer.py\nA  tests/sdk/test_shared_placement_fps.py",
+  "environment_overrides": {
+    "ASTRID_CI_JOB": "lanes-integration",
+    "ASTRID_RUNTIME_CHECKOUT": "/workspace/scratch/ed89673be2cd/runtime-sync",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONPATH": "/workspace/scratch/7b8a4aa9f9f5/astrid-agent/scripts:/workspace/scratch/ed89673be2cd/runtime-sync"
+  },
+  "finished_utc": "2026-11-19T17:55:46.391582+00:00",
+  "kind": "local focused proof; not hosted qualification",
+  "patch_sha256": "ac6e3177ac0861ad37baace77ef6bd566270e10a2b82ca5d072395469544b4e5",
+  "raw_returncode": 0,
+  "runtime_dirty": "",
+  "runtime_sha": "2537fed24385ec1c24f48a812e09af4bb63fb794",
+  "selectors": [
+    "tests/sdk/test_shared_placement_fps.py",
+    "tests/editing_conformance/test_commit_fps_d12.py",
+    "tests/sdk/test_d136_fps_upstream_compat.py::test_existing_typed_fps_cannot_be_removed_moved_or_changed",
+    "tests/sdk/test_d136_fps_upstream_compat.py::test_production_caller_keeps_invalid_typed_fps_refused",
+    "tests/sdk/test_d136_fps_upstream_compat.py::test_fps_removal_requires_selected_authenticated_initialization_inverse",
+    "tests/sdk/test_d136_fps_upstream_compat.py::test_inverse_cannot_remove_fps_from_an_existing_shot",
+    "tests/sdk/test_timeline_initialize_inverse_auth.py::test_arbitrary_patch_cannot_remove_introduced_fps"
+  ],
+  "source_sha": "de81bcd7e0518a8fc30b9d5ff17882240b6cb367",
+  "source_tree": "c344245f6d93dcab8cb3b5bd334111921c2dd2f6",
+  "started_utc": "2026-11-19T17:54:28.547150+00:00",
+  "tracked_worktree_tree": "29c9c7e1a299cbe09014fff0954aca1002a6fa49"
+}

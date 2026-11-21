@@ -1,0 +1,2212 @@
+{
+  "schema_version": 1,
+  "packet": "R14-P39-19",
+  "task": "Plan39 S01",
+  "historical_run": 44454822934,
+  "historical_source": "086845def6ec28216384163d835f47d8cebbae81",
+  "destination_run": 44462370783,
+  "destination_sha": "68e7aa8593d13eaeb6a55da1d97bed8b494df15b",
+  "candidate_sha": "de81bcd7e0518a8fc30b9d5ff17882240b6cb367",
+  "candidate_kind": "local focused proof, not hosted qualification",
+  "roster_sha256": "dfc20d160c80a4d370f9a24e9be5ae0f8e0728112217ea8d1e7b260fc0c379d7",
+  "counts": {
+    "selected": 104,
+    "setup_errors": 104,
+    "call_executed": 0,
+    "call_NO_RESULT": 104,
+    "teardown_pass": 104,
+    "newly_exposed_call_failures": 0
+  },
+  "limits": [
+    "All 104 candidate calls remain unexecuted; zero call failures is not passing coverage.",
+    "All destination phases are unknown because execution aborted collection.",
+    "Historical setup failures are not substituted for exact-destination outcomes.",
+    "Shared acceptance, retry and inverse remain unproven."
+  ],
+  "rows": [
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_media_manifest_inverse.py::test_real_media_manifest_inverse_retry_restart_and_history[add]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "5b3f4d2c02a3ed32a1047d3ebc116f675ccff1dc19e8fb5de4cff28b9877d11d"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_media_manifest_inverse.py::test_real_media_manifest_inverse_retry_restart_and_history[swap]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "301e709b4357c1635e60d7b787c85e2441a72429fa2c03941827dd2774144b8f"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-add-lifecycle-media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "fac68bda17a099370099afbdaa7502af1700b049a5a6bc93ed689fbcf4ceb2d0"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-add-lifecycle-old_media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "64ea0cde7ebf45da2735423da9d1596b479dc2b3d33b116687a1aad9387aa109"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-add-revocation-media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "20212b027df9082d37cdda5d35cd94accfd9e397449c03adc8b181ffd51610f8"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-add-revocation-old_media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "b150b5a68127c58f34c9b8fa75a506a8030d767f195382f35b73ba8a677be176"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-swap-lifecycle-media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "3c38fa2486074606c91015aeadc691906c5bb9ebbff7cd29d735048e5ed7e884"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-swap-lifecycle-old_media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "668ff99193e5ba582bca27f64a643c98983ed5d8d2cf0784c4fe25cde0712159"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-swap-revocation-media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "d24cb5df291f4c14838eb26b8abd5b7e96a29ed22214ce29f1643dfb1397b9c9"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[image-swap-revocation-old_media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "e824371918653749f4c6c380e4599a0315b19ed8edf5dc27864c6c45ba84ac30"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-add-lifecycle-media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "f612f9b36d7c6362a2ac939758bbf060d04b9d9648d1d705ef4fab189f1b5e72"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-add-lifecycle-old_media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "5681f20925245cbe3fc901b9be0c5579f78a8f380c562c0674896a968c28592b"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-add-revocation-media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "3cd8170a86b5979ae56dff324f86bdf9acb74826c26c78339b83013b1de36532"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-add-revocation-old_media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "a7675978802ae724ceb493ee67243aa2b5923bccc4f5b249cdd5b5aab6768dcf"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-swap-lifecycle-media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "0feda7b00e1adcdbaa6eb3c2c1baac1509f297a39c22f69a17a12b7e8b4c791f"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-swap-lifecycle-old_media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "8a7c952a5958bad31c6607684613347e462afd3b6770d221d8215b1206e1551a"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-swap-revocation-media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "254368b8fe2a3c9b74d21ce20df751f5ba47e2addcd2e2e04091819c89e1c652"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_capture_to_accept_races_refuse_atomically[video-swap-revocation-old_media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "19695b98d4f297d284dd06b8eaf21139a4a1683a49745fdb8d2023ca0a2e355d"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_exact_capture_acceptance_inverse_redo_restart_and_retry[image-add]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "a6ec086e1fd488467fffc305fbfcf265cb4c5b718b95a1dd7e9dbbd1ec649dbc"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_exact_capture_acceptance_inverse_redo_restart_and_retry[image-swap]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "7157fa5ce2008f87e8c87648e0b560a29f4f7e1164e911637c740467735939bd"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_exact_capture_acceptance_inverse_redo_restart_and_retry[video-add]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "da581c2af5d530e43eeca45a80f5ef4357df2c2637adbbab9bf20f8ee7292147"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_exact_capture_acceptance_inverse_redo_restart_and_retry[video-swap]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "babcad540e61258b7c1d80c293446035117a973efb9b63372d190c4f6a8da0fe"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-add-fingerprint-media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "6fc4dc9dc318edefbc88f4eedc7844b540e6cd1aea2a869ca5d1c3f68944d2f5"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-add-fingerprint-old_media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "c040cc7d3902465f4f18cb1e2bcec1b97b71efd11b78298a29fe17d4d3a2eac0"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-add-foreign-media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "dfe1720ca1d04df87a1d283aa91999dbb0567825c95da78a21576ea5484c319f"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-add-foreign-old_media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "3eb49b7caec3ecc122dbe58200a3f8dee758a123a696c7b2217cbfbfe3d76de7"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-add-stale-media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "89d494f70b7cd22e2e8cf251af933ab57bb1207ebbd222b60a79ad933f14da90"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-add-stale-old_media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "66f5670b0289a653ba22f0e733d98e6e5295cf2a2310b46a75f37bd5d2508cde"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-swap-fingerprint-media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "9892c7c790c2e974ccc92ecc4668c4277861e3ea258f402be0d59ae87abd5fd0"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-swap-fingerprint-old_media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "8071e189d339481d970291af318d3894b45efbb1c6181653503938b8f55fd2e4"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-swap-foreign-media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "fa8e632833feab1722ae29dab26dce7e835ebd805e6f2bbd022edd62ae4f7d3e"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-swap-foreign-old_media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "66b92c5b9d2fd130217204572fb5c86043d9f5f1bc5cbbf43ae10e64518c1c24"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-swap-stale-media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "f31a712aa024c4ed02e9f6f4af8b715f1a657112d57c99219d34a9bdd9a55666"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[image-swap-stale-old_media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "3ba12483be921070fe276a7cdd8c6b6fc3fcae6e1c5f0ad5bd90ab800c746fb8"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-add-fingerprint-media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "a7288e18b90595306500bfe80158f5f0c69f61a3981408b26099ea07805751c8"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-add-fingerprint-old_media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "f5f8db273525d2070fcdf3d011999768e5ce4b32995d12a0f55045f84a67cca9"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-add-foreign-media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "4e568d0ad5b7536c2e3a7fa085441ef7759d730778123eff58706f3c42a0d4c7"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-add-foreign-old_media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "3a9029aeba8ae42b917f3bc0dfe721e48f8c0852dc8c5bbffd318667525c27ae"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-add-stale-media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "31b9c10b018e28b29d3766d3f0a9a233f6f43a8ce0c6a9ef78928a7b20172f29"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-add-stale-old_media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "92da31e815c5f8f624a8dec036fc79801564b0fd9ef01e6a6c03fb8d11b46bd2"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-swap-fingerprint-media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "7b3f3e493a46d96a95061ce563b9f4c8c6216b111342882e9efbce92d91b98b6"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-swap-fingerprint-old_media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "712d22d4a668fd1490a48220289d4ef5c4bf48be6e55822de98c14408e9c77f4"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-swap-foreign-media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "f9eee8d91dad9113d2ffcc16f25eabc69eea5cb6535ad0d2f49dffc149fee08b"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-swap-foreign-old_media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "02da1661860c3d09c751ccdb6e2eb62b66cd3d94d902965c3cccfc8ffbf7347b"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-swap-stale-media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "e9d8aa676d089e4c17cb88c3da4908043c43dc3452a38604e2b7b18f66e19214"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_invalid_exact_selection_refuses_without_any_writes[video-swap-stale-old_media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "7acbea3a86e7b84155d46b9c6c0f4e338bf3c0b3b6d609f6fd4527712e5d9c99"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_source_metadata_is_part_of_the_exact_selection_fingerprint[image-add]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "22060ffbd9b6ef539c4b1c38e364f81071d1fc9ca6c92e2d103d9e9a9864c5c4"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_source_metadata_is_part_of_the_exact_selection_fingerprint[image-swap]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "35b66e453e4b0749c9f9ac931fc65bd6d6eefe794982d04f44aa6882c8ab4801"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_source_metadata_is_part_of_the_exact_selection_fingerprint[video-add]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "b6f5ae29687872c03dc68134e4ddb34dadba34a898442799607e124223676658"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_source_metadata_is_part_of_the_exact_selection_fingerprint[video-swap]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "b0e1036907f41fd9e9d497b1b29a49be51edd65211e6b49b1126e8fb46054e38"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_accepted_history_rebase_and_guarded_aba_undo[image-aba]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "2465bcb327576c5c27679024e74df1def689b4ec531b7dad3a1cac025c9a84aa"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_accepted_history_rebase_and_guarded_aba_undo[image-disjoint]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "11816ef8ac661a06bb30111fd5a5a7c3320bc2e22db4337a169cdc6ea29f03c1"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_accepted_history_rebase_and_guarded_aba_undo[video-aba]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "d21ab3e94f5af7e2dbeeae87a61fc960aea1a88e1c9800f5907c689a773c7610"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_accepted_history_rebase_and_guarded_aba_undo[video-disjoint]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "97f61681ebd358d6bd5adf3c5283eb57bb3df244d83b37fd3f9a099573715583"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[image-fingerprint-media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "ad5698211b62849ee7a72080d88316acda00e02361d7495dbcc7d2ffe79fe303"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[image-fingerprint-old_media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "cbe3ec5a0884ab7173b25dc543cfb6a928820b3f1dcfbd235d7f53866dc399fd"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[image-foreign-media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "3656382488b93107e1dbfba1825b8f5d25c597df169d7b9782a0e57a86664cea"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[image-foreign-old_media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "54c40b152299346d1b4587204eed664778bc089a23f8d66cc05a1c18b772a1f5"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[image-stale-media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "77e7f5f6e79a0d7392a29b267c55675103db1f97b7e4da8a059b3a7069e4acdc"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[image-stale-old_media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "c37ed18fc708769757a51a80381e7f0952df6d774a2a6e71f5a5149546f0ef31"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[video-fingerprint-media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "2c2ee063f94603ec6c0a53a4719d5dda2a2b94dc06ee42ac9a653d7777230740"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[video-fingerprint-old_media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "75123e932a4e30e3e4040f22c47dccf55968f579884ae25909507303d9321242"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[video-foreign-media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "e2988eb24219ad4daaf2e3c8d370314313003bf8c7a27720760ae99e869a367d"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[video-foreign-old_media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "dc78c3caf17c8d91951281127b1f22c7691b979d3f2b8faf7928f443ca128bf1"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[video-stale-media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "934d7334a535b88482182019fb82eea08475ead790e17d38b2430a78ceeb627a"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_invalid_selected_media_refuses_without_writes[video-stale-old_media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "b81fc16e62216b358eb89c3520af6c2f7b423adcac72ffad00ca628da31dd04d"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_lifecycle_race_refuses_at_acceptance[image-media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "8986363ed10b74ce6e2df82ebf7ee9a77dacee12d540cac09eb16caacc3fd5c1"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_lifecycle_race_refuses_at_acceptance[image-old_media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "ea0fe12a0d998e2b84b558a238c3703ee3a219b69cd1d5a5f1839a8374a41abc"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_lifecycle_race_refuses_at_acceptance[video-media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "df2110c7ab19970a6501f7963460bb6af53f8e6042866688eac2bf42f8eab76c"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_lifecycle_race_refuses_at_acceptance[video-old_media]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "eba5f04932098e8cc5acccb375482e74b2743791c984c652211325e8e17383a6"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_selected_swap_capture_accepted_reload_restart_retry_undo_and_redo[image]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "a044f86acb9f560fccf9d965b31df01cb18624258ade3a07437fb0c382c9a210"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_selected_swap_capture_accepted_reload_restart_retry_undo_and_redo[video]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "765aab1b573a1547474158462d0ca87a94fc3b569d624ee2e35e0c00b7e8ecca"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_selected_swap_over_authenticated_http_preserves_flight_and_guarded_undo[occurrence:occ-a]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "f00aa3f1ca9f2434fa3739eb80e73ee930be8347690666c12fa9ba3a1ea56462"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py::test_selected_swap_over_authenticated_http_preserves_flight_and_guarded_undo[parent]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "afdf3eef37bd84ec12b819fbff5e0d7ce89666fac5c8fd1ebb9edd91001a71cb"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_video_unplace.py::test_capture_commit_reload_undo_redo_and_restart_safe_retry[image-False]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "f19b66a6f68137820c21c6a526739295b588b5b17f9fcaeabf21516fb3c6562b"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_video_unplace.py::test_capture_commit_reload_undo_redo_and_restart_safe_retry[image-True]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "bf0a58de9198a3ed507fedb6ad4db0c02e0fb9a3c5db1b95242ccb28d982066c"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_video_unplace.py::test_capture_commit_reload_undo_redo_and_restart_safe_retry[video-False]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "9eceddd24826677947c683bf2303ddc1a1d9a57b0db476b496f0500a31ea7a16"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_commit_runtime_video_unplace.py::test_capture_commit_reload_undo_redo_and_restart_safe_retry[video-True]",
+      "historical_shard": 2,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "285a63e7a6d818484f4f5bfdf7f4abf63deb80ff077858d0aca17cafd5e466b3"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_recipe_m2_auto_placement.py::test_exact_capture_replay_inverse_and_redo[image-absent]",
+      "historical_shard": 3,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "f966711b366285ba3607f079f6a48232f14ab8148436ed9bc14b3fe89e948868"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_recipe_m2_auto_placement.py::test_exact_capture_replay_inverse_and_redo[image-anchor]",
+      "historical_shard": 3,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "8eceec955472a57a1d5802b76d1991226b0ced6e1e73f29d8abc4cf62d3026d3"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_recipe_m2_auto_placement.py::test_exact_capture_replay_inverse_and_redo[video-absent]",
+      "historical_shard": 3,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "8e53152e94b0520f620d3175f373159932b9128268e17577426c13e06f8ade19"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_recipe_m2_auto_placement.py::test_exact_capture_replay_inverse_and_redo[video-anchor]",
+      "historical_shard": 3,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "76c865c9d8f712f6d559850f1ea49c4768b1d2132994f42738e4c52cb4229a24"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_recipe_m2_auto_placement.py::test_provider_accepts_completion_placement_with_exact_undo_and_redo[image]",
+      "historical_shard": 3,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "8decec17e61ac0c395c9c617f5a32d8c44db2721e9e251afac7632290a6eaaaa"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_recipe_m2_auto_placement.py::test_provider_accepts_completion_placement_with_exact_undo_and_redo[video]",
+      "historical_shard": 3,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "c5e73a0dc6d44e75c6e5cab2660b7faea968fcd577efcabfb866513a6c08b257"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_recipe_m2_placement_create_unplace.py::test_exact_capture_replay_inverse_and_redo[create]",
+      "historical_shard": 3,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "367b0c2541e947b5715c343f5179eeb66c6f640c0a1f035d871486797967766b"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_recipe_m2_placement_create_unplace.py::test_exact_capture_replay_inverse_and_redo[unplace]",
+      "historical_shard": 3,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "10115339336dc95ab6789ca962195a016bac4518c49ce79a33f74e73a55bb091"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_recipe_m2_placement_create_unplace.py::test_provider_accepts_create_with_exact_undo_and_redo",
+      "historical_shard": 3,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "1f4254e26dbfcf35363f555b2cea50dead0db7a3ff873514b203dc468b110c40"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_recipe_m2_placement_create_unplace.py::test_provider_accepts_unplace_with_exact_undo_and_redo",
+      "historical_shard": 3,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "e01da4f46319b111c7363a4443b1a78082bff161fd262876b9efcca0f94ca4c2"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shared_auto_placement.py::test_exact_capture_replay_inverse_and_redo[image-append]",
+      "historical_shard": 3,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "d5c9f7c21573cd1c235a10d97865de40230da3b0542fe7803213f4d8af840392"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shared_auto_placement.py::test_exact_capture_replay_inverse_and_redo[image-shift]",
+      "historical_shard": 3,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "b78be39e81a322a0a74cf9bafa9a3270ace710cd728309a38d6e4ea573884340"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shared_auto_placement.py::test_exact_capture_replay_inverse_and_redo[video-append]",
+      "historical_shard": 3,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "7f851fa400cb3d47a6772b222323887ff65c934fa94b98f0ef72e39f0e077bf4"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shared_auto_placement.py::test_exact_capture_replay_inverse_and_redo[video-overlay-anchor]",
+      "historical_shard": 3,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "a30cca8d88eba30e4d4cd08aa4712caa1a490dce104f2ce91e48eb33c3b78e42"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shared_auto_placement.py::test_provider_accepts_shared_placement_with_exact_undo_and_redo[image]",
+      "historical_shard": 3,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "7f0f7b4562d8b0a39035b8a56bb973a754e3e1959ff288615d23c6a15f9c251d"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shared_auto_placement.py::test_provider_accepts_shared_placement_with_exact_undo_and_redo[video]",
+      "historical_shard": 3,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "a684599b50f6b02fc09e696c353f120836bf91894e0e38006c74ab6a990ebbd3"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shot_pool.py::test_exact_capture_replay_inverse_and_redo[add-first]",
+      "historical_shard": 3,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "cc095541300e97b10bbd28343469e73364b5335c1ad9c3d6354b53d211a0e3c5"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shot_pool.py::test_exact_capture_replay_inverse_and_redo[add-second]",
+      "historical_shard": 3,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "4972e40571eb9720ac19ec2122f7daf307d6b06320040487d99b86b3cf6299d1"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shot_pool.py::test_exact_capture_replay_inverse_and_redo[remove-middle]",
+      "historical_shard": 3,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "0dbec95cb51cefd709528c23d94dea7d2840e05032101f58727503bfd5780fdc"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shot_pool.py::test_placing_pooled_media_promotes_it_in_one_batch_that_undoes_as_one[image]",
+      "historical_shard": 3,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "4728a2be3eaa0915f12e340c410eb53a299ebe22234c3ae66339a0195bcadc03"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shot_pool.py::test_placing_pooled_media_promotes_it_in_one_batch_that_undoes_as_one[video]",
+      "historical_shard": 3,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "416f4d7957adb62ebbd08f6bc1aaf3b26733c9e137bbf67fa4d0612e971b1d53"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shot_pool.py::test_promotion_and_keep_as_pooled_round_trip_through_the_provider",
+      "historical_shard": 3,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "4f4405218d3d3d1ce6bf715c8674aef449ef9c784e9ab5060a352e9a22cafb4d"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_recipe_m2_shot_pool.py::test_provider_accepts_add_and_remove_with_exact_undo_and_redo",
+      "historical_shard": 3,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "4507bdaf920b30dc369cba701a9e83a69566aa9b210318e435a3c6f4c93f5ce8"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_recipe_occurrence_media.py::test_provider_exact_reload_inverse_redo_and_retired_asset_reservation[add]",
+      "historical_shard": 3,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "365ab9e5d4b34fa28670cc22d2c2a8eccbfb83862d41c30d1ebcce26d87f2a76"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_recipe_occurrence_media.py::test_provider_exact_reload_inverse_redo_and_retired_asset_reservation[swap]",
+      "historical_shard": 3,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "a9eac734d11211c264208e6a41e0240b6ddff69eae2fe1000ccf135444394933"
+    },
+    {
+      "nodeid": "tests/editing_conformance/test_recipe_occurrence_media.py::test_same_alias_materialized_whole_payload_read_allows_exact_undo_redo",
+      "historical_shard": 3,
+      "historical": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "destination": {
+        "setup": "NO-RESULT",
+        "call": "NO-RESULT",
+        "teardown": "NO-RESULT"
+      },
+      "candidate_local": {
+        "setup": "ERROR",
+        "call": "NO-RESULT",
+        "teardown": "PASS"
+      },
+      "candidate_cause": "shared-placement typed-fps path refusal",
+      "candidate_setup_detail_sha256": "be6fb250243343a244c5efc8bfcaa810764c9f498e9043232e255ab95b27261e"
+    }
+  ]
+}

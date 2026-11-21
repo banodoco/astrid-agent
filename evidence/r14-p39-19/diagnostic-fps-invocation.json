@@ -1,0 +1,40 @@
+{
+  "kind": "local focused proof; not hosted qualification",
+  "cwd": "/workspace/scratch/7b8a4aa9f9f5/astrid-agent",
+  "argv": [
+    "/workspace/scratch/ed89673be2cd/proof-env/bin/python",
+    "-P",
+    "-m",
+    "ci.run_pytest",
+    "-v",
+    "-rA",
+    "-m",
+    "integration",
+    "--junitxml=/workspace/scratch/7b8a4aa9f9f5/evidence/diagnostic-fps/results.xml",
+    "-p",
+    "s01_observer",
+    "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_exact_capture_acceptance_inverse_redo_restart_and_retry[image-add]"
+  ],
+  "environment_overrides": {
+    "PYTHONPATH": "/workspace/scratch/7b8a4aa9f9f5/astrid-agent/scripts:/workspace/scratch/ed89673be2cd/runtime-sync:/workspace/scratch/7b8a4aa9f9f5",
+    "ASTRID_RUNTIME_CHECKOUT": "/workspace/scratch/ed89673be2cd/runtime-sync",
+    "ASTRID_CI_JOB": "lanes-integration",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "S01_OBSERVER_OUTPUT": "/workspace/scratch/7b8a4aa9f9f5/evidence/fps-observer.jsonl"
+  },
+  "source_sha": "de81bcd7e0518a8fc30b9d5ff17882240b6cb367",
+  "source_tree": "c344245f6d93dcab8cb3b5bd334111921c2dd2f6",
+  "dirty": "",
+  "runtime_sha": "2537fed24385ec1c24f48a812e09af4bb63fb794",
+  "runtime_dirty": "",
+  "started_utc": "2026-11-19T17:39:28.221355+00:00",
+  "selectors": [
+    "-p",
+    "s01_observer",
+    "tests/editing_conformance/test_commit_runtime_occurrence_media.py::test_exact_capture_acceptance_inverse_redo_restart_and_retry[image-add]"
+  ],
+  "patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "tracked_worktree_tree": "c344245f6d93dcab8cb3b5bd334111921c2dd2f6",
+  "raw_returncode": 1,
+  "finished_utc": "2026-11-19T17:39:40.746929+00:00"
+}

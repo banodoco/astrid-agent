@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests.helpers.runtime import use_runtime
+from tests.helpers.shot_patch import assert_reopened_shared_shot, authored_shot_patch
 
 pytestmark = pytest.mark.integration
 OWNER = 'occurrence:occ-a'
@@ -24,6 +25,7 @@ def _create_fixture(service, project, document, selection, *, authorize):
     from astrid.sdk.timeline.commands import execute
     from astrid.sdk.timeline.commit import bundle_from_document, document_from_bundle
     from astrid.sdk.timeline.native_occurrence_create import capture_occurrence_create
+    from astrid.sdk.timeline.native_occurrence_shared import capture_occurrence_place_shared
 
     head = service.get_project_timeline(project, 'film')
     parent = service.get_project_parent_composition_revision(
@@ -87,18 +89,17 @@ def _create_fixture(service, project, document, selection, *, authorize):
           copy.deepcopy(document['internal_timeline_revisions'][0]['payload']))
     closure = Closure(bundle)
     before = closure.payload(closure.resolve('shot:chapter-shot'))
-    shot = copy.deepcopy(document['shot_revisions'][0]['payload'])
-    # The compiler supplies the new shot's managed link; it is not authored state.
-    shot.pop('internal_timeline_revision_id')
+    shot = authored_shot_patch(before, document['shot_revisions'][0]['payload'])
     patch('shot:chapter-shot', before, shot)
     current = document_from_bundle(bundle)
     before = current['parent_revision']['payload']['occurrences'][0]
     occurrence = {**copy.deepcopy(occurrences[0]),
                   'shot_revision_id': before['shot_revision_id']}
     patch('parent', before, occurrence, ('occurrences', 'occurrence_id:occ-a'))
-    submit(calls, 'popup-baseline')
-    result = submit([{'schema_version': 1, 'op': 'occurrence.place-shared', 'version': '1',
-                      'select': OWNER, 'args': {'occurrence_id': 'occ-b', 'on': 10}}], 'popup-sibling')
+    accepted = submit(calls, 'popup-baseline')
+    shared = capture_occurrence_place_shared(
+        bundle_from_document(accepted['data']['canonical_document']), OWNER, 'occ-b', on=10)
+    result = submit([shared], 'popup-sibling')
     actual = result['data']['canonical_document']
     expected_parent = copy.deepcopy(document['parent_revision']['payload'])
     actual_shot, = actual['shot_revisions']
@@ -112,6 +113,7 @@ def _create_fixture(service, project, document, selection, *, authorize):
             or actual_internal['timeline_id'] != 'film'
             or actual_internal['payload'] != document['internal_timeline_revisions'][0]['payload']):
         pytest.fail('supported fixture commits changed authored payloads or shared ownership')
+    assert_reopened_shared_shot(service, project, 'film', actual)
 
 
 @pytest.fixture(params=['image', 'video'])

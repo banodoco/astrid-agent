@@ -1,0 +1,74 @@
+[
+  {
+    "path": "tests/editing_conformance/test_commit_runtime_media_manifest_inverse.py",
+    "old_sha256": "e57cda182041106e32c4007cca08320966d86d73dd23311ad515e5b2dfc3dd73",
+    "new_sha256": "e57cda182041106e32c4007cca08320966d86d73dd23311ad515e5b2dfc3dd73",
+    "assertions_unchanged": 23,
+    "test_bodies_unchanged": 1,
+    "byte_identical": true
+  },
+  {
+    "path": "tests/editing_conformance/test_commit_runtime_occurrence_media.py",
+    "old_sha256": "cf73444ebe59c7a5e62f29cff072d3c3dea87ead85043d92ef632d433cb110a1",
+    "new_sha256": "926166d19a53126cb71715d9bad94d9c2cd2b2b7408d630b1d7bcf74b81b5ae8",
+    "assertions_unchanged": 28,
+    "test_bodies_unchanged": 4,
+    "byte_identical": false
+  },
+  {
+    "path": "tests/editing_conformance/test_commit_runtime_parent_media_swap.py",
+    "old_sha256": "e733226964bb5df253d3a3b4bb887e6fe573eda9090623c91725aa3f2c6f1ec9",
+    "new_sha256": "e733226964bb5df253d3a3b4bb887e6fe573eda9090623c91725aa3f2c6f1ec9",
+    "assertions_unchanged": 62,
+    "test_bodies_unchanged": 6,
+    "byte_identical": true
+  },
+  {
+    "path": "tests/editing_conformance/test_commit_runtime_video_unplace.py",
+    "old_sha256": "fe54a4f5d41677d95f4d7c4fa9edde56028333250be405080b41ad2101429cd2",
+    "new_sha256": "351326fea37e1dfe3dd18f200de2dfe0865acc301c3ee044989bf6320a675189",
+    "assertions_unchanged": 23,
+    "test_bodies_unchanged": 1,
+    "byte_identical": false
+  },
+  {
+    "path": "tests/editing_conformance/test_recipe_m2_auto_placement.py",
+    "old_sha256": "5146188c84a4911ff42ff5c39be5b9da650f8cc5ebdf80bb4900903dad90f861",
+    "new_sha256": "5146188c84a4911ff42ff5c39be5b9da650f8cc5ebdf80bb4900903dad90f861",
+    "assertions_unchanged": 46,
+    "test_bodies_unchanged": 19,
+    "byte_identical": true
+  },
+  {
+    "path": "tests/editing_conformance/test_recipe_m2_placement_create_unplace.py",
+    "old_sha256": "51c047472cf0677baf5ce9d0c252afa00b28ccda09b1b2cb60f7ed674e7e8af9",
+    "new_sha256": "51c047472cf0677baf5ce9d0c252afa00b28ccda09b1b2cb60f7ed674e7e8af9",
+    "assertions_unchanged": 36,
+    "test_bodies_unchanged": 16,
+    "byte_identical": true
+  },
+  {
+    "path": "tests/editing_conformance/test_recipe_m2_shared_auto_placement.py",
+    "old_sha256": "033deddcf43a49967c92a0a8fe827d96c0ea758bf071026f5629ec3606e728a6",
+    "new_sha256": "033deddcf43a49967c92a0a8fe827d96c0ea758bf071026f5629ec3606e728a6",
+    "assertions_unchanged": 71,
+    "test_bodies_unchanged": 25,
+    "byte_identical": true
+  },
+  {
+    "path": "tests/editing_conformance/test_recipe_m2_shot_pool.py",
+    "old_sha256": "7fbdd2f08dc1c772ce57500705a46a8b4a012d50ccd76918c50f1d45ae020b7e",
+    "new_sha256": "7fbdd2f08dc1c772ce57500705a46a8b4a012d50ccd76918c50f1d45ae020b7e",
+    "assertions_unchanged": 59,
+    "test_bodies_unchanged": 17,
+    "byte_identical": true
+  },
+  {
+    "path": "tests/editing_conformance/test_recipe_occurrence_media.py",
+    "old_sha256": "6c34ea9aadad53265d3f19b2737e54f3e0d74d45fc8855c0ae22ce88c3e355ec",
+    "new_sha256": "6c34ea9aadad53265d3f19b2737e54f3e0d74d45fc8855c0ae22ce88c3e355ec",
+    "assertions_unchanged": 44,
+    "test_bodies_unchanged": 15,
+    "byte_identical": true
+  }
+]

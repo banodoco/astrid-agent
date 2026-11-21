@@ -1,0 +1,35 @@
+{
+  "kind": "local focused proof; not hosted qualification",
+  "cwd": "/workspace/scratch/7b8a4aa9f9f5/astrid-agent",
+  "argv": [
+    "/workspace/scratch/ed89673be2cd/proof-env/bin/python",
+    "-P",
+    "-m",
+    "ci.run_pytest",
+    "-v",
+    "-rA",
+    "-m",
+    "not integration",
+    "--junitxml=/workspace/scratch/7b8a4aa9f9f5/evidence/pin-guard-manifest-proof/results.xml",
+    "tests/test_vibecomfy_pin.py::test_no_other_tracked_file_copies_the_pin"
+  ],
+  "environment_overrides": {
+    "PYTHONPATH": "/workspace/scratch/7b8a4aa9f9f5/astrid-agent/scripts:/workspace/scratch/ed89673be2cd/runtime-sync",
+    "ASTRID_RUNTIME_CHECKOUT": "/workspace/scratch/ed89673be2cd/runtime-sync",
+    "ASTRID_CI_JOB": "lanes-integration",
+    "PYTHONDONTWRITEBYTECODE": "1"
+  },
+  "source_sha": "305943c7c5d835d78e0bb46335710656a9d8f76f",
+  "source_tree": "d043d1844b94a03e1f797ae27d5debababc54ce4",
+  "dirty": "A  evidence/r14-p39-19/manifest-identity/README.md\nA  evidence/r14-p39-19/manifest-identity/assertion-preservation.json\nA  evidence/r14-p39-19/manifest-identity/invocation.json\nA  evidence/r14-p39-19/manifest-identity/manifest.json\nA  evidence/r14-p39-19/manifest-identity/native-files.json\nA  evidence/r14-p39-19/manifest-identity/outcomes-by-id.json\nA  evidence/r14-p39-19/manifest-identity/producer-source-witnesses.json\nA  evidence/r14-p39-19/manifest-identity/results.collection.json.gz\nA  evidence/r14-p39-19/manifest-identity/results.jsonl.gz\nA  evidence/r14-p39-19/manifest-identity/results.log.gz\nA  evidence/r14-p39-19/manifest-identity/results.reference.json.gz\nA  evidence/r14-p39-19/manifest-identity/results.xml.gz\nA  evidence/r14-p39-19/manifest-identity/summary.json",
+  "runtime_sha": "2537fed24385ec1c24f48a812e09af4bb63fb794",
+  "runtime_dirty": "",
+  "started_utc": "2026-11-19T18:51:55.136186+00:00",
+  "selectors": [
+    "tests/test_vibecomfy_pin.py::test_no_other_tracked_file_copies_the_pin"
+  ],
+  "patch_sha256": "09d9cebf3334926dbdbcfcc782f2f425cfab2dbe1579c267996944722a10fde4",
+  "tracked_worktree_tree": "8d798ab8d12c85734e692ceefb13eb8ed11391e6",
+  "raw_returncode": 0,
+  "finished_utc": "2026-11-19T18:51:57.422447+00:00"
+}
