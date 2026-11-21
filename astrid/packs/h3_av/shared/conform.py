@@ -3,11 +3,15 @@ from __future__ import annotations
 
 import hashlib
 import json
-import resource
 import subprocess
 import tempfile
 from fractions import Fraction
 from pathlib import Path
+
+try:
+    import resource
+except ImportError:  # Windows cannot enforce RLIMIT_FSIZE.
+    resource = None
 
 from astrid.core.media_framing import fill_filter, probe_streams
 
@@ -46,6 +50,9 @@ _MAX_PROBE_BYTES = 16 * 1024 * 1024
 
 
 def _bounded_probe(args: list[str]) -> dict:
+    if resource is None:
+        raise OSError('bounded probe output is unavailable on this platform')
+
     def limit_output():
         resource.setrlimit(resource.RLIMIT_FSIZE, (_MAX_PROBE_BYTES, _MAX_PROBE_BYTES))
 
@@ -53,6 +60,8 @@ def _bounded_probe(args: list[str]) -> dict:
         subprocess.run(['ffprobe', '-v', 'error', *args], stdout=output,
                        stderr=subprocess.DEVNULL, check=True, timeout=120,
                        preexec_fn=limit_output)
+        if output.tell() >= _MAX_PROBE_BYTES:
+            raise ValueError('probe output reached size limit')
         output.seek(0)
         return json.load(output)
 
