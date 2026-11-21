@@ -367,7 +367,7 @@ jobs:
           release11_only = journey_row in release11_job_ids
           release13_job_ids = (*journey_matrix.RELEASE13_UPDATE_JOB_IDS, journey_matrix.RELEASE13_KILLED_JOB_ID)
           release13_only = journey_row in release13_job_ids
-          valid_rows = {"", *journey_matrix.RELEASE1_JOB_IDS, "direct", "pinokio", *pinokio_job_ids, *release11_job_ids}
+          valid_rows = {"", *journey_matrix.RELEASE1_JOB_IDS, *journey_matrix.FIX17_JOB_IDS, "direct", "pinokio", *pinokio_job_ids, *release11_job_ids}
           if journey_row not in valid_rows:
               raise SystemExit("row must be one of " + ", ".join(sorted(valid_rows - {""})))
           if journey_row:

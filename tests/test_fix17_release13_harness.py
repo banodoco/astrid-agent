@@ -126,8 +126,11 @@ def test_original_five_direct_rows_are_never_replaced():
     expected = {"direct-linux", "direct-macos", "direct-windows",
                 "direct-linux-fresh", "direct-macos-fresh"}
     assert {row["job_id"] for row in matrix.RELEASE1_AUTOMATIC_MATRIX} == expected
-    assert expected <= set(matrix.RELEASE1_JOB_IDS)
-    assert len(matrix.RELEASE1_JOB_IDS) == len(set(matrix.RELEASE1_JOB_IDS))
+    assert expected == set(matrix.RELEASE1_JOB_IDS)
+    assert len(matrix.RELEASE1_JOB_IDS) == 5
+    assert len(matrix.FIX17_JOB_IDS) == len(set(matrix.FIX17_JOB_IDS))
+    assert set(matrix.RELEASE13_UPDATE_JOB_IDS) <= set(matrix.FIX17_JOB_IDS)
+    assert matrix.RELEASE13_KILLED_JOB_ID in matrix.FIX17_JOB_IDS
     # R9/R11/autostart references must not silently expand this packet's scope.
     assert not set(matrix.RELEASE9_INSTALL_MATRIX[0]["job_id"] for _ in range(1)) & set(matrix.RELEASE1_JOB_IDS)
 
@@ -166,7 +169,7 @@ def test_one_row_evidence_scope_still_refuses_missing_and_foreign_receipts(tmp_p
 
 
 def test_one_row_scope_does_not_weaken_full_aggregate(tmp_path):
-    with pytest.raises(ValueError, match="unknown or duplicate"):
+    with pytest.raises(ValueError, match="unknown or conflicting"):
         gate.evaluate_release1_matrix({}, tmp_path, job_id="not-a-row")
     with pytest.raises(ValueError, match="full direct-row scope"):
         gate.evaluate_release1_matrix({}, tmp_path, scope="five", job_id="direct-linux-r13-update")

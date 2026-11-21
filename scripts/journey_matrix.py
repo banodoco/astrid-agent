@@ -79,11 +79,15 @@ RELEASE1_AUTOSTART_MATRIX: Final = (
     {"job_id": "direct-linux-autostart-off", "mode": "direct", "runner": "ubuntu-24.04", "shell": "sh", "os": "linux", "leg": "fresh-install-autostart-off"},
     {"job_id": "direct-macos-autostart-off", "mode": "direct", "runner": "macos-15", "shell": "sh", "os": "macos", "leg": "fresh-install-autostart-off"},
 )
-# FIX-17 ports the prior-release user journeys only. Keep the five existing
-# direct rows and their unchanged automatic gate; historical R9/R11/autostart
-# rows are reference code, not silently added to the R14 publication matrix.
-RELEASE1_MATRIX: Final = (*_RELEASE1_DIRECT_LEGACY, *RELEASE1_DIRECT_FRESH_MATRIX,
-                          *RELEASE13_UPDATE_MATRIX, *RELEASE13_KILLED_MATRIX)
+# The original five-row Release-1 gate is immutable. FIX-17's selected
+# prior-release user journeys are separately addressed by job ID; they must
+# not change the historical Release-1 aggregate or its original assertions.
+RELEASE1_MATRIX: Final = (*_RELEASE1_DIRECT_LEGACY, *RELEASE1_DIRECT_FRESH_MATRIX)
+# Windows' existing fresh direct row and two distinct POSIX fresh rows,
+# plus exactly three R13 upgrades and the dedicated killed-update recovery.
+FIX17_MATRIX: Final = (_RELEASE1_DIRECT_LEGACY[2], *RELEASE1_DIRECT_FRESH_MATRIX,
+                       *RELEASE13_UPDATE_MATRIX, *RELEASE13_KILLED_MATRIX)
+FIX17_JOB_IDS: Final = tuple(row["job_id"] for row in FIX17_MATRIX)
 # An automatic push or schedule (no row input) runs the five rows that existed before the
 # release9 and release11 legs. row=direct runs all of RELEASE1_MATRIX.
 RELEASE1_AUTOMATIC_MATRIX: Final = (*_RELEASE1_DIRECT_LEGACY, *RELEASE1_DIRECT_FRESH_MATRIX)
@@ -293,7 +297,7 @@ def release1_job(job_id: str) -> dict:
     Deferred R1.1 Pinokio jobs stay admitted for the driver, but are not part
     of RELEASE1_MATRIX or its aggregate.
     """
-    for row in (*_ADMITTED_JOBS, *RELEASE1_MATRIX, *RELEASE1_1_PINOKIO_MATRIX):
+    for row in (*_ADMITTED_JOBS, *RELEASE1_MATRIX, *FIX17_MATRIX, *RELEASE1_1_PINOKIO_MATRIX):
         if row["job_id"] == job_id:
             return dict(row)
     raise ValueError(f"Unknown Release-1 journey job: {job_id}")
