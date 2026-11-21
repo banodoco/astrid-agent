@@ -87,7 +87,7 @@ def test_wav_import_one_receipt_exact_undo_retains_catalog(realm, tmp_path, trac
     ] + [
         {'schema_version': 1, 'op': 'clip.add', 'version': '1', 'select': 'parent',
          'args': {'row': {'id': identity, 'track': 'V1', 'clipType': 'text',
-                          'at': index * 3, 'hold': 1, 'params': {'text': identity}}}}
+                          'at': index * 3, 'hold': 1, 'text': {'content': identity}}}}
         for index, identity in enumerate(['opening', 'closing'])
     ], idempotency_key='setup')
     history = writer.list_timeline_commits(project, timeline)
