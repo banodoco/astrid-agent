@@ -188,7 +188,7 @@ LOOPBACK_HTTP_OPENINGS = {
     ),
     ("astrid/installer/backend.py", "Backend.verify", "urllib.request.build_opener"): (
         1,
-        "20f66fe079c64a1709d8c6bbbf298b5198a04336308a6c317fac35dfcf6797e9",
+        "aae5a363a6ceddaf529031acf53814aeafb2c5bf24eab64da8ee66c18331a7f8",
     ),
     ("astrid/mcp_server.py", "_comfy_workflow_import", "urllib.request.build_opener"): (
         1,
