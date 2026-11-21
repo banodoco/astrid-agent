@@ -22,6 +22,42 @@ READER_PROJECTION_APP_KEY = "astrid_authoring_render_projection"
 _HEX = frozenset("0123456789abcdef")
 
 
+def normalize_authored_reader_clips(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a detached reader view with safe authored clip extensions contained in app."""
+    from .banodoco_schema import _CLIP_ALLOWED
+    from .clip_fields import reserved_names
+
+    result = copy.deepcopy(dict(config))
+    clips = result.get("clips")
+    if not isinstance(clips, list):
+        return result
+    aliases = {"clip_type", "asset_id", "from_ms", "to_ms", "at_ms", "duration_ms", "from_", "type"}
+    selectors = {"asset", "asset_id", "media_id", "object_id"}
+    reserved = {"kind", "start", "duration", "file", "url", "path"}
+    keep = set(_CLIP_ALLOWED) | aliases | set(reserved_names()) | selectors | reserved | {"rect"}
+    for clip in clips:
+        if not isinstance(clip, dict):
+            continue
+        if clip.get("params", object()) is None:
+            clip["params"] = {}
+        app = clip.get("app")
+        if "app" in clip and not isinstance(app, dict):
+            continue
+        extensions = {key: clip.pop(key) for key in list(clip) if key not in keep}
+        if not extensions:
+            continue
+        if app is None:
+            app = {}
+            clip["app"] = app
+        namespace = "astrid_opaque"
+        suffix = 2
+        while namespace in app:
+            namespace = f"astrid_opaque_{suffix}"
+            suffix += 1
+        app[namespace] = extensions
+    return result
+
+
 class MediaSelectorError(ValueError):
     """A clip media selector that no reader can resolve to one registry asset."""
 
@@ -181,6 +217,7 @@ def reader_view(config: Mapping[str, Any], registry: Mapping[str, Any]) -> tuple
     from .banodoco_schema import EDITOR_ASSET_METADATA_KEYS
 
     view_config, view_registry = translate_media_selectors(config, registry, strict=False)
+    view_config = normalize_authored_reader_clips(view_config)
     assets = view_registry.get("assets")
     if isinstance(assets, dict):
         for entry in assets.values():
@@ -240,6 +277,7 @@ __all__ = [
     "ReaderProjectionError",
     "check_reader_projection",
     "media_identity",
+    "normalize_authored_reader_clips",
     "reader_view",
     "translate_media_selectors",
 ]

@@ -81,6 +81,7 @@ def _render_compatible_projection(
     from astrid.core.timeline.reader_projection import (
         READER_PROJECTION_APP_KEY,
         MediaSelectorError,
+        normalize_authored_reader_clips,
         translate_media_selectors,
     )
 
@@ -96,6 +97,8 @@ def _render_compatible_projection(
             recovery=exc.recovery,
             validator="authoring_render_projection",
         ) from exc
+
+    normalized_config = normalize_authored_reader_clips(normalized_config)
 
     raw_clips = normalized_config.get("clips", [])
     if not isinstance(raw_clips, list):
