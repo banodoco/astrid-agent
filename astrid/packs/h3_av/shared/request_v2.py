@@ -193,6 +193,8 @@ def _mask(value: Any, path: str, modalities: Mapping[str, str] | None) -> dict[s
         result["asset"] = asset
         result["edge"] = _edge(item.get("edge", {}), f"{path}.edge")
         if "threshold" in item:
+            if modality == "video":
+                raise H3RequestError(f"{path} has unsupported field: threshold for video mask")
             threshold = item["threshold"]
             if type(threshold) is not int or not 1 <= threshold <= 254:
                 raise H3RequestError(f"{path}.threshold must be an integer 1..254")
