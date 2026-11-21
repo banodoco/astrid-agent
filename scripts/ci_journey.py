@@ -38,7 +38,7 @@ if __package__:
         M4_4A_OLD_UPDATE_SHA256,
         M4_4A_PROVISIONAL_AGENT_REF,
         M4_4A_REQUIRED_AGENT_ANCESTORS,
-        RELEASE12_WINDOWS_JOB_ID,
+        RELEASE13_WINDOWS_JOB_ID,
         RELEASE1_MODES,
         validate_job,
     )
@@ -50,7 +50,7 @@ else:
         M4_4A_OLD_UPDATE_SHA256,
         M4_4A_PROVISIONAL_AGENT_REF,
         M4_4A_REQUIRED_AGENT_ANCESTORS,
-        RELEASE12_WINDOWS_JOB_ID,
+        RELEASE13_WINDOWS_JOB_ID,
         RELEASE1_MODES,
         validate_job,
     )
@@ -64,7 +64,7 @@ JOURNEY_PACKS = {"chiptune": ("https://github.com/banodoco/poms_packs", "2379ab5
 OWNER_FILE = "tst-b1-owner.json"
 VERSION_JUMP_LEGS = ("update-from-served", "update-from-release:pre-updater",
                      "update-over-old-declaration", "old-runtime-busy",
-                     "release9-then-install", "r0-handoff-then-update", "release11-then-update", "release12-then-update",
+                     "release9-then-install", "r0-handoff-then-update", "release11-then-update", "release13-then-update",
                      "fresh-install-autostart-off", "windows-upgrade-refusal")
 RUNNER_FAMILY = {"ubuntu-24.04": "linux", "ubuntu-22.04": "linux",
                  "windows-2022": "win32", "macos-14": "darwin", "macos-15": "darwin"}
@@ -113,9 +113,9 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "r11-home-packs.json",
     # Linux/macOS: each expected host/service log, captured or absent.
     "runtime-service-log-status.json",
-    # direct-windows-r12-update: `astrid doctor --json` and the dry-run generation, each as the installed
-    # candidate printed it (see journey_windows_r12_update.py).
-    "windows-r12-doctor.json", "windows-r12-dry-run.json",
+    # direct-windows-r13-update: `astrid doctor --json` and the dry-run generation, each as the installed
+    # candidate printed it (see journey_windows_r13_update.py).
+    "windows-r13-doctor.json", "windows-r13-dry-run.json",
 })
 JOURNEY_PACK_LOG = re.compile(r"journey-pack-[A-Za-z0-9_-]+\.log")
 EVIDENCE_LOG_LIMIT = 1024 * 1024
@@ -3976,10 +3976,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="a checkout containing the pinned Release-11 App commit for the direct 11-to-candidate update leg")
     parser.add_argument("--allow-release11-to-candidate", action="store_true",
                         help="admit only the exact pinned direct update from the served Release 11 to the candidate")
-    parser.add_argument("--release12-app-checkout", type=Path,
-                        help="a checkout containing the pinned Release-12 App commit")
-    parser.add_argument("--allow-release12-to-candidate", action="store_true",
-                        help="admit the pinned direct update from Release 12")
+    parser.add_argument("--release13-app-checkout", type=Path,
+                        help="a checkout containing the pinned Release-13 App commit")
+    parser.add_argument("--allow-release13-to-candidate", action="store_true",
+                        help="admit the pinned direct update from Release 13")
     parser.add_argument("--source-override", action="store_true", help="TEST MODE: install Agent and Runtime from local Git commits")
     parser.add_argument("--agent-checkout", type=Path)
     parser.add_argument("--runtime-checkout", type=Path)
@@ -4045,8 +4045,8 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("fresh-install-autostart-off requires a frozen direct candidate receipt")
         if (args.release0_fixture is not None or args.release9_app_checkout is not None
                 or args.release11_app_checkout is not None or args.allow_release0_to_release1
-                or args.allow_release11_to_candidate or args.release12_app_checkout is not None
-                or args.allow_release12_to_candidate):
+                or args.allow_release11_to_candidate or args.release13_app_checkout is not None
+                or args.allow_release13_to_candidate):
             parser.error("fresh-install-autostart-off admits no release source")
     if args.leg == "release11-then-update":
         if sys.platform == "win32" or diagnostic or args.diagnostic_keep_going or args.retain_for_next_leg:
@@ -4060,23 +4060,23 @@ def main(argv: list[str] | None = None) -> int:
                          "and admits no release-0 or release-9 source")
     elif args.release11_app_checkout is not None or args.allow_release11_to_candidate:
         parser.error("release-11 admission is only valid for the release11-then-update leg")
-    if args.leg == "release12-then-update":
+    if args.leg == "release13-then-update":
         if diagnostic or args.diagnostic_keep_going or args.retain_for_next_leg:
-            parser.error("release12-then-update requires a disposable direct qualification job")
+            parser.error("release13-then-update requires a disposable direct qualification job")
         if not (args.job_id and args.mode == "direct" and args.candidate):
-            parser.error("release12-then-update requires a frozen direct candidate receipt")
+            parser.error("release13-then-update requires a frozen direct candidate receipt")
         # Windows is admitted for exactly one job, and that job only on Windows.
-        if (sys.platform == "win32") != (args.job_id == RELEASE12_WINDOWS_JOB_ID):
-            parser.error(f"release12-then-update on Windows is admitted only for the {RELEASE12_WINDOWS_JOB_ID} "
-                         "job on windows-2022; Linux and macOS use their own r12 rows")
+        if (sys.platform == "win32") != (args.job_id == RELEASE13_WINDOWS_JOB_ID):
+            parser.error(f"release13-then-update on Windows is admitted only for the {RELEASE13_WINDOWS_JOB_ID} "
+                         "job on windows-2022; Linux and macOS use their own r13 rows")
         if validate_job(args.job_id, args.mode)["os"] != journey_os_label():
             parser.error(f"{args.job_id} does not run on this operating system")
-        if (args.release12_app_checkout is None or not args.allow_release12_to_candidate
+        if (args.release13_app_checkout is None or not args.allow_release13_to_candidate
                 or args.release0_fixture is not None or args.release9_app_checkout is not None
                 or args.allow_release0_to_release1):
-            parser.error("release12-then-update requires its pinned Release-12 source only")
-    elif args.release12_app_checkout is not None or args.allow_release12_to_candidate:
-        parser.error("release-12 admission is only valid for the release12-then-update leg")
+            parser.error("release13-then-update requires its pinned Release-13 source only")
+    elif args.release13_app_checkout is not None or args.allow_release13_to_candidate:
+        parser.error("release-13 admission is only valid for the release13-then-update leg")
     if args.leg in {"release9-then-install", "r0-handoff-then-update", "windows-upgrade-refusal"}:
         if args.leg == "windows-upgrade-refusal" and (sys.platform != "win32" or args.job_id != "direct-windows" or diagnostic or args.diagnostic_keep_going or args.retain_for_next_leg):
             parser.error("windows-upgrade-refusal requires the disposable direct-windows qualification job")

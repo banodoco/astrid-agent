@@ -23,7 +23,7 @@ if __package__:
     from . import check_journey_evidence as evidence_gate
     from . import ci_journey as journey, upgrade_release, journey_workspace, journey_live_workspace as live
     from . import journey_data_roots
-    from .journey_matrix import RELEASE12_WINDOWS_JOB_ID
+    from .journey_matrix import RELEASE13_WINDOWS_JOB_ID
 else:
     import check_journey_evidence as evidence_gate
     import ci_journey as journey
@@ -31,7 +31,7 @@ else:
     import journey_workspace
     import journey_live_workspace as live
     import journey_data_roots
-    from journey_matrix import RELEASE12_WINDOWS_JOB_ID
+    from journey_matrix import RELEASE13_WINDOWS_JOB_ID
 
 
 RELEASE0_FIXTURE = journey.ROOT / "tests" / "fixtures" / "release0"
@@ -64,12 +64,12 @@ RELEASE11_IDENTITY = {
     "runtime": "4f5477cb0f5b03d28bec991a1fe34edcd8fc309f",
     "schema_digest": "sha256:9628bb5fd6e1dbbec392dd39f2e01031622dcf52d7ccff7cd1f0ad10743dcb1c",
 }
-RELEASE12_LEG = "release12-then-update"
-RELEASE12_APP_COMMIT = "ae4da5d76bfcd9ef87fd117d4cbf02f4fe998bea"
-RELEASE12_RELEASE = 12
-RELEASE12_IDENTITY = {
-    "agent": "0e1543e0da2215db9cb3320cfd1083174c3c62a9",
-    "runtime": "42ae24aff8d2cb854f874ce134161077a3ba3641",
+RELEASE13_LEG = "release13-then-update"
+RELEASE13_APP_COMMIT = "de7dd1e668aa6dcf3cbce013c701fa7c76615f99"
+RELEASE13_RELEASE = 13
+RELEASE13_IDENTITY = {
+    "agent": "9814193a73f606719e81883a8be197d27dd361d4",
+    "runtime": "6855dfa8df65cf8ae4c002b57134d6505493c17c",
     "schema_digest": "sha256:9628bb5fd6e1dbbec392dd39f2e01031622dcf52d7ccff7cd1f0ad10743dcb1c",
 }
 CHECKSUM = re.compile(r"([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._/-]*)$")
@@ -1440,34 +1440,34 @@ def execute_release11_then_update(args, root: Path, data: Path, evidence: Path, 
     return result
 
 
-def release12_admission(args, output: Path) -> tuple[Path, Path, dict]:
-    """Admit the pinned, served Release 12 as the release12-then-update start."""
+def release13_admission(args, output: Path) -> tuple[Path, Path, dict]:
+    """Admit the pinned, served Release 13 as the release13-then-update start."""
     if (getattr(args, "mode", None) != "direct" or not getattr(args, "job_id", None)
-            or not getattr(args, "candidate", None) or not getattr(args, "allow_release12_to_candidate", False)
-            or getattr(args, "release12_app_checkout", None) is None):
-        raise ValueError(f"{RELEASE12_LEG} requires its scoped pinned Release-12 direct admission")
+            or not getattr(args, "candidate", None) or not getattr(args, "allow_release13_to_candidate", False)
+            or getattr(args, "release13_app_checkout", None) is None):
+        raise ValueError(f"{RELEASE13_LEG} requires its scoped pinned Release-13 direct admission")
     if getattr(args, "source_override", False):
-        raise ValueError(f"{RELEASE12_LEG} never admits a source override")
-    return verified_release12_source(args.release12_app_checkout, output)
+        raise ValueError(f"{RELEASE13_LEG} never admits a source override")
+    return verified_release13_source(args.release13_app_checkout, output)
 
 
-def verified_release12_source(app: Path, output: Path) -> tuple[Path, Path, dict]:
-    """Export Release 12's manifest and bootstrap from its pinned App commit.
+def verified_release13_source(app: Path, output: Path) -> tuple[Path, Path, dict]:
+    """Export Release 13's manifest and bootstrap from its pinned App commit.
 
-    The bytes are the git blobs at RELEASE12_APP_COMMIT, not whatever the live
+    The bytes are the git blobs at RELEASE13_APP_COMMIT, not whatever the live
     endpoint serves now. The export is then run by the plain install command.
     """
     if app.is_symlink() or not app.is_dir():
-        raise ValueError("Release-12 App checkout must be a non-symlink directory")
-    resolved = upgrade_release.resolve("release12", output, app_repo=app.resolve(strict=True))
-    if resolved.get("status") != "verified" or resolved.get("app_manifest_commit") != RELEASE12_APP_COMMIT:
-        raise RuntimeError("Release 12 could not be resolved from its pinned App commit")
-    if resolved.get("identity") != RELEASE12_IDENTITY:
-        raise RuntimeError("Pinned Release 12 identity differs from the served release")
+        raise ValueError("Release-13 App checkout must be a non-symlink directory")
+    resolved = upgrade_release.resolve("release13", output, app_repo=app.resolve(strict=True))
+    if resolved.get("status") != "verified" or resolved.get("app_manifest_commit") != RELEASE13_APP_COMMIT:
+        raise RuntimeError("Release 13 could not be resolved from its pinned App commit")
+    if resolved.get("identity") != RELEASE13_IDENTITY:
+        raise RuntimeError("Pinned Release 13 identity differs from the served release")
     manifest_path = output / "install-manifest.json"
     manifest = journey.read_json(manifest_path)
-    if manifest.get("release") != RELEASE12_RELEASE:
-        raise RuntimeError("Pinned Release 12 manifest does not declare release 12")
+    if manifest.get("release") != RELEASE13_RELEASE:
+        raise RuntimeError("Pinned Release 13 manifest does not declare release 12")
     receipt = {
         "app_commit": resolved["app_manifest_commit"],
         "manifest_sha256": resolved["manifest_sha256"],
@@ -1477,14 +1477,14 @@ def verified_release12_source(app: Path, output: Path) -> tuple[Path, Path, dict
     return output, manifest_path, receipt
 
 
-def bootstrap_release12(source: Path, manifest: Path, shell: str, evidence: Path,
+def bootstrap_release13(source: Path, manifest: Path, shell: str, evidence: Path,
                         root: Path, data: Path, agent: Path | None = None) -> None:
-    """Install the exported Release 12 with the plain install command, never --update."""
+    """Install the exported Release 13 with the plain install command, never --update."""
     journey.bootstrap(source, manifest, shell, "install", evidence, root, data, agent=agent)
 
 
-def execute_release12_then_update(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) -> dict:
-    """Pinned Release 12 plain install, API seed, then the candidate's install --update.
+def execute_release13_then_update(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) -> dict:
+    """Pinned Release 13 plain install, API seed, then the candidate's install --update.
 
     The candidate's update must exit 0 and install its manifest release. Its own run receipt
     must say updated to that release, exactly one Runtime may be live afterwards, and the
@@ -1492,7 +1492,7 @@ def execute_release12_then_update(args, root: Path, data: Path, evidence: Path, 
     """
     evidence.mkdir(parents=True, exist_ok=True)
     result = {
-        "schema_version": 1, "receipt_kind": RELEASE12_LEG,
+        "schema_version": 1, "receipt_kind": RELEASE13_LEG,
         "job_id": args.job_id, "mode": args.mode, "scenario": args.leg, "status": "not-run",
         "os_build": platform.platform(), "shell": args.shell, **journey.runner_identity(),
         "source_override_test_mode": False, "candidate_checkouts": getattr(args, "candidate_checkouts", None),
@@ -1500,26 +1500,26 @@ def execute_release12_then_update(args, root: Path, data: Path, evidence: Path, 
         "sources": None, "installed_tuple": None, "import_origins": None,
         "run_roots": {"program": str(root), "data": str(data)},
         "sentinel": {"pid": sentinel.pid, "birth": birth},
-        "release12_source": None, "candidate_bootstrap": None, "update": None,
+        "release13_source": None, "candidate_bootstrap": None, "update": None,
         "release_transition": None, "live_runtimes": None, "semantic_data": None,
         "checks": {key: "not-run" for key in (
-            "release12_install", "update_exit", "run_receipt", "release", "one_runtime", "service", "health",
+            "release13_install", "update_exit", "run_receipt", "release", "one_runtime", "service", "health",
             "semantic_data", "task_settled", "unrelated_sentinel")},
     }
     result_path = evidence / "journey-result.json"
     journey.write_json(result_path, result)
     try:
-        source, release12_manifest, source_receipt = release12_admission(args, root.parent / "release12-source")
-        result["release12_source"] = source_receipt
+        source, release13_manifest, source_receipt = release13_admission(args, root.parent / "release13-source")
+        result["release13_source"] = source_receipt
         app = args.app_checkout.resolve(strict=True)
         candidate_path, manifest = journey.selected_manifest(
             app, source_override=False, agent=None, runtime=None, evidence=evidence)
         candidate = journey.read_json(args.candidate)
         if evidence_gate.validate_tuple(candidate, app, candidate_path) != manifest:
-            raise RuntimeError(f"{RELEASE12_LEG} requires a frozen candidate manifest")
+            raise RuntimeError(f"{RELEASE13_LEG} requires a frozen candidate manifest")
         target_release = manifest.get("release")
-        if type(target_release) is not int or target_release <= RELEASE12_RELEASE:
-            raise RuntimeError(f"{RELEASE12_LEG} requires a candidate newer than Release {RELEASE12_RELEASE}")
+        if type(target_release) is not int or target_release <= RELEASE13_RELEASE:
+            raise RuntimeError(f"{RELEASE13_LEG} requires a candidate newer than Release {RELEASE13_RELEASE}")
         result["candidate_bootstrap"] = {"manifest_sha256": candidate["manifest_sha256"],
                                          "artifacts": candidate["artifacts"]}
         result["sources"] = {"app": journey.git_source(app), "agent": manifest["agent"],
@@ -1527,35 +1527,35 @@ def execute_release12_then_update(args, root: Path, data: Path, evidence: Path, 
         before_sentinel = journey.sentinel_observation(sentinel, birth)
         result["sentinel"]["before_lifecycle"] = before_sentinel
         if not before_sentinel["alive"]:
-            raise RuntimeError("Unrelated sentinel exited before the release-12 install")
+            raise RuntimeError("Unrelated sentinel exited before the release-13 install")
 
-        # 1. The pinned Release 12, installed plainly, then seeded through its live Runtime.
-        bootstrap_release12(source, release12_manifest, args.shell, evidence / "release12", root, data,
+        # 1. The pinned Release 13, installed plainly, then seeded through its live Runtime.
+        bootstrap_release13(source, release13_manifest, args.shell, evidence / "release13", root, data,
                             agent=release9_consent_agent(args))
-        start_direct_runtime(evidence / "release12")
+        start_direct_runtime(evidence / "release13")
         journey.wait_ready(selected_data_root(root, data))
         old_path, old_data, old = journey.installation(root, data)
-        if old_data != data or installed_release(old) != RELEASE12_RELEASE:
-            raise RuntimeError(f"Pinned Release-12 install did not select release {RELEASE12_RELEASE}")
-        old_tuple = journey.selected_tuple(journey.read_json(release12_manifest), old)
+        if old_data != data or installed_release(old) != RELEASE13_RELEASE:
+            raise RuntimeError(f"Pinned Release-13 install did not select release {RELEASE13_RELEASE}")
+        old_tuple = journey.selected_tuple(journey.read_json(release13_manifest), old)
         old_service = journey.assert_direct_service_ownership(root, data)
-        baseline = evidence / "release12-api-seed"
+        baseline = evidence / "release13-api-seed"
         journey.verify("observe", old_path, data, baseline)
-        project = "tst-release12-update"
+        project = "tst-release13-update"
         keys = live_workspace(root, data, baseline, "seed", {
-            "project": project, "generation": "release12", "task_id": None, "create_project": True})
-        keys["task_id"] = task_after_update(old, baseline / "release12-task", project)
+            "project": project, "generation": "release13", "task_id": None, "create_project": True})
+        keys["task_id"] = task_after_update(old, baseline / "release13-task", project)
         before = live_workspace(root, data, baseline, "snapshot", keys)
         old_health = journey.healthy(data)
-        result["checks"]["release12_install"] = "pass"
+        result["checks"]["release13_install"] = "pass"
 
-        # 2. The candidate's public update command, from the Release 12 install.
+        # 2. The candidate's public update command, from the Release 13 install.
         update = result["update"] = candidate_update(app, candidate_path, args.shell, evidence / "update",
                                                      root, data)
         receipt = update["receipt"] = run_receipt(data)
         if update["exit_code"] != 0:
             raise RuntimeError(f"Candidate install --update exited {update['exit_code']} "
-                               f"from the Release {RELEASE12_RELEASE} install")
+                               f"from the Release {RELEASE13_RELEASE} install")
         result["checks"]["update_exit"] = "pass"
         version_path, selected_data, version = journey.installation(root, data)
         if installed_release(version) != target_release:
@@ -1577,20 +1577,20 @@ def execute_release12_then_update(args, root: Path, data: Path, evidence: Path, 
         if live_release != target_release:
             raise RuntimeError(f"The live Runtime reports release {live_release}, not the candidate release {target_release}")
         if new_health["runtime_instance_id"] == old_health["runtime_instance_id"]:
-            raise RuntimeError(f"Candidate update retained the Release {RELEASE12_RELEASE} Runtime instance")
+            raise RuntimeError(f"Candidate update retained the Release {RELEASE13_RELEASE} Runtime instance")
         live_owners = live_runtime_owners(data)
         result["live_runtimes"] = live_owners
         if [owner["data_root"] for owner in live_owners] != [str(active_data)]:
             raise RuntimeError(f"Exactly one live Runtime (at {active_data}) is required after the update: {live_owners}")
         result["checks"]["one_runtime"] = "pass"
-        result["release_transition"] = {"from": RELEASE12_RELEASE, "to": target_release,
+        result["release_transition"] = {"from": RELEASE13_RELEASE, "to": target_release,
                                         "source": "candidate-install-update"}
         result["checks"]["release"] = "pass"
         new_service = journey.assert_direct_service_ownership(root, selected_data)
-        result["service_transition"] = {"release12": old_service, "candidate": new_service}
+        result["service_transition"] = {"release13": old_service, "candidate": new_service}
         result["service_manager"] = new_service
         result["health_transition"] = {
-            "release12_runtime_instance_id": old_health["runtime_instance_id"],
+            "release13_runtime_instance_id": old_health["runtime_instance_id"],
             "candidate_runtime_instance_id": new_health["runtime_instance_id"],
             "candidate_live_release": live_release,
         }
@@ -1601,7 +1601,7 @@ def execute_release12_then_update(args, root: Path, data: Path, evidence: Path, 
         result["import_origins"] = (journey.read_json(evidence / "verify-install.json").get("details") or {}).get("origin.imports")
 
         # 3. The seeded user data survives the update exactly.
-        after = live_workspace(root, active_data, evidence / "release12-api-observe", "snapshot", keys)
+        after = live_workspace(root, active_data, evidence / "release13-api-observe", "snapshot", keys)
         assert_preserved(before, after)
         semantic_keys = ("project", "timeline", "preferences", "task", "cas_sha256")
         before_sha = semantic_digest({k: before[k] for k in semantic_keys})
@@ -1615,7 +1615,7 @@ def execute_release12_then_update(args, root: Path, data: Path, evidence: Path, 
         settled_sentinel = journey.sentinel_observation(sentinel, birth)
         result["sentinel"]["at_settlement"] = settled_sentinel
         if not settled_sentinel["alive"]:
-            raise RuntimeError("Unrelated sentinel did not survive the Release 12 install and the update")
+            raise RuntimeError("Unrelated sentinel did not survive the Release 13 install and the update")
         result["checks"]["unrelated_sentinel"] = "pass"
         result["status"] = "pass"
     except Exception as exc:
@@ -2041,18 +2041,18 @@ def execute_owned(args, root: Path, data: Path, evidence: Path, sentinel, birth:
         if sys.platform == "win32":
             raise RuntimeError("Windows release-0 upgrade only admits the narrowed refusal leg")
         return execute_release11_then_update(args, root, data, evidence, sentinel, birth)
-    if args.leg == RELEASE12_LEG:
+    if args.leg == RELEASE13_LEG:
         if sys.platform == "win32":
-            # Windows starts from the published Release 12 on its one admitted job only; the
-            # leg itself lives in journey_windows_r12_update (it needs the Windows helpers).
-            if getattr(args, "job_id", None) != RELEASE12_WINDOWS_JOB_ID:
-                raise RuntimeError(f"Release-12 update on Windows is only admitted for {RELEASE12_WINDOWS_JOB_ID}")
+            # Windows starts from the published Release 13 on its one admitted job only; the
+            # leg itself lives in journey_windows_r13_update (it needs the Windows helpers).
+            if getattr(args, "job_id", None) != RELEASE13_WINDOWS_JOB_ID:
+                raise RuntimeError(f"Release-13 update on Windows is only admitted for {RELEASE13_WINDOWS_JOB_ID}")
             if __package__:
-                from . import journey_windows_r12_update
+                from . import journey_windows_r13_update
             else:
-                import journey_windows_r12_update
-            return journey_windows_r12_update.execute(args, root, data, evidence, sentinel, birth)
-        return execute_release12_then_update(args, root, data, evidence, sentinel, birth)
+                import journey_windows_r13_update
+            return journey_windows_r13_update.execute(args, root, data, evidence, sentinel, birth)
+        return execute_release13_then_update(args, root, data, evidence, sentinel, birth)
     if args.leg == AUTOSTART_LEG:
         if sys.platform == "win32":
             raise RuntimeError("Windows release-0 upgrade only admits the narrowed refusal leg")

@@ -29,7 +29,7 @@ if __package__:
         RELEASE1_MATRIX,
         RELEASE1_AUTOMATIC_MATRIX,
         RELEASE11_UPDATE_MATRIX,
-        RELEASE12_UPDATE_MATRIX,
+        RELEASE13_UPDATE_MATRIX,
         RELEASE1_1_DEFERRED_PINOKIO_MATRIX,
         RELEASE1_1_PINOKIO_MATRIX,
     )
@@ -53,7 +53,7 @@ else:
             RELEASE1_MATRIX,
             RELEASE1_AUTOMATIC_MATRIX,
             RELEASE11_UPDATE_MATRIX,
-            RELEASE12_UPDATE_MATRIX,
+            RELEASE13_UPDATE_MATRIX,
             RELEASE1_1_DEFERRED_PINOKIO_MATRIX,
             RELEASE1_1_PINOKIO_MATRIX,
         )
@@ -76,7 +76,7 @@ else:
             RELEASE1_MATRIX,
             RELEASE1_AUTOMATIC_MATRIX,
             RELEASE11_UPDATE_MATRIX,
-            RELEASE12_UPDATE_MATRIX,
+            RELEASE13_UPDATE_MATRIX,
             RELEASE1_1_DEFERRED_PINOKIO_MATRIX,
             RELEASE1_1_PINOKIO_MATRIX,
         )
@@ -104,21 +104,21 @@ RELEASE11_IDENTITY = {
 }
 RELEASE11_CHECKS = ("release11_install", "update_exit", "run_receipt", "release", "one_runtime", "service",
                     "health", "semantic_data", "task_settled", "unrelated_sentinel")
-RELEASE12_LEG = "release12-then-update"
-RELEASE12_APP_COMMIT = "ae4da5d76bfcd9ef87fd117d4cbf02f4fe998bea"
-RELEASE12_RELEASE = 12
-RELEASE12_IDENTITY = {
-    "agent": "0e1543e0da2215db9cb3320cfd1083174c3c62a9",
-    "runtime": "42ae24aff8d2cb854f874ce134161077a3ba3641",
+RELEASE13_LEG = "release13-then-update"
+RELEASE13_APP_COMMIT = "de7dd1e668aa6dcf3cbce013c701fa7c76615f99"
+RELEASE13_RELEASE = 13
+RELEASE13_IDENTITY = {
+    "agent": "9814193a73f606719e81883a8be197d27dd361d4",
+    "runtime": "6855dfa8df65cf8ae4c002b57134d6505493c17c",
     "schema_digest": "sha256:9628bb5fd6e1dbbec392dd39f2e01031622dcf52d7ccff7cd1f0ad10743dcb1c",
 }
-RELEASE12_CHECKS = tuple("release12_install" if name == "release11_install" else name for name in RELEASE11_CHECKS)
-# The Windows release12-then-update row seeds a project and a workspace marker through the installed command
+RELEASE13_CHECKS = tuple("release13_install" if name == "release11_install" else name for name in RELEASE11_CHECKS)
+# The Windows release13-then-update row seeds a project and a workspace marker through the installed command
 # line instead of the live API, and adds astrid doctor and a dry-run generation. Its run receipt is read
 # where the Windows installer writes it and is checked when present.
-RELEASE12_WINDOWS_CHECKS = ("release12_install", "update_exit", "release", "one_runtime", "service", "health",
+RELEASE13_WINDOWS_CHECKS = ("release13_install", "update_exit", "release", "one_runtime", "service", "health",
                             "doctor", "dry_run", "data_marker", "unrelated_sentinel")
-RELEASE12_WINDOWS_DRY_RUN_CAPABILITY = "generation.generate_speech"
+RELEASE13_WINDOWS_DRY_RUN_CAPABILITY = "generation.generate_speech"
 AUTOSTART_LEG = "fresh-install-autostart-off"
 AUTOSTART_CHECKS = ("install_exit", "selection_autostart_false", "update_status_autostart_off",
                     "post_update_refused_unchanged", "autostart_card_capture", "service", "health",
@@ -360,7 +360,7 @@ def _windows_fresh_update_errors(update, job_id):
 # The receipt kind each Release-1 matrix leg writes. The R0 handoff leg and the
 # release11-then-update leg write their own kinds; every other leg writes the shared lifecycle receipt.
 RELEASE1_RECEIPT_KINDS = {"r0-handoff-then-update": "r0-handoff-then-update",
-                          RELEASE11_LEG: RELEASE11_LEG, RELEASE12_LEG: RELEASE12_LEG, AUTOSTART_LEG: AUTOSTART_LEG}
+                          RELEASE11_LEG: RELEASE11_LEG, RELEASE13_LEG: RELEASE13_LEG, AUTOSTART_LEG: AUTOSTART_LEG}
 RELEASE1_DEFAULT_RECEIPT_KIND = "release1-installed-lifecycle"
 
 
@@ -369,7 +369,7 @@ def release1_receipt_kind(contract):
     return RELEASE1_RECEIPT_KINDS.get(contract.get("leg", "fresh-install"), RELEASE1_DEFAULT_RECEIPT_KIND)
 
 
-UPGRADE_LEGS = frozenset({"r0-handoff-then-update", RELEASE9_LEG, RELEASE11_LEG, RELEASE12_LEG})
+UPGRADE_LEGS = frozenset({"r0-handoff-then-update", RELEASE9_LEG, RELEASE11_LEG, RELEASE13_LEG})
 
 
 def _upgrade_release_errors(job_id, contract, row, release):
@@ -511,8 +511,8 @@ def _release11_row_errors(job_id, row, target_release):
     return errors
 
 
-def _release12_windows_errors(job_id, row):
-    """What only the Windows release12-then-update row records: the doctor, the dry run and the seeded data."""
+def _release13_windows_errors(job_id, row):
+    """What only the Windows release13-then-update row records: the doctor, the dry run and the seeded data."""
     errors = []
     doctor = row.get("doctor")
     if (not isinstance(doctor, dict) or doctor.get("exit_code") != 0 or doctor.get("ok") is not True):
@@ -520,7 +520,7 @@ def _release12_windows_errors(job_id, row):
     dry_run = row.get("dry_run")
     if (not isinstance(dry_run, dict) or dry_run.get("exit_code") != 0 or dry_run.get("ok") is not True
             or dry_run.get("dry_run") is not True
-            or dry_run.get("capability_id") != RELEASE12_WINDOWS_DRY_RUN_CAPABILITY):
+            or dry_run.get("capability_id") != RELEASE13_WINDOWS_DRY_RUN_CAPABILITY):
         errors.append(f"{job_id}: the dry-run generation did not run as a clean dry run")
     marker = row.get("data_marker")
     if (not isinstance(marker, dict) or marker.get("survived") is not True
@@ -537,8 +537,8 @@ def _release12_windows_errors(job_id, row):
     return errors
 
 
-def _release12_row_errors(job_id, row, target_release, os_name="linux"):
-    """The release12-then-update row's four assertions, each read from the leg's own receipt fields.
+def _release13_row_errors(job_id, row, target_release, os_name="linux"):
+    """The release13-then-update row's four assertions, each read from the leg's own receipt fields.
 
     1. the installed and live release match the candidate, from the pinned source;
     2. the candidate's run receipt says updated, exit 0, still and target match;
@@ -551,18 +551,18 @@ def _release12_row_errors(job_id, row, target_release, os_name="linux"):
     """
     windows = os_name == "windows"
     errors = []
-    source = row.get("release12_source")
-    if (not isinstance(source, dict) or source.get("app_commit") != RELEASE12_APP_COMMIT
-            or source.get("identity") != RELEASE12_IDENTITY):
-        errors.append(f"{job_id}: pinned release-12 source identity is absent or wrong")
+    source = row.get("release13_source")
+    if (not isinstance(source, dict) or source.get("app_commit") != RELEASE13_APP_COMMIT
+            or source.get("identity") != RELEASE13_IDENTITY):
+        errors.append(f"{job_id}: pinned release-13 source identity is absent or wrong")
     transition = row.get("release_transition")
     health = row.get("health_transition") if isinstance(row.get("health_transition"), dict) else {}
-    if (not isinstance(transition, dict) or transition.get("from") != RELEASE12_RELEASE
+    if (not isinstance(transition, dict) or transition.get("from") != RELEASE13_RELEASE
             or transition.get("to") != target_release
             or transition.get("source") != "candidate-install-update"
             or health.get("candidate_live_release") != target_release):
         errors.append(f"{job_id}: installed release is not {target_release} "
-                      f"(release {RELEASE12_RELEASE} to {target_release}, live identity)")
+                      f"(release {RELEASE13_RELEASE} to {target_release}, live identity)")
     update = row.get("update")
     receipt = update.get("receipt") if isinstance(update, dict) else None
     receipt_ok = (isinstance(receipt, dict) and receipt.get("kind") == "updated" and receipt.get("exit_code") == 0
@@ -585,11 +585,11 @@ def _release12_row_errors(job_id, row, target_release, os_name="linux"):
                 or semantic.get("before_sha256") != semantic.get("after_sha256")):
             errors.append(f"{job_id}: seeded user data preservation is absent or unequal")
     checks = row.get("checks") if isinstance(row.get("checks"), dict) else {}
-    for check in (RELEASE12_WINDOWS_CHECKS if windows else RELEASE12_CHECKS):
+    for check in (RELEASE13_WINDOWS_CHECKS if windows else RELEASE13_CHECKS):
         if checks.get(check) != "pass":
             errors.append(f"{job_id}: {check} assertion did not pass")
     if windows:
-        errors.extend(_release12_windows_errors(job_id, row))
+        errors.extend(_release13_windows_errors(job_id, row))
     return errors
 
 
@@ -722,8 +722,8 @@ def _release1_row_errors(candidate, contract, row):
             errors.extend(_release9_row_errors(job_id, row))
         elif contract.get("leg") == RELEASE11_LEG:
             errors.extend(_release11_row_errors(job_id, row, candidate.get("release")))
-        elif contract.get("leg") == RELEASE12_LEG:
-            errors.extend(_release12_row_errors(job_id, row, candidate.get("release"), contract["os"]))
+        elif contract.get("leg") == RELEASE13_LEG:
+            errors.extend(_release13_row_errors(job_id, row, candidate.get("release"), contract["os"]))
         elif not fresh:
             if row.get("scenario") != "r0-handoff-then-update":
                 errors.append(f"{job_id}: direct receipt did not run the r0-handoff-then-update leg")

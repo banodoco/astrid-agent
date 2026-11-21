@@ -50,18 +50,18 @@ RELEASE11_UPDATE_MATRIX: Final = (
     {"job_id": "direct-macos-r11-update", "mode": "direct", "runner": "macos-15", "shell": "sh", "os": "macos", "leg": "release11-then-update"},
 )
 RELEASE11_UPDATE_JOB_IDS: Final = tuple(row["job_id"] for row in RELEASE11_UPDATE_MATRIX)
-# The release12-then-update rows start from the served Release 12, installed plainly from its pinned
+# The release13-then-update rows start from the served Release 13, installed plainly from its pinned
 # App commit, and take the candidate's install --update to its manifest release. The Windows row is the
-# only Windows row that starts from a published release: it installs Release 12 through install.ps1 and
+# only Windows row that starts from a published release: it installs Release 13 through install.ps1 and
 # updates through the candidate's install.ps1 --update, then also checks astrid doctor and a dry-run
-# generation (see journey_windows_r12_update.py).
-RELEASE12_WINDOWS_JOB_ID: Final = "direct-windows-r12-update"
-RELEASE12_UPDATE_MATRIX: Final = (
-    {"job_id": "direct-linux-r12-update", "mode": "direct", "runner": "ubuntu-24.04", "shell": "sh", "os": "linux", "leg": "release12-then-update"},
-    {"job_id": "direct-macos-r12-update", "mode": "direct", "runner": "macos-15", "shell": "sh", "os": "macos", "leg": "release12-then-update"},
-    {"job_id": RELEASE12_WINDOWS_JOB_ID, "mode": "direct", "runner": "windows-2022", "shell": "powershell.exe", "os": "windows", "leg": "release12-then-update"},
+# generation (see journey_windows_r13_update.py).
+RELEASE13_WINDOWS_JOB_ID: Final = "direct-windows-r13-update"
+RELEASE13_UPDATE_MATRIX: Final = (
+    {"job_id": "direct-linux-r13-update", "mode": "direct", "runner": "ubuntu-24.04", "shell": "sh", "os": "linux", "leg": "release13-then-update"},
+    {"job_id": "direct-macos-r13-update", "mode": "direct", "runner": "macos-15", "shell": "sh", "os": "macos", "leg": "release13-then-update"},
+    {"job_id": RELEASE13_WINDOWS_JOB_ID, "mode": "direct", "runner": "windows-2022", "shell": "powershell.exe", "os": "windows", "leg": "release13-then-update"},
 )
-RELEASE12_UPDATE_JOB_IDS: Final = tuple(row["job_id"] for row in RELEASE12_UPDATE_MATRIX)
+RELEASE13_UPDATE_JOB_IDS: Final = tuple(row["job_id"] for row in RELEASE13_UPDATE_MATRIX)
 # The direct matrix includes fresh installs, handoffs, and pinned release update rows.
 # The fresh-install-autostart-off rows are a real fresh install from the candidate tuple with the
 # autostart choice off, on Linux and macOS. They check the selection record, the Runtime's own update
@@ -71,7 +71,7 @@ RELEASE1_AUTOSTART_MATRIX: Final = (
     {"job_id": "direct-macos-autostart-off", "mode": "direct", "runner": "macos-15", "shell": "sh", "os": "macos", "leg": "fresh-install-autostart-off"},
 )
 RELEASE1_MATRIX: Final = (*_RELEASE1_DIRECT_LEGACY, *RELEASE1_DIRECT_FRESH_MATRIX,
-                          *RELEASE9_INSTALL_MATRIX, *RELEASE11_UPDATE_MATRIX, *RELEASE12_UPDATE_MATRIX, *RELEASE1_AUTOSTART_MATRIX)
+                          *RELEASE9_INSTALL_MATRIX, *RELEASE11_UPDATE_MATRIX, *RELEASE13_UPDATE_MATRIX, *RELEASE1_AUTOSTART_MATRIX)
 # An automatic push or schedule (no row input) runs the five rows that existed before the
 # release9 and release11 legs. row=direct runs all of RELEASE1_MATRIX.
 RELEASE1_AUTOMATIC_MATRIX: Final = (*_RELEASE1_DIRECT_LEGACY, *RELEASE1_DIRECT_FRESH_MATRIX)
