@@ -154,6 +154,53 @@ def _timeline_clip(raw: Mapping[str, Any], *, path: str) -> dict[str, Any]:
     return result
 
 
+def _namespace_projected_clip_extensions(clip: dict[str, Any]) -> None:
+    """Move authored sibling extensions from child or parent reader rows.
+
+    This is applied only to detached reader projections. The authored row (and
+    values nested inside it) remain untouched. Selector and reserved fields
+    stay visible at the top level so malformed inputs still fail validation.
+    """
+    from .banodoco_schema import _CLIP_ALLOWED
+    from .clip_fields import reserved_names
+
+    aliases = {
+        "clip_type", "asset_id", "from_ms", "to_ms", "at_ms", "duration_ms",
+        "from_", "type",
+    }
+    selectors = {"asset", "asset_id", "media_id", "object_id"}
+    reserved = {"kind", "start", "duration", "file", "url", "path"}
+    # Runtime's reader_view promotes ``rect`` into canonical clip geometry
+    # before validating. Keep it at the clip level so that promotion can run.
+    keep = set(_CLIP_ALLOWED) | aliases | set(reserved_names()) | selectors | reserved | {"rect"}
+    app = clip.get("app")
+    if "app" in clip and not isinstance(app, dict):
+        # Preserve invalid authored app values so the strict reader rejects them.
+        return
+    extensions = {key: clip.pop(key) for key in list(clip) if key not in keep}
+    if not extensions:
+        return
+
+    if app is None:
+        app = {}
+        clip["app"] = app
+    namespace = "astrid_opaque"
+    suffix = 2
+    while namespace in app:
+        namespace = f"astrid_opaque_{suffix}"
+        suffix += 1
+    app[namespace] = extensions
+
+
+def _normalize_reader_clip(clip: dict[str, Any]) -> None:
+    """Apply safe legacy defaults to a detached reader-facing clip."""
+    if clip.get("params", object()) is None:
+        # Historical null params carried no entries and mean the empty object
+        # to readers; raw validators still reject null at their entry points.
+        clip["params"] = {}
+    _namespace_projected_clip_extensions(clip)
+
+
 def _duration(clip: Mapping[str, Any], *, path: str) -> float:
     try:
         return clip_timeline_duration(clip)
@@ -438,6 +485,7 @@ def _project_clip(
     path: str,
 ) -> dict[str, Any] | None:
     clip = _timeline_clip(raw, path=path)
+    _normalize_reader_clip(clip)
     relative_at = _number(clip.get("at", 0), f"{path}.at", default=0.0)
     _placement_speed(occurrence_speed, path=f"{path}.occurrence_speed")
     is_audio = _audio_clip(clip, track_definitions=track_definitions, revision=revision)
@@ -661,6 +709,11 @@ def project_runtime_parent_composition(
         copy.deepcopy(dict(_mapping(clip, f"parent_revision.payload.clips[{index}]")))
         for index, clip in enumerate(ordinary_clips)
     ]
+    # Parent rows are canonical authored data too, but only this renderer
+    # projection may tuck opaque sibling extensions away from Runtime's strict
+    # reader shape. Raw reader validation remains strict at every other entry.
+    for clip in config["clips"]:
+        _normalize_reader_clip(clip)
     if not isinstance(config.get("tracks", []), list):
         raise ShotCompositionProjectionError("parent_revision.payload.config.tracks must be a list")
     assets = registry.setdefault("assets", {})
