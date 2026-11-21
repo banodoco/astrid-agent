@@ -32,6 +32,8 @@ def stage(result: dict, result_path: Path, name: str):
         yield entry
     except Exception as error:
         entry.update(state="fail", error=f"{type(error).__name__}: {error}")
+        if isinstance(error, jumps._Fix17ChildFailure):
+            entry.update(error.receipt())
         journey.write_json(result_path, result)
         raise
     if entry["state"] == "running":
@@ -84,15 +86,19 @@ def _browser(config, *, app, expected_app, dist, release_app, manifest, python, 
         config_path = Path(private) / "input.json"
         journey.write_json(config_path, {**config, "origin": hosted.ORIGIN, "result": str(result_path),
                                         "spki": server.leaf_spki, "manifestSha256": manifest_sha})
+        argv = ["node", journey.ROOT / "scripts/journey_required_update_browser.mjs", config_path]
         try:
-            journey.run(["node", journey.ROOT / "scripts/journey_required_update_browser.mjs", config_path],
-                        evidence / "browser.log", timeout=420)
-        except RuntimeError:
-            if result_path.is_file():
-                failure = journey.read_json(result_path)
-                raise RuntimeError(f"{config['mode']} browser: {failure.get('error', 'failed')}") from None
-            raise
-        observed = journey.read_json(result_path)
+            jumps._fix17_subprocess(argv, evidence / "browser-stdout.log", evidence / "browser-stderr.log",
+                                    timeout=420)
+        except jumps._Fix17ChildFailure as error:
+            if not result_path.is_file():
+                raise
+            observed = journey.read_json(result_path)
+            if observed.get("status") != "fail" or observed.get("mode") != config["mode"]:
+                raise
+            observed.update(error.receipt())
+        else:
+            observed = journey.read_json(result_path)
         if observed.get("status") not in {"pass", "fail"} or observed.get("mode") != config["mode"]:
             raise RuntimeError("Hosted App did not return a result for " + config["mode"])
         hits = server.hits()
