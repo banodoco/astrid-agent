@@ -139,7 +139,7 @@ def test_public_generate_audio_uses_audio_parser_and_admits_runpod_sfx(
     assert gateway.main(["generate", "audio", "--help"]) == 0
     help_output = capsys.readouterr().out
     # Plan 59 adds transcription and wraps the help line (c76fea09b).
-    assert "--mode {music,tts,sfx,transcribe}" in " ".join(help_output.split())
+    assert "--mode {music,tts,sfx}" in " ".join(help_output.split())
     assert "generation history" not in help_output
 
     calls = []

@@ -3,7 +3,6 @@ import hashlib
 import io
 import json
 import zipfile
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -124,34 +123,41 @@ def test_run_import_refuses_unproven_identity(monkeypatch, change):
     assert client.document is None
 
 
-def test_run_and_from_run_commands_parse():
+def test_run_refuses_and_from_run_import_parses(capsys):
     from astrid.core.cli.domain_timelines import build_parser
     parser = build_parser(None)
-    run = parser.parse_args(['transcripts', 'run', 'sha256:' + 'a' * 64, '--project', 'p', '--placement', 'managed'])
-    assert run.placement == 'managed'
+    with pytest.raises(SystemExit) as caught:
+        parser.parse_args(['transcripts', 'run', 'sha256:' + 'a' * 64, '--project', 'p', '--placement', 'managed'])
+    assert caught.value.code == 2
+    assert 'audio transcription is unavailable in this release' in capsys.readouterr().err
     imp = parser.parse_args(['transcripts', 'import', 'sha256:' + 'a' * 64, '--project', 'p', '--from-run', 'run-1'])
     assert imp.file is None and imp.from_run == 'run-1'
 
 
-def test_run_command_stores_stubbed_generation(monkeypatch, capsys):
-    import astrid.core.media as media
-    import astrid.sdk.transcript_run as module
+def test_run_refuses_and_file_import_preserves_word_projection(monkeypatch, capsys, tmp_path):
     import astrid.sdk.generation as generation
     from astrid.core.cli.domain_timelines import build_parser
     import astrid.packs.timeline.cli  # install the product's execution handlers
-    monkeypatch.setattr(media, 'ffprobe_duration_seconds', lambda _: 2)
+    from astrid.sdk.timeline.words import default_source_order
+
     client = Client()
-    monkeypatch.setattr(module, '_expected_workflow_digest', lambda _: client.workflow_digest)
-    seen = {}
-    def audio(**kwargs):
-        seen.update(kwargs)
-        assert Path(kwargs['audio_ref']).read_bytes() == b'source media'
-        return {'task_id': 'task-1'}
-    monkeypatch.setattr(generation, 'generate', SimpleNamespace(audio=audio))
-    args = build_parser(client).parse_args(['transcripts', 'run', client.media_id, '--project', 'p',
-                                            '--placement', 'managed'])
+
+    def unexpected(**_kwargs):
+        pytest.fail("the retired command must not dispatch generation")
+
+    monkeypatch.setattr(generation, 'generate', SimpleNamespace(audio=unexpected))
+    parser = build_parser(client)
+    with pytest.raises(SystemExit) as caught:
+        parser.parse_args(['transcripts', 'run', client.media_id, '--project', 'p', '--placement', 'managed'])
+    assert caught.value.code == 2
+    assert 'audio transcription is unavailable in this release' in capsys.readouterr().err
+    assert client.document is None
+
+    words = tmp_path / 'words.json'
+    words.write_text(json.dumps([[0, 1, 'hello']]), encoding='utf-8')
+    args = parser.parse_args(['transcripts', 'import', client.media_id, str(words), '--project', 'p',
+                              '--source', default_source_order()[0]])
     assert args.handler(args) == 0
-    assert seen['entry'] == 'transcription' and seen['placement'] == 'managed'
     assert client.document['content']['media_id'] == client.media_id
     capsys.readouterr()
     from astrid.sdk.timeline_checkout import Checkout
@@ -166,23 +172,7 @@ def test_run_command_stores_stubbed_generation(monkeypatch, capsys):
     assert 'source 0.000–1.000s  hello  timeline 10.000–10.500s [clip-1]' in capsys.readouterr().out
 
 
-def test_real_entry_reconstructs_admitted_workflow(monkeypatch, tmp_path):
-    """The verifier rebuilds the same bundle generation emits for this asset."""
+def test_historical_transcription_entry_is_absent_from_generation():
     from astrid.core.generation import entries
-    from astrid.packs.vibecomfy.production_engine import _workflow_content_digest
-    from astrid.sdk.transcript_run import _expected_workflow_digest
-    from vibecomfy.workflow_bundle import emit_bundle
 
-    media = tmp_path / 'source.wav'
-    media.write_bytes(b'source media')
-    entry = entries.find_entry('transcription')
-    workflow, plan, _ = entries.prepare(entries.bundle_path(entry), target_client=None,
-        mode='transcribe', binds=entry.get('binds'), defaults=entry.get('defaults'),
-        values={'audio_ref': str(media)})
-    assert not plan['unbound']
-    bundle = tmp_path / 'workflow.py'
-    emit_bundle(workflow, bundle, {'operation': 'authored'})
-    original = entries.bundle_path(entry)
-    source = original.with_name('source.json')
-    (tmp_path / 'source.json').write_bytes((source if source.is_file() else original).read_bytes())
-    assert _expected_workflow_digest(media) == _workflow_content_digest(bundle)
+    assert entries.find_entry('transcription') is None
