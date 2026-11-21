@@ -305,7 +305,7 @@ def test_journey_resolves_companion_refs_from_durable_defaults():
     assert "ref: ${{ steps.runtime-ref.outputs.ref }}" in workflow
     assert "runtime_ref:" not in workflow
     assert "ref: ${{ steps.app-ref.outputs.ref }}" in workflow
-    assert '{ "main" }' in workflow
+    assert '{ "release/14/main" }' in workflow
     assert "^[0-9a-fA-F]{40}$" in workflow
     assert "git -C journey-app rev-parse HEAD" in workflow
     assert "default: windows/task-host" not in workflow
