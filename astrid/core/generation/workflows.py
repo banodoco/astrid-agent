@@ -33,7 +33,11 @@ class InputRequirements:
 
 @dataclass(frozen=True)
 class RemoteBuildTransport:
-    """Entry inputs, a managed source, and idempotency fields for a worker."""
+    """Entry inputs, a managed source, and idempotency fields for a worker.
+
+    The descriptor must match one returned by the current build's successful
+    controller publication callback.
+    """
 
     inputs: Mapping[str, Any]
     descriptor: Mapping[str, Any]

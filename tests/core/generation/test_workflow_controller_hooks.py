@@ -213,3 +213,63 @@ def test_controller_hook_matches_the_discovered_pack(fake_workflow_pack, tmp_pat
     with pytest.raises(ValueError, match="workflow input inspection is unavailable"):
         entries.inspect_entry_inputs(overlapping_entry, {}, registry=fake_workflow_pack)
     assert not entries.publishes_source(overlapping_entry, registry=fake_workflow_pack)
+
+
+@pytest.mark.parametrize("publication", ["missing", "different", "modified", "matching"])
+def test_remote_transport_requires_its_builds_published_source(
+    fake_workflow_pack, monkeypatch, tmp_path, publication,
+):
+    from astrid.core.generation import preflight
+    from astrid.sdk import generation
+    from astrid.sdk.exceptions import CapabilityInvocationError
+
+    monkeypatch.setattr(ExtensionRegistry, "load", lambda _: fake_workflow_pack)
+    monkeypatch.setattr(preflight, "select_generation_target", lambda *args, **kwargs: None)
+    monkeypatch.setattr(preflight, "require_generation_target_readiness", lambda *args, **kwargs: None)
+    actual = {"digest": "sha256:" + "a" * 64, "sha256": "a" * 64, "bytes": 5, "filename": "prepared.mp4"}
+    calls = []
+    real_hooks = entries.entry_hooks
+
+    def import_member(path, controls):
+        assert path.name == "prepared.mp4"
+        assert controls["project"] == "example-project"
+        calls.append(path)
+        return dict(actual)
+
+    opened = tmp_path / "opened.mp4"
+    client = SimpleNamespace(media=SimpleNamespace(open=lambda *a, **k: SimpleNamespace(
+        ok=True, data={"local_path": str(opened)},
+    )))
+
+    def build(entry, values, job_dir, *, publish_source, **options):
+        if publication == "missing":
+            descriptor = dict(actual)
+        else:
+            hooks = real_hooks(entry, registry=fake_workflow_pack)
+            result = hooks["build"](values, {}, job_dir, publish_source=publish_source)
+            descriptor = result["transport"].remote.descriptor
+        if publication == "different":
+            descriptor.update(digest="sha256:" + "b" * 64, sha256="b" * 64)
+        if publication == "modified":
+            descriptor.update(bytes=10)
+        return {"transport": workflows.BuildTransport(
+            remote=workflows.RemoteBuildTransport({}, descriptor, {}),
+        )}
+
+    class ValidatedTransport(Exception):
+        pass
+
+    class BuildResult(dict):
+        def __getitem__(self, key):
+            assert key == "workflow"
+            raise ValidatedTransport
+
+    monkeypatch.setattr(generation, "_import_generation_member", import_member)
+    monkeypatch.setattr(entries, "build_entry", lambda *a, **k: BuildResult(build(*a, **k)))
+    error = (pytest.raises(ValidatedTransport) if publication == "matching"
+             else pytest.raises(CapabilityInvocationError, match="match a source published by this build"))
+    with error:
+        generation.GenerationFacade().video(
+            model="example", mode="v2v", placement="local", client=client, project="example-project",
+        )
+    assert len(calls) == (0 if publication == "missing" else 1)

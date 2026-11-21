@@ -128,7 +128,7 @@ def _state_dir(job_dir) -> Path:
 
 
 def inspect_inputs(inputs):
-    """Declare the controller's project media dependencies before placement."""
+    """Declare the controller's project media dependencies before build."""
     from astrid.core.generation.entries import read_file_map_document
     from astrid.core.generation.workflows import InputRequirements
     from astrid.sdk.exceptions import CapabilityValidationError

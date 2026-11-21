@@ -1154,7 +1154,7 @@ def _entry_contribution(entry: Mapping[str, Any], registry: Any = None) -> Any:
 def inspect_entry_inputs(
     entry: str | Mapping[str, Any] | None, inputs: Mapping[str, Any], *, registry: Any = None,
 ) -> InputRequirements | None:
-    """Inspect an explicit entry's inputs on the controller without a Runtime connection."""
+    """Inspect the selected entry's inputs on the controller without a Runtime connection."""
     if isinstance(entry, str):
         entry = find_entry(entry)
     if entry is None or not entry.get('inspect_inputs_declared'):
@@ -1168,7 +1168,14 @@ def inspect_entry_inputs(
     inspect_inputs = workflows.hook(registry, contribution, 'inspect_inputs')
     if inspect_inputs is None:
         raise ValueError(f"workflow input inspection is unavailable for entry {entry['id']!r}")
-    inspected = inspect_inputs(dict(inputs))
+    try:
+        inspected = inspect_inputs(dict(inputs))
+    except (ValueError, OSError) as exc:
+        if not callable(getattr(exc, 'astrid_error_fields', None)):
+            raise
+        from astrid.core.generation.preflight import generation_error
+
+        raise generation_error(exc) from exc
     if (not isinstance(inspected, workflows.InputRequirements)
             or not isinstance(inspected.handle_ids, tuple)
             or not all(isinstance(handle, str) and is_media_handle(handle) for handle in inspected.handle_ids)):

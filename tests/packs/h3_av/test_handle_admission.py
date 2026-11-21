@@ -146,3 +146,121 @@ def test_unresolvable_handle_refuses_before_executor_and_cleans_temp_assets(admi
     assert len(client.media.open_calls) == 1
     assert client.media.open_calls[0][:2] == (selected, source_digest)
     assert not client.media.open_calls[0][2].exists()
+
+
+@pytest.fixture(params=["automatic", "pinned"])
+def selected_video(monkeypatch, request):
+    """Use the public placement route through real default and contribution selection."""
+    from astrid.core.generation import preflight, settings
+
+    pins = {"video.v2v": {"pack": "h3_av", "entry": "h3"}} if request.param == "pinned" else {}
+    monkeypatch.setattr(settings, "read", lambda *args, **kwargs: settings.Snapshot({"defaults": pins}, 1, "runtime"))
+    monkeypatch.setattr(preflight, "select_generation_target", lambda *args, **kwargs: None)
+    monkeypatch.setattr(preflight, "require_generation_target_readiness", lambda *args, **kwargs: None)
+    return GenerationFacade().video
+
+
+@pytest.mark.parametrize("as_document", [False, True])
+def test_selected_video_rejects_reserved_handoff(selected_video, monkeypatch, tmp_path, as_document):
+    from astrid.core.generation import entries
+    from astrid.sdk.exceptions import CapabilityValidationError
+
+    source = _digest(b"source")
+    inputs = _inputs(tmp_path, source, "ordinary-mask", {"__astrid_h3_prepared__": "/caller/handoff.json"})
+    if as_document:
+        document = tmp_path / "assets.json"
+        document.write_text(json.dumps(inputs["asset_map"]), encoding="utf-8")
+        inputs["asset_map"] = str(document)
+
+    def build(*args, **kwargs):
+        pytest.fail("caller-supplied handoff reached build")
+
+    monkeypatch.setattr(entries, "build_entry", build)
+    with pytest.raises(CapabilityValidationError, match="handoff is reserved"):
+        selected_video(placement="local", mode="v2v", dry_run=True, **inputs)
+
+
+def test_selected_video_checks_project_custody_before_build(selected_video, monkeypatch, tmp_path):
+    from astrid.core.generation import entries
+    from astrid.sdk.media_handles import MediaHandleError
+
+    source = _digest(b"another-project")
+    client = _Client({})
+    inputs = _inputs(tmp_path, source, "ordinary-mask", {source: "/caller/source.mp4"})
+
+    def build(*args, **kwargs):
+        pytest.fail("caller path for a handle outside project custody reached build")
+
+    monkeypatch.setattr(entries, "build_entry", build)
+    with pytest.raises(MediaHandleError):
+        selected_video(placement="local", mode="v2v", dry_run=True,
+                       project="selected-project", client=client, **inputs)
+    assert client.media.show_calls == [("selected-project", source)]
+    assert client.media.open_calls == []
+
+
+def test_selected_video_stages_authoritative_handle_and_lineage(selected_video, monkeypatch, tmp_path):
+    from astrid.core.generation import entries
+    from astrid.sdk import generation
+
+    class ObservedPublication(Exception):
+        pass
+
+    source = _digest(b"source")
+    run_handle = "run:prior-run/primary#0"
+    prior = _digest(b"prior")
+    client = _Client({source: b"source", prior: b"prior"})
+    inputs = _inputs(tmp_path, source, run_handle, {source: "/caller/source.mp4",
+                                                   run_handle: "/caller/mask.png"})
+
+    def build(entry, values, job_dir, *, publish_source, **kwargs):
+        assert entry["id"] == "h3"
+        assert values["asset_map"]["existing"] == "/already/staged.png"
+        assert Path(values["asset_map"][source]).read_bytes() == b"source"
+        assert Path(values["asset_map"][run_handle]).read_bytes() == b"prior"
+        publish_source(job_dir / "prepared.mp4", source.removeprefix("sha256:"))
+        pytest.fail("publication stub must stop before execution")
+
+    def import_member(path, controls):
+        assert path.name == "prepared.mp4"
+        assert controls["project"] == "selected-project"
+        assert controls["idempotency_context"]["media_handles"] == [
+            {"port": "request.asset", "handle": source, "digest": source},
+            {"port": "request.asset", "handle": run_handle, "digest": prior,
+             "output": {"run_id": "prior-run", "task_id": "prior-task", "output_port": "primary", "ordinal": 0}},
+        ]
+        raise ObservedPublication
+
+    monkeypatch.setattr(entries, "build_entry", build)
+    monkeypatch.setattr(generation, "_import_generation_member", import_member)
+    with pytest.raises(ObservedPublication):
+        selected_video(placement="local", mode="v2v", project="selected-project", client=client, **inputs)
+    assert client.media.show_calls == [("selected-project", source), ("selected-project", prior)]
+    assert len(client.media.open_calls) == 2
+    assert all(not path.exists() for _, _, path in client.media.open_calls)
+
+
+@pytest.mark.parametrize("cli_target", ["local", "runpod"])
+def test_invalid_request_preserves_structured_error_in_sdk_and_cli(tmp_path, capsys, cli_target):
+    from astrid.core.generation import cli
+    from astrid.core.generation.preflight import GenerationReadinessError
+
+    request = tmp_path / "invalid.json"
+    request.write_text("{", encoding="utf-8")
+    with pytest.raises(GenerationReadinessError) as caught:
+        GenerationFacade().video(entry="h3", placement="local", request=str(request), dry_run=True)
+
+    inputs = tmp_path / "inputs.json"
+    inputs.write_text(json.dumps({"request": str(request)}), encoding="utf-8")
+    options = ["--dry-run"] if cli_target == "local" else []
+    assert cli.main(["video", "--entry", "h3", "--placement", cli_target, "--inputs-json", str(inputs),
+                     "--json", *options]) == 2
+    captured = capsys.readouterr()
+    sdk_error = caught.value.to_envelope()
+    issue, = sdk_error["issues"]
+    assert caught.value.fix == "Correct the request using its v1/v2 schema"
+    assert issue["code"] == "h3.request.invalid"
+    assert issue["message"].startswith("request is not valid JSON/YAML")
+    assert issue["details"] == {"field": "request", "fix": caught.value.fix}
+    assert json.loads(captured.out) == sdk_error
+    assert "Traceback" not in captured.err

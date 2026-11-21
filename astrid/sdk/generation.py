@@ -11,7 +11,7 @@ import builtins
 import importlib
 import json
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from functools import wraps
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Protocol
@@ -339,6 +339,65 @@ def _offline_invocation_preflight(workflow: Any, *, plan: Mapping[str, Any] | No
             from astrid.core.generation.preflight import generation_error
             raise generation_error(ValueError(f'{exc}. {LOCAL_REFUSAL_SCOPE}.'),
                                    code='input_rejected') from exc
+
+
+def _validate_workflow_build_inputs(entry: dict[str, Any], inputs: Mapping[str, Any]) -> dict[str, Any]:
+    from astrid.core.generation.entries import validate_inputs
+
+    values = dict(inputs)
+    if values.get('count') == 1 and not any(
+            'count' in (port['name'], *port.get('aliases', [])) for port in entry.get('inputs', [])):
+        values.pop('count')  # single-output admission was checked by the target route
+    return validate_inputs(entry, values)
+
+
+def _admit_workflow_inputs(
+    entry: str | Mapping[str, Any], inputs: Mapping[str, Any],
+    controls: Mapping[str, Any], job_dirs: list[Path],
+) -> dict[str, Any]:
+    """Apply a controller inspection hook and stage its project-owned dependencies."""
+    from tempfile import mkdtemp
+
+    from astrid.core.contracts.errors import AstridError
+    from astrid.core.generation.entries import inspect_entry_inputs, read_file_map_document
+    from astrid.sdk.media_handles import resolve_media_handle
+
+    try:
+        requirements = inspect_entry_inputs(entry, inputs)
+    except (ValueError, OSError) as exc:
+        if isinstance(exc, AstridError):
+            raise
+        raise CapabilityValidationError(str(exc)) from exc
+    if requirements is None or not requirements.handle_ids:
+        return {}
+
+    client = controls.get("client")
+    _, project = _resolve_invoke_destination(client=client, out=controls.get("out"),
+        project=controls.get("project"), project_root=controls.get("project_root"), dry_run=True)
+    if client is None or not project:
+        raise CapabilityValidationError("media handles require a project and Runtime connection")
+    context = dict(controls.get("idempotency_context") or {})
+    if "media_handles" in context:
+        raise CapabilityValidationError("media_handles is reserved for resolved media lineage")
+    port = requirements.file_map_port
+    supplied_map = read_file_map_document(inputs.get(port) or {}, allow_output_handles=True, allow_empty=True)
+    if not isinstance(supplied_map, Mapping):
+        raise CapabilityValidationError(f"{port} must be a readable map of asset IDs to files")
+    root = Path(mkdtemp(prefix="astrid-media-handles-"))
+    job_dirs.append(root)
+    mapping = dict(supplied_map)
+    lineage = []
+    for index, handle in enumerate(requirements.handle_ids):
+        descriptor, record = resolve_media_handle(client, project, handle)
+        lineage.append({"port": requirements.lineage_port, **record})
+        opened = client.media.open(project, descriptor["digest"], materialize=True,
+            cache_root=root / str(index), preview_bytes=0,
+            max_bytes=max(descriptor["size_bytes"], 1))
+        if not opened.ok:
+            raise CapabilityValidationError(f"cannot open media handle {handle!r}: {opened.error.message}")
+        mapping[handle] = opened.data["local_path"]
+    context["media_handles"] = lineage
+    return {"project": project, "inputs": {**inputs, port: mapping}, "idempotency_context": context}
 
 
 def offline_request_preflight(entry_id: str, *, mode: str | None, inputs: Mapping[str, Any]) -> None:
@@ -1513,48 +1572,11 @@ class GenerationFacade:
         """Run target generation and remove its controller job directories on exit."""
         import shutil
 
-        from astrid.core.generation.entries import inspect_entry_inputs, read_file_map_document
-
         job_dirs: list[Path] = []
         try:
-            inputs = kwargs.get("inputs") or {}
-            try:
-                requirements = inspect_entry_inputs(kwargs.get("model"), inputs)
-            except (ValueError, OSError) as exc:
-                raise CapabilityValidationError(str(exc)) from exc
-            if requirements is not None and requirements.handle_ids:
-                from tempfile import mkdtemp
-
-                from astrid.sdk.media_handles import resolve_media_handle
-
-                client = kwargs.get("client")
-                _, project = _resolve_invoke_destination(client=client, out=kwargs.get("out"),
-                    project=kwargs.get("project"), project_root=kwargs.get("project_root"), dry_run=True)
-                if client is None or not project:
-                    raise CapabilityValidationError("media handles require a project and Runtime connection")
-                context = dict(kwargs.get("idempotency_context") or {})
-                if "media_handles" in context:
-                    raise CapabilityValidationError("media_handles is reserved for resolved media lineage")
-                port = requirements.file_map_port
-                supplied_map = read_file_map_document(
-                    inputs.get(port) or {}, allow_output_handles=True, allow_empty=True)
-                if not isinstance(supplied_map, Mapping):
-                    raise CapabilityValidationError(f"{port} must be a readable map of asset IDs to files")
-                root = Path(mkdtemp(prefix="astrid-media-handles-"))
-                job_dirs.append(root)
-                mapping = dict(supplied_map)
-                lineage = []
-                for index, handle in enumerate(requirements.handle_ids):
-                    descriptor, record = resolve_media_handle(client, project, handle)
-                    lineage.append({"port": requirements.lineage_port, **record})
-                    opened = client.media.open(project, descriptor["digest"], materialize=True,
-                        cache_root=root / str(index), preview_bytes=0,
-                        max_bytes=max(descriptor["size_bytes"], 1))
-                    if not opened.ok:
-                        raise CapabilityValidationError(f"cannot open media handle {handle!r}: {opened.error.message}")
-                    mapping[handle] = opened.data["local_path"]
-                context["media_handles"] = lineage
-                kwargs.update(project=project, inputs={**inputs, port: mapping}, idempotency_context=context)
+            if kwargs.get("model") is not None:
+                kwargs.update(_admit_workflow_inputs(
+                    kwargs["model"], kwargs.get("inputs") or {}, kwargs, job_dirs))
             if not kwargs.get("dry_run") and kwargs.get("placement") is not None:
                 from astrid.core.generation import placement as placements
                 resolved = placements.validate_placement(placements.resolve_placement(
@@ -1740,7 +1762,7 @@ class GenerationFacade:
         backend = VibeComfyBackend(target_client=target_client)
 
         def import_member(path: Path) -> dict[str, Any]:
-            return _import_generation_member(path, controls)
+            return _import_generation_member(path, candidate_controls)
 
         source_ref = retained_source
 
@@ -1768,6 +1790,18 @@ class GenerationFacade:
                 except workflow_entries.MissingRequiredEntryInputsError as exc:
                     failures.append(f"{identifier}: {exc}")
                     continue
+            candidate_inputs = inputs
+            candidate_controls = dict(controls)
+            if model is None and source == "workflow" and candidate.get("inspect_inputs_declared"):
+                # Explicit models were admitted before target preflight. Implicit
+                # selection must inspect the exact contribution about to build.
+                try:
+                    candidate_inputs = _validate_workflow_build_inputs(candidate, inputs)
+                except ValueError as exc:
+                    raise generation_error(exc, code="input_rejected") from exc
+                admission = _admit_workflow_inputs(candidate, candidate_inputs, controls, _job_dirs)
+                candidate_inputs = admission.pop("inputs", candidate_inputs)
+                candidate_controls.update(admission)
             try:
                 assets = {}
                 transport = BuildTransport()
@@ -1776,7 +1810,7 @@ class GenerationFacade:
                     if source == "workflow" and candidate.get('hooks_declared'):
                         import tempfile
                         _job_dirs.append(Path(tempfile.mkdtemp(prefix='astrid-job-')))
-                        candidate = workflow_entries.attach_hooks(candidate, inputs, _job_dirs[-1])
+                        candidate = workflow_entries.attach_hooks(candidate, candidate_inputs, _job_dirs[-1])
                     runpod_engine = workflow_entries.runpod_engine(candidate if source == "workflow" else
                         workflow_entries.find_entry(template) if template else None)
                     pending_target = {'engine': runpod_engine, 'placement': 'runpod', 'state': 'pending_host_readiness'}
@@ -1813,32 +1847,36 @@ class GenerationFacade:
                             _job_dirs.append(Path(job_dir))
                         # Discovery checks only required ports. The selected hook must
                         # honor the same declared-controls contract as an explicit entry.
-                        build_inputs = dict(inputs)
-                        if build_inputs.get('count') == 1 and not any(
-                                'count' in (port['name'], *port.get('aliases', []))
-                                for port in candidate.get('inputs', [])):
-                            build_inputs.pop('count')  # single-output admission was checked above
-                        build_inputs = workflow_entries.validate_inputs(candidate, build_inputs)
+                        build_inputs = _validate_workflow_build_inputs(candidate, candidate_inputs)
                         build_options: dict[str, Any] = {}
+                        published_sources: list[dict[str, Any]] = []
                         if not dry_run and workflow_entries.publishes_source(candidate):
                             def publish_source(path: Path, expected: str) -> tuple[Path, dict[str, Any]]:
                                 descriptor = import_member(path)
                                 if descriptor['sha256'] != expected:
                                     raise CapabilityInvocationError('managed source digest mismatch during publication')
-                                client = controls.get('client')
-                                project = controls.get('project')
+                                client = candidate_controls.get('client')
+                                project = candidate_controls.get('project')
                                 opened = client.media.open(project, descriptor['digest'], materialize=True,
                                     cache_root=Path(job_dir) / 'published-source', preview_bytes=0,
                                     max_bytes=max(descriptor['bytes'], 1))
                                 if not opened.ok:
                                     raise CapabilityInvocationError(
                                         f"could not reopen managed source: {opened.error.message}")
+                                published_sources.append(dict(descriptor))
                                 return Path(opened.data['local_path']), descriptor
                             build_options['publish_source'] = publish_source
                         built = workflow_entries.build_entry(
                             candidate, build_inputs, job_dir, check_runtime=not dry_run and not is_remote_target,
                             **build_options)
                         transport = build_transport(built)
+                        if transport.remote is not None:
+                            descriptor = dict(transport.remote.descriptor)
+                            published = next((source for source in published_sources if source == descriptor), None)
+                            if published is None:
+                                raise CapabilityInvocationError(
+                                    "remote workflow source descriptor must match a source published by this build")
+                            transport = replace(transport, remote=replace(transport.remote, descriptor=published))
                         workflow, assets = built['workflow'], dict(built.get('assets') or {})
                         plan = {'kind': candidate['kind'], 'unbound': [], 'bindings': dict(built['bindings']),
                                 'build_plan': built.get('plan'), 'job_dir': str(job_dir)}
@@ -1857,7 +1895,7 @@ class GenerationFacade:
                                 retain_source(original_path.name, original_path.read_bytes())
                             workflow, plan, assets = workflow_entries.prepare(
                                 frozen, target_client=target_client, mode=mode,
-                                binds=candidate.get("binds"), defaults=candidate.get("defaults"), values=inputs)
+                                binds=candidate.get("binds"), defaults=candidate.get("defaults"), values=candidate_inputs)
                         if plan["kind"] != modality:
                             raise ValueError("entry kind does not match workflow output")
                         if plan["unbound"]:
@@ -1910,6 +1948,8 @@ class GenerationFacade:
                         code='missing_dependency' if 'missing' in str(exc).lower() else 'input_rejected') from exc
                 failures.append(f"{identifier}: {exc}")
                 continue
+            inputs = candidate_inputs
+            controls = candidate_controls
             selected = (identifier, workflow, bundle, plan, schema, approval, assets)
             break
         if selected is None:
