@@ -177,6 +177,7 @@ on:
           - direct-linux-r13-update
           - direct-macos-r13-update
           - direct-windows-r13-update
+          - direct-windows-r13-killed-update
           - direct-linux-autostart-off
           - direct-macos-autostart-off
           - direct
@@ -364,7 +365,7 @@ jobs:
           # The release11-then-update rows are a separate direct matrix, selected by name only.
           release11_job_ids = tuple(row["job_id"] for row in journey_matrix.RELEASE11_UPDATE_MATRIX)
           release11_only = journey_row in release11_job_ids
-          release13_job_ids = journey_matrix.RELEASE13_UPDATE_JOB_IDS
+          release13_job_ids = (*journey_matrix.RELEASE13_UPDATE_JOB_IDS, journey_matrix.RELEASE13_KILLED_JOB_ID)
           release13_only = journey_row in release13_job_ids
           valid_rows = {"", *journey_matrix.RELEASE1_JOB_IDS, "direct", "pinokio", *pinokio_job_ids, *release11_job_ids}
           if journey_row not in valid_rows:
@@ -431,7 +432,7 @@ jobs:
           elif release11_only:
               matrix = [dict(row) for row in journey_matrix.RELEASE11_UPDATE_MATRIX]
           elif release13_only:
-              matrix = [dict(row) for row in journey_matrix.RELEASE13_UPDATE_MATRIX]
+              matrix = [dict(row) for row in (*journey_matrix.RELEASE13_UPDATE_MATRIX, *journey_matrix.RELEASE13_KILLED_MATRIX)]
           elif journey_row == "":
               # An automatic push or schedule runs the five rows that existed before the release9 and release11 legs.
               matrix = [dict(row) for row in journey_matrix.RELEASE1_AUTOMATIC_MATRIX]
@@ -552,7 +553,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
       - name: Check out the pinned Release 13 App for the release13-then-update leg
-        if: matrix.leg == 'release13-then-update'
+        if: matrix.leg == 'release13-then-update' || matrix.leg == 'release13-then-killed-update'
         uses: actions/checkout@v4
         with:
           repository: banodoco/astrid-app
@@ -865,7 +866,7 @@ jobs:
               '--allow-release11-to-candidate'
             )
           }
-          if ('${{ matrix.leg }}' -eq 'release13-then-update') {
+          if ('${{ matrix.leg }}' -in @('release13-then-update', 'release13-then-killed-update')) {
             $release0Args = @(
               '--release13-app-checkout', "$pwd/release13-app",
               '--allow-release13-to-candidate'

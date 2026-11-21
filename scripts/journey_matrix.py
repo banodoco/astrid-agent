@@ -62,6 +62,15 @@ RELEASE13_UPDATE_MATRIX: Final = (
     {"job_id": RELEASE13_WINDOWS_JOB_ID, "mode": "direct", "runner": "windows-2022", "shell": "powershell.exe", "os": "windows", "leg": "release13-then-update"},
 )
 RELEASE13_UPDATE_JOB_IDS: Final = tuple(row["job_id"] for row in RELEASE13_UPDATE_MATRIX)
+# The candidate update is forcibly terminated on an owned Windows runner at an
+# observed durable checkpoint; a retry must restore the Release 13 installation.
+RELEASE13_KILLED_LEG: Final = "release13-then-killed-update"
+RELEASE13_KILLED_JOB_ID: Final = "direct-windows-r13-killed-update"
+RELEASE13_KILLED_MATRIX: Final = (
+    {"job_id": RELEASE13_KILLED_JOB_ID, "mode": "direct", "runner": "windows-2022",
+     "shell": "powershell.exe", "os": "windows", "leg": RELEASE13_KILLED_LEG},
+)
+
 # The direct matrix includes fresh installs, handoffs, and pinned release update rows.
 # The fresh-install-autostart-off rows are a real fresh install from the candidate tuple with the
 # autostart choice off, on Linux and macOS. They check the selection record, the Runtime's own update
@@ -71,7 +80,7 @@ RELEASE1_AUTOSTART_MATRIX: Final = (
     {"job_id": "direct-macos-autostart-off", "mode": "direct", "runner": "macos-15", "shell": "sh", "os": "macos", "leg": "fresh-install-autostart-off"},
 )
 RELEASE1_MATRIX: Final = (*_RELEASE1_DIRECT_LEGACY, *RELEASE1_DIRECT_FRESH_MATRIX,
-                          *RELEASE9_INSTALL_MATRIX, *RELEASE11_UPDATE_MATRIX, *RELEASE13_UPDATE_MATRIX, *RELEASE1_AUTOSTART_MATRIX)
+                          *RELEASE9_INSTALL_MATRIX, *RELEASE11_UPDATE_MATRIX, *RELEASE13_UPDATE_MATRIX, *RELEASE13_KILLED_MATRIX, *RELEASE1_AUTOSTART_MATRIX)
 # An automatic push or schedule (no row input) runs the five rows that existed before the
 # release9 and release11 legs. row=direct runs all of RELEASE1_MATRIX.
 RELEASE1_AUTOMATIC_MATRIX: Final = (*_RELEASE1_DIRECT_LEGACY, *RELEASE1_DIRECT_FRESH_MATRIX)

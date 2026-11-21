@@ -23,7 +23,7 @@ if __package__:
     from . import check_journey_evidence as evidence_gate
     from . import ci_journey as journey, upgrade_release, journey_workspace, journey_live_workspace as live
     from . import journey_data_roots
-    from .journey_matrix import RELEASE13_WINDOWS_JOB_ID
+    from .journey_matrix import RELEASE13_WINDOWS_JOB_ID, RELEASE13_KILLED_JOB_ID
 else:
     import check_journey_evidence as evidence_gate
     import ci_journey as journey
@@ -31,7 +31,7 @@ else:
     import journey_workspace
     import journey_live_workspace as live
     import journey_data_roots
-    from journey_matrix import RELEASE13_WINDOWS_JOB_ID
+    from journey_matrix import RELEASE13_WINDOWS_JOB_ID, RELEASE13_KILLED_JOB_ID
 
 
 RELEASE0_FIXTURE = journey.ROOT / "tests" / "fixtures" / "release0"
@@ -65,6 +65,7 @@ RELEASE11_IDENTITY = {
     "schema_digest": "sha256:9628bb5fd6e1dbbec392dd39f2e01031622dcf52d7ccff7cd1f0ad10743dcb1c",
 }
 RELEASE13_LEG = "release13-then-update"
+RELEASE13_KILLED_LEG = "release13-then-killed-update"
 RELEASE13_APP_COMMIT = "de7dd1e668aa6dcf3cbce013c701fa7c76615f99"
 RELEASE13_RELEASE = 13
 RELEASE13_IDENTITY = {
@@ -2058,17 +2059,21 @@ def execute_owned(args, root: Path, data: Path, evidence: Path, sentinel, birth:
         if sys.platform == "win32":
             raise RuntimeError("Windows release-0 upgrade only admits the narrowed refusal leg")
         return execute_release11_then_update(args, root, data, evidence, sentinel, birth)
-    if args.leg == RELEASE13_LEG:
+    if args.leg in {RELEASE13_LEG, RELEASE13_KILLED_LEG}:
         if sys.platform == "win32":
+            if args.leg == RELEASE13_KILLED_LEG and getattr(args, "job_id", None) != RELEASE13_KILLED_JOB_ID:
+                raise RuntimeError("Killed R13 update requires its dedicated Windows row")
             # Windows starts from the published Release 13 on its one admitted job only; the
             # leg itself lives in journey_windows_r13_update (it needs the Windows helpers).
-            if getattr(args, "job_id", None) != RELEASE13_WINDOWS_JOB_ID:
+            if args.leg != RELEASE13_KILLED_LEG and getattr(args, "job_id", None) != RELEASE13_WINDOWS_JOB_ID:
                 raise RuntimeError(f"Release-13 update on Windows is only admitted for {RELEASE13_WINDOWS_JOB_ID}")
             if __package__:
                 from . import journey_windows_r13_update
             else:
                 import journey_windows_r13_update
             return journey_windows_r13_update.execute(args, root, data, evidence, sentinel, birth)
+        if args.leg == RELEASE13_KILLED_LEG:
+            raise RuntimeError("Killed update is admitted only on native Windows")
         return execute_release13_then_update(args, root, data, evidence, sentinel, birth)
     if args.leg == AUTOSTART_LEG:
         if sys.platform == "win32":
