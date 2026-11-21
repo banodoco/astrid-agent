@@ -1,7 +1,7 @@
 import whisper
 import os
 import folder_paths
-import uuid
+from tempfile import TemporaryDirectory
 import torch
 import logging
 import hashlib
@@ -122,21 +122,6 @@ class ApplyWhisperNode:
 
     def apply_whisper(self, audio, model, language, prompt):
 
-        # save audio bytes from VHS to file
-        temp_dir = folder_paths.get_temp_directory()
-        os.makedirs(temp_dir, exist_ok=True)
-        audio_save_path = os.path.join(temp_dir, f"{uuid.uuid1()}.wav")
-        waveform = audio['waveform'].squeeze(0).cpu().numpy()
-
-        if waveform.ndim == 2:
-            waveform = waveform.T
-
-        soundfile.write(
-            audio_save_path,
-            waveform,
-            int(audio["sample_rate"])
-        )
-
         cache_key = model
         if cache_key not in WHISPER_PATCHER_CACHE:
             load_device = mm.get_torch_device()
@@ -172,7 +157,16 @@ class ApplyWhisperNode:
                 ApplyWhisperNode.languages_by_name = {v.lower(): k for k, v in whisper.tokenizer.LANGUAGES.items()}
             transcribe_args['language'] = ApplyWhisperNode.languages_by_name[language.lower()]
 
-        result = whisper_model.transcribe(audio_save_path, word_timestamps=True, **transcribe_args)
+        waveform = audio["waveform"].squeeze(0).cpu().numpy()
+        if waveform.ndim == 2:
+            waveform = waveform.T
+
+        temp_dir = folder_paths.get_temp_directory()
+        os.makedirs(temp_dir, exist_ok=True)
+        with TemporaryDirectory(prefix="whisper-", dir=temp_dir) as recording_dir:
+            audio_save_path = os.path.join(recording_dir, "input.wav")
+            soundfile.write(audio_save_path, waveform, int(audio["sample_rate"]))
+            result = whisper_model.transcribe(audio_save_path, word_timestamps=True, **transcribe_args)
 
         segments = result['segments']
         segments_alignment = []

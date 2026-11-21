@@ -168,7 +168,7 @@
       "source": "comfyui-whisper",
       "path": "apply_whisper.py",
       "sha256_before": "89a9b9e522d9d5fa0c8655a370fdc6a88bc8a819f3bbbb17cf880981ad7a4832",
-      "sha256_after": "c3c72c746f81923fb0a1249e67645353010ec205e0f8ef4135533977287c347c",
+      "sha256_after": "dfdafd991a715d5b2854e0e9017643ec416abbc2d8266b021518bed8bf657cea",
       "replacement": "packs/runpod/patches/ComfyUI-Whisper-apply_whisper.py"
     }
   ]
