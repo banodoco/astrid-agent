@@ -345,7 +345,10 @@ def _materialize_managed_generation_result(
             if target.suffix != replacement.suffix:
                 target = reserve_destination(target.with_suffix(replacement.suffix).name, row["output_port"], replacement)
                 row["path"] = target.relative_to(managed_root).as_posix()
-                row["media_type"] = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+                media_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+                # System MIME databases disagree on this alias. The host and
+                # render consumers use video/x-matroska for Matroska output.
+                row["media_type"] = "video/x-matroska" if media_type == "video/matroska" else media_type
             if replacement.resolve() != target.resolve():
                 shutil.copyfile(replacement, target)
             data = target.read_bytes()

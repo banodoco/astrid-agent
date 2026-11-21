@@ -589,3 +589,20 @@ def test_hook_output_keeps_verified_container(tmp_path, monkeypatch, with_siblin
         assert row["sha256"] == digest
         assert published["content_hash"] == f"sha256:{digest}"
         assert row["bytes"] == len(data)
+
+
+@pytest.mark.parametrize("system_type", ["video/matroska", "video/x-matroska"])
+def test_hook_matroska_type_is_independent_of_system_mime_alias(tmp_path, monkeypatch, system_type):
+    import mimetypes
+
+    original_guess = mimetypes.guess_type
+
+    def system_guess(url, *args, **kwargs):
+        if str(url).endswith(".mkv"):
+            return system_type, None
+        return original_guess(url, *args, **kwargs)
+
+    monkeypatch.setattr(mimetypes, "guess_type", system_guess)
+    # The sibling exercises preservation of the producer's verified type while
+    # the first output exercises the hook replacement and suffix change.
+    test_hook_output_keeps_verified_container(tmp_path, monkeypatch, True)
