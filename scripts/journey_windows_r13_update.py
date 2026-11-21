@@ -1,13 +1,13 @@
-"""The Windows release12-then-update row: the published Release 12, then the candidate's update.
+"""The Windows release13-then-update row: the published Release 13, then the candidate's update.
 
-A Windows user who has Release 12 installed gets the candidate by running the candidate's install
+A Windows user who has Release 13 installed gets the candidate by running the candidate's install
 script with --update. This leg does exactly that on a disposable windows-2022 runner:
 
-1. the pinned Release 12 (the git blobs of its App commit, resolved by upgrade_release exactly as the
-   Linux and macOS r12 rows do) is installed with its install.ps1, run through Windows PowerShell 5.1
+1. the pinned Release 13 (the git blobs of its App commit, resolved by upgrade_release exactly as the
+   Linux and macOS r13 rows do) is installed with its install.ps1, run through Windows PowerShell 5.1
    with the plain install command and no --update, the same entry the fresh-install row uses;
 2. the Runtime is started through its Task Scheduler task, a project and a workspace marker are seeded
-   through the installed Release 12 command line;
+   through the installed Release 13 command line;
 3. the candidate's public/install.ps1 --update takes that install to the candidate release;
 4. the installed release is the candidate's, with the candidate's Agent and Runtime commits from its
    frozen receipt, the live Runtime reports it and is healthy, and exactly one Runtime is live;
@@ -15,7 +15,7 @@ script with --update. This leg does exactly that on a disposable windows-2022 ru
 6. the seeded project and marker survived and the unrelated sentinel is still alive.
 
 journey-result.json is rewritten after every step, and a failure names the step: candidate admission,
-R12 bootstrap, R12 start, R12 seed, update, release check, doctor, dry-run or data check.
+R13 bootstrap, R13 start, R13 seed, update, release check, doctor, dry-run or data check.
 
 Call only through journey_version_jumps.execute_owned, inside ci_journey's scope, environment, sentinel
 and cleanup: this module does not admit lifecycle roots.
@@ -42,15 +42,15 @@ else:
     import ci_journey as journey
     import journey_version_jumps as jumps
 
-LEG = "release12-then-update"
-PROJECT = "windows-r12-update"
+LEG = "release13-then-update"
+PROJECT = "windows-r13-update"
 MARKER_NAME = "tst-b1-workspace-marker.txt"
-MARKER_TEXT = "Windows release-12 update workspace marker\n"
-DOCTOR_EVIDENCE = "windows-r12-doctor.json"
-DRY_RUN_EVIDENCE = "windows-r12-dry-run.json"
+MARKER_TEXT = "Windows release-13 update workspace marker\n"
+DOCTOR_EVIDENCE = "windows-r13-doctor.json"
+DRY_RUN_EVIDENCE = "windows-r13-dry-run.json"
 # The scratch outputs the two commands write; only the structured evidence files above are retained.
-DOCTOR_OUTPUT = "windows-r12-doctor-output.txt"
-DRY_RUN_OUTPUT = "windows-r12-dry-run-output.txt"
+DOCTOR_OUTPUT = "windows-r13-doctor-output.txt"
+DRY_RUN_OUTPUT = "windows-r13-dry-run-output.txt"
 # Cold Windows starts are slower than the 180 seconds a single-row dispatch gives the other rows.
 WAIT_FLOOR_SECONDS = 600
 OUTPUT_TAIL_LINES = 40
@@ -71,9 +71,9 @@ DRY_RUN_CODE = (
 # Step keys, in order, with the label every failure message and receipt row carries.
 STEPS = (
     ("admission", "candidate admission"),
-    ("r12_bootstrap", "R12 bootstrap"),
-    ("r12_start", "R12 start"),
-    ("r12_seed", "R12 seed"),
+    ("r13_bootstrap", "R13 bootstrap"),
+    ("r13_start", "R13 start"),
+    ("r13_seed", "R13 seed"),
     ("update", "update"),
     ("release_check", "release check"),
     ("doctor", "doctor"),
@@ -82,15 +82,15 @@ STEPS = (
 )
 STEP_LABELS = dict(STEPS)
 # The receipt's assertions; the evidence checker names the same ones.
-CHECKS = ("release12_install", "update_exit", "release", "one_runtime", "service", "health",
+CHECKS = ("release13_install", "update_exit", "release", "one_runtime", "service", "health",
           "doctor", "dry_run", "data_marker", "unrelated_sentinel")
 
 
-class WindowsR12StepError(RuntimeError):
+class WindowsR13StepError(RuntimeError):
     """A failure that names the journey step it happened in."""
 
     def __init__(self, label: str, cause: BaseException):
-        super().__init__(f"Windows release-12 update failed at step '{label}': {type(cause).__name__}: {cause}")
+        super().__init__(f"Windows release-13 update failed at step '{label}': {type(cause).__name__}: {cause}")
         self.label = label
 
 
@@ -105,19 +105,19 @@ def step(result: dict, result_path: Path, key: str):
     record = {"step": key, "label": label, "status": "running", "started_at": _now()}
     result["steps"].append(record)
     journey.write_json(result_path, result)
-    print(f"[windows-r12] {label}: start", flush=True)
+    print(f"[windows-r13] {label}: start", flush=True)
     try:
         yield record
     except Exception as exc:
         record.update(status="fail", ended_at=_now(), error=f"{type(exc).__name__}: {exc}")
         journey.write_json(result_path, result)
-        print(f"[windows-r12] {label}: FAILED: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
-        if isinstance(exc, WindowsR12StepError):
+        print(f"[windows-r13] {label}: FAILED: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+        if isinstance(exc, WindowsR13StepError):
             raise
-        raise WindowsR12StepError(label, exc) from exc
+        raise WindowsR13StepError(label, exc) from exc
     record.update(status="pass", ended_at=_now())
     journey.write_json(result_path, result)
-    print(f"[windows-r12] {label}: pass", flush=True)
+    print(f"[windows-r13] {label}: pass", flush=True)
 
 
 def wait_timeout() -> int:
@@ -266,7 +266,7 @@ def check_dry_run(report) -> dict:
 
 
 def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) -> dict:
-    """Pinned Release 12 plain install, seed, the candidate's install.ps1 --update, then the checks."""
+    """Pinned Release 13 plain install, seed, the candidate's install.ps1 --update, then the checks."""
     evidence.mkdir(parents=True, exist_ok=True)
     journey.windows.EVIDENCE = evidence
     result = {
@@ -278,7 +278,7 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) 
         "sources": None, "installed_tuple": None, "import_origins": None,
         "run_roots": {"program": str(root), "data": str(data)},
         "sentinel": {"pid": sentinel.pid, "birth": birth},
-        "release12_source": None, "candidate_bootstrap": None, "update": None,
+        "release13_source": None, "candidate_bootstrap": None, "update": None,
         "release_transition": None, "live_runtimes": None, "health_transition": None,
         "doctor": None, "dry_run": None, "data_marker": None, "steps": [],
         "checks": {key: "not-run" for key in CHECKS},
@@ -295,8 +295,8 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) 
             if evidence_gate.validate_tuple(candidate, app, candidate_path) != manifest:
                 raise RuntimeError(f"{LEG} requires a frozen candidate manifest")
             target_release = manifest.get("release")
-            if type(target_release) is not int or target_release <= jumps.RELEASE12_RELEASE:
-                raise RuntimeError(f"{LEG} requires a candidate newer than Release {jumps.RELEASE12_RELEASE}")
+            if type(target_release) is not int or target_release <= jumps.RELEASE13_RELEASE:
+                raise RuntimeError(f"{LEG} requires a candidate newer than Release {jumps.RELEASE13_RELEASE}")
             result["candidate_bootstrap"] = {"manifest_sha256": candidate["manifest_sha256"],
                                              "artifacts": candidate["artifacts"]}
             result["sources"] = {"app": journey.git_source(app), "agent": manifest["agent"],
@@ -304,51 +304,51 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) 
             before_sentinel = journey.sentinel_observation(sentinel, birth)
             result["sentinel"]["before_lifecycle"] = before_sentinel
             if not before_sentinel["alive"]:
-                raise RuntimeError("Unrelated sentinel exited before the release-12 install")
+                raise RuntimeError("Unrelated sentinel exited before the release-13 install")
 
-        # 1. The pinned Release 12, installed with its own install.ps1 and the plain install command.
-        with step(result, result_path, "r12_bootstrap"):
-            source, release12_manifest, source_receipt = jumps.release12_admission(
-                args, root.parent / "release12-source")
-            result["release12_source"] = source_receipt
-            jumps.bootstrap_release12(source, release12_manifest, args.shell, evidence, root, data,
+        # 1. The pinned Release 13, installed with its own install.ps1 and the plain install command.
+        with step(result, result_path, "r13_bootstrap"):
+            source, release13_manifest, source_receipt = jumps.release13_admission(
+                args, root.parent / "release13-source")
+            result["release13_source"] = source_receipt
+            jumps.bootstrap_release13(source, release13_manifest, args.shell, evidence, root, data,
                                       agent=jumps.release9_consent_agent(args))
 
-        # 2. The Release 12 Runtime, started the way the fresh-install row starts its own.
-        with step(result, result_path, "r12_start"):
+        # 2. The Release 13 Runtime, started the way the fresh-install row starts its own.
+        with step(result, result_path, "r13_start"):
             journey.windows.powershell("Start-ScheduledTask -TaskName 'Astrid Runtime' -TaskPath '\\'", "start.log")
             journey.wait_ready(data, timeout=wait_timeout())
             old_path, old_data, old = journey.installation(root, data)
-            if old_data != data or jumps.installed_release(old) != jumps.RELEASE12_RELEASE:
-                raise RuntimeError(f"Pinned Release-12 install did not select release {jumps.RELEASE12_RELEASE}")
-            old_tuple = journey.selected_tuple(journey.read_json(release12_manifest), old)
+            if old_data != data or jumps.installed_release(old) != jumps.RELEASE13_RELEASE:
+                raise RuntimeError(f"Pinned Release-13 install did not select release {jumps.RELEASE13_RELEASE}")
+            old_tuple = journey.selected_tuple(journey.read_json(release13_manifest), old)
             old_service = journey.assert_direct_service_ownership(root, data)
             old_health = journey.healthy(data)
             old_pid = old_health.get("pid")
             old_birth = journey.process_birth(old_pid) if type(old_pid) is int else None
             if not old_birth:
-                raise RuntimeError("Cannot establish the Release-12 Runtime process identity")
-            result["checks"]["release12_install"] = "pass"
+                raise RuntimeError("Cannot establish the Release-13 Runtime process identity")
+            result["checks"]["release13_install"] = "pass"
 
-        # 3. User data on the Release 12 install: a project and a marker in the workspace.
-        with step(result, result_path, "r12_seed"):
+        # 3. User data on the Release 13 install: a project and a marker in the workspace.
+        with step(result, result_path, "r13_seed"):
             journey.verify("observe", old_path, data, evidence)
             created = json.loads(journey.installed_cli(
                 old, ["projects", "create", PROJECT, "--name", "Windows release 12 update", "--json"],
-                evidence, "release12-project.json"))
+                evidence, "release13-project.json"))
             if created.get("ok") is not True:
-                raise RuntimeError("Project creation on the Release-12 install failed")
+                raise RuntimeError("Project creation on the Release-13 install failed")
             marker = journey.workspace_root(data) / MARKER_NAME
             marker.write_text(MARKER_TEXT, encoding="utf-8")
             digest = hashlib.sha256(marker.read_bytes()).hexdigest()
             result["data_marker"] = {"project": PROJECT, "sha256": digest, "survived": None}
 
-        # 4. The candidate's public update command, from the Release 12 install.
+        # 4. The candidate's public update command, from the Release 13 install.
         with step(result, result_path, "update"):
             update = result["update"] = candidate_update_windows(app, candidate_path, args.shell, evidence, root, data)
             if update["exit_code"] != 0:
                 raise RuntimeError(f"Candidate install.ps1 --update exited {update['exit_code']} from the "
-                                   f"Release {jumps.RELEASE12_RELEASE} install: {update['last_lines']}")
+                                   f"Release {jumps.RELEASE13_RELEASE} install: {update['last_lines']}")
             result["checks"]["update_exit"] = "pass"
             receipt = update["receipt"] = windows_run_receipt(root.parent)
             if receipt is not None and (receipt.get("kind") != "updated" or receipt.get("exit_code") != 0
@@ -374,21 +374,21 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) 
                 raise RuntimeError(
                     f"The live Runtime reports release {live_release}, not the candidate release {target_release}")
             if new_health["runtime_instance_id"] == old_health["runtime_instance_id"]:
-                raise RuntimeError(f"Candidate update retained the Release {jumps.RELEASE12_RELEASE} Runtime instance")
+                raise RuntimeError(f"Candidate update retained the Release {jumps.RELEASE13_RELEASE} Runtime instance")
             if journey.process_birth(old_pid) == old_birth:
-                raise RuntimeError(f"The Release {jumps.RELEASE12_RELEASE} Runtime process survived the update")
+                raise RuntimeError(f"The Release {jumps.RELEASE13_RELEASE} Runtime process survived the update")
             owners = result["live_runtimes"] = windows_live_runtime_owners(data)
             if [owner["data_root"] for owner in owners] != [str(active_data)]:
                 raise RuntimeError(f"Exactly one live Runtime (at {active_data}) is required after the update: {owners}")
             result["checks"]["one_runtime"] = "pass"
-            result["release_transition"] = {"from": jumps.RELEASE12_RELEASE, "to": target_release,
+            result["release_transition"] = {"from": jumps.RELEASE13_RELEASE, "to": target_release,
                                             "source": "candidate-install-update"}
             result["checks"]["release"] = "pass"
             new_service = journey.assert_direct_service_ownership(root, selected_data)
-            result["service_transition"] = {"release12": old_service, "candidate": new_service}
+            result["service_transition"] = {"release13": old_service, "candidate": new_service}
             result["service_manager"] = new_service
             result["health_transition"] = {
-                "release12_runtime_instance_id": old_health["runtime_instance_id"],
+                "release13_runtime_instance_id": old_health["runtime_instance_id"],
                 "candidate_runtime_instance_id": new_health["runtime_instance_id"],
                 "candidate_live_release": live_release,
             }
@@ -417,7 +417,7 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) 
             settled = journey.sentinel_observation(sentinel, birth)
             result["sentinel"]["at_settlement"] = settled
             if not settled["alive"]:
-                raise RuntimeError("Unrelated sentinel did not survive the Release 12 install and the update")
+                raise RuntimeError("Unrelated sentinel did not survive the Release 13 install and the update")
             result["checks"]["unrelated_sentinel"] = "pass"
         result["status"] = "pass"
     except Exception as exc:
