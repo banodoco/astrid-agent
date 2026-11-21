@@ -50,8 +50,12 @@ def _path(inputs: Mapping[str, Any], files: Mapping[str, Any], name: str) -> Pat
 
 
 def _file_map(inputs: Mapping[str, Any], files: Mapping[str, Any]) -> dict[str, str]:
-    value = (files or {}).get("asset_map") or (inputs or {}).get("asset_map")
-    if not isinstance(value, Mapping) or not value:
+    value = (files or {}).get("asset_map")
+    if value is None:
+        value = (inputs or {}).get("asset_map")
+    if value is None:
+        value = {}
+    if not isinstance(value, Mapping):
         raise ValueError("h3 needs the 'asset_map' file map ({asset id: file path})")
     return {str(key): str(path) for key, path in value.items()}
 
@@ -175,23 +179,32 @@ def build(inputs, files, out, *, engine=None, check_runtime=False, publish_sourc
     _shared("prepare").write_preparation(work / "preparation.json", preparation)
     bindings = compilation["workflow_inputs"]
     facts.assert_no_unresolved_placeholders(bindings)
-    plan = {**stages._sealed_plan(compilation), "request_digest": request.digest}
+    plan = {**stages._sealed_plan(compilation, preparation=preparation), "request_digest": request.digest}
     if preparation.get("source_conform"):
         plan["source_conform"] = preparation["source_conform"]
     source_id = stages._authoritative_source_asset_id(request)
     source = paths[source_id] if source_id else None
-    if source is not None and "source_video" in bindings:
-        plan["source_av"] = _source_av_measurement(preparation, source, facts)
-    stages.save_build_state(work, request=request, document=document, preparation=preparation, source=source, plan=plan)
+    if any(item.get("role") == "timeline" and item.get("modality") == "image" for item in request.value.get("media", [])):
+        source = str(work / "plan" / "compile" / "prepared-still-source.mkv")
     trio = Path(compilation["workflow"]["workflow.py"]["path"]).parent
     # The media the graph binds, unpacked from compile's managed-assets archive: {binding: path}.
-    resolved = facts.read_archive(compilation["managed_assets"]["path"])
     assets = {}
-    for record in resolved.manifest["assets"]:
-        target = work / "managed" / record["member"]
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(resolved.members[record["member"]])
-        assets[record["binding"]] = target
+    reference_assets = {}
+    if "managed_assets" in compilation:
+        resolved = facts.read_archive(compilation["managed_assets"]["path"])
+        for record in resolved.manifest["assets"]:
+            target = work / "managed" / record["member"]
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(resolved.members[record["member"]])
+            assets[record["binding"]] = target
+            reference_assets[record["binding"]] = {"member": record["member"], "sha256": record["sha256"]}
+    if source is not None and "source_video" in assets:
+        conform = preparation.get("source_conform")
+        bound_sha256 = reference_assets["source_video"]["sha256"]
+        conformed_binding = isinstance(conform, Mapping) and bound_sha256.removeprefix("sha256:") == conform["output"]["sha256"]
+        plan["source_av"] = _source_av_measurement(preparation if conformed_binding else {}, assets["source_video"], facts)
+    stages.save_build_state(work, request=request, document=document, preparation=preparation,
+                            source=source, plan=plan, reference_assets=reference_assets)
     return {"workflow": _load_graph(trio), "bindings": bindings, "plan": plan, "assets": assets,
             "bundle": str(trio)}
 
@@ -224,6 +237,14 @@ def after_outputs(job_dir, inputs, files, outputs, *, engine=None):
                                     out_dir=work / "compose")
     verification = verify_candidate(preparation=preparation, composition=composition, source=source,
                                     candidate=composition["candidate"]["path"])
+    # Keep the path-free sealed view with settled verification. The separate
+    # CPU re-decode derives the VHS frame count from the exact managed bytes and
+    # leaves the metadata upper-bound estimate distinct.
+    if isinstance(state["plan"].get("reference_view"), Mapping):
+        verification["reference_view"] = stages._settled_reference_view(
+            state["plan"]["reference_view"], reference_assets=state.get("reference_assets", {}), workdir=work,
+            composition=composition.get("composition") if isinstance(composition, Mapping) else None,
+        )
     facts.write_json_atomic(work / "verify.json", verification)
     _continuation_take(work, state, composition, facts)
     return [composition["candidate"]["path"], *outputs[1:]]

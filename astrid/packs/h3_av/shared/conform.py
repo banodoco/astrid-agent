@@ -23,7 +23,8 @@ def _digest(path: Path) -> str:
 def _probe(path: Path) -> dict:
     try:
         proc = subprocess.run(['ffprobe', '-v', 'error', '-show_entries',
-            'stream=codec_type,start_time,start_pts,duration,duration_ts,time_base,sample_rate,nb_frames,sample_aspect_ratio,avg_frame_rate:format=start_time,duration',
+            'stream=codec_type,start_time,start_pts,duration,duration_ts,time_base,sample_rate,nb_frames,'
+            'sample_aspect_ratio,r_frame_rate,avg_frame_rate,width,height,pix_fmt:format=start_time,duration',
             '-of', 'json', str(path)], capture_output=True, text=True, check=True, timeout=30)
         return json.loads(proc.stdout)
     except (OSError, subprocess.SubprocessError, ValueError) as exc:
@@ -109,11 +110,13 @@ def conform_source(source: Path, destination: Path, *, start: str, end: str, fit
     info = _probe(source)
     streams = info.get('streams', [])
     selected = [next((s for s in streams if s.get('codec_type') == kind), None) for kind in ('video', 'audio')]
-    if selected[0] is None:
+    video_stream = selected[0]
+    if video_stream is None:
         raise PreparationError('source must contain video')
     has_audio = selected[1] is not None
-    aspect = selected[0].get('sample_aspect_ratio')
+    aspect = video_stream.get('sample_aspect_ratio')
     square_default = aspect in (None, 'N/A', '0:1')
+    sample_aspect = Fraction(1)
     if not square_default:
         try:
             sample_aspect = Fraction(str(aspect).replace(':', '/'))
@@ -121,9 +124,20 @@ def conform_source(source: Path, destination: Path, *, start: str, end: str, fit
                 raise ValueError('non-positive pixel aspect ratio')
         except (ValueError, ZeroDivisionError) as exc:
             raise PreparationError('source pixel aspect ratio is invalid') from exc
+    duration_tolerance = Fraction(0)
     try:
-        video_start = _stream_time(selected[0], 'start_pts', 'start_time')
-        video_duration = _stream_time(selected[0], 'duration_ts', 'duration')
+        video_start = _stream_time(video_stream, 'start_pts', 'start_time')
+        try:
+            video_duration = _stream_time(video_stream, 'duration_ts', 'duration')
+        except KeyError:
+            # A video-only container can report duration exclusively at the
+            # container level, as Matroska commonly does.
+            if len(streams) != 1:
+                raise
+            video_duration = Fraction(str(info['format']['duration']))
+            # The muxer can quantize the final packet duration. The output
+            # frame count is validated independently after conforming.
+            duration_tolerance = Fraction(str(video_stream['time_base']))
         audio_start = _stream_time(selected[1], 'start_pts', 'start_time') if has_audio else None
         audio_duration = _stream_time(selected[1], 'duration_ts', 'duration') if has_audio else None
     except (KeyError, ValueError, TypeError, ZeroDivisionError) as exc:
@@ -134,8 +148,18 @@ def conform_source(source: Path, destination: Path, *, start: str, end: str, fit
         audio_relative_start = audio_start - video_start
         available += (f", audio [{float(audio_relative_start):.6f}, "
                       f"{float(audio_relative_start + audio_duration):.6f})")
-    if last > video_duration:
+    if last > video_duration + duration_tolerance:
         raise PreparationError(f'source streams must cover the requested range {requested}; available {available}')
+    # Silent native-grid sources need a managed range extraction, but their
+    # selected decoded pixels must survive it for exact preservation.
+    lossless_video = (
+        not has_audio
+        and (video_stream.get('width'), video_stream.get('height')) == (1024, 576)
+        and sample_aspect == 1
+        and video_stream.get('pix_fmt') == 'yuv420p'
+        and video_stream.get('r_frame_rate') == video_stream.get('avg_frame_rate') == '24/1'
+        and (first * 24).denominator == (last * 24).denominator == 1
+    )
     target_duration = Fraction(frames, 24)
     target_samples = frames * 2000
     anchor = video_start + first
@@ -195,7 +219,7 @@ def conform_source(source: Path, destination: Path, *, start: str, end: str, fit
         cmd = ['ffmpeg', '-v', 'error', '-nostdin', '-copyts', '-i', str(source), '-filter_complex', filters, '-map', '[v]']
         if has_audio:
             cmd += ['-map', '[a]', '-c:a', 'aac', '-ar', '48000']
-        cmd += ['-c:v', 'libx264', '-crf', '12', '-pix_fmt', 'yuv420p', str(output)]
+        cmd += ['-c:v', 'libx264', '-crf', '0' if lossless_video else '12', '-pix_fmt', 'yuv420p', str(output)]
         try:
             subprocess.run(cmd, check=True, capture_output=True, text=True)
         except (OSError, subprocess.CalledProcessError) as exc:

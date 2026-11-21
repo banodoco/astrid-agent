@@ -190,3 +190,12 @@ def test_lanpaint_regional_change_requires_and_binds_real_mask_asset(tmp_path: P
     compiled = compile_preparation(_prepared(tmp_path, request, masks=True), out_dir=tmp_path / "compiled")
     keyframes = json.loads(compiled["workflow_inputs"]["mask_keyframes"])
     assert keyframes["24"].endswith("mask.png")
+
+
+def test_v1_sequential_operations_remain_fail_closed(tmp_path):
+    request = _request(changes={"video": [
+        {"during": [0, 2], "area": {"full_frame": True}, "action": "generate"},
+        {"during": [2, 4], "area": {"full_frame": True}, "action": "generate"},
+    ], "audio": []})
+    with pytest.raises(CompilationError, match="exactly one modifying video operation"):
+        compile_preparation(_prepared(tmp_path, request), out_dir=tmp_path / "compiled")

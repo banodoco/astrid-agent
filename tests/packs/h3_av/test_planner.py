@@ -149,6 +149,7 @@ def test_plan_reports_ignored_v1_constant_overrides_and_keeps_supported_controls
     plan = plan_request(request, asset_map=_assets(tmp_path, source=True), out_dir=tmp_path / "plan")
 
     ignored = {row["field"]: row["value"] for row in plan["ignored_fields"]}
+    # Plan 59 e0d6ca6e8 honors continuation overrides.
     assert ignored == {}
     if operation == "continue":
         effective = plan["compilation"]["effective_settings"]
@@ -239,6 +240,7 @@ def test_v2_ignored_constant_settings_and_disabled_turbo_strength(tmp_path: Path
     })
     plan = plan_request(continuation, asset_map=_assets(tmp_path, source=True), out_dir=tmp_path / "continue")
     ignored = {row["field"]: row["value"] for row in plan["ignored_fields"]}
+    # Plan 59 e0d6ca6e8 honors continuation overrides.
     assert ignored == {}
     effective = plan["compilation"]["effective_settings"]
     assert effective["sampler"] == "res_multistep"
@@ -314,3 +316,49 @@ def test_v1_named_choice_and_edit_settings_reach_plan_and_graph(tmp_path: Path, 
     raw["overrides"]["turbo_lora"] = "lightx2v_8step"
     with pytest.raises(H3RequestError, match="lightx2v_8step.*no matching variant"):
         plan_request(normalize_request(raw), asset_map=assets, out_dir=tmp_path / "unmatched")
+
+
+def test_plan_retains_text_only_and_duration_warnings(tmp_path):
+    request = normalize_request({"version": 2, "prompt": "A scene", "duration": 16, "media": []})
+    plan = plan_request(request, asset_map={}, out_dir=tmp_path / "plan")
+    assert {row.get("limit") for row in plan["warnings"]} >= {"job_duration_seconds", "text_only_documented_use"}
+
+
+@pytest.mark.parametrize("operation", ["continue", "edit"])
+def test_plan_reports_ignored_v1_constant_overrides_and_keeps_supported_controls_plan64(tmp_path: Path, operation: str) -> None:
+    if operation == "continue":
+        request = _continue(overrides={"sampler": "res_multistep", "guidance": 0.95, "steps": 11, "seed": 42})
+        expected_steps, expected_seed = 11, 42
+    else:
+        raw = dict(_source_edit().value)
+        raw["overrides"] = {"sampler": "res_multistep", "guidance": 0.95, "steps": 12, "seed": 7}
+        request = normalize_request(raw)
+        expected_steps, expected_seed = 12, 7
+    plan = plan_request(request, asset_map=_assets(tmp_path, source=True), out_dir=tmp_path / "plan")
+
+    ignored = {row["field"]: row["value"] for row in plan["ignored_fields"]}
+    # Plan 59 e0d6ca6e8 honors continuation overrides.
+    assert ignored == {}
+    assert plan["compilation"]["workflow_inputs"]["steps"] == expected_steps
+    assert plan["compilation"]["workflow_inputs"]["seed"] == expected_seed
+
+
+def test_v2_ignored_constant_settings_and_disabled_turbo_strength_plan64(tmp_path: Path) -> None:
+    continuation = _v2_continue(settings={
+        "sampler": "res_multistep", "scheduler": "simple", "steps": 9, "seed": 123,
+        "turbo": {"enabled": True, "strength": 0.95},
+    })
+    plan = plan_request(continuation, asset_map=_assets(tmp_path, source=True), out_dir=tmp_path / "continue")
+    ignored = {row["field"]: row["value"] for row in plan["ignored_fields"]}
+    # Plan 59 e0d6ca6e8 honors continuation overrides.
+    assert ignored == {}
+    assert plan["compilation"]["workflow_inputs"]["steps"] == 9
+    assert plan["compilation"]["workflow_inputs"]["seed"] == 123
+
+    generate = _v2_source_free(settings={
+        "steps": 7, "seed": 88, "turbo": {"enabled": False, "strength": 0.7},
+    })
+    plan = plan_request(generate, asset_map=_assets(tmp_path, look=True), out_dir=tmp_path / "generate")
+    assert {row["field"] for row in plan["ignored_fields"]} == {"settings.turbo.strength"}
+    assert plan["compilation"]["workflow_inputs"]["steps"] == 7
+    assert plan["compilation"]["workflow_inputs"]["seed"] == 88
