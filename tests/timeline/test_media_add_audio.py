@@ -112,7 +112,9 @@ def test_audio_creates_a_missing_audio_lane_with_verified_kind(tmp_path):
     _add(session, source)
 
     assert session.last_commands[0]['op'] == 'track.create'
-    assert session.last_commands[0]['args']['row'] == {'id': 'A2', 'kind': 'audio', 'label': 'A2'}
+    # Plan 59 placement defaults (ea644e4cb); provisional pending F7.
+    assert session.last_commands[0]['args']['row'] == {'id': 'A2', 'kind': 'audio', 'label': 'A2',
+        'app': {'clipPlacementVersion': 1, 'scaleAppliesToPositionedClips': True}}
 
 
 def test_omitted_visual_track_keeps_v1_default(tmp_path, monkeypatch):
@@ -125,7 +127,9 @@ def test_omitted_visual_track_keeps_v1_default(tmp_path, monkeypatch):
 
     _add(session, source)
 
-    assert session.last_commands[0]['args']['row'] == {'id': 'V1', 'kind': 'visual', 'label': 'V1'}
+    # Plan 59 placement defaults (ea644e4cb); provisional pending F7.
+    assert session.last_commands[0]['args']['row'] == {'id': 'V1', 'kind': 'visual', 'label': 'V1',
+        'app': {'clipPlacementVersion': 1, 'scaleAppliesToPositionedClips': True}}
     assert session.last_commands[1]['args']['row']['track'] == 'V1'
 
 
