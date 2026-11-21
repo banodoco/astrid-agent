@@ -725,7 +725,10 @@ def _validate_frozen_source(request: H3Request, source: Mapping[str, Any], path:
     except (OSError, subprocess.SubprocessError) as exc:
         raise PreparationError("cannot probe prepared source geometry") from exc
     if probe.stdout.strip() != f"{canvas[0]}x{canvas[1]}":
-        raise PreparationError(f"prepared source video dimensions are not {canvas[0]}x{canvas[1]}")
+        raise PreparationError(
+            f"prepared source video dimensions {probe.stdout.strip() or 'unknown'} "
+            f"do not match requested {canvas[0]}x{canvas[1]}"
+        )
     if not isinstance(record.get("decoded_av"), Mapping):
         raise PreparationError("prepared source decoded AV measurement is missing")
     return dict(record)

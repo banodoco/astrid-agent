@@ -201,6 +201,6 @@ def test_v2_conform_and_frozen_source_follow_requested_canvas(tmp_path: Path) ->
     wrong_digest = hashlib.sha256(wrong.read_bytes()).hexdigest()
     envelope["conform"] = {**record, "output": {**record["output"], "sha256": wrong_digest}}
     envelope["managed_source"] = {"digest": "sha256:" + wrong_digest, "sha256": wrong_digest}
-    with pytest.raises(PreparationError, match="video dimensions are not 512x512"):
+    with pytest.raises(PreparationError, match="video dimensions 640x480 do not match requested 512x512"):
         prepare_request(request, asset_map={"source": str(wrong)},
                         out_dir=tmp_path / "wrong", frozen_source=envelope)
