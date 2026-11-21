@@ -24,7 +24,26 @@ from astrid.sdk.pagination import paged_rows
 _DIGEST = re.compile(r"^(?:sha256:)?[0-9a-f]{64}$")
 _PATH_FIELDS = ("local_path", "file", "path", "src")
 _ID_FIELDS = ("media_id", "object_id", "digest", "content_digest", "content_sha256")
-_MAX_BYTES = 64 * 1024 * 1024
+# Interim Agent limit: this path reads each whole file into memory. The Runtime
+# object limit is 5 GiB; Plan 79 removes this constant when streaming lands.
+_MAX_BYTES = 1024 * 1024 * 1024
+
+
+def _limit_description() -> str:
+    if _MAX_BYTES % (1024**3) == 0:
+        return f"{_MAX_BYTES // (1024**3)} GiB"
+    if _MAX_BYTES % (1024**2) == 0:
+        return f"{_MAX_BYTES // (1024**2)} MiB"
+    if _MAX_BYTES % 1024 == 0:
+        return f"{_MAX_BYTES // 1024} KiB"
+    return f"{_MAX_BYTES} bytes"
+
+
+def _oversized_message(path: Path) -> str:
+    return (
+        f"Local media is larger than the {_limit_description()} limit for adding local files: "
+        f"{path}. Use a smaller file for now."
+    )
 
 
 def _identity(value: Any) -> str | None:
@@ -109,7 +128,7 @@ def _metadata(path: Path) -> dict[str, Any]:
     if not path.is_file():
         raise ValueError(f"Local media must be a regular file: {path}")
     if path.stat().st_size > _MAX_BYTES:
-        raise ValueError(f"Local media exceeds Runtime's 64 MiB limit: {path}")
+        raise ValueError(_oversized_message(path))
     media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
     kind = media_type.split("/", 1)[0]
     if kind not in {"image", "video", "audio"}:
@@ -138,7 +157,7 @@ def _metadata(path: Path) -> dict[str, Any]:
             metadata.update(width=probe.width, height=probe.height)
     payload = path.read_bytes()
     if len(payload) > _MAX_BYTES:
-        raise ValueError(f"Local media exceeds Runtime's 64 MiB limit: {path}")
+        raise ValueError(_oversized_message(path))
     metadata["digest"] = "sha256:" + hashlib.sha256(payload).hexdigest()
     metadata["size"] = len(payload)
     return metadata
