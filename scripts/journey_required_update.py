@@ -1,26 +1,29 @@
 #!/usr/bin/env python3
-"""Run the R13 required-update and R13 realm-reopen rows on an installed Linux Runtime."""
+"""Run the R13 required-update browser rows on an installed Linux Runtime."""
 from __future__ import annotations
 
 import base64
 from contextlib import contextmanager
+import os
 from pathlib import Path
 import platform
 import shutil
+import subprocess
 from tempfile import TemporaryDirectory
+import time
 
 if __package__:
     from . import check_journey_evidence as gate
     from . import ci_journey as journey
     from . import journey_hosted_update as hosted
     from . import journey_version_jumps as jumps
-    from .journey_matrix import FIX17_PROMPT_LEG, FIX17_REALM_LEG, validate_job
+    from .journey_matrix import FIX17_PROMPT_LEG, FIX17_REALM_LEG, FIX17_RELOAD_INFLIGHT_LEG, validate_job
 else:
     import check_journey_evidence as gate
     import ci_journey as journey
     import journey_hosted_update as hosted
     import journey_version_jumps as jumps
-    from journey_matrix import FIX17_PROMPT_LEG, FIX17_REALM_LEG, validate_job
+    from journey_matrix import FIX17_PROMPT_LEG, FIX17_REALM_LEG, FIX17_RELOAD_INFLIGHT_LEG, validate_job
 
 
 @contextmanager
@@ -117,6 +120,100 @@ def _browser(config, *, app, expected_app, dist, release_app, manifest, python, 
         "build_sha256": gate.digest(build), "manifest_reads": manifest_reads,
         "intercept_reverted": True,
     }
+
+
+def _reload_inflight(config, *, app, old_app, expected_app, old_dist, new_dist, release13_source,
+                     old_manifest, new_manifest, old_python, evidence, update_and_verify):
+    """Keep the real R13 editor alive while the installed Runtime changes and routes flip to R14."""
+    _git_source(old_app, jumps.RELEASE13_APP_COMMIT)
+    _git_source(app, expected_app)
+    old_dist, new_dist = _dist(old_app, old_dist), _dist(app, new_dist)
+    if journey.read_json(old_dist / "build.json").get("app") != jumps.RELEASE13_APP_COMMIT:
+        raise RuntimeError("R13 browser build identity mismatch")
+    if journey.read_json(new_dist / "build.json").get("app") != expected_app:
+        raise RuntimeError("R14 browser build identity mismatch")
+    old_routes, old_types = hosted.page_routes(old_dist)
+    old_routes.update(hosted.release_routes(release13_source, old_manifest.read_bytes()))
+    new_routes, new_types = hosted.page_routes(new_dist)
+    new_routes.update(hosted.release_routes(app, new_manifest.read_bytes()))
+    types = {**old_types, **new_types}
+    evidence.mkdir(parents=True, exist_ok=True)
+    result_path = evidence / "browser-result.json"
+    with TemporaryDirectory(prefix="fix17-reload-inflight-") as private:
+        private = Path(private)
+        held, published = private / "held", private / "published"
+        config_path = private / "input.json"
+        with hosted.Intercept(old_routes, python=old_python, types=types,
+                              secondary_routes=new_routes, activate=published) as server:
+            payload = {**config, "origin": hosted.ORIGIN, "result": str(result_path),
+                       "spki": server.leaf_spki, "manifestSha256": gate.digest(old_manifest),
+                       "expectedApp": expected_app, "initialApp": jumps.RELEASE13_APP_COMMIT,
+                       "initialBuildSha256": gate.digest(old_dist / "build.json"),
+                       "candidateBuildSha256": gate.digest(new_dist / "build.json"),
+                       "candidateIndexSha256": gate.digest(new_dist / "index.html"),
+                       "heldPath": str(held), "publishedPath": str(published)}
+            journey.write_json(config_path, payload)
+            argv = ["node", journey.ROOT / "scripts/journey_reload_inflight_browser.mjs", config_path]
+            child = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            try:
+                deadline = time.monotonic() + 300
+                while not held.exists():
+                    if child.poll() is not None:
+                        out, err = child.communicate(timeout=5)
+                        (evidence / "browser-stdout.log").write_text(out, encoding="utf-8")
+                        (evidence / "browser-stderr.log").write_text(err, encoding="utf-8")
+                        raise RuntimeError("Browser child exited before holding its R13 save")
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("Browser child did not signal held R13 save")
+                    time.sleep(.2)
+                held_save = journey.read_json(held)
+                if (held_save.get("held") is not True or held_save.get("release_after_reload") is not False
+                        or not all(gate.DIGEST.fullmatch(str(held_save.get(name, "")))
+                                   for name in ("body_sha256", "key_sha256"))):
+                    raise RuntimeError("Browser did not signal a held, scoped save")
+                output = update_and_verify()
+                temp_marker = published.with_name("published.tmp")
+                temp_marker.write_text("published\n", encoding="utf-8")
+                os.replace(temp_marker, published)
+                try:
+                    out, err = child.communicate(timeout=240)
+                except subprocess.TimeoutExpired:
+                    raise TimeoutError("Browser child did not finish after R14 publication")
+                (evidence / "browser-stdout.log").write_text(out, encoding="utf-8")
+                (evidence / "browser-stderr.log").write_text(err, encoding="utf-8")
+                if child.returncode:
+                    raise RuntimeError(f"Browser child exited {child.returncode}")
+                observed = journey.read_json(result_path)
+                if (observed.get("mode") != FIX17_RELOAD_INFLIGHT_LEG
+                        or observed.get("status") not in {"pass", "fail"}):
+                    raise RuntimeError("Browser child did not produce a reload-inflight result")
+                if observed.get("held_save") != held_save:
+                    raise RuntimeError("Final browser receipt changed the held R13 request")
+                hits = server.hits()
+                observed["https"] = {
+                    "initial_build_sha256": payload["initialBuildSha256"],
+                    "candidate_build_sha256": payload["candidateBuildSha256"],
+                    "candidate_index_sha256": payload["candidateIndexSha256"],
+                    "candidate_manifest_sha256": gate.digest(new_manifest),
+                    "candidate_build_served": any(hit.get("phase") == "secondary" and hit["path"] == "/build.json"
+                                                   and hit["status"] == 200 for hit in hits),
+                    "candidate_page_served": any(hit.get("phase") == "secondary" and hit["path"] == hosted.PAGE_ENTRY_ROUTE
+                                                  and hit["status"] == 200 for hit in hits),
+                }
+            finally:
+                if child.poll() is None:
+                    child.terminate()
+                    try:
+                        child.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        child.kill()
+                        child.wait(timeout=10)
+        if server.reverted.get("clean") is not True:
+            raise RuntimeError("The hosted intercept did not restore hosts and system trust")
+        observed["intercept_reverted"] = True
+        if isinstance(observed.get("author"), dict):
+            observed["author"]["intercept_reverted"] = True
+        return observed, output
 
 
 def _installed(root, data, manifest, release):
@@ -218,17 +315,20 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) 
                         "manifest_sha256": result["release13_source"]["manifest_sha256"],
                         "build_sha256": publication["build_sha256"], "intercept_reverted": True,
                     }
-                else:
+                elif mode != FIX17_RELOAD_INFLIGHT_LEG:
                     author = _browser({**config, "mode": "author"},
                                       app=old_app, expected_app=jumps.RELEASE13_APP_COMMIT,
                                       dist=args.release13_browser_dist, release_app=source, manifest=old_path,
                                       python=old_version["python"], evidence=evidence / (slug + "-r13"))
+                else:
+                    author = {"status": "pending", "app": jumps.RELEASE13_APP_COMMIT,
+                              "manifest_sha256": result["release13_source"]["manifest_sha256"]}
                 result["timelines"].append({
                     "config": {key: config[key] for key in
                                ("projectId", "projectName", "timelineId", "savedLabel", "draftLabel")},
                     "author": author,
                 })
-                if author.get("status") != "pass":
+                if mode != FIX17_RELOAD_INFLIGHT_LEG and author.get("status") != "pass":
                     raise RuntimeError("R13 App did not author the original scoped saved and unsaved edits: "
                                        + str(author.get("error") or (result.get("prompt") or {}).get("error")
                                              or "missing evidence"))
@@ -240,33 +340,52 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) 
                     entry.update(state="fail", error=result["prompt"].get("error", "Required prompt evidence absent"))
 
         with stage(result, result_path, "native_r14_update"):
-            result["update"] = jumps.candidate_update(app, path, args.shell, evidence / "r14-update", root, data)
-            receipt = jumps.run_receipt(data)
-            result["update_receipt"] = receipt
-            if result["update"]["exit_code"] != 0 or not isinstance(receipt, dict) or (
-                    receipt.get("kind"), receipt.get("exit_code"), receipt.get("still"), receipt.get("target")
-            ) != ("updated", 0, 14, 14):
-                raise RuntimeError("Candidate install --update did not report updated release 14")
-            installed, version, selected, ownership = _installed(root, data, manifest, 14)
-            if installed == original:
-                raise RuntimeError("Candidate did not activate a new installed version")
-            result["release_transition"] = {"from": 13, "to": 14, "source": "candidate-install-update"}
-            result["installed_tuple"] = {"app": candidate["app"], **selected}
-            result["service_manager"] = ownership
-            verify = evidence / "verify-r14"
-            verify.mkdir()
-            journey.verify("install", installed, data, verify)
-            result["import_origins"] = (
-                journey.read_json(verify / "verify-install.json").get("details") or {}).get("origin.imports")
-            if not result["import_origins"]:
-                raise RuntimeError("Installed import origins are absent")
+            def update_and_verify():
+                result["update"] = jumps.candidate_update(app, path, args.shell, evidence / "r14-update", root, data)
+                receipt = jumps.run_receipt(data)
+                result["update_receipt"] = receipt
+                if result["update"]["exit_code"] != 0 or not isinstance(receipt, dict) or (
+                        receipt.get("kind"), receipt.get("exit_code"), receipt.get("still"), receipt.get("target")
+                ) != ("updated", 0, 14, 14):
+                    raise RuntimeError("Candidate install --update did not report updated release 14")
+                installed_now, version_now, selected_now, ownership_now = _installed(root, data, manifest, 14)
+                if installed_now == original:
+                    raise RuntimeError("Candidate did not activate a new installed version")
+                result["release_transition"] = {"from": 13, "to": 14, "source": "candidate-install-update"}
+                result["installed_tuple"] = {"app": candidate["app"], **selected_now}
+                result["service_manager"] = ownership_now
+                verify_now = evidence / "verify-r14"
+                verify_now.mkdir()
+                journey.verify("install", installed_now, data, verify_now)
+                result["import_origins"] = (journey.read_json(verify_now / "verify-install.json").get("details") or {}).get("origin.imports")
+                if not result["import_origins"]:
+                    raise RuntimeError("Installed import origins are absent")
+                return installed_now, version_now, selected_now, ownership_now
+
+            if mode == FIX17_RELOAD_INFLIGHT_LEG:
+                timeline = result["timelines"][0]
+                browser_config = {**config, "mode": FIX17_RELOAD_INFLIGHT_LEG}
+                observed, update_state = _reload_inflight(
+                    browser_config, app=app, old_app=old_app, expected_app=candidate["app"],
+                    old_dist=args.release13_browser_dist, new_dist=args.candidate_browser_dist,
+                    release13_source=source, old_manifest=old_path, new_manifest=path,
+                    old_python=old_version["python"], evidence=evidence / "r13-reload-inflight",
+                    update_and_verify=update_and_verify)
+                timeline["reload_inflight"] = observed
+                timeline["author"] = observed.get("author", {})
+                installed, version, selected, ownership = update_state
+            else:
+                installed, version, selected, ownership = update_and_verify()
 
         with stage(result, result_path, "r14_reopen") as entry:
             if mode == FIX17_REALM_LEG:
                 result["realm_after"] = _reopen_catalog(root, data, evidence / "after")
                 if result["realm_before"] != result["realm_after"]:
                     raise RuntimeError("An R13 project, timeline or published history changed during the update")
-            for number, timeline in enumerate(result["timelines"], start=1):
+            if mode == FIX17_RELOAD_INFLIGHT_LEG and observed["status"] != "pass":
+                entry.update(state="fail", error=observed.get("error", "Guarded Reload did not restore the draft"))
+            timelines_to_retry = () if mode == FIX17_RELOAD_INFLIGHT_LEG else result["timelines"]
+            for number, timeline in enumerate(timelines_to_retry, start=1):
                 config = timeline["config"]
                 timeline["reopen"] = _browser({
                     **config, "mode": "reopen", "expectedDraft": timeline["author"]["draft"],
@@ -298,6 +417,16 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) 
             raise RuntimeError("Failed browser qualification stages: " + ", ".join(failed))
         result["status"] = "pass"
     except Exception as exc:
+        partial = evidence / "r13-reload-inflight" / "browser-result.json"
+        if (mode == FIX17_RELOAD_INFLIGHT_LEG and partial.is_file() and result.get("timelines")
+                and "reload_inflight" not in result["timelines"][0]):
+            try:
+                result["timelines"][0]["reload_inflight"] = journey.read_json(partial)
+                observed_author = result["timelines"][0]["reload_inflight"].get("author")
+                if isinstance(observed_author, dict):
+                    result["timelines"][0]["author"] = observed_author
+            except Exception:
+                result["timelines"][0]["reload_inflight"] = {"status": "fail", "error": "partial browser receipt unreadable"}
         result.update(status="fail", error=f"{type(exc).__name__}: {exc}")
         raise
     finally:

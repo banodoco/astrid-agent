@@ -31,6 +31,8 @@ if __package__:
         FIX17_MATRIX,
         FIX17_BROWSER_LEGS,
         FIX17_PROMPT_LEG,
+        FIX17_RELOAD_INFLIGHT_LEG,
+        FIX17_RELOAD_INFLIGHT_ROW,
         RELEASE1_AUTOMATIC_MATRIX,
         RELEASE11_UPDATE_MATRIX,
         RELEASE13_UPDATE_MATRIX,
@@ -58,6 +60,8 @@ else:
             FIX17_MATRIX,
             FIX17_BROWSER_LEGS,
             FIX17_PROMPT_LEG,
+            FIX17_RELOAD_INFLIGHT_LEG,
+            FIX17_RELOAD_INFLIGHT_ROW,
             RELEASE1_AUTOMATIC_MATRIX,
             RELEASE11_UPDATE_MATRIX,
             RELEASE13_UPDATE_MATRIX,
@@ -84,6 +88,8 @@ else:
             FIX17_MATRIX,
             FIX17_BROWSER_LEGS,
             FIX17_PROMPT_LEG,
+            FIX17_RELOAD_INFLIGHT_LEG,
+            FIX17_RELOAD_INFLIGHT_ROW,
             RELEASE1_AUTOMATIC_MATRIX,
             RELEASE11_UPDATE_MATRIX,
             RELEASE13_UPDATE_MATRIX,
@@ -751,6 +757,8 @@ def _retry_matches(reopen, draft, config, r13_accepted):
 
 
 def _fix17_browser_errors(job_id, contract, row, candidate):
+    if contract.get("leg") == FIX17_RELOAD_INFLIGHT_LEG:
+        return _fix17_reload_inflight_errors(job_id, row, candidate)
     errors = []
     is_prompt = contract["leg"] == FIX17_PROMPT_LEG
     start = row.get("release13_source") or {}
@@ -853,6 +861,120 @@ def _fix17_browser_errors(job_id, contract, row, candidate):
                 or step.get("draft") != draft
                 or not _publication_visits_match(step, draft, start.get("manifest_sha256"), candidate)):
             errors.append(f"{job_id}: both R13 visits must show the required R14 prompt before any save")
+    return errors
+
+
+def _fix17_reload_inflight_errors(job_id, row, candidate):
+    """Validate the Linux R13 save held through an installed R14 editor reload."""
+    errors = []
+    start = row.get("release13_source") or {}
+    installed_r13 = row.get("installed_r13") or {}
+    if (start.get("app_commit") != RELEASE13_APP_COMMIT or start.get("identity") != RELEASE13_IDENTITY
+            or not DIGEST.fullmatch(str(start.get("manifest_sha256", "")))
+            or any(installed_r13.get(k) != v for k, v in RELEASE13_IDENTITY.items())):
+        errors.append(f"{job_id}: exact published and installed R13 provenance is absent")
+    if not required_release14(candidate):
+        errors.append(f"{job_id}: frozen candidate manifest does not require Release 14")
+    if row.get("release_transition") != {"from": 13, "to": 14, "source": "candidate-install-update"}:
+        errors.append(f"{job_id}: native 13 to 14 transition is invalid")
+    update, outcome = row.get("update") or {}, row.get("update_receipt") or {}
+    if (update.get("command") != "install --update" or update.get("exit_code") != 0
+            or (outcome.get("kind"), outcome.get("exit_code"), outcome.get("still"), outcome.get("target"))
+            != ("updated", 0, 14, 14)):
+        errors.append(f"{job_id}: native R14 installer outcome does not prove success")
+    schema = candidate.get("schema_digest")
+    if (not isinstance(schema, str) or not re.fullmatch(r"sha256:[a-f0-9]{64}", schema)
+            or (row.get("installed_tuple") or {}).get("schema_digest") != schema):
+        errors.append(f"{job_id}: installed R14 schema does not match the candidate")
+    if row.get("browser_profile_removed") is not True:
+        errors.append(f"{job_id}: run-owned browser profile cleanup was not proven")
+    if (row.get("service_manager") or {}).get("manager") != "systemd-user":
+        errors.append(f"{job_id}: native Linux service owner was not proven")
+    owners = row.get("live_runtimes")
+    if (not isinstance(owners, list) or len(owners) != 1 or not isinstance(owners[0], dict)
+            or owners[0].get("data_root") != (row.get("run_roots") or {}).get("data")
+            or not _nonempty_text(owners[0].get("runtime_instance_id"))):
+        errors.append(f"{job_id}: did not settle on exactly one run-owned Runtime")
+    required_steps = ["pinned_sources", "native_r13_install", "r13_authoring", "native_r14_update",
+                      "r14_reopen", "native_end"]
+    if row.get("steps") != [{"stage": s, "state": "pass"} for s in required_steps]:
+        errors.append(f"{job_id}: native/browser step trace is incomplete")
+    if (row.get("sentinel") or {}).get("at_settlement", {}).get("alive") is not True:
+        errors.append(f"{job_id}: unrelated sentinel survival is absent")
+
+    timelines = row.get("timelines")
+    if not isinstance(timelines, list) or len(timelines) != 1 or not isinstance(timelines[0], dict):
+        return [*errors, f"{job_id}: expected single reload-inflight timeline is absent"]
+    timeline = timelines[0]
+    config, author = timeline.get("config") or {}, timeline.get("author") or {}
+    draft = author.get("draft") or {}
+    receipt = timeline.get("reload_inflight")
+    if not isinstance(receipt, dict) or receipt.get("mode") != FIX17_RELOAD_INFLIGHT_LEG or receipt.get("status") != "pass":
+        return [*errors, f"{job_id}: reload-inflight browser receipt is absent or failed"]
+    if (not _browser_step_matches(author, "author", RELEASE13_APP_COMMIT, start.get("manifest_sha256"))
+            or not isinstance(author.get("blockedPosts"), int) or author["blockedPosts"] < 1):
+        errors.append(f"{job_id}: authentic R13 authoring proof is absent")
+    identity_keys = ("realmId", "actorId", "projectId", "timelineId", "ownerId", "intentId")
+    if (not all(_nonempty_text(draft.get(k)) for k in identity_keys)
+            or not all(DIGEST.fullmatch(str(draft.get(k, ""))) for k in ("payloadSha256", "requestSha256", "keySha256"))
+            or any(draft.get(k) != config.get(k) for k in ("projectId", "timelineId"))
+            or not all(_nonempty_text(config.get(k)) for k in ("projectId", "timelineId", "draftLabel"))):
+        errors.append(f"{job_id}: original scoped draft identity or digests are incomplete")
+    accepted = author.get("accepted") or {}
+    if not all(_nonempty_text(accepted.get(k)) for k in ("revision", "publication")):
+        errors.append(f"{job_id}: accepted R13 save identifiers are absent")
+
+    held = receipt.get("held_save") if isinstance(receipt.get("held_save"), dict) else {}
+    expected_path = ("/v1/projects/{}/timelines/{}/commit".format(
+        quote(config.get("projectId", ""), safe=""), quote(config.get("timelineId", ""), safe=""))
+        if _nonempty_text(config.get("projectId")) and _nonempty_text(config.get("timelineId")) else None)
+    if (held.get("method") != "POST" or held.get("path") != expected_path
+            or held.get("held") is not True or held.get("release_after_reload") is not False
+            or held.get("body_sha256", held.get("bodySha256")) != draft.get("requestSha256")
+            or held.get("key_sha256", held.get("keySha256")) != draft.get("keySha256")):
+        errors.append(f"{job_id}: original scoped R13 commit was not proven held across the reload")
+
+    transition = receipt.get("transition") if isinstance(receipt.get("transition"), dict) else {}
+    r14_app = candidate.get("app")
+    https = receipt.get("https") if isinstance(receipt.get("https"), dict) else {}
+    if (receipt.get("origin") != "https://astrid.haus" or transition.get("origin") != receipt.get("origin")
+            or transition.get("url") != "https://astrid.haus/build.json"
+            or transition.get("initial_app_sha") != RELEASE13_APP_COMMIT or transition.get("app_sha") != r14_app
+            or https.get("initial_build_sha256") != author.get("build_sha256")
+            or https.get("candidate_manifest_sha256") != candidate.get("manifest_sha256")
+            or https.get("candidate_build_served") is not True or https.get("candidate_page_served") is not True
+            or receipt.get("intercept_reverted") is not True
+            or not DIGEST.fullmatch(str(transition.get("build_sha256", "")))
+            or transition.get("build_sha256") != https.get("candidate_build_sha256")):
+        errors.append(f"{job_id}: same-origin R14 build response identity is absent or mismatched")
+    notice = receipt.get("notice") if isinstance(receipt.get("notice"), dict) else {}
+    if (notice.get("text") != "Editor updated · Reload" or notice.get("visible") is not True
+            or notice.get("original_document") is not True):
+        errors.append(f"{job_id}: exact Reload notice was not visible in the original document")
+    reload_result = receipt.get("reload") if isinstance(receipt.get("reload"), dict) else {}
+    if reload_result.get("clicked") is not True or reload_result.get("result") != "reloaded":
+        errors.append(f"{job_id}: guarded Reload did not complete successfully")
+
+    restore = receipt.get("restore") if isinstance(receipt.get("restore"), dict) else {}
+    same_draft = restore.get("draft_digest") == draft.get("payloadSha256")
+    persisted = restore.get("persisted_label") == config.get("draftLabel")
+    offered = (restore.get("offered") is True and restore.get("pending") is True
+               and restore.get("draft_label") == config.get("draftLabel")
+               and restore.get("draft_id") in {draft.get("intentId"), draft.get("requestSha256")})
+    if (restore.get("app_sha") != r14_app or restore.get("document_replaced") is not True
+            or not DIGEST.fullmatch(str(restore.get("index_sha256", "")))
+            or restore.get("index_sha256") != https.get("candidate_index_sha256")
+            or restore.get("project_id") != config.get("projectId") or restore.get("timeline_id") != config.get("timelineId")
+            or not (persisted or offered) or not same_draft):
+        errors.append(f"{job_id}: R14 did not restore the same original persisted or identified pending draft")
+    audit = receipt.get("r14_audit") if isinstance(receipt.get("r14_audit"), dict) else {}
+    records = audit.get("requests")
+    if (not isinstance(records, list) or not all(isinstance(record, dict) for record in records)
+            or not {"method": "GET", "path": "/build.json", "source": "R13", "kind": "build-watcher"} in records
+            or not {"method": "GET", "path": "/tools/video-editor", "source": "R13", "kind": "navigation"} in records):
+        errors.append(f"{job_id}: R14 build and document request audit is incomplete")
+    if audit.get("r13_save_requests_after_switch") != []:
+        errors.append(f"{job_id}: R13 save audit recorded ambiguous or post-switch R14 writes")
     return errors
 
 COMPOSITION_REOPEN_FIELDS = ("project_id", "timeline_id", "accepted_revision_id",
@@ -1185,7 +1307,7 @@ def evaluate_release1_matrix(candidate, results, scope="nine", job_id=None):
             raise ValueError("selected Release-1 job id must be nonempty")
         if scope != "nine":
             raise ValueError("one named Release-1 row requires the full direct-row scope")
-        matched = tuple(row for row in (*RELEASE1_MATRIX, *FIX17_MATRIX)
+        matched = tuple(row for row in (*RELEASE1_MATRIX, *FIX17_MATRIX, FIX17_RELOAD_INFLIGHT_ROW)
                         if row["job_id"] == job_id)
         if not matched or any(row != matched[0] for row in matched[1:]):
             raise ValueError("unknown or conflicting named Release-1/FIX-17 job id: " + job_id)

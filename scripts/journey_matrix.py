@@ -87,13 +87,19 @@ RELEASE1_MATRIX: Final = (*_RELEASE1_DIRECT_LEGACY, *RELEASE1_DIRECT_FRESH_MATRI
 # plus exactly three R13 upgrades and the dedicated killed-update recovery.
 FIX17_PROMPT_LEG: Final = "release13-required-update"
 FIX17_REALM_LEG: Final = "release13-realm-reopen"
-FIX17_BROWSER_LEGS: Final = (FIX17_PROMPT_LEG, FIX17_REALM_LEG)
+FIX17_RELOAD_INFLIGHT_LEG: Final = "r13-reload-inflight"
+FIX17_BROWSER_LEGS: Final = (FIX17_PROMPT_LEG, FIX17_REALM_LEG, FIX17_RELOAD_INFLIGHT_LEG)
 FIX17_REQUIRED_UPDATE_MATRIX: Final = (
     {"job_id": "direct-linux-r13-required-update", "mode": "direct", "runner": "ubuntu-24.04",
      "shell": "sh", "os": "linux", "leg": FIX17_PROMPT_LEG},
     {"job_id": "direct-linux-r13-realm-reopen", "mode": "direct", "runner": "ubuntu-24.04",
      "shell": "sh", "os": "linux", "leg": FIX17_REALM_LEG},
 )
+# The later owner row is named separately from the original FIX-17 matrix.
+FIX17_RELOAD_INFLIGHT_ROW: Final = {
+    "job_id": "direct-linux-r13-reload-inflight", "mode": "direct", "runner": "ubuntu-24.04",
+    "shell": "sh", "os": "linux", "leg": FIX17_RELOAD_INFLIGHT_LEG,
+}
 FIX17_MATRIX: Final = (_RELEASE1_DIRECT_LEGACY[2], *RELEASE1_DIRECT_FRESH_MATRIX,
                        *RELEASE13_UPDATE_MATRIX, *RELEASE13_KILLED_MATRIX, *FIX17_REQUIRED_UPDATE_MATRIX)
 FIX17_JOB_IDS: Final = tuple(row["job_id"] for row in FIX17_MATRIX)
@@ -306,7 +312,8 @@ def release1_job(job_id: str) -> dict:
     Deferred R1.1 Pinokio jobs stay admitted for the driver, but are not part
     of RELEASE1_MATRIX or its aggregate.
     """
-    for row in (*_ADMITTED_JOBS, *RELEASE1_MATRIX, *FIX17_MATRIX, *RELEASE1_1_PINOKIO_MATRIX):
+    for row in (*_ADMITTED_JOBS, *RELEASE1_MATRIX, *FIX17_MATRIX, FIX17_RELOAD_INFLIGHT_ROW,
+                *RELEASE1_1_PINOKIO_MATRIX):
         if row["job_id"] == job_id:
             return dict(row)
     raise ValueError(f"Unknown Release-1 journey job: {job_id}")

@@ -1,4 +1,5 @@
 name: Release-1 installed lifecycle receipts
+run-name: ${{ inputs.rehearsal == true && format('FIX-17 round 4 REHEARSAL · {0}', inputs.row) || 'Release-1 installed lifecycle receipts' }}
 
 # This workflow is deliberately a receipt producer, not a release dispatcher.
 # A caller or automatic resolver supplies one immutable candidate tuple; the
@@ -84,6 +85,11 @@ on:
         type: string
   workflow_dispatch:
     inputs:
+      rehearsal:
+        description: Label this manually dispatched run as a release rehearsal
+        required: false
+        default: false
+        type: boolean
       candidate:
         description: Frozen candidate JSON; hosted results are evidence, never a publish action. Leave empty to resolve the candidate from the App's manifest on `branch` (as the automatic push/schedule path does)
         required: false
@@ -180,6 +186,7 @@ on:
           - direct-windows-r13-killed-update
           - direct-linux-r13-required-update
           - direct-linux-r13-realm-reopen
+          - direct-linux-r13-reload-inflight
           - direct-linux-autostart-off
           - direct-macos-autostart-off
           - direct
@@ -367,10 +374,11 @@ jobs:
           # The release11-then-update rows are a separate direct matrix, selected by name only.
           release11_job_ids = tuple(row["job_id"] for row in journey_matrix.RELEASE11_UPDATE_MATRIX)
           release11_only = journey_row in release11_job_ids
-          release13_job_ids = (*journey_matrix.RELEASE13_UPDATE_JOB_IDS, journey_matrix.RELEASE13_KILLED_JOB_ID,
-                                   *(row["job_id"] for row in journey_matrix.FIX17_REQUIRED_UPDATE_MATRIX))
+          release13_rows = (*journey_matrix.RELEASE13_UPDATE_MATRIX, *journey_matrix.RELEASE13_KILLED_MATRIX,
+                            *journey_matrix.FIX17_REQUIRED_UPDATE_MATRIX, journey_matrix.FIX17_RELOAD_INFLIGHT_ROW)
+          release13_job_ids = tuple(row["job_id"] for row in release13_rows)
           release13_only = journey_row in release13_job_ids
-          valid_rows = {"", *journey_matrix.RELEASE1_JOB_IDS, *journey_matrix.FIX17_JOB_IDS, "direct", "pinokio", *pinokio_job_ids, *release11_job_ids}
+          valid_rows = {"", *journey_matrix.RELEASE1_JOB_IDS, *journey_matrix.FIX17_JOB_IDS, "direct", "pinokio", *pinokio_job_ids, *release11_job_ids, *release13_job_ids}
           if journey_row not in valid_rows:
               raise SystemExit("row must be one of " + ", ".join(sorted(valid_rows - {""})))
           if journey_row:
@@ -435,8 +443,7 @@ jobs:
           elif release11_only:
               matrix = [dict(row) for row in journey_matrix.RELEASE11_UPDATE_MATRIX]
           elif release13_only:
-              matrix = [dict(row) for row in (*journey_matrix.RELEASE13_UPDATE_MATRIX,
-                          *journey_matrix.RELEASE13_KILLED_MATRIX, *journey_matrix.FIX17_REQUIRED_UPDATE_MATRIX)]
+              matrix = [dict(row) for row in release13_rows]
           elif journey_row == "":
               # An automatic push or schedule runs the five rows that existed before the release9 and release11 legs.
               matrix = [dict(row) for row in journey_matrix.RELEASE1_AUTOMATIC_MATRIX]
@@ -560,7 +567,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
       - name: Check out the pinned Release 13 App for the release13-then-update leg
-        if: matrix.leg == 'release13-then-update' || matrix.leg == 'release13-then-killed-update' || (matrix.leg == 'release13-required-update' || matrix.leg == 'release13-realm-reopen')
+        if: matrix.leg == 'release13-then-update' || matrix.leg == 'release13-then-killed-update' || (matrix.leg == 'release13-required-update' || matrix.leg == 'release13-realm-reopen' || matrix.leg == 'r13-reload-inflight')
         uses: actions/checkout@v4
         with:
           repository: banodoco/astrid-app
@@ -831,7 +838,7 @@ jobs:
       # The fresh Linux row updates by clicking Update now in the candidate's own hosted App build:
       # the driver serves this build at https://astrid.haus through the update leg's intercept.
       - name: Set up Node for the hosted App build
-        if: matrix.job_id == 'direct-linux-fresh' || matrix.leg == 'fresh-install-autostart-off' || (matrix.leg == 'release13-required-update' || matrix.leg == 'release13-realm-reopen') || (startsWith(matrix.job_id, 'pinokio-') && steps.candidate_files.outputs.release == '14')
+        if: matrix.job_id == 'direct-linux-fresh' || matrix.leg == 'fresh-install-autostart-off' || (matrix.leg == 'release13-required-update' || matrix.leg == 'release13-realm-reopen' || matrix.leg == 'r13-reload-inflight') || (startsWith(matrix.job_id, 'pinokio-') && steps.candidate_files.outputs.release == '14')
         uses: actions/setup-node@v4
         with:
           node-version-file: app/.nvmrc
@@ -882,7 +889,7 @@ jobs:
             exit 1
           fi
       - name: Build staged App for R14 reopen
-        if: (matrix.leg == 'release13-required-update' || matrix.leg == 'release13-realm-reopen')
+        if: (matrix.leg == 'release13-required-update' || matrix.leg == 'release13-realm-reopen' || matrix.leg == 'r13-reload-inflight')
         shell: bash
         working-directory: app
         timeout-minutes: 30
@@ -902,7 +909,7 @@ jobs:
             exit 1
           fi
       - name: Build pinned Release 13 App for R13 authoring and required-update browser
-        if: (matrix.leg == 'release13-required-update' || matrix.leg == 'release13-realm-reopen')
+        if: (matrix.leg == 'release13-required-update' || matrix.leg == 'release13-realm-reopen' || matrix.leg == 'r13-reload-inflight')
         shell: bash
         working-directory: release13-app
         timeout-minutes: 30
@@ -946,7 +953,7 @@ jobs:
               '--allow-release11-to-candidate'
             )
           }
-          if ('${{ matrix.leg }}' -in @('release13-then-update', 'release13-then-killed-update', 'release13-required-update', 'release13-realm-reopen')) {
+          if ('${{ matrix.leg }}' -in @('release13-then-update', 'release13-then-killed-update', 'release13-required-update', 'release13-realm-reopen', 'r13-reload-inflight')) {
             $release0Args = @(
               '--release13-app-checkout', "$pwd/release13-app",
               '--allow-release13-to-candidate'
@@ -977,7 +984,7 @@ jobs:
           $keepGoingArgs = @()
           if ('${{ inputs.diagnostic_keep_going }}' -eq 'true') { $keepGoingArgs = @('--diagnostic-keep-going') }
           $browserArgs = @()
-          if ('${{ matrix.leg }}' -in @('release13-required-update', 'release13-realm-reopen')) {
+          if ('${{ matrix.leg }}' -in @('release13-required-update', 'release13-realm-reopen', 'r13-reload-inflight')) {
             $browserArgs = @('--candidate-browser-dist', "$pwd/app/dist",
                            '--release13-browser-dist', "$pwd/release13-app/dist")
           }
@@ -1025,7 +1032,7 @@ jobs:
       - name: Make sure the hosted-update intercept left no trace on the runner
         # The update leg maps astrid.haus to a local HTTPS stand-in with a CA only this runner trusts.
         # The driver removes both in a finally block; this repeats the removal if the driver was killed.
-        if: ${{ always() && (matrix.job_id == 'direct-windows' || matrix.job_id == 'direct-linux-fresh' || matrix.job_id == 'direct-macos-fresh' || (matrix.leg == 'release13-required-update' || matrix.leg == 'release13-realm-reopen')) }}
+        if: ${{ always() && (matrix.job_id == 'direct-windows' || matrix.job_id == 'direct-linux-fresh' || matrix.job_id == 'direct-macos-fresh' || (matrix.leg == 'release13-required-update' || matrix.leg == 'release13-realm-reopen' || matrix.leg == 'r13-reload-inflight')) }}
         timeout-minutes: 5
         run: python agent/scripts/journey_hosted_update.py revert
       - name: Run the Pinokio launcher row driver
@@ -1068,6 +1075,23 @@ jobs:
             [IO.File]::WriteAllText($table, "NON-PROOF`n`n| stage | result | forced-continuation-used | first error |`n| --- | --- | --- | --- |`n| pre-driver-or-scope | not-run | false | $errorText |`n", [Text.UTF8Encoding]::new($false))
           }
           if (Test-Path -LiteralPath $table) { Get-Content -LiteralPath $table | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY }
+      - name: Mark the lifecycle receipts as rehearsal evidence
+        if: always() && inputs.rehearsal == true && steps.candidate_files.outputs.release == '14'
+        shell: bash
+        run: |
+          python - <<'PYTHON'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"]) / os.environ["JOURNEY_ROOT_NAME"] / "evidence-upload"
+          for phase in ("before-cleanup", "after-cleanup"):
+              receipt = root / phase / "journey-result.json"
+              if receipt.is_file() and not any(path.is_symlink() for path in (root, receipt.parent, receipt)):
+                  data = json.loads(receipt.read_text(encoding="utf-8"))
+                  data["run_purpose"] = "REHEARSAL"
+                  receipt.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+          PYTHON
       - name: Validate the named lifecycle evidence artifact boundary
         id: evidence_boundary
         if: always()

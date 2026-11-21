@@ -12,19 +12,19 @@ const PROMPT_TIMEOUT = 30_000;
 const COMMIT_PATH = /^\/v1\/projects\/[^/]+\/timelines\/[^/]+\/commit$/;
 const PROFILE_OPTIONS = { permissions: ['local-network-access'], serviceWorkers: 'block' };
 
-function check(value, message) {
+export function check(value, message) {
   if (!value) throw new Error(message);
 }
 
-function sha256(value) {
+export function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
 }
 
-function runtimePath(path) {
+export function runtimePath(path) {
   return path.replace(/^\/api\/runtime(?=\/v1\/)/, '');
 }
 
-function commitPost(request) {
+export function commitPost(request) {
   return request.method() === 'POST' && COMMIT_PATH.test(runtimePath(new URL(request.url()).pathname));
 }
 
@@ -33,26 +33,30 @@ function selectedPath(config) {
     + encodeURIComponent(config.timelineId) + '/commit';
 }
 
-function isCommit(request, config) {
+export function isCommit(request, config) {
   return commitPost(request) && runtimePath(new URL(request.url()).pathname) === selectedPath(config);
 }
 
-function trackName(page) {
+export function trackName(page) {
   return page.getByRole('textbox', { name: 'Track name' }).first();
 }
 
-async function openEditor(page, config) {
+async function openEditor(page, config, onPhase = () => {}) {
   const url = new URL('/tools/video-editor', config.origin);
   url.searchParams.set('project', config.projectId);
   url.searchParams.set('timeline', config.timelineId);
+  onPhase('open-editor');
   await page.goto(url.toString(), { waitUntil: 'domcontentloaded' });
+  onPhase('wait-for-runtime-connection');
   await page.locator('[data-testid="runtime-connection-status"][data-state="connected"]')
     .waitFor({ state: 'attached' });
+  onPhase('wait-for-selected-project');
   await page.waitForFunction(({ name }) => [...document.querySelectorAll('[role="combobox"][aria-label="Select project"]')]
     .some((combobox) => combobox.textContent?.trim() === name), { name: config.projectName });
   const current = new URL(page.url());
   check(current.searchParams.get('project') === config.projectId
     && current.searchParams.get('timeline') === config.timelineId, 'The App opened a different project or timeline');
+  onPhase('wait-for-track');
   const track = trackName(page);
   await track.waitFor({ state: 'visible' });
   return track;
@@ -83,7 +87,7 @@ async function queueRows(page) {
 }
 
 // Keep the raw persisted request in memory. Only scoped IDs and digests leave the browser runner.
-async function findDraft(page, config) {
+export async function findDraft(page, config) {
   const matches = [];
   for (const row of await queueRows(page)) {
     if (row.scope?.projectId !== config.projectId || row.scope?.timelineId !== config.timelineId) continue;
@@ -118,17 +122,23 @@ async function waitForDraft(page, config) {
   throw new Error('The original scoped request was missing from the durable save queue');
 }
 
-async function author(page, config) {
+export async function author(page, config, { onQueuedAttempt, onPhase, newDocument } = {}) {
   let queueing = false;
   let blockedPosts = 0;
+  let queuedAttempt = null;
   await page.route('**/*', (route) => {
     const request = route.request();
     if (!commitPost(request)) return route.fallback();
+    if (newDocument?.()) return route.continue();
     if (!queueing && isCommit(request, config)) return route.continue();
-    if (isCommit(request, config)) blockedPosts++;
+    if (isCommit(request, config)) {
+      blockedPosts++;
+      if (queueing && onQueuedAttempt) { queuedAttempt ??= request; return onQueuedAttempt(route, request); }
+    }
     return route.abort('internetdisconnected');
   });
-  const track = await openEditor(page, config);
+  const track = await openEditor(page, config, onPhase);
+  onPhase?.('accept-r13-edit');
   check(await track.inputValue() === config.initialLabel, 'R13 did not open the seeded composition');
   await page.getByTestId('required-update-reason').waitFor({ state: 'hidden', timeout: 5_000 });
   const first = page.waitForResponse((response) => isCommit(response.request(), config));
@@ -138,10 +148,20 @@ async function author(page, config) {
   check(response.ok() && body.data?.status === 'accepted' && body.data.accepted_revision_id
     && body.receipt?.receipt_id, 'R13 did not accept the saved composition edit');
   queueing = true;
-  const [attempt] = await Promise.all([
-    page.waitForEvent('requestfailed', (request) => isCommit(request, config)),
-    editTrack(track, config.draftLabel),
-  ]);
+  onPhase?.('hold-r13-draft');
+  let attempt;
+  if (onQueuedAttempt) {
+    await editTrack(track, config.draftLabel);
+    const attemptDeadline = Date.now() + PROMPT_TIMEOUT;
+    while (!queuedAttempt && Date.now() < attemptDeadline) await page.waitForTimeout(25);
+    check(queuedAttempt, 'The second scoped R13 save was not captured');
+    attempt = queuedAttempt;
+  } else {
+    [attempt] = await Promise.all([
+      page.waitForEvent('requestfailed', (request) => isCommit(request, config)),
+      editTrack(track, config.draftLabel),
+    ]);
+  }
   const { draft } = await waitForDraft(page, config);
   check(blockedPosts > 0 && draft.requestSha256 === sha256(attempt.postData() ?? '')
     && draft.keySha256 === sha256(attempt.headers()['idempotency-key'] ?? ''),
@@ -211,7 +231,7 @@ async function freshContext(browser, config, action) {
   }
 }
 
-async function publication(page, context, browser, config) {
+async function publication(page, context, browser, config, onPhase) {
   let published = false;
   const manifestUrl = config.origin + '/install-manifest.json';
   const oldManifest = Buffer.from(config.initialManifestB64, 'base64');
@@ -220,10 +240,11 @@ async function publication(page, context, browser, config) {
     headers: { 'cache-control': 'no-store' },
   }));
   const requests = observeRequests(page, config.origin);
-  const authored = await author(page, config);
+  const authored = await author(page, config, { onPhase });
   await page.evaluate(() => { window.__astridFix17OriginalDocument = true; });
   const initialAttempt = requests.saveAttempts.length;
   published = true;
+  onPhase?.('observe-required-prompt');
   const [warm, fresh] = await Promise.all([
     visitReceipt(page, config, 'already-open-edited-tab', requests, initialAttempt),
     freshContext(browser, config, async (tab) => {
@@ -243,7 +264,7 @@ async function publication(page, context, browser, config) {
     prompt: fresh.prompt, ...(complete ? {} : { error: 'R13 publication visits did not both prove a required prompt before save' }) };
 }
 
-async function reopen(page, browser, config) {
+async function reopen(page, browser, config, onPhase) {
   let pending = null;
   let clicked = false;
   const attempts = [];
@@ -261,13 +282,15 @@ async function reopen(page, browser, config) {
     allowed.add(request);
     return route.continue();
   });
-  const track = await openEditor(page, config);
+  const track = await openEditor(page, config, onPhase);
+  onPhase?.('read-prior-draft');
   const original = await waitForDraft(page, config);
   pending = original.pending;
   const label = await track.inputValue();
   check(label === config.draftLabel || label === config.savedLabel, 'The App opened a different composition');
   const button = page.locator('[data-save-bar]').getByRole('button', { name: 'Try again', exact: true });
   await button.waitFor({ state: 'visible', timeout: PROMPT_TIMEOUT });
+  onPhase?.('retry-prior-draft');
   const accepted = page.waitForResponse((response) => allowed.has(response.request()),
     { timeout: PROMPT_TIMEOUT }).catch(() => null);
   clicked = true;
@@ -303,8 +326,7 @@ async function reopen(page, browser, config) {
     ...(reopenedLabel === config.draftLabel ? {} : { error: 'Fresh R14 client did not reopen the accepted draft composition label' }) };
 }
 
-export async function execute(config, chromium) {
-  check(['author', 'publication', 'reopen'].includes(config.mode), 'Unknown FIX-17 browser step');
+export async function withBrowserPage(config, chromium, run) {
   check(config.origin === 'https://astrid.haus' && config.spki?.length >= 32 && config.profileDir,
     'An isolated hosted origin, TLS pin and persistent profile are required');
   const browser = chromium ?? createRequire(join(config.browserDriverApp, 'package.json'))('@playwright/test').chromium;
@@ -315,26 +337,34 @@ export async function execute(config, chromium) {
     await context.addInitScript(() => localStorage.setItem('astrid-editor-tour-v1', '1'));
     const page = context.pages()[0] ?? await context.newPage();
     page.setDefaultTimeout(TIMEOUT);
-    let result;
-    if (config.mode === 'publication') result = await publication(page, context, browser, config);
-    else if (config.mode === 'reopen') result = await reopen(page, browser, config);
-    else result = { status: 'pass', ...await author(page, config) };
-    return { mode: config.mode, ...result };
+    return await run(page, context, browser);
   } finally {
     await context.close();
   }
 }
 
+export async function execute(config, chromium, onPhase) {
+  check(['author', 'publication', 'reopen'].includes(config.mode), 'Unknown FIX-17 browser step');
+  return withBrowserPage(config, chromium, async (page, context, browser) => {
+    let result;
+    if (config.mode === 'publication') result = await publication(page, context, browser, config, onPhase);
+    else if (config.mode === 'reopen') result = await reopen(page, browser, config, onPhase);
+    else result = { status: 'pass', ...await author(page, config, { onPhase }) };
+    return { mode: config.mode, ...result };
+  });
+}
+
 async function main() {
   const config = JSON.parse(readFileSync(process.argv[2], 'utf8'));
   let result;
+  let stage = 'launch-browser';
   try {
-    result = await execute(config);
+    result = await execute(config, undefined, (nextStage) => { stage = nextStage; });
   } catch (error) {
     // Playwright errors may contain request data. Retain a bounded safe stage signal.
     const code = error?.name === 'TimeoutError' ? 'browser-timeout' : 'browser-operation-failed';
     const safe = typeof error?.message === 'string' && /^[a-zA-Z0-9 .'-]{1,175}$/.test(error.message);
-    result = { status: 'fail', mode: config.mode, error: safe ? error.message : code };
+    result = { status: 'fail', mode: config.mode, stage, error: safe ? error.message : code };
   }
   writeFileSync(config.result, JSON.stringify(result, null, 2) + '\n');
 }
