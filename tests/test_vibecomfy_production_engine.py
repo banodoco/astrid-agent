@@ -606,3 +606,85 @@ def test_hook_matroska_type_is_independent_of_system_mime_alias(tmp_path, monkey
     # The sibling exercises preservation of the producer's verified type while
     # the first output exercises the hook replacement and suffix change.
     test_hook_output_keeps_verified_container(tmp_path, monkeypatch, True)
+
+
+@pytest.mark.parametrize(
+    ("suffix", "expected"),
+    [
+        (".mkv", "video/x-matroska"),
+        (".mp4", "video/mp4"),
+        (".mov", "video/quicktime"),
+        (".webm", "video/webm"),
+        (".wav", "audio/wav"),
+        (".png", "image/png"),
+        (".jpg", "image/jpeg"),
+    ],
+)
+def test_hook_output_media_type_uses_fixed_astrid_media_table(
+    tmp_path, monkeypatch, suffix, expected,
+):
+    import mimetypes
+
+    monkeypatch.setenv("ASTRID_INTERNAL_INVOCATION", "1")
+    run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    envelope, payload = _managed_result_fixture(tmp_path)
+    first = payload["outputs"][0]
+    first["path"] = "outputs/shot.avi"
+    (envelope.parent / "outputs/final.mp4").rename(envelope.parent / first["path"])
+    envelope.write_text(json.dumps(payload), encoding="utf-8")
+    production = production_engine.ProductionRunResult(
+        outputs=tuple(envelope.parent / row["path"] for row in payload["outputs"]),
+        managed_generation_result_path=envelope, managed_generation_result=payload,
+    )
+    candidate = tmp_path / f"composed{suffix}"
+    candidate.write_bytes(b"hook output")
+    monkeypatch.setattr(
+        mimetypes, "guess_type", lambda *_args, **_kwargs: ("application/x-conflicting-host", None),
+    )
+
+    manifest = run._materialize_managed_generation_result(
+        tmp_path / "spool", production, task_identity="task-1",
+        workflow_path=tmp_path / "workflow.py",
+        after_outputs=lambda paths: [candidate, *paths[1:]],
+    )
+
+    row = manifest["managed_generation_result"]["outputs"][0]
+    assert Path(row["path"]).suffix == suffix
+    assert row["media_type"] == expected
+
+
+@pytest.mark.parametrize(
+    ("platform_type", "expected"),
+    [
+        ("application/x-platform-fallback", "application/x-platform-fallback"),
+        (None, "application/octet-stream"),
+    ],
+)
+def test_hook_output_media_type_falls_back_outside_astrid_media_table(
+    tmp_path, monkeypatch, platform_type, expected,
+):
+    import mimetypes
+
+    monkeypatch.setenv("ASTRID_INTERNAL_INVOCATION", "1")
+    run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    envelope, payload = _managed_result_fixture(tmp_path)
+    first = payload["outputs"][0]
+    first["path"] = "outputs/shot.avi"
+    (envelope.parent / "outputs/final.mp4").rename(envelope.parent / first["path"])
+    envelope.write_text(json.dumps(payload), encoding="utf-8")
+    production = production_engine.ProductionRunResult(
+        outputs=tuple(envelope.parent / row["path"] for row in payload["outputs"]),
+        managed_generation_result_path=envelope, managed_generation_result=payload,
+    )
+    candidate = tmp_path / "composed.unlisted"
+    candidate.write_bytes(b"hook output")
+    monkeypatch.setattr(mimetypes, "guess_type", lambda *_args, **_kwargs: (platform_type, None))
+
+    manifest = run._materialize_managed_generation_result(
+        tmp_path / "spool", production, task_identity="task-1",
+        workflow_path=tmp_path / "workflow.py",
+        after_outputs=lambda paths: [candidate, *paths[1:]],
+    )
+
+    row = manifest["managed_generation_result"]["outputs"][0]
+    assert row["media_type"] == expected
