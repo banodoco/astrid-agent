@@ -79,11 +79,13 @@ STEPS = (
     ("doctor", "doctor"),
     ("dry_run", "dry-run"),
     ("data_check", "data check"),
+    ("save_timeline", "save timeline on installed candidate"),
+    ("reopen_timeline", "reload and reopen saved timeline"),
 )
 STEP_LABELS = dict(STEPS)
 # The receipt's assertions; the evidence checker names the same ones.
 CHECKS = ("release13_install", "update_exit", "release", "one_runtime", "service", "health",
-          "doctor", "dry_run", "data_marker", "unrelated_sentinel")
+          "doctor", "dry_run", "data_marker", "timeline_saved", "timeline_reopened", "unrelated_sentinel")
 
 
 class WindowsR13StepError(RuntimeError):
@@ -280,7 +282,8 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) 
         "sentinel": {"pid": sentinel.pid, "birth": birth},
         "release13_source": None, "candidate_bootstrap": None, "update": None,
         "release_transition": None, "live_runtimes": None, "health_transition": None,
-        "doctor": None, "dry_run": None, "data_marker": None, "steps": [],
+        "doctor": None, "dry_run": None, "data_marker": None,
+        "timeline_seed": None, "timeline_save": None, "timeline_reopen": None, "steps": [],
         "checks": {key: "not-run" for key in CHECKS},
     }
     result_path = evidence / "journey-result.json"
@@ -342,6 +345,12 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) 
             marker.write_text(MARKER_TEXT, encoding="utf-8")
             digest = hashlib.sha256(marker.read_bytes()).hexdigest()
             result["data_marker"] = {"project": PROJECT, "sha256": digest, "survived": None}
+            # An authentic Release 13 timeline is created in the same selected
+            # installed Runtime, before installing the candidate.
+            result["timeline_seed"] = jumps.live_workspace(
+                root, data, evidence / "release13-timeline-seed", "seed",
+                {"project": PROJECT + "-timeline", "generation": "release13-windows",
+                 "task_id": None, "create_project": True})
 
         # 4. The candidate's public update command, from the Release 13 install.
         with step(result, result_path, "update"):
@@ -419,6 +428,24 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) 
             if not settled["alive"]:
                 raise RuntimeError("Unrelated sentinel did not survive the Release 13 install and the update")
             result["checks"]["unrelated_sentinel"] = "pass"
+        with step(result, result_path, "save_timeline"):
+            seed = result["timeline_seed"]
+            saved = jumps.live_workspace(
+                root, active_data, evidence / "candidate-save",
+                "save_timeline_after_update", seed)
+            if saved.get("saved") is not True:
+                raise RuntimeError("Installed candidate did not save the timeline edit")
+            result["timeline_save"] = saved
+            result["checks"]["timeline_saved"] = "pass"
+
+        with step(result, result_path, "reopen_timeline"):
+            reopened = jumps.live_workspace(
+                root, active_data, evidence / "candidate-reopen",
+                "reopen_saved_timeline", saved)
+            if reopened.get("reopened") is not True or reopened.get("saved_name") != saved["saved_name"]:
+                raise RuntimeError("The installed candidate did not reopen the saved timeline edit")
+            result["timeline_reopen"] = reopened
+            result["checks"]["timeline_reopened"] = "pass"
         result["status"] = "pass"
     except Exception as exc:
         result.update(status="fail", error=f"{type(exc).__name__}: {exc}")
