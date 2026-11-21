@@ -10,8 +10,8 @@ import subprocess
 from astrid.core.rendering._remotion_package import composition_package_problem
 from astrid.core.rendering.node_pin import resolve_pinned_node
 from astrid.core.rendering.remotion_runtime import resolve_remotion_project_dir
-from ._command_state import CommandError, equal
 
+from ._command_state import CommandError, equal
 
 _FIELDS = ('x', 'y', 'width', 'height', 'cropTop', 'cropBottom', 'cropLeft', 'cropRight', 'fit')
 
@@ -190,7 +190,12 @@ def normalize_revision_closure(parent, internals):
     if separate and embedded and separate != embedded:
         raise CommandError('parent clip collections disagree before placement normalization')
     config['clips'] = copy.deepcopy(separate or embedded)
-    media = lambda row: any(isinstance(c, dict) and c.get('clipType', 'media') in ('media', 'image', 'video') for c in row.get('clips', []))
+    def media(row):
+        return any(
+            isinstance(clip, dict) and clip.get('clipType', 'media') in ('media', 'image', 'video')
+            for clip in row.get('clips', [])
+        )
+
     needs_canvas = media(config) or any(media(row['payload']) for row in internals)
     if not needs_canvas:
         return parent, internals, []

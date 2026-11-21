@@ -4,7 +4,6 @@ from __future__ import annotations
 from collections.abc import MutableMapping
 from typing import Any
 
-
 SCALE_APPLIES_TO_POSITIONED_CLIPS = "scaleAppliesToPositionedClips"
 CLIP_PLACEMENT_VERSION = "clipPlacementVersion"
 CLIP_PLACEMENT_VERSION_CURRENT = 1
