@@ -453,7 +453,7 @@ def place_element(owner: Any, project: str, timeline: str, *, realm: str, target
                     project_id, timeline_id, _connection(client)):
                 raise ValueError('Session belongs to a different realm, actor, project or timeline')
         calls = [{'schema_version': 1, 'op': 'clip.set-element', 'version': '1',
-                  'select': target, 'args': {'elementRef': copy.deepcopy(element)}}]
+                  'select': target, 'args': {'elementRef': copy.deepcopy(element), 'placement': 'place'}}]
         with session.outbox.locked():
             state = session._state()
             key = key or (state['flight']['key'] if state['flight'] else f'element-place-{uuid.uuid4().hex}')
@@ -481,7 +481,13 @@ def place_element(owner: Any, project: str, timeline: str, *, realm: str, target
                     if ('elementRef' not in before and 'element_ref' not in before
                             and element['kind'] != 'effect'):
                         raise ValueError('First placement supports effect elements only')
-                    if not _matches(data['commands'], calls):
+                    # Authenticated history may contain a placement accepted before the
+                    # explicit marker existed. Compare its original body without altering it.
+                    historical_calls = copy.deepcopy(calls)
+                    if all('placement' not in cmd['args'] for cmd in data['commands']):
+                        for call in historical_calls:
+                            call['args'].pop('placement', None)
+                    if not _matches(data['commands'], historical_calls):
                         raise ValueError('Acknowledged request identity has different original intent')
                     return _placement_result(session, data, receipt, before, target, expected_head, key)
             cursor = history.data['next_cursor']

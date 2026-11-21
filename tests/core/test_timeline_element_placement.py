@@ -6,6 +6,7 @@ import copy
 import hashlib
 import json
 from unittest.mock import Mock
+from pathlib import Path
 
 import pytest
 
@@ -25,6 +26,10 @@ TARGET = 'occurrence:occ-a/clip:clip-a'
 
 
 def _setup(monkeypatch, tmp_path, configured):
+    from astrid.core.element.registry import load_default_registry
+    fixture_pack = Path(__file__).parents[1] / 'fixtures/packs/astrid_motion'
+    registry = load_default_registry(extra_pack_roots=(str(fixture_pack),))
+    monkeypatch.setattr('astrid.core.element.registry.load_default_registry', lambda: registry)
     test_project_packs.seed()
     admitted = packs.admit_project_pack('realm', 'project')
     ref = {key: admitted['elements'][0]['descriptor'][key]
@@ -140,7 +145,7 @@ def test_native_first_placement_rejects_unsupported_element_kinds(monkeypatch, t
         'op': 'clip.set-element',
         'version': '1',
         'select': TARGET,
-        'args': {'elementRef': {**ref, 'kind': kind}},
+        'args': {'elementRef': {**ref, 'kind': kind}, 'placement': 'place'},
     }
     with pytest.raises(CommandError, match='effect elements on built-in effect clips only'):
         execute(bundle, [command], schema_inputs=owner.schema_inputs, realm_id='realm')
@@ -163,6 +168,7 @@ def test_placement_writes_exact_admission_pin_and_retries_by_identity(monkeypatc
     assert command['select'] == TARGET
     assert command['args']['elementRef'] == ref
     assert command['args']['schema_source'] == pin
+    assert command['args']['placement'] == 'place'
     assert first.data['element'] == ref
     assert first.data['before'] == {'element': None}
     assert execute(bundle, body['commands'], schema_inputs=owner.schema_inputs,
@@ -213,7 +219,7 @@ def test_retarget_refuses_params_the_new_element_cannot_hold(monkeypatch, tmp_pa
     owner.commit.assert_not_called()
 
 
-@pytest.mark.parametrize('clip_type', ['media'])
+@pytest.mark.parametrize('clip_type', ['media', 'unknown-effect'])
 def test_retarget_refuses_a_clip_that_is_not_a_builtin_effect(monkeypatch, tmp_path, configured, clip_type):
     owner, ref, _, bundle = _setup(monkeypatch, tmp_path, configured)
     _builtin_clip(bundle, clip_type)
@@ -246,6 +252,7 @@ def test_builtin_effect_parent_clip_is_pointed_at_the_admitted_effect(monkeypatc
     owner.commit.assert_not_called()
     result = _place(owner, ref, target=parent_target)
     assert result.ok, result.error
+    assert owner.commit.call_args.args[2]['commands'][0]['args']['placement'] == 'place'
     after = State(owner.last_plan.bundle).entity(parent_target)
     assert (after['clipType'], after['elementRef']) == (ref['id'], ref)
     assert after['params'] == {'seed': 7, 'author_note': 'keep me'}
@@ -306,3 +313,55 @@ def test_stale_expected_head_reports_runtime_and_outbox_heads(monkeypatch, tmp_p
     assert not result.ok and result.error.code == 'conflict'
     assert result.error.details == {'expected_head': 'stale', 'actual_head': 'head', 'outbox_base': 'head'}
     owner.commit.assert_not_called()
+
+
+def test_unmarked_first_placement_with_valid_pin_is_refused(monkeypatch, tmp_path, configured):
+    owner, ref, pin, bundle = _setup(monkeypatch, tmp_path, configured)
+    before = copy.deepcopy(bundle)
+    command = {'schema_version': 1, 'op': 'clip.set-element', 'version': '1',
+               'select': TARGET, 'args': {'elementRef': ref, 'schema_source': pin}}
+    with pytest.raises(CommandError, match='requires an existing element ref'):
+        execute(bundle, [command], schema_inputs=owner.schema_inputs, realm_id='realm')
+    assert bundle == before
+    owner.commit.assert_not_called()
+
+
+def test_authenticated_old_placement_receipt_and_inverse(monkeypatch, tmp_path, configured):
+    from astrid.sdk.timeline import _clip_scalar_commands as scalar
+    from tests.editing_conformance.test_recipe_m1_commands import inverse
+
+    owner, ref, pin, bundle = _setup(monkeypatch, tmp_path, configured)
+    old_command = {'schema_version': 1, 'op': 'clip.set-element', 'version': '1',
+                   'select': TARGET, 'args': {'elementRef': ref, 'schema_source': pin}}
+    # Reproduce the former native handler to produce an actual old captured command
+    # and its inverse, then restore the new handler before acknowledging history.
+    with monkeypatch.context() as old:
+        old.setattr(scalar, 'clip_set_element', lambda ctx, cmd: scalar._clip_element(ctx, cmd, allow_initial=True))
+        plan = execute(bundle, [old_command], schema_inputs=owner.schema_inputs, realm_id='realm')
+    assert State(inverse(plan.bundle, plan.records).bundle).entity(TARGET) == State(bundle).entity(TARGET)
+    data = {'base_revision_id': 'head', 'base_publication_id': 'publication',
+            'accepted_revision_id': 'committed', 'commands': copy.deepcopy(plan.commands),
+            'canonical_document': document_from_bundle(plan.bundle)}
+    receipt = CommandReceipt('old-receipt', 'timeline.commit', 'place-key', 'hash', 'project',
+                             (1, 1), (), data, '2026-10-26T00:00:00Z').as_dict()
+    history = {'head': {'revision_id': 'committed', 'publication_id': 'old-receipt'},
+               'items': [{'publisher': 'author', 'receipt': receipt}], 'next_cursor': None}
+    owner.history.side_effect = lambda *args, **kwargs: DomainResult.success(copy.deepcopy(history))
+    result = _place(owner, ref)
+    assert result.ok, result.error
+    assert result.receipt == receipt
+    assert 'placement' not in receipt['result']['commands'][0]['args']
+    owner.commit.assert_not_called()
+
+
+def test_builtin_effect_identity_fails_closed_for_non_effect_and_registry_failure(monkeypatch):
+    from types import SimpleNamespace
+    from astrid.sdk.timeline._clip_scalar_commands import _builtin_effect
+
+    registry = Mock()
+    registry.list.return_value = [SimpleNamespace(id='known-animation', kind='animations')]
+    monkeypatch.setattr('astrid.core.element.registry.load_default_registry', lambda: registry)
+    assert not _builtin_effect('known-animation')
+    assert not _builtin_effect('unknown-effect')
+    registry.list.side_effect = RuntimeError('registry unavailable')
+    assert not _builtin_effect('known-animation')
