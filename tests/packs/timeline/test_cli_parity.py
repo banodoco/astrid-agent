@@ -112,7 +112,7 @@ def test_place_element_cli_exposes_occurrence_target_and_forwards_arguments(caps
     normalized_help = ' '.join(help_text.split())
     assert '--target' in help_text
     assert 'occurrence:<occurrence-' in help_text and 'id>/clip:<clip-id>' in help_text
-    assert 'effect elements on am-discord clips only' in normalized_help
+    assert 'built-in effect clip' in normalized_help
     parsed = parser.parse_args([
         'place-element', 'film', '--project', 'p', '--realm', 'realm',
         '--target', 'occurrence:shot-1/clip:discord', '--pack', 'project_pack',

@@ -334,12 +334,23 @@ def _asset_duration(asset: Mapping[str, Any]) -> Fraction | None:
     return None
 
 
+def _canonical(value: Any) -> Any:
+    """Numbers compare by value (2 equals 2.0), so a re-serialised clip is not a changed one."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        if isinstance(value, Mapping):
+            return {key: _canonical(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [_canonical(item) for item in value]
+        return value
+    return float(value)
+
+
 def _same_fields(current: Mapping[str, Any], previous: Mapping[str, Any] | None,
                  fields: Sequence[str]) -> bool:
     if previous is None:
         return False
-    return json.dumps({key: current[key] for key in fields if key in current}, sort_keys=True) == json.dumps(
-        {key: previous[key] for key in fields if key in previous}, sort_keys=True)
+    return json.dumps(_canonical({key: current[key] for key in fields if key in current}), sort_keys=True) == json.dumps(
+        _canonical({key: previous[key] for key in fields if key in previous}), sort_keys=True)
 
 
 def _validate_clip_list(
@@ -371,9 +382,11 @@ def _validate_clip_list(
                 _fail(f"{clip_path}.track", "must reference an existing track")
         timing_changed = not _same_fields(
             clip, prior, ("at", "at_ms", "from", "to", "hold", "duration", "speed"))
-        # D12a checks the interval when its declaration or occurrence bound is
-        # written. An unrelated edit preserves an existing overrun verbatim.
-        if timing_changed or bound != baseline_bound:
+        # D12a checks the interval of a clip the candidate added or changed, or of any clip when the
+        # occurrence bound shrinks. An untouched clip keeps an existing overrun verbatim.
+        bound_shrank = bound != baseline_bound and not (
+            bound is not None and baseline_bound is not None and bound >= baseline_bound)
+        if timing_changed or bound_shrank:
             start, duration = _clip_duration(clip, clip_path)
             if bound is not None and start + duration > bound:
                 _fail(clip_path, "timeline interval must fit the occurrence's half-open bounds")
@@ -461,6 +474,7 @@ def _timing_parent_view(bundle: Mapping[str, Any]) -> Mapping[str, Any]:
 def _schema_for_selected(
     clip: Mapping[str, Any], *, schema_inputs: Sequence[Any], realm_id: str | None, project: str,
     required: bool = True, identity_only: bool = False,
+    snapshot_loader: Any = None,
 ) -> Mapping[str, Any] | None:
     reference = clip.get("elementRef") or clip.get("element_ref")
     if not isinstance(reference, Mapping) or not reference.get("packId"):
@@ -499,11 +513,24 @@ def _schema_for_selected(
     # this candidate can qualify; other retained pins may intentionally have
     # no object in this provider invocation.
     declarations = []
+    consumed = any(isinstance(admission.get('snapshot_object'), Mapping)
+                   and admission['snapshot_object'].get('object_id') in objects
+                   for _, objects, admission in matches)
+    try:
+        from runtime_protocol.errors import ConflictError, NotFoundError
+        runtime_document_errors = (ConflictError, NotFoundError)
+    except ImportError:
+        runtime_document_errors = ()
     for verified, objects, admission in matches:
         admission_map = cast(Mapping[str, Any], admission)
         descriptor_ref = admission_map.get("snapshot_object")
         object_id = descriptor_ref.get("object_id") if isinstance(descriptor_ref, Mapping) else None
         snapshot = objects.get(object_id) if isinstance(object_id, str) else None
+        if snapshot is None and not consumed and required and not identity_only and snapshot_loader is not None:
+            try:
+                snapshot = snapshot_loader(verified, objects, admission_map)
+            except (KeyError, StopIteration, TypeError, ValueError, *runtime_document_errors):
+                continue
         if snapshot is None:
             continue
         if not isinstance(realm_id, str) or not realm_id:
@@ -595,6 +622,7 @@ def _validate_params(
     clip: Mapping[str, Any], *, path: str, baseline: Mapping[str, Any] | None,
     schema_inputs: Sequence[Any], realm_id: str | None, project: str,
     text_reference: bool = False,
+    snapshot_loader: Any = None,
 ) -> None:
     params = clip.get("params", {})
     # Guarded inverse may restore this literal container after a PARAM write.
@@ -621,7 +649,7 @@ def _validate_params(
         schema = _schema_for_selected(
             clip, schema_inputs=schema_inputs, realm_id=realm_id, project=project,
             required=bool(changed) or not equal(element_ref, previous_ref),
-            identity_only=not changed)
+            identity_only=not changed, snapshot_loader=snapshot_loader)
         if schema is None:
             return
     else:
@@ -673,6 +701,7 @@ def validate_final_candidate(
     restoration_records: Sequence[Mapping[str, Any]] = (),
     inverse_records: Sequence[Mapping[str, Any]] = (),
     authenticated_copy: bool = False,
+    snapshot_loader: Any = None,
 ) -> None:
     """Validate one complete candidate without changing it.
 
@@ -771,8 +800,11 @@ def validate_final_candidate(
         previous_source = (baseline or {}).get("source_mapping", {}).get("shots", {}).get(shot_id)
         previous_placement = next((row for row in (baseline or {}).get("placements", [])
                                    if row.get("occurrence_id") == occurrence_id), None)
-        if (not _same_fields(source, previous_source, (
-                "shot_id", "revision_id", "internal_timeline_id", "internal_timeline_revision_id"))
+        # A new revision of the same shot and internal timeline is the ordinary edit: its clips are
+        # judged against the previous revision. Revision ids are content addresses, so every edit of a
+        # shot's internal timeline also gives the shot a new revision_id; only another shot or another
+        # internal timeline is a different declaration, so nothing of the baseline carries over.
+        if (not _same_fields(source, previous_source, ("shot_id", "internal_timeline_id"))
                 or not _same_fields(placement, previous_placement, ("shot_id",))
                 or not _same_fields(candidate, baseline, ("project_id", "timeline_id"))):
             baseline_internal = {}
@@ -794,6 +826,7 @@ def validate_final_candidate(
                 clip, path=clip_path, text_reference=text_reference,
                 baseline=before_child.get(clip_id), schema_inputs=schema_inputs,
                 realm_id=realm_id, project=str(candidate.get("project_id", "")),
+                snapshot_loader=snapshot_loader,
             )
     for clip_id, clip in clips.items():
         prior = _baseline_clips(baseline or {}).get(("parent", clip_id))
@@ -805,6 +838,7 @@ def validate_final_candidate(
         _validate_params(
             clip, path=clip_path, baseline=prior, text_reference=text_reference,
             schema_inputs=schema_inputs, realm_id=realm_id, project=str(candidate.get("project_id", "")),
+            snapshot_loader=snapshot_loader,
         )
 
     from astrid.sdk.timeline._commit_timing_validation import validate_candidate_timing

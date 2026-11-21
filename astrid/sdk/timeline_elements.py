@@ -144,6 +144,20 @@ def _matches(saved, calls):
         for prior, call in zip(saved, calls))
 
 
+def _settle_held_flight(session):
+    """Replay the outbox's unacknowledged flight under its own key before any head check.
+
+    A lost acknowledgement leaves the outbox base behind the Runtime while the flight
+    is still held. Resending that flight verbatim (same idempotency key) returns the
+    Runtime's original receipt and settles the base, so the caller's head check and
+    history reconciliation read the true state. Failures raise, leaving the flight held.
+    """
+    with session.outbox.locked():
+        held = session._state()['flight'] is not None
+    if held:
+        session.flush()
+
+
 def _clip(bundle, clip_id):
     clips = bundle['parent'].get('clips')
     if not isinstance(clips, list):
@@ -261,6 +275,9 @@ def update_parent_element(owner: Any, project: str, timeline: str, *, realm: str
         with session.outbox.locked():
             state = session._state()
             key = key or (state['flight']['key'] if state['flight'] else f'element-{uuid.uuid4().hex}')
+        _settle_held_flight(session)
+        with session.outbox.locked():
+            state = session._state()
         # Acknowledged identities belong to Runtime history, never a client cache.
         # Return its original result without recapturing against a newer head/pin.
         cursor = None
@@ -292,9 +309,13 @@ def update_parent_element(owner: Any, project: str, timeline: str, *, realm: str
             if cursor is None:
                 break
         if state['base']['revision_id'] != expected_head:
+            current = owner.history(session.project_id, session.timeline_id, limit=1)
+            if not current.ok:
+                return current
             return DomainResult.failure(ErrorObject(
                 'conflict', 'Timeline head changed; inspect before making a fresh edit',
-                {'expected_head': expected_head, 'actual_head': state['base']['revision_id']}),
+                {'expected_head': expected_head, 'actual_head': current.data['head']['revision_id'],
+                 'outbox_base': state['base']['revision_id']}),
                 idempotency_key=key)
         opened = owner.open_bundle(session.project_id, session.timeline_id, revision_id=expected_head)
         if not opened.ok:
@@ -399,18 +420,20 @@ def place_element(owner: Any, project: str, timeline: str, *, realm: str, target
                   element: dict[str, str], expected_head: str,
                   idempotency_key: str | None = None,
                   session: TimelineSession | None = None):
-    """Place an admitted project-pack element on an occurrence shot clip.
+    """Place an admitted project-pack effect on one clip.
 
-    First placement supports effect elements on ``am-discord`` clips. If the
-    target already has an element ref, the native command keeps the same id,
-    kind, and pack owner as the existing element-update route.
+    A built-in effect clip (``clipType`` is a built-in element id, with or without media,
+    no element ref yet) is pointed at the admitted effect: ``clipType`` and ``elementRef``
+    are set together and its params, timing and media are kept. If the target already has
+    an element ref, the native command keeps the same id, kind, and pack owner as the
+    existing element-update route.
     """
     key = idempotency_key
     try:
         if not all(isinstance(v, str) and v for v in (project, timeline, realm, target, expected_head)):
             raise ValueError('Explicit project/timeline/realm/target/expected head are required')
-        if not re.fullmatch(r'occurrence:[^/]+/clip:[^/]+', target) or '::' in target:
-            raise ValueError('Target must be an occurrence shot clip: occurrence:<occurrence-id>/clip:<clip-id>')
+        if not re.fullmatch(r'(?:parent|occurrence:[^/]+)/clip:[^/]+', target) or '::' in target:
+            raise ValueError('Target must be a clip: parent/clip:<clip-id> or occurrence:<occurrence-id>/clip:<clip-id>')
         if (not isinstance(element, dict)
                 or set(element) != {'packId', 'id', 'kind', 'revision'}
                 or any(not isinstance(element[name], str) or not element[name]
@@ -435,6 +458,10 @@ def place_element(owner: Any, project: str, timeline: str, *, realm: str, target
             state = session._state()
             key = key or (state['flight']['key'] if state['flight'] else f'element-place-{uuid.uuid4().hex}')
 
+        # Settle a lost-ack flight first so the reconciliation and head check see the Runtime.
+        _settle_held_flight(session)
+        with session.outbox.locked():
+            state = session._state()
         cursor = None
         while state['flight'] is None and idempotency_key is not None:
             history = owner.history(session.project_id, session.timeline_id, cursor=cursor, limit=100)
@@ -461,9 +488,13 @@ def place_element(owner: Any, project: str, timeline: str, *, realm: str, target
             if cursor is None:
                 break
         if state['base']['revision_id'] != expected_head:
+            current = owner.history(session.project_id, session.timeline_id, limit=1)
+            if not current.ok:
+                return current
             return DomainResult.failure(ErrorObject(
                 'conflict', 'Timeline head changed; inspect before making a fresh edit',
-                {'expected_head': expected_head, 'actual_head': state['base']['revision_id']}),
+                {'expected_head': expected_head, 'actual_head': current.data['head']['revision_id'],
+                 'outbox_base': state['base']['revision_id']}),
                 idempotency_key=key)
         opened = owner.open_bundle(session.project_id, session.timeline_id, revision_id=expected_head)
         if not opened.ok:
