@@ -40,7 +40,28 @@ def _stream_time(stream: dict, ticks_field: str, seconds_field: str) -> Fraction
     return Fraction(str(stream[seconds_field]))
 
 
-def _decoded_audio_coverage(path: Path, stream: dict, start: Fraction, end: Fraction) -> tuple[Fraction, Fraction]:
+def _video_packet_end(path: Path, stream: dict) -> Fraction:
+    """Measure the selected video stream's last packet, independently of the container."""
+    try:
+        proc = subprocess.run(
+            ['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_packets',
+             '-show_entries', 'packet=pts,duration', '-of', 'json', str(path)],
+            capture_output=True, text=True, check=True, timeout=120,
+        )
+        base = Fraction(str(stream['time_base']))
+        if base <= 0:
+            raise ValueError('invalid video clock')
+        packets = json.loads(proc.stdout)['packets']
+        ends = [(int(packet['pts']) + int(packet['duration'])) * base for packet in packets
+                if int(packet['duration']) > 0]
+        if len(ends) != len(packets) or not ends:
+            raise ValueError('incomplete video packet timing')
+        return max(ends)
+    except (OSError, subprocess.SubprocessError, KeyError, TypeError, ValueError, ZeroDivisionError) as exc:
+        raise PreparationError(f'cannot verify source video coverage: {exc}') from exc
+
+
+def _decoded_audio_coverage(path: Path, stream: dict, start: Fraction, end: Fraction) -> tuple[Fraction, Fraction, Fraction, Fraction]:
     """Measure decoded frame support and reject discontinuities in the selected span."""
     try:
         proc = subprocess.run(
@@ -55,12 +76,15 @@ def _decoded_audio_coverage(path: Path, stream: dict, start: Fraction, end: Frac
             raise ValueError('invalid audio clock')
         tolerance = max(base, Fraction(1, rate))
         coverage_start = coverage_end = None
+        stream_start = stream_end = None
         for frame in frames:
             frame_start = int(frame['best_effort_timestamp']) * base
             samples = int(frame['nb_samples'])
             if samples <= 0:
                 raise ValueError('invalid decoded audio frame length')
             frame_end = frame_start + Fraction(samples, rate)
+            stream_start = frame_start if stream_start is None else min(stream_start, frame_start)
+            stream_end = frame_end if stream_end is None else max(stream_end, frame_end)
             if frame_end <= start or frame_start >= end:
                 continue
             if coverage_end is not None and abs(frame_start - coverage_end) > tolerance:
@@ -70,7 +94,7 @@ def _decoded_audio_coverage(path: Path, stream: dict, start: Fraction, end: Frac
             coverage_end = frame_end
         if coverage_start is None or coverage_end is None:
             raise ValueError('no decoded audio frames in the requested range')
-        return coverage_start, coverage_end
+        return coverage_start, coverage_end, stream_start, stream_end
     except (OSError, subprocess.SubprocessError, KeyError, TypeError, ValueError, ZeroDivisionError) as exc:
         raise PreparationError(f'cannot verify decoded source audio coverage: {exc}') from exc
 
@@ -132,16 +156,26 @@ def conform_source(source: Path, destination: Path, *, start: str, end: str, fit
         except KeyError:
             # A video-only container can report duration exclusively at the
             # container level, as Matroska commonly does.
-            if len(streams) != 1:
-                raise
-            video_duration = Fraction(str(info['format']['duration']))
+            if len(streams) == 1:
+                video_duration = Fraction(str(info['format']['duration']))
+            else:
+                video_duration = _video_packet_end(source, video_stream) - video_start
             # The muxer can quantize the final packet duration. The output
             # frame count is validated independently after conforming.
             duration_tolerance = Fraction(str(video_stream['time_base']))
         audio_start = _stream_time(selected[1], 'start_pts', 'start_time') if has_audio else None
-        audio_duration = _stream_time(selected[1], 'duration_ts', 'duration') if has_audio else None
+        audio_duration = None
+        if has_audio:
+            try:
+                audio_duration = _stream_time(selected[1], 'duration_ts', 'duration')
+            except KeyError:
+                pass
     except (KeyError, ValueError, TypeError, ZeroDivisionError) as exc:
         raise PreparationError('source stream start times and durations must be measurable') from exc
+    if has_audio and audio_duration is None:
+        selected_end = video_start + min(last, first + Fraction(frames, 24))
+        _, _, _, decoded_end = _decoded_audio_coverage(source, selected[1], video_start + first, selected_end)
+        audio_duration = decoded_end - audio_start
     requested = f"[{float(first):.6f}, {float(last):.6f})"
     available = f"video [0.000000, {float(video_duration):.6f})"
     if has_audio:
@@ -178,7 +212,7 @@ def conform_source(source: Path, destination: Path, *, start: str, end: str, fit
                 f'requested {requested}; available {available}'
             )
         selected_end = min(requested_end, target_end)
-        decoded_start, decoded_end = _decoded_audio_coverage(source, selected[1], anchor, selected_end)
+        decoded_start, decoded_end, _, _ = _decoded_audio_coverage(source, selected[1], anchor, selected_end)
         audio_start = max(audio_start, decoded_start)
         audio_end = min(audio_end, decoded_end)
         if min(audio_end, selected_end) <= max(audio_start, anchor):
