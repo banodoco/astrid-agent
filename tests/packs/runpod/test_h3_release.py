@@ -317,6 +317,40 @@ def model_row(payload):
             "bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
 
 
+@pytest.mark.parametrize("source", ["https", "repository"])
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_release_model_sources_reach_verified_downloader(tmp_path, source, corrupt):
+    lock = build.release_inputs()["lock"]
+    if source == "https":
+        original = next(row for row in lock["models"] if row["url"] is not None)
+        expected_url = original["url"]
+    else:
+        original = next(row for row in lock["models"]
+                        if row["repository"] and row["repository"] != lock["repository"])
+        from urllib.parse import quote
+        expected_url = (f"https://huggingface.co/{original['repository']}/resolve/"
+                        f"{original['revision']}/{quote(original['path'], safe='/')}")
+    payload = b"verified model bytes"
+    row = {**original, "bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
+    delivered = b"x" * len(payload) if corrupt else payload
+    destination = tmp_path / row["destination"]
+    requests = []
+
+    def opener(request, timeout):
+        requests.append(request.full_url)
+        start, end = map(int, request.headers["Range"].removeprefix("bytes=").split("-"))
+        return RangeResponse(delivered, start, end)
+
+    if corrupt:
+        with pytest.raises(RuntimeError, match="SHA-256 mismatch"):
+            remote.download_model(row, destination, lock["repository"], time.time() + 60, opener=opener)
+        assert not destination.exists()
+    else:
+        remote.download_model(row, destination, lock["repository"], time.time() + 60, opener=opener)
+        assert destination.read_bytes() == payload
+    assert requests == [expected_url]
+
+
 def test_real_downloader_crash_resume_skip_and_atomic_promotion(tmp_path):
     payload = b"model-bytes" * 25
     row = model_row(payload)
