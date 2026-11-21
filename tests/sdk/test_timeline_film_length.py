@@ -51,7 +51,9 @@ def test_check_syncs_the_placement_and_says_so_in_words():
 
 
 def test_a_layer_longer_than_its_middle_shot_blocks_check():
-    tl = Checkout(tiny())
+    data = tiny()
+    Checkout._pin_initial_base(data)
+    tl = Checkout(data)
     # Add the overrun *after* opening the checkout. The release contract reports
     # unchanged pre-existing overruns without blocking unrelated new edits, but
     # a newly introduced six-second layer in this four-second shot must block.
