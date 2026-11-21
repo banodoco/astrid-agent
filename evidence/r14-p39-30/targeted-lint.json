@@ -1,0 +1,60 @@
+{
+  "baseline": {
+    "raw_exit": 1,
+    "findings": [
+      {
+        "code": "F401",
+        "message": "`datetime` imported but unused",
+        "location": {
+          "column": 20,
+          "row": 8
+        },
+        "end_location": {
+          "column": 22,
+          "row": 8
+        }
+      },
+      {
+        "code": "F401",
+        "message": "`sys` imported but unused",
+        "location": {
+          "column": 8,
+          "row": 17
+        },
+        "end_location": {
+          "column": 11,
+          "row": 17
+        }
+      }
+    ]
+  },
+  "candidate": {
+    "raw_exit": 1,
+    "findings": [
+      {
+        "code": "F401",
+        "message": "`datetime` imported but unused",
+        "location": {
+          "column": 20,
+          "row": 8
+        },
+        "end_location": {
+          "column": 22,
+          "row": 8
+        }
+      },
+      {
+        "code": "F401",
+        "message": "`sys` imported but unused",
+        "location": {
+          "column": 8,
+          "row": 17
+        },
+        "end_location": {
+          "column": 11,
+          "row": 17
+        }
+      }
+    ]
+  }
+}

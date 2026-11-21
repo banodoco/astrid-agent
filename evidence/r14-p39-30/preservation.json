@@ -1,0 +1,58 @@
+{
+  "baseline": "3a50507ceef9bf3520f44938e2e8ef6d4ef43a42",
+  "native_head": "b1e53baf5facbb340dfc42b1688f7152c255e351",
+  "unchanged": {
+    ".github/workflows/chat.yml": {
+      "git_blob": "0cf9201e4094aa27ee47fc5bb56fc47a37ca01d8",
+      "sha256": "b90a425342ecb2d41d16c723219fd8e7788a0eea203fa004a17ae1704ea7fd35"
+    },
+    "package.json": {
+      "git_blob": "d08e22046f435aa1f9cac49332e33e68cf3b2da0",
+      "sha256": "a25d4f5e21cebfe2013dd2b229bf27c149316b2a427f7c03e7e479f858918f7d"
+    },
+    "package-lock.json": {
+      "git_blob": "421651cfed2bff47daec7a515421d37b4813a862",
+      "sha256": "946d5c7d5964aafa6b9fd9f74599285d846ab6349162bdd88b37eab35077230a"
+    },
+    "ci/required-checks.json": {
+      "git_blob": "9813cad1e873056a3f66008fe4bec1b966f6f9e0",
+      "sha256": "98c104bc0c12063adee7213ab87fc46991634f3f5ca3fee01bb411658fd51f94"
+    },
+    "ci/test-inventory.json.gz": {
+      "git_blob": "78ec1d14c77c131370804bb3200f1649f2e89a1b",
+      "sha256": "bf6d574192d3643e451aa0ec933622bfae2f75d4861c07263d5b463400b484ab"
+    },
+    "ci/failure-ceiling.json": {
+      "git_blob": "1b41b3bf3040d37385b5f2f0c943c719588444d8",
+      "sha256": "c51f2c5ad8aceef6be30dbb89e781d69d54ecb7f918b688cfc1d715dd31ec4ac"
+    },
+    "scripts/ci/failure_ceiling.py": {
+      "git_blob": "6a973757c01b9c4fe0484501ec7eb1b17d65c008",
+      "sha256": "a5e977a0e8744973f35f10ac682b1ef4b80c6250a71c3a9bca93584b5c4145ed"
+    },
+    "scripts/ci/ceiling_capture.py": {
+      "git_blob": "33a8cbcd80c84079f60a57f26c3dd8d04c6f2757",
+      "sha256": "a19174a70946c5ca7d4b7e16385da17a13b868eed4019c5a5e734623fce840a1"
+    },
+    "scripts/ci/protect_gate_paths.py": {
+      "git_blob": "351f6be4ca6b3e0f60968b5e77bdc21b15a57307",
+      "sha256": "b1e62ff0bb6de881022dbd2d1ac0717c10e185d75d9d93e9867ff5524a818ba8"
+    }
+  },
+  "subtrees": {
+    "astrid": {
+      "native": "bc6d1e14b0ef2a550a5ec4d6e672dc826d40aaa7",
+      "baseline": "bc6d1e14b0ef2a550a5ec4d6e672dc826d40aaa7",
+      "candidate_index": "bc6d1e14b0ef2a550a5ec4d6e672dc826d40aaa7"
+    },
+    "tests": {
+      "native": "1c797d28ec0653e85284837567eb6447a802024a",
+      "baseline": "bd7713a5fa6b73545c1ea8368ae012e11523e6e8",
+      "candidate_index": "bd7713a5fa6b73545c1ea8368ae012e11523e6e8"
+    }
+  },
+  "native_to_baseline_changes": [
+    "scripts/ci_windows_journey.py",
+    "tests/test_ci_windows_pack_entrypoint.py"
+  ]
+}

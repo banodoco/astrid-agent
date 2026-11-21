@@ -1,0 +1,24 @@
+test_archived_native_failure_retains_exact_identity_diagnostic_and_exit (__main__.BunSelectionTests.test_archived_native_failure_retains_exact_identity_diagnostic_and_exit) ... ok
+test_changed_command_cannot_authorize_its_own_filter (__main__.BunSelectionTests.test_changed_command_cannot_authorize_its_own_filter) ... ok
+test_command_digest_mismatch_still_rejects (__main__.BunSelectionTests.test_command_digest_mismatch_still_rejects) ... ok
+test_each_lost_junit_identity_rejects_without_a_count_rewrite (__main__.BunSelectionTests.test_each_lost_junit_identity_rejects_without_a_count_rewrite) ... ok
+test_existing_comparator_still_refuses_unapproved_nonexecution (__main__.BunSelectionTests.test_existing_comparator_still_refuses_unapproved_nonexecution) ... ok
+test_failure_and_its_diagnostic_and_exit_remain_real_red (__main__.BunSelectionTests.test_failure_and_its_diagnostic_and_exit_remain_real_red) ... ok
+test_filtered_receipt_needs_trusted_selection (__main__.BunSelectionTests.test_filtered_receipt_needs_trusted_selection) ... ok
+test_missing_or_duplicate_terminal_finish_rejects (__main__.BunSelectionTests.test_missing_or_duplicate_terminal_finish_rejects) ... ok
+test_missing_or_wrong_selected_terminal_id_rejects (__main__.BunSelectionTests.test_missing_or_wrong_selected_terminal_id_rejects) ... ok
+test_missing_trusted_workflow_fails_closed (__main__.BunSelectionTests.test_missing_trusted_workflow_fails_closed) ... ok
+test_nonzero_or_interrupted_exit_without_failure_still_rejects (__main__.BunSelectionTests.test_nonzero_or_interrupted_exit_without_failure_still_rejects) ... ok
+test_original_35_identities_and_every_native_outcome_are_preserved (__main__.BunSelectionTests.test_original_35_identities_and_every_native_outcome_are_preserved) ... ok
+test_original_complete_job_normalizes_without_hiding_filtered_ids (__main__.BunSelectionTests.test_original_complete_job_normalizes_without_hiding_filtered_ids) ... ok
+test_terminal_filtered_and_outcome_counts_cannot_hide_loss (__main__.BunSelectionTests.test_terminal_filtered_and_outcome_counts_cannot_hide_loss) ... ok
+test_trusted_snapshot_exports_the_original_workflow (__main__.BunSelectionTests.test_trusted_snapshot_exports_the_original_workflow) ... ok
+test_unfiltered_linux_control_preserves_existing_duplicate_refusal (__main__.BunSelectionTests.test_unfiltered_linux_control_preserves_existing_duplicate_refusal) ... ok
+test_unselected_case_cannot_be_reported_as_executed (__main__.BunSelectionTests.test_unselected_case_cannot_be_reported_as_executed) ... ok
+test_unsupported_regex_is_not_approximated (__main__.BunSelectionTests.test_unsupported_regex_is_not_approximated) ... ok
+test_zero_selected_tests_cannot_qualify_even_with_consistent_counts (__main__.BunSelectionTests.test_zero_selected_tests_cannot_qualify_even_with_consistent_counts) ... ok
+
+----------------------------------------------------------------------
+Ran 19 tests in 1.552s
+
+OK
