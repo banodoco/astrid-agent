@@ -778,6 +778,7 @@ def validate_final_candidate(
     if not isinstance(shots_value, Mapping):
         _fail("candidate.shots", "must be an object")
     shots: Mapping[str, Any] = shots_value
+    # The commit provider opens both images through the same realm-bound Runtime port.
     marker_baseline = (baseline or {}) if _same_fields(candidate, baseline, ("project_id", "timeline_id")) else {}
     baseline_shots = marker_baseline.get("shots", {})
     baseline_sources = marker_baseline.get("source_mapping", {}).get("shots", {})

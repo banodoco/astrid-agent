@@ -27,15 +27,15 @@ def _history(service, project):
     return service.list_timeline_commits(project, "main", authorize=lambda: None)
 
 
-def _patch(service, project, change, key):
+def _patch(service, project, change, key, *, reads=()):
     head = _history(service, project)["head"]
     body = {
         "api_version": 1, "project_id": project, "timeline_id": "main",
         "base_revision_id": head["revision_id"], "base_publication_id": head["publication_id"],
         "commands": [{"schema_version": 1, "op": "doc.patch", "version": "1",
                       "select": None, "args": {"changes": [change]}}],
-        "label": "Update track app", "merge": "fields", "reads": [],
-        "steps": [{"id": "track-app", "label": "Track app", "intent": "Update track app",
+        "label": "Guarded edit", "merge": "fields", "reads": list(reads),
+        "steps": [{"id": "edit", "label": "Edit", "intent": "Guarded edit",
                    "tags": [], "command_ordinals": [0], "patch": [change]}],
     }
     return service.commit_timeline(
@@ -96,6 +96,7 @@ def test_saved_r13_marker_is_absent_only_in_reader_projection(realm, reader, tmp
     from astrid.sdk.timeline.commit import create_runtime_commit_service, reader_problem
     from astrid.sdk.timeline_filmstrip import prepare_filmstrip
     from runtime_protocol.capture_validation import validate_capture
+    from runtime_protocol.util import canonical_json
 
     service, client, project = realm
     track = seed_r13_timeline(service, project, tmp_path / "still.png")
@@ -130,17 +131,19 @@ def test_saved_r13_marker_is_absent_only_in_reader_projection(realm, reader, tmp
     document = history["items"][-1]["receipt"]["result"]["canonical_document"]
     assert reader_problem(provider, document) is None
 
-    updated = copy.deepcopy(track["app"])
-    updated.pop(_MARKER)
-    updated["org.example"]["keep"] = False
-    change = {"op": "set", "ref": "parent", "path": ["config", "tracks", "id:V1", "app"],
-              "before": {"state": "present", "value": track["app"]}, "value": updated}
-    accepted = _patch(service, project, change, "edit")
+    guard = {"ref": "parent", "path": ["config", "tracks", "id:V1", "app", _MARKER],
+             "state": {"state": "present", "value": 2}}
+    change = {"op": "set", "ref": "parent", "path": ["meta"],
+              "before": {"state": "absent"}, "value": {"org.example.timeline": {"note": "Keep"}}}
+    accepted = _patch(service, project, change, "edit", reads=[guard])
     assert accepted["data"]["status"] == "accepted"
-    new_parent = accepted["data"]["canonical_document"]["parent_revision"]["payload"]
-    assert new_parent["config"]["tracks"][0]["app"] == updated
+    new_document = accepted["data"]["canonical_document"]
+    new_tracks = new_document["parent_revision"]["payload"]["config"]["tracks"]
+    assert canonical_json(new_tracks) == canonical_json(revision["payload"]["config"]["tracks"])
+    assert canonical_json(new_document["internal_timeline_revisions"][0]["payload"]) == canonical_json(child["payload"])
     records = _history(service, project)["items"][-1]["records"]
     assert records["steps"][0]["patch"] == [change]
+    assert guard in records["steps"][0]["dependencies"]
     assert service.get_project_parent_composition_revision(project, "main", "r13-parent") == revision
     assert service.get_project_timeline_revision(project, "main", "r13-child") == child
 
