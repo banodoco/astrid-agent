@@ -21,6 +21,7 @@ const OUTBOX_DB = 'astrid.command-outbox';
 const OUTBOX_STORE = 'owners';
 const EDITOR_URL = '/tools/video-editor';
 const UI_TIMEOUT = 120_000;
+const OUTBOX_TIMEOUT = 30_000;
 const scriptPath = fileURLToPath(import.meta.url);
 
 function check(value, message) {
@@ -69,6 +70,7 @@ async function outboxOwners(page, projectId, timelineId) {
       };
     });
   }, { database: OUTBOX_DB, store: OUTBOX_STORE, project: projectId, timeline: timelineId });
+  if (rows === null) return []; // An uncreated database remains a failure at the bounded deadline.
   check(Array.isArray(rows), 'Real browser has no durable command outbox');
   return rows.map((row) => ({
     ownerId: row.ownerId,
@@ -78,6 +80,19 @@ async function outboxOwners(page, projectId, timelineId) {
     pending: row.pending !== undefined && row.pending !== null,
     conflict: row.conflict !== undefined && row.conflict !== null,
   }));
+}
+
+
+async function waitForOutbox(page, projectId, timelineId, predicate, reason) {
+  const deadline = Date.now() + OUTBOX_TIMEOUT;
+  let last = [];
+  do {
+    last = await outboxOwners(page, projectId, timelineId);
+    if (predicate(last)) return last;
+    if (Date.now() >= deadline) break;
+    await page.waitForTimeout(250);
+  } while (true);
+  throw new Error(reason + '; observed scoped owners: ' + JSON.stringify(last));
 }
 
 async function openEditor(context, config, traffic) {
@@ -125,19 +140,31 @@ async function caseR14AppR13Installed(context, config, traffic) {
   check((await track.inputValue()) === config.initialLabel,
     'New App did not open the R13-authored parent-track label');
   const edit = await waitForAcceptedCommit(page, () => editTrack(page, track, config.savedLabel));
+  await waitForOutbox(page, config.projectId, config.timelineId,
+    (rows) => rows.some((row) => row.intents === 0 && !row.pending),
+    'Accepted R14-on-R13 edit left no settled durable outbox');
   await page.close();
   const reopened = await openEditor(context, config, traffic);
   check(await reopened.track.inputValue() === config.savedLabel,
     'R14 App lost the R13-install accepted edit on real browser reopen');
-  const afterSave = await outboxOwners(reopened.page, config.projectId, config.timelineId);
-  check(afterSave.length >= 1 && afterSave.some((row) => row.intents === 0 && !row.pending),
+  const afterSave = await waitForOutbox(reopened.page, config.projectId, config.timelineId,
+    (rows) => rows.some((row) => row.intents === 0 && !row.pending),
     'Accepted edit did not settle in the real browser command outbox');
 
   // Exercise the true FIX-16 App refusal handler without pretending a network
   // stub is a Runtime product defect. The *first* save above hit the Runtime.
   let rejected = 0;
+  let unsafeRetries = 0;
   await reopened.page.route(EDIT_PATH, async (route) => {
-    if (!isCommit(route.request()) || rejected !== 0) return route.continue();
+    if (!isCommit(route.request())) return route.continue();
+    if (rejected !== 0) {
+      // A product regression must not let an automatic retry mutate the
+      // installed Runtime while the creator believes the save was refused.
+      unsafeRetries++;
+      await route.fulfill({ status: 503, contentType: 'application/json',
+        body: JSON.stringify({ code: 'fix17_unexpected_retry' }) });
+      return;
+    }
     rejected++;
     await route.fulfill({
       status: 413,
@@ -152,18 +179,19 @@ async function caseR14AppR13Installed(context, config, traffic) {
   await reopened.page.getByRole('button', {
     name: 'Discard and reload the saved version', exact: true,
   }).waitFor({ state: 'visible', timeout: UI_TIMEOUT });
-  check(rejected === 1, 'FIX-16 card appeared without one rejected App commit');
+  check(rejected === 1 && unsafeRetries === 0,
+    'FIX-16 card appeared without one isolated refusal or the App automatically retried');
   check(await reopened.track.inputValue() === refusedLabel,
     'FIX-16 refusal discarded the creator’s unsaved edit');
-  const afterRefusal = await outboxOwners(reopened.page, config.projectId, config.timelineId);
-  check(afterRefusal.some((row) => row.intents > 0 || row.pending),
+  const afterRefusal = await waitForOutbox(reopened.page, config.projectId, config.timelineId,
+    (rows) => rows.some((row) => row.intents > 0 || row.pending),
     'FIX-16 refusal lost its durable pending change');
   check(traffic.length >= 2, 'Expected an accepted and then rejected editor commit');
   await reopened.page.close();
   return {
     mode: config.mode, realInstalledEdit: edit, savedLabel: config.savedLabel,
     reopened: true, rejectedHttp: { status: 413, injected: true, count: rejected },
-    fix16Card: true, refusedLabelPreserved: true,
+    fix16Card: true, refusedLabelPreserved: true, unexpectedRetries: unsafeRetries,
     outboxBefore: afterSave, outboxAfter: afterRefusal,
   };
 }
@@ -173,6 +201,9 @@ async function caseR14Author(context, config, traffic) {
   check((await track.inputValue()) === config.initialLabel,
     'R14 App cannot open the installed R14 realm before authoring');
   const edit = await waitForAcceptedCommit(page, () => editTrack(page, track, config.savedLabel));
+  await waitForOutbox(page, config.projectId, config.timelineId,
+    (rows) => rows.some((row) => row.intents === 0 && !row.pending),
+    'R14-authored edit did not settle its durable save queue');
   await page.close();
   const reopened = await openEditor(context, config, traffic);
   check(await reopened.track.inputValue() === config.savedLabel,
@@ -185,15 +216,15 @@ async function caseR13ReadR14(context, config, traffic) {
   const { page, track } = await openEditor(context, config, traffic);
   check((await track.inputValue()) === config.savedLabel,
     'Published R13 App could not read an R14-authored parent timeline');
-  const before = await outboxOwners(page, config.projectId, config.timelineId);
-  check(before.length >= 1 && before.some((row) => !row.pending && row.intents === 0),
+  const before = await waitForOutbox(page, config.projectId, config.timelineId,
+    (rows) => rows.some((row) => !row.pending && row.intents === 0),
     'Published R13 App could not read an idle durable save queue');
   await page.close();
   const reopen = await openEditor(context, config, traffic);
   check(await reopen.track.inputValue() === config.savedLabel,
     'Published R13 App could not reopen R14-authored timeline');
-  const after = await outboxOwners(reopen.page, config.projectId, config.timelineId);
-  check(after.length >= 1 && after.some((row) => !row.pending && row.intents === 0),
+  const after = await waitForOutbox(reopen.page, config.projectId, config.timelineId,
+    (rows) => rows.some((row) => !row.pending && row.intents === 0),
     'Published R13 App lost or changed its save queue on reopen');
   check(traffic.length === 0, 'Read-only R13 App sent an unexpected timeline commit');
   await reopen.page.close();

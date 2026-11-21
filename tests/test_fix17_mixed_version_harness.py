@@ -91,6 +91,7 @@ def test_mixed_browser_does_not_replace_installed_runtime_or_claim_injected_reje
     assert "status: 413" in BROWSER
     assert "caseR13ReadR14" in BROWSER
     assert "traffic.length === 0" in BROWSER
+    assert "unsafeRetries" in BROWSER
     assert "chromiumArgs" in BROWSER
     assert "browserAppSha" in BROWSER
 
@@ -115,8 +116,12 @@ def test_source_rejects_missing_and_mismatched_mixed_app_dist(tmp_path):
     dist.mkdir()
     (dist / "index.html").write_text("<!doctype html>")
     (dist / "build.json").write_text("{}")
-    with pytest.raises(RuntimeError, match="exact hosted"):
+    with pytest.raises(RuntimeError, match="exact pinned"):
         mixed._dist(candidate, tmp_path / "other")
+    foreign = tmp_path / "other"
+    foreign.mkdir()
+    with pytest.raises(RuntimeError, match="does not belong"):
+        mixed._dist(candidate, foreign)
     assert mixed._dist(candidate, dist) == dist
     (dist / "build.json").unlink()
     with pytest.raises(RuntimeError, match="index and build"):
