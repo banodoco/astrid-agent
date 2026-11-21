@@ -240,6 +240,42 @@ def snapshot(client, keys):
             "schema_digest": health["schema_digest"], "target_schema_digest": expected_schema_digest}
 
 
+
+def save_timeline_after_update(client, keys):
+    """Edit the seeded timeline through its public mutation endpoint and verify the saved result.
+
+    This is a real HTTP PATCH against the selected installed Runtime;
+    an in-memory edit or checkout mutation is not journey evidence.
+    """
+    base = path("projects", keys["project"], "timelines", keys["timeline"])
+    before = client.request("GET", base)
+    expected = "User edit " + keys["generation"]
+    if not isinstance(before, dict) or before.get("name") != expected or before.get("head_revision_id") != keys["head"]:
+        raise ValueError("Selected timeline is not the seeded timeline before the save")
+    saved_name = "Saved after update " + keys["generation"]
+    client.request("PATCH", base, {"name": saved_name},
+                   key="fix17-save-" + keys["generation"])
+    saved = client.request("GET", base)
+    if not isinstance(saved, dict) or saved.get("name") != saved_name:
+        raise ValueError("Timeline edit did not persist to the installed Runtime")
+    if saved.get("head_revision_id") != keys["head"]:
+        raise ValueError("Timeline metadata save unexpectedly changed its document head")
+    return {"project": keys["project"], "timeline": keys["timeline"],
+            "saved_name": saved_name, "head": keys["head"], "saved": True}
+
+
+def reopen_saved_timeline(client, saved):
+    """A fresh script process/client reopens the saved timeline by its original ID."""
+    base = path("projects", saved["project"], "timelines", saved["timeline"])
+    current = client.request("GET", base)
+    if not isinstance(current, dict) or current.get("name") != saved["saved_name"]:
+        raise ValueError("Reopened timeline lost the saved edit")
+    if current.get("head_revision_id") != saved["head"]:
+        raise ValueError("Reopened timeline changed its saved document head")
+    return {"project": saved["project"], "timeline": saved["timeline"],
+            "saved_name": saved["saved_name"], "head": saved["head"], "reopened": True}
+
+
 # These fields bind discovery to the owner selected by the parent. Do not pass
 # the credential itself through the command line or the evidence files.
 SELECTION_FIELDS = ("endpoint", "realm_root", "active_realm", "runtime_instance_id",
@@ -294,7 +330,7 @@ def check_selection(data, root, expected):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("seed", "snapshot"))
+    parser.add_argument("action", choices=("seed", "snapshot", "save_timeline_after_update", "reopen_saved_timeline"))
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--selection", type=Path, required=True)
@@ -332,7 +368,14 @@ def execute(args):
     client = LiveWorkspace(selection["endpoint"], credential_token(credential),
                            guard=lambda: check_selection(data, root, selection))
     request = json.loads(args.request.read_text(encoding="utf-8"))
-    result = seed(client, **request) if args.action == "seed" else snapshot(client, request)
+    if args.action == "seed":
+        result = seed(client, **request)
+    elif args.action == "snapshot":
+        result = snapshot(client, request)
+    elif args.action == "save_timeline_after_update":
+        result = save_timeline_after_update(client, request)
+    else:
+        result = reopen_saved_timeline(client, request)
     check_selection(data, root, selection)
     print(json.dumps(result, sort_keys=True))
 
