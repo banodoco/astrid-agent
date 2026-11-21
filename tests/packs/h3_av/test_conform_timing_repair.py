@@ -353,3 +353,46 @@ def test_matroska_missing_stream_durations_measures_each_stream(
         # the reported repair accounts for the resulting 16-sample shortfall.
         assert result["timing"]["tail_pad_samples"] == 16
         assert result["timing"]["audio_offset_samples"] == 0
+
+
+@pytest.mark.ffmpeg
+def test_matroska_video_gap_is_rejected(tmp_path: Path) -> None:
+    source = tmp_path / "gap.mkv"
+    _ffmpeg(
+        "-f", "lavfi", "-i", "color=c=black:s=320x180:r=24:d=1",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=1",
+        "-vf", "select='not(between(t,0.4,0.8))'", "-fps_mode:v", "passthrough",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "pcm_s16le", str(source),
+    )
+    with pytest.raises(PreparationError, match="video has a timestamp gap"):
+        _prepare(tmp_path, source, 0, 1)
+
+
+@pytest.mark.ffmpeg
+def test_coverage_probe_fails_closed_when_output_limit_exceeded(tmp_path: Path, monkeypatch) -> None:
+    from astrid.packs.h3_av.shared import conform
+
+    source = _source(tmp_path / "source.mov", duration=Fraction(1))
+    monkeypatch.setattr(conform, "_MAX_PROBE_BYTES", 256)
+    with pytest.raises(PreparationError, match="cannot verify decoded source audio coverage"):
+        _prepare(tmp_path, source, 0, 1)
+    assert not (tmp_path / "prepared" / "conformed-source").exists()
+
+
+@pytest.mark.ffmpeg
+def test_source_change_during_coverage_inspection_is_rejected(tmp_path: Path, monkeypatch) -> None:
+    from astrid.packs.h3_av.shared import conform
+
+    source = _source(tmp_path / "source.mov", duration=Fraction(1))
+    original = conform._decoded_audio_coverage
+
+    def mutate_after_probe(*args):
+        result = original(*args)
+        with source.open("ab") as changed:
+            changed.write(b"changed")
+        return result
+
+    monkeypatch.setattr(conform, "_decoded_audio_coverage", mutate_after_probe)
+    with pytest.raises(PreparationError, match="source changed while inspecting coverage"):
+        _prepare(tmp_path, source, 0, 1)
+    assert not (tmp_path / "prepared" / "conformed-source").exists()
