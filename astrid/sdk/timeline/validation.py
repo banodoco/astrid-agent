@@ -669,30 +669,33 @@ def _validate_legacy_placement_markers(
 ) -> None:
     from astrid.core.timeline.track_appearance import (
         CLIP_PLACEMENT_VERSION,
+        CLIP_PLACEMENT_VERSION_CURRENT,
         SCALE_APPLIES_TO_POSITIONED_CLIPS,
         is_legacy_clip_placement_version,
     )
 
-    def marked_tracks(source: Mapping[str, Any]) -> dict[str, str]:
+    def rows_by_id(source: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
         rows = source.get("tracks")
         if not isinstance(rows, list):
             return {}
-        result = {}
-        for row in rows:
-            if not isinstance(row, Mapping):
-                continue
-            track_id, app = row.get("id"), row.get("app")
-            if (isinstance(track_id, str) and isinstance(app, Mapping)
-                    and is_legacy_clip_placement_version(app.get(CLIP_PLACEMENT_VERSION))):
-                placement = {key: row[key] for key in ("fit", "scale") if key in row}
-                if SCALE_APPLIES_TO_POSITIONED_CLIPS in app:
-                    placement[SCALE_APPLIES_TO_POSITIONED_CLIPS] = app[SCALE_APPLIES_TO_POSITIONED_CLIPS]
-                result[track_id] = json.dumps(placement, sort_keys=True)
-        return result
+        return {row["id"]: row for row in rows
+                if isinstance(row, Mapping) and isinstance(row.get("id"), str)}
 
-    old_tracks = marked_tracks(previous)
-    for track_id, placement in marked_tracks(config).items():
-        if old_tracks.get(track_id) != placement:
+    def track_app(row: Mapping[str, Any]) -> Mapping[str, Any]:
+        app = row.get("app")
+        return app if isinstance(app, Mapping) else {}
+
+    old_tracks = rows_by_id(previous)
+    for track_id, track in rows_by_id(config).items():
+        old_track = old_tracks.get(track_id, {})
+        app, old_app = track_app(track), track_app(old_track)
+        marker = app.get(CLIP_PLACEMENT_VERSION)
+        inherited = is_legacy_clip_placement_version(old_app.get(CLIP_PLACEMENT_VERSION))
+        if inherited and (_same_fields(track, old_track, ("fit", "scale"))
+                          and _same_fields(app, old_app, (SCALE_APPLIES_TO_POSITIONED_CLIPS,))):
+            continue
+        canonical = type(marker) is int and marker == CLIP_PLACEMENT_VERSION_CURRENT
+        if is_legacy_clip_placement_version(marker) or (inherited and not canonical):
             _fail(f"{path}[{track_id!r}].app.{CLIP_PLACEMENT_VERSION}", "is invalid for authored placement")
 
 
