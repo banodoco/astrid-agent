@@ -2218,8 +2218,10 @@ class GenerationFacade:
             raise CapabilityValidationError("generate requires an entry")
         if inputs is not None and not isinstance(inputs, Mapping):
             raise CapabilityValidationError("generate inputs must be an object")
-        from astrid.core.generation.entries import describe_entry
+        from astrid.core.generation.entries import HELD_TRANSCRIPTION_ENTRIES, describe_entry
 
+        if entry in HELD_TRANSCRIPTION_ENTRIES:
+            raise GenerationInputError("audio transcription is unavailable in this release")
         sdk_module = importlib.import_module(self.sdk_module_name)
         try:
             kind = describe_entry(
@@ -2552,11 +2554,11 @@ class GenerationFacade:
         align: str | None = None,
         **inputs: Any,
     ) -> Any:
+        arguments = {key: value for key, value in locals().items() if key not in {"self", "inputs"}}
         from astrid.core.generation.entries import HELD_TRANSCRIPTION_ENTRIES
 
         if mode == 'transcribe' or (entry or model) in HELD_TRANSCRIPTION_ENTRIES:
             raise GenerationInputError('audio transcription is unavailable in this release')
-        arguments = {key: value for key, value in locals().items() if key not in {"self", "inputs"}}
         return self._media_request("audio", **arguments, **inputs)
 
 

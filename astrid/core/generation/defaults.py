@@ -49,6 +49,7 @@ class Resolved:
 def pack_candidates(registry: Any = None) -> list[Candidate]:
     """Every default a contribution declares, from both points."""
     from astrid.core.generation import workflows
+    from astrid.core.generation.entries import HELD_TRANSCRIPTION_ENTRIES
 
     if registry is None:
         from astrid.core.extensions.registry import ExtensionRegistry
@@ -58,11 +59,13 @@ def pack_candidates(registry: Any = None) -> list[Candidate]:
     for contribution in registry.contributions(DEFAULTS_POINT):
         for raw in contribution.fields.get("defaults", []):
             rows.append(Candidate(contribution.pack, raw["entry"], raw["kind"], raw["mode"], raw["priority"]))
-    return rows
+    return [row for row in rows if row.entry not in HELD_TRANSCRIPTION_ENTRIES]
 
 
 def known_entries(registry: Any = None) -> list[dict[str, Any]]:
     """Real entries as ``{pack, entry, kind, modes}``; a pin must name one of these."""
+    from astrid.core.generation.entries import HELD_TRANSCRIPTION_ENTRIES
+
     rows: list[dict[str, Any]] = []
     for candidate in pack_candidates(registry):
         rows.append({"pack": candidate.pack, "entry": candidate.entry, "kind": candidate.kind,
@@ -95,7 +98,7 @@ def known_entries(registry: Any = None) -> list[dict[str, Any]]:
             rows.append({"pack": pack, "entry": row["id"], "kind": row["kind"], "modes": set(row["modes"])})
     except Exception:  # noqa: BLE001 - best-effort fallback; diagnostic at debug, never a user-facing traceback
         _logger.debug("Could not discover contributed workflow entries for generation defaults", exc_info=True)
-    return rows
+    return [row for row in rows if row["entry"] not in HELD_TRANSCRIPTION_ENTRIES]
 
 
 def slots(candidates: Iterable[Candidate], pins: Mapping[str, Any]) -> list[tuple[str, str]]:

@@ -1,6 +1,8 @@
 """The release omits transcription generation while retaining timeline transcript reads."""
 from __future__ import annotations
 
+from inspect import signature
+
 import pytest
 
 from astrid.core.cli.domain_timelines import build_parser
@@ -62,3 +64,54 @@ def test_timeline_parser_refuses_retired_launches(capsys, args, diagnostic):
 
     assert caught.value.code == 2
     assert diagnostic in capsys.readouterr().err
+
+
+def test_audio_sdk_forwards_only_the_requested_generation_arguments(monkeypatch):
+    expected_names = set(signature(GenerationFacade.audio).parameters) - {"self", "inputs"} | {"prompt"}
+    result = object()
+
+    def dispatch(self, modality, **kwargs):
+        assert modality == "audio"
+        assert set(kwargs) == expected_names
+        assert kwargs["mode"] == "sfx" and kwargs["prompt"] == "waves"
+        return result
+
+    monkeypatch.setattr(GenerationFacade, "_media_request", dispatch)
+    assert GenerationFacade().audio(mode="sfx", prompt="waves") is result
+
+
+@pytest.mark.parametrize("entry_id", ["transcription", "audio/transcribe"])
+def test_generic_generation_refuses_transcription_before_discovery(monkeypatch, entry_id):
+    from astrid.sdk import generation
+
+    def unexpected(**_kwargs):
+        pytest.fail("the holdout must refuse before discovering models or dispatching generation")
+
+    monkeypatch.setattr(generation, "_load_model_registry", unexpected)
+    with pytest.raises(GenerationInputError, match="audio transcription is unavailable"):
+        GenerationFacade().generate(entry_id)
+
+
+def test_saved_and_contributed_entries_cannot_reintroduce_the_held_ids(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from vibecomfy import entries as vibe_entries
+    from astrid.core.extensions import scopes
+
+    monkeypatch.setattr(vibe_entries, "discover_entries",
+                        lambda: [{"id": "transcription"}, {"id": "saved-audio"}])
+    pack = tmp_path / "custom-audio"
+    extensions = pack / "extensions" / "vibecomfy.workflows"
+    extensions.mkdir(parents=True)
+    (extensions / "custom-audio.yaml").write_text(
+        "ready_root: ../../workflows\n"
+        "entries:\n"
+        "  - {id: audio/transcribe, bundle: retired}\n"
+        "  - {id: custom-audio, bundle: custom}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(scopes, "contribution_roots", lambda: [SimpleNamespace(path=tmp_path, scope="user")])
+
+    assert [row["id"] for row in entries.user_entries()] == ["saved-audio", "custom-audio"]
+    assert entries.find_entry("transcription") is None
+    assert entries.find_entry("audio/transcribe") is None

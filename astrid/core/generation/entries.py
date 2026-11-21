@@ -25,7 +25,7 @@ class MissingRequiredEntryInputsError(ValueError):
     """Entry validation failed because one or more required inputs are absent."""
 
 
-# The ready template can still be present in an existing VibeComfy installation.
+# Reserve the held route IDs even when saved locally or present in VibeComfy.
 HELD_TRANSCRIPTION_ENTRIES = frozenset({'transcription', 'audio/transcribe'})
 
 
@@ -35,7 +35,7 @@ def user_entries() -> list[dict[str, Any]]:
         from vibecomfy.entries import discover_entries
     except ImportError:
         return []
-    rows = discover_entries()
+    rows = [row for row in discover_entries() if row.get("id") not in HELD_TRANSCRIPTION_ENTRIES]
     return rows + contributed_entries(exclude={row.get("id") for row in rows})
 
 
@@ -57,7 +57,7 @@ def contributed_entries(*, exclude: Any = ()) -> list[dict[str, Any]]:
         # Contributions are optional; preserve the prior empty projection if discovery fails.
         logger.debug('Could not discover workflow contribution roots', exc_info=True)
         return []
-    rows, seen = [], set(exclude)
+    rows, seen = [], set(exclude) | HELD_TRANSCRIPTION_ENTRIES
     for root in roots:
         path = Path(root.path)
         if not path.is_dir():
@@ -214,6 +214,8 @@ def action_entries(discovery: Any | None = None) -> list[dict[str, Any]]:
                        or _input_type(ports[name].type) != "file" for name in local_files)
                 or len(local_files) != len(set(local_files))):
             raise ValueError(f"invalid generation entry declaration on {capability.id!r}")
+        if declaration["id"] in HELD_TRANSCRIPTION_ENTRIES:
+            continue
         rows.append({"id": declaration["id"], "kind": declaration["kind"],
                      "modes": list(declaration["modes"]), "action": capability.id,
                      "inputs": [{"name": ports[name].name, "type": ports[name].type,
@@ -238,6 +240,8 @@ def bundle_path(entry: dict[str, Any]) -> Path:
 
 
 def find_entry(entry_id: str) -> dict[str, Any] | None:
+    if entry_id in HELD_TRANSCRIPTION_ENTRIES:
+        return None
     matches = [entry for entry in user_entries() if entry['id'] == entry_id]
     actions = [entry for entry in action_entries() if entry['id'] == entry_id]
     if actions:
@@ -527,6 +531,8 @@ def describe_entry(entry_id: str, mode: str | None = None, *, registry: Any = No
     No target inventory, readiness checks, Runtime client, provider or installer
     is involved. Multi-mode callers select a mode or inspect mode_descriptions.
     """
+    if entry_id in HELD_TRANSCRIPTION_ENTRIES:
+        raise ValueError("audio transcription is unavailable in this release")
     if registry is None:
         from astrid.core.model_catalog.registry import ModelRegistry
         registry = ModelRegistry.load_default()
