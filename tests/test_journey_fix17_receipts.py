@@ -59,10 +59,11 @@ def test_native_update_gate_binds_fresh_composition_to_its_source():
     saved = {
         "project_id": "r13-project", "timeline_id": "r13-timeline", "base_revision_id": "r13-revision",
         "accepted_revision_id": "r14-revision", "publication_id": "r14-publication",
-        "document_sha256": "1" * 64, "edit": "edited.mp4", "saved": True,
+        "document_sha256": "1" * 64, "track_id": "V1", "edit": "Edited track", "saved": True,
     }
     row = {
-        "timeline_seed": {"project": "r13-project", "timeline": "r13-timeline", "revision_id": "r13-revision",
+        "timeline_seed": {"project": "r13-project", "timeline": "r13-timeline", "track_id": "V1",
+                          "initial_label": "Original track", "revision_id": "r13-revision",
                           "publication_id": "r13-publication"},
         "timeline_save": saved,
         "timeline_reopen": {**saved, "reopened": True},

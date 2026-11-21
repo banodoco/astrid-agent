@@ -633,7 +633,8 @@ def _release13_killed_errors(job_id, row, candidate=None):
             or not _composition_reopen_matches(original, retry.get("timeline_reopen"))
             or any(original.get(key) != seed.get(source) for key, source in (
                 ("project_id", "project"), ("timeline_id", "timeline"),
-                ("accepted_revision_id", "revision_id"), ("publication_id", "publication_id")))):
+                ("accepted_revision_id", "revision_id"), ("publication_id", "publication_id"),
+                ("track_id", "track_id"), ("edit", "initial_label")))):
         errors.append(f"{job_id}: the original composition edit was not freshly reopened after recovery and retry")
     final_owners = retry.get("live_runtimes")
     installed = retry.get("installed_tuple")
@@ -855,7 +856,7 @@ def _fix17_browser_errors(job_id, contract, row, candidate):
     return errors
 
 COMPOSITION_REOPEN_FIELDS = ("project_id", "timeline_id", "accepted_revision_id",
-                             "publication_id", "document_sha256", "edit")
+                             "publication_id", "document_sha256", "track_id", "edit")
 
 
 def _nonempty_text(value):
@@ -877,6 +878,8 @@ def _composition_save_matches_seed(seed, saved):
             and DIGEST.fullmatch(saved["document_sha256"]) is not None
             and saved["project_id"] == seed.get("project")
             and saved["timeline_id"] == seed.get("timeline")
+            and saved["track_id"] == seed.get("track_id")
+            and _nonempty_text(seed.get("initial_label")) and saved["edit"] != seed["initial_label"]
             and saved["base_revision_id"] == seed.get("revision_id", seed.get("head"))
             and saved["accepted_revision_id"] != saved["base_revision_id"]
             and saved["publication_id"] != seed.get("publication_id"))

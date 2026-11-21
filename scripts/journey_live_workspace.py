@@ -191,7 +191,7 @@ def seed(client, project, generation, task_id=None, create_project=False):
             "object_digest": hashlib.sha256(payload).hexdigest(), "generation": generation}
 
 
-def seed_authored_timeline(client, project, generation):
+def seed_authored_timeline(client, project, generation, track_label=None):
     """Prepare a real canonical editor document using public Runtime endpoints.
 
     The installed Runtime must accept the same timeline.init envelope used by
@@ -208,11 +208,10 @@ def seed_authored_timeline(client, project, generation):
         raise RuntimeError("Installed Runtime did not publish a canonical timeline bootstrap head")
 
     label = "Initialize Release 13 creative timeline"
-    original_file = "fix17-r13-" + generation + ".mp4"
     command = {
         "schema_version": 1, "op": "timeline.init", "version": "1", "select": "parent",
         "args": {"name": "Main", "slug": "main",
-                 "output": {"resolution": "1280x720", "fps": 30, "file": original_file,
+                 "output": {"resolution": "1280x720", "fps": 30, "file": "output.mp4",
                             "background": None, "background_scale": None}},
     }
     reads = [{"kind": "scope", "ref": "timeline", "path": []}]
@@ -249,20 +248,24 @@ def seed_authored_timeline(client, project, generation):
         raise RuntimeError("Canonical initializer did not persist the accepted head and publication")
     composition = read_composition_head(client, keys["project"], keys["timeline"],
                                         data["accepted_revision_id"], receipt["receipt_id"])
-    if composition["payload"]["config"]["output"]["file"] != original_file:
-        raise RuntimeError("The original R13 composition did not retain its authored edit")
-    keys["head"] = data["accepted_revision_id"]
-    return {
+    seeded = {
         **keys,
         "project_name": "Release-0 user project " + generation,
         "timeline_name": reopened["name"], "track_id": "V1", "initial_label": "V1",
+        "head": data["accepted_revision_id"],
         "revision_id": data["accepted_revision_id"],
         "publication_id": receipt["receipt_id"], "authored": True,
         "composition": {"project_id": keys["project"], "timeline_id": keys["timeline"],
                         "accepted_revision_id": data["accepted_revision_id"],
                         "publication_id": receipt["receipt_id"],
-                        "document_sha256": composition_digest(composition), "edit": original_file},
+                        "document_sha256": composition_digest(composition), "track_id": "V1", "edit": "V1"},
     }
+    if track_label is not None:
+        edited = _save_composition_label(client, seeded, track_label, legacy=True)
+        seeded.update(initial_label=track_label, head=edited["accepted_revision_id"],
+                      revision_id=edited["accepted_revision_id"], publication_id=edited["publication_id"],
+                      composition=edited)
+    return seeded
 
 
 def _inventory_pages(client, route):
@@ -407,7 +410,16 @@ def save_timeline_after_update(client, keys):
 
 
 def save_composition_after_update(client, keys):
-    """Commit a real document edit and prove the accepted revision via public reads."""
+    """Commit a track label through R14's document edit endpoint."""
+    return _save_composition_label(client, keys, "Saved after update " + keys["generation"])
+
+
+def _track_label(revision, track_id):
+    tracks = revision["payload"]["config"]["tracks"]
+    return next((track.get("label") for track in tracks if track["id"] == track_id), None)
+
+
+def _save_composition_label(client, keys, label, *, legacy=False):
     base = path("projects", keys["project"], "timelines", keys["timeline"])
     timeline = client.request("GET", base)
     revision_id, publication_id = timeline.get("head_revision_id"), timeline.get("head_publication_id")
@@ -415,27 +427,30 @@ def save_composition_after_update(client, keys):
             or revision_id != keys.get("revision_id") or publication_id != keys.get("publication_id")):
         raise ValueError("Selected composition is not the seeded timeline and publication before the save")
     revision = read_composition_head(client, keys["project"], keys["timeline"], revision_id, publication_id)
-    payload = revision.get("payload") if isinstance(revision, dict) else None
-    config = payload.get("config") if isinstance(payload, dict) else None
-    output = config.get("output") if isinstance(config, dict) else None
-    if not isinstance(output, dict) or not isinstance(output.get("file"), str):
-        raise RuntimeError("Seeded composition has no editable output file")
-    changed = dict(output)
-    changed["file"] = "fix17-saved-" + keys["generation"] + ".mp4"
-    change = {"op": "set", "ref": "parent", "path": ["config", "output"],
-              "before": {"state": "present", "value": output}, "value": changed}
-    label = "Save composition after Release 14 update"
-    command = {"schema_version": 1, "op": "doc.patch", "version": "1", "select": None, "created": [],
-               "args": {"changes": [change]}}
+    track_id = keys["track_id"]
+    before = _track_label(revision, track_id)
+    if not isinstance(before, str) or before != keys["initial_label"] or before == label:
+        raise RuntimeError("Seeded composition does not have the original editable track label")
+    if legacy:
+        target = "parent/track:" + track_id
+        command = {"schema_version": 1, "op": "track.set", "version": "1", "select": target,
+                   "args": {"values": {"label": label}, "clear": []},
+                   "expect": {target + "::label": {"state": "present", "value": before}}}
+        patch = []
+    else:
+        patch = [{"op": "set", "ref": "parent", "path": ["config", "tracks", "id:" + track_id, "label"],
+                  "before": {"state": "present", "value": before}, "value": label}]
+        command = {"schema_version": 1, "op": "doc.patch", "version": "1", "select": None, "created": [],
+                   "args": {"changes": patch}}
     reads = [{"kind": "scope", "ref": "timeline", "path": []}]
     accepted = client.request("POST", base + "/commit", {
         "api_version": 1, "project_id": keys["project"], "timeline_id": keys["timeline"],
         "base_revision_id": revision_id, "base_publication_id": publication_id,
         "commands": [command], "label": label,
-        "steps": [{"id": "fix17-composition-save", "label": "doc.patch", "intent": label,
-                   "tags": [], "command_ordinals": [0], "patch": [change], "reads": reads}],
+        "steps": [{"id": "fix17-composition-save", "label": label, "intent": label,
+                   "tags": [], "command_ordinals": [0], "patch": patch, "reads": reads}],
         "merge": "atomic", "reads": reads, "dry_run": False, "source": {"via": "python"},
-    }, key="fix17-composition-save-" + keys["generation"])
+    }, key=("fix17-r13-edit-" if legacy else "fix17-composition-save-") + keys["generation"])
     data, receipt = accepted.get("data"), accepted.get("receipt")
     accepted_id = data.get("accepted_revision_id") if isinstance(data, dict) else None
     publication = receipt.get("receipt_id") if isinstance(receipt, dict) else None
@@ -444,12 +459,12 @@ def save_composition_after_update(client, keys):
             or not isinstance(publication, str) or not publication or publication == publication_id):
         raise RuntimeError("Runtime did not accept and publish the composition edit")
     fresh = read_composition_head(client, keys["project"], keys["timeline"], accepted_id, publication)
-    if fresh["payload"]["config"]["output"]["file"] != changed["file"]:
+    if _track_label(fresh, track_id) != label:
         raise RuntimeError("Fresh composition revision read did not contain the accepted edit")
     return {"project_id": keys["project"], "timeline_id": keys["timeline"],
             "base_revision_id": revision_id, "accepted_revision_id": accepted_id,
             "publication_id": publication, "document_sha256": composition_digest(fresh),
-            "edit": changed["file"], "saved": True}
+            "track_id": track_id, "edit": label, "saved": True}
 
 
 def read_composition_head(client, project, timeline_id, revision_id, publication_id):
@@ -472,10 +487,10 @@ def reopen_saved_composition(client, saved):
     revision = read_composition_head(client, saved["project_id"], saved["timeline_id"],
                                      saved["accepted_revision_id"], saved["publication_id"])
     if (composition_digest(revision) != saved["document_sha256"]
-            or revision["payload"]["config"]["output"]["file"] != saved["edit"]):
+            or _track_label(revision, saved["track_id"]) != saved["edit"]):
         raise ValueError("Fresh Runtime client did not reopen the accepted composition edit")
     return {key: saved[key] for key in ("project_id", "timeline_id", "accepted_revision_id",
-                                       "publication_id", "document_sha256", "edit")} | {"reopened": True}
+                                       "publication_id", "document_sha256", "track_id", "edit")} | {"reopened": True}
 
 
 def reopen_browser_composition(client, saved):
