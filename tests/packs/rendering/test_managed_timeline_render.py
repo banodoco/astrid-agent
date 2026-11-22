@@ -558,6 +558,31 @@ def test_editor_object_route_for_the_entrys_own_media_is_dropped() -> None:
     }
 
 
+@pytest.mark.parametrize("thumbnail_field", ["thumbnailUrl", "thumbnail_url"])
+def test_render_projection_drops_thumbnail_presentation_metadata(thumbnail_field) -> None:
+    runtime = _Runtime(media=[{"media_id": "sha256:" + _ROUTE_HEX, "digest": _ROUTE_HEX}])
+    entry = {"media_id": "sha256:" + _ROUTE_HEX, "type": "image/png",
+             thumbnail_field: "/api/runtime/v1/objects/thumbnail"}
+    runtime.timeline["registry"] = {"assets": {"still": entry.copy()}}
+    snapshot = _snapshot(runtime)
+    assert thumbnail_field not in snapshot.registry["assets"]["still"]
+    # Projection must never rewrite the pinned authored entry.
+    assert runtime.timeline["registry"]["assets"]["still"] == entry
+
+
+@pytest.mark.parametrize("field", ["sourceUrl", "remoteUrl", "uri", "path", "source_path", "locator"])
+def test_render_projection_drops_only_own_object_locators(field) -> None:
+    runtime = _Runtime(media=[{"media_id": "sha256:" + _ROUTE_HEX, "digest": _ROUTE_HEX}])
+    runtime.timeline["registry"] = {"assets": {"still": {
+        "media_id": "sha256:" + _ROUTE_HEX,
+        field: "/api/runtime/v1/objects/sha256%3A" + _ROUTE_HEX,
+    }}}
+    assert field not in _snapshot(runtime).registry["assets"]["still"]
+    runtime.timeline["registry"]["assets"]["still"][field] = "/v1/objects/sha256%3A" + "b" * 64
+    with pytest.raises(ManagedRenderValidationError, match="retired media locator"):
+        _snapshot(runtime)
+
+
 def test_capture_precheck_keeps_the_route_and_names_unused_entries() -> None:
     # Composed capture sends its registry to the generic host unchanged, and
     # the host refuses every locator, so its pre-check must not drop routes.
