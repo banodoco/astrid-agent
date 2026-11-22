@@ -81,7 +81,9 @@ def _render_compatible_projection(
     from astrid.core.timeline.reader_projection import (
         READER_PROJECTION_APP_KEY,
         MediaSelectorError,
+        ReaderProjectionError,
         normalize_legacy_reader_fields,
+        project_reader_fields,
         translate_media_selectors,
     )
 
@@ -99,6 +101,14 @@ def _render_compatible_projection(
         ) from exc
 
     normalize_legacy_reader_fields(normalized_config, normalized_registry)
+    try:
+        project_reader_fields(normalized_config)
+    except ReaderProjectionError as exc:
+        raise ManagedRenderValidationError(
+            str(exc), path="$.config", reason=exc.reason,
+            recovery="Use finite JSON extensions and positive integer rational FPS values.",
+            validator="authoring_render_projection",
+        ) from exc
     raw_clips = normalized_config.get("clips", [])
     if not isinstance(raw_clips, list):
         return normalized_config, normalized_registry

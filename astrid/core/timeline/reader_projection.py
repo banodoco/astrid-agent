@@ -15,11 +15,20 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import math
 from collections.abc import Mapping
 from typing import Any
 
 READER_PROJECTION_APP_KEY = "astrid_authoring_render_projection"
 _HEX = frozenset("0123456789abcdef")
+# Recorded in R13 SDK and authoring round trips. Similar-looking structural
+# fields stay in place for the strict reader schema to check.
+_LEGACY_EXTENSION_KEYS = {
+    "config": frozenset({"opaque", "x_f2_opaque", "opaque_parent_config", "org.example/data"}),
+    "clip": frozenset({"opaque", "org.example/data"}),
+    "track": frozenset({"opaque"}),
+    "theme_overrides": frozenset({"opaque_theme"}),
+}
 
 
 class MediaSelectorError(ValueError):
@@ -211,15 +220,89 @@ def normalize_legacy_reader_fields(
         del registry["meta"]
 
 
+def _project_extensions(
+    owner: dict[str, Any], section: str, *, app_owner: dict[str, Any],
+) -> None:
+    extensions = {key: owner[key] for key in _LEGACY_EXTENSION_KEYS[section] if key in owner}
+    if section == "clip" and owner.get("clipType") == "text":
+        # R13 could retain these null placeholders on a text clip. A
+        # non-null sourceURL would still be an unknown media selector.
+        extensions.update({key: None for key in ("nullable", "sourceURL")
+                           if key in owner and owner[key] is None})
+    if not extensions:
+        return
+
+    from astrid.core.receipts.canonical import CanonicalizationError, canonical_json
+
+    try:
+        canonical_json(extensions)
+    except CanonicalizationError as exc:
+        reason = f"{section} extensions must contain only bounded finite JSON"
+        raise ReaderProjectionError(reason, part="timeline", reason=reason) from exc
+
+    app = app_owner.setdefault("app", {})
+    annotation = app.setdefault(READER_PROJECTION_APP_KEY, {}) if isinstance(app, dict) else None
+    slots = annotation.setdefault("extensions", {}) if isinstance(annotation, dict) else None
+    if not isinstance(slots, dict) or section in slots:
+        reason = f"{section} extensions collide with the reader projection annotation"
+        raise ReaderProjectionError(reason, part="timeline", reason=reason)
+    slots[section] = extensions
+    for key in extensions:
+        del owner[key]
+
+
+def _project_rational_fps(container: Any, path: str) -> None:
+    value = container.get("fps") if isinstance(container, dict) else None
+    # The legacy canvas also tolerates opaque objects with no FPS components.
+    components = {"numerator", "denominator"}
+    if not isinstance(value, dict) or components.isdisjoint(value):
+        return
+
+    reason = f"{path}.fps must be a finite positive ratio of positive integers"
+    numerator = value.get("numerator")
+    denominator = value.get("denominator")
+    if (value.keys() != components
+            or type(numerator) is not int or numerator <= 0
+            or type(denominator) is not int or denominator <= 0):
+        raise ReaderProjectionError(reason, part="timeline", reason=reason)
+    try:
+        fps = numerator / denominator
+    except OverflowError as exc:
+        raise ReaderProjectionError(reason, part="timeline", reason=reason) from exc
+    if not math.isfinite(fps) or fps <= 0:
+        raise ReaderProjectionError(reason, part="timeline", reason=reason)
+    container["fps"] = fps
+
+
+def project_reader_fields(config: dict[str, Any]) -> None:
+    """Adapt a reader-owned copy of the compiled timeline for the scalar schema."""
+    _project_rational_fps(config.get("output"), "output")
+    _project_extensions(config, "config", app_owner=config)
+    for collection, section in (("tracks", "track"), ("clips", "clip")):
+        rows = config.get(collection)
+        if isinstance(rows, list):
+            for row in rows:
+                if isinstance(row, dict):
+                    _project_extensions(row, section, app_owner=row)
+
+    overrides = config.get("theme_overrides")
+    if isinstance(overrides, dict):
+        _project_extensions(overrides, "theme_overrides", app_owner=config)
+        visual = overrides.get("visual")
+        if isinstance(visual, dict):
+            _project_rational_fps(visual.get("canvas"), "theme_overrides.visual.canvas")
+
+
 def reader_view(config: Mapping[str, Any], registry: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     """Return what render reads from a projection, without importing the renderer.
 
-    Media selectors, legacy transition spelling, editor registry metadata,
-    and ``rect`` placement are translated for the strict reader check.
+    Media selectors, legacy fields, editor registry metadata, and ``rect``
+    placement are translated for the strict reader check.
     """
     from .banodoco_schema import EDITOR_ASSET_METADATA_KEYS
 
     view_config, view_registry = translate_media_selectors(config, registry, strict=False)
+    project_reader_fields(view_config)
     _normalize_legacy_transitions(view_config)
     assets = view_registry.get("assets")
     if isinstance(assets, dict):
@@ -280,6 +363,7 @@ __all__ = [
     "ReaderProjectionError",
     "check_reader_projection",
     "media_identity",
+    "project_reader_fields",
     "reader_view",
     "translate_media_selectors",
 ]
