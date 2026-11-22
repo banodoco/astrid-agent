@@ -8,7 +8,6 @@ import json
 from unittest.mock import Mock
 from pathlib import Path
 from types import SimpleNamespace
-from types import SimpleNamespace
 
 import pytest
 
@@ -342,169 +341,220 @@ def test_commit_function_batches_occurrence_placements_and_document_edits(
     assert len(history_state['items']) == 1
 
 
-def _scope_test_realm(realm):
-    """Match the admitted test pack's realm/project scope to DetachedRealm."""
-    from astrid.sdk.timeline.commit import _digest
-    from astrid.sdk.timeline._scalar_commands import capture_track_set
+@pytest.mark.parametrize('case', ['disjoint-placement', 'disjoint-doc-patch', 'overlap'])
+def test_public_function_stale_edit_uses_conservative_scope_guard(
+        monkeypatch, tmp_path, configured, case):
+    """Public function commits retry against a real detached provider head."""
+    from astrid.core.receipts.canonical import canonical_json
+    from astrid.sdk.timeline import commit_session, sync
+    from astrid.sdk.timeline.commit import _digest, _manifest, create_runtime_commit_service
+    from tests.sdk.test_timeline_commit_provider import DetachedPort, DetachedRealm, detached, runtime_abi
 
-    original_context = realm.context
+    # The provider module owns the test Runtime ABI exceptions used by its port.
+    runtime_abi.__wrapped__(monkeypatch)
+    from runtime_protocol.timeline_commit import CommitRejected
 
-    def context(calls, **kwargs):
-        value = original_context(calls, **kwargs)
-        value['request']['project_id'] = 'project'
-        value['invocation']['body']['project_id'] = 'project'
-        value['realm_id'] = 'realm'
-        value['request_hash'] = _digest(value['invocation'])
-        return value
-
-    realm.context = context
-
-
-def test_provider_stale_placement_and_free_patch_rebases_disjoint_but_conflicts_same_key(
-        monkeypatch, tmp_path, configured):
-    """A staged admitted placement stays atomic with a free patch through stale replay."""
-    from astrid.sdk.timeline import commit_session, store
-    from astrid.sdk.timeline.commit import _digest
-    from tests.sdk.test_timeline_commit_provider import CommitRejected, DetachedRealm, detached
-
-    def public_staged_commands(owner, element_ref, starting_bundle, fps, outbox, *, place=True):
-        client = SimpleNamespace(
-            _remote=SimpleNamespace(_transport=owner._client), timelines=owner,
-            documents=configured, media=configured.media)
-        monkeypatch.setattr(store, 'fetch_bundle',
-                            lambda *a, **kw: copy.deepcopy(starting_bundle))
-        history_state = {'head': {'revision_id': 'head', 'publication_id': 'publication'},
-                         'items': [], 'next_cursor': None}
-        owner.history.side_effect = lambda *a, **kw: DomainResult.success(copy.deepcopy(history_state))
-        timeline = commit_session.open('project', 'film', client=client, outbox_path=outbox)
-        if place:
-            timeline.clip('placement-proof-clip').set_element(element_ref)
-        if fps is not None:
-            timeline.bundle['parent']['config']['output']['fps'] = {
-                'numerator': fps, 'denominator': 1}
-        else:
-            other = next(row for row in timeline.bundle['placements']
-                         if row['occurrence_id'] != 'occ-a')
-            shot = timeline.bundle['shots'][other['shot_id']]
-            shot['internal_timeline']['clips'][0]['at'] += 0.5
-        timeline._capture_free_edits()
-        commands = copy.deepcopy(timeline._commands)
-        assert [command['op'] for command in commands] == (
-            ['clip.set-element', 'doc.patch'] if place else ['doc.patch'])
-        return commands
-
-    unique_target = 'occurrence:occ-a/clip:placement-proof-clip'
+    real_ack = sync._ack
     owner, ref, pin, initial = _setup(monkeypatch, tmp_path, configured)
+    monkeypatch.setattr(sync, '_ack', real_ack)
+
     document = copy.deepcopy(initial['source_mapping']['_runtime_document'])
     internal = document['internal_timeline_revisions'][0]
     internal['payload']['clips'][0]['id'] = 'placement-proof-clip'
     internal['content_digest'] = _digest(internal['payload'])
-    document['dependency_manifest']['internal_timelines'][0]['content_digest'] = internal['content_digest']
-    shot2 = copy.deepcopy(document['shot_revisions'][0])
-    shot2.update(shot_id='chapter-shot-b', revision_id='shot-2')
-    internal2 = copy.deepcopy(internal)
-    internal2.update(timeline_id='chapter-two', revision_id='internal-2')
-    internal2['payload']['clips'][0]['id'] = 'chapter-two-clip'
-    internal2['content_digest'] = _digest(internal2['payload'])
-    shot2['internal_timeline_revision_id'] = 'internal-2'
-    shot2['payload']['internal_timeline_revision_id'] = 'internal-2'
-    shot2['payload']['items'][0]['item_id'] = 'item-2'
-    shot2['content_digest'] = _digest(shot2['payload'])
-    document['shot_revisions'].append(shot2)
-    document['internal_timeline_revisions'].append(internal2)
-    second_occurrence = copy.deepcopy(document['parent_revision']['payload']['occurrences'][0])
-    second_occurrence.update(occurrence_id='occ-b', shot_id='chapter-shot-b',
-                             shot_revision_id='shot-2')
-    document['parent_revision']['payload']['occurrences'].append(second_occurrence)
-    document['parent_revision']['content_digest'] = _digest(document['parent_revision']['payload'])
-    from astrid.sdk.timeline.commit import _manifest
     document['dependency_manifest'] = _manifest(
         document['shot_revisions'], document['internal_timeline_revisions'],
         document['dependency_manifest']['media'], document['dependency_manifest']['documents'])
     bundle = bundle_from_document(document)
-    owner.open_bundle.return_value = DomainResult.success({
-        'bundle': bundle, 'project_id': 'project', 'timeline_id': 'film',
-        'head_revision_id': 'head', 'revision_id': 'head',
-    })
+    target = 'occurrence:occ-a/clip:placement-proof-clip'
     realm = DetachedRealm(document)
+    realm.entries[0]['receipt']['project_id'] = 'project'
     source, snapshots = owner.schema_inputs[0]
     realm.live_sources[_digest(pin)] = detached(source)
     realm.snapshot_objects = detached(snapshots)
-    _scope_test_realm(realm)
-    base = copy.deepcopy(realm.head)
-    stale = public_staged_commands(owner, ref, bundle, 24,
-                                   tmp_path / 'public-stage-a.json')
-    concurrent = public_staged_commands(
-        owner, ref, bundle, None, tmp_path / 'public-stage-concurrent.json', place=False)
-    realm.call(concurrent)
-    rebased = realm.call(stale, base=base)
-    final = bundle_from_document(rebased['data']['canonical_document'])
-    assert rebased['data']['status'] == 'rebased'
-    assert State(final).entity(unique_target)['elementRef'] == ref
-    assert final['parent']['config']['output']['fps'] == {'numerator': 24, 'denominator': 1}
-    other_shot_id = next(row['shot_id'] for row in final['placements']
-                        if row['occurrence_id'] == 'occ-b')
-    internal = final['shots'][other_shot_id]['internal_timeline']
-    assert internal['clips'][0]['at'] == 1.5
-    assert State(final).entity('parent/clip:clip-b')['at'] == 8.008
+    owner._client._last_handshake = {'realm_id': 'realm', 'actor_id': 'actor-1'}
 
-    # Repeat from a clean base with the exact free-patch key changed by the
-    # intervening publisher. The staged element write must not partially land.
-    owner2, ref2, pin2, initial2 = _setup(monkeypatch, tmp_path / 'conflict', configured)
-    document2 = copy.deepcopy(initial2['source_mapping']['_runtime_document'])
-    internal2 = document2['internal_timeline_revisions'][0]
-    internal2['payload']['clips'][0]['id'] = 'placement-proof-clip'
-    internal2['content_digest'] = _digest(internal2['payload'])
-    document2['dependency_manifest']['internal_timelines'][0]['content_digest'] = internal2['content_digest']
-    shot_b = copy.deepcopy(document2['shot_revisions'][0])
-    shot_b.update(shot_id='chapter-shot-b', revision_id='shot-2')
-    internal_b = copy.deepcopy(internal2)
-    internal_b.update(timeline_id='chapter-two', revision_id='internal-2')
-    internal_b['payload']['clips'][0]['id'] = 'chapter-two-clip'
-    internal_b['content_digest'] = _digest(internal_b['payload'])
-    shot_b['internal_timeline_revision_id'] = 'internal-2'
-    shot_b['payload']['internal_timeline_revision_id'] = 'internal-2'
-    shot_b['payload']['items'][0]['item_id'] = 'item-2'
-    shot_b['content_digest'] = _digest(shot_b['payload'])
-    document2['shot_revisions'].append(shot_b)
-    document2['internal_timeline_revisions'].append(internal_b)
-    occurrence_b = copy.deepcopy(document2['parent_revision']['payload']['occurrences'][0])
-    occurrence_b.update(occurrence_id='occ-b', shot_id='chapter-shot-b', shot_revision_id='shot-2')
-    document2['parent_revision']['payload']['occurrences'].append(occurrence_b)
-    document2['parent_revision']['content_digest'] = _digest(document2['parent_revision']['payload'])
-    document2['dependency_manifest'] = _manifest(
-        document2['shot_revisions'], document2['internal_timeline_revisions'],
-        document2['dependency_manifest']['media'], document2['dependency_manifest']['documents'])
-    bundle2 = bundle_from_document(document2)
-    owner2.open_bundle.return_value = DomainResult.success({
-        'bundle': bundle2, 'project_id': 'project', 'timeline_id': 'film',
-        'head_revision_id': 'head', 'revision_id': 'head',
-    })
-    realm2 = DetachedRealm(document2)
-    source2, snapshots2 = owner2.schema_inputs[0]
-    realm2.live_sources[_digest(pin2)] = detached(source2)
-    realm2.snapshot_objects = detached(snapshots2)
-    _scope_test_realm(realm2)
-    base2 = copy.deepcopy(realm2.head)
-    stale2 = public_staged_commands(owner2, ref2, bundle2, 25,
-                                    tmp_path / 'public-stage-b.json')
-    competing_patch = copy.deepcopy(stale2[1])
-    competing_patch['args']['changes'][0]['value'] = {'numerator': 60, 'denominator': 1}
-    realm2.call([competing_patch])
-    before = (copy.deepcopy(realm2.head), copy.deepcopy(realm2.entries),
-              copy.deepcopy(realm2.documents))
-    accepted_count = len(realm2.accepted)
-    with pytest.raises(CommitRejected) as error:
-        realm2.call(stale2, base=base2)
-    assert error.value.failure['details']['status'] == 'conflict'
-    assert any(conflict['ref'] == 'parent'
-               and conflict['path'] == ['config', 'output', 'fps']
-               for conflict in error.value.failure['details']['conflicts'])
-    assert (realm2.head, realm2.entries, realm2.documents) == before
-    assert len(realm2.accepted) == accepted_count
-    landed = bundle_from_document(realm2.documents[realm2.head['revision_id']])
-    assert State(landed).entity(unique_target)['elementRef'] is None
-    assert landed['parent']['config']['output']['fps'] == {'numerator': 60, 'denominator': 1}
+    path = '/v1/projects/project/timelines/film/commit'
+    service = create_runtime_commit_service()
+
+    def runtime_accept(body, key):
+        invocation = {'operation': 'commitTimeline', 'path': path,
+                      'publisher': 'actor-1', 'request': copy.deepcopy(body)}
+        context = {'request': body, 'invocation': invocation,
+                   'idempotency_key': key,
+                   'request_hash': hashlib.sha256(canonical_json(invocation).encode()).hexdigest(),
+                   'realm_id': 'realm', 'publisher': 'actor-1'}
+        port = DetachedPort(realm, context)
+        port.context['request'].setdefault('rationale', '')  # Required by the legacy receipt fixture.
+        accepted = service.commit(context, port)
+        receipt = copy.deepcopy(accepted['receipt'])
+        receipt['project_id'] = 'project'
+        receipt['project_seq'] = [receipt['project_seq'][0], receipt['project_seq'][0]]
+        realm.entries[-1]['receipt']['project_id'] = 'project'
+        realm.entries[-1]['receipt']['project_seq'] = copy.deepcopy(receipt['project_seq'])
+        realm.accepted[-1]['receipt']['project_id'] = 'project'
+        realm.accepted[-1]['receipt']['project_seq'] = copy.deepcopy(receipt['project_seq'])
+        return copy.deepcopy(accepted['data']), receipt
+
+    def head_for(revision_id, publication_id):
+        assert any(entry['revision_id'] == revision_id
+                   and entry['publication_id'] == publication_id for entry in realm.entries)
+        current_document = realm.documents[revision_id]
+        current_bundle = bundle_from_document(copy.deepcopy(current_document))
+        current_bundle['base_parent']['publication_id'] = publication_id
+        return current_bundle
+
+    owner.open_bundle.side_effect = lambda _project, _timeline, *, revision_id=None, publication_id=None: (
+        DomainResult.success({
+            'bundle': head_for(revision_id or realm.head['revision_id'],
+                               publication_id or realm.head['publication_id']),
+            'project_id': 'project', 'timeline_id': 'film',
+            'head_revision_id': realm.head['revision_id'],
+            'revision_id': revision_id or realm.head['revision_id'],
+        }))
+
+    def history(*_args, **_kwargs):
+        return DomainResult.success({'head': copy.deepcopy(realm.head),
+                                     'items': copy.deepcopy(realm.entries), 'next_cursor': None})
+
+    owner.history.side_effect = history
+    injected = False
+    mixed_bodies = []
+    mixed_bases = []
+    peer_receipts = []
+    peer_snapshot = []
+    stale_failures = []
+
+    def commit(_project, _timeline, body, *, idempotency_key):
+        nonlocal injected
+        is_mixed = any(command.get('op') in ('clip.set-element', 'doc.patch')
+                       for command in body['commands'])
+        if is_mixed:
+            mixed_bodies.append(copy.deepcopy(body))
+            mixed_bases.append((body['base_revision_id'], body['base_publication_id']))
+            if not injected:
+                injected = True
+                if case == 'overlap':
+                    from astrid.sdk.timeline.emitter import emit_document_commands
+                    peer_before = head_for(realm.head['revision_id'], realm.head['publication_id'])
+                    peer_after = copy.deepcopy(peer_before)
+                    peer_after['parent']['config']['opaque']['timestamp'] = 'peer timestamp'
+                    peer_commands = emit_document_commands(peer_before, peer_after)
+                else:
+                    peer_commands = [realm.move('parent/clip:clip-b', 8.008)]
+                _peer_data, peer_receipt = runtime_accept({
+                    'api_version': 1, 'project_id': 'project', 'timeline_id': 'film',
+                    'base_revision_id': realm.head['revision_id'],
+                    'base_publication_id': realm.head['publication_id'],
+                    'commands': peer_commands, 'source': {'via': 'python'}, 'dry_run': False,
+                    'label': 'Peer edit', 'merge': 'fields', 'reads': [],
+                    'steps': [{'id': f'step-{i + 1}', 'label': 'Peer edit', 'intent': '',
+                               'tags': [], 'command_ordinals': [i],
+                               'patch': (copy.deepcopy(command.get('args', {}).get('changes', []))
+                                         if command.get('op') == 'doc.patch' else [])}
+                              for i, command in enumerate(peer_commands)]},
+                    f'peer-{case}')
+                peer_receipts.append(peer_receipt['receipt_id'])
+                peer_snapshot.append((copy.deepcopy(realm.head), copy.deepcopy(realm.entries),
+                                      copy.deepcopy(realm.documents), copy.deepcopy(realm.accepted)))
+        try:
+            data, receipt = runtime_accept(body, idempotency_key)
+        except CommitRejected as exc:
+            current_snapshot = (realm.head, realm.entries, realm.documents, realm.accepted)
+            assert current_snapshot == peer_snapshot[-1]
+            stale_failures.append(copy.deepcopy(exc.failure))
+            raise WorkspaceClientError(409, exc.failure['code'], exc.failure['message'],
+                                       exc.failure['details']) from exc
+        receipt_obj = CommandReceipt.from_dict(receipt)
+        return DomainResult.success(data, receipt=receipt_obj, idempotency_key=idempotency_key)
+
+    owner.commit.side_effect = commit
+    client = SimpleNamespace(_remote=SimpleNamespace(_transport=owner._client), timelines=owner,
+                             documents=configured, media=configured.media)
+    timeline = commit_session.open('project', 'film', client=client,
+                                   outbox_path=tmp_path / f'public-{case}.json')
+    evaluations = []
+
+    def edit(working):
+        evaluations.append(working.head.copy())
+        if case != 'disjoint-doc-patch':
+            working.clip('placement-proof-clip').set_element(ref)
+        working.bundle['parent']['config']['opaque']['timestamp'] = 'function timestamp'
+
+    if case == 'overlap':
+        with pytest.raises(sync.CommitConflict) as error:
+            timeline.commit(edit, label='Mixed placement and timestamp', key='mixed-overlap')
+        assert len(evaluations) == 2
+        assert evaluations[0] == {'revision_id': realm.entries[0]['revision_id'],
+                                  'publication_id': realm.entries[0]['publication_id']}
+        assert evaluations[1] == {'revision_id': realm.entries[1]['revision_id'],
+                                  'publication_id': realm.entries[1]['publication_id']}
+        assert len(mixed_bodies) == 1
+        assert mixed_bases == [(realm.entries[0]['revision_id'], realm.entries[0]['publication_id'])]
+        assert mixed_bodies[0]['merge'] == 'atomic'
+        assert [command['op'] for command in mixed_bodies[0]['commands']] == ['clip.set-element', 'doc.patch']
+        assert mixed_bodies[0]['commands'][0]['args']['schema_source'] == pin
+        assert all(any(read == {'kind': 'scope', 'ref': 'timeline', 'path': []}
+                       for read in step.get('reads', [])) for step in mixed_bodies[0]['steps'])
+        assert len(stale_failures) == 1
+        assert stale_failures[0]['details']['reason'] == 'atomic_scope_changed'
+        assert stale_failures[0]['details']['current'] == evaluations[1]
+        assert error.value.failure['details']['reason'] == 'intervening_write'
+        conflicts = error.value.failure['details']['conflicts']
+        assert any(row['ref'] == 'parent' and row['path'] == ['config', 'opaque', 'timestamp']
+                   for row in conflicts)
+        assert len(peer_receipts) == 1
+        assert (realm.head, realm.entries, realm.documents, realm.accepted) == peer_snapshot[0]
+        assert realm.head == {'revision_id': realm.entries[-1]['revision_id'],
+                              'publication_id': peer_receipts[0]}
+        landed = bundle_from_document(realm.documents[realm.head['revision_id']])
+        assert State(landed).entity(target).get('elementRef') is None
+        assert landed['parent']['config']['opaque']['timestamp'] == 'peer timestamp'
+        assert State(landed).entity('parent/clip:clip-b')['at'] == State(bundle).entity('parent/clip:clip-b')['at']
+        return
+
+    accepted = timeline.commit(edit, label='Mixed placement and timestamp', key=f'mixed-{case}')
+    assert len(evaluations) == 2
+    assert evaluations[0] == {'revision_id': realm.entries[0]['revision_id'],
+                              'publication_id': realm.entries[0]['publication_id']}
+    assert evaluations[1] == {'revision_id': realm.entries[1]['revision_id'],
+                              'publication_id': realm.entries[1]['publication_id']}
+    assert len(mixed_bodies) == 2
+    assert accepted['attempts'] == 2
+    assert len(stale_failures) == 1
+    refusal = stale_failures[0]
+    assert refusal['message'] == 'intervening publication changed a guarded address'
+    assert refusal['details']['status'] == 'conflict'
+    assert refusal['details']['reason'] == 'atomic_scope_changed'
+    assert refusal['details']['base'] == evaluations[0]
+    assert refusal['details']['current'] == evaluations[1]
+    assert any(site['ref'] == 'timeline' and site['path'] == []
+               for site in refusal['details']['conflicts'])
+    assert mixed_bases == [(realm.entries[0]['revision_id'], realm.entries[0]['publication_id']),
+                           (realm.entries[1]['revision_id'], realm.entries[1]['publication_id'])]
+    assert all(body['merge'] == 'atomic' for body in mixed_bodies)
+    assert all([command['op'] for command in body['commands']] == (
+        ['clip.set-element', 'doc.patch'] if case == 'disjoint-placement' else ['doc.patch'])
+               for body in mixed_bodies)
+    if case == 'disjoint-placement':
+        assert all(command['args']['schema_source'] == pin for body in mixed_bodies
+                   for command in body['commands'] if command['op'] == 'clip.set-element')
+    assert all({'kind': 'scope', 'ref': 'timeline', 'path': []} in step['reads']
+               for body in mixed_bodies for step in body['steps'])
+    assert len(peer_receipts) == 1
+    assert len(realm.accepted) == 2
+    assert accepted['receipt']['receipt_id'] == realm.head['publication_id']
+    assert len([entry for entry in realm.entries if entry['publication_id'] == accepted['receipt']['receipt_id']]) == 1
+    landed = bundle_from_document(realm.documents[realm.head['revision_id']])
+    assert landed['parent']['config']['opaque']['timestamp'] == 'function timestamp'
+    assert State(landed).entity('parent/clip:clip-b')['at'] == 8.008
+    original_rows = {row['id']: row for row in bundle['parent']['clips']}
+    final_rows = {row['id']: row for row in landed['parent']['clips']}
+    assert all(final_rows[row_id] == row for row_id, row in original_rows.items() if row_id != 'clip-b')
+    if case == 'disjoint-placement':
+        assert State(landed).entity(target)['elementRef'] == ref
+    else:
+        assert State(landed).entity(target).get('elementRef') is None
 
 
 # --- pointing an existing built-in effect clip at an admitted project effect ---------------------------------
