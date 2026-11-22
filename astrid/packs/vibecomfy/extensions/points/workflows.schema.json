@@ -27,7 +27,8 @@
                 "name": {"type": "string", "minLength": 1},
                 "type": {"enum": ["string", "integer", "number", "boolean", "file", "file_map", "json", "object", "array"]},
                 "required": {"type": "boolean"},
-                "description": {"type": "string"}
+                "description": {"type": "string"},
+                "allow_output_handle_keys": {"type": "boolean", "default": false}
               }
             }
           },
@@ -50,6 +51,8 @@
       }
     },
     "build": {"type": "string", "pattern": "^[^:]+\\.py:[A-Za-z_]\\w*$"},
-    "after_outputs": {"type": "string", "pattern": "^[^:]+\\.py:[A-Za-z_]\\w*$"}
+    "after_outputs": {"type": "string", "pattern": "^[^:]+\\.py:[A-Za-z_]\\w*$"},
+    "inspect_inputs": {"type": "string", "pattern": "^[^:]+\\.py:[A-Za-z_]\\w*$"},
+    "publish_source": {"type": "boolean", "default": false}
   }
 }

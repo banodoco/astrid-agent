@@ -2,6 +2,28 @@
   "branch": "source_backed_v2v",
   "capabilities": {
     "audio_binding": "source_audio_from_source_video, audio_strength=0",
+    "conditioning": [
+      {
+        "input_binding": {
+          "binding": "reference_0",
+          "port": "ref_images.ref_image_0"
+        },
+        "modality": "image",
+        "occurrence": "occurrence-2",
+        "tag": "<Picture 1>",
+        "trim": null
+      },
+      {
+        "input_binding": {
+          "binding": "reference_1",
+          "port": "ref_images.ref_image_1"
+        },
+        "modality": "image",
+        "occurrence": "occurrence-3",
+        "tag": "<Picture 2>",
+        "trim": null
+      }
+    ],
     "connected_model_assets": [
       "minimax_h3_audio_vae_fp32.safetensors",
       "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
@@ -22,6 +44,12 @@
       "seed": 123456789,
       "strength": 1.0
     },
+    "effective_audio_tags": [],
+    "effective_reference_count": 2,
+    "effective_reference_order": [
+      "occurrence-2",
+      "occurrence-3"
+    ],
     "generation_timing": {
       "duration": 5.0,
       "fps": 24,
@@ -57,11 +85,18 @@
         }
       ]
     },
+    "reference_capacity": 9,
+    "reference_modality_counts": {
+      "audio": 0,
+      "image": 2,
+      "video": 0
+    },
     "reference_order": [
       "blue-pill-ref",
       "red-ref"
     ],
     "references": 2,
+    "sampler_mask_precision": "native",
     "source_binding": "source_video",
     "source_frame_fit": {
       "audio_tail": "silence",
@@ -71,7 +106,7 @@
       "video_tail": "repeat_last_selected_frame"
     }
   },
-  "compilation_digest": "d501baeb3ffb99e590958369b28cb9813a01d70c4d5850e1ef460627bdac50e8",
+  "compilation_digest": "0960cf648f9c951cbd5a06c3a215164bab1371f1765b4074c80c7228f2292d27",
   "effective_settings": {
     "audio_shift": 3.0,
     "cfg": 1.0,
@@ -90,15 +125,25 @@
   "kind": "h3_av_compilation",
   "limitations": [
     "native masked edit is CPU-verified only; spatial mode on ref2va plus Turbo is unproven on GPU",
-    "one modifying video operation per request; static boxes, image masks or per-frame mask video",
-    "audio regeneration, polygon masks and per-operation adapters are unsupported",
-    "box-only regions bind in the graph; end-to-end execution still needs resolved mask propagation for composition paste-back",
-    "windows are limited to 15 s with no automatic chunking",
+    "static boxes, image masks or per-frame mask video; active regions share one reference set and one seed",
+    "polygon masks and per-operation adapters are unsupported",
+    "long windows use one pass without automatic chunking",
     "zero-reference requests assume MiniMaxH3ReferenceToVideo accepts no ref images (unverified)"
   ],
   "managed_assets": {
     "manifest": {
       "assets": [
+        {
+          "binding": "permission_mask_0",
+          "lineage": {
+            "filename": "resolved-mask.png",
+            "kind": "source_bytes",
+            "sha256": "sha256:60f587d2d6d543eac9de231150413e55bfafc1ce8362b95325abf3b40f3e7f9f"
+          },
+          "member": "assets/60f587d2d6d543ea-resolved-mask.png",
+          "sha256": "60f587d2d6d543eac9de231150413e55bfafc1ce8362b95325abf3b40f3e7f9f",
+          "size": 1379
+        },
         {
           "binding": "reference_0",
           "lineage": {
@@ -161,11 +206,15 @@
       }
     },
     "path": "<D>/out/managed-assets.zip",
-    "sha256": "03fd786d91d1745e4f99b408ca96cdfc88417f99e12096727e455b6008988d0d"
+    "sha256": "e5a49fd4b639aedcac7f3e8e54b1b77989aeac7827806c8a06ea60338b7be90b"
   },
   "profile": "h3_av.native.v2",
-  "request_digest": "d2818f23d3370e3b5424e18d7b58a837fb5e52a145b3d0cf581d3c9e7f46a1bb",
+  "request_digest": "62c475aed4fb717d649daa02873ba2bef227780c2696a443ef8104e2ae7ba417",
   "schema_version": 1,
+  "size": {
+    "height": 576,
+    "width": 1024
+  },
   "status": "compiled",
   "workflow": {
     "source.json": {

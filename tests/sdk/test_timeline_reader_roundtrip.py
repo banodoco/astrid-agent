@@ -386,4 +386,11 @@ def test_created_track_without_a_label_is_labelled_with_its_id_and_passes_the_ga
     payload["config"]["tracks"].append({"id": "overlay", "kind": "visual", "label": "overlay"})
     assert reader_problem(service, _document_of(payload)) is None
     payload["config"]["tracks"][-1].pop("label")
-    assert "label" in reader_problem(service, _document_of(payload))
+    legacy = _document_of(payload)
+    assert reader_problem(service, legacy) is None
+    projected = service.project_capture(legacy, normalize_appearance=False)
+    overlay = next(track for track in projected["config"]["tracks"] if track["id"] == "overlay")
+    assert overlay["label"] == overlay["id"]
+
+    payload["config"]["tracks"][-1]["label"] = None
+    assert "is not of type 'string'" in reader_problem(service, _document_of(payload))

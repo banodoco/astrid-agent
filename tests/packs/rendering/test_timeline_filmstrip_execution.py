@@ -233,8 +233,58 @@ def test_composed_capture_uses_remotion_for_requested_frames_without_video_frame
         monkeypatch.setattr(invocation, '_invoke_internal_result', dispatch)
         assert fast_lane._invoke_video(client, 'demo', 'main', 'matching-render', 7) == actual_media
         assert calls[0][1]['inputs']['render_run'] == 'matching-render'
-        assert calls[0][1]['inputs']['composed_capture'] is True
+        # ac6295d62 selects the actual video for an explicit render run.
+        assert calls[0][1]['inputs']['composed_capture'] is False
         assert (Path(result['outputs']['pack_root']) / 'media/rendered-video.mp4').is_file()
+
+
+@pytest.mark.ffmpeg
+def test_explicit_render_fast_lane_receipt_uses_admitted_video(tmp_path, monkeypatch):
+    """ac6295d62 routes explicit runs to their actual video and receipt."""
+    from astrid.packs.rendering.actions.timeline_visualize import fast_lane
+    from astrid.sdk.client import AstridClient
+    from astrid.sdk.remote import RemoteAstridClient
+    from astrid.sdk.timeline_filmstrip import prepare_filmstrip
+    from tests.sdk.test_native_timeline_facades import _NativeTransport
+    from tests.sdk.test_timeline_filmstrip import FakeClient, envelope
+    import astrid.sdk.invocation as invocation
+
+    video = tmp_path / 'render.mp4'
+    subprocess.run(['ffmpeg', '-loglevel', 'error', '-f', 'lavfi', '-i',
+                    'color=blue:size=64x64:rate=24:duration=1', '-c:v', 'libx264',
+                    '-y', str(video)], check=True)
+    digest = 'sha256:' + hashlib.sha256(video.read_bytes()).hexdigest()
+    runtime = FakeClient()
+    runtime.get_task = lambda ref: {'state': 'succeeded', 'capability_id': 'rendering.render',
+        'spec': {'spec': envelope()}, 'result': {'outputs': [{'name': 'video', 'digest': digest}]}}
+    runtime.list_project_objects = lambda project, **kwargs: [[{'object_id': digest}], None]
+    seen = []
+
+    def dispatch(capability_id, **kwargs):
+        inputs = kwargs['inputs']
+        seen.append(inputs)
+        authority = prepare_filmstrip({**inputs, 'timeline_slug': 'cut', 'timeline_ref': 'tl'}, project='p', client=runtime)
+        assert authority['mode'] == 'filmstrip'
+        assert authority['filmstrip_snapshot']['metadata']['selection'] == 'explicit_current_render'
+        assert authority['video_digest'] == digest
+        args = Namespace(filmstrip_authority=json.dumps(authority), project_slug='p',
+                         rendered_video=video, range_value=None, out=tmp_path / 'actual',
+                         include_media=True, frame=0, show=['output'])
+        result = execution.execute_filmstrip(args)
+        root = Path(result['outputs']['pack_root'])
+        return SimpleNamespace(ok=True, outputs={'media': str(root / 'media/rendered-video.mp4'),
+                                                  'frame_index': str(root / 'frame-index.json')})
+
+    monkeypatch.setattr(invocation, '_invoke_internal_result', dispatch)
+    client = AstridClient(remote=RemoteAstridClient(_NativeTransport()))
+    actual = fast_lane._invoke_video(client, 'p', 'main', 'run', 0)
+    assert seen[0]['render_run'] == 'run' and seen[0]['composed_capture'] is False
+    assert actual.read_bytes() == video.read_bytes()
+    receipt = json.loads((actual.parent.parent / 'frame-index.json').read_text())
+    assert receipt['media']['render_run_id'] == 'run'
+    assert receipt['media']['verified'] is True
+    assert receipt['media']['digest'] == digest
+    assert receipt['provenance']['render_run_id'] == 'run'
 
 
 def test_bundle_publication_keeps_previous_complete_bundle_on_archive_failure(

@@ -299,7 +299,8 @@ def test_remote_parent_writer_uses_commit_and_exact_immutable_reads(realm):
     document = saved['canonical_document']
     child = document['internal_timeline_revisions'][0]['payload']
     clip = next(row for row in child['clips'] if row['id'] == 'picture-1')
-    assert clip['media_id'] == media
+    # Plan 59 stores the media binding in the registry (86031e920); provisional pending F7.
+    assert child['registry']['assets'][clip['asset']]['media_id'] == media
     assert (clip['at'], clip['hold'], clip['rect'], clip['opaque_clip']) == (
         0, 1, internals[0]['payload']['clips'][0]['rect'], {'literal': 'item-1'})
     assert document['parent_revision']['payload']['occurrences'][0]['transform'] == parent['payload']['occurrences'][0]['transform']

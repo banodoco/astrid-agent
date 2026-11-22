@@ -93,7 +93,9 @@ that final publication occurred.
 ## Character Swap (opt-in native-v2 candidate)
 
 Set `settings.adapter.id` to `character_swap_v1` to select this route. It requires
-exactly one typed video reference and one typed replacement image. They receive
+at least one typed video reference and one typed replacement image. Additional
+references are accepted by the current lowering but untested; see the
+[`character_swap_references` limit](../shared/generation.py). The first video and image receive
 `<Video 1>` and `<Picture 1>` tags in their modality-local order. Adapter strength
 defaults to `1.0` and must be finite from `0` through `2`.
 
@@ -134,6 +136,18 @@ compile test does not establish public Runtime CPU acceptance or final managed
 publication.
 
 ## Request shape
+
+The native v2 compiler accepts `output.size: [width, height]` for image-guided
+generation, masked edits, and Character Swap. Each dimension must be an integer
+from 32 through 16384 inclusive and a multiple of 32. Omission selects
+1024×576. Continuation requires the default size.
+
+The [512×288 image-guided speech request](examples/image-guided-speech.json)
+illustrates a smaller picture for a voice-only take where the creator intends
+to keep the generated audio. The [768×448 masked edit](examples/rectangle-edit.json)
+uses a clip already prepared at the requested size. CPU compilation covers these
+two sizes. Other non-default sizes within the rule are uncharacterized. Speech
+quality and timing at the smaller size still need a live evaluation.
 
 Start with `schemas/request.v1.json` or `schemas/request.v2.json` and the
 following compact v1 shape:
@@ -180,12 +194,13 @@ contracts—not creative request fields.
 `changes` list means preserve source material. References are an ordered list
 and may be empty; the selected workflow advertises its actual reference
 capacity in the compiled manifest rather than silently discarding extras.
-The continuation workflow and the source-backed masked edit both support up to
-two image references; the masked edit advertises `reference_capacity: 2` in its
-manifest when it carries references. Ordinary source-free generation
-supports one to nine ordered still-image references. The Character Swap route
-supports exactly one video and one image reference. Unsupported counts fail
-admission or compilation.
+Captured continuation accepts up to two image references. The source-free v1
+generation adapter accepts one to nine ordered still-image references. Native
+v2 conditioning and source-backed masked edits use the shared H3 slot limits:
+up to 9 images, 3 videos and 3 standalone audio references, with 12 inputs total
+(subject to per-modality duration limits below). Character Swap requires at
+least one video and one image; additional references are accepted by the
+lowering but untested. See the [shared limits](../shared/generation.py).
 Do not add request-level reference strategies or fixture-specific production
 workflows to bypass these limits.
 
@@ -220,16 +235,37 @@ request samples 362 native frames and deterministically trims two frames and
 the matching audio tail to deliver 360 frames. Media filenames are managed run
 bindings, never graph defaults or caller/worker filesystem dependencies.
 
-This adapter does not yet support video/audio references, timed keyframes, or
-source-free masks/preservation schedules. Those requests fail before GPU work.
+The v1 example above uses still-image references. Timed keyframes and
+source-free masks/preservation schedules remain unsupported in this adapter.
 Its CPU bundle and transport tests do not establish live GPU acceptance or
 visual quality; target attestation and a live run remain separate gates.
 
+## Speaker references (v2)
+
+The [start-still request](recipes/start-still-speaker.json) uses a speaker video's
+soundtrack. Place a timeline image at frame 0 for an exact first frame. H3
+generates the picture from frame 1 and the entire soundtrack.
+
+The [mouth-mask request](recipes/mouth-mask-speaker.json) uses a standalone
+speaker clip. White in the supplied mask allows the mouth to change during
+the edit window. H3 keeps the source audio outside that window and regenerates
+both speech and room tone inside it.
+
+Conditioning accepts up to 9 images, 3 videos and 3 standalone audio clips,
+with 12 inputs total. Each selected clip spans 2–15 seconds. Video and audio
+each have a 15-second total. Enabled video soundtracks count toward the audio
+total. See the [limits table](../shared/generation.py).
+
+`<Audio 1> is the voice-timbre reference for <Subject 1> (S1)` is an
+unverified prompt convention. Judge voice likeness and lip sync on generated
+output.
+
 ## Worked source-backed edits
 
-Source-backed edits keep the shot's audio unless the request supplies a
-replacement audio clip (see "Edit inputs" below); `audio_strength` stays 0 either
-way. Ordinary source-backed edits use the native `H3V2VGranularFractionalDenoise`
+The examples below request video-only changes and keep the shot's audio.
+Source-backed edits may supply a replacement audio clip (see "Edit inputs"
+below); `audio_strength` stays 0 either way. Ordinary source-backed edits use
+the native `H3V2VGranularFractionalDenoise`
 spatial/temporal mask route. The LanPaint helper in `shared/compile.py` is not
 on the active edit dispatch. The composer rejects changed outside-mask pixels
 (`shared/compose.py:678–680`); CPU admission alone does not prove output equality.
@@ -259,8 +295,8 @@ First frame via still: keep the first four frames of `bike-still.mp4`, permit
 video changes from frame 4 onward, and keep its source audio. A still-clip edit
 keeps the first N frames of the supplied clip: a lossless clip keeps them exactly
 in the decoded source. A lossy still clip is not bit-identical to the original
-picture. i2v with an image reference supplies a style/subject reference, not an
-exact first frame; exact first-frame conditioning is not yet supported.
+picture. For an exact first frame from an image, use the v2 timeline placement
+in the start-still request above.
 
 Use exact frame-aligned boundaries in v2, such as `"1/6"` seconds for four
 frames at 24 fps. The decimal `0.1667` is not representable on the native clock.
@@ -313,9 +349,8 @@ they combine in one request:
   masks in one request merge into one union mask. Per-frame mask video cannot be
   merged.
 - **Reference images** are `role: reference`, `modality: image` media, linked
-  with the edit's `guides`. An edit takes up to two references, matching the
-  continuation graph's two reference slots. Three or more fail compilation with
-  "two image-reference slots".
+  with the edit's `guides`. Source-backed masked edits use the shared native H3
+  slot limits above; the continuation route has its own two-image limit.
 - **Replacement audio** is a span: `role: reference`, `modality: audio`, with a
   `range` in seconds naming a window of the clip (the clip may be a longer voice
   track), plus one `stream: audio` edit whose `during` has exactly the range's
@@ -346,8 +381,9 @@ The compiled manifest reports `reference_capacity`, `replacement_audio` (the
 clip range, the interval, `audio_strength: 0`, and `length_check`: `ffprobe` when
 the clip is verified to cover its range, or `request_range_only` when ffprobe is
 unavailable), `audio_binding` and `mask_binding`. If ffprobe is installed and
-cannot read the clip, compilation refuses it. Status:
-compile-verified on CPU only; no GPU run yet.
+cannot read the clip, compilation refuses it. The 18 November GPU runs used image guides for lens edits and fixed audio for a
+mouth edit. Listen to the selected audio range first. The 02c mouth take played
+the temporary voice-over supplied by the shot plan.
 
 Lens region replace with one reference image:
 
@@ -409,6 +445,14 @@ Both in one request (lens region and mouth region, one interval, one reference):
 ```
 
 ## Mask semantics
+
+For a v2 rectangle, `mask.canvas: [width, height]` gives the dimensions of
+the prepared view in which the rectangle was drawn, including any fit bars.
+The rectangle contains its left edge, top edge, width and height in pixels.
+When the canvas is omitted, coordinates refer to 1024×576. The compiler scales
+the rectangle to the requested output. A still-image mask scales from its own
+pixel dimensions using nearest-neighbour sampling. A moving mask must already
+match the prepared source size and frame clock and use a lossless encoding.
 
 Use a full-frame region, a supplied mask asset, a geometry region, or an
 explicit semantic target. The preparation stage keeps three truths separate:
@@ -527,7 +571,7 @@ preview it over the shot:
 ```bash
 astrid media mask --project P --name "02c lenses" \
   --ellipse 282,121,119,99 --ellipse 622,114,132,96 --grow 8 \
-  --preview-on SHOT_MEDIA_ID
+  --preview-on SHOT_MEDIA_ID --range 81.041667,84.291667
 ```
 
 Open the contact sheet printed on the last line. It shows the mask over the

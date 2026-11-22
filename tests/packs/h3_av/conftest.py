@@ -28,8 +28,11 @@ _OPAQUE_SOURCE_STRUCTURAL_TESTS = {
     ("test_planner.py", "test_plan_requested_raw_and_trim_timing"),
     ("test_planner.py", "test_plan_orders_multiple_modifying_passes_and_rejects_unresolved_assets"),
     ("test_planner.py", "test_plan_reports_ignored_v1_constant_overrides_and_keeps_supported_controls"),
+    # Plan 64 source ed397b26; these names were renamed by C3 merge (this merge).
+    ("test_planner.py", "test_plan_reports_ignored_v1_constant_overrides_and_keeps_supported_controls_plan64"),
     ("test_planner.py", "test_v2_creative_prompt_contains_only_the_author_prompt"),
     ("test_planner.py", "test_v2_ignored_constant_settings_and_disabled_turbo_strength"),
+    ("test_planner.py", "test_v2_ignored_constant_settings_and_disabled_turbo_strength_plan64"),
     ("test_planner.py", "test_plan_binds_per_edit_reference_selection"),
     ("test_planner.py", "test_plan_rejects_a_preserve_only_spec"),
     ("test_edit_binding.py", "test_imported_v1_and_v2_use_the_same_native_lowering"),

@@ -7,7 +7,8 @@ import math
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from .media_transcript import SCHEMA as TRANSCRIPT_SCHEMA, transcript_document_id
+from .media_transcript import SCHEMA as TRANSCRIPT_SCHEMA
+from .media_transcript import transcript_document_id
 
 WHISPER_SOURCE_URL = (
     "https://raw.githubusercontent.com/yuvraj108c/ComfyUI-Whisper/"

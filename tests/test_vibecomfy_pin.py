@@ -44,6 +44,10 @@ def recipe_workspace(tmp_path, monkeypatch) -> tuple[Path, ...]:
         root / entry["recipe"]["path"]: recipe_bytes,
         root / declaration_path: declaration_bytes,
     }
+    for patch in recipe.get("source_patches", []):
+        patch_bytes = (engine_recipe._ROOT / patch["replacement"]).read_bytes()
+        assert hashlib.sha256(patch_bytes).hexdigest() == patch["sha256_after"]
+        payloads[root / patch["replacement"]] = patch_bytes
     for path, payload in payloads.items():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(payload)
@@ -63,6 +67,13 @@ def test_pin_script_rejects_unverified_pin_bytes(recipe_workspace) -> None:
     pins = json.loads(pins_path.read_text(encoding="utf-8"))
     pins["sources"]["vibecomfy"]["revision"] = "b" * 40
     pins_path.write_text(json.dumps(pins), encoding="utf-8")
+    with pytest.raises(IntegrityError, match="packaged data digest mismatch"):
+        vibecomfy_pin.read()
+
+
+def test_pin_script_rejects_unverified_patch_bytes(recipe_workspace) -> None:
+    patch_path = recipe_workspace[-1]
+    patch_path.write_bytes(b"wrong patch bytes\n")
     with pytest.raises(IntegrityError, match="packaged data digest mismatch"):
         vibecomfy_pin.read()
 

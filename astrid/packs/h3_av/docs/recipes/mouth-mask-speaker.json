@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "duration": 6,
+  "prompt": "The woman at the window is <Subject 1> (S1). <Audio 1> is the voice-timbre reference for <Subject 1> (S1). She says, \"I saved you a seat.\"",
+  "media": [
+    {
+      "asset": "window-shot.mp4",
+      "role": "timeline",
+      "modality": "video",
+      "at": {"frame": 0},
+      "range": [0, 6],
+      "edit": [
+        {
+          "stream": "video",
+          "during": [2, 4],
+          "mask": {"asset": "mouth-mask.png"},
+          "guides": ["speaker"]
+        },
+        {"stream": "audio", "during": [2, 4], "action": "generate"}
+      ]
+    },
+    {
+      "id": "speaker",
+      "asset": "speaker-sample.wav",
+      "role": "reference",
+      "modality": "audio",
+      "range": [0, 3]
+    }
+  ],
+  "settings": {"seed": 42}
+}

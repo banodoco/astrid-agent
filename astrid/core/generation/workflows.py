@@ -1,21 +1,87 @@
-"""The ``vibecomfy.workflows`` point: ready roots, thin entries, and the optional build and after_outputs hooks.
+"""The ``vibecomfy.workflows`` contribution contract.
 
 A contribution declares a ready root, a list of VibeComfy thin entries, and optionally
 ``build: file.py:fn`` and ``after_outputs: file.py:fn``. This module only reads that data and
 hands the hooks to the engine; it never calls them. The comfyui engine's run site is the
-one place that does (``comfyui_engine.ComfyUIEngine.prepare`` and ``.finish``).
+one place that does (``comfyui_engine.ComfyUIEngine.prepare`` and ``.finish``). The optional
+``inspect_inputs`` hook is called by the controller before preparing a job.
 
 ``after_outputs`` is not VibeComfy's template finalize (templates.py:1381). It runs once, on
 the machine that executed the job, after execute and before copy-back.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
 POINT = "vibecomfy.workflows"
 HOOKS = ("build", "after_outputs")
+CONTROLLER_HOOKS = ("inspect_inputs",)
 ASTRID_ENTRY_FIELDS = frozenset({"default_for", "inputs", "default_mode"})
+
+
+@dataclass(frozen=True)
+class InputRequirements:
+    """Ordered project media handles, their destination file map, and receipt port."""
+
+    handle_ids: tuple[str, ...] = ()
+    file_map_port: str | None = None
+    lineage_port: str | None = None
+
+
+@dataclass(frozen=True)
+class RemoteBuildTransport:
+    """Entry inputs, a managed source, and idempotency fields for a worker.
+
+    The descriptor must match one returned by the current build's successful
+    controller publication callback.
+    """
+
+    inputs: Mapping[str, Any]
+    descriptor: Mapping[str, Any]
+    idempotency: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class BuildTransport:
+    """Preparation metadata consumed by the controller after building the workflow."""
+
+    lineage: Mapping[str, Any] | None = None
+    preflight_source_video: bool = True
+    remote: RemoteBuildTransport | None = None
+
+
+def build_transport(result: Mapping[str, Any]) -> BuildTransport:
+    """Read optional transport metadata and reject invalid hook results."""
+    transport = result.get("transport")
+    if transport is None:
+        return BuildTransport()
+    if (not isinstance(transport, BuildTransport)
+            or type(transport.preflight_source_video) is not bool
+            or transport.lineage is not None and not _string_keyed(transport.lineage)):
+        raise ValueError("workflow build returned invalid transport metadata")
+    remote = transport.remote
+    if remote is not None and (
+        not isinstance(remote, RemoteBuildTransport)
+        or not all(_string_keyed(value) for value in (remote.inputs, remote.descriptor, remote.idempotency))
+    ):
+        raise ValueError("workflow build returned invalid remote transport metadata")
+    if remote is not None:
+        from astrid.core.execution.managed_inputs import managed_file_digest
+
+        try:
+            digest = managed_file_digest(remote.descriptor, "source_video")
+        except ValueError as exc:
+            raise ValueError("workflow build returned invalid remote transport source descriptor") from exc
+        if "sha256" in remote.descriptor and remote.descriptor["sha256"] != digest.removeprefix("sha256:"):
+            raise ValueError("workflow build returned inconsistent remote transport source digests")
+    return transport
+
+
+def _string_keyed(value: Any) -> bool:
+    return isinstance(value, Mapping) and all(isinstance(key, str) and key for key in value)
 
 
 def contributions(registry: Any) -> list[Any]:
@@ -52,8 +118,8 @@ def entries(contribution: Any, *, with_inputs: bool = False) -> list[dict[str, A
 
 def hook(registry: Any, contribution: Any, name: str) -> Callable[..., Any] | None:
     """Import the named hook lazily, or None when the contribution declares none."""
-    if name not in HOOKS:
-        raise ValueError(f"unknown workflow hook {name!r}; expected one of {HOOKS}")
+    if name not in HOOKS + CONTROLLER_HOOKS:
+        raise ValueError(f"unknown workflow hook {name!r}; expected one of {HOOKS + CONTROLLER_HOOKS}")
     text = contribution.fields.get(name)
     if text is None:
         return None

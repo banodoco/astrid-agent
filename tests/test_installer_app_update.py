@@ -29,6 +29,26 @@ from astrid.installer.core import (
 from astrid.installer.service import LABEL
 
 
+def test_update_browser_respects_install_opt_outs(monkeypatch):
+    from astrid.installer import backend
+
+    opened = []
+    class Interactive:
+        def isatty(self):
+            return True
+
+    monkeypatch.setattr(backend.sys, "stdin", Interactive())
+    monkeypatch.setattr(backend.webbrowser, "open", lambda url: opened.append(url))
+    monkeypatch.setenv("ASTRID_NO_BROWSER", "1")
+    backend.open_astrid_browser("https://astrid.haus/?connect=1")
+    assert opened == []
+
+    monkeypatch.delenv("ASTRID_NO_BROWSER")
+    monkeypatch.setattr(backend.sys, "stdin", None)
+    backend.open_astrid_browser("https://astrid.haus/?connect=1")
+    assert opened == []
+
+
 def _install_test_runtime(tmp_path, name, capability=1):
     """Install a tiny noneditable Runtime as Backend.stage does."""
     import setuptools
@@ -914,8 +934,11 @@ def test_selection_check_is_read_only(installed):
     installed.backend.persist_identity.assert_not_called()
 
 
-def test_stages_online_then_restarts_without_workspace_mutations(installed):
+def test_stages_online_then_restarts_without_workspace_mutations(installed, monkeypatch):
+    opened = []
+    monkeypatch.setattr(update, "open_astrid_browser", lambda url: opened.append(url))
     run(installed)
+    assert opened == ["https://astrid.haus/?connect=1"]
     assert installed.calls == ["stage", "stop:old", "start:new"]
     assert installed.validations == ["old", "new"]
     assert installed.journal_steps[:2] == ["staged", "stopping"]
@@ -2143,7 +2166,7 @@ def test_strict_cli_app_update_applies_skill_policy_and_reports_without_migratio
         assert not owned.exists() and not owned.is_symlink()
         assert "Astrid skill targets removed:" in output
     assert "Astrid setup summary:" in output and "Startup: running and ready" in output
-    assert "Astrid is updated and running." in output
+    assert "Astrid is updated. If you had Astrid open in a browser tab, reload or close it." in output
     assert f"Skill target preserved: {edited.parent}" in output
     assert f"Skill target preserved: {foreign}" in output
     assert "edited Astrid managed copy preserved" in output
@@ -2164,6 +2187,8 @@ def test_strict_app_update_failure_keeps_saved_skill_policy_and_targets(
     from astrid.skills import state
 
     env = _skill_app_update(tmp_path, monkeypatch)
+    opened = []
+    monkeypatch.setattr(update, "open_astrid_browser", lambda url: opened.append(url))
     env.fail_start = failure == "readiness"
     env.schema_changed = failure == "schema"
     saved = env.backend.service.recorded()["choices"]
@@ -2173,6 +2198,7 @@ def test_strict_app_update_failure_keeps_saved_skill_policy_and_targets(
     message = "candidate readiness failed" if failure == "readiness" else "storage layout changed"
     with pytest.raises(ValueError, match=message):
         update.update_app(env.root, env.backend, {"release": 12}, say=lambda _: None)
+    assert opened == []
     assert current(env.root) == env.old
     assert env.backend.service.recorded()["choices"] == saved
     assert not any(event.startswith("skills:") for event in env.events)

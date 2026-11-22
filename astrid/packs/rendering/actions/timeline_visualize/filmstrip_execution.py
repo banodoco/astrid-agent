@@ -1845,12 +1845,13 @@ def execute_filmstrip(args, *, authority=None):
             # Release the provider's lease while the shared owner remains
             # paused behind its bounded idle-expiry timer.
             frame_provider.close()
-    if capture_mode and video is not None:
+    if video is not None:
         media_record = result.get('frame_index', {}).get('media')
         if isinstance(media_record, dict):
             media_record['source_digest'] = authority.get('video_digest')
-            if authority.get('render_run_id'):
-                media_record['render_run_id'] = authority['render_run_id']
+            media_run = authority.get('render_run_id') if capture_mode else snapshot.get('render_run_id')
+            if media_run:
+                media_record['render_run_id'] = media_run
     # Keep optional input evidence as synchronized, full-width timeline panels
     # in the static delivery too.  When output and inputs are both selected,
     # compose those panels onto the same public PNG surface while retaining

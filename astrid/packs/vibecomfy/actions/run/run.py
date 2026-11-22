@@ -228,6 +228,45 @@ def _stage_managed_assets(
 _ASTRID_PREFIX_TOKEN = re.compile(r"_astrid_[A-Za-z0-9.:-]+")
 _COMFY_COUNTER = re.compile(r"_\d{4,6}_?$")
 
+# Astrid's artifact manifests need the same media type on every host. In
+# particular, Python's platform MIME databases disagree on the Matroska
+# alias, so media extensions used by Astrid are pinned here. Keep the platform
+# database as a fallback for formats outside this media set.
+_ASTRID_MEDIA_SUFFIX_TYPES = {
+    # Images
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".tiff": "image/tiff",
+    ".tif": "image/tiff",
+    # Video
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+    ".mov": "video/quicktime",
+    ".avi": "video/x-msvideo",
+    ".mkv": "video/x-matroska",
+    # Audio
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".ogg": "audio/ogg",
+    ".flac": "audio/flac",
+    ".m4a": "audio/mp4",
+    ".aac": "audio/aac",
+}
+
+
+def _output_media_type(filename: str) -> str:
+    """Return a deterministic Astrid media type, then platform fallback."""
+    suffix = Path(filename).suffix.lower()
+    return (
+        _ASTRID_MEDIA_SUFFIX_TYPES.get(suffix)
+        or mimetypes.guess_type(filename)[0]
+        or "application/octet-stream"
+    )
+
 
 def _friendly_output_name(source_name: str, fallback: str, taken: set[str]) -> str:
     """The project-facing file name for a generated output.
@@ -345,7 +384,7 @@ def _materialize_managed_generation_result(
             if target.suffix != replacement.suffix:
                 target = reserve_destination(target.with_suffix(replacement.suffix).name, row["output_port"], replacement)
                 row["path"] = target.relative_to(managed_root).as_posix()
-                row["media_type"] = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+                row["media_type"] = _output_media_type(target.name)
             if replacement.resolve() != target.resolve():
                 shutil.copyfile(replacement, target)
             data = target.read_bytes()

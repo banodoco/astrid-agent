@@ -181,15 +181,13 @@ def test_unsupported_operation_controls_fail_closed(control, value):
         normalize_spec(replace(spec, ops=(replace(spec.ops[0], **{control: value}),)))
 
 
-@pytest.mark.parametrize("mutation", ["audio", "multiple", "polygon", "preserve-control"])
+@pytest.mark.parametrize("mutation", ["multiple", "polygon", "preserve-control"])
 def test_unsupported_edits_fail_before_any_legacy_route(tmp_path, monkeypatch, mutation):
     compiler = importlib.import_module("astrid.packs.h3_av.shared.compile")
     monkeypatch.setattr(compiler, "_compile_lanpaint", lambda *a, **kw: pytest.fail("legacy route reached"))
     raw = copy.deepcopy(CASES[2]["v2"])
     edits = raw["media"][0]["edit"]
-    if mutation == "audio":
-        edits.append({"stream": "audio", "during": [0, 4]})
-    elif mutation == "multiple":
+    if mutation == "multiple":
         edits[0]["during"] = [0, 2]
         edits.append({**edits[0], "during": [2, 4], "seed": 17})
     elif mutation == "polygon":
@@ -198,6 +196,25 @@ def test_unsupported_edits_fail_before_any_legacy_route(tmp_path, monkeypatch, m
         edits[0].update(action="preserve", seed=1)
     with pytest.raises((H3RequestError, CompilationError)):
         _compile(raw, tmp_path, _assets(tmp_path), "rejected")
+
+
+def test_audio_edit_binds_time_mask_to_native_v2v(tmp_path, monkeypatch):
+    compiler = importlib.import_module("astrid.packs.h3_av.shared.compile")
+    monkeypatch.setattr(compiler, "_compile_lanpaint", lambda *a, **kw: pytest.fail("legacy route reached"))
+    raw = copy.deepcopy(CASES[2]["v2"])
+    raw["media"][0]["edit"].append({"stream": "audio", "during": [0, 4]})
+    manifest, api = _compile(raw, tmp_path, _assets(tmp_path), "compiled-audio")
+    assert "audio_time_mask" in manifest["workflow_inputs"]
+    assert any(row["binding"] == "audio_time_mask" for row in manifest["managed_assets"]["manifest"]["assets"])
+    v2v_id = next(node_id for node_id, row in api.items() if row["class_type"] == "H3V2VGranularFractionalDenoise")
+    setter = _node(api, "MiniMaxH3SetAVNoiseMask")
+    assert setter["latent"] == [v2v_id, 0]
+    crop = api[setter["audio_mask"][0]]
+    assert crop["class_type"] == "CropMask"
+    image_to_mask = api[crop["inputs"]["mask"][0]]
+    assert image_to_mask["class_type"] == "ImageToMask"
+    loader = api[image_to_mask["inputs"]["image"][0]]
+    assert loader["inputs"]["video"] == manifest["workflow_inputs"]["audio_time_mask"]
 
 
 @pytest.mark.parametrize("control,value", [("strength", 0.5), ("seed", 17)])
@@ -218,3 +235,27 @@ def test_per_operation_controls_fail_closed_on_other_native_routes(tmp_path, con
         message = "native-v2 continuation has no per-operation strength or seed binding"
     with pytest.raises(CompilationError, match=message):
         compile_preparation(preparation, out_dir=tmp_path / "rejected")
+
+
+def test_reference_port_order_deduplicates_and_ignores_cross_modality_interleaving():
+    from astrid.packs.h3_av.shared.compile import _reference_port_order
+
+    modalities = {"a": "image", "b": "image", "v": "video"}
+    order = _reference_port_order(("a", "v", "a", "b"), modalities)
+    assert order == _reference_port_order(("v", "a", "b"), modalities)
+    assert order == (("a", "b"), ("v",), ())
+    assert order != _reference_port_order(("b", "a", "v"), modalities)
+
+
+def test_selected_reference_occurrences_bind_once_in_first_use_order(tmp_path):
+    from astrid.packs.h3_av.shared.compile import _conditioning_rows
+
+    raw = copy.deepcopy(CASES[2]["v2"])
+    raw["media"].append({"id": "other", "asset": "other.png", "role": "reference", "modality": "image"})
+    request = normalize_request(raw)
+    refs = [item for item in request.value["media"] if item["role"] == "reference"]
+    first, second = (item["occurrence_id"] for item in refs)
+    assets = {name: Path(path) for name, path in _assets(tmp_path).items()}
+    rows, bindings = _conditioning_rows(request, assets, selected=(second, first, second))
+    assert [row["occurrence"] for row in rows] == [second, first]
+    assert [bindings[f"reference_{index}"].name for index in range(2)] == ["other.png", "look.png"]

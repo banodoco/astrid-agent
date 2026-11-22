@@ -213,8 +213,8 @@ def _cmd_lint(parsed: argparse.Namespace) -> int:
     from astrid.packs.timeline.cli_lint_header import print_broken_header
 
     print_broken_header("check")  # a check that could not load is named first, never silently absent
-    from astrid.pack_api import bundle_fps, occurrences_from_bundle, picture_cuts
     from astrid.core.timeline.cuts import find_cut
+    from astrid.pack_api import bundle_fps, occurrences_from_bundle, picture_cuts
     from astrid.packs.rendering.actions.timeline_visualize.layers.base import check_help
     from astrid.packs.rendering.actions.timeline_visualize.motion import model
     from astrid.packs.rendering.actions.timeline_visualize.motion.conditions import run_checks
@@ -450,6 +450,7 @@ def _cmd_transcripts_import(parsed: argparse.Namespace) -> int:
 def _cmd_transcripts_run(parsed: argparse.Namespace) -> int:
     import hashlib
     import tempfile
+
     from astrid.sdk.generation import generate
     from astrid.sdk.media_handles import resolve_media_handle
     from astrid.sdk.transcript_run import import_transcription_run
@@ -489,17 +490,18 @@ def _cmd_transcripts_run(parsed: argparse.Namespace) -> int:
 def _cmd_transcripts_refresh(parsed: argparse.Namespace) -> int:
     """Status of every audio media (parent and child timelines), missing transcripts run on request,
     an explicit transcript choice recorded in transcriptReferences, and what a refresh cannot fix."""
+    from astrid.sdk.media_ids import media_id_text
     from astrid.sdk.timeline import words as W
     from astrid.sdk.timeline_checkout import Checkout
     from astrid.sdk.timeline_transcript_refresh import (
         REFERENCES_SCHEMA as W_REFERENCES_SCHEMA,
+    )
+    from astrid.sdk.timeline_transcript_refresh import (
         cut_words,
         inventory,
         stale_anchors,
         with_reference,
     )
-
-    from astrid.sdk.media_ids import media_id_text
 
     project = need_project(parsed)
     if parsed.run_missing and not parsed.placement:
@@ -617,7 +619,11 @@ def _cmd_transcripts_sync(parsed: argparse.Namespace) -> int:
 
 def _show_projected(parsed: argparse.Namespace, tl: Any, source_range: tuple[float, float] | None) -> int:
     """``transcripts show --timeline``: the shared projection over every placement of the timeline."""
-    from astrid.sdk.timeline.words import default_source_order, load_timeline_transcripts, project_words
+    from astrid.sdk.timeline.words import (
+        default_source_order,
+        load_timeline_transcripts,
+        project_words,
+    )
 
     project = need_project(parsed)
     # Default: the Whisper transcript (what this command has always shown), and a transcriptReferences

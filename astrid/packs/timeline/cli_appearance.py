@@ -6,12 +6,18 @@ import re
 
 
 def command(parsed):
+    from astrid.pack_api import print_result
+    from astrid.packs.timeline.cli_native import _commit_envelope, _render_commit_result
     from astrid.sdk.contracts import DomainResult, ErrorObject
-    from astrid.sdk.timeline._appearance import canvas, in_memory_canvas_warnings, normalize_for_read, package_query
+    from astrid.sdk.timeline._appearance import (
+        canvas,
+        in_memory_canvas_warnings,
+        normalize_for_read,
+        package_query,
+    )
     from astrid.sdk.timeline._command_state import State
     from astrid.sdk.timeline.sync import TimelineSession
-    from astrid.packs.timeline.cli_native import _commit_envelope, _render_commit_result
-    from astrid.pack_api import print_result
+    from astrid.sdk.workspace_client import WorkspaceClientError
 
     try:
         ref = parsed.clip or parsed.track
@@ -81,6 +87,6 @@ def command(parsed):
                 'warnings': canvas_warnings, 'migration': findings}
         return print_result(DomainResult.success(answer), as_json=parsed.json,
                             human_renderer=lambda value: json.dumps(value, indent=2, ensure_ascii=False))
-    except Exception as exc:
+    except (WorkspaceClientError, OSError, ValueError, TypeError, KeyError, StopIteration) as exc:
         return print_result(DomainResult.failure(ErrorObject(getattr(exc, 'code', 'timeline_edit_error'), str(exc), {})),
                             as_json=parsed.json)
