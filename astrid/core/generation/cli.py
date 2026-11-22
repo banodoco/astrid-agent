@@ -728,18 +728,23 @@ def _main_request(argv: list[str], stack) -> int:
     if parsed.inputs_json:
         if not (parsed.entry or parsed.model):
             parser.error("--inputs-json requires --entry or --model")
+    selector = parsed.entry or parsed.model
+    discovery = None
+    if selector:
+        from .entries import _EntryDiscovery
+        discovery = _EntryDiscovery()
+
     if parsed.entry or parsed.inputs_json:
-        from astrid.core.generation.entries import resolve_entry_inputs
         try:
             from astrid.sdk.command_timing import timed_call
-            description, values = timed_call("entry lookup", resolve_entry_inputs, parsed.entry or parsed.model, values,
+            description, values = timed_call("entry lookup", discovery.resolve_entry_inputs,
+                selector, values,
                 mode=parsed.mode, kind=parsed.modality)
         except (ValueError, KeyError, TypeError) as exc:
             if parser.json_errors:
-                from astrid.core.generation.entries import describe_entry
                 from astrid.sdk.generation import GenerationInputError
                 try:
-                    context = describe_entry(parsed.entry or parsed.model, mode=parsed.mode)
+                    context = discovery.describe_entry(selector, mode=parsed.mode)
                 except (ValueError, KeyError):
                     context = None
                 raise GenerationInputError(str(exc), entry=context) from exc
@@ -771,22 +776,28 @@ def _main_request(argv: list[str], stack) -> int:
     if (is_runpod_placement(parsed.placement) and not parsed.dry_run
             and not getattr(parsed, 'no_run', False)):
         from astrid.sdk.generation import _require_claimed_machine, offline_request_preflight
-        if parsed.entry or parsed.model:
+        if discovery is not None:
             # An explicit entry is refused locally, with the invocation preflight a submission runs,
             # before a claimed machine is required. No facade or Runtime is touched on the way.
-            offline_request_preflight(parsed.entry or parsed.model, mode=kwargs.get('mode'), inputs=values)
+            offline_request_preflight(selector, mode=kwargs.get('mode'), inputs=values,
+                                      discovery=discovery)
         _require_claimed_machine(parsed.placement)
     from .delivery import admitted_project, open_url_for
     admitted = None
     transcription_run = None
     transcribing = parsed.modality == 'audio' and kwargs.get('mode') == 'transcribe'
     try:
-        generate = getattr(_generate_facade(), parsed.modality)
-        from astrid.sdk.generation import _prompt_only_video
+        facade = _generate_facade()
+        from astrid.sdk.generation import GenerationFacade, _prompt_only_video
+        if discovery is not None and isinstance(facade, GenerationFacade):
+            generate = facade._typed_command(parsed.modality, discovery)
+        else:
+            generate = getattr(facade, parsed.modality)
         requirements = None
         if parsed.dry_run:
             from .entries import inspect_entry_inputs
-            requirements = inspect_entry_inputs(parsed.entry or parsed.model, values)
+            row = discovery.find_entry(selector) if discovery is not None else None
+            requirements = inspect_entry_inputs(row, values)
         if (parsed.dry_run and not (requirements and requirements.handle_ids)) or (_KIND_SPEC[parsed.modality].get('prompt_only_guard') and _prompt_only_video(
                 model=parsed.model, entry=parsed.entry, inputs=values)):
             # Let the facade refuse before opening a Runtime connection.

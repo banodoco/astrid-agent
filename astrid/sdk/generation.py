@@ -14,7 +14,7 @@ import importlib
 import json
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, replace
-from functools import wraps
+from functools import partial, wraps
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Protocol
 
@@ -451,7 +451,8 @@ def _admit_workflow_inputs(
     return {"project": project, "inputs": {**values, port: mapping}, "idempotency_context": context}
 
 
-def offline_request_preflight(entry_id: str, *, mode: str | None, inputs: Mapping[str, Any]) -> None:
+def offline_request_preflight(entry_id: str, *, mode: str | None, inputs: Mapping[str, Any],
+                              discovery: Any = None) -> None:
     """Refuse an explicit entry request locally, without a facade, Runtime or machine.
 
     Compiles the named shipped entry for these inputs and runs the invocation preflight a
@@ -460,7 +461,7 @@ def offline_request_preflight(entry_id: str, *, mode: str | None, inputs: Mappin
     """
     from astrid.core.generation import entries as workflow_entries
 
-    row = workflow_entries.find_entry(entry_id)
+    row = discovery.find_entry(entry_id) if discovery is not None else workflow_entries.find_entry(entry_id)
     if (row is None or row.get('action')
             or workflow_entries.inspect_entry_inputs(row, inputs) is not None):
         return
@@ -1053,7 +1054,7 @@ def _video_prompt_check(*, model: Any, entry: Any, inputs: dict[str, Any]) -> No
 
 
 def _image_resolve_mode(sdk_module: Any, *, model: Any, mode: Any, execution: Any, inputs: dict[str, Any],
-                        **_: Any) -> tuple[Any, bool]:
+                        entry_lookup: Any = None, **_: Any) -> tuple[Any, bool]:
     resolved_mode = sdk_module._infer_image_mode(mode, inputs)
     explicit_openai = execution == "openai" or (
         isinstance(model, str) and model.startswith("gpt-image")
@@ -1062,7 +1063,7 @@ def _image_resolve_mode(sdk_module: Any, *, model: Any, mode: Any, execution: An
         resolved_mode = "edit"
     if model is not None and mode is None and inputs.get("image_ref"):
         from astrid.core.generation.entries import find_entry
-        manifest = timed_call("entry lookup", find_entry, model)
+        manifest = entry_lookup(model) if entry_lookup is not None else timed_call("entry lookup", find_entry, model)
         if manifest is not None and "edit" in manifest["modes"] and "i2i" not in manifest["modes"]:
             resolved_mode = "edit"
     return resolved_mode, explicit_openai
@@ -1627,8 +1628,12 @@ class GenerationFacade:
         state = _WorkflowAdmissionState()
         try:
             if kwargs.get("model") is not None:
-                kwargs.update(_admit_workflow_inputs(
-                    kwargs["model"], kwargs.get("inputs") or {}, kwargs, job_dirs, state))
+                discovery = kwargs.get("_discovery")
+                row = (timed_call('entry lookup', discovery.find_entry, kwargs['model'])
+                       if discovery is not None else kwargs['model'])
+                if row is not None:
+                    kwargs.update(_admit_workflow_inputs(
+                        row, kwargs.get("inputs") or {}, kwargs, job_dirs, state))
             else:
                 kwargs["_admission_state"] = state
             if not kwargs.get("dry_run") and kwargs.get("placement") is not None:
@@ -1660,6 +1665,7 @@ class GenerationFacade:
         workflow_entry: dict[str, Any] | None = None,
         retained_source: dict[str, Any] | None = None,
         _admission_state: _WorkflowAdmissionState | None = None,
+        _discovery: Any = None,
         **controls: Any,
     ) -> Any:
         """Bind a catalog template and admit it through the workflow facade.
@@ -1705,10 +1711,15 @@ class GenerationFacade:
         from astrid.core.generation import settings as generation_settings
         from astrid.core.generation.workflows import BuildTransport, build_transport
         from astrid.packs.vibecomfy.production_engine import ProductionEngineError
+        discovery = _discovery
+        if discovery is None:
+            scoped = controls.get('project_root') is not None or controls.get('extra_pack_roots')
+            discovery = workflow_entries._EntryDiscovery(load_registry=None if scoped else lambda: registry)
         settings_snapshot = generation_settings.read(controls.get('client'))
-        pinned = (generation_defaults.pinned_entry(modality, mode, settings_snapshot)
-                  if model is None and workflow_entry is None else None)
-        preferred = generation_defaults.ordered_ids(modality, mode, settings_snapshot)
+        automatic = model is None and workflow_entry is None
+        pinned, preferred = generation_defaults.dispatch_ids(
+            modality, mode, settings_snapshot, discovery=discovery, automatic=automatic,
+        )
         def rank(candidate: Any) -> tuple[int, str]:
             identifier = candidate[1].id if candidate[0] == "catalog" else candidate[1]["id"]
             return (preferred.index(identifier) if identifier in preferred else len(preferred), identifier)
@@ -1717,7 +1728,7 @@ class GenerationFacade:
         if workflow_entry is not None:
             candidates = [("workflow", workflow_entry)]
         elif model is not None:
-            manifest = timed_call("entry lookup", workflow_entries.find_entry, model)
+            manifest = timed_call("entry lookup", discovery.find_entry, model)
             if manifest is not None:
                 candidates = [("workflow", manifest)]
             else:
@@ -1730,14 +1741,14 @@ class GenerationFacade:
                           if (entry.id not in _EXPLICIT_ONLY_ENTRIES or entry.id in preferred)
                           and mode in entry.modes and _local_template(entry, mode)]
             candidates += [("workflow", entry) for entry in
-                           [*({**entry, 'source': 'user-entry'} for entry in timed_call("pack discovery", workflow_entries.user_entries)),
-                            *({**entry, 'source': 'ready-template'} for entry in timed_call("entry discovery", workflow_entries.ready_entries))]
+                           [*({**entry, 'source': 'user-entry'} for entry in timed_call("pack discovery", discovery.users)),
+                            *timed_call("entry discovery", discovery.ready_candidates)]
                            if entry["kind"] == modality and mode in entry["modes"]
                            and (entry["id"] not in _EXPLICIT_ONLY_ENTRIES or entry["id"] in preferred)
                            and (not entry.get("registry_id") or entry["id"] in preferred)]
             if pinned is not None and not any(
                     (c[1].id if c[0] == "catalog" else c[1]["id"]) == pinned for c in candidates):
-                found = timed_call("entry lookup", workflow_entries.find_entry, pinned)
+                found = timed_call("entry lookup", discovery.find_entry, pinned)
                 if found is not None:
                     candidates.append(("workflow", found))
             candidates.sort(key=rank)
@@ -1745,7 +1756,6 @@ class GenerationFacade:
             require_entry_available,
             require_model_available,
         )
-        automatic = model is None and workflow_entry is None
         qualified = []
         filtered = []
         for source, candidate in candidates:
@@ -1773,6 +1783,8 @@ class GenerationFacade:
                 + '; '.join(f'{identifier}: {exc}' for identifier, exc in filtered),
                 code='generation_route_unqualified', recovery_command=filtered[0][1].fix)
         candidates = qualified
+        if candidates and candidates[0][0] == 'workflow':
+            discovery.complete_ready(candidates[0][1])
         default_id = (candidates[0][1].id if candidates[0][0] == 'catalog'
                       else candidates[0][1]['id']) if candidates else None
         # Qualify every candidate before the placement resolver can probe discovery.
@@ -1832,6 +1844,8 @@ class GenerationFacade:
         failures: list[str] = []
         state = _admission_state or _WorkflowAdmissionState()
         for source, candidate in candidates:
+            if source == 'workflow':
+                candidate = discovery.complete_ready(candidate)
             source_ref = retained_source
             identifier = candidate.id if source == "catalog" else candidate["id"]
             inspect_candidate = model is None and source == "workflow" and candidate.get("inspect_inputs_declared")
@@ -1844,7 +1858,7 @@ class GenerationFacade:
                 # A contributed default may require a different public input shape. Only
                 # skip it for missing required inputs; a chosen candidate's build errors
                 # and explicitly pinned entries remain fail-closed.
-                description = workflow_entries.describe_entry(identifier, mode=mode, _native=True)
+                description = discovery.describe_entry(identifier, mode=mode, _native=True)
                 names = {name for port in description['inputs']
                          for name in (port['name'], *port.get('aliases', []))}
                 try:
@@ -1878,7 +1892,7 @@ class GenerationFacade:
                         _job_dirs.append(Path(tempfile.mkdtemp(prefix='astrid-job-')))
                         candidate = workflow_entries.attach_hooks(candidate, candidate_inputs, _job_dirs[-1])
                     runpod_engine = workflow_entries.runpod_engine(candidate if source == "workflow" else
-                        workflow_entries.find_entry(template) if template else None)
+                        discovery.find_entry(template) if template else None)
                     pending_target = {'engine': runpod_engine, 'placement': 'runpod', 'state': 'pending_host_readiness'}
                 if source == "catalog":
                     if is_managed_target and not dry_run:
@@ -2150,10 +2164,10 @@ class GenerationFacade:
                         raise CapabilityValidationError(f"reserved generation lineage keys: {names}")
                     controls['idempotency_context'] = {**authority, **remote.idempotency}
                     archive_inputs = dict(remote.inputs)
-                public, public_values = workflow_entries.resolve_entry_inputs(entry_id, archive_inputs, mode=mode)
+                public, public_values = discovery.resolve_entry_inputs(entry_id, archive_inputs, mode=mode)
                 if 'filename_prefix' in inputs and any(
                         'filename_prefix' in {port['name'], *port.get('aliases', [])} for port in public['inputs']):
-                    public, public_values = workflow_entries.resolve_entry_inputs(
+                    public, public_values = discovery.resolve_entry_inputs(
                         entry_id, {**archive_inputs, 'filename_prefix': inputs['filename_prefix']}, mode=mode)
                 if 'seed' in {port['name'] for port in public['inputs']} and 'seed' in (plan or {}).get('bindings', {}):
                     public_values['seed'] = plan['bindings']['seed']
@@ -2204,18 +2218,17 @@ class GenerationFacade:
     @staticmethod
     def _resolve_public_entry(*, entry: str, model: str | None,
                               mode: str | None, modality: str,
-                              inputs: Mapping[str, Any], registry: Any):
-        from astrid.core.generation.entries import describe_entry, resolve_entry_inputs
-
+                              inputs: Mapping[str, Any], registry: Any, discovery: Any):
         if model is not None and model != entry:
             raise CapabilityValidationError("model and entry select different generation entries")
+        description = None
         try:
-            description = describe_entry(entry, mode=mode, registry=registry, _native=True)
-            description, values = resolve_entry_inputs(
+            description = discovery.describe_entry(entry, mode=mode, registry=registry, _native=True)
+            description, values = discovery.resolve_entry_inputs(
                 entry, dict(inputs), mode=mode, kind=modality, registry=registry,
             )
         except (ValueError, KeyError) as exc:
-            raise GenerationInputError(str(exc), entry=locals().get('description')) from exc
+            raise GenerationInputError(str(exc), entry=description) from exc
         from astrid.core.generation.availability import require_entry_available
         require_entry_available(description, description['mode'])
         if description.get("action"):
@@ -2237,21 +2250,42 @@ class GenerationFacade:
             raise CapabilityValidationError("generate requires an entry")
         if inputs is not None and not isinstance(inputs, Mapping):
             raise CapabilityValidationError("generate inputs must be an object")
-        from astrid.core.generation.entries import describe_entry
+        from astrid.core.generation.entries import _EntryDiscovery
 
         sdk_module = importlib.import_module(self.sdk_module_name)
+        project_root = options.get('project_root')
+        extra_pack_roots = options.get('extra_pack_roots', ())
+        scoped = project_root is not None or extra_pack_roots
+        load_registry = partial(sdk_module._load_model_registry,
+                                project_root=project_root, extra_pack_roots=extra_pack_roots)
+        discovery = _EntryDiscovery(load_registry=None if scoped else load_registry)
         try:
-            kind = describe_entry(
-                entry, mode=options.get("mode"),
-                registry=sdk_module._load_model_registry(
-                    project_root=options.get("project_root"),
-                    extra_pack_roots=options.get("extra_pack_roots", ()),
-                ),
-                _native=True,
-            )["kind"]
+            registry = load_registry() if scoped else discovery.registry
+            description = discovery.describe_entry(entry, mode=options.get('mode'), registry=registry, _native=True)
+            kind = description["kind"]
         except (KeyError, ValueError) as exc:
             raise CapabilityValidationError(str(exc)) from exc
-        return getattr(self, kind)(entry=entry, placement=placement, **dict(inputs or {}), **options)
+        method = self._typed_command(kind, discovery, registry=registry)
+        return method(entry=entry, placement=placement, **dict(inputs or {}), **options)
+
+    def _typed_command(self, modality, discovery, *, registry=None):
+        """Bind this command's discovery to a built-in typed alias."""
+        method = getattr(self, modality)
+        base_alias = getattr(GenerationFacade, modality)
+        if (getattr(method, '__func__', None) is not base_alias
+                or getattr(self._media_request, '__func__', None) is not GenerationFacade._media_request):
+            return method
+
+        from inspect import signature
+        parameters = signature(method)
+
+        def generate(**kwargs):
+            # Bind the public arguments before passing command-owned state separately.
+            arguments = parameters.bind(**kwargs).arguments
+            inputs = arguments.pop('inputs', {})
+            return self._generate_resolved_media(modality, discovery, registry, **arguments, **inputs)
+
+        return generate
 
     @_generation_boundary
     def image(
@@ -2286,9 +2320,19 @@ class GenerationFacade:
         arguments = {key: value for key, value in locals().items() if key not in {"self", "inputs"}}
         return self._media_request("image", **arguments, **inputs)
 
-    def _media_request(
+    def _media_request(self, modality: str, **kwargs: Any) -> Any:
+        return self._media_request_impl(modality, None, None, **kwargs)
+
+    @_generation_boundary
+    def _generate_resolved_media(self, modality: str, discovery: Any, registry: Any, /, **kwargs: Any) -> Any:
+        return self._media_request_impl(modality, discovery, registry, **kwargs)
+
+    def _media_request_impl(
         self,
         modality: str,
+        discovery: Any,
+        registry: Any,
+        /,
         *,
         model: str | None = None,
         request: str | Mapping[str, Any] | None = None,
@@ -2332,32 +2376,41 @@ class GenerationFacade:
                        (("request", request), ("asset_map", asset_map)) if value is not None})
         kind.check_prompt(model=model, entry=entry, inputs=inputs)
         sdk_module = importlib.import_module(self.sdk_module_name)
-        registry = None
+        from astrid.core.generation.entries import _EntryDiscovery
+
+        scoped = project_root is not None or extra_pack_roots
+        load_registry = partial(sdk_module._load_model_registry,
+                                project_root=project_root, extra_pack_roots=extra_pack_roots)
+        if discovery is None:
+            discovery = _EntryDiscovery(load_registry=None if scoped else load_registry)
+
+        def command_registry():
+            if scoped:
+                return load_registry()
+            return discovery.registry
+
+        def entry_lookup(identifier):
+            return timed_call('entry lookup', discovery.find_entry, identifier)
+
         entry_source = None
         if entry is None and model is not None:
-            from astrid.core.generation.entries import find_entry
-
             # Preserve the workflow lookup's user precedence for either selector.
-            manifest = timed_call("entry lookup", find_entry, model)
+            manifest = entry_lookup(model)
             if manifest is not None and manifest.get('source') == 'user-entry':
                 entry_source = 'workflow'
         if entry is not None:
-            registry = sdk_module._load_model_registry(
-                project_root=project_root, extra_pack_roots=extra_pack_roots,
-            )
+            if registry is None:
+                registry = command_registry()
             description, inputs = timed_call("entry lookup", self._resolve_public_entry,
                 entry=entry, model=model, mode=mode, modality=modality,
-                inputs=inputs, registry=registry,
+                inputs=inputs, registry=registry, discovery=discovery,
             )
             entry_source = description["source"]
             model, mode = entry, description["mode"]
         if entry_source == "workflow" and placement is None:
             placement = "auto"
         if registry is None:
-            registry = sdk_module._load_model_registry(
-                project_root=project_root,
-                extra_pack_roots=extra_pack_roots,
-            )
+            registry = command_registry()
         # Engine selects the ComfyUI target resolver; establish that selector
         # before resolving a catalog execution so provider entries can consume
         # ``auto`` without it being reintroduced as a target afterward.
@@ -2372,6 +2425,7 @@ class GenerationFacade:
         resolved_mode, explicit_openai = kind.resolve_mode(
             sdk_module, model=model, mode=mode, execution=execution, inputs=inputs,
             resume=resume, recovery_path=recovery_path, placement=placement,
+            entry_lookup=entry_lookup,
         )
         # Catalog entries declare their execution in the selected mode. Resolve
         # that declaration before interpreting placement so provider entries
@@ -2403,7 +2457,7 @@ class GenerationFacade:
             kind.check_target_mode(mode=resolved_mode)
             return self._generate_on_target(
                 registry=registry, model=model, mode=resolved_mode, modality=modality,
-                placement=placement, execution=execution, inputs=inputs, dry_run=dry_run,
+                _discovery=discovery, placement=placement, execution=execution, inputs=inputs, dry_run=dry_run,
                 client=client, out=out, project=project, project_root=project_root,
                 extra_pack_roots=extra_pack_roots, banodoco_config=banodoco_config,
                 active_theme=active_theme, include_missing_roots=include_missing_roots,
