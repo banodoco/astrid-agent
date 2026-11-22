@@ -25,6 +25,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -33,6 +34,8 @@ import re
 import subprocess
 import sys
 import time
+import urllib.parse
+import urllib.request
 
 if __package__:
     from . import check_journey_evidence as evidence_gate
@@ -228,6 +231,56 @@ def windows_live_runtime_owners(data: Path) -> list[dict]:
     return owners
 
 
+def runtime_identity_probe(discovery: dict, expected: dict, *, receipt: dict | None = None) -> dict:
+    """Read the live Runtime's own health identity and bind it to discovery and pins.
+
+    ``journey.healthy`` intentionally returns the discovery document after checking only the
+    endpoint's status and instance id. The schema digest lives in the HTTP response.
+    """
+    endpoint = discovery.get("endpoint")
+    try:
+        parsed = urllib.parse.urlsplit(endpoint) if isinstance(endpoint, str) else None
+        host = parsed.hostname if parsed else None
+        loopback = host == "localhost" or (host is not None and ipaddress.ip_address(host).is_loopback)
+        valid = (parsed is not None and parsed.scheme == "http" and loopback
+                 and parsed.port is not None and parsed.username is None and parsed.password is None
+                 and parsed.path in ("", "/") and not parsed.query and not parsed.fragment)
+    except ValueError:
+        valid = False
+    if not valid:
+        raise RuntimeError("Runtime discovery has no loopback health endpoint")
+    health_url = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, "", "", "")).rstrip("/") + "/v1/health"
+    request = urllib.request.Request(health_url, headers={"Origin": "https://astrid.haus"})
+    with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=10) as response:
+        health = json.load(response)
+    expected_identity = {"release": expected["release"], "managed_by": None}
+    # Keep only the identity fields needed to classify a mismatch. Health can
+    # grow operational fields, including sensitive values, so never dump it whole.
+    def safe_identity(value):
+        return ({key: value.get(key) for key in ("release", "managed_by")}
+                if isinstance(value, dict) else None)
+
+    if receipt is not None:
+        receipt["live_probe"] = {
+            "endpoint": {"scheme": parsed.scheme, "host": host, "port": parsed.port},
+            "discovery": {"pid": discovery.get("pid"),
+                          "runtime_instance_id": discovery.get("runtime_instance_id"),
+                          "identity": safe_identity(discovery.get("identity"))},
+            "health": {"status": health.get("status"),
+                       "runtime_instance_id": health.get("runtime_instance_id"),
+                       "identity": safe_identity(health.get("identity")),
+                       "schema_digest": health.get("schema_digest")},
+        }
+    matches = (health.get("status") == "ok"
+               and health.get("runtime_instance_id") == discovery.get("runtime_instance_id")
+               and health.get("identity") == expected_identity
+               and discovery.get("identity") == expected_identity
+               and health.get("schema_digest") == expected["schema_digest"])
+    if not matches:
+        raise RuntimeError("Live Runtime identity does not match the exact selected release")
+    return health
+
+
 def candidate_update_windows(app: Path, manifest_path: Path, shell: str, evidence: Path,
                              root: Path, data: Path) -> dict:
     """Run the candidate's public install.ps1 --update once and return what it reported.
@@ -406,10 +459,11 @@ def recover_killed_r13_update(args, result: dict, result_path: Path, *,
         result["checks"]["one_runtime"] = "pass"
         recovery["service_manager"] = journey.assert_direct_service_ownership(root, data)
         result["checks"]["service"] = "pass"
-        health = journey.healthy(data)
-        if ((health.get("identity") or {}).get("release") != jumps.RELEASE13_RELEASE
-                or health.get("schema_digest") != jumps.RELEASE13_IDENTITY["schema_digest"]
-                or owners[0].get("runtime_instance_id") != health.get("runtime_instance_id")):
+        discovery = journey.healthy(data)
+        health = runtime_identity_probe(
+            discovery, {"release": jumps.RELEASE13_RELEASE, **jumps.RELEASE13_IDENTITY},
+            receipt=recovery)
+        if owners[0].get("runtime_instance_id") != health.get("runtime_instance_id"):
             raise RuntimeError("Recovered Runtime does not report Release 13")
         result["checks"]["health"] = "pass"
         recovery["live_release"] = jumps.RELEASE13_RELEASE
@@ -445,7 +499,9 @@ def recover_killed_r13_update(args, result: dict, result_path: Path, *,
         selected = jumps.selected_candidate(manifest, version, jumps.RELEASE13_IDENTITY)
         active_data = jumps.selected_data_root(root, data, allow_r1=False)
         journey.wait_ready(active_data, timeout=wait_timeout())
-        live = journey.healthy(active_data)
+        live_discovery = journey.healthy(active_data)
+        live = runtime_identity_probe(
+            live_discovery, {"release": target_release, **selected}, receipt=retry)
         owners = windows_live_runtime_owners(active_data)
         if ((live.get("identity") or {}).get("release") != target_release
                 or live.get("schema_digest") != selected["schema_digest"]
