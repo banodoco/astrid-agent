@@ -126,9 +126,9 @@ def _builtin_effect(clip_type):
 
     try:
         kinds = {item.kind for item in load_default_registry().list() if item.id == clip_type}
-    except Exception:  # noqa: BLE001 - an unreadable registry cannot prove the target is another kind
-        return True
-    return not kinds or 'effects' in kinds
+    except Exception:  # noqa: BLE001 - an unreadable registry cannot prove the target is an effect
+        return False
+    return kinds == {'effects'}
 
 
 def _clip_element(ctx, command, *, allow_initial=False):
@@ -171,7 +171,9 @@ def _clip_element(ctx, command, *, allow_initial=False):
 
 def clip_set_element(ctx, command):
     ref = command['select']
-    _clip_element(ctx, command, allow_initial=isinstance(ref, str) and ref.startswith(('occurrence:', 'parent/')))
+    _clip_element(ctx, command, allow_initial=(command['args'].get('placement') == 'place'
+                                              and isinstance(ref, str)
+                                              and ref.startswith(('occurrence:', 'parent/'))))
 
 
 def capture_clip_set_element(bundle, select, *, element, schema_source=None,
