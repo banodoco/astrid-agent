@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from runtime_protocol import platform
+from astrid.sdk.lock_wait import acquire_file_lock
 
 
 def request_bytes(value):
@@ -33,7 +34,7 @@ class Outbox:
             finally:
                 os.close(descriptor)
         with self.path.with_suffix(self.path.suffix + ".lock").open("a") as lock:
-            platform.lock_file(lock.fileno())
+            acquire_file_lock(lock.fileno(), "timeline outbox lock")
             try:
                 yield
             finally:
