@@ -1797,6 +1797,8 @@ REMOTION_GATE_DESCRIPTION = "tasks that render with rendering.remotion"
 
 def _managed_asset_identity(key: str, raw: Mapping[str, Any]) -> tuple[str, str]:
     return _naming_managed_asset_identity(key, raw, digest_resolver=managed_asset_digest)
+
+
 _managed_asset_identity.__doc__ = _naming_managed_asset_identity.__doc__
 
 
@@ -2124,6 +2126,7 @@ def _resolve_credential_value(
     source: Mapping[str, str], name: str, *, explicit: bool = False
 ) -> str | None:
     """Resolve a declared credential without broadening ordinary env access.
+
     Hivemind's contributor login stores its owner-only credential at the
     standard ``~/.hivemind/key`` path. The child executor already supports
     that path; the host must use the same source for readiness and injection
@@ -2760,9 +2763,7 @@ def _interactive_review_authority(
     it, and no authority issuance or parent heartbeat is needed by a child.
     """
     from astrid.sdk._child_bridge import _validate_child_policy
-
     from ._child_bridge import _snapshot_grant, task_resource
-
     parent_id = "iteration.experiment_review_session"
     child_id = "editorial.human_review"
     if record.id not in {parent_id, child_id}:
@@ -3448,7 +3449,6 @@ def _iteration_video_discovery(
     receives the retained media file, and only its rendering child is adapted.
     """
     from ._child_bridge import _DIGEST, _MAX_OBJECT, _snapshot
-
     if record.id != "video_editing.iteration_video":
         return None
     if bridge is None or getattr(bridge, "_iteration_video_submit", None) is not None:
