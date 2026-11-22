@@ -306,7 +306,6 @@ def test_commit_function_batches_occurrence_placements_and_document_edits(
         text_row = {'id': 'chapter-title', 'track': 'picture', 'clipType': 'text-card',
                     'at': 0, 'hold': 1, 'params': {'content': 'Chapter title'}}
         target_shot['clips'].append(copy.deepcopy(text_row))
-        target_shot['config']['clips'].append(copy.deepcopy(text_row))
 
     first = timeline.commit(edit, key='mixed-key')
     assert first['receipt']['receipt_id'] == 'accepted-receipt'
