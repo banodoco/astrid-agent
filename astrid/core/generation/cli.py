@@ -973,7 +973,11 @@ def main(argv: list[str] | None = None, *, dispatch_marks: tuple[float, float] |
     entry = time.monotonic()
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] not in {"image", "video", "audio", "workflow"} or any(arg in {"-h", "--help"} for arg in argv):
-        return _main_with_errors(argv, output=stdout)
+        token = _generation_output.set(stdout)
+        try:
+            return _main_with_errors(argv)
+        finally:
+            _generation_output.reset(token)
     from astrid.console import startup_marks
     from astrid.sdk.command_timing import TimingCollector, TimingOutput, print_timings, timing_scope
     marks = startup_marks()
@@ -982,17 +986,21 @@ def main(argv: list[str] | None = None, *, dispatch_marks: tuple[float, float] |
     collector = TimingCollector(started=marks[0], startup=(*marks, entry),
                                 startup_child=("dispatch", *dispatch_marks) if dispatch_marks else None)
     result_output = TimingOutput(stdout, collector, include_collector_span=True) if '--timings' in argv else stdout
+    token = _generation_output.set(result_output)
     try:
         with timing_scope(collector):
-            return _main_with_errors(argv, output=result_output)
+            return _main_with_errors(argv)
     finally:
+        _generation_output.reset(token)
         if '--timings' in argv:
             print_timings(collector.snapshot())
 
 
-def _main_with_errors(argv: list[str] | None = None, *, output=None) -> int:
+def _main_with_errors(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    output = sys.stdout if output is None else output
+    output = _generation_output.get()
+    if output is None:
+        output = sys.stdout
     from astrid.core.generation.preflight import generation_error
     from astrid.sdk.generation import _NO_MACHINE
     before: set[tuple[str | None, int | None]] = set()
