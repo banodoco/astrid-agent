@@ -124,6 +124,11 @@ def _require_single_declared_output(*, workflow: Any, companion: Any) -> None:
         )
 
 
+def _timed_generation_invocation(function, /, *args, **kwargs):
+    with stage("invocation"):
+        return function(*args, **kwargs)
+
+
 def _import_generation_member(path: Path, controls: dict[str, Any]) -> dict[str, Any]:
     with stage("object import"):
         import hashlib
@@ -2211,7 +2216,7 @@ class GenerationFacade:
                     job = workflow_entries.entry_job(candidate, inputs, plan['job_dir'], hooks={})
                     hook_job = json.dumps({'entry': candidate['id'], 'job_dir': plan['job_dir'],
                                            'inputs': job['inputs'], 'files': job['files']}, sort_keys=True)
-            result = timed_call("invocation", self.workflow,
+            result = _timed_generation_invocation(self.workflow,
                 **({'after_outputs_job': hook_job} if hook_job else {}),
                 python=import_member(root / "workflow.py"),
                 companion=import_member(root / "workflow.vibe.json"),
