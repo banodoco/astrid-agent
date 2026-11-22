@@ -39,8 +39,8 @@ from astrid.core.timeline.duration import (
     visual_tracks_paint_order,
 )
 from astrid.core.timeline.legacy_elements import (
-    LEGACY_TRANSITION_IDS,
     normalize_legacy_transition_id,
+    uses_editor_incoming_transition,
 )
 from astrid.core.timeline.resolution import AssetIntegrity, classify_registry
 from astrid.core.timeline.snapshot import TimelineSnapshot
@@ -328,7 +328,7 @@ def _inspection_transition(value: Any) -> tuple[dict[str, Any] | None, bool]:
         return transition, False
     canonical = normalize_legacy_transition_id(identity)
     transition[field] = canonical
-    return transition, canonical != identity or canonical in LEGACY_TRANSITION_IDS
+    return transition, uses_editor_incoming_transition(identity, editor_type=field == "type")
 
 
 def _registry_entries(registry: Mapping[str, Any]) -> dict[str, Any]:

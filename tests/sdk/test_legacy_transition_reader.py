@@ -9,7 +9,6 @@ from astrid.core.timeline import validate_timeline
 from astrid.core.timeline.reader_projection import check_reader_projection, reader_view
 from astrid.packs.rendering.actions.render.managed_timeline import _render_compatible_projection
 
-
 _REGISTRY = {"assets": {"a": {"type": "video", "file": "a.mp4"}}}
 
 
@@ -63,10 +62,26 @@ def test_strict_timeline_validator_accepts_authored_r13_transition(identity):
     validate_timeline(_r13_config({"type": identity, "duration": 0.5}))
 
 
-def test_legacy_transition_catalog_only_extends_reader_membership():
-    legacy_ids = {"wipe", "slide-push", "zoom-through"}
-    assert legacy_ids <= set(catalog.list_transition_ids(include_legacy=True))
-    assert legacy_ids.isdisjoint(catalog.list_transition_ids())
+@pytest.mark.parametrize("identity", ["crossfade", "wipe", "slide-push", "zoom-through"])
+def test_r13_incoming_transition_duration_can_exceed_clip_lengths(identity):
+    source = _r13_config({"type": identity, "duration": 0.5})
+    source["clips"][0]["hold"] = 0.25
+    source["clips"][1].update(at=0.25, hold=0.25)
+    validate_timeline(source)
+    check_reader_projection(*reader_view(source, _REGISTRY))
+    check_reader_projection(*_render_compatible_projection(source, _REGISTRY))
+    assert source["clips"][0]["transition"] == {"type": identity, "duration": 0.5}
+
+
+@pytest.mark.parametrize("identity", ["wipe", "slide-push", "zoom-through"])
+def test_r14_catalog_exposes_supported_transition_choices(identity):
+    assert identity in catalog.list_transition_ids()
+    descriptor = next(
+        row for row in catalog.list_element_descriptors("transitions") if row["id"] == identity
+    )
+    assert descriptor["packId"] == "rendering"
+    assert descriptor["renderability"]["workerExport"] == "supported"
+    assert catalog.read_transition_defaults(identity) == {"durationFrames": 8}
 
 
 @pytest.mark.parametrize("reader", [reader_view, _render_compatible_projection])

@@ -653,7 +653,6 @@ def _resolve_timeline_element_references(
     # Keep the allowlist explicit and keep every other unknown id fail-closed.
     from astrid.core.timeline.legacy_elements import (
         LEGACY_PHASE_EFFECT_IDS,
-        LEGACY_TRANSITION_IDS,
         normalize_legacy_transition_id,
     )
 
@@ -692,8 +691,6 @@ def _resolve_timeline_element_references(
                 )
                 lookup_id = element_id
                 if owner is None and slot_name == "transition":
-                    if element_id in LEGACY_TRANSITION_IDS:
-                        continue
                     lookup_id = normalize_legacy_transition_id(element_id)
                 elif (owner is None and slot_name in LEGACY_PHASE_EFFECT_IDS
                       and isinstance(slot, Mapping) and "id" not in slot

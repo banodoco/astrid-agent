@@ -15,7 +15,7 @@ def _animation_ids() -> set[str]:
 
 def _transition_ids() -> set[str]:
     from astrid.core.element import catalog as effects_catalog
-    return set(effects_catalog.list_transition_ids(include_legacy=True))
+    return set(effects_catalog.list_transition_ids())
 
 
 def _animation_meta(animation_id: str) -> dict[str, Any]:

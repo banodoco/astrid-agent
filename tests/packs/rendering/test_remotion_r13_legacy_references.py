@@ -14,10 +14,10 @@ def registry():
 def test_r13_transition_aliases_and_renderer_ids_preflight(registry, identity):
     data = {"clips": [{"id": "clip", "transition": {"type": identity, "duration": 0.4}}]}
     resolved = remotion._resolve_timeline_element_references(data, theme_path=None, registry=registry)
-    if identity == "crossfade":
-        assert [row["element_id"] for row in resolved["transitions"]] == ["cross-fade"]
-    else:
-        assert resolved["transitions"] == []
+    expected_id = "cross-fade" if identity == "crossfade" else identity
+    assert [(row["element_id"], row["source_pack_id"]) for row in resolved["transitions"]] == [
+        (expected_id, "rendering"),
+    ]
 
 
 @pytest.mark.parametrize(

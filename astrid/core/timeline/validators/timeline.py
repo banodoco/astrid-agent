@@ -12,7 +12,10 @@ from astrid.core.timeline.banodoco_schema import (
     _validate_shared_timeline,
 )
 from astrid.core.timeline.kinds import normalize_track_kind
-from astrid.core.timeline.legacy_elements import normalize_legacy_transition_id
+from astrid.core.timeline.legacy_elements import (
+    normalize_legacy_transition_id,
+    uses_editor_incoming_transition,
+)
 from astrid.core.timeline.validators.meta import validate_timeline_meta_locations
 
 # Registry lookups are late-imported through banodoco_schema so that
@@ -156,17 +159,24 @@ def _validate_clip_transitions(clips: list[dict[str, Any]], fps: float) -> None:
         for position, (index, clip) in enumerate(track_clips):
             if "transition" not in clip:
                 continue
-            transition_id, duration_frames = _transition_reference(clip["transition"], f"clips[{index}].transition")
+            reference = clip["transition"]
+            transition_id, duration_frames = _transition_reference(reference, f"clips[{index}].transition")
             if known_ids and normalize_legacy_transition_id(transition_id) not in known_ids:
                 raise ValueError(
                     f"clips[{index}].transition id {transition_id!r} is not present in the transitions catalog"
                 )
+            if uses_editor_incoming_transition(
+                transition_id, editor_type=isinstance(reference, dict) and "id" not in reference,
+            ):
+                # The editor prerolls the incoming sequence over the timeline.
+                # Its authored duration can exceed either neighboring clip.
+                continue
             next_clip = track_clips[position + 1][1] if position + 1 < len(track_clips) else None
             current_duration = _clip_duration_seconds(clip)
             next_duration = _clip_duration_seconds(next_clip) if next_clip is not None else None
             duration_seconds = duration_frames / fps if duration_frames is not None else None
-            if duration_seconds is None and isinstance(clip.get("transition"), dict):
-                raw_duration = clip["transition"].get("duration")
+            if duration_seconds is None and isinstance(reference, dict):
+                raw_duration = reference.get("duration")
                 duration_seconds = float(raw_duration) if isinstance(raw_duration, (int, float)) else None
             if duration_seconds is None or current_duration is None or next_duration is None:
                 continue

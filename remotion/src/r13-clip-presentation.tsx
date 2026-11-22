@@ -53,7 +53,8 @@ const transitionReference = (raw: unknown): LegacyEffect | undefined =>
 export function isLegacyIncomingTransition(raw: unknown): boolean {
   const reference = transitionReference(raw);
   const id = reference?.id ?? reference?.type;
-  return typeof id === 'string' && (id === 'crossfade' || isLegacyTransitionId(id));
+  return id === 'crossfade' || isLegacyTransitionId(id)
+    || (reference?.id === undefined && reference?.type === 'cross-fade');
 }
 
 export function isLegacyTransitionId(id: unknown): id is string {

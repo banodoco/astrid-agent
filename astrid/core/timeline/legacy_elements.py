@@ -7,8 +7,8 @@ from pathlib import Path
 
 from astrid.core.pack import ELEMENT_KIND_REGISTRY
 
-# Shared with the Remotion host. These IDs describe saved renderer behavior
-# and do not extend the authoring picker catalogs.
+# Shared with the Remotion host. The transitions are still offered by the
+# editor. The phase IDs describe saved effects without adding picker choices.
 _R13_ELEMENTS = json.loads(
     Path(__file__).with_name("schema").joinpath("r13-legacy-elements.json").read_text(encoding="utf-8"),
 )
@@ -24,3 +24,17 @@ _CROSS_FADE_ALIASES = ELEMENT_KIND_REGISTRY.descriptor("cross-fade", catalog="tr
 def normalize_legacy_transition_id(identity: str) -> str:
     """Return the canonical spelling for the R13 cross-fade alias."""
     return "cross-fade" if identity in _CROSS_FADE_ALIASES else identity
+
+
+def uses_editor_incoming_transition(identity: str, *, editor_type: bool) -> bool:
+    """Recognize the editor's incoming owner convention, including detached alias copies."""
+    return (
+        identity in LEGACY_TRANSITION_IDS
+        or identity in _CROSS_FADE_ALIASES
+        or (editor_type and identity == "cross-fade")
+    )
+
+
+def is_r13_host_transition(kind: str, identity: str, source: str) -> bool:
+    """Identify rendering-pack transitions drawn by the host's incoming layer."""
+    return kind == "transitions" and source == "pack:rendering" and identity in LEGACY_TRANSITION_IDS
