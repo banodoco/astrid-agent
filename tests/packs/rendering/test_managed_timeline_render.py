@@ -525,6 +525,66 @@ def test_retired_locator_is_rejected_before_runtime_materialization() -> None:
         _snapshot(runtime)
 
 
+_ROUTE_HEX = "4ab84c47567ab892fe2e8620042523c2f9a242d495793c5c590cc448046d625d"
+
+
+def test_editor_object_route_for_the_entrys_own_media_is_dropped() -> None:
+    # banodoco/astrid-dev#1238: the editor stores ``file: /v1/objects/<media_id>``
+    # on imported media. It repeats the admitted identity, so it is dropped
+    # from the child snapshot instead of failing every view of the timeline.
+    runtime = _Runtime(media=[{"media_id": "sha256:" + _ROUTE_HEX, "digest": _ROUTE_HEX}])
+    runtime.timeline["registry"] = {"assets": {"still": {
+        "file": "/v1/objects/sha256%3A" + _ROUTE_HEX,
+        "media_id": "sha256:" + _ROUTE_HEX,
+        "type": "image/png",
+    }}}
+    snapshot = _snapshot(runtime)
+    assert snapshot.registry["assets"]["still"] == {
+        "media_id": "sha256:" + _ROUTE_HEX,
+        "content_sha256": _ROUTE_HEX,
+        "type": "image/png",
+    }
+
+
+def test_capture_precheck_keeps_the_route_and_names_unused_entries() -> None:
+    # Composed capture sends its registry to the generic host unchanged, and
+    # the host refuses every locator, so its pre-check must not drop routes.
+    from astrid.packs.rendering.actions.render.managed_timeline import _runtime_snapshot_registry
+
+    runtime = _Runtime(media=[{"media_id": "sha256:" + _ROUTE_HEX, "digest": _ROUTE_HEX}])
+    registry = {"assets": {"stray": {
+        "file": "/v1/objects/sha256%3A" + _ROUTE_HEX,
+        "media_id": "sha256:" + _ROUTE_HEX,
+    }}}
+    with pytest.raises(ManagedRenderValidationError, match=r"file \(not used by any clip\)"):
+        _runtime_snapshot_registry(
+            registry, project_ref="demo", client=runtime,
+            config={"tracks": [], "clips": []}, drop_redundant_object_routes=False,
+        )
+
+
+def test_route_to_another_object_is_still_a_retired_locator() -> None:
+    runtime = _Runtime(media=[{"media_id": "sha256:" + _ROUTE_HEX, "digest": _ROUTE_HEX}])
+    runtime.timeline["registry"] = {"assets": {"still": {
+        "file": "/v1/objects/sha256%3A" + "b" * 64,
+        "media_id": "sha256:" + _ROUTE_HEX,
+    }}}
+    with pytest.raises(ManagedRenderValidationError, match="retired media locator"):
+        _snapshot(runtime)
+
+
+def test_retired_locator_error_names_the_clip_and_the_repair() -> None:
+    runtime = _Runtime()
+    runtime.timeline["config"] = {
+        "tracks": [{"id": "v1", "kind": "visual", "label": "V1"}],
+        "clips": [{"id": "clip-1", "track": "v1", "clipType": "hold", "at": 0, "hold": 2, "asset": "hero"}],
+    }
+    runtime.timeline["registry"] = {"assets": {"hero": {"file": "/tmp/hero.png", "media_id": "media-1"}}}
+    with pytest.raises(ManagedRenderValidationError, match=r"used by clip\(s\) clip-1") as caught:
+        _snapshot(runtime)
+    assert "--replace-asset hero=" in caught.value.details["recovery"]
+
+
 def test_stale_and_archived_timelines_are_rejected() -> None:
     with pytest.raises(ValueError, match="stale timeline version"):
         _snapshot(_Runtime(), expected_version=2)

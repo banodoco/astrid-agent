@@ -12,6 +12,7 @@ from typing import Any, Mapping
 from astrid.pack_api import validate_registry, validate_timeline
 from astrid.pack_api import write_json_atomic
 from astrid.core.foundation.hash import validate_digest
+from astrid.core.rendering.assets import without_redundant_object_route
 from astrid.core.timeline.duration import render_clock
 from astrid.sdk.pagination import paged_rows
 
@@ -581,8 +582,24 @@ def _runtime_media_admissions(client: Any, project_ref: str) -> dict[str, str]:
     return admitted
 
 
+def _clips_using_asset(config: Mapping[str, Any] | None, key: str) -> list[str]:
+    clips = config.get("clips") if isinstance(config, Mapping) else None
+    if not isinstance(clips, list):
+        return []
+    return [
+        str(clip.get("id", f"#{index}"))
+        for index, clip in enumerate(clips)
+        if isinstance(clip, Mapping) and clip.get("asset") == key
+    ]
+
+
 def _runtime_snapshot_registry(
-    registry: Mapping[str, Any], *, project_ref: str, client: Any
+    registry: Mapping[str, Any],
+    *,
+    project_ref: str,
+    client: Any,
+    config: Mapping[str, Any] | None = None,
+    drop_redundant_object_routes: bool = True,
 ) -> dict[str, Any]:
     """Validate runtime-admitted media identities without replacing locators.
 
@@ -624,16 +641,31 @@ def _runtime_snapshot_registry(
             )
         seen_media[media_id] = digest
     seen_media.clear()
-    for key, entry in raw_assets.items():
+    for key in list(raw_assets):
+        entry = raw_assets[key]
         if not isinstance(entry, dict):
             continue
+        if drop_redundant_object_routes:
+            entry = without_redundant_object_route(entry)
+            raw_assets[key] = entry
         forbidden = [field for field in ("url", "file", "path", "source_path", "locator", "realm") if field in entry]
         if forbidden:
+            users = _clips_using_asset(config, str(key))
+            used = (
+                f"used by clip(s) {', '.join(users)}" if users
+                else "not used by any clip" if config is not None else None
+            )
             raise ManagedRenderValidationError(
-                f"canonical registry asset {key!r} contains retired media locator field(s): {', '.join(forbidden)}",
+                f"canonical registry asset {key!r} contains retired media locator field(s): "
+                f"{', '.join(forbidden)}" + (f" ({used})" if used else ""),
                 path=f"$.assets[{json.dumps(str(key))}]",
                 reason="live rendering accepts runtime-managed object ids and digests only",
-                recovery="Import the bytes into the runtime and reference its object_id/digest.",
+                recovery=(
+                    f"Rebuild the entry from project media: astrid timelines edit <timeline> "
+                    f"--replace-asset {key}=<sha256:... media id>, or remove the clip(s) using it."
+                    if users else
+                    "Import the bytes into the runtime and reference its object_id/digest."
+                ),
                 validator="managed_media_locator",
             )
         media_id = entry.get("object_id") or entry.get("media_id")
@@ -1152,6 +1184,7 @@ def resolve_managed_render_snapshot(
         stored_registry,
         project_ref=project_ref,
         client=client,
+        config=config,
     )
     config_hash = _digest(config)
     registry_hash = _digest(raw_registry)
