@@ -21,12 +21,12 @@ from runtime_protocol.util import new_id
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_PIN = "3f9c0ca34170cbd3f39d61077ecfe497fc8bbf6b"
-VIBECOMFY_PIN = "799d90f619a6723d0b376b7e77aef09c244a0821"
-RUNTIME_LONGEST_FILE = "diagnostics/readiness-auth/readiness-native21-66e943bd/authenticated-state.json"
-RUNTIME_LONGEST_DIRECTORY = "diagnostics/readiness-auth/readiness-native21-66e943bd"
+VIBECOMFY_PIN = "48b5fa9e45630e1bc502651975ec0ef3a5e74c4c"
+RUNTIME_LONGEST_FILE = "diagnostics/readiness-auth/readiness-native21-67b709d6/authenticated-state.json"
+RUNTIME_LONGEST_DIRECTORY = "diagnostics/readiness-auth/readiness-native21-67b709d6"
 VIBECOMFY_LONGEST_INCLUDED_FILE = (
-    "tests/fixtures/live_agentic_corpus/corpus/"
-    "1472123703247769_ComfyUI_2026-02-14-014741z-image-base__00001_.extracted.json"
+    "vibecomfy/porting/cache/object_info/"
+    "ComfyUI-Whisper@local-006a709-a73ea02875944b579722b5475f64c82b94755469f5cc374cb69663276fc289b4.json"
 )
 VIBECOMFY_LONGEST_INCLUDED_DIRECTORY = (
     "ready_templates/sources/custom_nodes/ComfyUI-H3-Motion-Context-MultiRef/seitanism"
