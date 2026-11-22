@@ -17,13 +17,45 @@ def _functions(source: str) -> tuple[dict[str, list[int]], Counter[str]]:
     functions: dict[str, list[int]] = {}
     methods: Counter[str] = Counter()
 
+    class ClassBindings(ast.NodeVisitor):
+        """Count class-level definitions and bindings, including in control flow."""
+
+        def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+            methods[node.name] += 1
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            # Nested classes have their own namespace.
+            pass
+
+        def _target(self, node: ast.AST) -> None:
+            if isinstance(node, ast.Name):
+                methods[node.id] += 1
+            elif isinstance(node, (ast.Tuple, ast.List)):
+                for item in node.elts:
+                    self._target(item)
+
+        def visit_Assign(self, node: ast.Assign) -> None:
+            for target in node.targets:
+                self._target(target)
+
+        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+            if node.value is not None:
+                self._target(node.target)
+
+        def visit_AugAssign(self, node: ast.AugAssign) -> None:
+            self._target(node.target)
+
     class Visitor(ast.NodeVisitor):
         def __init__(self) -> None:
             self.scope: list[str] = []
 
         def visit_ClassDef(self, node: ast.ClassDef) -> None:
             if not self.scope and node.name == "GenericPackHost":
-                methods.update(n.name for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)))
+                bindings = ClassBindings()
+                for statement in node.body:
+                    bindings.visit(statement)
             self.scope.append(node.name)
             self.generic_visit(node)
             self.scope.pop()

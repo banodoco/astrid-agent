@@ -1209,3 +1209,34 @@ def test_execution_size_guard_limits_new_functions_and_method_duplicates() -> No
     path = "astrid/core/execution/sibling.py"
     long_function = "def long():\n" + "    pass\n" * 200
     assert any("long grew" in e for e in compare(base, {**base, path: long_function}))
+
+
+def test_execution_size_guard_counts_class_control_flow_and_bindings() -> None:
+    from scripts.reshape.compare_execution_size import HOST, compare
+
+    base = {HOST: "class GenericPackHost:\n    def _run_task_impl(self): pass\n\n\n"}
+    additions = [
+        "    if True:\n        def probe(self): return 42\n",
+        "    probe = _run_task_impl\n",
+        "    if True:\n        async def probe(self): pass\n",
+        "    if True:\n        probe = staticmethod(_run_task_impl)\n",
+    ]
+    for addition in additions:
+        head = {HOST: "class GenericPackHost:\n    def _run_task_impl(self): pass\n" + addition}
+        assert len(head[HOST].splitlines()) <= len(base[HOST].splitlines())
+        assert any("added method probe" in error for error in compare(base, head))
+
+
+def test_execution_size_guard_ignores_nested_scope_bindings() -> None:
+    from scripts.reshape.compare_execution_size import HOST, compare
+
+    base = {HOST: "class GenericPackHost:\n    def existing(self): pass\n\n\n\n\n"}
+    head = {HOST: (
+        "class GenericPackHost:\n"
+        "    def existing(self):\n"
+        "        def probe(): pass\n"
+        "        alias = probe\n"
+        "    class Inner:\n"
+        "        def probe(self): pass\n"
+    )}
+    assert not any("added method" in error for error in compare(base, head))
