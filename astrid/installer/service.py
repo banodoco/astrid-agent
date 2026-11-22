@@ -1211,17 +1211,32 @@ class Service:
             raise ValueError("The Astrid Runtime scheduled task has an unknown action. Re-run the install line to repair it.")
         def quote(value):
             return "'" + value.replace("'", "''") + "'"
-        # Recheck exact observed bytes in the same Scheduler operation before
-        # changing or removing the owned task.
-        operation = ("$t | Unregister-ScheduledTask -Confirm:$false" if remove else
-            f"$a=New-ScheduledTaskAction -Execute {quote(argv[0])} " +
-            f"-Argument {quote(subprocess.list2cmdline(argv[1:]))} -WorkingDirectory {quote(str(version.root))}; " +
-            "$t | Set-ScheduledTask -Action $a | Out-Null")
-        self.powershell(TASK_QUERY +
-            "if (-not $t) { throw 'The Astrid Runtime scheduled task disappeared.' }; " +
-            "$prior=ConvertTo-Json -Compress -InputObject @($t.Actions | Select-Object Execute,Arguments); " +
-            f"if ($prior -cne {quote(observed)}) {{ throw 'The Astrid Runtime scheduled task action changed.' }}; " +
-            operation)
+        # R13 actions and their replacements can each exceed Windows' 32,767
+        # character process command-line limit. Keep all variable data in a
+        # short-lived file; the Scheduler compare-and-set still happens inside
+        # one PowerShell operation immediately before mutation.
+        payload = {"observed": observed, "execute": argv[0],
+                   "arguments": subprocess.list2cmdline(argv[1:]),
+                   "working_directory": str(version.root)}
+        payload_path = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="\n",
+                                             prefix="astrid-task-", suffix=".json", delete=False) as pending:
+                payload_path = Path(pending.name)
+                json.dump(payload, pending, ensure_ascii=False, separators=(",", ":"))
+            path_literal = quote(str(payload_path))
+            operation = ("$t | Unregister-ScheduledTask -Confirm:$false" if remove else
+                f"$a=New-ScheduledTaskAction -Execute $payload.execute -Argument $payload.arguments " +
+                "-WorkingDirectory $payload.working_directory; Set-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath -Action $a | Out-Null")
+            self.powershell(TASK_QUERY +
+                "if (-not $t) { throw 'The Astrid Runtime scheduled task disappeared.' }; " +
+                f"$payload=Get-Content -LiteralPath {path_literal} -Raw -Encoding UTF8 | ConvertFrom-Json; " +
+                "$prior=ConvertTo-Json -Compress -InputObject @($t.Actions | Select-Object Execute,Arguments); " +
+                "if ($prior -cne $payload.observed) { throw 'The Astrid Runtime scheduled task action changed.' }; " +
+                operation)
+        finally:
+            if payload_path is not None:
+                payload_path.unlink(missing_ok=True)
         if remove:
             self.path.unlink(missing_ok=True)
 

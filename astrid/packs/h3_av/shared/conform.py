@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-import resource
 import subprocess
 import tempfile
+import threading
+import time
 from fractions import Fraction
 from pathlib import Path
 
@@ -45,16 +46,67 @@ def _stream_time(stream: dict, ticks_field: str, seconds_field: str) -> Fraction
 _MAX_PROBE_BYTES = 16 * 1024 * 1024
 
 
-def _bounded_probe(args: list[str]) -> dict:
-    def limit_output():
-        resource.setrlimit(resource.RLIMIT_FSIZE, (_MAX_PROBE_BYTES, _MAX_PROBE_BYTES))
+_PROBE_TIMEOUT_SECONDS = 120
 
-    with tempfile.TemporaryFile() as output:
-        subprocess.run(['ffprobe', '-v', 'error', *args], stdout=output,
-                       stderr=subprocess.DEVNULL, check=True, timeout=120,
-                       preexec_fn=limit_output)
-        output.seek(0)
-        return json.load(output)
+
+def _bounded_probe(args: list[str]) -> dict:
+    command = ['ffprobe', '-v', 'error', *args]
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    output = bytearray()
+    read_errors = []
+    overflow = threading.Event()
+
+    def kill_if_running():
+        try:
+            process.kill()
+        except OSError:
+            if process.poll() is None:
+                raise
+
+    def read_output():
+        try:
+            with process.stdout as stream:
+                while True:
+                    chunk = stream.read1(min(65536, _MAX_PROBE_BYTES + 1 - len(output)))
+                    if not chunk:
+                        return
+                    output.extend(chunk)
+                    if len(output) > _MAX_PROBE_BYTES:
+                        overflow.set()
+                        kill_if_running()
+                        return
+        except (OSError, ValueError) as exc:
+            read_errors.append(exc)
+
+    reader = None
+    started = False
+    try:
+        reader = threading.Thread(target=read_output, daemon=True)
+        deadline = time.monotonic() + _PROBE_TIMEOUT_SECONDS
+        reader.start()
+        started = True
+        process.wait(timeout=max(0, deadline - time.monotonic()))
+        reader.join(timeout=max(0, deadline - time.monotonic()))
+        if reader.is_alive():
+            raise subprocess.TimeoutExpired(command, _PROBE_TIMEOUT_SECONDS)
+    except BaseException:
+        try:
+            kill_if_running()
+        finally:
+            process.wait()
+            if started:
+                # A descendant can inherit stdout; do not wait indefinitely for it.
+                reader.join(timeout=1)
+            elif process.stdout is not None:
+                process.stdout.close()
+        raise
+    if overflow.is_set():
+        raise ValueError('probe output exceeded size limit')
+    if read_errors:
+        raise OSError('cannot read probe output') from read_errors[0]
+    if process.returncode:
+        raise subprocess.CalledProcessError(process.returncode, command)
+    return json.loads(output)
 
 
 def _video_packet_end(path: Path, stream: dict, start: Fraction, end: Fraction) -> Fraction:
