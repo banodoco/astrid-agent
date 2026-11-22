@@ -1231,6 +1231,15 @@ def prepare_remotion_validation(**kwargs: Any) -> dict[str, str]:
             error.validation_evidence_error = type(persistence).__name__
         raise
 
+def _context_differences(expected: Any, actual: Any, prefix: str = "") -> list[str]:
+    """Identify changed context fields without exposing their values."""
+    if isinstance(expected, dict) and isinstance(actual, dict):
+        return [field for key in sorted(expected.keys() | actual.keys())
+                for field in _context_differences(expected.get(key), actual.get(key),
+                                                  f"{prefix}.{key}" if prefix else key)]
+    return [prefix] if expected != actual else []
+
+
 def _validated_runtime(project_dir: Path, *, environment: Mapping[str, str] | None = None,
                        python_executable: str | None = None) -> dict[str, Any]:
     ensure_remotion_validation()
@@ -1263,8 +1272,14 @@ def _validated_runtime(project_dir: Path, *, environment: Mapping[str, str] | No
             raise RemotionValidationError("runtime validation launch/source differs")
         matches = [item for item in artifact['contexts'][role]['variants'] if item['context'] == context]
         if len(matches) != 1:
+            differences = [_context_differences(item.get('context'), context)
+                           for item in artifact['contexts'][role]['variants']]
+            fields = min(differences, key=len) if differences else []
+            detail = ", ".join(fields[:8]) if fields else "validated context or role"
+            if len(fields) > 8:
+                detail += ", …"
             raise RemotionValidationError(
-                "runtime validation consumer context differs: this process's environment was not validated at "
+                f"runtime validation consumer context differs in {detail}: this process's environment was not validated at "
                 "launch (only the host and Remotion-capable capability workers are)")
         entry = matches[0]
         if python_executable is None:
