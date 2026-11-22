@@ -715,7 +715,7 @@ def test_generated_runtime_attempt_settlement_round_trip(monkeypatch: pytest.Mon
     calls: list[tuple[str, dict[str, Any], str]] = []
 
     class Generated:
-        def __init__(self, _endpoint: str, _token: str) -> None:
+        def __init__(self, _endpoint: str, _token: str, *, timeout: float = 30.0) -> None:
             pass
 
         def settle_attempt(self, attempt_id: str, settlement: dict[str, Any], *, idempotency_key: str) -> dict[str, Any]:
