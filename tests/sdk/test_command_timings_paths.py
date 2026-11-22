@@ -41,8 +41,7 @@ def test_timeline_gateway_json_includes_timings(connected, monkeypatch, capsys):
     assert code == 0, captured.err
     payload = json.loads(captured.out)
     assert payload["ok"] is True
-    assert payload["timings"]
-    assert all(row["seconds"] >= 0 for row in payload["timings"])
+    assert "timings" not in payload
 
 
 def test_nested_waiting_names_only_innermost_stage_and_does_not_double_count(capsys):
@@ -90,7 +89,7 @@ def test_timeline_gateway_edit_reports_accepted_commit_and_timings(connected, mo
     assert code == 0, captured.err
     implicit_json = json.loads(captured.out)
     assert implicit_json["ok"] is True
-    assert implicit_json["timings"]
+    assert "timings" not in implicit_json
 
 
 def test_generation_refusal_is_immediate_with_timings(monkeypatch, capsys):
