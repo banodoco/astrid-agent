@@ -506,6 +506,21 @@ def element_schema(element: str) -> dict[str, Any]:
             aliases = clip_type_aliases({key: value.metadata for key, value in effects.items()})
             resolved = aliases.get(element)
             candidates = [effects[resolved]] if resolved in effects else []
+        if not candidates:
+            # A pack may have been installed after this process first populated
+            # the registry cache. Retry discovery once on a miss so callers can
+            # use it immediately; a second miss follows the usual refusal path.
+            from astrid.core.element.registry import clear_default_registry_cache
+
+            clear_default_registry_cache()
+            registry = load_default_registry()
+            effects = {item.id: item for item in registry.list(kind="effects")}
+            candidates = ([effects[element]] if element in effects else
+                          [item for item in registry.list() if item.id == element])
+            if not candidates:
+                aliases = clip_type_aliases({key: value.metadata for key, value in effects.items()})
+                resolved = aliases.get(element)
+                candidates = [effects[resolved]] if resolved in effects else []
     except Exception as exc:  # noqa: BLE001 - an unreadable corpus refuses; it never means "schema-less"
         moved = moved_element_pack(element)
         fix = "Run `astrid doctor` to find the pack that breaks the registry."
