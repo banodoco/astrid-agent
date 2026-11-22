@@ -34,6 +34,7 @@ from .core import (
 )
 from .custody import operation, stopped_custody
 from .launcher import publish_runtime_runner
+from .backend import open_astrid_browser
 from .service import installer_lock_path, pinokio_lock_paths, pinokio_owned
 
 # Run with the Version's interpreter in isolated mode. Backend.stage installs
@@ -625,5 +626,6 @@ def update_pinokio(root: Path, backend, manifest: dict, *, lifecycle=None, say=p
         # The release this run activated: the receipt's target, whatever the manifest defaulted to.
         assert prepared is not None
         outcomes["release"] = prepared.release
-        say("Astrid is updated and running.")
+        say("Astrid is updated. If you had Astrid open in a browser tab, reload or close it.")
+        open_astrid_browser("https://astrid.haus/?connect=1")
         return outcomes

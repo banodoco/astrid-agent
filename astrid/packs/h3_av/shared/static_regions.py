@@ -42,7 +42,7 @@ def _png(image: Image.Image) -> bytes:
     return output.getvalue()
 
 
-def _image_pixels(path: Path, name: str, width: int, height: int, threshold: int | None) -> bytes:
+def _image_pixels(path: Path, name: str, width: int, height: int, threshold: int | None, *, scale: bool = False) -> bytes:
     # The shared probe recognises image masks and rejects malformed files. Do
     # not pass video through iter_mask_frames: this resolver is still-only, and
     # decoding directly avoids conversion or resizing before binary validation.
@@ -56,8 +56,9 @@ def _image_pixels(path: Path, name: str, width: int, height: int, threshold: int
         with Image.open(path) as image:
             if image.format not in {"BMP", "JPEG", "PNG", "TIFF", "WEBP"} or getattr(image, "n_frames", 1) != 1:
                 _fail("unsupported_image", "Unsupported or animated mask image", "mask_asset", "Supply a supported single-frame image")
-            if image.size != (width, height):
+            if not scale and image.size != (width, height):
                 _fail("image_size", f"Mask image is {image.width}x{image.height}; expected {width}x{height}", "mask_asset", "Supply a mask matching the source dimensions")
+            image_size = image.size
             if image.getexif().get(274, 1) != 1:
                 _fail("unsupported_image", "Mask orientation metadata is unsupported", "mask_asset", "Supply an image with normal orientation")
             # Alpha, palette, high-bit-depth and color masks have ambiguous
@@ -78,8 +79,11 @@ def _image_pixels(path: Path, name: str, width: int, height: int, threshold: int
     if threshold is None:
         if not set(pixels) <= {0, 255}:
             _fail("non_binary", "Mask contains values other than 0 and 255", "mask_asset", "Supply a binary mask or an explicit threshold")
-        return pixels
-    return bytes(255 if value >= threshold else 0 for value in pixels)
+    else:
+        pixels = bytes(255 if value >= threshold else 0 for value in pixels)
+    if scale and image_size != (width, height):
+        pixels = Image.frombytes("L", image_size, pixels).resize((width, height), Image.Resampling.NEAREST).tobytes()
+    return pixels
 
 
 def resolve_static_region(
@@ -90,8 +94,13 @@ def resolve_static_region(
     assets: Mapping[str, str | Path] | None = None,
     polarity: str | None = None,
     threshold: int | None = None,
+    authored_canvas: bool = False,
 ) -> StaticRegion:
-    """Resolve a Region at source dimensions without resampling.
+    """Resolve a Region to binary pixels at the target dimensions.
+
+    By default, preserve the legacy direct-call contract: boxes use the target
+    canvas and image sizes must match. authored_canvas enables authored box
+    scaling and nearest-neighbour resampling of validated still masks.
 
     Image assets require explicit black-preserve/white-edit polarity; the three
     aliases accepted by the v2 normalizer have the same meaning. A threshold,
@@ -115,7 +124,7 @@ def resolve_static_region(
             path = Path(assets[region.mask_asset])
         except (TypeError, ValueError):
             _fail("asset", "Mask asset path is invalid", "mask_asset", "Provide a valid image path")
-        pixels = _image_pixels(path, region.mask_asset, width, height, threshold)
+        pixels = _image_pixels(path, region.mask_asset, width, height, threshold, scale=authored_canvas)
     else:
         if polarity is not None or threshold is not None:
             _fail("selector", "Image polarity and threshold cannot be applied to a box", "region", "Remove image options from the box")
@@ -123,10 +132,14 @@ def resolve_static_region(
         if not isinstance(box, (tuple, list)) or len(box) != 4 or any(type(n) not in (int, float) or not math.isfinite(n) for n in box):
             _fail("box", "Box must contain four finite numbers", "box", "Supply [x, y, width, height]")
         x, y, w, h = box
-        if x < 0 or y < 0 or w <= 0 or h <= 0 or x + w > width or y + h > height:
+        canvas = (region.canvas or (1024, 576)) if authored_canvas else (width, height)
+        if not isinstance(canvas, (tuple, list)) or len(canvas) != 2 or any(type(n) is not int or n <= 0 for n in canvas):
+            _fail("canvas", "Canvas must contain two positive integers", "canvas", "Supply the authored width and height")
+        canvas_w, canvas_h = canvas
+        if x < 0 or y < 0 or w <= 0 or h <= 0 or x + w > canvas_w or y + h > canvas_h:
             _fail("box", "Box must have positive size and fit inside the frame", "box", "Correct the pixel coordinates")
-        left, top = max(0, math.ceil(x - 0.5)), max(0, math.ceil(y - 0.5))
-        right, bottom = min(width, math.ceil(x + w - 0.5)), min(height, math.ceil(y + h - 0.5))
+        left, top = max(0, math.ceil(x * width / canvas_w - 0.5)), max(0, math.ceil(y * height / canvas_h - 0.5))
+        right, bottom = min(width, math.ceil((x + w) * width / canvas_w - 0.5)), min(height, math.ceil((y + h) * height / canvas_h - 0.5))
         data = bytearray(width * height)
         for row in range(top, bottom):
             data[row * width + left:row * width + right] = b"\xff" * (right - left)

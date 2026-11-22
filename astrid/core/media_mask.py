@@ -1,4 +1,4 @@
-"""Create binary edit masks and preview them in the H3 working frame."""
+"""Create binary edit masks and preview them in the working frame."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from typing import Any
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageOps, PngImagePlugin
 
 from astrid.core.media_crop import _failure, _kind_for
-from astrid.packs.h3_av.shared.conform import _probe, fill_filter
+from astrid.core.media_framing import fill_filter, probe_streams
 from astrid.sdk.contracts import DomainResult
 from astrid.sdk.exceptions import ServiceError
 
@@ -59,8 +59,10 @@ def build_mask(
     width, height = size
     image = Image.new("L", size)
     draw = ImageDraw.Draw(image)
+    ellipse_recipe: list[list[float]] = []
+    box_recipe: list[list[int]] = []
     recipe = {"name": name, "size": list(size), "grow": grow, "invert": invert,
-              "ellipses": [], "boxes": []}
+              "ellipses": ellipse_recipe, "boxes": box_recipe}
     for raw in ellipses:
         shape = _numbers(raw, (4, 5), "--ellipse CX,CY,RX,RY[,ROT_DEG]")
         if len(shape) == 4:
@@ -75,7 +77,7 @@ def build_mask(
             raise ValueError("ellipse is outside the working frame")
         # Beyond the frame diagonal, the grown ellipse already covers the canvas.
         draw.polygon(_ellipse_points(shape, min(grow, max(size) * 2)), fill=255)
-        recipe["ellipses"].append(shape)
+        ellipse_recipe.append(shape)
     for raw in boxes:
         try:
             x, y, w, h = (int(part) for part in raw.split(","))
@@ -87,7 +89,7 @@ def build_mask(
             raise ValueError("box is outside the working frame")
         draw.rectangle((max(0, x - grow), max(0, y - grow),
                         min(width - 1, x + w + grow - 1), min(height - 1, y + h + grow - 1)), fill=255)
-        recipe["boxes"].append([x, y, w, h])
+        box_recipe.append([x, y, w, h])
     return (ImageOps.invert(image) if invert else image), recipe
 
 
@@ -151,7 +153,7 @@ def _fitted_frame(path: Path, seconds: float, size: tuple[int, int], *, square_d
 
 
 def _preview(path: Path, kind: str, mask: Image.Image, span: str | None, samples: int) -> dict:
-    info = _probe(path)
+    info = probe_streams(path)
     stream = next((s for s in info.get("streams", []) if s.get("codec_type") == "video"), None)
     if stream is None:
         raise ValueError("--preview-on requires an image or video")

@@ -120,7 +120,7 @@ class GenerationReadinessError(AstridError, ValueError):
             recovery = issue['details'].get('fix') or recovery
         super().__init__(issue['message'], code=issue['code'],
                          field=issue['details'].get('field'),
-                         recovery_command=recovery,
+                         recovery_command=recovery, fix=issue['details'].get('fix'),
                          state_snapshot={'readiness': self.readiness})
 
     def to_envelope(self) -> dict[str, Any]:
@@ -139,6 +139,12 @@ def generation_error(error: Any, *, entry=None, target=None, code=None,
     readiness = getattr(error, 'readiness', None)
     if isinstance(readiness, dict):
         return GenerationReadinessError(readiness, task_id=task_id)
+    if callable(getattr(error, 'astrid_error_fields', None)):
+        from astrid.core.contracts.errors import coerce_astrid_error
+
+        error = coerce_astrid_error(error)
+        if error.fix:
+            details = {'fix': error.fix, **(details or {})}
     get = error.get if isinstance(error, Mapping) else lambda key, default=None: getattr(error, key, default)
     category = get('category') or get('sdk_category')
     native = code or get('code') or {

@@ -129,3 +129,464 @@ def test_grayscale_rgb_is_supported(tmp_path):
 def test_missing_asset_and_invalid_dimensions_are_coded():
     _assert_error("asset", lambda: resolve_static_region(Region("r", mask_asset="missing"), width=4, height=3, polarity=POLARITY))
     _assert_error("dimensions", lambda: resolve_static_region(Region("r", box=(0, 0, 1, 1)), width=True, height=3))
+
+
+def test_authored_canvas_box_scales_edges_with_ties_down():
+    result = resolve_static_region(Region("r", box=(1, 0, 2, 2), canvas=(8, 4)), width=4, height=2, authored_canvas=True)
+    assert _pixels(result.mask_png)[2] == [255, 0, 0, 0, 0, 0, 0, 0]
+
+
+def test_authored_canvas_image_resamples_after_validation(tmp_path):
+    path = _save(tmp_path, "L", [0, 255, 255, 0], size=(2, 2))
+    result = resolve_static_region(Region("r", mask_asset="mask"), width=4, height=2,
+                                   assets={"mask": path}, polarity=POLARITY, authored_canvas=True)
+    assert _pixels(result.mask_png)[2] == [0, 0, 255, 255, 255, 255, 0, 0]
+
+
+def test_authored_box_scales_to_non_16_9_canvas():
+    result = resolve_static_region(Region("landmark", box=(256, 144, 256, 144)), width=768, height=448, authored_canvas=True)
+    _, size, pixels = _pixels(result.mask_png)
+    assert size == (768, 448)
+    assert sum(pixel == 255 for pixel in pixels) == 192 * 112
+    assert pixels[112 * 768 + 192] == 255
+    assert pixels[111 * 768 + 192] == 0
+    assert pixels[112 * 768 + 384] == 0
+
+
+def test_sampler_strength_mask_uses_requested_dimensions(tmp_path):
+    from astrid.packs.h3_av.shared.compile import _combined_strength_mask
+    from astrid.packs.h3_av.shared.compose import iter_mask_frames
+
+    a = tmp_path / "a.png"
+    b = tmp_path / "b.png"
+    image = Image.new("L", (32, 32), 0)
+    for y in (7, 8):
+        for x in (7, 8):
+            image.putpixel((x, y), 255)
+    image.save(a)
+    image.save(b)
+    path = _combined_strength_mask([(a, "image", (0, 2), 0.25, "a"),
+                                    (b, "image", (1, 2), 0.75, "b")],
+                                   frames=2, destination=tmp_path, size=(32, 32))
+    frames = list(iter_mask_frames(path, start_frame=0, count=2, width=32, height=32))
+    assert [frame[(7 * 32 + 7) * 3] for frame in frames] == [64, 191]
+    assert all(frame[0] == 0 for frame in frames)
+
+
+def test_compiler_hands_prepared_static_permission_to_composition(tmp_path):
+    import copy
+    from astrid.packs.h3_av.shared.compile import compile_preparation
+    from astrid.packs.h3_av.shared.prepare import _v2_mask_schedule
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from tests.packs.h3_av.test_native_masked_edit import WATERMARK, _prepare
+
+    raw = copy.deepcopy(WATERMARK)
+    raw["media"][0]["edit"][0]["mask"] = {"rectangle": [256, 144, 256, 144]}
+    raw["output"] = {"size": [512, 288]}
+    preparation = _prepare(raw, tmp_path)
+    preparation["mask_schedule"] = _v2_mask_schedule(normalize_request(raw))
+    result = compile_preparation(preparation, out_dir=tmp_path / "compile")
+    change = preparation["mask_schedule"]["video"]["changes"][0]
+    binding = change["prepared_mask_asset"]
+    record = next(item for item in preparation["assets"] if item["asset"] == binding)
+    assert any(item["binding"] == binding for item in result["managed_assets"]["manifest"]["assets"])
+    with Image.open(record["path"]) as mask:
+        assert mask.size == (512, 288)
+        assert mask.getpixel((128, 72)) == 255
+        assert mask.getpixel((127, 72)) == 0
+
+
+def test_compiled_permission_is_used_by_composition_and_verification(tmp_path):
+    from astrid.packs.h3_av.shared.compile import compile_preparation
+    from astrid.packs.h3_av.shared.compose import compose_candidate
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from astrid.packs.h3_av.shared.verify import verify_candidate
+    from tests.packs.h3_av.test_moving_masks import _fixtures
+
+    source, generated = _fixtures(tmp_path)
+    request = normalize_request({
+        "version": 2, "prompt": "Change the rectangle", "duration": 1,
+        "media": [{"id": "source", "asset": "source.mkv", "role": "timeline", "modality": "video",
+                   "at": {"frame": 0}, "range": [0, 1],
+                   "edit": [{"stream": "video", "during": [0, 1],
+                             "mask": {"rectangle": [160, 96, 128, 96]}}]}],
+    })
+    preparation = prepare_request(request, asset_map={"source.mkv": str(source)})
+    compile_preparation(preparation, out_dir=tmp_path / "compiled")
+    composition = compose_candidate(preparation=preparation, generated=generated, source=source, out_dir=tmp_path / "composition")
+    result = verify_candidate(preparation=preparation, composition=composition, source=source)
+    assert result["preservation"]["spatial_complement"][0]["protected_pixel_count_per_frame"] == 1024 * 576 - 128 * 96
+
+
+def test_resized_still_uses_prepared_bytes_after_original_moves(tmp_path):
+    from astrid.packs.h3_av.shared.compile import compile_preparation
+    from astrid.packs.h3_av.shared.compose import compose_candidate
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from astrid.packs.h3_av.shared.verify import verify_candidate
+    from tests.packs.h3_av.test_moving_masks import _fixtures
+
+    source, generated = _fixtures(tmp_path)
+    original = tmp_path / "small.png"
+    image = Image.new("L", (2, 2), 0)
+    image.putpixel((0, 0), 200)
+    image.save(original)
+    request = normalize_request({
+        "version": 2, "prompt": "Change one quadrant", "duration": 1,
+        "media": [{"asset": "source.mkv", "role": "timeline", "modality": "video",
+                   "at": {"frame": 0}, "range": [0, 1],
+                   "edit": [{"stream": "video", "during": [0, 1],
+                             "mask": {"asset": "small.png", "threshold": 128}}]}],
+    })
+    preparation = prepare_request(request, asset_map={"source.mkv": str(source), "small.png": str(original)})
+    compile_preparation(preparation, out_dir=tmp_path / "compiled")
+    original.rename(tmp_path / "moved-small.png")
+    composition = compose_candidate(preparation=preparation, generated=generated, source=source, out_dir=tmp_path / "composition")
+    result = verify_candidate(preparation=preparation, composition=composition, source=source)
+    assert result["preservation"]["spatial_complement"][0]["protected_pixel_count_per_frame"] == 1024 * 576 * 3 // 4
+
+
+def test_managed_permission_survives_compile_scratch_move_through_hooks(tmp_path):
+    import importlib.util
+    import json
+    from pathlib import Path
+    from astrid.core.generation.engine_facts import comfyui_facts
+    from tests.packs.h3_av.test_moving_masks import _fixtures
+
+    source, generated = _fixtures(tmp_path)
+    original = tmp_path / "small.png"
+    image = Image.new("L", (2, 2), 0)
+    image.putpixel((0, 0), 255)
+    image.save(original)
+    document = {"version": 2, "prompt": "Change one quadrant", "duration": 1,
+                "media": [{"asset": "source", "role": "timeline", "modality": "video",
+                           "at": {"frame": 0}, "range": [0, 1],
+                           "edit": [{"stream": "video", "during": [0, 1], "mask": {"asset": "mask"}}]}]}
+    request_file = tmp_path / "request.json"
+    request_file.write_text(json.dumps(document))
+    hook_path = Path(__file__).parents[3] / "astrid/packs/h3_av/extensions/vibecomfy.workflows/hooks.py"
+    spec = importlib.util.spec_from_file_location("h3_ds3_test_hooks", hook_path)
+    hooks = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hooks)
+    job = tmp_path / "job"
+    hooks.build({"request": str(request_file), "asset_map": {"source": str(source), "mask": str(original)}}, {}, job, engine=comfyui_facts())
+    (job / "h3" / "plan" / "compile").rename(tmp_path / "old-compile")
+    original.rename(tmp_path / "old-mask.png")
+    outputs = hooks.after_outputs(job, {}, {}, [str(generated)], engine=comfyui_facts())
+    assert Path(outputs[0]).is_file()
+    result = json.loads((job / "h3" / "verify.json").read_text())
+    assert result["status"] == "verified"
+    assert result["preservation"]["spatial_complement"][0]["protected_pixel_count_per_frame"] == 1024 * 576 * 3 // 4
+
+
+def test_zero_strength_does_not_shift_prepared_grant_binding(tmp_path):
+    import copy
+    from astrid.packs.h3_av.shared.compile import compile_preparation
+    from astrid.packs.h3_av.shared.prepare import _v2_mask_schedule
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from tests.packs.h3_av.test_native_masked_edit import WATERMARK, _prepare
+
+    raw = copy.deepcopy(WATERMARK)
+    raw["media"][0]["edit"] = [
+        {"stream": "video", "during": [0, 12], "strength": 0, "mask": {"rectangle": [0, 0, 64, 64]}},
+        {"stream": "video", "during": [0, 12], "strength": 1, "mask": {"rectangle": [512, 288, 128, 128]}},
+    ]
+    preparation = _prepare(raw, tmp_path)
+    preparation["mask_schedule"] = _v2_mask_schedule(normalize_request(raw))
+    compile_preparation(preparation, out_dir=tmp_path / "compile")
+    changes = preparation["mask_schedule"]["video"]["changes"]
+    assert len(changes) == 1 and changes[0]["index"] == 1
+    record = next(row for row in preparation["assets"] if row["asset"] == changes[0]["prepared_mask_asset"])
+    with Image.open(record["path"]) as mask:
+        assert mask.getpixel((512, 288)) == 255 and mask.getpixel((0, 0)) == 0
+
+
+@pytest.mark.parametrize("offset", [0, 1])
+def test_prepared_permission_verifies_each_source_offset(tmp_path, offset):
+    import subprocess
+    from astrid.packs.h3_av.shared.compile import compile_preparation
+    from astrid.packs.h3_av.shared.compose import compose_candidate
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from astrid.packs.h3_av.shared.verify import verify_candidate
+    from tests.packs.h3_av.test_moving_masks import _fixtures
+
+    _, generated = _fixtures(tmp_path)
+    source = tmp_path / f"source-{offset}.mkv"
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-f", "lavfi", "-i", "testsrc2=size=1024x576:rate=24:duration=2",
+                    "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=2",
+                    "-c:v", "ffv1", "-c:a", "pcm_s16le", str(source)], check=True, capture_output=True)
+    request = normalize_request({"version": 2, "prompt": "Edit the box", "duration": 1,
+        "media": [{"asset": "source", "role": "timeline", "modality": "video", "at": {"frame": 0},
+                   "range": [offset, offset + 1], "edit": [{"stream": "video", "during": [0, 1],
+                   "mask": {"rectangle": [128, 96, 128, 96]}}]}]})
+    preparation = prepare_request(request, asset_map={"source": str(source)})
+    compile_preparation(preparation, out_dir=tmp_path / "compiled")
+    composition = compose_candidate(preparation=preparation, generated=generated, source=source, out_dir=tmp_path / "composition")
+    evidence = verify_candidate(preparation=preparation, composition=composition, source=source)["preservation"]["spatial_complement"]
+    assert evidence[0]["protected_pixel_count_per_frame"] == 1024 * 576 - 128 * 96
+    assert evidence[0]["max_abs_channel_difference"] == 0
+
+
+def test_nonempty_grant_vanishing_on_target_grid_names_grant(tmp_path):
+    from astrid.packs.h3_av.shared.compile import _combined_strength_mask
+    from astrid.packs.h3_av.shared.errors import CompilationError
+
+    mask = Image.new("L", (32, 32), 0)
+    mask.putpixel((0, 0), 255)
+    path = tmp_path / "tiny.png"
+    mask.save(path)
+    with pytest.raises(CompilationError, match="mouth.*vanishes"):
+        _combined_strength_mask([(path, "image", (0, 1), 0.75, "mouth")], frames=1, destination=tmp_path, size=(32, 32))
+
+
+def test_recompile_permission_with_authored_binding_collision(tmp_path):
+    import copy
+    from astrid.packs.h3_av.shared.compile import compile_preparation
+    from astrid.packs.h3_av.shared.prepare import _v2_mask_schedule
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from tests.packs.h3_av.test_native_masked_edit import WATERMARK, _prepare
+
+    raw = copy.deepcopy(WATERMARK)
+    raw["media"][0]["edit"][0]["mask"] = {"rectangle": [0, 0, 128, 128]}
+    preparation = _prepare(raw, tmp_path)
+    preparation["mask_schedule"] = _v2_mask_schedule(normalize_request(raw))
+    authored = dict(preparation["assets"][0], asset="permission_mask_0")
+    preparation["assets"].append(authored)
+    first = compile_preparation(preparation, out_dir=tmp_path / "first")
+    change = preparation["mask_schedule"]["video"]["changes"][0]
+    asset_id = change["prepared_mask_asset"]
+    assert asset_id != "permission_mask_0"
+    first_hash = next(r["sha256"] for r in preparation["assets"] if r["asset"] == asset_id)
+    second = compile_preparation(preparation, out_dir=tmp_path / "second")
+    assert change["prepared_mask_asset"] == asset_id
+    assert [r for r in preparation["assets"] if r["asset"] == "permission_mask_0"] == [authored]
+    derived = [r for r in preparation["assets"] if r["asset"] == asset_id]
+    assert len(derived) == 1 and derived[0]["sha256"] == first_hash
+    assert first["managed_assets"]["manifest"] == second["managed_assets"]["manifest"]
+
+
+def test_permission_handoff_survives_failed_recompile_and_retry(tmp_path):
+    import copy
+    from pathlib import Path
+    from astrid.packs.h3_av.shared.compile import compile_preparation
+    from astrid.packs.h3_av.shared.prepare import _v2_mask_schedule
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from tests.packs.h3_av.test_native_masked_edit import WATERMARK, _prepare
+
+    raw = copy.deepcopy(WATERMARK)
+    raw["media"][0]["edit"][0]["mask"] = {"rectangle": [0, 0, 128, 128]}
+    preparation = _prepare(raw, tmp_path)
+    preparation["mask_schedule"] = _v2_mask_schedule(normalize_request(raw))
+    compile_preparation(preparation, out_dir=tmp_path / "first")
+    before = copy.deepcopy(preparation)
+    blocked = tmp_path / "blocked"
+    (blocked / "permission_mask_0.png").mkdir(parents=True)
+    with pytest.raises(OSError):
+        compile_preparation(preparation, out_dir=blocked)
+    assert preparation == before
+    compile_preparation(preparation, out_dir=tmp_path / "retry")
+    change = preparation["mask_schedule"]["video"]["changes"][0]
+    derived = [row for row in preparation["assets"] if row["asset"] == change["prepared_mask_asset"]]
+    assert len(derived) == 1
+    assert Path(derived[0]["path"]).parent == tmp_path / "retry"
+    assert Path(derived[0]["path"]).is_file()
+
+
+def test_same_directory_failed_permission_write_preserves_handoff(tmp_path, monkeypatch):
+    import copy
+    import tempfile
+    from pathlib import Path
+    from astrid.packs.h3_av.shared.compile import compile_preparation
+    from astrid.packs.h3_av.shared.prepare import _v2_mask_schedule
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from tests.packs.h3_av.test_native_masked_edit import WATERMARK, _prepare
+
+    raw = copy.deepcopy(WATERMARK)
+    raw["media"][0]["edit"][0]["mask"] = {"rectangle": [0, 0, 128, 128]}
+    preparation = _prepare(raw, tmp_path)
+    preparation["mask_schedule"] = _v2_mask_schedule(normalize_request(raw))
+    destination = tmp_path / "compile"
+    compile_preparation(preparation, out_dir=destination)
+    before = copy.deepcopy(preparation)
+    asset_id = before["mask_schedule"]["video"]["changes"][0]["prepared_mask_asset"]
+    old_path = Path(next(row["path"] for row in before["assets"] if row["asset"] == asset_id))
+    old_bytes = old_path.read_bytes()
+    real_tempfile = tempfile.NamedTemporaryFile
+
+    def failed_write(*args, **kwargs):
+        wrapped = real_tempfile(*args, **kwargs)
+        class Failure:
+            def __enter__(self):
+                self.handle = wrapped.__enter__()
+                self.name = self.handle.name
+                return self
+            def write(self, data):
+                self.handle.write(data[:10])
+                raise OSError("injected short write")
+            def __exit__(self, *args):
+                return wrapped.__exit__(*args)
+        return Failure()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(tempfile, "NamedTemporaryFile", failed_write)
+        with pytest.raises(OSError, match="injected short write"):
+            compile_preparation(preparation, out_dir=destination)
+    assert preparation == before
+    assert old_path.read_bytes() == old_bytes
+    compile_preparation(preparation, out_dir=destination)
+    assert old_path.read_bytes() == old_bytes
+    assert preparation["mask_schedule"]["video"]["changes"][0]["prepared_mask_asset"] == asset_id
+
+
+def test_failed_second_permission_cleans_new_files_and_preserves_previous(tmp_path, monkeypatch):
+    import copy
+    import os
+    from pathlib import Path
+    from astrid.packs.h3_av.shared.compile import compile_preparation
+    from astrid.packs.h3_av.shared.prepare import _v2_mask_schedule
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from tests.packs.h3_av.test_native_masked_edit import WATERMARK, _prepare
+
+    raw = copy.deepcopy(WATERMARK)
+    raw["media"][0]["edit"] = [
+        {"stream": "video", "during": [0, 12], "mask": {"rectangle": [0, 0, 128, 128]}},
+        {"stream": "video", "during": [0, 12], "mask": {"rectangle": [256, 0, 128, 128]}},
+    ]
+    preparation = _prepare(raw, tmp_path)
+    preparation["mask_schedule"] = _v2_mask_schedule(normalize_request(raw))
+    destination = tmp_path / "compile"
+    compile_preparation(preparation, out_dir=destination)
+    before = copy.deepcopy(preparation)
+    previous = {Path(row["path"]): Path(row["path"]).read_bytes() for row in before["assets"]
+                if row.get("binding", "").startswith("permission_mask_")}
+    assert len(previous) == 2
+    real_replace = os.replace
+    calls = 0
+
+    def fail_second(source, target):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("injected second publication failure")
+        return real_replace(source, target)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "replace", fail_second)
+        with pytest.raises(OSError, match="second publication"):
+            compile_preparation(preparation, out_dir=destination)
+    assert preparation == before
+    assert {path: path.read_bytes() for path in previous} == previous
+    assert set(destination.glob("permission_mask_*.png")) == set(previous)
+    assert not list(destination.glob(".permission_mask_*-*"))
+    compile_preparation(preparation, out_dir=destination)
+    assert all(path.read_bytes() == content for path, content in previous.items())
+
+
+@pytest.mark.parametrize("kind", ["box", "still"])
+def test_planner_preview_and_saved_preparation_match_compiled_permission(tmp_path, kind):
+    import json
+    from pathlib import Path
+    from astrid.packs.h3_av.shared.planner import plan_request
+    from astrid.packs.h3_av.shared.request import normalize_request
+    from tests.packs.h3_av.test_moving_masks import _fixtures
+
+    source, _ = _fixtures(tmp_path)
+    import subprocess
+    resized = tmp_path / "resized.mkv"
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(source),
+                    "-vf", "scale=512:288", "-c:v", "ffv1", "-c:a", "copy", str(resized)],
+                   check=True, capture_output=True)
+    source = resized
+    assets = {"source": str(source)}
+    if kind == "box":
+        mask = {"rectangle": [256, 144, 256, 144]}
+    else:
+        path = tmp_path / "small.png"
+        image = Image.new("L", (2, 2), 0)
+        image.putpixel((0, 0), 200)
+        image.save(path)
+        assets["mask"] = str(path)
+        mask = {"asset": "mask", "threshold": 128}
+    request = normalize_request({"version": 2, "prompt": "Edit", "duration": 1,
+        "output": {"size": [512, 288]},
+        "media": [{"asset": "source", "role": "timeline", "modality": "video",
+                   "at": {"frame": 0}, "range": [0, 1],
+                   "edit": [{"stream": "video", "during": [0, 1], "mask": mask}]}]})
+    plan = plan_request(request, asset_map=assets, out_dir=tmp_path / "plan")
+    assert plan["compilation"]["status"] == "compiled"
+    saved = json.loads(Path(plan["preparation_path"]).read_text())
+    binding = saved["mask_schedule"]["video"]["changes"][0]["prepared_mask_asset"]
+    prepared = next(row["path"] for row in saved["assets"] if row["asset"] == binding)
+    with Image.open(prepared) as compiled, Image.open(plan["bindings"]["regions"][0]["mask"]) as preview:
+        assert compiled.size == preview.size == (512, 288)
+        assert list(compiled.getdata()) == list(preview.getdata())
+        assert compiled.getpixel((128, 72) if kind == "box" else (0, 0)) == 255
+
+
+@pytest.mark.parametrize("target,mask", [
+    ((512, 288), {"rectangle": [32, 32, 64, 64]}),
+    ((1024, 576), {"rectangle": [32, 32, 64, 64], "canvas": [512, 288]}),
+    ((512, 288), {"asset": "mask"}),
+    ((1024, 576), {"asset": "mask", "threshold": 128}),
+])
+def test_legacy_unprepared_static_permission_fails_closed(tmp_path, target, mask):
+    from astrid.packs.h3_av.shared.compose import CompositionError, compose_candidate
+    from astrid.packs.h3_av.shared.verify import VerificationError, verify_candidate
+
+    path = tmp_path / "mask.png"
+    Image.new("L", (1024, 576), 255).save(path)
+    preparation = {"status": "prepared", "media": {"width": target[0], "height": target[1]},
+                   "assets": [{"asset": "mask", "status": "resolved", "path": str(path)}],
+                   "mask_schedule": {"video": {"changes": [{"action": "generate", "area": mask}]}}}
+    with pytest.raises(CompositionError, match="requires a compiled mask"):
+        compose_candidate(preparation=preparation, generated=path, out_dir=tmp_path / "out")
+    with pytest.raises(VerificationError, match="requires a compiled mask"):
+        verify_candidate(preparation=preparation, composition={"status": "composed"})
+
+
+def test_legacy_equivalent_static_permissions_remain_accepted(tmp_path):
+    from astrid.packs.h3_av.shared.compose import _guard_unprepared_static_permissions
+
+    path = tmp_path / "mask.png"
+    Image.new("L", (1024, 576), 255).save(path)
+    preparation = {"media": {"width": 1024, "height": 576},
+                   "assets": [{"asset": "mask", "status": "resolved", "path": str(path)}],
+                   "mask_schedule": {"video": {"changes": [
+                       {"action": "generate", "area": {"rectangle": [32, 32, 64, 64]}},
+                       {"action": "generate", "area": {"asset": "mask"}},
+                   ]}}}
+    _guard_unprepared_static_permissions(preparation)
+
+
+def test_legacy_moving_mask_remains_accepted_on_nondefault_canvas(tmp_path):
+    import subprocess
+    from astrid.packs.h3_av.shared.compose import _guard_unprepared_static_permissions
+
+    path = tmp_path / "mask.mkv"
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "color=white:size=512x288:rate=24:duration=1", "-c:v", "ffv1", str(path)],
+                   check=True, capture_output=True)
+    preparation = {"media": {"width": 512, "height": 288},
+                   "assets": [{"asset": "mask", "status": "resolved", "path": str(path)}],
+                   "mask_schedule": {"video": {"changes": [
+                       {"action": "generate", "area": {"asset": "mask"}}]}}}
+    _guard_unprepared_static_permissions(preparation)
+
+
+def test_legacy_partial_gray_still_fails_closed(tmp_path):
+    from astrid.packs.h3_av.shared.compose import CompositionError, compose_candidate
+    from astrid.packs.h3_av.shared.verify import VerificationError, verify_candidate
+
+    path = tmp_path / "gray.png"
+    Image.new("L", (1024, 576), 128).save(path)
+    preparation = {"status": "prepared", "media": {"width": 1024, "height": 576},
+                   "assets": [{"asset": "mask", "status": "resolved", "path": str(path)}],
+                   "mask_schedule": {"video": {"changes": [
+                       {"action": "generate", "area": {"asset": "mask"}}]}}}
+    with pytest.raises(CompositionError, match="requires a compiled mask"):
+        compose_candidate(preparation=preparation, generated=path, out_dir=tmp_path / "out")
+    with pytest.raises(VerificationError, match="requires a compiled mask"):
+        verify_candidate(preparation=preparation, composition={"status": "composed"})

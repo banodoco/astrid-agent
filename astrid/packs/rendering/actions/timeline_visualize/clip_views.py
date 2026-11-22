@@ -423,8 +423,8 @@ def region_strip_page(*, title: str, what: str, sub: Sequence[str], frames: Sequ
     against a fixed line."""
     from .layers.base import PALETTE, draw_text
 
-    x0, y0, x1, y1 = box
-    w, h = x1 - x0, y1 - y0
+    x0, _, x1, _ = box
+    w = x1 - x0
     crops = []
     for frame in frames:
         crop = _crop_at_canvas(frame, box, canvas)

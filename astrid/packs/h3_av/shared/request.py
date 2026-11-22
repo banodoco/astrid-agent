@@ -322,9 +322,11 @@ def _normalize_v1(raw: Mapping[str, Any]) -> H3Request:
         overrides["guidance"] = _number(overrides_raw["guidance"], "overrides.guidance", minimum=0)
 
     for name in ("turbo_lora", "scheduler"):
-        if name in overrides_raw: overrides[name] = _nonblank(overrides_raw[name], f"overrides.{name}")
+        if name in overrides_raw:
+            overrides[name] = _nonblank(overrides_raw[name], f"overrides.{name}")
     for name in ("cfg", "video_shift", "audio_shift"):
-        if name in overrides_raw: overrides[name] = _number(overrides_raw[name], f"overrides.{name}", minimum=0)
+        if name in overrides_raw:
+            overrides[name] = _number(overrides_raw[name], f"overrides.{name}", minimum=0)
 
     value = {
         "version": 1,

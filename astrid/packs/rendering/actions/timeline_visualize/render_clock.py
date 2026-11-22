@@ -1,7 +1,7 @@
 """The timeline clock and file-frame mapping of a managed render."""
-from fractions import Fraction
 from collections.abc import Mapping
 from copy import deepcopy
+from fractions import Fraction
 
 
 def normalize_time(value):

@@ -8,16 +8,26 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from astrid.packs.h3_av.shared import compose as compose_module
 from astrid.packs.h3_av.shared.compile import compile_preparation
-from astrid.packs.h3_av.shared.prepare import prepare_request
 from astrid.packs.h3_av.shared.compose import compose_candidate
-from astrid.packs.h3_av.shared.generation import build_generation_workflow, generation_timing
+from astrid.packs.h3_av.shared.generation import (
+    build_generation_workflow,
+    generation_inputs_from_bindings,
+    generation_timing,
+)
+from astrid.packs.h3_av.shared.prepare import prepare_request
 from astrid.packs.h3_av.shared.request import normalize_request
 from tests.packs.h3_av.fixtures.source_fit_start_contract import (
-    TinyTensor, audio_concat_execute, empty_audio_execute, fit_start,
-    image_from_batch, pixel_frames, repeat_image_batch, temporal_shape,
+    TinyTensor,
+    audio_concat_execute,
+    empty_audio_execute,
+    fit_start,
+    image_from_batch,
+    pixel_frames,
+    repeat_image_batch,
+    temporal_shape,
 )
-
 
 SCENARIOS = [
     # request frames, original source start, moving mask
@@ -25,6 +35,22 @@ SCENARIOS = [
     (39, 0.0, False),
     (42, 0.0, True),
 ]
+
+
+def test_video_coverage_estimates_frames_when_probe_reports_only_duration(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        compose_module,
+        "_probe",
+        lambda _path: {
+            "streams": [{"codec_type": "video", "duration": "2", "avg_frame_rate": "24/1"}]
+        },
+    )
+
+    coverage = compose_module._video_coverage(tmp_path / "duration-only.mkv")
+
+    assert coverage["frames"] == 48
+    assert coverage["fps"] == 24
+    assert coverage["duration"] == 2
 
 
 def _decode_video(path: Path, start: float, frames: int) -> np.ndarray:
@@ -314,12 +340,12 @@ def test_next_frame_after_native_boundary_keeps_maximum_internal_tail(tmp_path):
     timing = generation_timing(frames / 24)
     assets, source_frames, source_audio, mask_frames = _assets(
         tmp_path, frames, start=0, moving_mask=False)
-    workflow = build_generation_workflow(
+    workflow = build_generation_workflow(generation_inputs_from_bindings(
         references=[], prompt="Synthetic frame boundary.", frames=timing["raw_frames"],
         model="minimax_h3_ref2va_pruned_int8_convrot.safetensors", steps=8, seed=0,
         masked_edit={"source_binding": "source_video", "mask_binding": "mask_0",
                      "mask_channel": "red", "start_time": 0, "frame_load_cap": frames},
-    )
+    ))
     api = workflow.compile("api", run_inputs={"source_video": assets["source.mkv"],
                                              "mask_0": assets["mask.png"]})
     images, audio, _ = _evaluate_padding_graph(
@@ -329,3 +355,29 @@ def test_next_frame_after_native_boundary_keeps_maximum_internal_tail(tmp_path):
     assert np.array_equal(images[:frames], source_frames)
     assert np.array_equal(images[frames:], np.repeat(source_frames[-1:], 16, axis=0))
     assert audio.shape[-1] == 102900
+
+
+@pytest.mark.ffmpeg
+def test_source_preflight_uses_resolved_canvas_dimensions(tmp_path: Path) -> None:
+    """The v2 source preflight checks the request canvas; v1 keeps its legacy canvas."""
+    source = tmp_path / "source-768x448.mkv"
+    subprocess.run([
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "lavfi", "-i", "testsrc2=s=768x448:r=24:d=2",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100:duration=2",
+        "-c:v", "ffv1", "-pix_fmt", "yuv420p", "-c:a", "pcm_s16le", str(source),
+    ], check=True, capture_output=True, timeout=30)
+    request = normalize_request({
+        "version": 2,
+        "duration": "48/24",
+        "prompt": "Canvas-specific source preflight.",
+        "output": {"size": [768, 448]},
+        "media": [{
+            "id": "source", "asset": "source.mkv", "role": "timeline", "modality": "video",
+            "at": {"frame": 0}, "range": ["0/24", "48/24"],
+        }],
+        "settings": {},
+    })
+    preparation = prepare_request(request, asset_map={"source.mkv": str(source)})
+    assert preparation["media"]["width"] == 768
+    assert preparation["media"]["height"] == 448
