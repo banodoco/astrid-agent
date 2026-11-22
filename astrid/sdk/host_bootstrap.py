@@ -28,7 +28,6 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from runtime_protocol import platform
-from astrid.sdk.lock_wait import acquire_file_lock
 
 from astrid.core.execution.host_log import rotate_if_needed
 from astrid.core.execution.platform_helpers import signal_observed_group
@@ -42,6 +41,7 @@ from astrid.core.generation.vibecomfy_dependency import (
     VibeComfyDependencyError,
     dependency_pythonpath,
 )
+from astrid.sdk.lock_wait import acquire_file_lock
 
 # Pack-host startup has no total-time cap: it waits while the host is alive and
 # making progress (log growth, ready-file change, CPU use) and fails only when

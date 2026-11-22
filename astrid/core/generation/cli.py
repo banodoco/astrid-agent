@@ -9,12 +9,14 @@ import logging
 import sys
 import time
 from contextlib import nullcontext
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
 from astrid.core.generation import cli_shared
 
 _logger = logging.getLogger(__name__)
+_generation_output: ContextVar[Any] = ContextVar('astrid_generation_cli_output', default=None)
 
 # One table of what each generation kind needs at the CLI boundary: its help
 # noun, the SDK keyword that carries its dimensions, whether a video prompt
@@ -39,8 +41,8 @@ def _generate_facade() -> Any:
 
 def _open_client() -> Any:
     """Acquire the Runtime connection at the explicit public CLI boundary."""
-    from astrid.sdk.command_timing import stage
     from astrid.sdk.client import AstridClient
+    from astrid.sdk.command_timing import stage
 
     with stage("Runtime connection"):
         return AstridClient.open_from_launcher()
@@ -66,6 +68,17 @@ def _no_generation_target(target: str, *, repo=None, client=None) -> bool:
     except Exception:  # noqa: BLE001 - an unavailable target probe must leave admission to its owner.
         _logger.debug("Could not settle whether a local generation target is available", exc_info=True)
         return False
+
+
+class _TimingAction(argparse._HelpAction):
+    """A CLI-only store-true option omitted by parser-derived tool schemas."""
+
+    def __init__(self, option_strings, dest, default=False, required=False, help=None):
+        argparse.Action.__init__(self, option_strings, dest, nargs=0, const=True,
+                                 default=default, required=required, help=help)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, self.const)
 
 
 class _Once(argparse.Action):
@@ -249,7 +262,7 @@ def _parser(contextual: dict[str, Any] | None = None) -> _GenerationParser:
                                   "check: judge models against the target's inventory, fetch nothing (local default); "
                                   "trust: accept the workflow's declared models as present on the target, unverified.")
         command.add_argument("--json", action="store_true", help="Print the SDK result as JSON.")
-        command.add_argument("--timings", action="store_true", help="Print command stage timings.")
+        command.add_argument("--timings", action=_TimingAction, help="Print command stage timings.")
         _common_options(command)
         if 'audio_modes' in spec:
             command.add_argument('--resume', action='store_true', help='Resume from the admission receipt.')
@@ -289,7 +302,7 @@ def _parser(contextual: dict[str, Any] | None = None) -> _GenerationParser:
     command.add_argument("--cfg", '--guidance-scale', dest="guidance_scale", action=_Once, type=float)
     command.add_argument("--dry-run", action="store_true")
     command.add_argument("--json", action="store_true")
-    command.add_argument("--timings", action="store_true", help="Print command stage timings.")
+    command.add_argument("--timings", action=_TimingAction, help="Print command stage timings.")
     _common_options(command)
     command = sub.add_parser('align', help='Inspect locked managed assets; apply with explicit user_env consent.')
     selection = command.add_mutually_exclusive_group()
@@ -468,8 +481,9 @@ def _workflow_comfy_url(parsed: argparse.Namespace) -> dict[str, str]:
     return {'comfy_url': url} if url else {}
 
 
-def _workflow_command(parsed: argparse.Namespace) -> int:
+def _workflow_command(parsed: argparse.Namespace, *, output=None) -> int:
     """Route authored workflows through the same target admission as entries."""
+    output = sys.stdout if output is None else output
     from astrid.core.generation import entries
 
     try:
@@ -510,7 +524,7 @@ def _workflow_command(parsed: argparse.Namespace) -> int:
             "modes": description.get("modes"),
             "inputs": description.get("inputs"),
         }
-        print(json.dumps(preview, indent=2, sort_keys=True, default=str))
+        print(json.dumps(preview, indent=2, sort_keys=True, default=str), file=output)
         return 0
     if parsed.as_entry:
         from vibecomfy.entries import import_as_entry
@@ -524,7 +538,7 @@ def _workflow_command(parsed: argparse.Namespace) -> int:
         entry = import_as_entry(path, parsed.as_entry, **({'replace': True} if parsed.replace else {}))
         if parsed.no_run:
             print(json.dumps({'saved': True, 'ran': False, 'entry': parsed.as_entry,
-                              'replaced': bool(parsed.replace)}, indent=2, sort_keys=True))
+                              'replaced': bool(parsed.replace)}, indent=2, sort_keys=True), file=output)
             return 0
     def generate(client=None):
         facade = _generate_facade()
@@ -555,12 +569,13 @@ def _workflow_command(parsed: argparse.Namespace) -> int:
         raise generation_error(getattr(result, 'error', None) or ValueError('Workflow generation failed.'),
                                task_id=getattr(result, 'kernel_task_id', None))
     payload = result.to_dict() if hasattr(result, "to_dict") else result
-    print(json.dumps(payload, indent=2, sort_keys=True))
+    print(json.dumps(payload, indent=2, sort_keys=True), file=output)
     return 0
 
 
-def _job_command(argv: list[str]) -> int:
+def _job_command(argv: list[str], *, output=None) -> int:
     """``generate <entry> --placement local --job FILE --out DIR --json``: the pod-side run."""
+    output = sys.stdout if output is None else output
     parser = _GenerationParser(prog='astrid generate', description='Run one machine job file locally.')
     parser.json_errors = '--json' in argv
     parser.add_argument('entry')
@@ -583,15 +598,17 @@ def _job_command(argv: list[str]) -> int:
     except JobInputError as exc:
         parser.error(str(exc))
     write_progress('done')
-    print(json.dumps(result, indent=2, sort_keys=True, default=str))
+    print(json.dumps(result, indent=2, sort_keys=True, default=str), file=output)
     return 0
 
 
-def _main(argv: list[str]) -> int:
+def _main(argv: list[str], *, output=None) -> int:
     """Parse one request and call its existing public SDK method exactly once."""
+    if output is None:
+        output = _generation_output.get()
     # A media id given as --audio-ref is written to a file that must outlive generation.
     with contextlib.ExitStack() as stack:
-        return _main_request(argv, stack)
+        return _main_request(argv, stack, output=output)
 
 
 def _media_ref_file(parsed, ref: str, stack) -> tuple[str, str]:
@@ -618,9 +635,12 @@ def _media_ref_file(parsed, ref: str, stack) -> tuple[str, str]:
     return str(path), digest
 
 
-def _main_request(argv: list[str], stack) -> int:
+def _main_request(argv: list[str], stack, *, output=None) -> int:
+    output = sys.stdout if output is None else output
     if '--job' in argv:
-        return _job_command(argv)
+        if output is sys.stdout:
+            return _job_command(argv)
+        return _job_command(argv, output=output)
     from astrid.sdk.command_timing import stage
     with stage("argument parsing"):
         parser = _parser(_context_description(argv))
@@ -710,7 +730,9 @@ def _main_request(argv: list[str], stack) -> int:
         print(json.dumps(description, indent=2, sort_keys=True) if parsed.json else _entry_help(description))
         return 0
     if parsed.modality == "workflow":
-        return _workflow_command(parsed)
+        if output is sys.stdout:
+            return _workflow_command(parsed)
+        return _workflow_command(parsed, output=output)
     if parsed.model and parsed.entry and parsed.model != parsed.entry:
         parser.error("--model and --entry select different generation entries")
     if parsed.prompt is not None and not parsed.prompt.strip():
@@ -739,6 +761,7 @@ def _main_request(argv: list[str], stack) -> int:
     discovery = None
     if selector:
         from astrid.sdk.command_timing import timed_call
+
         from .entries import _EntryDiscovery
         discovery = timed_call("entry discovery", _EntryDiscovery)
 
@@ -857,20 +880,20 @@ def _main_request(argv: list[str], stack) -> int:
         # The same run id timelines transcripts import --from-run takes, with the media it transcribed.
         payload = {**payload, 'run_id': transcription_run, **({'media_id': media_id} if media_id else {})}
     if parsed.json or parsed.dry_run or not isinstance(payload, dict):
-        print(json.dumps(payload, indent=2, sort_keys=True))
+        print(json.dumps(payload, indent=2, sort_keys=True), file=output)
     elif parsed.no_wait:
         task_id = payload.get('kernel_task_id') or payload.get('task_id')
-        print(f'task: {task_id}' if task_id else json.dumps(payload, sort_keys=True))
+        print(f'task: {task_id}' if task_id else json.dumps(payload, sort_keys=True), file=output)
     else:
-        print(f"{parsed.modality} generation complete")
+        print(f"{parsed.modality} generation complete", file=output)
         for path in payload.get("image_paths", []):
-            print(path)
+            print(path, file=output)
         if payload.get("run_dir"):
-            print(f"run: {payload['run_dir']}")
+            print(f"run: {payload['run_dir']}", file=output)
         if payload.get('run_id'):
-            print(f"transcription run: {payload['run_id']}")
+            print(f"transcription run: {payload['run_id']}", file=output)
             media = payload.get('media_id') or '<media-id>'
-            print(f"import: astrid timelines transcripts import {media} --project <project> --from-run {payload['run_id']}")
+            print(f"import: astrid timelines transcripts import {media} --project <project> --from-run {payload['run_id']}", file=output)
     return 0
 
 
@@ -958,10 +981,15 @@ def subcommand_names() -> tuple[str, ...]:
 
 
 def main(argv: list[str] | None = None, *, dispatch_marks: tuple[float, float] | None = None) -> int:
+    stdout = sys.stdout
     entry = time.monotonic()
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] not in {"image", "video", "audio", "workflow"} or any(arg in {"-h", "--help"} for arg in argv):
-        return _main_with_errors(argv)
+        token = _generation_output.set(stdout)
+        try:
+            return _main_with_errors(argv)
+        finally:
+            _generation_output.reset(token)
     from astrid.console import startup_marks
     from astrid.sdk.command_timing import TimingCollector, TimingOutput, print_timings, timing_scope
     marks = startup_marks()
@@ -969,17 +997,22 @@ def main(argv: list[str] | None = None, *, dispatch_marks: tuple[float, float] |
         marks = (entry, "command entry", None, None)
     collector = TimingCollector(started=marks[0], startup=(*marks, entry),
                                 startup_child=("dispatch", *dispatch_marks) if dispatch_marks else None)
-    output = contextlib.redirect_stdout(TimingOutput(sys.stdout, collector, include_collector_span=True)) if '--timings' in argv else contextlib.nullcontext()
+    result_output = TimingOutput(stdout, collector, include_collector_span=True) if '--timings' in argv else stdout
+    token = _generation_output.set(result_output)
     try:
-        with timing_scope(collector), output:
+        with timing_scope(collector):
             return _main_with_errors(argv)
     finally:
+        _generation_output.reset(token)
         if '--timings' in argv:
             print_timings(collector.snapshot())
 
 
 def _main_with_errors(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    output = _generation_output.get()
+    if output is None:
+        output = sys.stdout
     from astrid.core.generation.preflight import generation_error
     from astrid.sdk.generation import _NO_MACHINE
     before: set[tuple[str | None, int | None]] = set()
@@ -999,8 +1032,15 @@ def _main_with_errors(argv: list[str] | None = None) -> int:
         if '--dry-run' in argv:
             from astrid.core.pack.discovery import pack_discovery_scope
             scope = pack_discovery_scope()
-        with scope:
-            return _main(argv)
+        token = _generation_output.set(output)
+        try:
+            with scope:
+                # Keep the original one-argument call shape for embedders and
+                # tests that replace _main; the real implementation reads the
+                # captured stream from this context and passes it onward.
+                return _main(argv)
+        finally:
+            _generation_output.reset(token)
     except (RuntimeError, ValueError, OSError, ImportError) as exc:
         if str(exc) == _NO_MACHINE:
             print(str(exc), file=sys.stderr)
@@ -1016,7 +1056,7 @@ def _main_with_errors(argv: list[str] | None = None) -> int:
                 import traceback
                 diagnostic = ''.join(traceback.format_exception(exc, chain=True))
                 print(redact_credential_data(diagnostic), file=sys.stderr, end='')
-            print(json.dumps(error.to_envelope(), indent=2, sort_keys=True))
+            print(json.dumps(error.to_envelope(), indent=2, sort_keys=True), file=output)
             return 2
         raise error from exc
     except BaseException:

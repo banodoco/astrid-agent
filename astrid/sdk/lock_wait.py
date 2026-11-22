@@ -5,6 +5,7 @@ import time
 from contextlib import contextmanager
 
 from runtime_protocol import cancellation, platform
+
 from astrid.sdk.command_timing import stage
 
 LOCK_TIMEOUT = 135.0

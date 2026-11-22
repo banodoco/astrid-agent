@@ -25,9 +25,9 @@ from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Lock
 from typing import Any, Callable
 
-from astrid.sdk.command_timing import stage
 from astrid.core.foundation.paths import PACKAGE_ROOT, REPO_ROOT
 from astrid.core.pack import (
     PackDefinition,
@@ -45,6 +45,7 @@ from astrid.core.pack.canonical import (
     read_normalize_validate,
 )
 from astrid.core.pack.loader import discover_packs as _default_discover_packs
+from astrid.sdk.command_timing import stage
 
 DiscoverPacksFn = Callable[..., "tuple[PackDefinition, ...]"]
 
@@ -59,19 +60,53 @@ ASTRID_PACKS_PATH_ENV = "ASTRID_PACKS_PATH"
 
 # Opt-in, request-local reuse for generation input resolution. Other discovery
 # callers continue to scan normally. Never retain an inventory across requests.
-_discovery_cache: ContextVar[dict | None] = ContextVar("pack_discovery_cache", default=None)
+class _DiscoveryCache(dict):
+    """A shared owner that can revoke caches held by copied contexts."""
+
+    def __init__(self):
+        super().__init__()
+        self.active = True
+        self._lock = Lock()
+
+    def read(self, key):
+        with self._lock:
+            if self.active and key in self:
+                return deepcopy(self[key])
+            return _CACHE_MISS
+
+    def publish(self, key, value):
+        snapshot = deepcopy(value)
+        with self._lock:
+            if self.active:
+                self[key] = snapshot
+
+    def revoke(self):
+        with self._lock:
+            self.active = False
+            self.clear()
+
+
+_CACHE_MISS = object()
+_discovery_cache: ContextVar[_DiscoveryCache | None] = ContextVar("pack_discovery_cache", default=None)
+
+
+def _active_discovery_cache() -> _DiscoveryCache | None:
+    cache = _discovery_cache.get()
+    return cache if cache is not None and cache.active else None
 
 
 @contextmanager
 def pack_discovery_scope():
     """Reuse admitted packs only while their complete discovery inputs match."""
-    if _discovery_cache.get() is not None:
+    if _active_discovery_cache() is not None:
         yield
         return
-    token = _discovery_cache.set({})
+    cache = _DiscoveryCache()
+    token = _discovery_cache.set(cache)
     try:
         yield
     finally:
+        cache.revoke()
         _discovery_cache.reset(token)
 
 
@@ -147,7 +182,7 @@ def reuse_pack_projection(projection: Callable[[], Any]) -> Any:
     discovery objects and projections with other inputs must not use this seam.
     Managed custody is verified on every lookup, just as for pack metadata.
     """
-    cache = _discovery_cache.get()
+    cache = _active_discovery_cache()
     if cache is None:
         return projection()
     from astrid.core.pack.source_setup import active_source_inventory
@@ -157,11 +192,13 @@ def reuse_pack_projection(projection: Callable[[], Any]) -> Any:
 
     before = fingerprint()
     key = (projection, before)
-    if before is not None and key in cache:
-        return deepcopy(cache[key])
+    if before is not None:
+        cached = cache.read(key)
+        if cached is not _CACHE_MISS:
+            return cached
     result = projection()
     if before is not None and before == fingerprint():
-        cache[key] = deepcopy(result)
+        cache.publish(key, result)
     return result
 
 
@@ -503,7 +540,7 @@ def discover_pack_metadata(
     except ImportError:
         managed_inventory = None
 
-    cache = _discovery_cache.get()
+    cache = _active_discovery_cache()
     fingerprint = None
     if cache is not None and managed_inventory is not None:
         # active_source_inventory verifies revision, cleanliness, manifest and
@@ -512,8 +549,10 @@ def discover_pack_metadata(
             project_root, extra_pack_roots, managed_inventory, scan,
             include_hidden=include_hidden, personal_packs_root=selected_personal_root,
         )
-        if fingerprint is not None and fingerprint in cache:
-            return deepcopy(cache[fingerprint])
+        if fingerprint is not None:
+            cached = cache.read(fingerprint)
+            if cached is not _CACHE_MISS:
+                return cached
 
     managed_by_root = {
         source.pack_root.resolve(): source
@@ -767,12 +806,12 @@ def discover_pack_metadata(
                       and not (item.pack.root.resolve() in unique_roots
                                or unique_roots.add(item.pack.root.resolve()))]
     result = tuple(discovered)
-    if fingerprint is not None and fingerprint == _discovery_fingerprint(
+    if cache is not None and fingerprint is not None and fingerprint == _discovery_fingerprint(
         project_root, extra_pack_roots, managed_inventory, scan,
         include_hidden=include_hidden, personal_packs_root=selected_personal_root,
     ):
         # Do not publish a snapshot if its inputs changed during admission.
-        cache[fingerprint] = deepcopy(result)
+        cache.publish(fingerprint, result)
     return result
 
 

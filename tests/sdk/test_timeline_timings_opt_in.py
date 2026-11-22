@@ -18,10 +18,10 @@ from astrid.sdk.command_timing import stage
     ],
 )
 def test_timeline_timings_are_opt_in_and_verification_receives_flag(monkeypatch, capsys, args, forwarded):
-    def run(actual):
+    def run(actual, *, output_stream):
         assert actual == forwarded
         with stage("timeline work"):
-            print(json.dumps({"ok": True, "data": {}}))
+            print(json.dumps({"ok": True, "data": {}}), file=output_stream)
         return 0
 
     monkeypatch.setattr(dispatch, "_dispatch_product_inner", run)

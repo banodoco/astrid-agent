@@ -6,7 +6,6 @@ import sys
 import time
 from contextvars import ContextVar
 
-
 _STARTUP_MARKS: ContextVar[tuple | None] = ContextVar("astrid_startup_marks", default=None)
 
 
@@ -20,6 +19,12 @@ _CLI_STARTED_AT: ContextVar[float | None] = ContextVar("astrid_cli_started_at", 
 def cli_started_at() -> float | None:
     """Start of this console invocation, when dispatching through OMP."""
     return _CLI_STARTED_AT.get()
+
+
+def capture_module_start() -> None:
+    """Capture the installer module's start before its remaining imports."""
+    started_at = time.monotonic()
+    _CLI_STARTED_AT.set(process_started_at(started_at))
 
 
 def process_started_at(fallback: float) -> float:
@@ -80,8 +85,25 @@ def entrypoint() -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Keep the historical console-script entrypoint as a command-entry call."""
-    return _run_console(argv, start_provenance="command entry")
+    """Dispatch the installed script or an embedded command invocation."""
+    # Packaging-generated scripts call main directly from their __main__ module.
+    # Explicit arguments and other callers are embedded invocations, whose
+    # timing starts at this call even in a long-lived process.
+    caller = sys._getframe(1)
+    script_path = caller.f_code.co_filename.lower().replace("\\", "/")
+    script = os.path.basename(script_path)
+    launcher = sys.argv[0].lower().replace("\\", "/")
+    installed_script = (
+        argv is None
+        and caller.f_globals.get("__name__") == "__main__"
+        and os.path.basename(launcher) in {"astrid", "astrid.exe"}
+        and (
+            script in {"astrid", "astrid-script.py", "astrid.exe"}
+            or script_path == launcher + "/__main__.py"  # Windows launcher zip
+        )
+    )
+    provenance = "process start" if installed_script else "command entry"
+    return _run_console(argv, start_provenance=provenance)
 
 
 def _run_console(

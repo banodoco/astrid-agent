@@ -155,14 +155,20 @@ def _ready_entry_rows(entry_id: str | None = None, *, registry: Any = None) -> l
 
 
 def _discover_ready_workflows() -> Any:
+    try:
+        import vibecomfy  # noqa: F401 - distinguish an absent package from a broken installation
+    except ModuleNotFoundError as exc:
+        if exc.name != 'vibecomfy':
+            raise
+        return None
     from vibecomfy.registry.ready import _discover_ready_templates
     return _discover_ready_templates(include_dynamic=False, include_json_references=False)
 
 
 def _complete_ready_entry(row: dict[str, Any], *, discovery: Any) -> dict[str, Any]:
     """Fill graph-derived fields for one already projected ready entry."""
-    from vibecomfy.errors import ShippedResourceMissingError
     from vibecomfy.entries import LOADER_ROLES
+    from vibecomfy.errors import ShippedResourceMissingError
     from vibecomfy.model_assets import _referenced_model_values
     from vibecomfy.registry.ready import workflow_from_ready
 
@@ -188,10 +194,8 @@ def _complete_ready_entry(row: dict[str, Any], *, discovery: Any) -> dict[str, A
 
 def _ready_entries_for(entry_id: str | None = None) -> list[dict[str, Any]]:
     """Project repository metadata and complete each row with workflow metadata."""
-    rows = _ready_entry_rows(entry_id)
-    if not rows:
-        return rows
     discovery = _discover_ready_workflows()
+    rows = _ready_entry_rows(entry_id)
     return [_complete_ready_entry(row, discovery=discovery) for row in rows]
 
 
@@ -201,6 +205,7 @@ def ready_entries() -> list[dict[str, Any]]:
 
 _DEFAULT_READY_ENTRIES = ready_entries
 _DEFAULT_READY_ENTRIES_FOR = _ready_entries_for
+_DEFAULT_READY_ENTRY_ROWS = _ready_entry_rows
 
 
 def action_entries(discovery: Any | None = None) -> list[dict[str, Any]]:
@@ -878,10 +883,10 @@ class _EntryDiscovery:
                 return timed_call('model registry', ModelRegistry.load_default)
         self._load_registry = load_registry
         self._registry = None
-        self._users = None
-        self._actions = None
+        self._users: list[dict[str, Any]] | None = None
+        self._actions: list[dict[str, Any]] | None = None
         self._ready: dict[str, list[dict[str, Any]]] = {}
-        self._ready_candidates = None
+        self._ready_candidates: list[dict[str, Any]] | None = None
         self._pending_ready: set[int] = set()
         self._workflow_discovery = None
         self._found: dict[str, dict[str, Any] | None] = {}
@@ -908,7 +913,15 @@ class _EntryDiscovery:
             if _ready_entries_for is not _DEFAULT_READY_ENTRIES_FOR:
                 self._ready[entry_id] = _ready_entries_for(entry_id)
             else:
-                rows = (row for row in self._ready_rows() if row['id'] == entry_id)
+                if self._workflow_discovery is None:
+                    self._workflow_discovery = _discover_ready_workflows()
+                if self._ready_candidates is not None:
+                    rows = [row for row in self._ready_candidates if row['id'] == entry_id]
+                elif _ready_entry_rows is not _DEFAULT_READY_ENTRY_ROWS:
+                    rows = [row for row in self._ready_rows() if row['id'] == entry_id]
+                else:
+                    rows = _ready_entry_rows(entry_id, registry=self.registry)
+                    self._pending_ready.update(id(row) for row in rows)
                 self._ready[entry_id] = [self.complete_ready(row) for row in rows]
         return self._ready[entry_id]
 

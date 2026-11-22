@@ -2295,6 +2295,9 @@
             "--opacity": {
               "required": false
             },
+            "--operations": {
+              "required": false
+            },
             "--over": {
               "required": false
             },
