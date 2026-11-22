@@ -8,6 +8,7 @@ import json
 from unittest.mock import Mock
 from pathlib import Path
 from types import SimpleNamespace
+from types import SimpleNamespace
 
 import pytest
 
@@ -180,6 +181,156 @@ def test_placement_writes_exact_admission_pin_and_retries_by_identity(monkeypatc
 
     retried = _place(owner, ref)
     assert retried == first
+    assert owner.commit.call_count == 1
+
+
+def test_clip_add_refuses_an_occurrence_target(monkeypatch, tmp_path, configured):
+    _, _, _, bundle = _setup(monkeypatch, tmp_path, configured)
+    command = {
+        'schema_version': 1,
+        'op': 'clip.add',
+        'version': '1',
+        'select': 'occurrence:occ-a',
+        'args': {'row': {'id': 'caption', 'track': 'titles', 'clipType': 'media',
+                         'at': 0, 'hold': 1}},
+    }
+    with pytest.raises(CommandError, match='parent'):
+        execute(bundle, [command])
+
+
+def test_commit_function_batches_occurrence_placements_and_document_edits(
+        monkeypatch, tmp_path, configured):
+    """Native placements and free edits share one Timeline.commit request."""
+    from astrid.sdk.contracts import DomainResult
+    from astrid.sdk.timeline import commit_session, store
+    from astrid.sdk.timeline.commit import _digest, _manifest, bundle_from_document, document_from_bundle
+
+    owner, ref, pin, initial = _setup(monkeypatch, tmp_path, configured)
+    document = copy.deepcopy(initial['source_mapping']['_runtime_document'])
+    internal = document['internal_timeline_revisions'][0]
+    internal['payload']['clips'][0]['params'] = {'seed': 'ƒ(words of n05b)'}
+    internal['content_digest'] = _digest(internal['payload'])
+    shot = copy.deepcopy(document['shot_revisions'][0])
+    shot.update(shot_id='chapter-shot-b', revision_id='shot-2')
+    internal_b = copy.deepcopy(internal)
+    internal_b.update(timeline_id='chapter-two', revision_id='internal-2')
+    internal_b['payload']['clips'][0]['params'] = {'seed': 7}
+    internal_b['content_digest'] = _digest(internal_b['payload'])
+    shot['internal_timeline_revision_id'] = 'internal-2'
+    shot['payload']['internal_timeline_revision_id'] = 'internal-2'
+    shot['payload']['items'][0]['item_id'] = 'item-2'
+    shot['content_digest'] = _digest(shot['payload'])
+    document['shot_revisions'].append(shot)
+    document['internal_timeline_revisions'].append(internal_b)
+    second_occurrence = copy.deepcopy(document['parent_revision']['payload']['occurrences'][0])
+    second_occurrence.update(occurrence_id='occ-b', shot_id='chapter-shot-b',
+                             shot_revision_id='shot-2')
+    document['parent_revision']['payload']['occurrences'].append(second_occurrence)
+    document['parent_revision']['content_digest'] = _digest(document['parent_revision']['payload'])
+    document['dependency_manifest'] = _manifest(
+        document['shot_revisions'], document['internal_timeline_revisions'],
+        document['dependency_manifest']['media'], document['dependency_manifest']['documents'])
+    bundle = bundle_from_document(document)
+    baseline = copy.deepcopy(bundle)
+    placements = bundle['placements']
+    targets = [f"occurrence:{row['occurrence_id']}/clip:clip-a" for row in placements]
+    assert len(set(row['shot_id'] for row in placements)) == 2
+    assert len({bundle['source_mapping']['shots'][row['shot_id']]['internal_timeline_revision_id']
+                for row in placements}) == 2
+
+    client = SimpleNamespace(
+        _remote=SimpleNamespace(_transport=owner._client),
+        timelines=owner,
+    )
+    client.documents = configured
+    client.media = configured.media
+    monkeypatch.setattr(store, 'fetch_bundle', lambda *a, **kw: copy.deepcopy(bundle))
+    history_state = {'head': {'revision_id': 'head', 'publication_id': 'publication'},
+                     'items': [], 'next_cursor': None}
+    owner.history.side_effect = lambda *a, **kw: DomainResult.success(copy.deepcopy(history_state))
+
+    def commit(project, timeline_id, body, **kwargs):
+        evaluated_head = {'revision_id': body['base_revision_id'],
+                          'publication_id': body['base_publication_id']}
+        plan = execute(bundle, body['commands'], schema_inputs=owner.schema_inputs,
+                       realm_id='realm', commit_request=body, evaluated_head=evaluated_head)
+        owner.last_plan = plan
+        data = {'base_revision_id': 'head', 'base_publication_id': 'publication',
+                'accepted_revision_id': 'committed', 'commands': copy.deepcopy(body['commands']),
+                'canonical_document': document_from_bundle(plan.bundle)}
+        result_receipt = CommandReceipt('accepted-receipt', 'timeline.commit', kwargs['idempotency_key'],
+                                        'hash', 'project', (1, 1), (), data,
+                                        '2026-10-26T00:00:00Z')
+        history_state['items'].append({'revision_id': 'committed', 'publication_id': 'accepted-receipt',
+                                       'publisher': 'author', 'receipt': result_receipt.as_dict()})
+        history_state['head'] = {'revision_id': 'committed', 'publication_id': 'accepted-receipt'}
+        return DomainResult.success(data, receipt=result_receipt, idempotency_key=kwargs['idempotency_key'])
+
+    owner.commit.side_effect = commit
+    def commit_timeline(project, timeline_id, body, *, idempotency_key):
+        result = owner.commit(project, timeline_id, body, idempotency_key=idempotency_key)
+        assert result.ok, result.as_dict()
+        return {'data': result.data, 'receipt': result.receipt.as_dict()}
+
+    owner._client.commit_timeline = commit_timeline
+    timeline = commit_session.open('project', 'film', client=client,
+                                   outbox_path=tmp_path / 'commit-outbox.json')
+
+    from astrid.sdk.timeline.model import Clip
+
+    def occurrence_clip(working, occurrence_id):
+        placement = next(row for row in working.bundle['placements']
+                         if row['occurrence_id'] == occurrence_id)
+        shot_id = placement['shot_id']
+        row = next(row for row in working.bundle['shots'][shot_id]['internal_timeline']['clips']
+                   if row['id'] == 'clip-a')
+        return Clip(working, shot_id, row)
+
+    with pytest.raises(ValueError, match='not admitted'):
+        timeline.commit(lambda working: occurrence_clip(
+            working, 'occ-a').set_element({**ref, 'revision': 'sha256:' + '0' * 64}),
+            key='wrong-revision')
+    assert owner.commit.call_count == 0
+
+    def edit(working):
+        # Remove a formula before retargeting its clip, then place on both
+        # independently owned occurrences and set a parameter on one.
+        occurrence_clip(working, 'occ-a').params.pop('seed')
+        occurrence_clip(working, 'occ-a').set_element(ref)
+        placed = occurrence_clip(working, 'occ-b').set_element(ref)
+        placed.params.update({'seed': 9})
+        target_shot = working.bundle['shots'][placed.shot_id]['internal_timeline']
+        text_row = {'id': 'chapter-title', 'track': 'picture', 'clipType': 'text-card',
+                    'at': 0, 'hold': 1, 'params': {'content': 'Chapter title'}}
+        target_shot['clips'].append(copy.deepcopy(text_row))
+        target_shot['config']['clips'].append(copy.deepcopy(text_row))
+
+    first = timeline.commit(edit, key='mixed-key')
+    assert first['receipt']['receipt_id'] == 'accepted-receipt'
+    assert owner.commit.call_count == 1
+    body = owner.commit.call_args.args[2]
+    commands = body['commands']
+    operations = [command['op'] for command in commands]
+    assert body['merge'] == 'atomic'
+    assert operations.count('clip.set-element') == 2
+    assert 'doc.patch' in operations
+    assert [command['select'] for command in commands if command['op'] == 'clip.set-element'] == targets
+    assert all(command['args']['schema_source'] == pin for command in commands
+               if command['op'] == 'clip.set-element')
+    accepted = bundle_from_document(first['data']['canonical_document'])
+    assert State(accepted).entity(targets[0])['elementRef'] == ref
+    assert State(accepted).entity(targets[1])['elementRef'] == ref
+    assert 'seed' not in State(accepted).entity(targets[0])['params']
+    assert State(accepted).entity(targets[1])['params']['seed'] == 9
+    second_shot = accepted['shots'][next(row['shot_id'] for row in accepted['placements']
+                                          if row['occurrence_id'] == 'occ-b')]
+    assert any(row['id'] == 'chapter-title' and row['params']['content'] == 'Chapter title'
+               for row in second_shot['internal_timeline']['clips'])
+    assert baseline != accepted
+
+    retried = timeline.commit(lambda _working: pytest.fail('same-key retry must reuse its receipt'),
+                              key='mixed-key')
+    assert retried['receipt'] == first['receipt']
     assert owner.commit.call_count == 1
 
 

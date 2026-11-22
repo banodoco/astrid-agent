@@ -279,6 +279,16 @@ class Clip(_Suggest):
         return f"<Clip {self.address} {self.element} {what} {self.start:.3f}–{self.end:.3f} s{anchor}>"
 
     # edits ---------------------------------------------------------------
+    def set_element(self, element: dict[str, str]) -> "Clip":
+        """Stage an admitted project element on this clip in a Timeline session.
+
+        Returns the refreshed clip view, suitable for subsequent parameter edits.
+        """
+        stage = getattr(self._tl, "_set_clip_element", None)
+        if not callable(stage):
+            raise TimelineEditError("element placement requires a Timeline session")
+        return stage(self, element)
+
     def split(self, at: Any, *, id: str) -> "Clip":
         """Split an attached parent media clip at absolute timeline seconds.
 
