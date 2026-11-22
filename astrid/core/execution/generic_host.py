@@ -18,21 +18,6 @@ leases, reservations, and settlement remain protocol operations on the daemon.
 
 from __future__ import annotations
 
-from astrid.core.execution import execution_contract_helpers as _contract_helpers
-from astrid.core.execution.execution_contract_helpers import (
-    _canonical_digest, _admitted_spec_envelope, _assert_verified_placement_binding,
-)
-from astrid.core.execution.host_matrix import load_matrix as _load_host_matrix
-
-from astrid.core.execution.host_errors import HostError
-from astrid.core.execution.host_naming import (
-    _MANAGED_ASSET_LOCATOR_KEYS, _VIDEO_SUFFIX_MEDIA_TYPES, _SUFFIX_MEDIA_TYPES,
-    _RUNTIME_OUTPUT_NAMESPACES, _managed_input_staging_name, _managed_asset_identity,
-    _settlement_media_type, _runtime_output_filename, _generation_output_port,
-    _generation_selector_declarations as _naming_generation_selector_declarations,
-    _named_raw_publication_port, _bind_named_parent_output,
-)
-
 import argparse
 import base64
 import codecs
@@ -46,7 +31,7 @@ import inspect
 import io
 import json
 import logging
-import mimetypes
+import mimetypes as mimetypes
 import queue
 import re
 import secrets as secrets_module
@@ -60,7 +45,6 @@ import tempfile
 import threading
 import time
 import zipfile
-
 from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field, is_dataclass, replace
 from datetime import datetime, timezone
@@ -75,14 +59,46 @@ from runtime_protocol.dirfd import filesystem as os
 from runtime_protocol.errors import ConflictError
 from runtime_protocol.storage import free_disk_floor_bytes
 
+from astrid.core.execution import execution_contract_helpers as _contract_helpers
+from astrid.core.execution.execution_contract_helpers import (
+    _admitted_spec_envelope,
+    _assert_verified_placement_binding,
+    _canonical_digest,
+)
+from astrid.core.execution.host_errors import HostError
+from astrid.core.execution.host_matrix import load_matrix as _load_host_matrix
+from astrid.core.execution.host_naming import (
+    _MANAGED_ASSET_LOCATOR_KEYS as _MANAGED_ASSET_LOCATOR_KEYS,
+)
+from astrid.core.execution.host_naming import (
+    _RUNTIME_OUTPUT_NAMESPACES as _RUNTIME_OUTPUT_NAMESPACES,
+)
+from astrid.core.execution.host_naming import (
+    _SUFFIX_MEDIA_TYPES as _SUFFIX_MEDIA_TYPES,
+)
+from astrid.core.execution.host_naming import (
+    _VIDEO_SUFFIX_MEDIA_TYPES as _VIDEO_SUFFIX_MEDIA_TYPES,
+)
+from astrid.core.execution.host_naming import (
+    _bind_named_parent_output,
+    _generation_output_port,
+    _managed_asset_identity,
+    _managed_input_staging_name,
+    _named_raw_publication_port,
+    _runtime_output_filename,
+    _settlement_media_type,
+)
+from astrid.core.execution.host_naming import (
+    _generation_selector_declarations as _naming_generation_selector_declarations,
+)
 from astrid.core.execution.pipe_io import PipeReader, PipeWriter, close_pipe_workers
-from astrid.core.execution.stall_diagnostics import process_stall_diagnostics
 from astrid.core.execution.platform_helpers import (
     PROCESS_CONTROL_SUPPORT_ENV,
     configure_process_control,
     owned_by_current_user,
     process_control_support,
 )
+from astrid.core.execution.stall_diagnostics import process_stall_diagnostics
 from astrid.core.source_identity import (
     _source_digest,
     source_checkout_closure,
@@ -209,7 +225,8 @@ from astrid.core.execution.provider_route_grant import (
     ProviderRouteGrantAuthority,
     ProviderRouteGrantError,
 )
-from astrid.core.execution.task_scope import TaskScopeUnresolved, spawn as spawn_task_scope
+from astrid.core.execution.task_scope import TaskScopeUnresolved
+from astrid.core.execution.task_scope import spawn as spawn_task_scope
 from astrid.core.execution.terminal_result import serialize_terminal_result
 from astrid.core.execution.thumbnails import (
     THUMBNAIL_RECIPE_VERSION,
@@ -234,13 +251,11 @@ from astrid.core.generation.vibecomfy_dependency import (
     configured_vibecomfy_checkout,
     dependency_pythonpath,
 )
-from astrid.core.rendering.assets import managed_asset_digest
+from astrid.core.rendering.assets import managed_asset_digest as managed_asset_digest
 from astrid.core.subprocess_env import build_child_subprocess_env
 from astrid.core.util.secrets import load_local_api_key_with_source
 from astrid.sdk.execution_request import normalize_execution_request
 from astrid.sdk.workspace_client import WorkspaceClientError, validate_runtime_endpoint
-
-
 
 if TYPE_CHECKING:
     from astrid.core.execution.executor.schema import ExecutorDefinition
@@ -13617,7 +13632,9 @@ class GenericPackHost:
                     and not _terminal.get("retain_spool")):
                 # Keeping the receipt/output evidence does not keep relocated
                 # VibeComfy scratch. Unresolved writers/publication keep both.
-                from astrid.core.generation.vibecomfy_runtime_root import remove_windows_runtime_root
+                from astrid.core.generation.vibecomfy_runtime_root import (
+                    remove_windows_runtime_root,
+                )
                 try:
                     remove_windows_runtime_root(root / "outputs")
                 except OSError as exc:

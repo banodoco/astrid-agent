@@ -8,9 +8,8 @@ import re
 from pathlib import Path
 from typing import Any, Mapping
 
-from astrid.core.rendering.assets import managed_asset_digest
 from astrid.core.execution.host_errors import HostError
-
+from astrid.core.rendering.assets import managed_asset_digest
 
 _MANAGED_ASSET_LOCATOR_KEYS = frozenset({"url", "uri", "path", "source_path", "locator", "realm", "file"})
 
