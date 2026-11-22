@@ -295,7 +295,8 @@ LOCAL_REFUSAL_SCOPE = ('refused locally before submission; nothing was sent to a
 
 def _offline_invocation_preflight(workflow: Any, *, plan: Mapping[str, Any] | None,
                                   assets: Mapping[str, Any], comfy_url: str | None,
-                                  lineage: Any, source_video: bool) -> None:
+                                  lineage: Any, source_video: bool,
+                                  approved_files: tuple[bytes, bytes] | None = None) -> None:
     """Run the same invocation preflight a live submission runs, offline, on the emitted bundle.
 
     Every dry run calls this so a request the live path would refuse is refused before a
@@ -328,7 +329,11 @@ def _offline_invocation_preflight(workflow: Any, *, plan: Mapping[str, Any] | No
     expected_prompt = prompt if isinstance(prompt, str) and prompt.strip() else None
     with TemporaryDirectory(prefix='astrid-dry-preflight-') as scratch:
         capsule = Path(scratch) / 'workflow.py'
-        emit_bundle(workflow, capsule, {'operation': 'authored'})
+        if approved_files is None:
+            emit_bundle(workflow, capsule, {'operation': 'authored'})
+        else:
+            capsule.write_bytes(approved_files[0])
+            capsule.with_suffix('.vibe.json').write_bytes(approved_files[1])
         try:
             for name, path in assets.items():
                 if getattr(workflow.inputs.get(name), 'media_semantics', None) == 'audio':
@@ -1864,6 +1869,7 @@ class GenerationFacade:
                 candidate_controls.update({key: value for key, value in admission.items() if key != "inputs"})
             try:
                 assets = {}
+                approved_files = None
                 transport = BuildTransport()
                 if is_remote_target:
                     template = (None if source == "workflow" else _local_template(candidate, mode))
@@ -1981,6 +1987,8 @@ class GenerationFacade:
                         bundle = emit_bundle(workflow, Path(scratch) / "workflow.py", {"operation": "authored"})
                         bundle.require_canonical_authority("generate on target")
                         approval = bundle.compile(schema_provider=schema) if schema is not None and not assets else None
+                        approved_files = (Path(scratch, "workflow.py").read_bytes(),
+                                          Path(scratch, "workflow.vibe.json").read_bytes())
                 else:
                     bundle = load_bundle(workflow)
                     bundle.require_canonical_authority("generate on target")
@@ -2010,7 +2018,7 @@ class GenerationFacade:
                 continue
             inputs = candidate_inputs
             controls = candidate_controls
-            selected = (identifier, workflow, bundle, plan, schema, approval, assets)
+            selected = (identifier, workflow, bundle, plan, schema, approval, assets, approved_files)
             break
         if selected is None:
             raise AstridError(
@@ -2019,7 +2027,7 @@ class GenerationFacade:
                 code="COMFY_TARGET_NO_MODEL", field="model",
                 fix="Use an attached ComfyUI with the required nodes and models, or an installed managed runtime",
             )
-        entry_id, workflow, bundle, plan, schema, approval, assets = selected
+        entry_id, workflow, bundle, plan, schema, approval, assets, approved_files = selected
         if is_remote_target and placement_policy is not None:
             placement_policy["engine"] = runpod_engine
         target_record = getattr(target_client, 'generation_target', None)
@@ -2075,7 +2083,11 @@ class GenerationFacade:
                 with TemporaryDirectory(prefix="astrid-dry-declarations-") as scratch:
                     root = Path(scratch)
                     capsule = root / "workflow.py"
-                    emit_bundle(workflow, capsule, {"operation": "authored"})
+                    if approved_files is None:
+                        emit_bundle(workflow, capsule, {"operation": "authored"})
+                    else:
+                        capsule.write_bytes(approved_files[0])
+                        capsule.with_suffix(".vibe.json").write_bytes(approved_files[1])
                     loaded = load_workflow_path(capsule, root / "load")
                     canonical = _canonical_bundle_value(loaded.resolved).workflow
                     manifest, _ = judge_declarations(canonical, root / "engine",
@@ -2088,7 +2100,8 @@ class GenerationFacade:
             _offline_invocation_preflight(
                 workflow, plan=plan, assets=assets or {},
                 comfy_url=(target_client.target.url if placement.kind == 'attached' and target_client is not None else None),
-                lineage=transport.lineage, source_video=transport.preflight_source_video)
+                lineage=transport.lineage, source_video=transport.preflight_source_video,
+                approved_files=approved_files)
             readiness['entry'].update(preview)
             if align == 'trust':
                 readiness['alignment'] = {'mode': 'trust', 'verified': False}
@@ -2100,7 +2113,11 @@ class GenerationFacade:
 
         with TemporaryDirectory(prefix="astrid-generate-target-") as scratch:
             root = Path(scratch)
-            emit_bundle(workflow, root / "workflow.py", {"operation": "authored"})
+            if approved_files is None:
+                emit_bundle(workflow, root / "workflow.py", {"operation": "authored"})
+            else:
+                (root / "workflow.py").write_bytes(approved_files[0])
+                (root / "workflow.vibe.json").write_bytes(approved_files[1])
             # The native bindings sent as workflow_inputs below.
             sent_inputs = {name: value for name, value in (plan or {}).get('bindings', {}).items()
                            if name not in assets}
