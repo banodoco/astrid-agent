@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import json
 from contextlib import nullcontext
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from astrid import console
 from astrid.core.execution.generic_host import GenericPackHost, RuntimeProtocolClient
-from astrid.core.generation import cli
 from astrid.sdk.client import AstridClient
 from tests.core.generation.backends.test_comfy_model_resolution import install_target, target_info
 from tests.core.generation.backends.test_comfy_target import network  # noqa: F401
@@ -36,7 +36,8 @@ def _assert_stage_parents(rows: list[dict], expected: dict[str, set[str | None]]
             f"{name} has unexpected parent(s): {[row.get('parent') for row in actual[name]]}; "
             f"expected one of {sorted(map(str, parents))}"
         )
-        assert all(row.get("total_seconds", 0) >= 0 for row in actual[name])
+        assert all(row.get("seconds", 0) > 0 and row.get("total_seconds", 0) > 0
+                   for row in actual[name]), f"{name} reported no positive work"
 
 
 @pytest.mark.integration
@@ -61,17 +62,11 @@ def test_workflow_and_image_admissions_report_generation_stage_tree(
 
     # Keep model selection and the pinned VibeComfy source identical to the
     # established attached-target admission test; only ComfyUI is simulated.
-    from astrid.core.generation import preflight
     from astrid.core.model_catalog.registry import ModelRegistry
     import astrid.sdk as sdk
     import vibecomfy
     from vibecomfy.runtime.session import current_source_content_digest, current_source_revision
 
-    monkeypatch.setattr(preflight, "_module_available", lambda name: name == "vibecomfy")
-    def unexpected_managed_probe(*_args, **_kwargs):
-        raise AssertionError("attached generation probed managed ComfyUI")
-
-    monkeypatch.setattr(preflight, "_comfyui_runtime_available", unexpected_managed_probe)
     registry = ModelRegistry([ModelRegistry.load_default().get("z-image")])
     monkeypatch.setattr(sdk, "_load_model_registry", lambda **_kwargs: registry)
 
@@ -88,7 +83,7 @@ def test_workflow_and_image_admissions_report_generation_stage_tree(
     )
     host.discover()
     host.register()
-    monkeypatch.setattr(cli, "_open_client", lambda: nullcontext(client))
+    monkeypatch.setattr(AstridClient, "open_from_launcher", lambda **_kwargs: nullcontext(client))
 
     from vibecomfy.registry.ready import repo_ready_template_discovery, resolve_ready_template
 
@@ -108,6 +103,33 @@ def test_workflow_and_image_admissions_report_generation_stage_tree(
         "--no-wait", "--json", "--timings",
     ])
 
+    # A qualified catalog candidate with a missing target model is prepared,
+    # rejected by the real ComfyUI resolver, and followed by the ready catalog
+    # route. This proves the candidate loop and its per-candidate timing detail.
+    from astrid.core.generation import defaults
+    base = registry.get("z-image")
+    mode_spec = base.modes["t2i"]
+    local_spec = mode_spec.backends["local"]
+    missing_spec = replace(local_spec, model_roles={
+        key: replace(role, names=(f"missing-{role.names[0]}",))
+        for key, role in local_spec.model_roles.items()
+    })
+    missing_entry = replace(base, id="a-missing", modes={
+        "t2i": replace(mode_spec, backends={"local": missing_spec}),
+    })
+    fallback_registry = ModelRegistry([missing_entry, base])
+    monkeypatch.setattr(sdk, "_load_model_registry", lambda **_kwargs: fallback_registry)
+    monkeypatch.setattr(defaults, "dispatch_ids", lambda *args, **_kwargs: (None, ()))
+    fallback_rows = _stage_rows(capsys, [
+        "generate", "image", "a silver paper boat", "--placement", comfy.target.url,
+        "--project", project.data["project_id"], "--no-wait", "--json", "--timings",
+    ])
+    candidate_rows = [row for row in fallback_rows if row["stage"] == "candidate preparation"]
+    assert len(candidate_rows) == 2, candidate_rows
+    assert candidate_rows[0].get("detail") == "a-missing", candidate_rows
+    assert candidate_rows[1].get("detail") != "a-missing", candidate_rows
+    assert all(row["seconds"] > 0 and row["total_seconds"] > 0 for row in candidate_rows)
+
     common = {
         "argument parsing": {None},
         "Runtime connection": {None},
@@ -118,7 +140,7 @@ def test_workflow_and_image_admissions_report_generation_stage_tree(
         "availability declaration": {"candidate qualification"},
         "candidate preparation": {None},
         "workflow build": {"candidate preparation"},
-        "model registry": {"workflow build"},
+        "model registry": {None, "workflow build"},
         "target node list": {"candidate preparation", "workflow build"},
         "workflow emission": {"candidate preparation", "bundle materialisation"},
         "approval compile": {"candidate preparation"},
@@ -128,15 +150,17 @@ def test_workflow_and_image_admissions_report_generation_stage_tree(
         "invocation": {None},
         "capability registries": {"invocation"},
         "capability lookup": {"invocation"},
-        "admission preflight": {"invocation"},
-        "ComfyUI GET /system_stats": {"placement", "candidate preparation"},
-        "ComfyUI GET /object_info": {"candidate preparation", "workflow build", "target node list"},
+        "SDK admission preflight": {"invocation"},
+        "Workspace admission preflight": {"invocation"},
+        "Remote admission preflight": {"invocation"},
+        "ComfyUI GET /system_stats": {"target check"},
+        "ComfyUI GET /object_info": {"workflow build", "target node list", "ComfyUI GET /object_info"},
     }
     workflow_expected = {
         **common,
         "workflow snapshot": {None},
         "source retention": {None, "workflow snapshot", "candidate preparation"},
-        "workflow inputs": {None},
+        "workflow inputs": {"workflow snapshot"},
         "entry needs": {"candidate preparation"},
     }
     image_expected = {
@@ -156,12 +180,32 @@ def test_workflow_and_image_admissions_report_generation_stage_tree(
         "invocation": {None},
         "capability registries": {"invocation"},
         "capability lookup": {"invocation"},
-        "admission preflight": {"invocation"},
+        "SDK admission preflight": {"invocation"},
+        "Workspace admission preflight": {"invocation"},
     })
 
     # Each command created a distinct admitted Runtime task.
     tasks = client.tasks.list(project.data["project_id"])
     assert tasks.ok, tasks
-    assert len(tasks.data[0][0]) == 3
-    assert len({row["task_id"] for row in tasks.data[0][0]}) == 3
+    assert len(tasks.data[0][0]) == 4
+    assert len({row["task_id"] for row in tasks.data[0][0]}) == 4
     host.shutdown()
+
+
+def test_early_generation_refusal_has_parse_work_but_never_opens_runtime(monkeypatch, capsys):
+    """Reject a wrong-modality catalog request at qualification before admission."""
+    def forbidden_runtime_open(**_kwargs):
+        pytest.fail("generation input refusal must precede the Runtime connection")
+
+    monkeypatch.setattr(AstridClient, "open_from_launcher", forbidden_runtime_open)
+    code = console.main([
+        "generate", "image", "a silver paper boat", "--model", "wan-2.2", "--mode", "t2i",
+        "--placement", "http://127.0.0.1:8188", "--json", "--timings",
+    ])
+    captured = capsys.readouterr()
+    assert code == 2, captured.out + captured.err
+    payload = json.loads(captured.out)
+    rows = payload["timings"]
+    assert any(row["stage"] == "argument parsing" and row["seconds"] > 0 for row in rows)
+    assert any(row["stage"] == "candidate qualification" and row["seconds"] > 0 for row in rows)
+    assert not any(row["stage"] == "Runtime connection" for row in rows)
