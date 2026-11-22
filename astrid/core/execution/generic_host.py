@@ -187,7 +187,7 @@ from astrid.core.execution.host_naming import (
 from astrid.core.execution.host_naming import (
     _bind_named_parent_output,
     _generation_output_port,
-    _managed_asset_identity,
+    _managed_asset_identity as _naming_managed_asset_identity,
     _managed_input_staging_name,
     _named_raw_publication_port,
     _runtime_output_filename,
@@ -1795,6 +1795,11 @@ def _confined_cwd(
 REMOTION_GATE_DESCRIPTION = "tasks that render with rendering.remotion"
 
 
+def _managed_asset_identity(key: str, raw: Mapping[str, Any]) -> tuple[str, str]:
+    return _naming_managed_asset_identity(key, raw, digest_resolver=managed_asset_digest)
+_managed_asset_identity.__doc__ = _naming_managed_asset_identity.__doc__
+
+
 def _task_selector(task_data: Mapping[str, Any]) -> str | None:
     return _contract_helpers._task_selector(task_data, admitted_task_spec=_admitted_task_spec)
 
@@ -1811,7 +1816,6 @@ def _renderer_selection(record: "CapabilityRecord", task_data: Mapping[str, Any]
     if adapter is None or adapter.remotion != "selected":
         return None
     from astrid.core.rendering.contracts import FFMPEG_RENDERER_ID, REMOTION_RENDERER_ID
-
     check = record.preflight.get("remotion")
     check = check if isinstance(check, Mapping) else {}
     remotion_ok = check.get("ok") is True
@@ -1823,7 +1827,6 @@ def _renderer_selection(record: "CapabilityRecord", task_data: Mapping[str, Any]
         selector, chosen_by = requested, "task"
     if selector == REMOTION_RENDERER_ID and not remotion_ok:
         from astrid.core.rendering.failure_message import render_failure_message
-
         raise HostError(
             render_failure_message(
                 f"{record.id}: this task renders with {REMOTION_RENDERER_ID}, which this host cannot run: {reason}",
@@ -2121,7 +2124,6 @@ def _resolve_credential_value(
     source: Mapping[str, str], name: str, *, explicit: bool = False
 ) -> str | None:
     """Resolve a declared credential without broadening ordinary env access.
-
     Hivemind's contributor login stores its owner-only credential at the
     standard ``~/.hivemind/key`` path. The child executor already supports
     that path; the host must use the same source for readiness and injection
@@ -2172,7 +2174,6 @@ def _network_policy(record: "CapabilityRecord", inputs: Mapping[str, Any] | None
     policy = {str(key): value for key, value in raw.items()}
     if record.id == "vibecomfy.run" and inputs and inputs.get("comfy_url"):
         from astrid.core.generation.backends.vibecomfy_local_server import validate_comfy_url
-
         url = validate_comfy_url(inputs["comfy_url"])
         policy = {"allowed_protocols": ["dns", "tcp"],
                   "allowed_destinations": [url.removeprefix("http://")],
@@ -2207,7 +2208,6 @@ def _provider_routes(record: "CapabilityRecord", inputs: Mapping[str, Any] | Non
         from astrid.core.execution.provider_route_resolvers import (
             resolve_runpod_pod_handle_ssh_route,
         )
-
         for name in handle_names or ():
             raw = (inputs or {}).get(str(name))
             if raw is None:
