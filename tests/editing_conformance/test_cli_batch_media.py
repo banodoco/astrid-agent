@@ -68,7 +68,7 @@ def editing_runtime(real_runtime, tmp_path, monkeypatch, runtime_wire):
         opened = client.timelines.open_bundle(project, "film")
         assert opened.ok, opened.as_dict()
         command = capture_track_create(opened.data["bundle"], "parent", {
-            "id": "A1", "kind": "audio", "label": "Audio",
+            "id": "batch-audio", "kind": "audio", "label": "Audio",
         })
         history = client.timelines.history(project, "film", limit=100).data
         head = history["head"]
@@ -159,7 +159,7 @@ def test_bad_second_add_reports_prior_import_and_publishes_nothing(
         {"op": "add", "source": str(source), "at": 0, "hold": 1,
          "track": "V1", "id": "first"},
         {"op": "add", "source": str(source), "at": 2, "hold": 1,
-         "track": "A1", "id": "bad"},
+         "track": "batch-audio", "id": "bad"},
     ])
     calls, _lose = runtime_wire
     before = client.timelines.history(world.project, "film", limit=100).data
@@ -213,7 +213,7 @@ def test_failing_first_add_reports_its_import(editing_runtime, runtime_wire, tmp
     source = _png(tmp_path / "frame.png", "purple")
     path = tmp_path / "operations.json"
     _write(path, [{"op": "add", "source": str(source), "at": 0, "hold": 1,
-                  "track": "A1", "id": "bad"}])
+                  "track": "batch-audio", "id": "bad"}])
     calls, _lose = runtime_wire
     before = client.timelines.history(world.project, "film", limit=100).data
 
