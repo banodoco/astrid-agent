@@ -23,7 +23,7 @@ from astrid.sdk.invocation import _prepare_managed_render_inputs
 
 
 def test_projection_preserves_independent_clip_fit():
-    config = {"tracks": [{"id": "v1", "fit": "contain"}], "clips": [
+    config = {"tracks": [{"id": "v1", "kind": "visual", "label": "V1", "fit": "contain"}], "clips": [
         {"id": "fit", "track": "v1", "fit": "contain"},
         {"id": "fill", "track": "v1", "fit": "cover"},
     ]}

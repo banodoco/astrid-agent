@@ -66,9 +66,10 @@ def host(tmp_path_factory):
     package = modules / "@banodoco/timeline-composition"
     package.parent.mkdir()
     (project / "package").rename(package)
-    for name in ("scene-query.mjs", "native-scene.mjs", "webpack-alias.mjs", "package.json"):
+    for name in ("scene-query.mjs", "native-scene.mjs", "webpack-alias.mjs",
+                 "timeline-composition-legacy-loader.cjs", "package.json"):
         shutil.copyfile(REMOTION / name, project / name)
-    for name in ("host-scene.ts", "host-registries.ts"):
+    for name in ("host-scene.ts", "host-registries.ts", "r13-clip-presentation.tsx"):
         shutil.copyfile(REMOTION / "src" / name, project / "src" / name)
     for kind in ("effects", "animations", "transitions"):
         (project / "src" / f"{kind}.generated.ts").write_text(gen_effect_registry.generate_element_registry(kind))
