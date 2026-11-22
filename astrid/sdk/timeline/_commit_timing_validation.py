@@ -84,14 +84,15 @@ def _reference_shape(clip: Mapping[str, Any], assets: Mapping[str, Any] | None =
 
 _WORD_TIMING_FIELDS = ("id", "track", "at", "at_ms", "from", "to", "hold", "duration", "speed",
                        "asset", "asset_id")
+_WORD_RETIME_FIELDS = frozenset({"at", "at_ms", "hold", "duration"})
 
 
 def _fixed_visual_duration(clip: Mapping[str, Any], assets: Mapping[str, Any] | None) -> bool:
     """An explicit visual hold makes the selected picture immaterial to timing.
 
     Keep asset identity in the basis for intrinsic-duration and audio inputs.
-    This only retains a baseline failure; changed declarations/timing still
-    require normal exact binding validation.
+    This only retains a baseline failure for an asset-only edit; timing-only
+    edits use a separate signature that keeps the selected media pinned.
     """
     hold = clip.get("hold")
     entry = (assets or {}).get(clip.get("asset", clip.get("asset_id")))
@@ -128,22 +129,37 @@ class _BasisReader:
         registry = scope.get('registry', scope.get('config', {}).get('registry', {}))
         return registry.get('assets', {}) if isinstance(registry, Mapping) else {}
 
-    def signature(self, key: tuple[Any, ...], clip: Mapping[str, Any], declaration: str) -> str:
+    def signature(self, key: tuple[Any, ...], clip: Mapping[str, Any], declaration: str,
+                  *, retimed: bool = False) -> str:
         """The basis as text, assembled from per-bundle parts so each declaration adds only its own."""
         try:
             word = moments.parse(declaration).kind == "word"
         except (TypeError, ValueError, moments.MomentError):
             word = False
         if word and key[0] != "parent":
-            # A shot clip's word declaration never has an authorized binding, whatever its siblings,
-            # placements or other shots say: the finding depends on this clip's timing alone, not on
-            # which element it shows or its params.
-            timing = {name: clip[name] for name in _WORD_TIMING_FIELDS if name in clip}
-            if _fixed_visual_duration(clip, self._assets(key[0], key[1])):
+            # This second, narrow signature admits authored interval edits only. Keep the
+            # selected media and source-window fields in the clip shape; unlike the historical
+            # asset-only signature below, no media identity is removed here.
+            timing = {name: clip[name] for name in _WORD_TIMING_FIELDS
+                      if name in clip and (not retimed or name not in _WORD_RETIME_FIELDS)}
+            if not retimed and _fixed_visual_duration(clip, self._assets(key[0], key[1])):
+                # Preserve the established asset-only visual-hold exception, with timing pinned.
                 timing.pop("asset", None)
                 timing.pop("asset_id", None)
             anchors = intent._app(clip).get("word_anchors")
-            return json.dumps({"clip": timing, "word_anchors": anchors}, sort_keys=True, default=str)
+            source = None
+            if retimed:
+                source_shots = self.source.get("shots", {})
+                shot = source_shots.get(key[1], {}) if isinstance(source_shots, Mapping) else {}
+                asset_key = clip.get("asset", clip.get("asset_id"))
+                source = {
+                    "shot_id": shot.get("shot_id") if isinstance(shot, Mapping) else None,
+                    "internal_timeline_id": shot.get("internal_timeline_id") if isinstance(shot, Mapping) else None,
+                    "pinned_documents": self.source.get("pinned_documents", []),
+                    "asset_entry": self._assets(key[0], key[1]).get(asset_key),
+                }
+            return json.dumps({"clip": timing, "word_anchors": anchors, "source": source},
+                              sort_keys=True, default=str)
         basis = self.basis(key, clip, declaration)
         own = {"clip": basis["clip"]}
         parts = [json.dumps(own, sort_keys=True, default=str), self._json("documents", basis["documents"])]
@@ -416,14 +432,20 @@ def _declaration_failures(
 
 def _signed_failures(
     bundle: Mapping[str, Any], source_bundles: Sequence[Mapping[str, Any]] = (),
-) -> dict[tuple[Any, ...], str]:
+) -> dict[tuple[Any, ...], frozenset[str]]:
     """Sign each failing declaration by its text and the inputs that decide it."""
     rows = dict(_legacy_rows(bundle))
     reader = _BasisReader(bundle)
     signed = {}
     for key, field in _declaration_failures(bundle, source_bundles):
         value = _legacy_declarations(rows[key])[field]
-        signed[(key, field)] = json.dumps([value, reader.signature(key, rows[key], value)])
+        signatures = {reader.signature(key, rows[key], value)}
+        try:
+            if key[0] != "parent" and moments.parse(value).kind == "word":
+                signatures.add(reader.signature(key, rows[key], value, retimed=True))
+        except (TypeError, ValueError, moments.MomentError):
+            pass
+        signed[(key, field)] = frozenset(json.dumps([value, signature]) for signature in signatures)
     return signed
 
 
@@ -438,9 +460,10 @@ def _legacy_exemptions(
     """
     if baseline is None:
         return set()
-    _, preexisting = split_findings(
-        _signed_failures(candidate, source_bundles), _signed_failures(baseline))
-    return set(preexisting)
+    candidate_failures = _signed_failures(candidate, source_bundles)
+    baseline_failures = _signed_failures(baseline)
+    return {key for key in candidate_failures.keys() & baseline_failures.keys()
+            if candidate_failures[key] & baseline_failures[key]}
 
 
 def _legacy_inputs(
