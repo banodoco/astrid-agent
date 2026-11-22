@@ -1275,10 +1275,12 @@ def _validated_runtime(project_dir: Path, *, environment: Mapping[str, str] | No
             raise RemotionValidationError("runtime validation launch/source differs")
         matches = [item for item in artifact['contexts'][role]['variants'] if item['context'] == context]
         if len(matches) != 1:
-            differences = [_context_differences(item['context'], context)
+            differences = [_context_differences(item.get('context'), context)
                            for item in artifact['contexts'][role]['variants']]
             fields = min(differences, key=len) if differences else []
-            detail = ", ".join(fields) if fields else "validated context or role"
+            detail = ", ".join(fields[:8]) if fields else "validated context or role"
+            if len(fields) > 8:
+                detail += ", …"
             raise RemotionValidationError(
                 f"runtime validation consumer context differs in {detail}; "
                 "restart the Astrid host after aligning its launch and worker environment, then retry")
