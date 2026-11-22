@@ -2166,8 +2166,10 @@ def ensure_pack_host(
     )
 
     try:
-        source_digest = source_checkout_digest(source_path)
-        source_closure_digest = source_checkout_closure_digest(source_path)
+        from astrid.sdk.command_timing import stage
+        with stage("pack host source identity"):
+            source_digest = source_checkout_digest(source_path)
+            source_closure_digest = source_checkout_closure_digest(source_path)
     except (OSError, ValueError) as exc:
         raise PackHostBootstrapError(
             f"generic Astrid pack source tree is not a safe checkout; {reconfigure_action}"
@@ -2233,7 +2235,8 @@ def ensure_pack_host(
         raise PackHostBootstrapError(f"generic Astrid pack host lock is unavailable; {reconfigure_action}") from exc
     try:
         try:
-            platform.lock_file(lock_handle.fileno())
+            with stage("pack host lifecycle lock"):
+                platform.lock_file(lock_handle.fileno())
         except (ImportError, OSError) as exc:
             raise PackHostBootstrapError(f"generic Astrid pack host lock is unavailable; {reconfigure_action}") from exc
         current = _read_object(state_path)
