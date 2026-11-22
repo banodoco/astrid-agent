@@ -10,7 +10,7 @@ on:
   # runs only the cheap subset: fast checks, unit shard 1 of 8 (and the unit aggregate), and boundary. The heavy jobs
   # (windows, darwin, release wheels, shards 2-8) carry `if: github.event_name != 'pull_request'` and run on the push.
   pull_request:
-    branches: ["release/*/main"]
+    branches: ["release/*/main", "release/*/plan-*"]
   workflow_dispatch:
 
 concurrency:
@@ -21,6 +21,20 @@ env:
   PYTEST_ADDOPTS: -rA
 
 jobs:
+  execution-size:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - name: Compare execution sizes with the PR merge base
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/reshape/compare_execution_size.py --base "$PR_BASE" --head "$PR_HEAD"
+
   windows-native-and-installer:
     if: github.event_name != 'pull_request'
     runs-on: windows-latest

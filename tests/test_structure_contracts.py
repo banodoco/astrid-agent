@@ -1168,3 +1168,44 @@ def test_validate_repo_structure_authority_exemptions_stay_green(
 
     assert structure.validate_authority_boundaries(tmp_path) == []
     assert report.ok, report.errors
+
+
+def test_execution_size_guard_detects_required_growth() -> None:
+    import ast
+    from scripts.reshape.compare_execution_size import HOST, compare
+
+    source = (Path(__file__).resolve().parents[1] / HOST).read_text(encoding="utf-8")
+    lines = source.splitlines(keepends=True)
+    tree = ast.parse(source)
+    host = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "GenericPackHost")
+    method = next(n for n in host.body if isinstance(n, ast.FunctionDef) and n.name == "_run_task_impl")
+    nested = next(n for n in ast.walk(method) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n is not method)
+    base = {HOST: source}
+
+    def inserted(at: int, text: str) -> str:
+        return "".join(lines[:at] + [text] + lines[at:])
+
+    assert any("lines grew" in e for e in compare(base, {HOST: source + "\n"}))
+    added = inserted(host.end_lineno, "    def added_guard_method(self): pass\n")
+    assert any("added method added_guard_method" in e for e in compare(base, {HOST: added}))
+    direct = inserted(method.lineno, " " * (method.col_offset + 4) + "# added\n")
+    nested_growth = inserted(nested.lineno, " " * (nested.col_offset + 4) + "# added\n")
+    for changed in (direct, nested_growth):
+        assert any("_run_task_impl grew" in e for e in compare(base, {HOST: changed}))
+    sibling = "astrid/core/execution/new_sibling.py"
+    assert any(sibling in e and "1200" in e for e in compare(base, {HOST: source, sibling: "# line\n" * 1300}))
+    assert compare(base, {HOST: source.replace("\n\n", "\n", 1)}) == []
+    paid = direct.replace("\n\n", "\n", 2)
+    assert len(paid.splitlines()) <= len(lines)
+    assert any("_run_task_impl grew" in e for e in compare(base, {HOST: paid}))
+
+
+def test_execution_size_guard_limits_new_functions_and_method_duplicates() -> None:
+    from scripts.reshape.compare_execution_size import HOST, compare
+
+    base = {HOST: "class GenericPackHost:\n    def existing(self): pass\n"}
+    duplicate = "class GenericPackHost:\n    def existing(self): pass\n    def existing(self): pass\n"
+    assert any("added method existing" in e for e in compare(base, {HOST: duplicate}))
+    path = "astrid/core/execution/sibling.py"
+    long_function = "def long():\n" + "    pass\n" * 200
+    assert any("long grew" in e for e in compare(base, {**base, path: long_function}))
