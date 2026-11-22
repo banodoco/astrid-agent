@@ -594,6 +594,17 @@ def test_generate_without_claimed_machine_refuses_before_admission(monkeypatch):
         GenerationFacade().image(placement='runpod', prompt='one boat')
 
 
+@pytest.mark.parametrize('inputs', [
+    {'gpu': ['RTX 4090']},
+    {'datacenter': 'EU-FAKE'},
+])
+def test_workflow_rejects_claim_controls_with_machine_claim_guidance(inputs):
+    from astrid.sdk.generation import GenerationInputError
+
+    with pytest.raises(GenerationInputError, match='astrid machines claim'):
+        GenerationFacade().workflow(workflow='workflow.json', inputs=inputs)
+
+
 def test_target_describe_directs_rental_to_machines_claim(monkeypatch):
     from astrid.core.generation import placement
     import astrid.sdk.generation as generation
