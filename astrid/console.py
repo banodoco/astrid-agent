@@ -7,6 +7,13 @@ import time
 from contextvars import ContextVar
 
 
+_STARTUP_MARKS: ContextVar[tuple | None] = ContextVar("astrid_startup_marks", default=None)
+
+
+def startup_marks():
+    return _STARTUP_MARKS.get()
+
+
 _CLI_STARTED_AT: ContextVar[float | None] = ContextVar("astrid_cli_started_at", default=None)
 
 
@@ -68,14 +75,23 @@ def process_started_at(fallback: float) -> float:
 
 
 def main(argv: list[str] | None = None) -> int:
-    rest = list(sys.argv[1:] if argv is None else argv)
     started_at = time.monotonic()
+    rest = list(sys.argv[1:] if argv is None else argv)
     if argv is None and rest and rest[0] == "timelines":
         started_at = process_started_at(started_at)
     if rest and rest[0] == "generate":
+        process_start = (process_started_at(started_at)
+                         if argv is None and "astrid.core.gateway" not in sys.modules
+                         else started_at)
+        provenance = "process start" if process_start < started_at else "command entry"
+        import_start = time.monotonic()
         from .core.gateway import main as gateway_main
-
-        return gateway_main(rest)
+        import_end = time.monotonic()
+        token = _STARTUP_MARKS.set((process_start, provenance, import_start, import_end))
+        try:
+            return gateway_main(rest)
+        finally:
+            _STARTUP_MARKS.reset(token)
     if rest and rest[0] == "engines":
         from .core.engine_cli import main as engines_main
 
