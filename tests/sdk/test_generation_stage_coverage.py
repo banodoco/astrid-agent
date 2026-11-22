@@ -12,7 +12,9 @@ from astrid import console
 from astrid.core.execution.generic_host import GenericPackHost, RuntimeProtocolClient
 from astrid.sdk.client import AstridClient
 from tests.core.generation.backends.test_comfy_model_resolution import install_target, target_info
-from tests.core.generation.backends.test_comfy_target import network  # noqa: F401
+from tests.core.generation.test_engine_endpoint_transport import (
+    engine_configuration, network, observation_configuration,
+)  # noqa: F401
 
 
 def _stage_rows(capsys, command: list[str]) -> list[dict]:
@@ -45,7 +47,7 @@ def test_workflow_and_image_admissions_report_generation_stage_tree(
     network, real_runtime, tmp_path, monkeypatch, capsys,
 ):
     """Exercise workflow and prompt-only image through real Runtime admission."""
-    comfy, _ = install_target(network, target_info())
+    comfy, _ = install_target(network, target_info(vaes=("ae.safetensors",)))
     daemon = real_runtime()
     client = AstridClient.open(
         endpoint=daemon.endpoint,
@@ -85,20 +87,26 @@ def test_workflow_and_image_admissions_report_generation_stage_tree(
     host.register()
     monkeypatch.setattr(AstridClient, "open_from_launcher", lambda **_kwargs: nullcontext(client))
 
-    from vibecomfy.registry.ready import repo_ready_template_discovery, resolve_ready_template
+    from vibecomfy.registry.ready import workflow_from_ready
+    from vibecomfy.workflow_bundle import emit_bundle
 
-    workflow = resolve_ready_template("image/z_image_turbo", repo_ready_template_discovery()).path
+    workflow = emit_bundle(
+        workflow_from_ready("image/z_image_turbo"),
+        tmp_path / "stage-workflow" / "workflow.py",
+        {"operation": "authored"},
+    ).python_path
     workflow_rows = _stage_rows(capsys, [
         "generate", "workflow", str(workflow), "--placement", comfy.target.url,
         "--project", project.data["project_id"], "--prompt", "a silver paper boat",
         "--no-wait", "--json", "--timings",
     ])
+    install_target(network, target_info())
     image_rows = _stage_rows(capsys, [
         "generate", "image", "a silver paper boat", "--placement", comfy.target.url,
         "--project", project.data["project_id"], "--no-wait", "--json", "--timings",
     ])
     entry_rows = _stage_rows(capsys, [
-        "generate", "image", "a silver paper boat", "--entry", "image/z_image_turbo",
+        "generate", "image", "a silver paper boat", "--entry", "z-image",
         "--placement", comfy.target.url, "--project", project.data["project_id"],
         "--no-wait", "--json", "--timings",
     ])
@@ -160,7 +168,7 @@ def test_workflow_and_image_admissions_report_generation_stage_tree(
         **common,
         "workflow snapshot": {None},
         "source retention": {None, "workflow snapshot", "candidate preparation"},
-        "workflow inputs": {"workflow snapshot"},
+        "workflow inputs": {None},
         "entry needs": {"candidate preparation"},
     }
     image_expected = {
@@ -193,19 +201,19 @@ def test_workflow_and_image_admissions_report_generation_stage_tree(
 
 
 def test_early_generation_refusal_has_parse_work_but_never_opens_runtime(monkeypatch, capsys):
-    """Reject a wrong-modality catalog request at qualification before admission."""
+    """Reject an empty named prompt during input reads before Runtime admission."""
     def forbidden_runtime_open(**_kwargs):
         pytest.fail("generation input refusal must precede the Runtime connection")
 
     monkeypatch.setattr(AstridClient, "open_from_launcher", forbidden_runtime_open)
     code = console.main([
-        "generate", "image", "a silver paper boat", "--model", "wan-2.2", "--mode", "t2i",
-        "--placement", "http://127.0.0.1:8188", "--json", "--timings",
+        "generate", "image", "--prompt", " ", "--placement", "http://127.0.0.1:8188",
+        "--json", "--timings",
     ])
     captured = capsys.readouterr()
     assert code == 2, captured.out + captured.err
     payload = json.loads(captured.out)
     rows = payload["timings"]
     assert any(row["stage"] == "argument parsing" and row["seconds"] > 0 for row in rows)
-    assert any(row["stage"] == "candidate qualification" and row["seconds"] > 0 for row in rows)
+    assert any(row["stage"] == "input reads" and row["seconds"] > 0 for row in rows)
     assert not any(row["stage"] == "Runtime connection" for row in rows)
