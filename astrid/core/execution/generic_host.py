@@ -614,13 +614,10 @@ INLINE_OUTPUT_MAX_BYTES = 8 * 1024 * 1024
 
 
 
-
-
-
-
 def _generation_selector_declarations(
     record: Any, intent: Mapping[str, Any] | None,
 ) -> tuple[str | None, tuple[dict[str, Any], ...]]:
+    """Flatten admitted selector declarations without changing their order."""
     return _naming_generation_selector_declarations(
         record, intent, output_port_resolver=_generation_output_port
     )
@@ -1805,6 +1802,7 @@ _managed_asset_identity.__doc__ = _naming_managed_asset_identity.__doc__
 
 
 def _task_selector(task_data: Mapping[str, Any]) -> str | None:
+    """The renderer selector the admitted task names, or None when it omits one."""
     return _contract_helpers._task_selector(task_data, admitted_task_spec=_admitted_task_spec)
 
 
@@ -2597,6 +2595,7 @@ def _fixed_request_scope(metadata: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _admitted_task_spec(task_data: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Decode the canonical immutable request from a task snapshot."""
     return _contract_helpers._admitted_task_spec(task_data, admitted_spec_envelope=_admitted_spec_envelope)
 
 
@@ -2606,6 +2605,7 @@ def _execution_contract(
     task_data: Mapping[str, Any], *, runtime_session_id: str | None = None,
     allow_runtime_empty_inputs: bool = False,
 ) -> dict[str, Any] | None:
+    """Validate the carried request before the worker spends or opens a session."""
     return _contract_helpers._execution_contract(
         task_data, runtime_session_id=runtime_session_id,
         allow_runtime_empty_inputs=allow_runtime_empty_inputs,
