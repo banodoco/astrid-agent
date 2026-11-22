@@ -312,7 +312,8 @@ def test_cleanup_flight_retries_exact_body_without_recapture(monkeypatch, config
             base_revision_id=body['base_revision_id'],
             commands=copy.deepcopy(body['commands']))
         owner.history.return_value = DomainResult.success({
-            'head': {'revision_id': 'committed', 'publication_id': 'publication'},
+            'head': {'revision_id': accepted.data['accepted_revision_id'],
+                     'publication_id': receipt['receipt_id']},
             'items': [{'publisher': 'author', 'receipt': receipt}],
             'next_cursor': None})
         return accepted
