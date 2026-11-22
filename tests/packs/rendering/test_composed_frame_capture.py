@@ -153,6 +153,22 @@ def test_cache_identity_changes_when_renderer_source_changes(tmp_path, monkeypat
     assert first != second
 
 
+@pytest.mark.parametrize("renderer_source", [
+    "remotion/webpack-alias.mjs",
+    "remotion/native-scene.mjs",
+    "remotion/timeline-composition-legacy-loader.cjs",
+    "astrid/core/timeline/schema/r13-legacy-elements.json",
+])
+def test_legacy_renderer_inputs_invalidate_cached_frames(tmp_path, monkeypatch, renderer_source):
+    monkeypatch.setenv("ASTRID_REMOTION_PROJECT_DIR", str(tmp_path / "remotion"))
+    source_file = tmp_path / renderer_source
+    source_file.parent.mkdir(parents=True)
+    source_file.write_text("original", encoding="utf-8")
+    first = frame_cache_key(_snapshot(), 1, [32, 18])
+    source_file.write_text("changed", encoding="utf-8")
+    assert frame_cache_key(_snapshot(), 1, [32, 18]) != first
+
+
 @pytest.mark.parametrize("relative", [
     "astrid/packs/rendering/rendering/renderers/remotion/run.py",
     "astrid/packs/rendering/rendering/renderers/remotion/root_preparation.py",
