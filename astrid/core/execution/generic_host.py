@@ -67,30 +67,6 @@ from astrid.core.execution.execution_contract_helpers import (
 )
 from astrid.core.execution.host_errors import HostError
 from astrid.core.execution.host_matrix import load_matrix as _load_host_matrix
-from astrid.core.execution.host_naming import (
-    _MANAGED_ASSET_LOCATOR_KEYS as _MANAGED_ASSET_LOCATOR_KEYS,
-)
-from astrid.core.execution.host_naming import (
-    _RUNTIME_OUTPUT_NAMESPACES as _RUNTIME_OUTPUT_NAMESPACES,
-)
-from astrid.core.execution.host_naming import (
-    _SUFFIX_MEDIA_TYPES as _SUFFIX_MEDIA_TYPES,
-)
-from astrid.core.execution.host_naming import (
-    _VIDEO_SUFFIX_MEDIA_TYPES as _VIDEO_SUFFIX_MEDIA_TYPES,
-)
-from astrid.core.execution.host_naming import (
-    _bind_named_parent_output,
-    _generation_output_port,
-    _managed_asset_identity,
-    _managed_input_staging_name,
-    _named_raw_publication_port,
-    _runtime_output_filename,
-    _settlement_media_type,
-)
-from astrid.core.execution.host_naming import (
-    _generation_selector_declarations as _naming_generation_selector_declarations,
-)
 from astrid.core.execution.pipe_io import PipeReader, PipeWriter, close_pipe_workers
 from astrid.core.execution.platform_helpers import (
     PROCESS_CONTROL_SUPPORT_ENV,
@@ -196,6 +172,30 @@ from astrid.core.execution.guards import (
     write_evidence_status,
 )
 from astrid.core.execution.host_log import log_lease_diagnostic, start_stdio_rotator
+from astrid.core.execution.host_naming import (
+    _MANAGED_ASSET_LOCATOR_KEYS as _MANAGED_ASSET_LOCATOR_KEYS,
+)
+from astrid.core.execution.host_naming import (
+    _RUNTIME_OUTPUT_NAMESPACES as _RUNTIME_OUTPUT_NAMESPACES,
+)
+from astrid.core.execution.host_naming import (
+    _SUFFIX_MEDIA_TYPES as _SUFFIX_MEDIA_TYPES,
+)
+from astrid.core.execution.host_naming import (
+    _VIDEO_SUFFIX_MEDIA_TYPES as _VIDEO_SUFFIX_MEDIA_TYPES,
+)
+from astrid.core.execution.host_naming import (
+    _bind_named_parent_output,
+    _generation_output_port,
+    _managed_asset_identity,
+    _managed_input_staging_name,
+    _named_raw_publication_port,
+    _runtime_output_filename,
+    _settlement_media_type,
+)
+from astrid.core.execution.host_naming import (
+    _generation_selector_declarations as _naming_generation_selector_declarations,
+)
 from astrid.core.execution.managed_inputs import managed_file_digest
 from astrid.core.execution.managed_tool_session import (
     AdmissionToken,
