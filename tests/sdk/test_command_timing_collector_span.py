@@ -13,7 +13,8 @@ def test_repeated_output_snapshots_report_independent_collector_span(monkeypatch
     output = command_timing.TimingOutput(stream, collector, include_collector_span=True)
     for now in (12.5, 14.0):
         clock[0] = now
-        output.write('{"ok": true}\n')
+        output.write('{"ok": true}')
+        stream.write("\n")
     first, second = (json.loads(line) for line in stream.getvalue().splitlines())
     assert first["collector_span_seconds"] == 2.5
     assert second["collector_span_seconds"] == 4.0
