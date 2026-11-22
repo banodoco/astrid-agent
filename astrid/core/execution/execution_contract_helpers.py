@@ -17,7 +17,7 @@ def _canonical_digest(value: Any) -> str:
 
 def _task_selector(task_data: Mapping[str, Any], *, admitted_task_spec=None) -> str | None:
     """The renderer selector the admitted task names, or None when it omits one."""
-    spec = (admitted_task_spec or _admitted_task_spec)(task_data)
+    spec = (_admitted_task_spec if admitted_task_spec is None else admitted_task_spec)(task_data)
     for section in ("inputs", "params"):
         values = spec.get(section)
         if isinstance(values, Mapping) and values.get("selector"):
@@ -60,7 +60,7 @@ def _admitted_spec_envelope(raw_spec: Any) -> Mapping[str, Any]:
 
 def _admitted_task_spec(task_data: Mapping[str, Any], *, admitted_spec_envelope=None) -> Mapping[str, Any]:
     """Decode the canonical immutable request from a task snapshot."""
-    return (admitted_spec_envelope or _admitted_spec_envelope)(task_data.get("spec"))
+    return (_admitted_spec_envelope if admitted_spec_envelope is None else admitted_spec_envelope)(task_data.get("spec"))
 
 def _assert_verified_placement_binding(
     binding: Mapping[str, Any], target: Mapping[str, Any]
@@ -110,10 +110,10 @@ def _execution_contract(
     normalize_request=None,
 ) -> dict[str, Any] | None:
     """Validate the carried request before the worker spends or opens a session."""
-    admitted_spec_envelope = admitted_spec_envelope or _admitted_spec_envelope
-    assert_verified_placement_binding = assert_verified_placement_binding or _assert_verified_placement_binding
-    canonical_digest = canonical_digest or _canonical_digest
-    normalize_request = normalize_request or normalize_execution_request
+    admitted_spec_envelope = _admitted_spec_envelope if admitted_spec_envelope is None else admitted_spec_envelope
+    assert_verified_placement_binding = _assert_verified_placement_binding if assert_verified_placement_binding is None else assert_verified_placement_binding
+    canonical_digest = _canonical_digest if canonical_digest is None else canonical_digest
+    normalize_request = normalize_execution_request if normalize_request is None else normalize_request
     envelope = task_data.get("spec")
     # A small set of legacy in-process callers intentionally provide only the
     # task identity while exercising capability-level admission guards.  With

@@ -56,7 +56,7 @@ def _managed_input_staging_name(port: str, digest: str, original_name: str | Non
     return f"managed-{port_digest}-{digest}{suffix.lower()}"
 
 
-def _managed_asset_identity(key: str, raw: Mapping[str, Any]) -> tuple[str, str]:
+def _managed_asset_identity(key: str, raw: Mapping[str, Any], *, digest_resolver=None) -> tuple[str, str]:
     """Validate a frozen registry asset and return its CAS ID and digest hex.
 
     A SHA-256 media_id is already a content identity, so it may supply the
@@ -70,7 +70,7 @@ def _managed_asset_identity(key: str, raw: Mapping[str, Any]) -> tuple[str, str]
         raise HostError(f"managed asset {key!r} contains an unmanaged locator")
     object_id = raw.get("object_id") or raw.get("media_id")
     try:
-        raw_digest = managed_asset_digest(raw)
+        raw_digest = (managed_asset_digest if digest_resolver is None else digest_resolver)(raw)
     except ValueError as exc:
         raise HostError(f"managed asset {key!r}: {exc}") from exc
     if not isinstance(object_id, str) or not object_id.strip() or not isinstance(raw_digest, str):
