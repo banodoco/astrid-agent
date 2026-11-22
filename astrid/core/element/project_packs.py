@@ -420,7 +420,8 @@ def _renderer_compiler() -> tuple[Path,Path]:
     if not api.is_file():
         raise ValueError(f'Project element admission needs the Remotion esbuild {pin}, but {api} is missing. {_REPAIR}')
     try:
-        probe = subprocess.run([str(node.path),'-e',_ESBUILD_VERSION_PROBE,str(api)],capture_output=True,text=True,
+        probe = subprocess.run([str(node.path),'-e',_ESBUILD_VERSION_PROBE,str(api)],
+                               stdin=subprocess.DEVNULL,capture_output=True,text=True,
                                env=_node_env(),timeout=15,check=False)
     except (OSError,subprocess.SubprocessError) as exc:
         raise ValueError(f'The Remotion esbuild {api} cannot run ({exc}). {_REPAIR}') from exc
