@@ -187,7 +187,6 @@ from astrid.core.execution.host_naming import (
 from astrid.core.execution.host_naming import (
     _bind_named_parent_output,
     _generation_output_port,
-    _managed_asset_identity as _naming_managed_asset_identity,
     _managed_input_staging_name,
     _named_raw_publication_port,
     _runtime_output_filename,
@@ -195,6 +194,9 @@ from astrid.core.execution.host_naming import (
 )
 from astrid.core.execution.host_naming import (
     _generation_selector_declarations as _naming_generation_selector_declarations,
+)
+from astrid.core.execution.host_naming import (
+    _managed_asset_identity as _naming_managed_asset_identity,
 )
 from astrid.core.execution.managed_inputs import managed_file_digest
 from astrid.core.execution.managed_tool_session import (
@@ -2763,6 +2765,7 @@ def _interactive_review_authority(
     it, and no authority issuance or parent heartbeat is needed by a child.
     """
     from astrid.sdk._child_bridge import _validate_child_policy
+
     from ._child_bridge import _snapshot_grant, task_resource
     parent_id = "iteration.experiment_review_session"
     child_id = "editorial.human_review"
@@ -2992,7 +2995,6 @@ class _DiscoveryCollection:
                  lease_id: str, fence: int, runtime_epoch: int,
                  cancelled: Callable[[], bool]):
         from astrid.sdk._child_bridge import _validate_child_policy
-
         spec = parent.get("spec")
         if not isinstance(spec, Mapping) or "delegated_parent" in spec:
             raise HostError("discovery requires an admitted root parent")
@@ -3258,7 +3260,6 @@ class _DiscoveryCollection:
         Runtime path. Neither source filenames nor caller maps select a path.
         """
         from ._child_bridge import _DIGEST, _MAX_OBJECT
-
         try:
             self._active()
             if self._collected_outputs is None:
@@ -3350,7 +3351,6 @@ class _DiscoveryCollection:
         remain host provenance; uploads use the current bridge attempt.
         """
         from ._child_bridge import _KEY, _snapshot
-
         try:
             self._active()
             if self._prepared_objects is None or type(media_bindings) is not dict or not media_bindings:
