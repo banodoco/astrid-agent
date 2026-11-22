@@ -36,13 +36,14 @@ def test_catalog_helper_keeps_substitute_backend_on_legacy_call_path(
     _stub_catalog_helper(monkeypatch)
     registry = SimpleNamespace(_astrid_default_generation_registry=True)
     calls = []
+    sentinel = object()
 
     if backend_kind == "kwargs":
         def prepare(*args, **kwargs):
             calls.append((args, kwargs))
             return "workflow", {"roles": {"vae": "exact.vae"}}, None
     elif backend_kind == "keyword_only":
-        def prepare(*args, registry=None, **kwargs):
+        def prepare(*args, registry=sentinel, **kwargs):
             calls.append((args, {**kwargs, "registry": registry}))
             return "workflow", {"roles": {"vae": "exact.vae"}}, None
     elif backend_kind == "legacy":
@@ -80,7 +81,10 @@ def test_catalog_helper_keeps_substitute_backend_on_legacy_call_path(
     )
 
     assert len(calls) == 1
-    assert "registry" not in calls[0][1]
+    if backend_kind == "keyword_only":
+        assert calls[0][1]["registry"] is sentinel
+    else:
+        assert "registry" not in calls[0][1]
     assert result[1]["roles"] == {"vae": "exact.vae"}
     assert result[1]["bindings"] == {"seed": 7}
 
