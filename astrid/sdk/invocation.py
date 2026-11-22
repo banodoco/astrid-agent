@@ -1486,6 +1486,7 @@ def _prepare_managed_render_inputs(
             expanded_registry,
             project_ref=str(project),
             client=_client,
+            config=expanded_config,
         )
         snapshot = replace(
             snapshot,
