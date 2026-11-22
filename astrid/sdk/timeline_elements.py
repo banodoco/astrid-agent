@@ -8,7 +8,7 @@ import math
 import re
 import uuid
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 from astrid.core.element.project_packs import (
     _json_digest,
@@ -483,7 +483,8 @@ def place_element(owner: Any, project: str, timeline: str, *, realm: str, target
                     historical_calls = copy.deepcopy(calls)
                     if all('placement' not in cmd['args'] for cmd in data['commands']):
                         for call in historical_calls:
-                            call['args'].pop('placement', None)
+                            args = cast(dict[str, str | dict[str, str]], call['args'])
+                            args.pop('placement', None)
                     if not _matches(data['commands'], historical_calls):
                         raise ValueError('Acknowledged request identity has different original intent')
                     return _placement_result(session, data, receipt, before, target, expected_head, key)
