@@ -1,10 +1,13 @@
 """Element registry and canonical pack-source discovery."""
 
 import logging
+import os
+import stat
 import sys
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
+from threading import RLock
 from typing import Iterable
 
 from astrid.core.foundation.paths import REPO_ROOT
@@ -22,7 +25,10 @@ from astrid.core.pack.alias_resolver import (
     _register_pack_aliases,
     create_shared_alias_resolver,
 )
-from astrid.core.pack.discovery import discover_pack_metadata
+from astrid.core.pack.discovery import ASTRID_PACKS_PATH_ENV, discover_pack_metadata
+from astrid.core.pack.loader import packs_root
+from astrid.core.pack.personal import resolve_personal_packs_root
+from astrid.core.pack.source_setup import source_state_path
 from astrid.core.pack.walkers import iter_element_manifest_paths
 from astrid.core.registry import CapabilityRegistry
 
@@ -194,37 +200,75 @@ class ElementRegistry(CapabilityRegistry[tuple[str, str], ElementDefinition]):
         """
         return {key: definitions[0] for key, definitions in self._entries.items()}
 
-class _DefaultElementRegistry(ElementRegistry):
-    """A default registry can discover packs installed after it was assembled."""
+# Serialize cold loads for catalog and snapshot callers. The filesystem key
+# still changes when another process publishes a new collection.
+_default_registry_lock = RLock()
 
-    def get(self, kind, element_id, *, pack_id=None, revision=None):
-        try:
-            return super().get(kind, element_id, pack_id=pack_id, revision=revision)
-        except KeyError:
-            refreshed = getattr(self, "_refreshed", None)
-            if refreshed is not None:
+
+def _stat_key(info: os.stat_result) -> tuple[int, ...]:
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _path_state(path: Path) -> tuple[int, ...] | None:
+    try:
+        return _stat_key(path.stat())
+    except OSError:
+        return None
+
+
+def _pack_root_state(root: Path) -> tuple:
+    directory = _path_state(root)
+    manifest = _path_state(root / "pack.yaml")
+    if manifest is not None and stat.S_ISREG(manifest[2]):
+        return directory, manifest, ()
+
+    children = []
+    try:
+        with os.scandir(root) as entries:
+            for entry in entries:
+                if entry.name == "__pycache__":
+                    continue
                 try:
-                    return ElementRegistry.get(refreshed, kind, element_id, pack_id=pack_id, revision=revision)
-                except KeyError:
-                    pass
-            _load_default_registry_data.cache_clear()
-            refreshed = load_default_registry(**self._load_options)
-            # Use the base accessor for exactly one retry, without recursion.
-            result = ElementRegistry.get(refreshed, kind, element_id, pack_id=pack_id, revision=revision)
-            self._refreshed = refreshed
-            return result
+                    info = entry.stat()
+                except OSError:
+                    # A concurrent removal will be visible on the next scan.
+                    continue
+                if stat.S_ISDIR(info.st_mode):
+                    children.append((entry.name, _stat_key(info), _path_state(Path(entry.path) / "pack.yaml")))
+    except OSError:
+        # Leave unreadable-root admission and diagnostics to discovery.
+        pass
+    return directory, manifest, tuple(sorted(children))
 
 
-@lru_cache(maxsize=None)
+def _default_registry_state(project_root: Path, extra_pack_roots: tuple[str, ...] = ()) -> tuple:
+    """Fingerprint collection membership without reading or validating manifests."""
+    env_roots = tuple(filter(None, os.environ.get(ASTRID_PACKS_PATH_ENV, "").split(os.pathsep)))
+    personal_root = resolve_personal_packs_root()
+    roots = (packs_root(), project_root / "astrid" / "packs", *extra_pack_roots, *env_roots)
+    if personal_root is not None:
+        roots = (*roots, personal_root)
+    paths = dict.fromkeys((project_root / Path(root).expanduser()).resolve() for root in roots)
+    state = source_state_path()
+    return (
+        env_roots,
+        personal_root,
+        state,
+        _path_state(state),
+        tuple((root, _pack_root_state(root)) for root in paths),
+    )
+
+
+@lru_cache(maxsize=16)
 def _load_default_registry_data(
     project_root_key: str,
     include_missing_roots: bool,
     extra_pack_roots_key: tuple[str, ...],
+    pack_root_state: tuple,
 ) -> tuple[tuple[ElementDefinition, ...], ElementKindRegistry, tuple[SkippedElement, ...]]:
-    """Parse the static element corpus once; return raw definitions.
+    """Parse the element corpus once per collection state; return raw definitions.
 
-    The corpus (packs + default element sources) is static repo content.  A
-    fresh parse costs seconds of YAML work per call (measured: ~2s per load,
+    A fresh parse costs seconds of YAML work per call (measured: ~2s per load,
     ~189 ``yaml.safe_load`` calls — a 93-event timeline replay that validates
     four config events spends ~6s total).  Callers rebuild a fresh
     :class:`ElementRegistry` from the cached raw definitions, so per-call
@@ -267,7 +311,11 @@ def clear_default_registry_cache() -> None:
     this cache (the catalog's ``_clear_registry_cache`` does) so a re-discovered
     corpus (e.g. a temp pack declaring a custom element kind) is re-parsed.
     """
-    _load_default_registry_data.cache_clear()
+    from astrid.core.element.catalog import _cached_registry
+
+    with _default_registry_lock:
+        _load_default_registry_data.cache_clear()
+        _cached_registry.cache_clear()
     # Keep timeline parameter validation coherent with provider discovery. The SDK owns
     # its schema cache, so import lazily to avoid coupling registry initialization to it.
     from astrid.sdk.timeline_address import clear_schema_cache
@@ -286,20 +334,22 @@ def load_default_registry(
     Registry assembly stays per-call so callers may register additional
     elements without polluting the shared corpus cache.
     """
-    elements, element_kind_registry, diagnostics = _load_default_registry_data(
-        str(Path(project_root).resolve()),
-        include_missing_roots,
-        tuple(str(Path(root).resolve()) for root in extra_pack_roots),
-    )
+    project_root = Path(project_root).resolve()
+    extra_pack_roots = tuple(str(Path(root).resolve()) for root in extra_pack_roots)
+    with _default_registry_lock:
+        elements, element_kind_registry, diagnostics = _load_default_registry_data(
+            str(project_root),
+            include_missing_roots,
+            extra_pack_roots,
+            _default_registry_state(project_root, extra_pack_roots),
+        )
     resolver = create_shared_alias_resolver()
     _register_pack_aliases(resolver, {})  # no aliases yet
-    registry = _DefaultElementRegistry(
+    registry = ElementRegistry(
         alias_resolver=resolver,
         element_kind_registry=element_kind_registry,
         diagnostics=diagnostics,
     )
-    registry._load_options = dict(project_root=project_root, include_missing_roots=include_missing_roots,
-                                  extra_pack_roots=extra_pack_roots)
     for element in elements:
         registry.register(element)
     return registry

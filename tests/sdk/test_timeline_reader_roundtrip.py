@@ -397,8 +397,12 @@ def test_created_track_without_a_label_is_labelled_with_its_id_and_passes_the_ga
 
 
 def test_reader_gate_rediscovers_pack_added_after_registry_was_cached(tmp_path, monkeypatch):
+    import shutil
+    from concurrent.futures import ThreadPoolExecutor
+
     from astrid.core.element import catalog
-    from tests.sdk.test_timeline_element_schema_resolution import ELEMENT, _probe_pack
+    from astrid.core.element import registry as element_registry
+    from tests.sdk.test_timeline_element_schema_resolution import ELEMENT, PACK, _probe_pack
     from runtime_protocol.timeline_commit import CommitRejected
     from astrid.sdk.timeline.commit import _check_readers
 
@@ -409,29 +413,78 @@ def test_reader_gate_rediscovers_pack_added_after_registry_was_cached(tmp_path, 
     payload = readable_payload()
     payload["clips"][0].update(clipType=ELEMENT, params={"size": 2})
     candidate = _document_of(payload)
+    invalid_payload = readable_payload()
+    invalid_payload["clips"][0].update(clipType=ELEMENT, params={"size": "bad"})
+    invalid = _document_of(invalid_payload)
     base = {"revision_id": "r0", "publication_id": "pub0"}
     try:
-        # Warm both default discovery and the catalog before installing the pack.
+        # With no schema, the reader leaves an unknown effect opaque, even when
+        # its params would be invalid under the schema installed below.
         assert reader_problem(service, baseline) is None
+        assert reader_problem(service, invalid) is None
         with pytest.raises(KeyError, match=ELEMENT):
             catalog.read_effect_schema(ELEMENT)
+        before_install = element_registry.load_default_registry()
+        with pytest.raises(KeyError, match=ELEMENT):
+            before_install.get("effects", ELEMENT)
+
         _probe_pack(tmp_path)
-        from astrid.sdk.timeline_address import element_schema
-        assert element_schema(ELEMENT) is not None
+        # Immediately exercise the exact reader gate used by a commit after the
+        # pack appears in the same process.
         assert reader_problem(service, candidate) is None
         _check_readers(service, candidate, baseline, base, base)
-        from astrid.core.element import registry as element_registry
-        def unexpected_discovery(*args, **kwargs):
-            raise AssertionError("successful cached lookup rediscovered packs")
+        with pytest.raises(CommitRejected, match="'bad' is not of type 'integer'.*Nothing was committed"):
+            _check_readers(service, invalid, baseline, base, base)
+
+        with pytest.raises(KeyError, match=ELEMENT):
+            before_install.get("effects", ELEMENT)
+        assert ELEMENT in catalog.list_effect_ids()
+        assert catalog.read_effect_schema(ELEMENT)["properties"]["size"]["type"] == "integer"
+        installed = element_registry.load_default_registry()
+        definition = installed.get("effects", ELEMENT, pack_id=PACK)
+        assert definition.component.is_file()
+        revision = catalog._element_revision(definition)
+        assert installed.get("effects", ELEMENT, pack_id=PACK, revision=revision) == definition
+
+        with pytest.raises(KeyError, match="wrong-revision"):
+            installed.get("effects", ELEMENT, pack_id=PACK, revision="wrong-revision")
+
+        # Both the catalog and the raw registry share the cached corpus. Once
+        # this stable installed tree is loaded, concurrent readers and later hits
+        # should reuse the same discovery.
+        catalog._clear_registry_cache()
+        discoveries = []
+        original_discover = element_registry.discover_pack_metadata
+
+        def count_discovery(*args, **kwargs):
+            discoveries.append(1)
+            return original_discover(*args, **kwargs)
+
         with monkeypatch.context() as patch:
-            patch.setattr(element_registry, "discover_pack_metadata", unexpected_discovery)
-            assert catalog.read_effect_schema(ELEMENT)["properties"]["size"]["type"] == "integer"
-            assert catalog.read_effect_schema(ELEMENT)["properties"]["size"]["type"] == "integer"
+            patch.setattr(element_registry, "discover_pack_metadata", count_discovery)
+
+            def catalog_lookup():
+                assert ELEMENT in catalog.list_effect_ids()
+                return catalog.read_effect_schema(ELEMENT)["properties"]["size"]["type"]
+
+            def registry_lookup():
+                registry = element_registry.load_default_registry()
+                return registry.get("effects", ELEMENT, pack_id=PACK).component.is_file()
+
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                results = list(pool.map(lambda fn: fn(), [catalog_lookup, registry_lookup] * 8))
+        assert results == ["integer", True] * 8
+        assert len(discoveries) == 1
+
+        shutil.rmtree(tmp_path / PACK)
+        assert reader_problem(service, invalid) is None
+        assert installed.get("effects", ELEMENT, pack_id=PACK) == definition
+        assert ELEMENT not in catalog.list_effect_ids()
+        with pytest.raises(KeyError, match=ELEMENT):
+            catalog.read_effect_schema(ELEMENT)
         with pytest.raises(KeyError, match="zz-still-missing"):
             catalog.read_effect_schema("zz-still-missing")
-        missing = readable_payload()
-        missing["clips"][0].update(clipType=ELEMENT, params={"size": "bad"})
-        with pytest.raises(CommitRejected):
-            _check_readers(service, _document_of(missing), baseline, base, base)
+        with pytest.raises(KeyError, match=ELEMENT):
+            element_registry.load_default_registry().get("effects", ELEMENT, pack_id=PACK)
     finally:
         catalog._clear_registry_cache()
