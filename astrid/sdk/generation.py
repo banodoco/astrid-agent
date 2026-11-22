@@ -623,12 +623,37 @@ def _load_model_registry(
     """Lazily load the generation model registry."""
     from astrid.core.model_catalog.registry import ModelRegistry
 
-    return timed_call("model registry", ModelRegistry.load_default,
+    registry = timed_call("model registry", ModelRegistry.load_default,
         **_sdk_module()._registry_load_kwargs(
             project_root=project_root,
             extra_pack_roots=extra_pack_roots,
         ),
     )
+    # Mark the command-owned default assembly so only that verified-equivalent
+    # registry can be reused by target model resolution. Scoped registries keep
+    # the backend's legacy independent load and its original failure semantics.
+    registry._astrid_default_generation_registry = (
+        project_root is None and not extra_pack_roots
+    )
+    return registry
+
+
+def _backend_accepts_keyword(method: Any, keyword: str) -> bool:
+    """Return whether a callable accepts a keyword without invoking it."""
+    import inspect
+
+    try:
+        parameters = inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        return False
+    parameter = parameters.get(keyword)
+    if parameter is not None and parameter.kind in (
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.KEYWORD_ONLY,
+    ):
+        return True
+    return any(parameter.kind is inspect.Parameter.VAR_KEYWORD
+               for parameter in parameters.values())
 
 
 def _infer_image_mode(
@@ -877,18 +902,26 @@ def _validate_catalog_target_request(*, registry, candidate, mode, modality, inp
 def _prepare_catalog_target_workflow(*, registry: Any, candidate: Any, mode: str,
                                      modality: str, inputs: dict[str, Any],
                                      target_client: Any, backend: Any, retain_source=None,
-                                     defer_target: bool = False, align: str = "check"):
+                                     defer_target: bool = False, align: str = "check",
+                                     reuse_default_registry: bool = False):
     """Shared installed-catalog resolution and binding, without admission."""
     from astrid.core.generation.preflight import require_generation_target_readiness
     if not defer_target:
         timed_call("target check", require_generation_target_readiness, candidate, mode, target_client)
     translation = _validate_catalog_target_request(
         registry=registry, candidate=candidate, mode=mode, modality=modality, inputs=inputs)
-    workflow, plan, schema = backend.prepare_catalog_workflow(
-        candidate, mode, inputs, resolve_target=target_client is not None,
+    prepare = backend.prepare_catalog_workflow
+    kwargs = dict(resolve_target=target_client is not None,
         **({'retain_source': retain_source} if retain_source is not None else {}),
         **({'align': 'trust'} if align == 'trust' else {}),
     )
+    from astrid.core.generation.backends.vibecomfy import VibeComfyBackend
+    if (type(backend) is VibeComfyBackend
+            and reuse_default_registry
+            and getattr(registry, '_astrid_default_generation_registry', False)
+            and _backend_accepts_keyword(prepare, 'registry')):
+        kwargs['registry'] = registry
+    workflow, plan, schema = prepare(candidate, mode, inputs, **kwargs)
     from astrid.core.generation.entries import apply_workflow_inputs
     workflow, bindings, assets = apply_workflow_inputs(workflow, mode=mode, values=inputs,
         param_map=translation)
@@ -1901,7 +1934,9 @@ class GenerationFacade:
                         registry=registry, candidate=candidate, mode=mode, modality=modality,
                         inputs=inputs, target_client=target_client, backend=backend,
                         retain_source=None if dry_run else retain_source,
-                        defer_target=is_remote_target or (is_managed_target and not dry_run), align=align)
+                        defer_target=is_remote_target or (is_managed_target and not dry_run), align=align,
+                        reuse_default_registry=getattr(
+                            registry, '_astrid_default_generation_registry', False))
                 else:
                     from types import SimpleNamespace
                     prerequisite = SimpleNamespace(id=identifier, modes={mode: SimpleNamespace(
