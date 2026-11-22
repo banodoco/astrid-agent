@@ -11,6 +11,27 @@ const UI_TIMEOUT = 45_000;
 const NOTICE = 'Editor updated · Reload';
 const REFUSAL = /^Could not safely reload/;
 
+export async function clickAndObserveGuardedReload(page, button, config, refusalSignal = null, onTrustedClick = () => {}) {
+  let clickObserved = false;
+  const bindingName = '__fix17ObserveGuardedReload';
+  await page.exposeBinding(bindingName, ({ frame }) => {
+    if (frame === page.mainFrame()) {
+      clickObserved = true;
+      onTrustedClick();
+    }
+  });
+  await button.evaluate((element, name) => {
+    element.addEventListener('click', (event) => {
+      if (event.isTrusted && window.__fix17OriginalDocument === true) {
+        void window[name]().catch(() => {});
+      }
+    }, { capture: true, once: true });
+  }, bindingName);
+  const result = await clickAndObserveEditorNavigation(page, button, config, refusalSignal, UI_TIMEOUT);
+  if (!result.refused) check(clickObserved, 'The original document did not observe a trusted Reload click');
+  return { ...result, click_observed: clickObserved };
+}
+
 function writeReceipt(path, value) {
   const temp = path + '.tmp';
   writeFileSync(temp, JSON.stringify(value, null, 2) + '\n', { mode: 0o600 });
@@ -55,7 +76,7 @@ async function observeRestore(page, config, response, draft) {
 async function reloadInflight(page, config) {
   const receipt = {
     status: 'fail', mode: config.mode, origin: config.origin, stage: 'start',
-    reload: { clicked: false }, r14_audit: { requests: [], r13_save_requests_after_switch: [] },
+    reload: { clicked: false, click_observed: false }, r14_audit: { requests: [], r13_save_requests_after_switch: [] },
   };
   let heldRoute = null;
   let switched = false;
@@ -158,7 +179,8 @@ async function reloadInflight(page, config) {
       .then(() => ({ refused: true }), () => null);
     receipt.reload.clicked = true;
     record('guarded-reload-clicked');
-    const outcome = await clickAndObserveEditorNavigation(page, button, config, refusal);
+    const outcome = await clickAndObserveGuardedReload(page, button, config, refusal,
+      () => { receipt.reload.click_observed = true; writeReceipt(config.result, receipt); });
     let response = outcome.response;
     if (outcome.refused) {
       receipt.reload.result = 'unsafe-reload-fallback';
