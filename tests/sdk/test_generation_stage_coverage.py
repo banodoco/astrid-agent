@@ -177,7 +177,7 @@ def test_workflow_and_image_admissions_report_generation_stage_tree(
         "approval compile": {"candidate preparation"},
         "readiness description": {None},
         "bundle materialisation": {None},
-        "object import": {"source retention", "invocation", "bundle materialisation"},
+        "object import": {"source retention", None, "bundle materialisation"},
         "invocation": {None},
         "capability registries": {"invocation"},
         "capability lookup": {"invocation"},
@@ -189,7 +189,7 @@ def test_workflow_and_image_admissions_report_generation_stage_tree(
     }
     workflow_expected = {
         **common,
-        "workflow snapshot": {None},
+        "workflow snapshot": {None, "candidate preparation"},
         "source retention": {None, "workflow snapshot", "candidate preparation"},
         "workflow inputs": {None},
         "entry needs": {"candidate preparation"},
@@ -201,6 +201,14 @@ def test_workflow_and_image_admissions_report_generation_stage_tree(
         "entry discovery": {None},
         "pack discovery": {None},
     }
+    snapshots = [row for row in workflow_rows if row["stage"] == "workflow snapshot"]
+    assert [row["parent"] for row in snapshots] == [None, "candidate preparation"]
+    for rows in (workflow_rows, image_rows, entry_rows, fallback_rows):
+        imports = [row for row in rows if row["stage"] == "object import" and row["parent"] is None]
+        assert len(imports) == 2, imports
+        assert len({row["occurrence_id"] for row in imports}) == 2
+        assert all(row["seconds"] > 0 for row in imports)
+
     _assert_stage_parents(workflow_rows, workflow_expected)
     _assert_stage_parents(image_rows, image_expected)
     _assert_stage_parents(entry_rows, {
