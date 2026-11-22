@@ -186,6 +186,20 @@ class ComfyTargetClient:
 
     def _json(self, path, payload=None, *, timeout=10.0, response_limit=64 * 1024,
               acknowledge_empty=True):
+        from astrid.sdk.command_timing import stage
+
+        method = "GET" if payload is None else "POST"
+        with stage(f"ComfyUI {method} {path}"):
+            return self._json_request(
+                path,
+                payload,
+                timeout=timeout,
+                response_limit=response_limit,
+                acknowledge_empty=acknowledge_empty,
+            )
+
+    def _json_request(self, path, payload=None, *, timeout=10.0, response_limit=64 * 1024,
+                      acknowledge_empty=True):
         timeout = float(timeout)
         if not math.isfinite(timeout) or not 0 < timeout <= LOCAL_HTTP_SECONDS:
             raise ValueError("Comfy request timeout must be finite and at most 30 seconds")
@@ -266,7 +280,12 @@ class ComfyTargetClient:
     def object_info(self) -> dict[str, Any]:
         """Capture schema through this target's existing attested transport."""
         if self.endpoint_transport is not None:
-            payload = self.endpoint_transport.object_info(deadline=time.monotonic() + HTTP_TRANSFER_SECONDS)
+            from astrid.sdk.command_timing import stage
+
+            with stage("ComfyUI GET /object_info"):
+                payload = self.endpoint_transport.object_info(
+                    deadline=time.monotonic() + HTTP_TRANSFER_SECONDS
+                )
         else:
             payload = self.request_json("/object_info", timeout=LOCAL_HTTP_SECONDS, response_limit=MAX_JSON_BYTES)
         if not isinstance(payload, dict):

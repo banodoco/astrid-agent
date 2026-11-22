@@ -236,24 +236,30 @@ def get_capability(
 ):
     sdk_module = _sdk_module()
     if _registries is None:
-        executor_registry, orchestrator_registry, element_registry = sdk_module._load_registries(
-            project_root=project_root,
-            extra_pack_roots=extra_pack_roots,
-            banodoco_config=banodoco_config,
-            include_missing_roots=include_missing_roots,
-            include_elements=include_elements or kind == "element" or kind is None,
-        )
+        from .command_timing import stage as timing_stage
+
+        with timing_stage("capability registries"):
+            executor_registry, orchestrator_registry, element_registry = sdk_module._load_registries(
+                project_root=project_root,
+                extra_pack_roots=extra_pack_roots,
+                banodoco_config=banodoco_config,
+                include_missing_roots=include_missing_roots,
+                include_elements=include_elements or kind == "element" or kind is None,
+            )
     else:
         executor_registry, orchestrator_registry, element_registry = _registries
 
-    resolved = sdk_module._resolve_capability(
-        capability_id,
-        kind=kind,
-        element_kind=element_kind,
-        executor_registry=executor_registry,
-        orchestrator_registry=orchestrator_registry,
-        element_registry=element_registry,
-    )
+    from .command_timing import stage as timing_stage
+
+    with timing_stage("capability lookup"):
+        resolved = sdk_module._resolve_capability(
+            capability_id,
+            kind=kind,
+            element_kind=element_kind,
+            executor_registry=executor_registry,
+            orchestrator_registry=orchestrator_registry,
+            element_registry=element_registry,
+        )
     # Keep direct describes consistent with discover(): pack-level and
     # capability-specific safety permissions are part of the public handle,
     # not only of the full inventory DTO.
@@ -2606,6 +2612,8 @@ def _kernel_invoke(
     seam for callers that provide test doubles and is intentionally unused by
     the runtime admission request.
     """
+    from .command_timing import stage as timing_stage
+
     del registry
 
     try:
@@ -2695,11 +2703,12 @@ def _kernel_invoke(
                     "canonical VibeComfy preflight requires the runtime object reader"
                 )
             try:
-                spec["invocation_preflight"] = _vibecomfy_invocation_preflight(
-                    transport,
-                    {"inputs": preflight_inputs},
-                    strict=True,
-                )
+                with timing_stage("SDK admission preflight"):
+                    spec["invocation_preflight"] = _vibecomfy_invocation_preflight(
+                        transport,
+                        {"inputs": preflight_inputs},
+                        strict=True,
+                    )
             except Exception as exc:  # noqa: BLE001 - admission validation boundary
                 from .generation import LOCAL_REFUSAL_SCOPE
 
@@ -3141,7 +3150,8 @@ def _kernel_invoke(
         return dispatch(prepared.data)
 
     submitted_at = datetime.now(timezone.utc)
-    data, rejection = _admission_resource(admit(admission))
+    with timing_stage("task creation"):
+        data, rejection = _admission_resource(admit(admission))
     if rejection is not None:
         return "", "", "", None, {"ok": False, "error": rejection}, False, None
     replay = _admission_replay(data, submitted_at)
@@ -3151,7 +3161,8 @@ def _kernel_invoke(
         # (With a recovery receipt the new admission replaces the frozen one.)
         replay = None
         admission = {**admission, "deterministic_idempotency": False, "idempotency_key": uuid.uuid4().hex}
-        data, rejection = _admission_resource(admit(admission, replace_frozen=True))
+        with timing_stage("task creation"):
+            data, rejection = _admission_resource(admit(admission, replace_frozen=True))
         if rejection is not None:
             return "", "", "", None, {"ok": False, "error": rejection}, False, None
 
@@ -4504,14 +4515,17 @@ def invoke(
     _client = client
     sdk_module = _sdk_module()
     include_elements = kind == "element"
-    registries = sdk_module._load_registries(
-        project_root=project_root,
-        extra_pack_roots=extra_pack_roots,
-        banodoco_config=banodoco_config,
-        include_missing_roots=include_missing_roots,
-        include_elements=include_elements,
-        include_internal=_include_internal,
-    )
+    from .command_timing import stage as timing_stage
+
+    with timing_stage("capability registries"):
+        registries = sdk_module._load_registries(
+            project_root=project_root,
+            extra_pack_roots=extra_pack_roots,
+            banodoco_config=banodoco_config,
+            include_missing_roots=include_missing_roots,
+            include_elements=include_elements,
+            include_internal=_include_internal,
+        )
     # Keep the public generation entrypoint while selecting a separately
     # bounded runtime profile for Codex (the cloud profile remains closed).
     if capability_id == "generation.generate_image" and (inputs or {}).get("execution") == "codex":

@@ -20,6 +20,14 @@ def _freeze(value: Any) -> Any:
 
 def availability_declaration(*, selected_packs: tuple[Any, ...] | None = None) -> Mapping[str, Any]:
     """Collect live availability policy from parsed installed pack manifests."""
+    from astrid.sdk.command_timing import stage
+
+    with stage("availability declaration"):
+        return _availability_declaration(selected_packs=selected_packs)
+
+
+def _availability_declaration(*, selected_packs: tuple[Any, ...] | None = None) -> Mapping[str, Any]:
+    """Implementation kept separate so timing covers declaration construction."""
     from astrid.core.pack import PackValidationError
     from astrid.core.pack.discovery import discover_packs_ordered
 
