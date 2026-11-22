@@ -275,7 +275,7 @@ def test_history_uses_real_remote_facade_and_keeps_repeated_publications(monkeyp
     }
 
     class GeneratedFixture:
-        def __init__(self, endpoint, token):
+        def __init__(self, endpoint, token, *, timeout: float = 30.0):
             self.endpoint = endpoint
             self.token = token
 
