@@ -953,7 +953,7 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] not in {"image", "video", "audio", "workflow"} or any(arg in {"-h", "--help"} for arg in argv):
         return _main_with_errors(argv)
-    from astrid.sdk.command_timing import TimingCollector, TimingOutput, command_started, timing_scope
+    from astrid.sdk.command_timing import TimingCollector, TimingOutput, command_started, print_timings, timing_scope
     collector = TimingCollector(started=command_started())
     output = contextlib.redirect_stdout(TimingOutput(sys.stdout, collector)) if '--timings' in argv else contextlib.nullcontext()
     try:
@@ -961,8 +961,7 @@ def main(argv: list[str] | None = None) -> int:
             return _main_with_errors(argv)
     finally:
         if '--timings' in argv:
-            for item in collector.snapshot():
-                print(f"{item['stage']}: {item['seconds']:.3f}s", file=sys.stderr)
+            print_timings(collector.snapshot())
 
 
 def _main_with_errors(argv: list[str] | None = None) -> int:
