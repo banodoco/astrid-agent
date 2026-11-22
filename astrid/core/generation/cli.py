@@ -246,6 +246,7 @@ def _parser(contextual: dict[str, Any] | None = None) -> _GenerationParser:
                                   "check: judge models against the target's inventory, fetch nothing (local default); "
                                   "trust: accept the workflow's declared models as present on the target, unverified.")
         command.add_argument("--json", action="store_true", help="Print the SDK result as JSON.")
+        command.add_argument("--timings", action="store_true", help="Print command stage timings.")
         _common_options(command)
         if 'audio_modes' in spec:
             command.add_argument('--resume', action='store_true', help='Resume from the admission receipt.')
@@ -285,6 +286,7 @@ def _parser(contextual: dict[str, Any] | None = None) -> _GenerationParser:
     command.add_argument("--cfg", '--guidance-scale', dest="guidance_scale", action=_Once, type=float)
     command.add_argument("--dry-run", action="store_true")
     command.add_argument("--json", action="store_true")
+    command.add_argument("--timings", action="store_true", help="Print command stage timings.")
     _common_options(command)
     command = sub.add_parser('align', help='Inspect locked managed assets; apply with explicit user_env consent.')
     selection = command.add_mutually_exclusive_group()
@@ -729,7 +731,8 @@ def _main_request(argv: list[str], stack) -> int:
     if parsed.entry or parsed.inputs_json:
         from astrid.core.generation.entries import resolve_entry_inputs
         try:
-            description, values = resolve_entry_inputs(parsed.entry or parsed.model, values,
+            from astrid.sdk.command_timing import timed_call
+            description, values = timed_call("entry lookup", resolve_entry_inputs, parsed.entry or parsed.model, values,
                 mode=parsed.mode, kind=parsed.modality)
         except (ValueError, KeyError, TypeError) as exc:
             if parser.json_errors:
@@ -936,6 +939,21 @@ def subcommand_names() -> tuple[str, ...]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv or argv[0] not in {"image", "video", "audio", "workflow"} or any(arg in {"-h", "--help"} for arg in argv):
+        return _main_with_errors(argv)
+    from astrid.sdk.command_timing import TimingCollector, TimingOutput, timing_scope
+    collector = TimingCollector()
+    try:
+        with timing_scope(collector), contextlib.redirect_stdout(TimingOutput(sys.stdout, collector)):
+            return _main_with_errors(argv)
+    finally:
+        if '--timings' in argv:
+            for item in collector.snapshot():
+                print(f"{item['stage']}: {item['seconds']:.3f}s", file=sys.stderr)
+
+
+def _main_with_errors(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     from astrid.core.generation.preflight import generation_error
     from astrid.sdk.generation import _NO_MACHINE

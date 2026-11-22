@@ -7,6 +7,8 @@ generation method is actually invoked.
 
 from __future__ import annotations
 
+from astrid.sdk.command_timing import timed_call
+
 import builtins
 import importlib
 import json
@@ -459,7 +461,7 @@ def offline_request_preflight(entry_id: str, *, mode: str | None, inputs: Mappin
         return
     chosen_mode = mode or (row.get('modes') or [None])[0]
     values = dict(inputs or {})
-    workflow, plan, assets = workflow_entries.prepare(
+    workflow, plan, assets = timed_call("workflow build", workflow_entries.prepare,
         workflow_entries.bundle_path(row), target_client=None, mode=chosen_mode,
         binds=row.get('binds'), defaults=row.get('defaults'), values=values)
     _offline_invocation_preflight(workflow, plan=plan, assets=assets or {}, comfy_url=None,
@@ -615,7 +617,7 @@ def _load_model_registry(
     """Lazily load the generation model registry."""
     from astrid.core.model_catalog.registry import ModelRegistry
 
-    return ModelRegistry.load_default(
+    return timed_call("model registry", ModelRegistry.load_default,
         **_sdk_module()._registry_load_kwargs(
             project_root=project_root,
             extra_pack_roots=extra_pack_roots,
@@ -873,7 +875,7 @@ def _prepare_catalog_target_workflow(*, registry: Any, candidate: Any, mode: str
     """Shared installed-catalog resolution and binding, without admission."""
     from astrid.core.generation.preflight import require_generation_target_readiness
     if not defer_target:
-        require_generation_target_readiness(candidate, mode, target_client)
+        timed_call("target check", require_generation_target_readiness, candidate, mode, target_client)
     translation = _validate_catalog_target_request(
         registry=registry, candidate=candidate, mode=mode, modality=modality, inputs=inputs)
     workflow, plan, schema = backend.prepare_catalog_workflow(
@@ -1055,7 +1057,7 @@ def _image_resolve_mode(sdk_module: Any, *, model: Any, mode: Any, execution: An
         resolved_mode = "edit"
     if model is not None and mode is None and inputs.get("image_ref"):
         from astrid.core.generation.entries import find_entry
-        manifest = find_entry(model)
+        manifest = timed_call("entry lookup", find_entry, model)
         if manifest is not None and "edit" in manifest["modes"] and "i2i" not in manifest["modes"]:
             resolved_mode = "edit"
     return resolved_mode, explicit_openai
@@ -1710,7 +1712,7 @@ class GenerationFacade:
         if workflow_entry is not None:
             candidates = [("workflow", workflow_entry)]
         elif model is not None:
-            manifest = workflow_entries.find_entry(model)
+            manifest = timed_call("entry lookup", workflow_entries.find_entry, model)
             if manifest is not None:
                 candidates = [("workflow", manifest)]
             else:
@@ -1723,14 +1725,14 @@ class GenerationFacade:
                           if (entry.id not in _EXPLICIT_ONLY_ENTRIES or entry.id in preferred)
                           and mode in entry.modes and _local_template(entry, mode)]
             candidates += [("workflow", entry) for entry in
-                           [*({**entry, 'source': 'user-entry'} for entry in workflow_entries.user_entries()),
-                            *({**entry, 'source': 'ready-template'} for entry in workflow_entries.ready_entries())]
+                           [*({**entry, 'source': 'user-entry'} for entry in timed_call("pack discovery", workflow_entries.user_entries)),
+                            *({**entry, 'source': 'ready-template'} for entry in timed_call("entry discovery", workflow_entries.ready_entries))]
                            if entry["kind"] == modality and mode in entry["modes"]
                            and (entry["id"] not in _EXPLICIT_ONLY_ENTRIES or entry["id"] in preferred)
                            and (not entry.get("registry_id") or entry["id"] in preferred)]
             if pinned is not None and not any(
                     (c[1].id if c[0] == "catalog" else c[1]["id"]) == pinned for c in candidates):
-                found = workflow_entries.find_entry(pinned)
+                found = timed_call("entry lookup", workflow_entries.find_entry, pinned)
                 if found is not None:
                     candidates.append(("workflow", found))
             candidates.sort(key=rank)
@@ -1803,7 +1805,7 @@ class GenerationFacade:
             controls.pop(name, None)
         # Managed and remote workflows are frozen from declarations. The host
         # validates that exact selection after alignment and engine readiness.
-        target_client = (None if is_remote_target else select_generation_target(
+        target_client = (None if is_remote_target else timed_call("target check", select_generation_target,
             placements.comfy_selector(placement), repo=controls.get("project_root"),
             entry_id=model or (workflow_entry or {}).get('registry_id') or (workflow_entry or {}).get('id') or default_id,
             mode=mode, defer_managed=is_managed_target))
@@ -1874,8 +1876,8 @@ class GenerationFacade:
                     pending_target = {'engine': runpod_engine, 'placement': 'runpod', 'state': 'pending_host_readiness'}
                 if source == "catalog":
                     if is_managed_target and not dry_run:
-                        require_generation_target_readiness(candidate, mode, target_client)
-                    workflow, plan, schema, assets = _prepare_catalog_target_workflow(
+                        timed_call("target check", require_generation_target_readiness, candidate, mode, target_client)
+                    workflow, plan, schema, assets = timed_call("workflow build", _prepare_catalog_target_workflow,
                         registry=registry, candidate=candidate, mode=mode, modality=modality,
                         inputs=inputs, target_client=target_client, backend=backend,
                         retain_source=None if dry_run else retain_source,
@@ -1885,7 +1887,7 @@ class GenerationFacade:
                     prerequisite = SimpleNamespace(id=identifier, modes={mode: SimpleNamespace(
                         backends={"local": SimpleNamespace(template=str(candidate["bundle"]))})})
                     if not is_remote_target:
-                        require_generation_target_readiness(prerequisite, mode, target_client)
+                        timed_call("target check", require_generation_target_readiness, prerequisite, mode, target_client)
                     if candidate["kind"] != modality or mode not in candidate["modes"]:
                         raise ValueError(f"entry {identifier!r} does not support {modality}/{mode}")
                     # The selected workflow owns preparation. Its catalog association
@@ -1924,7 +1926,7 @@ class GenerationFacade:
                                 published_sources.append(dict(descriptor))
                                 return Path(opened.data['local_path']), descriptor
                             build_options['publish_source'] = publish_source
-                        built = workflow_entries.build_entry(
+                        built = timed_call('workflow build', workflow_entries.build_entry,
                             candidate, build_inputs, job_dir, check_runtime=not dry_run and not is_remote_target,
                             **build_options)
                         transport = build_transport(built)
@@ -1951,7 +1953,7 @@ class GenerationFacade:
                                 if retained.is_file():
                                     original_path = retained
                                 retain_source(original_path.name, original_path.read_bytes())
-                            workflow, plan, assets = workflow_entries.prepare(
+                            workflow, plan, assets = timed_call("workflow build", workflow_entries.prepare,
                                 frozen, target_client=target_client, mode=mode,
                                 binds=candidate.get("binds"), defaults=candidate.get("defaults"), values=candidate_inputs)
                         if plan["kind"] != modality:
@@ -2319,14 +2321,14 @@ class GenerationFacade:
             from astrid.core.generation.entries import find_entry
 
             # Preserve the workflow lookup's user precedence for either selector.
-            manifest = find_entry(model)
+            manifest = timed_call("entry lookup", find_entry, model)
             if manifest is not None and manifest.get('source') == 'user-entry':
                 entry_source = 'workflow'
         if entry is not None:
             registry = sdk_module._load_model_registry(
                 project_root=project_root, extra_pack_roots=extra_pack_roots,
             )
-            description, inputs = self._resolve_public_entry(
+            description, inputs = timed_call("entry lookup", self._resolve_public_entry,
                 entry=entry, model=model, mode=mode, modality=modality,
                 inputs=inputs, registry=registry,
             )
