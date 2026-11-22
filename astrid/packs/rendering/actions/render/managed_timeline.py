@@ -647,8 +647,17 @@ def _runtime_snapshot_registry(
             continue
         if drop_redundant_object_routes:
             entry = without_redundant_object_route(entry)
+            # Runtime's canonical render admission freezes object bindings,
+            # excluding gallery thumbnail metadata from the worker registry.
+            # Keep the authored revision intact, and check actual media
+            # locators below before any renderer-only metadata can hide them.
+            entry.pop("thumbnailUrl", None)
+            entry.pop("thumbnail_url", None)
             raw_assets[key] = entry
-        forbidden = [field for field in ("url", "file", "path", "source_path", "locator", "realm") if field in entry]
+        forbidden = [field for field in (
+            "url", "uri", "sourceUrl", "remoteUrl", "file", "path",
+            "source_path", "locator", "realm",
+        ) if field in entry]
         if forbidden:
             users = _clips_using_asset(config, str(key))
             used = (

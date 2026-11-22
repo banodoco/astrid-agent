@@ -59,7 +59,7 @@ def managed_asset_digest(entry: Mapping[str, Any]) -> str | None:
 
 
 _RUNTIME_OBJECT_ROUTE = re.compile(r"/(?:api/runtime/)?v1/objects/([^/?#]+)")
-_ROUTE_LOCATOR_FIELDS = ("file", "url", "uri")
+_ROUTE_LOCATOR_FIELDS = ("file", "url", "uri", "sourceUrl", "remoteUrl", "path", "source_path", "locator")
 
 
 def without_redundant_object_route(entry: Mapping[str, Any]) -> dict[str, Any]:
