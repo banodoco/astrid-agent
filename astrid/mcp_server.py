@@ -118,6 +118,8 @@ def _tools_for_parsers(parsers) -> dict[str, dict[str, Any]]:
             for action in leaf._actions:
                 if isinstance(action, argparse._HelpAction):
                     continue
+                if family == "generate" and action.dest == "timings":
+                    continue  # CLI display option, not an MCP input
                 if path == ("timelines", "render") and action.dest == "wait":
                     continue
                 if "--json" in action.option_strings:
