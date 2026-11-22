@@ -1240,3 +1240,48 @@ def test_execution_size_guard_ignores_nested_scope_bindings() -> None:
         "        def probe(self): pass\n"
     )}
     assert not any("added method" in error for error in compare(base, head))
+
+
+def test_execution_size_guard_counts_decorated_function_threshold() -> None:
+    from scripts.reshape.compare_execution_size import compare
+
+    path = "astrid/core/execution/sibling.py"
+    prefix = "@staticmethod\ndef decorated():\n"
+    assert compare({}, {path: prefix + "    pass\n" * 198}) == []
+    errors = compare({}, {path: prefix + "    pass\n" * 199})
+    assert any("decorated grew from 0 to 201 lines" in error for error in errors)
+
+
+def test_execution_size_guard_counts_multiline_decorators_and_nested_async() -> None:
+    from scripts.reshape.compare_execution_size import _functions
+
+    source = (
+        "def outer():\n"
+        "    @(\n"
+        "        decorator\n"
+        "    )\n"
+        "    async def inner():\n"
+        "        pass\n"
+    )
+    functions, _ = _functions(source)
+    assert functions["outer"] == [6]
+    assert functions["outer.inner"] == [5]
+
+
+def test_execution_size_guard_counts_only_trailing_suite_comments() -> None:
+    from scripts.reshape.compare_execution_size import _functions
+
+    source = (
+        "def first():\n"
+        "    text = '''\n"
+        "    # part of the string\n"
+        "    '''\n"
+        "    # trailing suite comment\n"
+        "# peer comment\n"
+        "def sibling():\n"
+        "    pass\n"
+        "    # sibling comment\n"
+    )
+    functions, _ = _functions(source)
+    assert functions["first"] == [5]
+    assert functions["sibling"] == [3]
