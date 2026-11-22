@@ -4,6 +4,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar
 import json
+import os
 import sys
 import threading
 import time
@@ -12,25 +13,67 @@ import time
 class TimingCollector:
     def __init__(self, started=None):
         self.timings = []
-        self.started = time.monotonic() if started is None else started
+        if started is None:
+            started = time.monotonic()
+        self.started = min(started, time.monotonic())
         self.active = []
         self.lock = threading.Lock()
+        self.changed = threading.Condition(self.lock)
+        self.monitor = None
+        self.closed = False
+        self.last_change = time.monotonic()
+
+    def _advance(self, now):
+        if self.active:
+            self.active[-1]['seconds'] += now - self.last_change
+        self.last_change = now
+
+    def _watch(self):
+        with self.changed:
+            while not self.closed:
+                now = time.monotonic()
+                eligible = [item for item in self.active
+                            if not item['reported'] and now - item['started'] >= 2.0]
+                if eligible:
+                    item = eligible[-1]
+                    item['reported'] = True
+                    # A nested wait explains its ancestors' wait as well.
+                    parent = item['parent']
+                    while parent is not None:
+                        parent['reported'] = True
+                        parent = parent['parent']
+                    print(f"Waiting for {item['name']}...", file=sys.stderr, flush=True)
+                    continue
+                deadlines = [item['started'] + 2.0 for item in self.active if not item['reported']]
+                self.changed.wait(max(0.0, min(deadlines) - now + 0.025) if deadlines else None)
+
+    def close(self):
+        with self.changed:
+            self.closed = True
+            self.changed.notify_all()
+        if self.monitor is not None:
+            self.monitor.join()
 
     def snapshot(self):
         with self.lock:
-            rows = [dict(row) for row in self.timings]
-            elapsed = time.monotonic() - self.started
-            # Include an active stage if output is produced inside it.
             now = time.monotonic()
-            for index, item in enumerate(self.active):
-                child = (now - self.active[index + 1]['started'] if index + 1 < len(self.active) else 0.0)
-                rows.append({'stage': item['name'], 'seconds': max(0.0, now - item['started'] - item['children'] - child)})
+            self._advance(now)
+            rows = [dict(row) for row in self.timings]
+            rows.extend({'stage': item['name'], 'seconds': item['seconds']} for item in self.active)
             measured = sum(row['seconds'] for row in rows)
-            rows.append({'stage': 'other command work', 'seconds': max(0.0, elapsed - measured)})
+            rows.append({'stage': 'other command work', 'seconds': max(0.0, now - self.started - measured)})
             return rows
 
 
+def command_started():
+    try:
+        return float(os.environ["ASTRID_CLI_START_MONO"])
+    except (KeyError, ValueError):
+        return time.monotonic()
+
+
 _current = ContextVar('astrid_command_timings', default=None)
+_parent = ContextVar('astrid_timing_parent', default=None)
 
 
 @contextmanager
@@ -40,6 +83,7 @@ def timing_scope(collector):
         yield collector
     finally:
         _current.reset(token)
+        collector.close()
 
 
 def current_timings():
@@ -75,42 +119,25 @@ def stage(name):
     if collector is None:
         yield
         return
-    item = {'name': name, 'started': time.monotonic(), 'children': 0.0,
-            'active_seconds': 0.0, 'active_since': None}
-    done = threading.Event()
-    with collector.lock:
-        now = time.monotonic()
-        if collector.active:
-            parent = collector.active[-1]
-            parent['active_seconds'] += now - parent['active_since']
-            parent['active_since'] = None
-        item['active_since'] = now
+    item = {'name': name, 'started': time.monotonic(), 'seconds': 0.0,
+            'reported': False, 'parent': _parent.get()}
+    with collector.changed:
+        collector._advance(item['started'])
         collector.active.append(item)
-
-    def waiting():
-        while not done.wait(0.025):
-            with collector.lock:
-                if collector.active and collector.active[-1] is item:
-                    active = item['active_seconds'] + time.monotonic() - item['active_since']
-                    if active >= 2.0:
-                        print(f'Waiting for {name}...', file=sys.stderr, flush=True)
-                        return
-
-    timer = threading.Thread(target=waiting, daemon=True)
-    timer.start()
+        if collector.monitor is None:
+            collector.monitor = threading.Thread(target=collector._watch, daemon=True)
+            collector.monitor.start()
+        collector.changed.notify_all()
+    token = _parent.set(item)
     try:
         yield
     finally:
-        done.set()
-        timer.join()
-        ended = time.monotonic()
-        elapsed = ended - item['started']
-        with collector.lock:
+        _parent.reset(token)
+        with collector.changed:
+            collector._advance(time.monotonic())
             collector.active.remove(item)
-            if collector.active:
-                collector.active[-1]['children'] += elapsed
-                collector.active[-1]['active_since'] = ended
-            collector.timings.append({'stage': name, 'seconds': max(0.0, elapsed - item['children'])})
+            collector.timings.append({'stage': name, 'seconds': item['seconds']})
+            collector.changed.notify_all()
 
 
 def timed_call(name, function, *args, **kwargs):

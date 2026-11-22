@@ -592,11 +592,11 @@ def _dispatch_product(args: list[str]) -> int:
     if not args or args[0] != "timelines" or any(arg in {"-h", "--help"} for arg in args[1:]):
         return _dispatch_product_inner(args)
 
-    from astrid.sdk.command_timing import TimingCollector, TimingOutput, timing_scope
+    from astrid.sdk.command_timing import TimingCollector, TimingOutput, command_started, timing_scope
     import contextlib
     import sys
 
-    collector = TimingCollector()
+    collector = TimingCollector(started=command_started())
     show_timings = "--timings" in args
     # Verification already owns a --timings flag; preserve its behavior.
     verify_timings = len(args) > 1 and ((args[1] == "check" and any(arg == "--at" or arg.startswith("--at=") for arg in args)) or (args[1] == "edit" and "--verify" in args))
