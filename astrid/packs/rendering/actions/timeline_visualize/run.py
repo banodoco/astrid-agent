@@ -405,7 +405,14 @@ def _materialize_kernel_timeline(
         timeline_id = str(uuid.UUID(str(row.timeline_id)))
     except ValueError:
         timeline_id = row.timeline_id
-    config = dict(row.config)
+    # Give visualization the same detached reader-facing document that managed
+    # render consumes. Runtime rows remain canonical and are never normalized in
+    # place by this visualization-only adapter.
+    from astrid.core.timeline.reader_projection import reader_view
+
+    config, projected_registry = reader_view(
+        row.config, row.registry if isinstance(row.registry, Mapping) else {}
+    )
     if isinstance(row.composition_graph, Mapping):
         app = config.setdefault("app", {})
         if not isinstance(app, dict):
@@ -418,7 +425,7 @@ def _materialize_kernel_timeline(
             "visualized: canonical config must contain top-level tracks and clips arrays; "
             "save a renderable timeline config and retry"
         )
-    registry = row.registry.get("assets", {}) if isinstance(row.registry, Mapping) else {}
+    registry = projected_registry.get("assets", {})
     if not isinstance(registry, dict):
         registry = {}
     actor = TimelineActor(type="system", id="astrid.kernel", display="Astrid kernel")

@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 import yaml
+import pytest
 
 from astrid.core.media import MediaProbe
 from astrid.core.rendering.contracts import (
@@ -228,6 +229,14 @@ def test_support_rejects_non_media_timeline(tmp_path: Path) -> None:
 
     assert report.supported is False
     assert any("unsupported clip kind" in reason for reason in report.reasons)
+
+
+def test_ffmpeg_canvas_declines_genuine_fps_ratio_but_keeps_integer_rates():
+    from astrid.packs.rendering.rendering.renderers.ffmpeg.support import _canvas
+
+    assert _canvas({"output": {"resolution": "640x360", "fps": 30}}) == (640, 360, 30)
+    with pytest.raises(ValueError, match="positive integers"):
+        _canvas({"output": {"resolution": "640x360", "fps": {"numerator": 30000, "denominator": 1001}}})
 
 
 def test_raw_support_adapter_writes_authoritative_report(tmp_path: Path) -> None:

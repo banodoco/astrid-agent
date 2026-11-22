@@ -170,7 +170,7 @@ def candidate_preview_snapshot(
     )
     raw_registry = projected.registry
     render_config, render_registry = _render_compatible_projection(
-        projected.config, raw_registry
+        projected.config, raw_registry, preserve_exact_fps=True
     )
     registry = _runtime_snapshot_registry(
         render_registry, project_ref=snapshot.project_slug, client=client

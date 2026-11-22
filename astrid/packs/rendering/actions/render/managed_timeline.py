@@ -13,6 +13,7 @@ from astrid.pack_api import validate_registry, validate_timeline
 from astrid.pack_api import write_json_atomic
 from astrid.core.foundation.hash import validate_digest
 from astrid.core.timeline.duration import render_clock
+from astrid.core.timeline.reader_projection import reader_fps_view
 from astrid.sdk.pagination import paged_rows
 
 
@@ -43,7 +44,7 @@ class ManagedRenderValidationError(ValueError):
 
 
 def _render_compatible_projection(
-    config: Mapping[str, Any], registry: Mapping[str, Any]
+    config: Mapping[str, Any], registry: Mapping[str, Any], *, preserve_exact_fps: bool = False
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Adapt public authoring-helper output to the existing render schema.
 
@@ -102,7 +103,7 @@ def _render_compatible_projection(
 
     normalize_legacy_reader_fields(normalized_config, normalized_registry)
     try:
-        project_reader_fields(normalized_config)
+        project_reader_fields(normalized_config, preserve_exact_fps=preserve_exact_fps)
     except ReaderProjectionError as exc:
         raise ManagedRenderValidationError(
             str(exc), path="$.config", reason=exc.reason,
@@ -393,10 +394,13 @@ def _validate_pinned_element_references(
 
 
 def _timeline_fps(config: Mapping[str, Any]) -> float:
-    output = config.get("output")
+    # Duration math mirrors the compositor's numeric clock. The snapshot and
+    # encoder profile retain the authored ratio.
+    clock_view = reader_fps_view(config)
+    output = clock_view.get("output")
     if isinstance(output, Mapping) and isinstance(output.get("fps"), (int, float)):
         return float(output["fps"])
-    overrides = config.get("theme_overrides")
+    overrides = clock_view.get("theme_overrides")
     if isinstance(overrides, Mapping):
         visual = overrides.get("visual")
         if isinstance(visual, Mapping):
@@ -727,7 +731,9 @@ def validate_managed_render_snapshot(snapshot: ManagedRenderSnapshot) -> None:
                 "Either omit config.output or provide resolution, fps, and file, then retry"
             )
     try:
-        validate_timeline(config)
+        # The authoring snapshot keeps exact FPS pairs. The strict renderer
+        # reader consumes its detached scalar compatibility view.
+        validate_timeline(reader_fps_view(config))
     except Exception as exc:
         raise _schema_validation_error(snapshot, exc) from exc
     _validate_pinned_element_references(snapshot, config)
@@ -1085,7 +1091,7 @@ def resolve_managed_render_snapshot(
     # identities in the snapshot; the generic host supplies bytes to the child
     # attempt without any local database or filesystem lookup.
     raw_registry = stored_registry
-    config, stored_registry = _render_compatible_projection(config, stored_registry)
+    config, stored_registry = _render_compatible_projection(config, stored_registry, preserve_exact_fps=True)
     config = _normalize_pinned_element_references(config)
     from astrid.core.rendering.project_elements import resolve_project_elements
 
