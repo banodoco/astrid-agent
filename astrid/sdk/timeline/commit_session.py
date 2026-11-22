@@ -487,19 +487,29 @@ class Timeline(Checkout):
             before, after = copy.deepcopy(self._command_bundle), copy.deepcopy(self.bundle)
             if self._runtime_document is not None or before.get("shots") != after.get("shots"):
                 before, after = self._execution_bundle(before), self._execution_bundle(after)
-            commands = emit_document_commands(before, after)
-            if not commands:
+            from .media_swap import capture_document_swaps
+
+            swaps, remaining, selected = capture_document_swaps(
+                before, after, self.session.client._remote._transport,
+                verified_media=self._verified_media,
+            )
+            commands = emit_document_commands(remaining, after)
+            if not commands and not swaps:
                 raise TimelineEditError("document emitter omitted local edits")
             from .publish import _media_admission_inputs
 
             inputs = _media_admission_inputs(
                 before, after, self.session.client._remote._transport,
             )
-            preview_media = self._verified_media
+            # The shared replacement recipe already admits its new objects.
+            swap_inputs = [item for call in swaps if call['op'] == 'media.admit'
+                           for item in call['args']['inputs']]
+            inputs = [item for item in inputs if item not in swap_inputs]
+            preview_media = selected
             if inputs:
                 from astrid.sdk.timeline_media_replacement import _verified
 
-                preview_media = [row for row in self._verified_media
+                preview_media = [row for row in selected
                                  if not any(row.get("pin") == item["pin"] for item in inputs)]
                 for item in inputs:
                     if "selection" in item:
@@ -511,9 +521,18 @@ class Timeline(Checkout):
                         row = next((row for row in self._verified_media if row.get("pin") == item["pin"]), None)
                     if row is not None and row not in preview_media:
                         preview_media.append(row)
-                commands.append({"schema_version": 1, "op": "media.admit", "version": "1",
-                                 "select": None, "args": {"inputs": inputs}})
-            self._append(commands, label="Edit document", verified_media=preview_media)
+            self._verified_media = preview_media
+            # Media admission and document patches have their own semantic
+            # steps. Mixing doc.patch claims with media.admit previously
+            # compared input-revision paths against successor-revision effects.
+            for swap in swaps:
+                self._append([swap], label="Replace clip media", verified_media=preview_media)
+            if commands:
+                self._append(commands, label="Edit document", verified_media=preview_media)
+            if inputs:
+                self._append([{"schema_version": 1, "op": "media.admit", "version": "1",
+                               "select": None, "args": {"inputs": inputs}}],
+                             label="Capture document media", verified_media=preview_media)
             self._free_edits = True
 
     def _append(self, commands, *, label, intent="", tags=(), reads=None, verified_media=None):
@@ -1003,8 +1022,7 @@ class Timeline(Checkout):
             self._add_preview_diff(result, self.bundle)
         return self._accepted(result)
 
-    @staticmethod
-    def _add_preview_diff(result, before_bundle):
+    def _add_preview_diff(self, result, before_bundle):
         """Pair Runtime's preview commands with a diff of authored document fields."""
         from .commit import bundle_from_document
         from .emitter import _diff, _payload_for_emit, _root_pairs
@@ -1012,6 +1030,10 @@ class Timeline(Checkout):
         data = result.get("data", {})
         document = data.get("canonical_document")
         if isinstance(document, Mapping):
+            # Live SDK bundles omit the private canonical input. Physical
+            # occurrence roots still need that exact session input for the
+            # read-only preview diff, just as command capture does.
+            before_bundle = self._execution_bundle(before_bundle)
             after_bundle = bundle_from_document(document)
             changes = []
             for ref, before, after in _root_pairs(before_bundle, after_bundle):

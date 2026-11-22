@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -55,12 +56,15 @@ def _legacy_declarations(clip: Mapping[str, Any]) -> dict[str, str]:
     }
 
 
-def _reference_shape(clip: Mapping[str, Any]) -> dict[str, Any]:
+def _reference_shape(clip: Mapping[str, Any], assets: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Keep timing/reference inputs while ignoring unrelated authored params.
 
     Read-only: the result shares unchanged values with ``clip`` and nothing mutates it.
     """
     value = {name: item for name, item in clip.items() if name != "params"}
+    if _fixed_visual_duration(clip, assets):
+        value.pop("asset", None)
+        value.pop("asset_id", None)
     app = value.get("app")
     if isinstance(app, dict):
         app = {name: item for name, item in app.items() if name not in ("opaque", "on", "until")}
@@ -80,6 +84,21 @@ def _reference_shape(clip: Mapping[str, Any]) -> dict[str, Any]:
 
 _WORD_TIMING_FIELDS = ("id", "track", "at", "at_ms", "from", "to", "hold", "duration", "speed",
                        "asset", "asset_id")
+
+
+def _fixed_visual_duration(clip: Mapping[str, Any], assets: Mapping[str, Any] | None) -> bool:
+    """An explicit visual hold makes the selected picture immaterial to timing.
+
+    Keep asset identity in the basis for intrinsic-duration and audio inputs.
+    This only retains a baseline failure; changed declarations/timing still
+    require normal exact binding validation.
+    """
+    hold = clip.get("hold")
+    entry = (assets or {}).get(clip.get("asset", clip.get("asset_id")))
+    media_type = entry.get("type") if isinstance(entry, Mapping) else None
+    kind = media_type.split("/")[0] if isinstance(media_type, str) else None
+    return (kind in ("image", "video") and not isinstance(hold, bool)
+            and isinstance(hold, (int, float)) and math.isfinite(hold) and hold > 0)
 
 
 class _BasisReader:
@@ -103,6 +122,12 @@ class _BasisReader:
             self._text[name] = json.dumps(value, sort_keys=True, default=str)
         return self._text[name]
 
+    def _assets(self, kind: str, owner: str) -> Mapping[str, Any]:
+        scope = (self.bundle.get('parent', {}) if kind == 'parent' else
+                 self.bundle.get('shots', {}).get(owner, {}).get('internal_timeline', {}))
+        registry = scope.get('registry', scope.get('config', {}).get('registry', {}))
+        return registry.get('assets', {}) if isinstance(registry, Mapping) else {}
+
     def signature(self, key: tuple[Any, ...], clip: Mapping[str, Any], declaration: str) -> str:
         """The basis as text, assembled from per-bundle parts so each declaration adds only its own."""
         try:
@@ -114,6 +139,9 @@ class _BasisReader:
             # placements or other shots say: the finding depends on this clip's timing alone, not on
             # which element it shows or its params.
             timing = {name: clip[name] for name in _WORD_TIMING_FIELDS if name in clip}
+            if _fixed_visual_duration(clip, self._assets(key[0], key[1])):
+                timing.pop("asset", None)
+                timing.pop("asset_id", None)
             anchors = intent._app(clip).get("word_anchors")
             return json.dumps({"clip": timing, "word_anchors": anchors}, sort_keys=True, default=str)
         basis = self.basis(key, clip, declaration)
@@ -141,7 +169,7 @@ class _BasisReader:
                 "word_sources": {
                     shot_id: {
                         "shot_id": shot.get("shot_id"),
-                        "clips": [{**_reference_shape(row), "declarations": intent._app(row)}
+                        "clips": [{**_reference_shape(row, self._assets('shot', shot_id)), "declarations": intent._app(row)}
                                   for row in shot["internal_timeline"]["clips"]],
                         "inputs": {field: shot["internal_timeline"][field]
                                    for field in ("tracks", "registry", "output", "source_window",
@@ -161,7 +189,7 @@ class _BasisReader:
         if kind == "parent":
             parent = bundle.get("parent", {})
             clips = parent.get("clips", []) if isinstance(parent, Mapping) else []
-            found = {"siblings": [_reference_shape(row) for row in clips if isinstance(row, Mapping)]}
+            found = {"siblings": [_reference_shape(row, self._assets(kind, owner)) for row in clips if isinstance(row, Mapping)]}
         else:
             shots = bundle.get("shots", {})
             shot = shots.get(owner, {}) if isinstance(shots, Mapping) else {}
@@ -170,7 +198,7 @@ class _BasisReader:
             source_shots = self.source.get("shots", {})
             source_shot = source_shots.get(owner) if isinstance(source_shots, Mapping) else None
             found = {
-                "siblings": [_reference_shape(row) for row in clips if isinstance(row, Mapping)],
+                "siblings": [_reference_shape(row, self._assets(kind, owner)) for row in clips if isinstance(row, Mapping)],
                 "placements": [row for row in bundle.get("placements", [])
                                if isinstance(row, Mapping) and row.get("shot_id") == owner],
                 "source": source_shot,
@@ -181,7 +209,7 @@ class _BasisReader:
     def basis(self, key: tuple[Any, ...], clip: Mapping[str, Any], declaration: str) -> dict[str, Any]:
         """Identify the authored target of one legacy timing declaration."""
         kind, owner, _ = key
-        basis: dict[str, Any] = {"clip": _reference_shape(clip)}
+        basis: dict[str, Any] = {"clip": _reference_shape(clip, self._assets(kind, owner))}
         basis["documents"] = self.source.get("pinned_documents", [])
         try:
             word = moments.parse(declaration).kind == "word"
