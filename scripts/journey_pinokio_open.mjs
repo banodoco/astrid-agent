@@ -2,7 +2,7 @@
 /** Open the launcher menu target with the frozen hosted App and the live local Runtime. */
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { stat, writeFile } from 'node:fs/promises';
+import { mkdir, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const [distArgument, target, output, appSha, manifestSha, appCheckout] = process.argv.slice(2);
@@ -65,6 +65,7 @@ try {
   if (health.status !== 'ok' || health.protocol !== 'workspace.v1'
     || health.identity?.release !== 14 || health.identity?.managed_by !== 'pinokio'
     || !health.runtime_instance_id || !health.schema_digest) throw new Error('Browser received the wrong live Runtime identity');
+  await mkdir(path.dirname(output), { recursive: true });
   await writeFile(output, JSON.stringify({
     target, connected: true, runtimeInstanceId: health.runtime_instance_id, runtimeIdentity: health.identity,
     schemaDigest: health.schema_digest, appBuild: asset.build.app,

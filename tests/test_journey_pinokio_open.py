@@ -51,11 +51,12 @@ fs.writeFileSync(path.join(modDir,'package.json'), JSON.stringify({main:'index.c
 fs.writeFileSync(path.join(modDir,'index.cjs'),`exports.chromium = {launch:async()=>({newContext:async()=>({newPage:async()=>globalThis.__page}),close:async()=>{}})};`);
 globalThis.__page=page;
 const oldArgv=process.argv;
-process.argv=[oldArgv[0],script,'/tmp/pinokio-dist','https://astrid.haus/?connect=1',path.join(app,'result.json'),'app-sha','MANIFEST_SHA',app];
+const outputPath=scenario === 'missing-parent' ? path.join(app,'nested','evidence','open-app.json') : path.join(app,'result.json');
+process.argv=[oldArgv[0],script,'/tmp/pinokio-dist','https://astrid.haus/?connect=1',outputPath,'app-sha','MANIFEST_SHA',app];
 let outcome='ok';
 try { await import(pathToFileURL(script)); } catch(e) { outcome=String(e); }
 await new Promise(r=>setTimeout(r,80));
-console.log(JSON.stringify({outcome,unhandled,captured,fallbackCalls,fallbackUrl,fallbackCache:fallbackOptions?.cache,fallbackTimeoutMs:timeoutMs,output:fs.existsSync(path.join(app,'result.json'))}));
+console.log(JSON.stringify({outcome,unhandled,captured,fallbackCalls,fallbackUrl,fallbackCache:fallbackOptions?.cache,fallbackTimeoutMs:timeoutMs,output:fs.existsSync(outputPath)}));
 """
 
 
@@ -110,3 +111,10 @@ def test_fallback_identity_must_match_exact_release(tmp_path):
     assert "wrong live Runtime identity" in result["outcome"]
     assert result["fallbackCalls"] == 1
     assert result["output"] is False
+
+
+def test_verified_health_writes_receipt_when_nested_parent_is_missing(tmp_path):
+    result = run_driver(tmp_path, "missing-parent")
+    assert result["outcome"] == "ok"
+    assert result["fallbackCalls"] == 0
+    assert result["output"] is True
