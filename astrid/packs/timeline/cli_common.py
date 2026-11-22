@@ -10,6 +10,8 @@ import sys
 from collections.abc import Mapping
 from typing import Any
 
+from astrid.core.cli.domain_output import cli_print as print
+
 
 class VerbError(Exception):
     """A user-facing failure: the message goes to stderr and the verb exits with ``code``."""

@@ -73,6 +73,7 @@ from pathlib import Path
 from typing import Any
 
 from astrid.core.cli.domain_output import DomainResult, envelope_dict, render_human
+from astrid.core.cli.domain_output import cli_print as print
 from astrid.core.cli.task_progress import task_handoff
 from astrid.core.timeline.clip_names import clip_media_name
 from astrid.pack_api import CommandSpec, pack_root, print_result, register_product_commands

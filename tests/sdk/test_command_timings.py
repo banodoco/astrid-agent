@@ -46,11 +46,11 @@ def test_delayed_runtime_request_prints_one_waiting_line(capsys) -> None:
 def test_timeline_gateway_reports_timings_in_json_and_text(monkeypatch, capsys) -> None:
     from astrid.core.gateway import dispatch
 
-    def run(args):
+    def run(args, *, output_stream):
         assert "--timings" not in args
         with stage("timeline work"):
             time.sleep(0.02)
-        print(json.dumps({"ok": True, "data": {}}))
+        print(json.dumps({"ok": True, "data": {}}), file=output_stream)
         return 0
 
     monkeypatch.setattr(dispatch, "_dispatch_product_inner", run)
