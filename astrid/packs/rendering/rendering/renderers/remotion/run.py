@@ -1231,6 +1231,21 @@ def _execute_remotion_locked(
             # worktrees and must never be inherited by the render child.
             remotion_env_additions["PYTHONPATH"] = schema_pythonpath
         remotion_env_additions["ASTRID_REMOTION_PROJECT_DIR"] = str(project_dir.resolve())
+        # The Python registry discovers the personal pack collection by its
+        # own root, so the generated registry can import its elements. The
+        # bundler resolves those imports only through ASTRID_PACKS_PATH, and a
+        # task's selected-pack environment names just the capability's packs.
+        personal_packs_root = resolve_personal_packs_root()
+        if personal_packs_root is not None and personal_packs_root.is_dir():
+            alias_roots = [item for item in os.environ.get("ASTRID_PACKS_PATH", "").split(os.pathsep) if item]
+            if str(personal_packs_root) not in alias_roots:
+                alias_roots.append(str(personal_packs_root))
+            remotion_env_additions["ASTRID_PACKS_PATH"] = os.pathsep.join(alias_roots)
+        # Propagated Astrid variables are copied from the parent mapping last,
+        # so the bundler's pack roots must be carried there as well.
+        remotion_parent_env = dict(os.environ)
+        if "ASTRID_PACKS_PATH" in remotion_env_additions:
+            remotion_parent_env["ASTRID_PACKS_PATH"] = remotion_env_additions["ASTRID_PACKS_PATH"]
         if stage_summary.get("project_pack_roots"):
             from astrid.core.rendering.project_elements import PACK_ROOTS_ENV, REGISTRY_ROOT_ENV
 
@@ -1352,12 +1367,12 @@ def _execute_remotion_locked(
                 with log_path.open("w") as stdout_log, RemotionProgressRelay(log_path, progress_path=progress_path):
                     completed = subprocess.run(
                         remotion_args, cwd=str(project_dir),
-                        env=build_child_subprocess_env(explicit_env=remotion_env_additions),
+                        env=build_child_subprocess_env(parent=remotion_parent_env, explicit_env=remotion_env_additions),
                         stdout=stdout_log, stderr=subprocess.PIPE, check=False, text=True)
             else:
                 completed = subprocess.run(
                     remotion_args, cwd=str(project_dir),
-                    env=build_child_subprocess_env(explicit_env=remotion_env_additions),
+                    env=build_child_subprocess_env(parent=remotion_parent_env, explicit_env=remotion_env_additions),
                     capture_output=True, check=False, text=True)
             if diagnostic_trace:
                 diagnostic_stdout = completed.stdout
