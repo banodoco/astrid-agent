@@ -592,7 +592,7 @@ def _dispatch_product(args: list[str]) -> int:
     if not args or args[0] != "timelines" or any(arg in {"-h", "--help"} for arg in args[1:]):
         return _dispatch_product_inner(args)
 
-    from astrid.sdk.command_timing import TimingCollector, TimingOutput, command_started, print_timings, timing_scope
+    from astrid.sdk.command_timing import TimingCollector, TimingOutput, command_started, timing_scope
     import contextlib
     import sys
 
@@ -608,7 +608,8 @@ def _dispatch_product(args: list[str]) -> int:
     finally:
         output.finalize()
     if show_timings:
-        print_timings(collector.snapshot())
+        for item in collector.snapshot():
+            print(f"{item['stage']}: {item['seconds']:.3f}s", file=sys.stderr)
     return result
 
 
