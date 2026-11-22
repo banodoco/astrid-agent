@@ -6,7 +6,6 @@ import sys
 import time
 from contextvars import ContextVar
 
-
 _STARTUP_MARKS: ContextVar[tuple | None] = ContextVar("astrid_startup_marks", default=None)
 
 
@@ -20,6 +19,12 @@ _CLI_STARTED_AT: ContextVar[float | None] = ContextVar("astrid_cli_started_at", 
 def cli_started_at() -> float | None:
     """Start of this console invocation, when dispatching through OMP."""
     return _CLI_STARTED_AT.get()
+
+
+def capture_module_start() -> None:
+    """Capture the installer module's start before its remaining imports."""
+    started_at = time.monotonic()
+    _CLI_STARTED_AT.set(process_started_at(started_at))
 
 
 def process_started_at(fallback: float) -> float:

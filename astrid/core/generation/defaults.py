@@ -82,9 +82,9 @@ def known_entries(registry: Any = None, *, discovery: Any = None,
     try:
         from astrid.core.generation import entries as workflow_entries
 
-        workflows = ([*discovery.users(), *discovery.ready_candidates()] if discovery is not None
-                     else [*workflow_entries.user_entries(), *workflow_entries.ready_entries()])
-        for row in workflows:
+        workflow_rows = ([*discovery.users(), *discovery.ready_candidates()] if discovery is not None
+                         else [*workflow_entries.user_entries(), *workflow_entries.ready_entries()])
+        for row in workflow_rows:
             rows.append({"pack": "vibecomfy", "entry": row["id"], "kind": row["kind"], "modes": set(row["modes"])})
         for row in (discovery.actions() if discovery is not None else workflow_entries.action_entries()):
             rows.append({"pack": "generation", "entry": row["id"], "kind": row["kind"], "modes": set(row["modes"])})

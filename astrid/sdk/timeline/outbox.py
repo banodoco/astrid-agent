@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from runtime_protocol import platform
+
 from astrid.sdk.lock_wait import acquire_file_lock
 
 
