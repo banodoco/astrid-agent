@@ -14,6 +14,7 @@ import os
 import subprocess
 
 from astrid.core.element import project_packs as packs
+from astrid.core.foundation.renderer_toolchain import resolve_pinned_node, resolve_remotion_project_dir
 
 # Wire grammar of Runtime's Idempotency-Key (runtime_protocol/service.py: IDEMPOTENCY_KEY_RE,
 # enforced by validate_idempotency_key). Mirrored here so the fake client needs no runtime checkout.
@@ -276,7 +277,7 @@ def test_undeclared_descriptor_asset_cannot_advance_document(configured):
 
 def _remotion_copy(tmp_path, *, bin_esbuild):
     """A Remotion project dir sharing the install's real esbuild native package, with ``bin/esbuild`` as given."""
-    real = Path(os.environ['ASTRID_REMOTION_PROJECT_DIR'])
+    real = resolve_remotion_project_dir('ASTRID_REMOTION_PROJECT_DIR', repo_root=packs.REPO_ROOT)
     project = tmp_path / 'remotion-copy'
     modules = project / 'node_modules'
     (modules / '@esbuild').mkdir(parents=True)
@@ -302,7 +303,13 @@ def test_admission_compiles_when_bin_esbuild_is_a_js_shim(monkeypatch, tmp_path)
 
 def test_compiler_discovery_needs_no_bin_esbuild_and_forwards_windows_env(monkeypatch, tmp_path):
     # The Windows layout has no bin/esbuild and a native package of its own; discovery goes through the JS API only.
-    monkeypatch.setenv('ASTRID_REMOTION_PROJECT_DIR', str(_remotion_copy(tmp_path, bin_esbuild=None)))
+    project = _remotion_copy(tmp_path, bin_esbuild=None)
+    monkeypatch.setenv('ASTRID_REMOTION_PROJECT_DIR', str(project))
+    node = resolve_pinned_node(project)
+    assert node.ok and node.path is not None and node.pin is not None and node.version == node.pin, (
+        f"Windows discovery emulation needs the Remotion-pinned Node; {node.problem or node}"
+    )
+    monkeypatch.setenv('ASTRID_NODE_EXECUTABLE', str(node.path))
     monkeypatch.setattr(sys, 'platform', 'win32')
     monkeypatch.setenv('SYSTEMROOT', 'C:\\Windows')
     node, api = packs._renderer_compiler()

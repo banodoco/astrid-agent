@@ -1,0 +1,27 @@
+name: Execution size
+
+on:
+  pull_request:
+    branches: ["release/*/main", "release/*/plan-*"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/int/r1' && !(startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main')) }}
+
+env:
+  PYTEST_ADDOPTS: -rA
+
+jobs:
+  execution-size:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - name: Compare execution sizes with the PR merge base
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/reshape/compare_execution_size.py --base "$PR_BASE" --head "$PR_HEAD"
