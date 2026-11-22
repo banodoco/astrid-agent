@@ -190,9 +190,12 @@ def _normalize_legacy_transitions(config: dict[str, Any]) -> None:
                     transition[field] = normalize_legacy_transition_id(value)
 
 
-def normalize_legacy_reader_fields(config: dict[str, Any], registry: dict[str, Any]) -> None:
+def normalize_legacy_reader_fields(
+    config: dict[str, Any], registry: dict[str, Any], *, preserve_transition_ids: bool = False,
+) -> None:
     """Adapt detached reader copies and leave authored fields for exact comparison."""
-    _normalize_legacy_transitions(config)
+    if not preserve_transition_ids:
+        _normalize_legacy_transitions(config)
 
     tracks = config.get("tracks")
     if isinstance(tracks, list):

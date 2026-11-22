@@ -117,3 +117,43 @@ def test_native_visualize_keeps_unknown_transition_explicitly_unresolved(native_
     assert incoming["transition_projection"]["status"] == "unresolved"
     assert incoming["transition_projection"]["transition"] == authored
     assert _history(service, project) == before
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("identity", ["crossfade", "wipe", "slide-push", "zoom-through"])
+def test_runtime_certifies_authored_r13_transition_and_readers_project_legacy_alias(native_timeline, identity):
+    from runtime_protocol.capture_validation import validate_capture
+
+    from astrid.core.timeline.reader_projection import check_reader_projection, reader_view
+    from astrid.sdk.timeline_filmstrip import prepare_filmstrip
+
+    service, client, project, tmp_path = native_timeline
+    authored = {"type": identity, "duration": 0.4}
+    _seed_r13(service, project, tmp_path / "still.png", transition=authored)
+    saved = service.get_project_parent_composition_revision(project, "main", "r13-parent")
+    snapshot = prepare_filmstrip(
+        {"timeline_ref": "main", "revision_id": "r13-parent", "composed_capture": True},
+        project=project, client=client,
+    )["capture_snapshot"]
+    ref = {
+        "source_kind": "revision",
+        "project_id": project,
+        "timeline_id": "main",
+        "revision_id": "r13-parent",
+        "revision_digest": saved["content_digest"],
+    }
+
+    # Runtime must certify the SDK's exact saved capture, including its authored ID.
+    assert validate_capture(service, snapshot, ref, {})
+    incoming = next(row for row in snapshot["config"]["clips"] if row["id"] == "incoming")
+    assert incoming["transition"] == authored
+
+    original_config = copy.deepcopy(snapshot["config"])
+    original_registry = copy.deepcopy(snapshot["registry"])
+    projected_config, projected_registry = reader_view(snapshot["config"], snapshot["registry"])
+    check_reader_projection(projected_config, projected_registry)
+    projected_incoming = next(row for row in projected_config["clips"] if row["id"] == "incoming")
+    expected = {**authored, "type": "cross-fade"} if identity == "crossfade" else authored
+    assert projected_incoming["transition"] == expected
+    assert snapshot["config"] == original_config
+    assert snapshot["registry"] == original_registry
