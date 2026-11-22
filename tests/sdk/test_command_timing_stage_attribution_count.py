@@ -136,4 +136,3 @@ def test_named_us1_stages_attribute_synthetic_delta_and_render_diagnostic(monkey
         assert delayed_span == pytest.approx(expected_baseline + INJECTED_DELTA_SECONDS)
         assert abs(sum(row["seconds"] for row in delayed_rows) - delayed_span) <= 0.1 * delayed_span
         assert f"{delayed_stage}:" in diagnostic
-

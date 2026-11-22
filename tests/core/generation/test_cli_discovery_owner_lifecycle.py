@@ -101,4 +101,3 @@ def test_sdk_image_resets_pack_discovery_owner_after_inner_exception(monkeypatch
     assert isinstance(owners[0], dict)
     assert discovery._discovery_cache.get() is None
     assert owners[0] == {"seen": True}
-
