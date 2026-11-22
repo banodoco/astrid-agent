@@ -338,6 +338,51 @@ def _same_fields(current: Mapping[str, Any], previous: Mapping[str, Any] | None,
         _canonical({key: previous[key] for key in fields if key in previous}), sort_keys=True)
 
 
+def _retained_overrun_does_not_worsen(
+    clip: Mapping[str, Any], prior: Mapping[str, Any] | None, *,
+    bound: Fraction | None, baseline_bound: Fraction | None,
+    assets: Mapping[str, Any], baseline_assets: Mapping[str, Any], path: str,
+) -> bool:
+    """Allow a legacy child overrun to survive a pure start shift unchanged.
+
+    Duration, source window, speed, asset selection, registry entry, and every
+    other authored clip input remain fixed. Only ``at``/``at_ms`` may move,
+    and exact rational overrun may not increase.
+    """
+    if prior is None or bound is None or baseline_bound is None:
+        return False
+    current_without_start = {key: value for key, value in clip.items()
+                             if key not in ("at", "at_ms")}
+    prior_without_start = {key: value for key, value in prior.items()
+                           if key not in ("at", "at_ms")}
+    if not equal(current_without_start, prior_without_start):
+        return False
+    selector_fields = ("asset", "asset_id")
+    current_selector = {key: clip[key] for key in selector_fields if key in clip}
+    prior_selector = {key: prior[key] for key in selector_fields if key in prior}
+    if not equal(current_selector, prior_selector):
+        return False
+    asset_key = clip.get("asset", clip.get("asset_id"))
+    if asset_key is not None:
+        if not isinstance(asset_key, str) or not isinstance(baseline_assets, Mapping):
+            return False
+        current_entry = assets.get(asset_key)
+        prior_entry = baseline_assets.get(asset_key)
+        if (not isinstance(current_entry, Mapping) or not isinstance(prior_entry, Mapping)
+                or not equal(current_entry, prior_entry)):
+            return False
+    try:
+        current_start, current_duration = _clip_duration(clip, path)
+        prior_start, prior_duration = _clip_duration(prior, path)
+    except FinalCandidateError:
+        return False
+    if current_duration != prior_duration:
+        return False
+    previous_overrun = max(Fraction(0), prior_start + prior_duration - baseline_bound)
+    current_overrun = max(Fraction(0), current_start + current_duration - bound)
+    return current_overrun <= previous_overrun
+
+
 def _validate_clip_list(
     clips: Any,
     *,
@@ -374,7 +419,10 @@ def _validate_clip_list(
         if timing_changed or bound_shrank:
             start, duration = _clip_duration(clip, clip_path)
             if bound is not None and start + duration > bound:
-                _fail(clip_path, "timeline interval must fit the occurrence's half-open bounds")
+                if not _retained_overrun_does_not_worsen(
+                        clip, prior, bound=bound, baseline_bound=baseline_bound,
+                        assets=assets, baseline_assets=before_assets, path=clip_path):
+                    _fail(clip_path, "timeline interval must fit the occurrence's half-open bounds")
         asset_key = clip.get("asset", clip.get("asset_id"))
         if asset_key is not None:
             if asset_key not in assets or not isinstance(assets[asset_key], Mapping):
@@ -793,8 +841,15 @@ def validate_final_candidate(
                 or not _same_fields(placement, previous_placement, ("shot_id",))
                 or not _same_fields(candidate, baseline, ("project_id", "timeline_id"))):
             baseline_internal = {}
-        previous_bound = (bound if baseline_internal and _same_fields(
-            placement, previous_placement, ("duration_ms",)) else None)
+        previous_bound = None
+        if baseline_internal and isinstance(previous_placement, Mapping):
+            try:
+                previous_bound = _validation_number(
+                    previous_placement.get("duration_ms"),
+                    f"baseline.placements[{occurrence_id!r}].duration_ms", positive=True,
+                ) / 1000
+            except FinalCandidateError:
+                previous_bound = None
         child_clips = _validate_clip_list(
             child_config.get("clips", []), path=f"candidate.shots[{shot_id!r}].internal_timeline.clips",
             tracks=child_tracks, registry=child_config.get("registry", {}), bound=bound,
