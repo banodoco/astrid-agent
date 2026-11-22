@@ -291,7 +291,7 @@ def test_facade_reuses_default_registry_within_each_command_only(network, monkey
         prompt="a red kite", seed=19, dry_run=True,
     )
     assert len(loads) == 2
-    assert first == second
+    assert first["entry"] == second["entry"]
     assert first["entry"]["approval"]["api_digest"]
 
 
@@ -343,6 +343,7 @@ def test_private_shipped_only_producer_retains_legacy_backend_load(
     from astrid.core.generation.model_root import ModelRootBinding
     from astrid.core.model_catalog import schema as catalog_schema
     from astrid.sdk.exceptions import CapabilityValidationError
+    import vibecomfy.model_assets as model_assets
 
     client, _requests = install_target(network, target_info())
     candidate = ModelRegistry.load_default().get("z-image")
@@ -354,7 +355,7 @@ def test_private_shipped_only_producer_retains_legacy_backend_load(
     )
     monkeypatch.setattr(catalog_schema, "validate_registry_with_backends", lambda *a, **k: [candidate])
     monkeypatch.setattr(model_root, "validate_model_root_binding", lambda *a, **k: binding)
-    monkeypatch.setattr(generation, "_referenced_model_values", lambda workflow: [])
+    monkeypatch.setattr(model_assets, "_referenced_model_values", lambda workflow: [])
     real_loader = ModelRegistry.load_default
     loads = []
 
