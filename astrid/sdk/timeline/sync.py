@@ -669,6 +669,8 @@ class TimelineSession:
                 captured_state, captured_bundle = _captured
                 if not equal(state, captured_state):
                     raise TimelineEditError("outbox changed during capture; original intent was not queued")
+                if runtime_capture:
+                    return copy.deepcopy(commands)
                 return execute(captured_bundle, commands, verified_media=verified_media).commands
             return copy.deepcopy(commands) if runtime_capture else execute(
                 self._capture_bundle(state, commands), commands, verified_media=verified_media
