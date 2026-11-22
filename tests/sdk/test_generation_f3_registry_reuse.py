@@ -115,6 +115,37 @@ def test_catalog_helper_passes_registry_to_builtin_backend(monkeypatch):
     assert calls[0][1]["registry"] is registry
 
 
+def test_catalog_helper_falls_back_for_noninspectable_builtin_method(monkeypatch):
+    _stub_catalog_helper(monkeypatch)
+    registry = SimpleNamespace(_astrid_default_generation_registry=True)
+    calls = []
+
+    class OpaqueCallable:
+        @property
+        def __signature__(self):
+            raise ValueError("signature unavailable")
+
+        def __call__(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            return "workflow", {}, None
+
+    backend = VibeComfyBackend()
+    backend.prepare_catalog_workflow = OpaqueCallable()
+    generation._prepare_catalog_target_workflow(
+        registry=registry,
+        candidate=object(),
+        mode="t2i",
+        modality="image",
+        inputs={},
+        target_client=None,
+        backend=backend,
+        defer_target=True,
+        reuse_default_registry=True,
+    )
+    assert len(calls) == 1
+    assert "registry" not in calls[0][1]
+
+
 def test_catalog_helper_does_not_retry_backend_type_error(monkeypatch):
     _stub_catalog_helper(monkeypatch)
     registry = SimpleNamespace(_astrid_default_generation_registry=True)
