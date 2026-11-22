@@ -18,8 +18,9 @@ from astrid.packs.runpod.worker_preparation import AcquisitionUnresolvedError, t
 
 
 @pytest.fixture
-def case(tmp_path, monkeypatch, pod_watchdog_transport):
+def case(tmp_path, monkeypatch, pod_watchdog_transport, acknowledged_watchdog):
     import runpod_lifecycle
+    from runpod_lifecycle import deadline
     from runpod_lifecycle import api
 
     now = datetime(2026, 11, 1, tzinfo=timezone.utc)
@@ -36,6 +37,15 @@ def case(tmp_path, monkeypatch, pod_watchdog_transport):
         now=now, raw=raw, prefs=prefs, offer=offer, creates=0, mounts="/workspace", rate=1.0,
         pods=[], lookup_error=None, create_error=None, configs=0, before_create=None,
     )
+
+    class TestClockDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return state.now.replace(tzinfo=None)
+            return state.now.astimezone(tz)
+
+    monkeypatch.setattr(deadline, "datetime", TestClockDateTime)
 
     async def launch(config, *, name, **kwargs):
         if state.before_create:
@@ -144,24 +154,6 @@ def test_denial_cap_deadline_and_changed_offer_block_before_claim_or_journal(cas
         asyncio.run(case.owner._select(replace(case.grant, **change)))
     assert not case.owner.path.exists()
     assert case.creates == case.configs == 0
-
-
-@pytest.fixture
-def acknowledged_watchdog(monkeypatch, pod_watchdog_transport):
-    from runpod_lifecycle import https
-
-    class Transport:
-        def __init__(self, pod_id, https_token, *, deadline=None):
-            assert pod_id and https_token == pod_watchdog_transport
-
-        def execute_command(self, command, timeout):
-            assert command.startswith("python3 -c ")
-            return 0, "", ""
-
-        def disconnect(self):
-            pass
-
-    monkeypatch.setattr(https, "HttpsPodTransport", Transport)
 
 
 def test_claim_namespaces_intent_before_provider_and_reuses_only_exact_journal(case, acknowledged_watchdog):
