@@ -223,3 +223,13 @@ When setup is done, give other agents the launcher path for their OS, and follow
 [Astrid's core skill](https://github.com/banodoco/astrid-agent/blob/main/astrid/packs/_core/docs/SKILL.md).
 Help the user enter credentials on their own computer; never ask for a secret
 in chat.
+
+## If something goes wrong
+
+- If you hit a bug, a confusing step or a failure in Astrid, tell the user plainly what happened.
+- Offer to fix it. With the user's OK, try to fix it and keep their work and data safe.
+- File an issue at https://github.com/banodoco/astrid-dev/issues/new with what happened,
+  the exact steps, `astrid --version` or the release, the OS, and the error output.
+  Remove credentials and personal data from everything you share.
+- If you fixed it, open a PR against the right repo and link it from the issue.
+- If you can't fix it, the issue alone is still valuable. Don't give up silently.
